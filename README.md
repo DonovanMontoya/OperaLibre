@@ -21,14 +21,34 @@ A private audiobook streaming app with a Rust media server and an iOS-ready web 
 
 ```bash
 npm install
-AUDIOBOOK_LIBRARY="/path/to/your/audiobooks" npm run dev
+cp server.config.example server.config
+npm run dev
 ```
+
+Edit `server.config` before starting the server. At minimum, set `library_root` to the folder containing your audiobook files.
 
 Open [http://localhost:5173](http://localhost:5173).
 
 The server runs on [http://localhost:4000](http://localhost:4000). On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall.
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
+
+## Server config
+
+The server reads `server.config` from the repo root by default. It is a plain `key = value` file:
+
+```config
+host = 0.0.0.0
+port = 4000
+library_root = /path/to/your/audiobooks
+data_dir = data
+progress_file = data/progress.json
+
+libation_cli_path =
+libation_files_dir =
+```
+
+Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `AUDIOBOOK_SERVER_CONFIG=/path/to/server.config` when starting the server.
 
 ## Library layout
 
@@ -43,6 +63,19 @@ Each folder is treated as one book:
 ```
 
 A single audio file directly in the root is treated as its own book.
+
+## Optional Libation / Audible import
+
+The server can use a local Libation CLI installation as an optional acquisition tool. Libation must already be installed and authenticated on the server. The web app can then show Libation's Audible library, run a Libation scan, trigger liberation for a selected ASIN, and rescan the local audiobook folder after the download completes.
+
+Set these in `server.config` only if you want the integration:
+
+```config
+libation_cli_path = /path/to/libationcli
+libation_files_dir = /path/to/LibationFiles
+```
+
+If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated.
 
 ## iOS path
 

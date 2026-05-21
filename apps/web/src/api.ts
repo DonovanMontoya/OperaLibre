@@ -1,4 +1,4 @@
-import type { Book, Progress } from "./types";
+import type { Book, JobCreated, JobStatus, LibationBook, LibationStatus, Progress } from "./types";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 
@@ -49,6 +49,28 @@ export async function saveProgress(
     method: "PUT",
     body: JSON.stringify(progress)
   });
+}
+
+export async function getLibationStatus() {
+  return request<LibationStatus>("/api/libation/status");
+}
+
+export async function getLibationBooks() {
+  return request<LibationBook[]>("/api/libation/books");
+}
+
+export async function syncLibationLibrary() {
+  return request<JobCreated>("/api/libation/sync", { method: "POST" });
+}
+
+export async function liberateLibationBook(asin: string) {
+  return request<JobCreated>(`/api/libation/books/${encodeURIComponent(asin)}/liberate`, {
+    method: "POST"
+  });
+}
+
+export async function getJob(jobId: string) {
+  return request<JobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
 export function mediaUrl(path: string) {

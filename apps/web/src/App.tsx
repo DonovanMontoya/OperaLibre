@@ -1,8 +1,11 @@
 import {
   Bookmark,
+  Cloud,
+  CloudDownload,
   Download,
   Gauge,
   Headphones,
+  KeyRound,
   LayoutGrid,
   Library,
   List,
@@ -13,19 +16,33 @@ import {
   RotateCcw,
   RotateCw,
   Search,
+  ServerOff,
   Timer,
   Volume2,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { bookDownloadUrl, getBooks, getProgress, mediaUrl, rescanLibrary, saveProgress } from "./api";
-import type { Book, Chapter, Track } from "./types";
+import {
+  bookDownloadUrl,
+  getBooks,
+  getJob,
+  getLibationBooks,
+  getLibationStatus,
+  getProgress,
+  liberateLibationBook,
+  mediaUrl,
+  rescanLibrary,
+  saveProgress,
+  syncLibationLibrary
+} from "./api";
+import type { Book, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
 
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
+type LibrarySource = "local" | "audible";
 
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
@@ -73,6 +90,21 @@ function durationFromTracks(book: Book) {
   return book.tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
 }
 
+function formatMinutes(minutes: number | null | undefined) {
+  if (!Number.isFinite(minutes ?? NaN)) {
+    return "Unknown length";
+  }
+  const totalMinutes = Math.max(0, Math.round(minutes ?? 0));
+  const hours = Math.floor(totalMinutes / 60);
+  const remainder = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
+}
+
+function isLiberatedStatus(status: string | null | undefined) {
+  const normalized = status?.toLowerCase() ?? "";
+  return normalized.includes("liberated") || normalized.includes("downloaded");
+}
+
 function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   const className = size === "small" ? "cover-mark" : "large-cover";
   if (book.coverArtUrl) {
@@ -106,8 +138,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("title");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
+  const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
+  const [libationLoading, setLibationLoading] = useState(false);
+  const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
+  const [libationError, setLibationError] = useState<string | null>(null);
+  const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -135,6 +174,19 @@ export default function App() {
     });
     return sorted;
   }, [books, searchQuery, sortMode]);
+
+  const visibleLibationBooks = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const filtered = query
+      ? libationBooks.filter((book) =>
+          [book.title, book.subtitle, book.authors, book.narrators]
+            .filter(Boolean)
+            .some((field) => field!.toLowerCase().includes(query))
+        )
+      : libationBooks;
+
+    return [...filtered].sort((a, b) => a.title.localeCompare(b.title));
+  }, [libationBooks, searchQuery]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -215,6 +267,61 @@ export default function App() {
   useEffect(() => {
     void loadBooks();
   }, [loadBooks]);
+
+  const loadLibationStatus = useCallback(async () => {
+    try {
+      const status = await getLibationStatus();
+      setLibationStatus(status);
+    } catch {
+      setLibationStatus(null);
+    }
+  }, []);
+
+  const loadLibationBooks = useCallback(async () => {
+    setLibationLoading(true);
+    setLibationError(null);
+    try {
+      const nextBooks = await getLibationBooks();
+      setLibationBooks(nextBooks);
+      setLibationBooksLoaded(true);
+    } catch {
+      setLibationError("Libation books could not be loaded.");
+      setLibationBooksLoaded(true);
+    } finally {
+      setLibationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLibationStatus();
+  }, [loadLibationStatus]);
+
+  useEffect(() => {
+    if (librarySource === "audible" && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
+      void loadLibationBooks();
+    }
+  }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
+
+  useEffect(() => {
+    if (!activeJob || activeJob.status !== "running") {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void getJob(activeJob.id)
+        .then((job) => {
+          setActiveJob(job);
+          if (job.status !== "running") {
+            void loadLibationStatus();
+            void loadLibationBooks();
+            void loadBooks();
+          }
+        })
+        .catch(() => undefined);
+    }, 1800);
+
+    return () => window.clearInterval(timer);
+  }, [activeJob, loadBooks, loadLibationBooks, loadLibationStatus]);
 
   useEffect(() => {
     if (!playbackBook) {
@@ -512,6 +619,46 @@ export default function App() {
     }
   }
 
+  async function startLibationSync() {
+    setLibationError(null);
+    setLibationBooksLoaded(false);
+    try {
+      const created = await syncLibationLibrary();
+      setActiveJob({
+        id: created.jobId,
+        kind: "libation-sync",
+        status: "running",
+        startedAt: "",
+        finishedAt: null,
+        exitCode: null,
+        output: "Starting Libation library scan.",
+        error: null
+      });
+    } catch {
+      setLibationError("Libation sync could not be started.");
+    }
+  }
+
+  async function startLiberation(book: LibationBook) {
+    setLibationError(null);
+    setLibationBooksLoaded(false);
+    try {
+      const created = await liberateLibationBook(book.asin);
+      setActiveJob({
+        id: created.jobId,
+        kind: "libation-liberate",
+        status: "running",
+        startedAt: "",
+        finishedAt: null,
+        exitCode: null,
+        output: `Starting liberation for ${book.title}.`,
+        error: null
+      });
+    } catch {
+      setLibationError(`Liberation could not be started for ${book.title}.`);
+    }
+  }
+
   return (
     <main className="shell">
       <audio
@@ -561,7 +708,7 @@ export default function App() {
             <Search size={14} aria-hidden="true" />
             <input
               type="search"
-              placeholder="Search title, author…"
+              placeholder={librarySource === "local" ? "Search title, author…" : "Search Audible titles…"}
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.currentTarget.value)}
               aria-label="Search library"
@@ -603,39 +750,148 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
 
-        {isLoading ? <div className="empty-state">Loading library…</div> : null}
-        {error ? <div className="empty-state error">{error}</div> : null}
-        {!isLoading && !error && books.length === 0 ? (
-          <div className="empty-state">No audiobooks found in the configured library folder.</div>
-        ) : null}
-        {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
-          <div className="empty-state">Nothing matches “{searchQuery}”.</div>
-        ) : null}
-
-        <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
-          {visibleBooks.map((book, index) => (
+          <div className="source-toggle" role="group" aria-label="Library source">
             <button
-              key={book.id}
-              className={`book-row ${book.id === selectedBook?.id ? "active" : ""}`}
-              onClick={() => {
-                selectBook(book);
-                setLibraryOpen(false);
-              }}
+              type="button"
+              className={librarySource === "local" ? "selected" : ""}
+              onClick={() => setLibrarySource("local")}
+              aria-pressed={librarySource === "local"}
             >
-              {viewMode === "grid" || book.coverArtUrl ? (
-                <CoverArt book={book} size="small" />
-              ) : (
-                <span className="index">{String(index + 1).padStart(2, "0")}</span>
-              )}
-              <span className="book-text">
-                <strong>{book.title}</strong>
-                <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-              </span>
+              <Library size={13} />
+              <span>Local</span>
             </button>
-          ))}
+            <button
+              type="button"
+              className={librarySource === "audible" ? "selected" : ""}
+              onClick={() => setLibrarySource("audible")}
+              aria-pressed={librarySource === "audible"}
+            >
+              <Cloud size={13} />
+              <span>Audible</span>
+            </button>
+          </div>
         </div>
+
+        {librarySource === "audible" ? (
+          <section className="libation-panel">
+            <div className="libation-status">
+              {libationStatus?.enabled ? <Cloud size={15} /> : <ServerOff size={15} />}
+              <span>
+                {libationStatus?.enabled
+                  ? libationStatus.authenticated
+                    ? "Libation ready"
+                    : "Libation needs sign-in"
+                  : "Libation not configured"}
+              </span>
+            </div>
+
+            {libationStatus?.message ? <p>{libationStatus.message}</p> : null}
+
+            {libationStatus?.accounts.length ? (
+              <div className="account-list">
+                {libationStatus.accounts.map((account) => (
+                  <span key={`${account.accountId}-${account.locale}`} className={account.authenticated ? "ok" : "warn"}>
+                    <KeyRound size={12} />
+                    {account.name || account.accountId} · {account.locale}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="libation-actions">
+              <button
+                type="button"
+                onClick={() => void loadLibationBooks()}
+                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
+              >
+                <RefreshCcw size={13} />
+                <span>{libationLoading ? "Loading" : "Load"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void startLibationSync()}
+                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
+              >
+                <CloudDownload size={13} />
+                <span>Sync</span>
+              </button>
+            </div>
+
+            {activeJob ? (
+              <div className={`job-pill ${activeJob.status}`}>
+                <span>{activeJob.status === "running" ? "Running" : activeJob.status}</span>
+                <em>{activeJob.error ?? activeJob.output.split("\n").filter(Boolean).slice(-1)[0]}</em>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {librarySource === "local" ? (
+          <>
+            {isLoading ? <div className="empty-state">Loading library…</div> : null}
+            {error ? <div className="empty-state error">{error}</div> : null}
+            {!isLoading && !error && books.length === 0 ? (
+              <div className="empty-state">No audiobooks found in the configured library folder.</div>
+            ) : null}
+            {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
+              <div className="empty-state">Nothing matches “{searchQuery}”.</div>
+            ) : null}
+
+            <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
+              {visibleBooks.map((book, index) => (
+                <button
+                  key={book.id}
+                  className={`book-row ${book.id === selectedBook?.id ? "active" : ""}`}
+                  onClick={() => {
+                    selectBook(book);
+                    setLibraryOpen(false);
+                  }}
+                >
+                  {viewMode === "grid" || book.coverArtUrl ? (
+                    <CoverArt book={book} size="small" />
+                  ) : (
+                    <span className="index">{String(index + 1).padStart(2, "0")}</span>
+                  )}
+                  <span className="book-text">
+                    <strong>{book.title}</strong>
+                    <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
+              <div className="empty-state">Loading Audible library…</div>
+            ) : null}
+            {libationError ? <div className="empty-state error">{libationError}</div> : null}
+            {!libationLoading && !libationError && libationBooksLoaded && libationStatus?.enabled && visibleLibationBooks.length === 0 ? (
+              <div className="empty-state">No Libation books loaded yet.</div>
+            ) : null}
+
+            <div className="audible-list">
+              {visibleLibationBooks.map((book) => (
+                <div key={book.asin} className="audible-row">
+                  <div>
+                    <strong>{book.title}</strong>
+                    <span>{[book.authors, formatMinutes(book.lengthMinutes), book.bookStatus].filter(Boolean).join(" · ")}</span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`${isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"} ${book.title}`}
+                    disabled={activeJob?.status === "running"}
+                    onClick={() => void startLiberation(book)}
+                  >
+                    <CloudDownload size={14} />
+                    <span>{isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"}</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </aside>
 
       <section className="player-pane" ref={playerPaneRef}>
