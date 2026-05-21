@@ -56,7 +56,7 @@ import type { AuthUser, Book, Chapter, JobStatus, LibationBook, LibationStatus, 
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
-const APP_STATE_STORAGE_PREFIX = "audiobook.appState";
+const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
@@ -1943,7 +1943,7 @@ function MainApp({
           <div className="empty-player">
             <Headphones size={48} strokeWidth={1.25} />
             <h2>An empty <em>shelf</em></h2>
-            <p>Start the server with AUDIOBOOK_LIBRARY pointed at your files.</p>
+            <p>Start the server with OPERALIBRE_LIBRARY pointed at your files.</p>
           </div>
         )}
       </section>

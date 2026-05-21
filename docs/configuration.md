@@ -9,11 +9,11 @@ The server is configured by a plain text file named `server.config` at the repos
 
 ## File location
 
-By default the server reads `./server.config` (relative to the working directory the server is launched from). To point at a different file, set the `AUDIOBOOK_SERVER_CONFIG` environment variable:
+By default the server reads `./server.config` (relative to the working directory the server is launched from). To point at a different file, set the `OPERALIBRE_SERVER_CONFIG` environment variable:
 
 ```bash
-AUDIOBOOK_SERVER_CONFIG=/etc/audiobook/server.config \
-  ./apps/server/target/release/audiobook-server
+OPERALIBRE_SERVER_CONFIG=/etc/operalibre/server.config \
+  ./apps/server/target/release/operalibre-server
 ```
 
 Relative paths inside the config (like `data_dir = data`) are resolved against the **directory containing the config file**, not the current working directory. This means you can drop a config file anywhere and its data paths follow it.
@@ -91,7 +91,7 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 
 | Variable | Used by | Description |
 | --- | --- | --- |
-| `AUDIOBOOK_SERVER_CONFIG` | server | Override the path to `server.config`. |
+| `OPERALIBRE_SERVER_CONFIG` | server | Override the path to `server.config`. |
 | `VITE_API_BASE` | web | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
 
 `VITE_API_BASE` is read at **build time** by Vite. Set it before running `npm run build`:

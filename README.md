@@ -1,4 +1,4 @@
-# Audiobook Serving
+# OperaLibre
 
 A private audiobook streaming app with a Rust media server and an iOS-ready web frontend. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
 
@@ -55,7 +55,7 @@ libation_cli_path =
 libation_files_dir =
 ```
 
-Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `AUDIOBOOK_SERVER_CONFIG=/path/to/server.config` when starting the server.
+Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server.
 
 ## Library layout
 
@@ -93,7 +93,7 @@ If `libation_cli_path` is omitted, the server looks for `libationcli`, `Libation
 The frontend is intentionally plain React/Vite so it can move to iOS through Capacitor later:
 
 ```bash
-npm install @capacitor/core @capacitor/cli @capacitor/ios -w @audiobook/web
+npm install @capacitor/core @capacitor/cli @capacitor/ios -w @operalibre/web
 ```
 
 For a native wrapper, set `VITE_API_BASE` to the server URL reachable from the phone, then add Capacitor once the web playback experience is stable.

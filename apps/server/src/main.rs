@@ -49,7 +49,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
-const SESSION_COOKIE_NAME: &str = "audiobook_session";
+const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 
 #[derive(Clone)]
@@ -439,7 +439,7 @@ struct ServerConfig {
 impl ServerConfig {
     fn load() -> anyhow::Result<Self> {
         let current_dir = env::current_dir()?;
-        let explicit_config_path = env::var_os("AUDIOBOOK_SERVER_CONFIG").map(PathBuf::from);
+        let explicit_config_path = env::var_os("OPERALIBRE_SERVER_CONFIG").map(PathBuf::from);
         let config_path = explicit_config_path
             .clone()
             .unwrap_or_else(|| current_dir.join("server.config"));
@@ -451,20 +451,20 @@ impl ServerConfig {
 
         let library_root = config_path_value(&values, &config_dir, "library_root")
             .or_else(|| config_path_value(&values, &config_dir, "audiobook_library"))
-            .or_else(|| env_path_value("AUDIOBOOK_LIBRARY"))
+            .or_else(|| env_path_value("OPERALIBRE_LIBRARY"))
             .unwrap_or_else(|| current_dir.join("library"));
         let data_dir = config_path_value(&values, &config_dir, "data_dir")
-            .or_else(|| env_path_value("AUDIOBOOK_DATA_DIR"))
+            .or_else(|| env_path_value("OPERALIBRE_DATA_DIR"))
             .unwrap_or_else(|| current_dir.join("data"));
         let progress_file = config_path_value(&values, &config_dir, "progress_file")
-            .or_else(|| env_path_value("AUDIOBOOK_PROGRESS_FILE"))
+            .or_else(|| env_path_value("OPERALIBRE_PROGRESS_FILE"))
             .unwrap_or_else(|| data_dir.join("progress.json"));
         let users_file = config_path_value(&values, &config_dir, "users_file")
-            .or_else(|| env_path_value("AUDIOBOOK_USERS_FILE"))
+            .or_else(|| env_path_value("OPERALIBRE_USERS_FILE"))
             .unwrap_or_else(|| data_dir.join("users.json"));
         let sessions_file = data_dir.join("sessions.json");
         let activity_file = config_path_value(&values, &config_dir, "activity_file")
-            .or_else(|| env_path_value("AUDIOBOOK_ACTIVITY_FILE"))
+            .or_else(|| env_path_value("OPERALIBRE_ACTIVITY_FILE"))
             .unwrap_or_else(|| data_dir.join("activity.json"));
 
         Ok(Self {
@@ -614,7 +614,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "audiobook_server=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "operalibre_server=info,tower_http=info".into()),
         )
         .init();
 
@@ -1203,7 +1203,7 @@ async fn download_book(
 
     let zip_path = tokio::task::spawn_blocking(move || -> anyhow::Result<PathBuf> {
         let temp = tempfile::Builder::new()
-            .prefix("audiobook-")
+            .prefix("operalibre-")
             .suffix(".zip")
             .tempfile()?;
         let (file, path) = temp.keep()?;
@@ -2353,7 +2353,7 @@ fn yes_no(value: &str) -> bool {
 
 async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBook>, ApiError> {
     let export_path = env::temp_dir().join(format!(
-        "audiobook-libation-export-{}.json",
+        "operalibre-libation-export-{}.json",
         now_rfc3339ish()
     ));
     let output = run_libation(

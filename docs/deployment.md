@@ -17,7 +17,7 @@ Produces:
 
 | Artifact | Path |
 | --- | --- |
-| Server binary | `apps/server/target/release/audiobook-server` |
+| Server binary | `apps/server/target/release/operalibre-server` |
 | Web bundle | `apps/web/dist/` |
 
 The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest, and assets. It can be served by the Rust server, a reverse proxy, or any static host that points API calls back at the server.
@@ -25,8 +25,8 @@ The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest
 ## Recommended layout on a home server
 
 ```text
-/opt/audiobook/
-  audiobook-server          # the release binary
+/opt/operalibre/
+  operalibre-server          # the release binary
   web/                      # contents of apps/web/dist/
   server.config             # your config
   data/                     # progress.json, users.json
@@ -35,28 +35,28 @@ The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest
 Start with:
 
 ```bash
-AUDIOBOOK_SERVER_CONFIG=/opt/audiobook/server.config \
-  /opt/audiobook/audiobook-server
+OPERALIBRE_SERVER_CONFIG=/opt/operalibre/server.config \
+  /opt/operalibre/operalibre-server
 ```
 
 ## systemd unit (Linux)
 
 ```ini
-# /etc/systemd/system/audiobook.service
+# /etc/systemd/system/operalibre.service
 [Unit]
-Description=Audiobook Serving
+Description=OperaLibre
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=audiobook
-Group=audiobook
-Environment=AUDIOBOOK_SERVER_CONFIG=/opt/audiobook/server.config
-ExecStart=/opt/audiobook/audiobook-server
+User=operalibre
+Group=operalibre
+Environment=OPERALIBRE_SERVER_CONFIG=/opt/operalibre/server.config
+ExecStart=/opt/operalibre/operalibre-server
 Restart=on-failure
 RestartSec=5
-WorkingDirectory=/opt/audiobook
+WorkingDirectory=/opt/operalibre
 
 [Install]
 WantedBy=multi-user.target
@@ -64,30 +64,30 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now audiobook.service
-sudo journalctl -u audiobook -f
+sudo systemctl enable --now operalibre.service
+sudo journalctl -u operalibre -f
 ```
 
 ## launchd (macOS)
 
-Drop the following at `~/Library/LaunchAgents/com.you.audiobook.plist` and load with `launchctl load ...`:
+Drop the following at `~/Library/LaunchAgents/com.you.operalibre.plist` and load with `launchctl load ...`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
-    <key>Label</key><string>com.you.audiobook</string>
+    <key>Label</key><string>com.you.operalibre</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/Users/you/audiobook/audiobook-server</string>
+      <string>/Users/you/operalibre/operalibre-server</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>AUDIOBOOK_SERVER_CONFIG</key>
-      <string>/Users/you/audiobook/server.config</string>
+      <key>OPERALIBRE_SERVER_CONFIG</key>
+      <string>/Users/you/operalibre/server.config</string>
     </dict>
-    <key>WorkingDirectory</key><string>/Users/you/audiobook</string>
+    <key>WorkingDirectory</key><string>/Users/you/operalibre</string>
     <key>KeepAlive</key><true/>
     <key>RunAtLoad</key><true/>
   </dict>
@@ -130,13 +130,13 @@ Two notes when fronting with a proxy:
 The web app is intentionally a plain React/Vite project so it can be wrapped with [Capacitor](https://capacitorjs.com/) for an iOS native app later:
 
 ```bash
-npm install @capacitor/core @capacitor/cli @capacitor/ios -w @audiobook/web
+npm install @capacitor/core @capacitor/cli @capacitor/ios -w @operalibre/web
 ```
 
 When building for a native wrapper, set `VITE_API_BASE` to the server URL reachable from the phone:
 
 ```bash
-VITE_API_BASE=https://books.example.com npm run build -w @audiobook/web
+VITE_API_BASE=https://books.example.com npm run build -w @operalibre/web
 ```
 
 This is a planned future build; the web PWA is the current happy path for mobile.
