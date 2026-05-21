@@ -766,13 +766,12 @@ async fn list_libation_books(
 
 fn match_local_book(local_books: &[Book], libation_book: &LibationBook) -> Option<String> {
     let target_asin = normalize_asin(&libation_book.asin);
-    if let Some(asin) = target_asin.as_ref() {
-        if let Some(matched) = local_books
+    if let Some(asin) = target_asin.as_ref()
+        && let Some(matched) = local_books
             .iter()
             .find(|book| book.asin.as_deref() == Some(asin.as_str()))
-        {
-            return Some(matched.id.clone());
-        }
+    {
+        return Some(matched.id.clone());
     }
 
     let target_key = normalize_match_key(&libation_book.title);
@@ -1338,8 +1337,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
                 let chapters = metadata[index]
                     .chapters
                     .iter()
-                    .enumerate()
-                    .map(|(_chapter_index, chapter)| Chapter {
+                    .map(|chapter| Chapter {
                         id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
                         title: chapter.title.clone(),
                         track_id: track_id.clone(),
@@ -1484,7 +1482,7 @@ fn find_reading_file(
         .map(|entry| entry.into_path())
         .filter(|path| is_supported_reading_file(path))
         .collect::<Vec<_>>();
-    candidates.sort_by(|a, b| natural_path_key(a).cmp(&natural_path_key(b)));
+    candidates.sort_by_key(|a| natural_path_key(a));
 
     let selected = candidates
         .iter()
@@ -1555,7 +1553,7 @@ fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
         })
         .collect::<Vec<_>>();
 
-    files.sort_by(|a, b| natural_path_key(a).cmp(&natural_path_key(b)));
+    files.sort_by_key(|a| natural_path_key(a));
     files
 }
 
@@ -1578,7 +1576,7 @@ fn group_files_into_books(root: &FsPath, files: Vec<PathBuf>) -> Vec<(PathBuf, V
         }
     }
 
-    groups.sort_by(|a, b| natural_path_key(&a.0).cmp(&natural_path_key(&b.0)));
+    groups.sort_by_key(|a| natural_path_key(&a.0));
     groups
 }
 
@@ -1834,7 +1832,7 @@ fn extract_vendor_json(tag: &Tag) -> Option<serde_json::Value> {
 
 fn looks_like_base64_json(value: &str) -> bool {
     value.len() > 128
-        && value.len() % 4 == 0
+        && value.len().is_multiple_of(4)
         && value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
         })
