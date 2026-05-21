@@ -1,0 +1,19 @@
+{
+  "name": "audiobook-serving",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"cargo run --manifest-path apps/server/Cargo.toml\" \"npm run dev -w @audiobook/web\"",
+    "dev:server": "cargo run --manifest-path apps/server/Cargo.toml",
+    "dev:web": "npm run dev -w @audiobook/web",
+    "build": "cargo build --manifest-path apps/server/Cargo.toml && npm run build -w @audiobook/web",
+    "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && npm run typecheck -w @audiobook/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}
