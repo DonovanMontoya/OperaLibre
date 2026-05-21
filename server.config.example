@@ -12,6 +12,7 @@ library_root = /path/to/audiobooks
 # Server data files.
 data_dir = data
 progress_file = data/progress.json
+users_file = data/users.json
 
 # Optional Libation / Audible import.
 # Leave these blank unless you use Libation.

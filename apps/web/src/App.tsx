@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Bookmark,
   Cloud,
   CloudDownload,
@@ -6,10 +7,12 @@ import {
   Gauge,
   Headphones,
   KeyRound,
+  LoaderCircle,
   LayoutGrid,
   Library,
   List,
   ListMusic,
+  LogOut,
   Pause,
   Play,
   RefreshCcw,
@@ -18,24 +21,34 @@ import {
   Search,
   ServerOff,
   Timer,
+  ScrollText,
+  UserCog,
   Volume2,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bookDownloadUrl,
+  getAuthStatus,
   getBooks,
   getJob,
   getLibationBooks,
   getLibationStatus,
+  getMe,
   getProgress,
+  getStoredToken,
   liberateLibationBook,
+  logout as apiLogout,
   mediaUrl,
   rescanLibrary,
   saveProgress,
+  setStoredToken,
+  setUnauthorizedHandler,
   syncLibationLibrary
 } from "./api";
-import type { Book, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
+import { AuthGate, UserManagementModal } from "./Auth";
+import { ProfilePage } from "./Profile";
+import type { AuthUser, Book, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
@@ -100,6 +113,85 @@ function formatMinutes(minutes: number | null | undefined) {
   return hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
 }
 
+function formatElapsed(startedAt: string | null | undefined, finishedAt?: string | null) {
+  if (!startedAt) {
+    return null;
+  }
+  const start = Number(new Date(startedAt));
+  const end = finishedAt ? Number(new Date(finishedAt)) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return null;
+  }
+  return formatDurationLabel((end - start) / 1000);
+}
+
+function jobTitle(job: JobStatus) {
+  if (job.kind === "libation-sync") {
+    return "Audible library sync";
+  }
+  if (job.kind === "libation-liberate") {
+    return "Audible download";
+  }
+  return job.kind;
+}
+
+function jobDetailLines(job: JobStatus) {
+  const text = [job.error, job.output].filter(Boolean).join("\n");
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-12);
+}
+
+function jobSummary(job: JobStatus) {
+  if (job.error) {
+    return job.error;
+  }
+  const lines = job.output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const latest = lines[lines.length - 1];
+  if (latest) {
+    return latest;
+  }
+  return job.status === "running" ? "Waiting for Libation output..." : "No output captured.";
+}
+
+function formatDurationLabel(seconds: number | null | undefined) {
+  if (!Number.isFinite(seconds ?? NaN)) {
+    return null;
+  }
+  const totalMinutes = Math.max(0, Math.ceil((seconds ?? 0) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${Math.max(1, minutes)}m`;
+}
+
+function bookProgressLabel(book: Book) {
+  if (!book.progress) {
+    return "Not started";
+  }
+  if (book.progress.status === "finished") {
+    return "Finished";
+  }
+  const remaining = formatDurationLabel(book.progress.remainingSeconds);
+  if (remaining) {
+    return `${remaining} left`;
+  }
+  if (book.progress.status === "inProgress") {
+    return "In progress";
+  }
+  return "Not started";
+}
+
 function isLiberatedStatus(status: string | null | undefined) {
   const normalized = status?.toLowerCase() ?? "";
   return normalized.includes("liberated") || normalized.includes("downloaded");
@@ -118,6 +210,96 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
 }
 
 export default function App() {
+  const [authState, setAuthState] = useState<
+    { phase: "loading" }
+    | { phase: "setup" }
+    | { phase: "login" }
+    | { phase: "ready"; user: AuthUser }
+  >({ phase: "loading" });
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const status = await getAuthStatus();
+      if (status.setupRequired) {
+        setStoredToken(null);
+        setAuthState({ phase: "setup" });
+        return;
+      }
+      if (status.user) {
+        setAuthState({ phase: "ready", user: status.user });
+        return;
+      }
+      const token = getStoredToken();
+      if (!token) {
+        setAuthState({ phase: "login" });
+        return;
+      }
+      try {
+        const user = await getMe();
+        setAuthState({ phase: "ready", user });
+      } catch {
+        setStoredToken(null);
+        setAuthState({ phase: "login" });
+      }
+    } catch {
+      setAuthState({ phase: "login" });
+    }
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setStoredToken(null);
+      setAuthState({ phase: "login" });
+    });
+    void checkAuth();
+    return () => setUnauthorizedHandler(null);
+  }, [checkAuth]);
+
+  if (authState.phase === "loading") {
+    return (
+      <main className="auth-shell">
+        <div className="auth-card">
+          <p>Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (authState.phase === "setup" || authState.phase === "login") {
+    return (
+      <AuthGate
+        mode={authState.phase}
+        onAuthenticated={(token, user) => {
+          setStoredToken(token);
+          setAuthState({ phase: "ready", user });
+        }}
+      />
+    );
+  }
+
+  return (
+    <MainApp
+      currentUser={authState.user}
+      onLogout={async () => {
+        try {
+          await apiLogout();
+        } catch {
+          // ignore
+        }
+        setStoredToken(null);
+        setAuthState({ phase: "login" });
+      }}
+    />
+  );
+}
+
+function MainApp({
+  currentUser,
+  onLogout
+}: {
+  currentUser: AuthUser;
+  onLogout: () => void | Promise<void>;
+}) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
@@ -147,6 +329,9 @@ export default function App() {
   const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [usersModalOpen, setUsersModalOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -431,7 +616,7 @@ export default function App() {
       return;
     }
 
-    await saveProgress(playbackBook.id, {
+    const saved = await saveProgress(playbackBook.id, {
       trackId: currentTrack.id,
       positionSeconds: audioRef.current.currentTime,
       bookPositionSeconds:
@@ -440,6 +625,43 @@ export default function App() {
         ? audioRef.current.duration
         : currentTrack.durationSeconds
     }).catch(() => undefined);
+    if (!saved) {
+      return;
+    }
+
+    setBooks((existing) =>
+      existing.map((book) => {
+        if (book.id !== playbackBook.id) {
+          return book;
+        }
+        const durationSeconds = book.durationSeconds ?? durationFromTracks(book);
+        const remainingSeconds =
+          durationSeconds > 0
+            ? Math.max(0, durationSeconds - saved.bookPositionSeconds)
+            : null;
+        const percentComplete =
+          durationSeconds > 0
+            ? Math.min(100, Math.max(0, (saved.bookPositionSeconds / durationSeconds) * 100))
+            : null;
+        const status =
+          durationSeconds > 0 && remainingSeconds !== null && (remainingSeconds <= 30 || percentComplete! >= 99.5)
+            ? "finished"
+            : saved.bookPositionSeconds > 0
+              ? "inProgress"
+              : "notStarted";
+        return {
+          ...book,
+          progress: {
+            status,
+            bookPositionSeconds: saved.bookPositionSeconds,
+            durationSeconds: durationSeconds > 0 ? durationSeconds : null,
+            remainingSeconds,
+            percentComplete,
+            updatedAt: saved.updatedAt
+          }
+        };
+      })
+    );
   }
 
   function onTimeUpdate() {
@@ -628,7 +850,7 @@ export default function App() {
         id: created.jobId,
         kind: "libation-sync",
         status: "running",
-        startedAt: "",
+        startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
         output: "Starting Libation library scan.",
@@ -648,7 +870,7 @@ export default function App() {
         id: created.jobId,
         kind: "libation-liberate",
         status: "running",
-        startedAt: "",
+        startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
         output: `Starting liberation for ${book.title}.`,
@@ -693,6 +915,56 @@ export default function App() {
             <button className="icon-button" aria-label="Rescan library" onClick={() => void refreshLibrary()}>
               <RefreshCcw size={16} />
             </button>
+            <div className="user-menu-wrap">
+              <button
+                className="icon-button"
+                aria-label="Account menu"
+                aria-expanded={userMenuOpen}
+                onClick={() => setUserMenuOpen((open) => !open)}
+              >
+                <span className="user-avatar">{currentUser.username.slice(0, 1).toUpperCase()}</span>
+              </button>
+              {userMenuOpen ? (
+                <div className="user-menu" role="menu">
+                  <div className="user-menu-head">
+                    <strong>{currentUser.username}</strong>
+                    <span>{currentUser.isAdmin ? "Administrator" : "Reader"}</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      setProfileOpen(true);
+                    }}
+                  >
+                    <ScrollText size={14} /> Reader's ledger
+                  </button>
+                  {currentUser.isAdmin ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        setUsersModalOpen(true);
+                      }}
+                    >
+                      <UserCog size={14} /> Manage readers
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      void onLogout();
+                    }}
+                  >
+                    <LogOut size={14} /> Sign out
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <button
               className="icon-button library-close"
               aria-label="Close library"
@@ -819,9 +1091,36 @@ export default function App() {
             </div>
 
             {activeJob ? (
-              <div className={`job-pill ${activeJob.status}`}>
-                <span>{activeJob.status === "running" ? "Running" : activeJob.status}</span>
-                <em>{activeJob.error ?? activeJob.output.split("\n").filter(Boolean).slice(-1)[0]}</em>
+              <div className={`job-card ${activeJob.status}`}>
+                <div className="job-card-head">
+                  <span className="job-state">
+                    {activeJob.status === "running" ? (
+                      <LoaderCircle size={13} />
+                    ) : activeJob.status === "failed" ? (
+                      <AlertCircle size={13} />
+                    ) : (
+                      <CloudDownload size={13} />
+                    )}
+                    {activeJob.status === "running" ? "Running" : activeJob.status}
+                  </span>
+                  <strong>{jobTitle(activeJob)}</strong>
+                </div>
+                <p>{jobSummary(activeJob)}</p>
+                <dl className="job-meta">
+                  <div>
+                    <dt>Elapsed</dt>
+                    <dd>{formatElapsed(activeJob.startedAt, activeJob.finishedAt) ?? "Starting"}</dd>
+                  </div>
+                  {activeJob.exitCode !== null ? (
+                    <div>
+                      <dt>Exit</dt>
+                      <dd>{activeJob.exitCode}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+                {activeJob.status !== "running" || activeJob.error ? (
+                  <pre className="job-output">{jobDetailLines(activeJob).join("\n")}</pre>
+                ) : null}
               </div>
             ) : null}
           </section>
@@ -839,26 +1138,41 @@ export default function App() {
             ) : null}
 
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
-              {visibleBooks.map((book, index) => (
-                <button
-                  key={book.id}
-                  className={`book-row ${book.id === selectedBook?.id ? "active" : ""}`}
-                  onClick={() => {
-                    selectBook(book);
-                    setLibraryOpen(false);
-                  }}
-                >
-                  {viewMode === "grid" || book.coverArtUrl ? (
-                    <CoverArt book={book} size="small" />
-                  ) : (
-                    <span className="index">{String(index + 1).padStart(2, "0")}</span>
-                  )}
-                  <span className="book-text">
-                    <strong>{book.title}</strong>
-                    <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                  </span>
-                </button>
-              ))}
+              {visibleBooks.map((book, index) => {
+                const progressPercent = book.progress?.percentComplete ?? 0;
+                return (
+                  <button
+                    key={book.id}
+                    className={`book-row ${book.id === selectedBook?.id ? "active" : ""}`}
+                    onClick={() => {
+                      selectBook(book);
+                      setLibraryOpen(false);
+                    }}
+                  >
+                    {viewMode === "grid" || book.coverArtUrl ? (
+                      <CoverArt book={book} size="small" />
+                    ) : (
+                      <span className="index">{String(index + 1).padStart(2, "0")}</span>
+                    )}
+                    <span className="book-text">
+                      <strong>{book.title}</strong>
+                      <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                      {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
+                        <span className="book-runtime-tag">
+                          <Timer size={11} strokeWidth={1.5} />
+                          {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
+                        </span>
+                      ) : null}
+                      <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
+                        <em>{bookProgressLabel(book)}</em>
+                        {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
+                          <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+                        ) : null}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </>
         ) : (
@@ -872,23 +1186,50 @@ export default function App() {
             ) : null}
 
             <div className="audible-list">
-              {visibleLibationBooks.map((book) => (
-                <div key={book.asin} className="audible-row">
-                  <div>
-                    <strong>{book.title}</strong>
-                    <span>{[book.authors, formatMinutes(book.lengthMinutes), book.bookStatus].filter(Boolean).join(" · ")}</span>
+              {visibleLibationBooks.map((book) => {
+                const isLocal = !!book.localBookId;
+                const metaParts = [
+                  book.authors,
+                  formatMinutes(book.lengthMinutes),
+                  isLocal ? "In library" : book.bookStatus
+                ].filter(Boolean);
+                return (
+                  <div key={book.asin} className={`audible-row ${isLocal ? "is-local" : ""}`}>
+                    <div>
+                      <strong>{book.title}</strong>
+                      <span>{metaParts.join(" · ")}</span>
+                    </div>
+                    {isLocal ? (
+                      <button
+                        type="button"
+                        className="local-marker"
+                        aria-label={`Open ${book.title} from the local library`}
+                        onClick={() => {
+                          if (!book.localBookId) {
+                            return;
+                          }
+                          setSelectedBookId(book.localBookId);
+                          setLibrarySource("local");
+                          setLibraryOpen(false);
+                        }}
+                      >
+                        <Library size={14} />
+                        <span>In library</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`${isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"} ${book.title}`}
+                        disabled={activeJob?.status === "running"}
+                        onClick={() => void startLiberation(book)}
+                      >
+                        <CloudDownload size={14} />
+                        <span>{isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"}</span>
+                      </button>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    aria-label={`${isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"} ${book.title}`}
-                    disabled={activeJob?.status === "running"}
-                    onClick={() => void startLiberation(book)}
-                  >
-                    <CloudDownload size={14} />
-                    <span>{isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"}</span>
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}
@@ -938,6 +1279,14 @@ export default function App() {
                   })}
                 </h2>
                 <p>{bookSubtitle(selectedBook) || `${selectedBook.trackCount} tracks`}</p>
+                {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
+                  <div className="book-runtime" aria-label="Total runtime">
+                    <span className="book-runtime-label">Runtime</span>
+                    <span className="book-runtime-value">
+                      {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook))}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -1204,6 +1553,25 @@ export default function App() {
             </button>
           </div>
         </aside>
+      ) : null}
+
+      {profileOpen ? (
+        <ProfilePage
+          user={currentUser}
+          onClose={() => setProfileOpen(false)}
+          onOpenBook={(bookId) => {
+            setSelectedBookId(bookId);
+            setProfileOpen(false);
+            setLibraryOpen(false);
+          }}
+        />
+      ) : null}
+
+      {usersModalOpen ? (
+        <UserManagementModal
+          currentUser={currentUser}
+          onClose={() => setUsersModalOpen(false)}
+        />
       ) : null}
     </main>
   );

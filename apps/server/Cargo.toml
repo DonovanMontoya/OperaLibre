@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+argon2 = "0.5"
 axum = "0.8"
 base64 = "0.22"
+rand = "0.8"
 id3 = "1.16"
 lofty = "0.22"
 mime_guess = "2.0"

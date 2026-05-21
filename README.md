@@ -87,11 +87,19 @@ npm install @capacitor/core @capacitor/cli @capacitor/ios -w @audiobook/web
 
 For a native wrapper, set `VITE_API_BASE` to the server URL reachable from the phone, then add Capacitor once the web playback experience is stable.
 
+## Users
+
+The server requires sign-in before any audiobook data is exposed. The first browser to load the app sees a one-time setup form that creates the initial administrator account; from then on the home screen is a sign-in form.
+
+- Accounts are stored in `data/users.json` (configurable via `users_file`). Passwords are hashed with Argon2.
+- Playback progress is tracked per user, so each reader has their own bookmarks.
+- Administrators can add or remove readers, and reset any password, from the **Manage readers** menu under the avatar in the library pane.
+- Sessions live in memory. Restarting the server signs everyone out — they keep their progress and just need to log back in.
+- Streaming, cover art, and zip download requests carry the session token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated.
+
 ## Next build slices
 
-- Authentication and device pairing.
-- Real user accounts and multi-device progress sync.
-- Offline downloads with encrypted local storage for the iOS build.
+- Device pairing and offline downloads with encrypted local storage for the iOS build.
 - Chapter extraction for `.m4b` chapter metadata.
 - Cover art extraction and caching.
 - Bookmarks, clips, notes, and listening history.
