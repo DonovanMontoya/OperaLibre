@@ -27,8 +27,8 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::Arc,
 };
-use tokio::{fs, sync::RwLock};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio::{fs, process::Command, sync::RwLock};
 use tokio_util::io::ReaderStream;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use walkdir::WalkDir;
@@ -41,7 +41,9 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 struct AppState {
     library_root: PathBuf,
     progress_file: PathBuf,
+    libation_config: LibationConfig,
     library: Arc<RwLock<LibraryState>>,
+    jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
 }
 
 #[derive(Default)]
@@ -161,6 +163,280 @@ struct ParsedChapter {
     source: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationStatus {
+    enabled: bool,
+    cli_path: Option<String>,
+    libation_files_dir: Option<String>,
+    library_root: String,
+    accounts: Vec<LibationAccount>,
+    authenticated: bool,
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationAccount {
+    account_id: String,
+    name: Option<String>,
+    locale: String,
+    scan_library: bool,
+    authenticated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationBook {
+    asin: String,
+    title: String,
+    subtitle: Option<String>,
+    authors: Option<String>,
+    narrators: Option<String>,
+    length_minutes: Option<i64>,
+    description: Option<String>,
+    publisher: Option<String>,
+    book_status: Option<String>,
+    pdf_status: Option<String>,
+    content_type: Option<String>,
+    locale: Option<String>,
+    last_downloaded: Option<String>,
+    is_audible_plus: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobStatus {
+    id: String,
+    kind: String,
+    status: String,
+    started_at: String,
+    finished_at: Option<String>,
+    exit_code: Option<i32>,
+    output: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobCreated {
+    job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct LibationExportRecord {
+    #[serde(rename = "Audible Product Id")]
+    #[serde(alias = "AudibleProductId")]
+    audible_product_id: Option<String>,
+    #[serde(rename = "Title")]
+    title: Option<String>,
+    #[serde(rename = "Subtitle")]
+    subtitle: Option<String>,
+    #[serde(rename = "Authors")]
+    #[serde(alias = "AuthorNames")]
+    author_names: Option<String>,
+    #[serde(rename = "Narrators")]
+    #[serde(alias = "NarratorNames")]
+    narrator_names: Option<String>,
+    #[serde(rename = "Length In Minutes")]
+    #[serde(alias = "LengthInMinutes")]
+    length_in_minutes: Option<i64>,
+    #[serde(rename = "Description")]
+    description: Option<String>,
+    #[serde(rename = "Publisher")]
+    publisher: Option<String>,
+    #[serde(rename = "Book Liberated Status")]
+    #[serde(alias = "BookStatus")]
+    book_status: Option<String>,
+    #[serde(rename = "PDF Liberated Status")]
+    #[serde(alias = "PdfStatus")]
+    pdf_status: Option<String>,
+    #[serde(rename = "Content Type")]
+    #[serde(alias = "ContentType")]
+    content_type: Option<String>,
+    #[serde(rename = "Locale")]
+    locale: Option<String>,
+    #[serde(rename = "Last Downloaded")]
+    #[serde(alias = "LastDownloaded")]
+    last_downloaded: Option<String>,
+    #[serde(rename = "Is Audible Plus?")]
+    #[serde(alias = "IsAudiblePlus")]
+    is_audible_plus: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    library_root: PathBuf,
+    data_dir: PathBuf,
+    progress_file: PathBuf,
+    libation_cli_path: Option<PathBuf>,
+    libation_files_dir: Option<PathBuf>,
+}
+
+impl ServerConfig {
+    fn load() -> anyhow::Result<Self> {
+        let current_dir = env::current_dir()?;
+        let explicit_config_path = env::var_os("AUDIOBOOK_SERVER_CONFIG").map(PathBuf::from);
+        let config_path = explicit_config_path
+            .clone()
+            .unwrap_or_else(|| current_dir.join("server.config"));
+        let config_dir = config_path
+            .parent()
+            .map(FsPath::to_path_buf)
+            .unwrap_or_else(|| current_dir.clone());
+        let values = read_server_config_file(&config_path, explicit_config_path.is_some())?;
+
+        let library_root = config_path_value(&values, &config_dir, "library_root")
+            .or_else(|| config_path_value(&values, &config_dir, "audiobook_library"))
+            .or_else(|| env_path_value("AUDIOBOOK_LIBRARY"))
+            .unwrap_or_else(|| current_dir.join("library"));
+        let data_dir = config_path_value(&values, &config_dir, "data_dir")
+            .or_else(|| env_path_value("AUDIOBOOK_DATA_DIR"))
+            .unwrap_or_else(|| current_dir.join("data"));
+        let progress_file = config_path_value(&values, &config_dir, "progress_file")
+            .or_else(|| env_path_value("AUDIOBOOK_PROGRESS_FILE"))
+            .unwrap_or_else(|| data_dir.join("progress.json"));
+
+        Ok(Self {
+            host: config_string_value(&values, "host")
+                .or_else(|| env_string_value("HOST"))
+                .unwrap_or_else(|| "0.0.0.0".to_string()),
+            port: config_u16_value(&values, "port")?
+                .or_else(|| env_u16_value("PORT"))
+                .unwrap_or(4000),
+            library_root,
+            data_dir,
+            progress_file,
+            libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
+                .or_else(|| env_path_value("LIBATION_CLI_PATH")),
+            libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
+                .or_else(|| env_path_value("LIBATION_FILES_DIR")),
+        })
+    }
+}
+
+fn read_server_config_file(
+    config_path: &FsPath,
+    explicit: bool,
+) -> anyhow::Result<HashMap<String, String>> {
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !explicit => {
+            return Ok(HashMap::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    parse_server_config(&contents)
+}
+
+fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>> {
+    let allowed_keys = [
+        "host",
+        "port",
+        "library_root",
+        "audiobook_library",
+        "data_dir",
+        "progress_file",
+        "libation_cli_path",
+        "libation_files_dir",
+    ];
+    let mut values = HashMap::new();
+
+    for (index, raw_line) in contents.lines().enumerate() {
+        let line_number = index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            anyhow::bail!("Invalid server.config line {line_number}: expected `key = value`.");
+        };
+        let key = key.trim().to_ascii_lowercase().replace('-', "_");
+        if key.is_empty() {
+            anyhow::bail!("Invalid server.config line {line_number}: setting name is empty.");
+        }
+        if !allowed_keys.contains(&key.as_str()) {
+            anyhow::bail!("Unknown server.config setting `{key}` on line {line_number}.");
+        }
+
+        values.insert(key, unquote_config_value(value.trim()));
+    }
+
+    Ok(values)
+}
+
+fn unquote_config_value(value: &str) -> String {
+    if value.len() >= 2 {
+        let first = value.as_bytes()[0];
+        let last = value.as_bytes()[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return value[1..value.len() - 1].to_string();
+        }
+    }
+    value.to_string()
+}
+
+fn config_string_value(values: &HashMap<String, String>, key: &str) -> Option<String> {
+    values
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_string_value(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn config_u16_value(values: &HashMap<String, String>, key: &str) -> anyhow::Result<Option<u16>> {
+    let Some(value) = config_string_value(values, key) else {
+        return Ok(None);
+    };
+    Ok(Some(value.parse::<u16>().map_err(|error| {
+        anyhow::anyhow!("Invalid server.config `{key}` value `{value}`: {error}")
+    })?))
+}
+
+fn env_u16_value(key: &str) -> Option<u16> {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+}
+
+fn config_path_value(
+    values: &HashMap<String, String>,
+    config_dir: &FsPath,
+    key: &str,
+) -> Option<PathBuf> {
+    values
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_config_path(config_dir, value))
+}
+
+fn env_path_value(key: &str) -> Option<PathBuf> {
+    env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn resolve_config_path(config_dir: &FsPath, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -170,20 +446,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let port = env::var("PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(4000);
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let library_root = env::var("AUDIOBOOK_LIBRARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| env::current_dir().unwrap().join("library"));
-    let data_dir = env::current_dir()?.join("data");
+    let config = ServerConfig::load()?;
+    tracing::info!(
+        library_root = %config.library_root.display(),
+        data_dir = %config.data_dir.display(),
+        "server configuration loaded"
+    );
 
     let state = AppState {
-        library_root,
-        progress_file: data_dir.join("progress.json"),
+        library_root: config.library_root.clone(),
+        progress_file: config.progress_file.clone(),
+        libation_config: LibationConfig::from_server_config(&config),
         library: Arc::new(RwLock::new(LibraryState::default())),
+        jobs: Arc::new(RwLock::new(HashMap::new())),
     };
 
     rescan_library(&state).await?;
@@ -192,6 +467,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
+        .route("/api/libation/status", get(libation_status))
+        .route("/api/libation/books", get(list_libation_books))
+        .route("/api/libation/sync", post(sync_libation_library))
+        .route(
+            "/api/libation/books/{asin}/liberate",
+            post(liberate_libation_book),
+        )
+        .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/cover", get(get_cover_art))
         .route(
@@ -207,7 +490,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let address: SocketAddr = format!("{host}:{port}").parse()?;
+    let address: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!("server listening on http://{address}");
     axum::serve(listener, app).await?;
@@ -231,6 +514,189 @@ async fn list_books(State(state): State<AppState>) -> Json<Vec<Book>> {
 async fn rescan(State(state): State<AppState>) -> Result<Json<Vec<Book>>, ApiError> {
     rescan_library(&state).await?;
     Ok(Json(state.library.read().await.books.clone()))
+}
+
+async fn libation_status(State(state): State<AppState>) -> Json<LibationStatus> {
+    Json(read_libation_status(&state).await)
+}
+
+async fn list_libation_books(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<LibationBook>>, ApiError> {
+    let config = state.libation_config.clone();
+    if !config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
+        ));
+    }
+    let books = export_libation_books(&config).await?;
+    Ok(Json(books))
+}
+
+async fn sync_libation_library(
+    State(state): State<AppState>,
+) -> Result<Json<JobCreated>, ApiError> {
+    let config = state.libation_config.clone();
+    if !config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
+        ));
+    }
+
+    let job_id = create_job(&state, "libation-sync").await;
+    let state_for_job = state.clone();
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        update_job_output(
+            &state_for_job,
+            &job_id_for_task,
+            "Starting Libation library scan.\n",
+        )
+        .await;
+        let result = run_libation(&config, vec!["scan".to_string()]).await;
+        match result {
+            Ok(output) if output.status.success() => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "completed",
+                    output.status.code(),
+                    None,
+                )
+                .await;
+            }
+            Ok(output) => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    output.status.code(),
+                    Some("Libation scan failed.".to_string()),
+                )
+                .await;
+            }
+            Err(error) => {
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    None,
+                    Some(error.to_string()),
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(JobCreated { job_id }))
+}
+
+async fn liberate_libation_book(
+    State(state): State<AppState>,
+    Path(asin): Path<String>,
+) -> Result<Json<JobCreated>, ApiError> {
+    let asin = asin.trim().to_string();
+    if asin.is_empty() {
+        return Err(ApiError::bad_request("Missing Audible product id."));
+    }
+
+    let config = state.libation_config.clone();
+    if !config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
+        ));
+    }
+
+    let job_id = create_job(&state, "libation-liberate").await;
+    let state_for_job = state.clone();
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        update_job_output(
+            &state_for_job,
+            &job_id_for_task,
+            &format!("Starting Libation liberation for {asin}.\n"),
+        )
+        .await;
+
+        let books_override = format!("Books={}", config.library_root.to_string_lossy());
+        let result = run_libation(
+            &config,
+            vec![
+                "liberate".to_string(),
+                "--id".to_string(),
+                asin,
+                "--override".to_string(),
+                books_override,
+            ],
+        )
+        .await;
+
+        match result {
+            Ok(output) if output.status.success() => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                if let Err(error) = rescan_library(&state_for_job).await {
+                    update_job_finished(
+                        &state_for_job,
+                        &job_id_for_task,
+                        "failed",
+                        output.status.code(),
+                        Some(format!(
+                            "Download completed, but local rescan failed: {error}"
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "completed",
+                    output.status.code(),
+                    None,
+                )
+                .await;
+            }
+            Ok(output) => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    output.status.code(),
+                    Some("Libation liberation failed.".to_string()),
+                )
+                .await;
+            }
+            Err(error) => {
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    None,
+                    Some(error.to_string()),
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(JobCreated { job_id }))
+}
+
+async fn get_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<JobStatus>, ApiError> {
+    state
+        .jobs
+        .read()
+        .await
+        .get(&job_id)
+        .cloned()
+        .map(Json)
+        .ok_or(ApiError::not_found("Job not found"))
 }
 
 async fn get_book(
@@ -553,13 +1019,18 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .try_fold(0.0, |sum, duration| duration.map(|value| sum + value));
 
         let title = if grouped_files.len() == 1 {
-            metadata[0].summary.album.clone().or(metadata[0].title.clone()).unwrap_or_else(|| {
-                grouped_files[0]
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Untitled book")
-                    .to_string()
-            })
+            metadata[0]
+                .summary
+                .album
+                .clone()
+                .or(metadata[0].title.clone())
+                .unwrap_or_else(|| {
+                    grouped_files[0]
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Untitled book")
+                        .to_string()
+                })
         } else {
             group_key
                 .file_name()
@@ -655,7 +1126,9 @@ fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
         return TrackMetadata::default();
     };
 
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag());
     let mut summary = tag.map(extract_metadata_summary).unwrap_or_default();
     if let Some(vendor_summary) = tag.and_then(extract_vendor_json_summary) {
         summary = merge_two_summaries(summary, vendor_summary);
@@ -750,7 +1223,8 @@ fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
             Some(MetadataField {
                 key: item_key_label(item.key()),
                 value,
-                description: (!item.description().is_empty()).then(|| item.description().to_string()),
+                description: (!item.description().is_empty())
+                    .then(|| item.description().to_string()),
             })
         })
         .collect()
@@ -831,7 +1305,9 @@ fn extract_vendor_json_summary(tag: &Tag) -> Option<MetadataSummary> {
 fn extract_vendor_json(tag: &Tag) -> Option<serde_json::Value> {
     tag.items().find_map(|item| {
         let text = match item.value() {
-            ItemValue::Text(value) | ItemValue::Locator(value) => value.trim_matches(char::from(0)).trim(),
+            ItemValue::Text(value) | ItemValue::Locator(value) => {
+                value.trim_matches(char::from(0)).trim()
+            }
             ItemValue::Binary(_) => return None,
         };
 
@@ -849,9 +1325,9 @@ fn extract_vendor_json(tag: &Tag) -> Option<serde_json::Value> {
 fn looks_like_base64_json(value: &str) -> bool {
     value.len() > 128
         && value.len() % 4 == 0
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '='))
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
+        })
 }
 
 fn json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -1079,7 +1555,10 @@ fn derive_track_chapters(tracks: &[Track]) -> Vec<Chapter> {
 fn unique_strings(values: Vec<String>) -> Vec<String> {
     let mut output = Vec::new();
     for value in values {
-        if !output.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
+        if !output
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&value))
+        {
             output.push(value);
         }
     }
@@ -1112,7 +1591,8 @@ fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
 
     let mut enriched = progress.clone();
     if enriched.book_position_seconds <= 0.0 {
-        enriched.book_position_seconds = book_position_seconds(book, track, progress.position_seconds);
+        enriched.book_position_seconds =
+            book_position_seconds(book, track, progress.position_seconds);
     }
     enriched
 }
@@ -1144,6 +1624,292 @@ async fn write_progress(
     }
     fs::write(progress_file, serde_json::to_vec_pretty(progress)?).await?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct LibationConfig {
+    cli_path: Option<PathBuf>,
+    libation_files_dir: Option<PathBuf>,
+    library_root: PathBuf,
+}
+
+impl LibationConfig {
+    fn from_server_config(config: &ServerConfig) -> Self {
+        let cli_path = config
+            .libation_cli_path
+            .clone()
+            .filter(|path| path.is_file())
+            .or_else(find_libation_cli_on_path);
+        let libation_files_dir = config
+            .libation_files_dir
+            .clone()
+            .filter(|path| path.is_dir());
+
+        Self {
+            cli_path,
+            libation_files_dir,
+            library_root: config.library_root.clone(),
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        self.cli_path.is_some()
+    }
+
+    fn command_args(&self, args: Vec<String>) -> Vec<String> {
+        let mut command_args = Vec::new();
+        if let Some(libation_files_dir) = &self.libation_files_dir {
+            command_args.push("--libationFiles".to_string());
+            command_args.push(libation_files_dir.to_string_lossy().to_string());
+        }
+        command_args.extend(args);
+        command_args
+    }
+}
+
+fn find_libation_cli_on_path() -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    let candidates = ["libationcli", "LibationCli", "libationcli.exe"];
+    for dir in env::split_paths(&path_var) {
+        for candidate in candidates {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+async fn read_libation_status(state: &AppState) -> LibationStatus {
+    let config = state.libation_config.clone();
+    let Some(cli_path) = config.cli_path.as_ref() else {
+        return LibationStatus {
+            enabled: false,
+            cli_path: None,
+            libation_files_dir: config
+                .libation_files_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            library_root: state.library_root.to_string_lossy().to_string(),
+            accounts: Vec::new(),
+            authenticated: false,
+            message: Some(
+                "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH."
+                    .to_string(),
+            ),
+        };
+    };
+
+    match run_libation(
+        &config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let accounts = parse_libation_accounts(&stdout);
+            let authenticated =
+                !accounts.is_empty() && accounts.iter().all(|account| account.authenticated);
+            let message = if accounts.is_empty() {
+                Some("No Libation accounts are configured.".to_string())
+            } else if !authenticated {
+                Some("One or more Libation accounts need to be authenticated again.".to_string())
+            } else if !stderr.trim().is_empty() {
+                Some(stderr.trim().to_string())
+            } else {
+                None
+            };
+
+            LibationStatus {
+                enabled: true,
+                cli_path: Some(cli_path.to_string_lossy().to_string()),
+                libation_files_dir: config
+                    .libation_files_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
+                library_root: state.library_root.to_string_lossy().to_string(),
+                accounts,
+                authenticated,
+                message,
+            }
+        }
+        Ok(output) => LibationStatus {
+            enabled: true,
+            cli_path: Some(cli_path.to_string_lossy().to_string()),
+            libation_files_dir: config
+                .libation_files_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            library_root: state.library_root.to_string_lossy().to_string(),
+            accounts: Vec::new(),
+            authenticated: false,
+            message: Some(command_output_text(&output)),
+        },
+        Err(error) => LibationStatus {
+            enabled: true,
+            cli_path: Some(cli_path.to_string_lossy().to_string()),
+            libation_files_dir: config
+                .libation_files_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            library_root: state.library_root.to_string_lossy().to_string(),
+            accounts: Vec::new(),
+            authenticated: false,
+            message: Some(error.to_string()),
+        },
+    }
+}
+
+fn parse_libation_accounts(output: &str) -> Vec<LibationAccount> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let columns = line.split('\t').collect::<Vec<_>>();
+            if columns.len() < 5 {
+                return None;
+            }
+            Some(LibationAccount {
+                account_id: columns[0].trim().to_string(),
+                name: non_empty_string(columns[1]),
+                locale: columns[2].trim().to_string(),
+                scan_library: yes_no(columns[3]),
+                authenticated: yes_no(columns[4]),
+            })
+        })
+        .collect()
+}
+
+fn yes_no(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("yes") || value.trim().eq_ignore_ascii_case("true")
+}
+
+async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBook>, ApiError> {
+    let export_path = env::temp_dir().join(format!(
+        "audiobook-libation-export-{}.json",
+        now_rfc3339ish()
+    ));
+    let output = run_libation(
+        config,
+        vec![
+            "export".to_string(),
+            "--path".to_string(),
+            export_path.to_string_lossy().to_string(),
+            "--json".to_string(),
+        ],
+    )
+    .await?;
+
+    if !output.status.success() {
+        return Err(ApiError::bad_gateway(command_output_text(&output)));
+    }
+
+    let contents = fs::read_to_string(&export_path).await?;
+    let _ = fs::remove_file(&export_path).await;
+    let records = serde_json::from_str::<Vec<LibationExportRecord>>(&contents)?;
+    Ok(records
+        .into_iter()
+        .filter_map(|record| {
+            let asin = non_empty_string(record.audible_product_id?)?;
+            Some(LibationBook {
+                asin,
+                title: record.title.unwrap_or_else(|| "Untitled".to_string()),
+                subtitle: non_empty_string(record.subtitle.unwrap_or_default()),
+                authors: non_empty_string(record.author_names.unwrap_or_default()),
+                narrators: non_empty_string(record.narrator_names.unwrap_or_default()),
+                length_minutes: record.length_in_minutes,
+                description: non_empty_string(record.description.unwrap_or_default()),
+                publisher: non_empty_string(record.publisher.unwrap_or_default()),
+                book_status: non_empty_string(record.book_status.unwrap_or_default()),
+                pdf_status: non_empty_string(record.pdf_status.unwrap_or_default()),
+                content_type: non_empty_string(record.content_type.unwrap_or_default()),
+                locale: non_empty_string(record.locale.unwrap_or_default()),
+                last_downloaded: non_empty_string(record.last_downloaded.unwrap_or_default()),
+                is_audible_plus: record.is_audible_plus.unwrap_or(false),
+            })
+        })
+        .collect())
+}
+
+fn non_empty_string(value: impl AsRef<str>) -> Option<String> {
+    let value = value.as_ref().trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+async fn run_libation(
+    config: &LibationConfig,
+    args: Vec<String>,
+) -> anyhow::Result<std::process::Output> {
+    let cli_path = config
+        .cli_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Libation CLI is not configured"))?;
+    Ok(Command::new(cli_path)
+        .args(config.command_args(args))
+        .output()
+        .await?)
+}
+
+fn command_output_text(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let text = format!("{}{}", stdout, stderr);
+    if text.trim().is_empty() {
+        format!("Libation exited with status {}", output.status)
+    } else {
+        text.trim().to_string()
+    }
+}
+
+async fn create_job(state: &AppState, kind: &str) -> String {
+    let id = stable_id(&format!(
+        "{kind}:{}:{}",
+        now_rfc3339ish(),
+        state.jobs.read().await.len()
+    ));
+    let job = JobStatus {
+        id: id.clone(),
+        kind: kind.to_string(),
+        status: "running".to_string(),
+        started_at: now_rfc3339ish(),
+        finished_at: None,
+        exit_code: None,
+        output: String::new(),
+        error: None,
+    };
+    state.jobs.write().await.insert(id.clone(), job);
+    id
+}
+
+async fn update_job_output(state: &AppState, job_id: &str, text: &str) {
+    if let Some(job) = state.jobs.write().await.get_mut(job_id) {
+        job.output.push_str(text);
+    }
+}
+
+async fn append_job_command_output(state: &AppState, job_id: &str, output: &std::process::Output) {
+    update_job_output(state, job_id, &command_output_text(output)).await;
+}
+
+async fn update_job_finished(
+    state: &AppState,
+    job_id: &str,
+    status: &str,
+    exit_code: Option<i32>,
+    error: Option<String>,
+) {
+    if let Some(job) = state.jobs.write().await.get_mut(job_id) {
+        job.status = status.to_string();
+        job.finished_at = Some(now_rfc3339ish());
+        job.exit_code = exit_code;
+        job.error = error;
+    }
 }
 
 fn stable_id(input: &str) -> String {
@@ -1198,6 +1964,20 @@ struct ApiError {
 }
 
 impl ApiError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,

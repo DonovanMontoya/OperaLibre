@@ -1,0 +1,19 @@
+# Audiobook server settings.
+# Copy this file to server.config and adjust the paths for your machine.
+
+# Network binding.
+host = 0.0.0.0
+port = 4000
+
+# Folder containing your audiobook files.
+# Relative paths are resolved from this config file's directory.
+library_root = /path/to/audiobooks
+
+# Server data files.
+data_dir = data
+progress_file = data/progress.json
+
+# Optional Libation / Audible import.
+# Leave these blank unless you use Libation.
+libation_cli_path =
+libation_files_dir =

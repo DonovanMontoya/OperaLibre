@@ -60,3 +60,53 @@ export type Progress = {
   durationSeconds: number | null;
   updatedAt: string;
 };
+
+export type LibationAccount = {
+  accountId: string;
+  name: string | null;
+  locale: string;
+  scanLibrary: boolean;
+  authenticated: boolean;
+};
+
+export type LibationStatus = {
+  enabled: boolean;
+  cliPath: string | null;
+  libationFilesDir: string | null;
+  libraryRoot: string;
+  accounts: LibationAccount[];
+  authenticated: boolean;
+  message: string | null;
+};
+
+export type LibationBook = {
+  asin: string;
+  title: string;
+  subtitle: string | null;
+  authors: string | null;
+  narrators: string | null;
+  lengthMinutes: number | null;
+  description: string | null;
+  publisher: string | null;
+  bookStatus: string | null;
+  pdfStatus: string | null;
+  contentType: string | null;
+  locale: string | null;
+  lastDownloaded: string | null;
+  isAudiblePlus: boolean;
+};
+
+export type JobStatus = {
+  id: string;
+  kind: string;
+  status: "running" | "completed" | "failed" | string;
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number | null;
+  output: string;
+  error: string | null;
+};
+
+export type JobCreated = {
+  jobId: string;
+};

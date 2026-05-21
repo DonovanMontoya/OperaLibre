@@ -4,6 +4,7 @@ target
 *.tsbuildinfo
 .DS_Store
 .env
+server.config
 data
 library
 Library
