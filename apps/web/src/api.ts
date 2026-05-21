@@ -13,6 +13,7 @@ import type {
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const TOKEN_STORAGE_KEY = "operalibre.authToken";
+const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
 
 function defaultApiBase() {
   if (typeof window === "undefined") {
@@ -23,7 +24,78 @@ function defaultApiBase() {
   return `${protocol}//${hostname}:4000`;
 }
 
-const API_BASE = configuredApiBase || defaultApiBase();
+function normalizeServerUrl(value: string): string {
+  let trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    trimmed = `http://${trimmed}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return trimmed.replace(/\/+$/, "");
+  }
+}
+
+let storedServerUrl: string | null = null;
+
+function readStoredServerUrl(): string | null {
+  if (storedServerUrl !== null) {
+    return storedServerUrl || null;
+  }
+  if (typeof window === "undefined") {
+    return null;
+  }
+  storedServerUrl = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
+  return storedServerUrl || null;
+}
+
+export function getServerUrl(): string {
+  return readStoredServerUrl() ?? configuredApiBase ?? defaultApiBase();
+}
+
+export function hasUserConfiguredServer(): boolean {
+  return !!readStoredServerUrl();
+}
+
+export function setServerUrl(rawValue: string) {
+  const value = normalizeServerUrl(rawValue);
+  storedServerUrl = value;
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (value) {
+    window.localStorage.setItem(SERVER_URL_STORAGE_KEY, value);
+  } else {
+    window.localStorage.removeItem(SERVER_URL_STORAGE_KEY);
+  }
+}
+
+export function clearServerUrl() {
+  setServerUrl("");
+}
+
+function currentApiBase(): string {
+  return getServerUrl();
+}
+
+export async function pingServer(rawValue: string): Promise<boolean> {
+  const base = normalizeServerUrl(rawValue);
+  if (!base) {
+    throw new Error("Server URL is required.");
+  }
+  const response = await fetch(`${base}/api/health`, {
+    method: "GET",
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error(`Server responded ${response.status}.`);
+  }
+  return true;
+}
 
 let cachedToken: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
@@ -73,7 +145,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${currentApiBase()}${path}`, {
     ...init,
     headers,
     credentials: "include"
@@ -215,13 +287,13 @@ function appendToken(path: string) {
 }
 
 export function mediaUrl(path: string) {
-  return `${API_BASE}${appendToken(path)}`;
+  return `${currentApiBase()}${appendToken(path)}`;
 }
 
 export function bookDownloadUrl(bookId: string) {
-  return `${API_BASE}${appendToken(`/api/books/${bookId}/download`)}`;
+  return `${currentApiBase()}${appendToken(`/api/books/${bookId}/download`)}`;
 }
 
 export function readalongUrl(path: string) {
-  return `${API_BASE}${appendToken(path)}`;
+  return `${currentApiBase()}${appendToken(path)}`;
 }

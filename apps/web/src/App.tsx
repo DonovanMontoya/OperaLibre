@@ -32,6 +32,7 @@ import type { Book as EpubBook, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bookDownloadUrl,
+  clearServerUrl,
   getAuthStatus,
   getBooks,
   getJob,
@@ -40,6 +41,7 @@ import {
   getMe,
   getProgress,
   getStoredToken,
+  hasUserConfiguredServer,
   liberateLibationBook,
   logout as apiLogout,
   mediaUrl,
@@ -50,7 +52,7 @@ import {
   setUnauthorizedHandler,
   syncLibationLibrary
 } from "./api";
-import { AuthGate, UserManagementModal } from "./Auth";
+import { AuthGate, ServerSetup, UserManagementModal } from "./Auth";
 import { ProfilePage } from "./Profile";
 import type { AuthUser, Book, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
 
@@ -563,12 +565,17 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
 export default function App() {
   const [authState, setAuthState] = useState<
     { phase: "loading" }
+    | { phase: "server" }
     | { phase: "setup" }
     | { phase: "login" }
     | { phase: "ready"; user: AuthUser }
   >({ phase: "loading" });
 
   const checkAuth = useCallback(async () => {
+    if (!hasUserConfiguredServer()) {
+      setAuthState({ phase: "server" });
+      return;
+    }
     try {
       const status = await getAuthStatus();
       if (status.setupRequired) {
@@ -616,6 +623,17 @@ export default function App() {
     );
   }
 
+  if (authState.phase === "server") {
+    return (
+      <ServerSetup
+        onConnected={() => {
+          setAuthState({ phase: "loading" });
+          void checkAuth();
+        }}
+      />
+    );
+  }
+
   if (authState.phase === "setup" || authState.phase === "login") {
     return (
       <AuthGate
@@ -623,6 +641,11 @@ export default function App() {
         onAuthenticated={(token, user) => {
           setStoredToken(token);
           setAuthState({ phase: "ready", user });
+        }}
+        onChangeServer={() => {
+          setStoredToken(null);
+          clearServerUrl();
+          setAuthState({ phase: "server" });
         }}
       />
     );
