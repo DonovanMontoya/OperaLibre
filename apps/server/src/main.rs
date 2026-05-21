@@ -1,13 +1,21 @@
+use argon2::{
+    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE},
+        header::{
+            ACCEPT_RANGES, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE,
+            RANGE, SET_COOKIE,
+        },
     },
+    middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -18,10 +26,11 @@ use lofty::{
     read_from_path,
     tag::{ItemKey, ItemValue, Tag},
 };
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env, io,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
@@ -30,20 +39,132 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::{fs, process::Command, sync::RwLock};
 use tokio_util::io::ReaderStream;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 use walkdir::WalkDir;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
+const SESSION_COOKIE_NAME: &str = "audiobook_session";
+const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 
 #[derive(Clone)]
 struct AppState {
     library_root: PathBuf,
     progress_file: PathBuf,
+    users_file: PathBuf,
+    sessions_file: PathBuf,
+    activity_file: PathBuf,
     libation_config: LibationConfig,
     library: Arc<RwLock<LibraryState>>,
     jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
+    users: Arc<RwLock<UsersStore>>,
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    activity: Arc<RwLock<ActivityStore>>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ActivityStore {
+    by_user: HashMap<String, BTreeMap<String, f64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct User {
+    id: String,
+    username: String,
+    password_hash: String,
+    is_admin: bool,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserPublic {
+    id: String,
+    username: String,
+    is_admin: bool,
+    created_at: String,
+}
+
+impl From<&User> for UserPublic {
+    fn from(user: &User) -> Self {
+        Self {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+            created_at: user.created_at.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct UsersStore {
+    #[serde(default)]
+    users: Vec<User>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Session {
+    user_id: String,
+    #[allow(dead_code)]
+    created_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct AuthUser {
+    id: String,
+    username: String,
+    is_admin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUserRequest {
+    username: String,
+    password: String,
+    #[serde(default)]
+    is_admin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangePasswordRequest {
+    #[serde(default)]
+    current_password: Option<String>,
+    new_password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginResponse {
+    token: String,
+    user: UserPublic,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthStatus {
+    setup_required: bool,
+    user: Option<UserPublic>,
 }
 
 #[derive(Default)]
@@ -79,9 +200,30 @@ struct Book {
     description: Option<String>,
     genres: Vec<String>,
     published_date: Option<String>,
+    asin: Option<String>,
     chapters: Vec<Chapter>,
     metadata: MetadataSummary,
     tracks: Vec<Track>,
+    progress: Option<BookProgress>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BookProgress {
+    status: BookProgressStatus,
+    book_position_seconds: f64,
+    duration_seconds: Option<f64>,
+    remaining_seconds: Option<f64>,
+    percent_complete: Option<f64>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum BookProgressStatus {
+    NotStarted,
+    InProgress,
+    Finished,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,6 +292,7 @@ struct TrackMetadata {
     author: Option<String>,
     narrator: Option<String>,
     duration_seconds: Option<f64>,
+    asin: Option<String>,
     chapters: Vec<ParsedChapter>,
     cover_art: Option<EmbeddedImage>,
     summary: MetadataSummary,
@@ -202,6 +345,7 @@ struct LibationBook {
     locale: Option<String>,
     last_downloaded: Option<String>,
     is_audible_plus: bool,
+    local_book_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,6 +416,9 @@ struct ServerConfig {
     library_root: PathBuf,
     data_dir: PathBuf,
     progress_file: PathBuf,
+    users_file: PathBuf,
+    sessions_file: PathBuf,
+    activity_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
 }
@@ -299,6 +446,13 @@ impl ServerConfig {
         let progress_file = config_path_value(&values, &config_dir, "progress_file")
             .or_else(|| env_path_value("AUDIOBOOK_PROGRESS_FILE"))
             .unwrap_or_else(|| data_dir.join("progress.json"));
+        let users_file = config_path_value(&values, &config_dir, "users_file")
+            .or_else(|| env_path_value("AUDIOBOOK_USERS_FILE"))
+            .unwrap_or_else(|| data_dir.join("users.json"));
+        let sessions_file = data_dir.join("sessions.json");
+        let activity_file = config_path_value(&values, &config_dir, "activity_file")
+            .or_else(|| env_path_value("AUDIOBOOK_ACTIVITY_FILE"))
+            .unwrap_or_else(|| data_dir.join("activity.json"));
 
         Ok(Self {
             host: config_string_value(&values, "host")
@@ -310,6 +464,9 @@ impl ServerConfig {
             library_root,
             data_dir,
             progress_file,
+            users_file,
+            sessions_file,
+            activity_file,
             libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
@@ -341,6 +498,8 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "audiobook_library",
         "data_dir",
         "progress_file",
+        "users_file",
+        "activity_file",
         "libation_cli_path",
         "libation_files_dir",
     ];
@@ -453,18 +612,53 @@ async fn main() -> anyhow::Result<()> {
         "server configuration loaded"
     );
 
+    let users_store = load_users_store(&config.users_file).await?;
+    let sessions_store = load_sessions_store(&config.sessions_file).await?;
+    let activity_store = load_activity_store(&config.activity_file).await?;
+    if users_store.users.is_empty() {
+        match fs::remove_file(&config.progress_file).await {
+            Ok(_) => tracing::info!(
+                "no users configured yet; cleared legacy progress at {}",
+                config.progress_file.display()
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                "failed to clear legacy progress file {}: {error}",
+                config.progress_file.display()
+            ),
+        }
+        let _ = fs::remove_file(&config.activity_file).await;
+    }
+
     let state = AppState {
         library_root: config.library_root.clone(),
         progress_file: config.progress_file.clone(),
+        users_file: config.users_file.clone(),
+        sessions_file: config.sessions_file.clone(),
+        activity_file: config.activity_file.clone(),
         libation_config: LibationConfig::from_server_config(&config),
         library: Arc::new(RwLock::new(LibraryState::default())),
         jobs: Arc::new(RwLock::new(HashMap::new())),
+        users: Arc::new(RwLock::new(users_store)),
+        sessions: Arc::new(RwLock::new(sessions_store)),
+        activity: Arc::new(RwLock::new(activity_store)),
     };
 
     rescan_library(&state).await?;
 
-    let app = Router::new()
+    let public_routes = Router::new()
         .route("/api/health", get(health))
+        .route("/api/auth/status", get(auth_status))
+        .route("/api/auth/setup", post(setup_admin))
+        .route("/api/auth/login", post(login));
+
+    let protected_routes = Router::new()
+        .route("/api/auth/logout", post(logout))
+        .route("/api/auth/me", get(me))
+        .route("/api/profile/stats", get(profile_stats))
+        .route("/api/users", get(list_users).post(create_user))
+        .route("/api/users/{user_id}", delete(delete_user))
+        .route("/api/users/{user_id}/password", post(change_password))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
         .route("/api/libation/status", get(libation_status))
@@ -486,7 +680,20 @@ async fn main() -> anyhow::Result<()> {
             get(stream_track),
         )
         .route("/api/books/{book_id}/download", get(download_book))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let app = public_routes
+        .merge(protected_routes)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::mirror_request())
+                .allow_methods(AllowMethods::mirror_request())
+                .allow_headers(AllowHeaders::mirror_request())
+                .allow_credentials(true),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -507,13 +714,19 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-async fn list_books(State(state): State<AppState>) -> Json<Vec<Book>> {
-    Json(state.library.read().await.books.clone())
+async fn list_books(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<Book>>, ApiError> {
+    Ok(Json(books_with_progress(&state, &auth.id).await?))
 }
 
-async fn rescan(State(state): State<AppState>) -> Result<Json<Vec<Book>>, ApiError> {
+async fn rescan(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<Book>>, ApiError> {
     rescan_library(&state).await?;
-    Ok(Json(state.library.read().await.books.clone()))
+    Ok(Json(books_with_progress(&state, &auth.id).await?))
 }
 
 async fn libation_status(State(state): State<AppState>) -> Json<LibationStatus> {
@@ -529,8 +742,58 @@ async fn list_libation_books(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
-    let books = export_libation_books(&config).await?;
+    let mut books = export_libation_books(&config).await?;
+    let library = state.library.read().await;
+    for book in books.iter_mut() {
+        book.local_book_id = match_local_book(&library.books, book);
+    }
     Ok(Json(books))
+}
+
+fn match_local_book(local_books: &[Book], libation_book: &LibationBook) -> Option<String> {
+    let target_asin = normalize_asin(&libation_book.asin);
+    if let Some(asin) = target_asin.as_ref() {
+        if let Some(matched) = local_books
+            .iter()
+            .find(|book| book.asin.as_deref() == Some(asin.as_str()))
+        {
+            return Some(matched.id.clone());
+        }
+    }
+
+    let target_key = normalize_match_key(&libation_book.title);
+    if target_key.is_empty() {
+        return None;
+    }
+
+    local_books
+        .iter()
+        .find(|book| {
+            let candidate = normalize_match_key(&book.title);
+            !candidate.is_empty() && titles_match(&candidate, &target_key)
+        })
+        .map(|book| book.id.clone())
+}
+
+fn titles_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let shorter = if a.len() <= b.len() { a } else { b };
+    let longer = if a.len() <= b.len() { b } else { a };
+    let prefix = format!("{shorter} ");
+    longer.starts_with(&prefix)
+}
+
+fn normalize_match_key(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn sync_libation_library(
@@ -732,10 +995,11 @@ async fn get_cover_art(
 
 async fn get_progress(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let progress = read_progress(&state.progress_file).await?;
-    let value = if let Some(saved) = progress.get(&progress_key(&book_id)) {
+    let value = if let Some(saved) = progress.get(&progress_key(&auth.id, &book_id)) {
         let library = state.library.read().await;
         let enriched = library
             .books
@@ -752,6 +1016,7 @@ async fn get_progress(
 
 async fn update_progress(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
     Json(update): Json<ProgressUpdate>,
 ) -> Result<Json<Progress>, ApiError> {
@@ -768,6 +1033,11 @@ async fn update_progress(
         .ok_or(ApiError::not_found("Track not found"))?;
 
     let mut progress = read_progress(&state.progress_file).await?;
+    let key = progress_key(&auth.id, &book.id);
+    let previous_position = progress
+        .get(&key)
+        .map(|previous| previous.book_position_seconds)
+        .unwrap_or(0.0);
     let saved = Progress {
         book_id: book.id.clone(),
         track_id: track.id.clone(),
@@ -779,8 +1049,14 @@ async fn update_progress(
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
         updated_at: now_rfc3339ish(),
     };
-    progress.insert(progress_key(&book.id), saved.clone());
+    progress.insert(key, saved.clone());
     write_progress(&state.progress_file, &progress).await?;
+
+    let listened_delta = (saved.book_position_seconds - previous_position).max(0.0);
+    if listened_delta > 0.0 && listened_delta < 4.0 * 3600.0 {
+        record_activity(&state, &auth.id, listened_delta).await;
+    }
+
     Ok(Json(saved))
 }
 
@@ -956,6 +1232,37 @@ fn sanitize_zip_entry(value: &str) -> String {
     }
 }
 
+fn clean_imported_title(value: &str) -> String {
+    let trimmed = value.trim();
+    let Some((open, close)) = trailing_bracket_pair(trimmed) else {
+        return trimmed.to_string();
+    };
+    let candidate = trimmed[open + 1..close].trim();
+    if normalize_asin(candidate).is_none() {
+        return trimmed.to_string();
+    }
+    let cleaned = trimmed[..open].trim_end_matches([' ', '-', '_']).trim();
+    if cleaned.is_empty() {
+        trimmed.to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn trailing_bracket_pair(value: &str) -> Option<(usize, usize)> {
+    let close = value.trim_end().char_indices().next_back()?;
+    let expected_open = match close.1 {
+        ']' => '[',
+        ')' => '(',
+        _ => return None,
+    };
+    value[..close.0]
+        .char_indices()
+        .rev()
+        .find(|(_, character)| *character == expected_open)
+        .map(|(open, _)| (open, close.0))
+}
+
 async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let files = walk_audio_files(&state.library_root);
     let groups = group_files_into_books(&state.library_root, files);
@@ -992,13 +1299,17 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
                     .collect::<Vec<_>>();
                 Track {
                     id: track_id.clone(),
-                    title: metadata[index].title.clone().unwrap_or_else(|| {
-                        file_path
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Untitled track")
-                            .to_string()
-                    }),
+                    title: metadata[index]
+                        .title
+                        .as_deref()
+                        .map(clean_imported_title)
+                        .unwrap_or_else(|| {
+                            file_path
+                                .file_stem()
+                                .and_then(|name| name.to_str())
+                                .map(clean_imported_title)
+                                .unwrap_or_else(|| "Untitled track".to_string())
+                        }),
                     file_name: file_path
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -1018,7 +1329,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .map(|track| track.duration_seconds)
             .try_fold(0.0, |sum, duration| duration.map(|value| sum + value));
 
-        let title = if grouped_files.len() == 1 {
+        let raw_title = if grouped_files.len() == 1 {
             metadata[0]
                 .summary
                 .album
@@ -1038,6 +1349,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
                 .unwrap_or("Untitled book")
                 .to_string()
         };
+        let title = clean_imported_title(&raw_title);
 
         let cover_art_url = metadata
             .iter()
@@ -1063,9 +1375,11 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             description: metadata_summary.description.clone(),
             genres: metadata_summary.genres.clone(),
             published_date: metadata_summary.published_date.clone(),
+            asin: metadata.iter().find_map(|item| item.asin.clone()),
             chapters: book_chapters,
             metadata: metadata_summary,
             tracks,
+            progress: None,
         });
     }
 
@@ -1156,9 +1470,58 @@ fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
             .and_then(extract_narrator)
             .or_else(|| tag.and_then(extract_vendor_narrator)),
         duration_seconds: Some(tagged_file.properties().duration().as_secs_f64()),
+        asin: tag
+            .and_then(extract_asin)
+            .or_else(|| extract_asin_from_path(file_path)),
         chapters,
         cover_art: tag.and_then(extract_cover_art),
         summary,
+    }
+}
+
+fn extract_asin(tag: &Tag) -> Option<String> {
+    if let Some(value) = extract_vendor_json(tag).and_then(|json| {
+        ["asin", "audible_product_id", "product_id"]
+            .iter()
+            .find_map(|key| {
+                json.get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+    }) {
+        return normalize_asin(&value);
+    }
+
+    tag.items().find_map(|item| {
+        let key = item_key_label(item.key()).to_lowercase();
+        let description = item.description().to_lowercase();
+        if !(key.contains("asin") || description.contains("asin")) {
+            return None;
+        }
+        match item.value() {
+            ItemValue::Text(value) | ItemValue::Locator(value) => normalize_asin(value),
+            ItemValue::Binary(_) => None,
+        }
+    })
+}
+
+fn extract_asin_from_path(path: &FsPath) -> Option<String> {
+    let name = path.file_name().and_then(|name| name.to_str())?;
+    name.split(|character: char| !character.is_ascii_alphanumeric())
+        .find_map(normalize_asin)
+}
+
+fn normalize_asin(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches(char::from(0));
+    if trimmed.len() == 10
+        && trimmed.starts_with('B')
+        && trimmed
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        Some(trimmed.to_ascii_uppercase())
+    } else {
+        None
     }
 }
 
@@ -1597,6 +1960,61 @@ fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
     enriched
 }
 
+async fn books_with_progress(state: &AppState, user_id: &str) -> Result<Vec<Book>, ApiError> {
+    let saved_progress = read_progress(&state.progress_file).await?;
+    let books = state.library.read().await.books.clone();
+    Ok(books
+        .into_iter()
+        .map(|mut book| {
+            book.progress = saved_progress
+                .get(&progress_key(user_id, &book.id))
+                .map(|progress| summarize_book_progress(&book, progress));
+            book
+        })
+        .collect())
+}
+
+fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
+    let enriched = enrich_progress(book, progress);
+    let duration = book.duration_seconds.or_else(|| {
+        let total = duration_from_tracks(book);
+        (total > 0.0).then_some(total)
+    });
+    let position = duration
+        .map(|duration| enriched.book_position_seconds.clamp(0.0, duration))
+        .unwrap_or_else(|| enriched.book_position_seconds.max(0.0));
+    let remaining = duration.map(|duration| (duration - position).max(0.0));
+    let percent_complete = duration
+        .filter(|duration| *duration > 0.0)
+        .map(|duration| ((position / duration) * 100.0).clamp(0.0, 100.0));
+    let status = match (duration, remaining, position) {
+        (Some(duration), Some(remaining), _) if duration > 0.0 && remaining <= 30.0 => {
+            BookProgressStatus::Finished
+        }
+        (Some(duration), _, position) if duration > 0.0 && position / duration >= 0.995 => {
+            BookProgressStatus::Finished
+        }
+        (_, _, position) if position > 0.0 => BookProgressStatus::InProgress,
+        _ => BookProgressStatus::NotStarted,
+    };
+
+    BookProgress {
+        status,
+        book_position_seconds: position,
+        duration_seconds: duration,
+        remaining_seconds: remaining,
+        percent_complete,
+        updated_at: enriched.updated_at,
+    }
+}
+
+fn duration_from_tracks(book: &Book) -> f64 {
+    book.tracks
+        .iter()
+        .map(|track| track.duration_seconds.unwrap_or(0.0))
+        .sum()
+}
+
 fn book_position_seconds(book: &Book, track: &Track, position_seconds: f64) -> f64 {
     let track_offset = book
         .tracks
@@ -1828,6 +2246,7 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
                 locale: non_empty_string(record.locale.unwrap_or_default()),
                 last_downloaded: non_empty_string(record.last_downloaded.unwrap_or_default()),
                 is_audible_plus: record.is_audible_plus.unwrap_or(false),
+                local_book_id: None,
             })
         })
         .collect())
@@ -1918,8 +2337,8 @@ fn stable_id(input: &str) -> String {
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
-fn progress_key(book_id: &str) -> String {
-    format!("local:{book_id}")
+fn progress_key(user_id: &str, book_id: &str) -> String {
+    format!("user:{user_id}:book:{book_id}")
 }
 
 fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
@@ -1957,6 +2376,761 @@ fn now_rfc3339ish() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileStats {
+    total_hours_read: f64,
+    books_finished: u32,
+    total_tracks_completed: u32,
+    current_streak_days: u32,
+    longest_streak_days: u32,
+    avg_daily_minutes: f64,
+    last_listened_at: Option<String>,
+    favorite_narrator: Option<String>,
+    favorite_genre: Option<String>,
+    days_active: u32,
+    member_since: String,
+    streak_calendar: Vec<StreakDay>,
+    recent_books: Vec<RecentBook>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreakDay {
+    date: String,
+    minutes: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentBook {
+    id: String,
+    title: String,
+    cover_art_url: Option<String>,
+    hours_read: f64,
+    finished: bool,
+    updated_at: String,
+}
+
+async fn load_activity_store(activity_file: &FsPath) -> anyhow::Result<ActivityStore> {
+    match fs::read_to_string(activity_file).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ActivityStore::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_activity_store(
+    activity_file: &FsPath,
+    store: &ActivityStore,
+) -> Result<(), ApiError> {
+    if let Some(parent) = activity_file.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(activity_file, serde_json::to_vec_pretty(store)?).await?;
+    Ok(())
+}
+
+fn today_ymd_utc() -> String {
+    // Year-month-day in UTC, no extra deps. Uses civil-date conversion from
+    // days-since-epoch (1970-01-01) via Howard Hinnant's algorithm.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    days_to_ymd((now / 86_400) as i64)
+}
+
+fn days_to_ymd(days_since_epoch: i64) -> String {
+    let z = days_since_epoch + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", year, m, d)
+}
+
+fn ymd_to_days(ymd: &str) -> Option<i64> {
+    let mut parts = ymd.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = y_adj.div_euclid(400);
+    let yoe = y_adj.rem_euclid(400);
+    let m_adj = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * m_adj + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
+    let today = today_ymd_utc();
+    {
+        let mut activity = state.activity.write().await;
+        let entry = activity
+            .by_user
+            .entry(user_id.to_string())
+            .or_default()
+            .entry(today)
+            .or_insert(0.0);
+        *entry += delta_seconds;
+    }
+
+    let snapshot = {
+        let activity = state.activity.read().await;
+        ActivityStore {
+            by_user: activity.by_user.clone(),
+        }
+    };
+    if let Err(error) = write_activity_store(&state.activity_file, &snapshot).await {
+        tracing::warn!("failed to persist activity log: {}", error.message);
+    }
+}
+
+async fn profile_stats(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<ProfileStats>, ApiError> {
+    let library = state.library.read().await;
+    let progress_map = read_progress(&state.progress_file).await?;
+    let key_prefix = format!("user:{}:book:", auth.id);
+    let user_progress: Vec<(&String, &Progress)> = progress_map
+        .iter()
+        .filter(|(key, _)| key.starts_with(&key_prefix))
+        .collect();
+
+    // Headline numbers.
+    let mut books_finished = 0u32;
+    let mut total_tracks_completed = 0u32;
+    let mut hours_from_positions = 0.0;
+    let mut narrator_hours: HashMap<String, f64> = HashMap::new();
+    let mut genre_hours: HashMap<String, f64> = HashMap::new();
+    let mut last_updated: Option<String> = None;
+
+    let mut book_lookup: HashMap<&str, &Book> = HashMap::new();
+    for book in library.books.iter() {
+        book_lookup.insert(book.id.as_str(), book);
+    }
+
+    let mut recent: Vec<RecentBook> = Vec::new();
+    for (_, progress) in user_progress.iter() {
+        if let Some(book) = book_lookup.get(progress.book_id.as_str()) {
+            let summary = summarize_book_progress(book, progress);
+            let hours = summary.book_position_seconds / 3600.0;
+            hours_from_positions += summary.book_position_seconds;
+            let finished = matches!(summary.status, BookProgressStatus::Finished);
+            if finished {
+                books_finished += 1;
+                total_tracks_completed += book.tracks.len() as u32;
+            } else {
+                let track_index = book
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == progress.track_id)
+                    .unwrap_or(0);
+                total_tracks_completed += track_index as u32;
+            }
+            if let Some(narrator) = book.narrator.as_ref() {
+                *narrator_hours.entry(narrator.clone()).or_insert(0.0) += hours;
+            }
+            for genre in book.genres.iter() {
+                *genre_hours.entry(genre.clone()).or_insert(0.0) += hours;
+            }
+            recent.push(RecentBook {
+                id: book.id.clone(),
+                title: book.title.clone(),
+                cover_art_url: book.cover_art_url.clone(),
+                hours_read: hours,
+                finished,
+                updated_at: progress.updated_at.clone(),
+            });
+            match &last_updated {
+                Some(prev) if prev >= &progress.updated_at => {}
+                _ => last_updated = Some(progress.updated_at.clone()),
+            }
+        }
+    }
+
+    recent.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    recent.truncate(6);
+
+    // Activity-based numbers.
+    let activity = state.activity.read().await;
+    let user_activity = activity.by_user.get(&auth.id).cloned().unwrap_or_default();
+
+    let total_seconds_activity: f64 = user_activity.values().sum();
+    let total_hours_read = if total_seconds_activity > 0.0 {
+        total_seconds_activity / 3600.0
+    } else {
+        hours_from_positions / 3600.0
+    };
+
+    let days_active = user_activity
+        .values()
+        .filter(|seconds| **seconds > 30.0)
+        .count() as u32;
+
+    let avg_daily_minutes = if days_active > 0 {
+        (total_hours_read * 60.0) / days_active as f64
+    } else {
+        0.0
+    };
+
+    let (current_streak_days, longest_streak_days) = compute_streaks(&user_activity);
+    let streak_calendar = build_streak_calendar(&user_activity, 56);
+
+    let favorite_narrator = narrator_hours
+        .into_iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|(_, hours)| *hours > 0.05)
+        .map(|(name, _)| name);
+    let favorite_genre = genre_hours
+        .into_iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|(_, hours)| *hours > 0.05)
+        .map(|(name, _)| name);
+
+    let member_since = state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.id == auth.id)
+        .map(|user| user.created_at.clone())
+        .unwrap_or_default();
+
+    Ok(Json(ProfileStats {
+        total_hours_read,
+        books_finished,
+        total_tracks_completed,
+        current_streak_days,
+        longest_streak_days,
+        avg_daily_minutes,
+        last_listened_at: last_updated,
+        favorite_narrator,
+        favorite_genre,
+        days_active,
+        member_since,
+        streak_calendar,
+        recent_books: recent,
+    }))
+}
+
+fn compute_streaks(activity: &BTreeMap<String, f64>) -> (u32, u32) {
+    let mut active_days: Vec<i64> = activity
+        .iter()
+        .filter_map(|(date, seconds)| {
+            if *seconds > 30.0 {
+                ymd_to_days(date)
+            } else {
+                None
+            }
+        })
+        .collect();
+    active_days.sort_unstable();
+    active_days.dedup();
+
+    if active_days.is_empty() {
+        return (0, 0);
+    }
+
+    let mut longest = 1u32;
+    let mut run = 1u32;
+    for window in active_days.windows(2) {
+        if window[1] - window[0] == 1 {
+            run += 1;
+            if run > longest {
+                longest = run;
+            }
+        } else {
+            run = 1;
+        }
+    }
+
+    let today = ymd_to_days(&today_ymd_utc()).unwrap_or(0);
+    let last = *active_days.last().unwrap();
+    let current = if today - last <= 1 {
+        let mut run = 1u32;
+        for window in active_days.windows(2).rev() {
+            if window[1] - window[0] == 1 {
+                run += 1;
+            } else {
+                break;
+            }
+        }
+        run
+    } else {
+        0
+    };
+
+    (current, longest)
+}
+
+fn build_streak_calendar(activity: &BTreeMap<String, f64>, days: i64) -> Vec<StreakDay> {
+    let today = ymd_to_days(&today_ymd_utc()).unwrap_or(0);
+    let start = today - (days - 1);
+    (0..days)
+        .map(|offset| {
+            let day = start + offset;
+            let date = days_to_ymd(day);
+            let seconds = activity.get(&date).copied().unwrap_or(0.0);
+            StreakDay {
+                date,
+                minutes: seconds / 60.0,
+            }
+        })
+        .collect()
+}
+
+async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
+    match fs::read_to_string(users_file).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(UsersStore::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_users_store(users_file: &FsPath, store: &UsersStore) -> Result<(), ApiError> {
+    if let Some(parent) = users_file.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(users_file, serde_json::to_vec_pretty(store)?).await?;
+    Ok(())
+}
+
+async fn load_sessions_store(sessions_file: &FsPath) -> anyhow::Result<HashMap<String, Session>> {
+    match fs::read_to_string(sessions_file).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_sessions_store(
+    sessions_file: &FsPath,
+    sessions: &HashMap<String, Session>,
+) -> Result<(), ApiError> {
+    if let Some(parent) = sessions_file.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(sessions_file, serde_json::to_vec_pretty(sessions)?).await?;
+    Ok(())
+}
+
+fn hash_password(password: &str) -> Result<String, ApiError> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| ApiError::internal(format!("Password hashing failed: {error}")))
+}
+
+fn verify_password(password: &str, hash: &str) -> bool {
+    PasswordHash::new(hash)
+        .and_then(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed))
+        .is_ok()
+}
+
+fn generate_session_token() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn normalize_username(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn validate_password(password: &str) -> Result<(), ApiError> {
+    if password.chars().count() < 6 {
+        return Err(ApiError::bad_request(
+            "Password must be at least 6 characters long.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_username(username: &str) -> Result<(), ApiError> {
+    let trimmed = username.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::bad_request("Username is required."));
+    }
+    if trimmed.chars().count() > 64 {
+        return Err(ApiError::bad_request("Username is too long."));
+    }
+    Ok(())
+}
+
+fn token_from_authorization(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn token_from_cookie_header(value: &str) -> Option<String> {
+    value.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        if name == SESSION_COOKIE_NAME && !value.is_empty() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn token_from_cookies(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(token_from_cookie_header)
+}
+
+fn token_from_headers(headers: &HeaderMap) -> Option<String> {
+    token_from_authorization(headers).or_else(|| token_from_cookies(headers))
+}
+
+fn session_cookie(token: &str) -> String {
+    format!(
+        "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax"
+    )
+}
+
+fn expired_session_cookie() -> String {
+    format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+}
+
+fn extract_request_token(req: &Request) -> Option<String> {
+    if let Some(token) = token_from_headers(req.headers()) {
+        return Some(token);
+    }
+    let query = req.uri().query()?;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == "token" && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
+    let sessions = state.sessions.read().await;
+    let session = sessions.get(token)?.clone();
+    drop(sessions);
+    let users = state.users.read().await;
+    users
+        .users
+        .iter()
+        .find(|user| user.id == session.user_id)
+        .map(|user| AuthUser {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        })
+}
+
+async fn auth_middleware(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(token) = extract_request_token(&req) else {
+        return Err(ApiError::unauthorized("Missing authentication token."));
+    };
+    let Some(user) = resolve_session(&state, &token).await else {
+        return Err(ApiError::unauthorized("Session is invalid or expired."));
+    };
+    req.extensions_mut().insert(user);
+    Ok(next.run(req).await)
+}
+
+async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> Json<AuthStatus> {
+    let setup_required = state.users.read().await.users.is_empty();
+    let user = if let Some(token) = token_from_headers(&headers) {
+        resolve_session(&state, &token)
+            .await
+            .map(|auth| UserPublic {
+                id: auth.id,
+                username: auth.username,
+                is_admin: auth.is_admin,
+                created_at: String::new(),
+            })
+    } else {
+        None
+    };
+
+    Json(AuthStatus {
+        setup_required,
+        user,
+    })
+}
+
+async fn setup_admin(
+    State(state): State<AppState>,
+    Json(payload): Json<SetupRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    {
+        let users = state.users.read().await;
+        if !users.users.is_empty() {
+            return Err(ApiError::bad_request(
+                "Setup has already been completed. Sign in instead.",
+            ));
+        }
+    }
+
+    let username = normalize_username(&payload.username);
+    validate_username(&username)?;
+    validate_password(&payload.password)?;
+
+    let new_user = User {
+        id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
+        username,
+        password_hash: hash_password(&payload.password)?,
+        is_admin: true,
+        created_at: now_rfc3339ish(),
+    };
+
+    {
+        let mut users = state.users.write().await;
+        users.users.push(new_user.clone());
+        write_users_store(&state.users_file, &users).await?;
+    }
+
+    let token = create_session(&state, &new_user.id).await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(&token))
+            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+    );
+    Ok((
+        headers,
+        Json(LoginResponse {
+            token,
+            user: UserPublic::from(&new_user),
+        }),
+    ))
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let username = normalize_username(&payload.username);
+    let matched_user = {
+        let users = state.users.read().await;
+        users
+            .users
+            .iter()
+            .find(|user| user.username.eq_ignore_ascii_case(&username))
+            .cloned()
+    };
+
+    let Some(user) = matched_user else {
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    };
+    if !verify_password(&payload.password, &user.password_hash) {
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    }
+
+    let token = create_session(&state, &user.id).await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(&token))
+            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+    );
+    Ok((
+        headers,
+        Json(LoginResponse {
+            token,
+            user: UserPublic::from(&user),
+        }),
+    ))
+}
+
+async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
+    let token = generate_session_token();
+    let session = Session {
+        user_id: user_id.to_string(),
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    let mut sessions = state.sessions.write().await;
+    sessions.insert(token.clone(), session);
+    write_sessions_store(&state.sessions_file, &sessions).await?;
+    Ok(token)
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    if let Some(token) = token_from_headers(&headers) {
+        let mut sessions = state.sessions.write().await;
+        sessions.remove(&token);
+        write_sessions_store(&state.sessions_file, &sessions).await?;
+    }
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&expired_session_cookie())
+            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+    );
+    Ok((response_headers, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
+    Json(UserPublic {
+        id: auth.id,
+        username: auth.username,
+        is_admin: auth.is_admin,
+        created_at: String::new(),
+    })
+}
+
+fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
+    if auth.is_admin {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Administrator access is required."))
+    }
+}
+
+async fn list_users(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<UserPublic>>, ApiError> {
+    require_admin(&auth)?;
+    let users = state.users.read().await;
+    Ok(Json(users.users.iter().map(UserPublic::from).collect()))
+}
+
+async fn create_user(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<CreateUserRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    require_admin(&auth)?;
+    let username = normalize_username(&payload.username);
+    validate_username(&username)?;
+    validate_password(&payload.password)?;
+
+    let mut users = state.users.write().await;
+    if users
+        .users
+        .iter()
+        .any(|user| user.username.eq_ignore_ascii_case(&username))
+    {
+        return Err(ApiError::bad_request("That username is already taken."));
+    }
+
+    let new_user = User {
+        id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
+        username,
+        password_hash: hash_password(&payload.password)?,
+        is_admin: payload.is_admin,
+        created_at: now_rfc3339ish(),
+    };
+    users.users.push(new_user.clone());
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(UserPublic::from(&new_user)))
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&auth)?;
+    if user_id == auth.id {
+        return Err(ApiError::bad_request(
+            "You cannot delete your own account while signed in.",
+        ));
+    }
+
+    let mut users = state.users.write().await;
+    let original_len = users.users.len();
+    users.users.retain(|user| user.id != user_id);
+    if users.users.len() == original_len {
+        return Err(ApiError::not_found("User not found."));
+    }
+    write_users_store(&state.users_file, &users).await?;
+    drop(users);
+
+    let mut sessions = state.sessions.write().await;
+    sessions.retain(|_, session| session.user_id != user_id);
+    write_sessions_store(&state.sessions_file, &sessions).await?;
+    drop(sessions);
+
+    let mut progress = read_progress(&state.progress_file).await?;
+    let prefix = format!("user:{user_id}:");
+    progress.retain(|key, _| !key.starts_with(&prefix));
+    write_progress(&state.progress_file, &progress).await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let changing_self = auth.id == user_id;
+    if !changing_self && !auth.is_admin {
+        return Err(ApiError::forbidden(
+            "You can only change your own password.",
+        ));
+    }
+    validate_password(&payload.new_password)?;
+
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+
+    if changing_self {
+        let current = payload.current_password.unwrap_or_default();
+        if !verify_password(&current, &user.password_hash) {
+            return Err(ApiError::unauthorized("Current password is incorrect."));
+        }
+    }
+
+    user.password_hash = hash_password(&payload.new_password)?;
+    let target_id = user.id.clone();
+    write_users_store(&state.users_file, &users).await?;
+    drop(users);
+
+    if !changing_self {
+        let mut sessions = state.sessions.write().await;
+        sessions.retain(|_, session| session.user_id != target_id);
+        write_sessions_store(&state.sessions_file, &sessions).await?;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -1981,6 +3155,27 @@ impl ApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
         }
     }
@@ -2037,5 +3232,26 @@ impl From<axum::http::Error> for ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: error.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_imported_title;
+
+    #[test]
+    fn clean_imported_title_strips_trailing_audible_asin() {
+        assert_eq!(clean_imported_title("Dune [B002V1OF70]"), "Dune");
+        assert_eq!(clean_imported_title("Dune (B002V1OF70)"), "Dune");
+        assert_eq!(clean_imported_title("Dune - [B002V1OF70]"), "Dune");
+    }
+
+    #[test]
+    fn clean_imported_title_keeps_non_asin_brackets() {
+        assert_eq!(
+            clean_imported_title("Dune [Unabridged]"),
+            "Dune [Unabridged]"
+        );
+        assert_eq!(clean_imported_title("[B002V1OF70]"), "[B002V1OF70]");
     }
 }

@@ -20,9 +20,20 @@ export type Book = {
   description: string | null;
   genres: string[];
   publishedDate: string | null;
+  asin: string | null;
   chapters: Chapter[];
   metadata: MetadataSummary;
   tracks: Track[];
+  progress: BookProgress | null;
+};
+
+export type BookProgress = {
+  status: "notStarted" | "inProgress" | "finished";
+  bookPositionSeconds: number;
+  durationSeconds: number | null;
+  remainingSeconds: number | null;
+  percentComplete: number | null;
+  updatedAt: string;
 };
 
 export type Chapter = {
@@ -94,6 +105,7 @@ export type LibationBook = {
   locale: string | null;
   lastDownloaded: string | null;
   isAudiblePlus: boolean;
+  localBookId: string | null;
 };
 
 export type JobStatus = {
@@ -109,4 +121,51 @@ export type JobStatus = {
 
 export type JobCreated = {
   jobId: string;
+};
+
+export type AuthUser = {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  createdAt: string;
+};
+
+export type AuthStatus = {
+  setupRequired: boolean;
+  user: AuthUser | null;
+};
+
+export type LoginResponse = {
+  token: string;
+  user: AuthUser;
+};
+
+export type ProfileStats = {
+  totalHoursRead: number;
+  booksFinished: number;
+  totalTracksCompleted: number;
+  currentStreakDays: number;
+  longestStreakDays: number;
+  avgDailyMinutes: number;
+  lastListenedAt: string | null;
+  favoriteNarrator: string | null;
+  favoriteGenre: string | null;
+  daysActive: number;
+  memberSince: string;
+  streakCalendar: StreakDay[];
+  recentBooks: ProfileRecentBook[];
+};
+
+export type StreakDay = {
+  date: string;
+  minutes: number;
+};
+
+export type ProfileRecentBook = {
+  id: string;
+  title: string;
+  coverArtUrl: string | null;
+  hoursRead: number;
+  finished: boolean;
+  updatedAt: string;
 };
