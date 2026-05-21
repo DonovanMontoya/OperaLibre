@@ -1,6 +1,8 @@
 import {
   AlertCircle,
   Bookmark,
+  ChevronLeft,
+  ChevronRight,
   Cloud,
   CloudDownload,
   Download,
@@ -26,6 +28,7 @@ import {
   Volume2,
   X
 } from "lucide-react";
+import type { Book as EpubBook, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bookDownloadUrl,
@@ -40,6 +43,7 @@ import {
   liberateLibationBook,
   logout as apiLogout,
   mediaUrl,
+  readalongUrl,
   rescanLibrary,
   saveProgress,
   setStoredToken,
@@ -52,6 +56,7 @@ import type { AuthUser, Book, Chapter, JobStatus, LibationBook, LibationStatus, 
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
+const APP_STATE_STORAGE_PREFIX = "audiobook.appState";
 
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
@@ -197,6 +202,352 @@ function isLiberatedStatus(status: string | null | undefined) {
   return normalized.includes("liberated") || normalized.includes("downloaded");
 }
 
+function canPreviewReadalong(book: Book) {
+  const extension = book.readingFile?.extension.toLowerCase();
+  return extension === "epub" || extension === "pdf" || extension === "txt" || extension === "html" || extension === "htm";
+}
+
+function storedStateKey(userId: string, field: "selectedBookId" | "playbackBookId") {
+  return `${APP_STATE_STORAGE_PREFIX}.${userId}.${field}`;
+}
+
+function readStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId") {
+  try {
+    return window.localStorage.getItem(storedStateKey(userId, field));
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId", bookId: string | null) {
+  try {
+    const key = storedStateKey(userId, field);
+    if (bookId) {
+      window.localStorage.setItem(key, bookId);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function mostRecentlyListenedBookId(books: Book[]) {
+  return books
+    .filter((book) => book.progress?.updatedAt)
+    .sort(
+      (a, b) =>
+        Number(new Date(b.progress!.updatedAt)) - Number(new Date(a.progress!.updatedAt))
+    )[0]?.id ?? null;
+}
+
+function resolveBookId(books: Book[], preferredId: string | null, fallbackId: string | null = null) {
+  if (preferredId && books.some((book) => book.id === preferredId)) {
+    return preferredId;
+  }
+  if (fallbackId && books.some((book) => book.id === fallbackId)) {
+    return fallbackId;
+  }
+  return mostRecentlyListenedBookId(books) ?? books[0]?.id ?? null;
+}
+
+function flattenToc(items: NavItem[], depth = 0): Array<NavItem & { depth: number }> {
+  return items.flatMap((item) => [
+    { ...item, depth },
+    ...flattenToc(item.subitems ?? [], depth + 1)
+  ]);
+}
+
+type EpubSyncTarget = {
+  id: string;
+  title: string;
+};
+
+type ParsedReadalongLabel = {
+  number: number | null;
+  key: string;
+};
+
+function normalizeReadalongText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function parseReadalongLabel(value: string): ParsedReadalongLabel {
+  const chapterMatch = value.match(/\bchapter\s+0*(\d+)\b/i);
+  const leadingMatch = value.match(/^\s*0*(\d+)\s*[.:)\-–—]\s*/);
+  const number = Number(chapterMatch?.[1] ?? leadingMatch?.[1] ?? NaN);
+  const withoutNumber = chapterMatch
+    ? value.slice((chapterMatch.index ?? 0) + chapterMatch[0].length).replace(/^\s*[.:)\-–—]\s*/, "")
+    : value.replace(/^\s*0*\d+\s*[.:)\-–—]\s*/, "");
+
+  return {
+    number: Number.isFinite(number) ? number : null,
+    key: normalizeReadalongText(withoutNumber)
+  };
+}
+
+function readalongMatchScore(target: ParsedReadalongLabel, item: ParsedReadalongLabel) {
+  let score = 0;
+  if (target.number !== null && item.number === target.number) {
+    score += 100;
+  }
+  if (target.key && item.key) {
+    if (target.key === item.key) {
+      score += 80;
+    } else if (target.key.includes(item.key) || item.key.includes(target.key)) {
+      score += 45;
+    } else {
+      const targetWords = new Set(target.key.split(" ").filter((word) => word.length > 3));
+      const sharedWords = item.key
+        .split(" ")
+        .filter((word) => word.length > 3 && targetWords.has(word)).length;
+      score += Math.min(35, sharedWords * 10);
+    }
+  }
+  return score;
+}
+
+function findTocHrefForSyncTarget(
+  toc: Array<NavItem & { depth: number }>,
+  syncTarget: EpubSyncTarget
+) {
+  const parsedTarget = parseReadalongLabel(syncTarget.title);
+  const ranked = toc
+    .filter((item) => item.href)
+    .map((item) => ({
+      href: item.href,
+      score: readalongMatchScore(parsedTarget, parseReadalongLabel(item.label))
+    }))
+    .sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  return best && best.score >= 70 ? best.href : null;
+}
+
+function EpubReadalong({
+  title,
+  url,
+  syncTarget
+}: {
+  title: string;
+  url: string;
+  syncTarget: EpubSyncTarget | null;
+}) {
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const bookRef = useRef<EpubBook | null>(null);
+  const renditionRef = useRef<Rendition | null>(null);
+  const syncedTargetRef = useRef<string | null>(null);
+  const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
+  const [location, setLocation] = useState<Location | null>(null);
+  const [activeHref, setActiveHref] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
+
+  useEffect(() => {
+    if (!viewerRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+    setToc([]);
+    setLocation(null);
+    setActiveHref("");
+    setError(null);
+    setErrorDetail(null);
+    setIsReady(false);
+    syncedTargetRef.current = null;
+
+    const abortController = new AbortController();
+    let readyTimeout: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let book: EpubBook | null = null;
+    let rendition: Rendition | null = null;
+    const handleRelocated = (nextLocation: Location) => {
+      setLocation(nextLocation);
+      setIsReady(true);
+    };
+    const handleRendered = () => {
+      setIsReady(true);
+    };
+
+    const openBook = async () => {
+      try {
+        const { default: ePub } = await import("epubjs");
+        if (cancelled || !viewerRef.current) {
+          return;
+        }
+
+        readyTimeout = window.setTimeout(() => {
+          if (!cancelled) {
+            setError("This EPUB is taking longer than expected to open.");
+          }
+        }, 15000);
+
+        const response = await fetch(url, {
+          credentials: "include",
+          signal: abortController.signal
+        });
+        if (!response.ok) {
+          throw new Error(`EPUB request failed with ${response.status}`);
+        }
+        const data = await response.arrayBuffer();
+        if (cancelled || !viewerRef.current) {
+          return;
+        }
+        if (data.byteLength === 0) {
+          throw new Error("EPUB response was empty");
+        }
+
+        book = ePub(data, {
+          replacements: "blobUrl"
+        });
+        await book.opened;
+        if (cancelled || !viewerRef.current) {
+          return;
+        }
+
+        rendition = book.renderTo(viewerRef.current, {
+          width: "100%",
+          height: "100%",
+          flow: "paginated",
+          spread: "none",
+          manager: "default"
+        });
+
+        bookRef.current = book;
+        renditionRef.current = rendition;
+        rendition.on("relocated", handleRelocated);
+        rendition.on("rendered", handleRendered);
+
+        book.loaded.navigation
+          .then((navigation) => {
+            if (!cancelled) {
+              setToc(flattenToc(navigation.toc));
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setToc([]);
+            }
+          });
+
+        await rendition.display();
+        if (!cancelled) {
+          setIsReady(true);
+          setError(null);
+          setErrorDetail(null);
+          if (readyTimeout !== null) {
+            window.clearTimeout(readyTimeout);
+            readyTimeout = null;
+          }
+        }
+      } catch (error) {
+        if (!cancelled && !abortController.signal.aborted) {
+          console.error("EPUB readalong failed", error);
+          setError("This EPUB could not be opened inline.");
+          setErrorDetail(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+
+    resizeObserver = new ResizeObserver(() => {
+      const bounds = viewerRef.current?.getBoundingClientRect();
+      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition) {
+        rendition.resize(Math.floor(bounds.width), Math.floor(bounds.height));
+      }
+    });
+    resizeObserver.observe(viewerRef.current);
+    void openBook();
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+      if (readyTimeout !== null) {
+        window.clearTimeout(readyTimeout);
+      }
+      resizeObserver?.disconnect();
+      rendition?.off("relocated", handleRelocated);
+      rendition?.off("rendered", handleRendered);
+      rendition?.destroy();
+      book?.destroy();
+      renditionRef.current = null;
+      bookRef.current = null;
+    };
+  }, [url]);
+
+  useEffect(() => {
+    if (!syncTarget || !isReady || toc.length === 0 || syncedTargetRef.current === syncTarget.id) {
+      return;
+    }
+
+    const href = findTocHrefForSyncTarget(toc, syncTarget);
+    if (!href) {
+      return;
+    }
+
+    syncedTargetRef.current = syncTarget.id;
+    setActiveHref(href);
+    void renditionRef.current?.display(href);
+  }, [isReady, syncTarget, toc]);
+
+  const percent = location?.start?.percentage;
+  const locationLabel = Number.isFinite(percent ?? NaN)
+    ? `${Math.round((percent ?? 0) * 100)}%`
+    : isReady
+      ? "Ready"
+      : "Loading";
+
+  return (
+    <div className="epub-reader">
+      <div className="epub-toolbar">
+        <button type="button" onClick={() => void renditionRef.current?.prev()} aria-label="Previous page">
+          <ChevronLeft size={16} />
+        </button>
+        <select
+          aria-label={`${title} table of contents`}
+          value={activeHref}
+          onChange={(event) => {
+            const href = event.currentTarget.value;
+            setActiveHref(href);
+            syncedTargetRef.current = null;
+            if (href) {
+              void renditionRef.current?.display(href);
+            }
+          }}
+        >
+          <option value="">Contents</option>
+          {toc.map((item) => (
+            <option key={`${item.href}-${item.label}`} value={item.href}>
+              {"\u00A0".repeat(item.depth * 2)}{item.label}
+            </option>
+          ))}
+        </select>
+        <span>{syncTarget ? `Sync ${locationLabel}` : locationLabel}</span>
+        <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <div className="epub-stage" ref={viewerRef}>
+        {!isReady && !error ? <span className="epub-loading">Loading EPUB…</span> : null}
+        {error ? (
+          <span className="epub-error">
+            {error}
+            {errorDetail ? <small>{errorDetail}</small> : null}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   const className = size === "small" ? "cover-mark" : "large-cover";
   if (book.coverArtUrl) {
@@ -304,8 +655,12 @@ function MainApp({
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
   const [books, setBooks] = useState<Book[]>([]);
-  const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
-  const [playbackBookId, setPlaybackBookId] = useState<string | null>(null);
+  const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
+    readStoredBookId(currentUser.id, "selectedBookId")
+  );
+  const [playbackBookId, setPlaybackBookId] = useState<string | null>(() =>
+    readStoredBookId(currentUser.id, "playbackBookId")
+  );
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
   const [position, setPosition] = useState(0);
@@ -323,6 +678,7 @@ function MainApp({
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [readalongOpen, setReadalongOpen] = useState(false);
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
   const [libationLoading, setLibationLoading] = useState(false);
@@ -433,6 +789,9 @@ function MainApp({
     ? Math.max(1, activeChapter.endSeconds - activeChapter.startSeconds)
     : Math.max(1, sliderMax);
   const isViewingPlayingBook = !!selectedBook && !!playbackBook && selectedBook.id === playbackBook.id;
+  const selectedReadalongUrl = selectedBook?.readingFile
+    ? readalongUrl(selectedBook.readingFile.url)
+    : null;
 
   const loadBooks = useCallback(async () => {
     setIsLoading(true);
@@ -440,18 +799,40 @@ function MainApp({
     try {
       const nextBooks = await getBooks();
       setBooks(nextBooks);
-      setSelectedBookId((existing) => existing ?? nextBooks[0]?.id ?? null);
-      setPlaybackBookId((existing) => existing ?? nextBooks[0]?.id ?? null);
+      setSelectedBookId((existing) =>
+        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
+      );
+      setPlaybackBookId((existing) =>
+        resolveBookId(
+          nextBooks,
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          readStoredBookId(currentUser.id, "selectedBookId")
+        )
+      );
     } catch {
       setError("The audiobook server is not reachable.");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [currentUser.id]);
 
   useEffect(() => {
     void loadBooks();
   }, [loadBooks]);
+
+  useEffect(() => {
+    writeStoredBookId(currentUser.id, "selectedBookId", selectedBookId);
+  }, [currentUser.id, selectedBookId]);
+
+  useEffect(() => {
+    writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
+  }, [currentUser.id, playbackBookId]);
+
+  useEffect(() => {
+    if (!selectedBook?.readingFile) {
+      setReadalongOpen(false);
+    }
+  }, [selectedBook?.readingFile]);
 
   const loadLibationStatus = useCallback(async () => {
     try {
@@ -716,16 +1097,13 @@ function MainApp({
     void persistProgress();
   }
 
-  function seekBookPosition(value: number, autoPlay = false) {
-    if (!playbackBook) {
-      return;
-    }
-
-    const clampedValue = Math.max(0, Math.min(value, bookDuration || value));
+  function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
+    const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
+    const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     let offset = 0;
-    let targetTrack = playbackBook.tracks[0];
+    let targetTrack: Track | undefined = book.tracks[0];
 
-    for (const track of playbackBook.tracks) {
+    for (const track of book.tracks) {
       const trackDuration = track.durationSeconds ?? 0;
       const nextOffset = offset + Math.max(1, trackDuration);
       targetTrack = track;
@@ -740,7 +1118,9 @@ function MainApp({
     }
 
     const trackPosition = Math.max(0, clampedValue - offset);
-    if (targetTrack.id === currentTrack?.id && audioRef.current) {
+    setPlaybackBookId(book.id);
+
+    if (playbackBook?.id === book.id && targetTrack.id === currentTrack?.id && audioRef.current) {
       audioRef.current.currentTime = trackPosition;
       setPosition(trackPosition);
       void persistProgress();
@@ -756,6 +1136,14 @@ function MainApp({
     if (autoPlay) {
       window.setTimeout(() => void audioRef.current?.play(), 0);
     }
+  }
+
+  function seekBookPosition(value: number, autoPlay = false) {
+    if (!playbackBook) {
+      return;
+    }
+
+    seekBookPositionInBook(playbackBook, value, autoPlay);
   }
 
   function togglePlayback() {
@@ -792,18 +1180,9 @@ function MainApp({
     if (!selectedBook) {
       return;
     }
-    const track = selectedBook.tracks.find((candidate) => candidate.id === chapter.trackId);
-    if (!track) {
-      return;
-    }
 
     void persistProgress();
-    setPlaybackBookId(selectedBook.id);
-    const trackOffset = trackOffsetSeconds(selectedBook, chapter.trackIndex);
-    setCurrentTrackId(track.id);
-    setPendingSeek(Math.max(0, chapter.startSeconds - trackOffset));
-    setPosition(Math.max(0, chapter.startSeconds - trackOffset));
-    window.setTimeout(() => void audioRef.current?.play(), 0);
+    seekBookPositionInBook(selectedBook, chapter.startSeconds, true);
   }
 
   function playNextTrack() {
@@ -831,7 +1210,14 @@ function MainApp({
       const nextBooks = await rescanLibrary();
       setBooks(nextBooks);
       setSelectedBookId((existing) =>
-        nextBooks.some((book) => book.id === existing) ? existing : nextBooks[0]?.id ?? null
+        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
+      );
+      setPlaybackBookId((existing) =>
+        resolveBookId(
+          nextBooks,
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          readStoredBookId(currentUser.id, "selectedBookId")
+        )
       );
       setError(null);
     } catch {
@@ -1257,15 +1643,29 @@ function MainApp({
               <div className="meta">
                 <div className="heading-top">
                   <span className="eyebrow"><Bookmark size={13} /> Now Reading</span>
-                  <a
-                    className="download-btn"
-                    href={bookDownloadUrl(selectedBook.id)}
-                    download
-                    aria-label={`Download ${selectedBook.title} as zip`}
-                  >
-                    <Download size={13} />
-                    <span>Download</span>
-                  </a>
+                  <div className="heading-actions">
+                    {selectedBook.readingFile ? (
+                      <button
+                        className={`download-btn ${readalongOpen ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setReadalongOpen((open) => !open)}
+                        aria-pressed={readalongOpen}
+                        aria-label={`${readalongOpen ? "Close" : "Open"} readalong for ${selectedBook.title}`}
+                      >
+                        <ScrollText size={13} />
+                        <span>Read Along</span>
+                      </button>
+                    ) : null}
+                    <a
+                      className="download-btn"
+                      href={bookDownloadUrl(selectedBook.id)}
+                      download
+                      aria-label={`Download ${selectedBook.title} as zip`}
+                    >
+                      <Download size={13} />
+                      <span>Download</span>
+                    </a>
+                  </div>
                 </div>
                 <h2>
                   {selectedBook.title.split(" ").map((word, i, arr) => {
@@ -1298,6 +1698,48 @@ function MainApp({
             </div>
 
             {selectedBook.description ? <p className="book-description">{selectedBook.description}</p> : null}
+
+            {readalongOpen && selectedBook.readingFile && selectedReadalongUrl ? (
+              <section className="readalong-panel" aria-label={`${selectedBook.title} readalong`}>
+                <div className="readalong-header">
+                  <div>
+                    <span className="section-label"><ScrollText size={13} /> Readalong</span>
+                    <strong>{selectedBook.readingFile.fileName}</strong>
+                  </div>
+                  <a className="download-btn" href={selectedReadalongUrl} target="_blank" rel="noreferrer">
+                    <Download size={13} />
+                    <span>Open</span>
+                  </a>
+                </div>
+                {selectedBook.readingFile.extension === "epub" ? (
+                  <EpubReadalong
+                    title={selectedBook.title}
+                    url={selectedReadalongUrl}
+                    syncTarget={isViewingPlayingBook && activeChapter ? activeChapter : null}
+                  />
+                ) : canPreviewReadalong(selectedBook) ? (
+                  <iframe
+                    className="readalong-frame"
+                    src={selectedReadalongUrl}
+                    title={`${selectedBook.title} readalong`}
+                  />
+                ) : (
+                  <div className="readalong-fallback">
+                    <ScrollText size={36} strokeWidth={1.4} />
+                    <p>
+                      {selectedBook.readingFile.extension.toUpperCase()} files are available to open, but this browser
+                      cannot preview them inline yet.
+                    </p>
+                  </div>
+                )}
+                {activeChapter ? (
+                  <div className="readalong-sync">
+                    <span>{activeChapter.title}</span>
+                    <span>{formatTime(bookPosition)}</span>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {isViewingPlayingBook && currentTrack ? (
               <>
