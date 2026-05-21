@@ -1,0 +1,727 @@
+/* ============================================================
+   Audiobook Serving — Documentation
+   Visual language: aged paper, ink, oxblood, antique gold.
+   Matches apps/web/src/styles.css.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --paper:       #f1e7d0;
+  --paper-deep:  #e6d9b8;
+  --paper-soft:  #ebe1c7;
+  --ink:         #1a1410;
+  --ink-soft:    #3a2e26;
+  --ink-faded:   #6b5a4c;
+  --oxblood:     #8b2e1f;
+  --oxblood-deep:#5e1e13;
+  --gold:        #b8893a;
+  --gold-soft:   #d9b574;
+  --spine:       #1a1410;
+  --spine-deep:  #0e0a07;
+
+  --serif: "Fraunces", "Times New Roman", Georgia, serif;
+  --mono:  "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+
+/* ---------- Page canvas (aged paper with noise) ---------- */
+
+html, body {
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+  font-family: var(--serif) !important;
+  font-optical-sizing: auto;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background-image:
+    radial-gradient(ellipse at 20% 0%,   rgba(184,137,58,0.18), transparent 50%),
+    radial-gradient(ellipse at 100% 100%, rgba(139,46,31,0.12), transparent 55%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.08 0 0 0 0 0.06 0 0 0 0.35 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.55'/></svg>") !important;
+  background-attachment: fixed !important;
+}
+
+/* ---------- The book spine (sidebar) ---------- */
+
+.side-bar {
+  background: var(--spine) !important;
+  background-image:
+    linear-gradient(180deg, #211710 0%, #100a06 100%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 2px, transparent 2px 4px) !important;
+  background-blend-mode: normal, overlay;
+  color: var(--paper) !important;
+  border-right: 1px solid #000 !important;
+  box-shadow: inset -10px 0 24px rgba(0,0,0,0.55) !important;
+  position: relative;
+}
+
+/* The gilded edge — that gold seam where the spine meets the page */
+.side-bar::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 6px;
+  background: linear-gradient(90deg,
+    rgba(0,0,0,0.55),
+    rgba(184,137,58,0.45),
+    rgba(0,0,0,0.7));
+  pointer-events: none;
+}
+
+.site-header {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(217,181,116,0.22) !important;
+  padding: 22px 28px 18px !important;
+}
+
+.site-title {
+  font-family: var(--serif) !important;
+  font-weight: 600 !important;
+  font-size: 1.45rem !important;
+  letter-spacing: -0.01em !important;
+  color: var(--paper) !important;
+  background: none !important;
+  -webkit-text-fill-color: var(--paper) !important;
+  position: relative;
+  display: block;
+  padding-bottom: 14px;
+}
+
+.site-title::after {
+  content: "DOCUMENTATION";
+  display: block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  font-weight: 500;
+  letter-spacing: 0.32em;
+  color: var(--gold-soft);
+}
+
+/* Tiny ornamental rule under title */
+.site-title::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(217,181,116,0.4), transparent);
+}
+
+/* ---------- Sidebar nav ---------- */
+
+.site-nav,
+.nav-list {
+  padding: 14px 0 !important;
+}
+
+.nav-list-item {
+  border: 0 !important;
+}
+
+.nav-list .nav-list-link {
+  font-family: var(--mono) !important;
+  font-size: 0.68rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  color: rgba(241,231,208,0.58) !important;
+  padding: 11px 28px !important;
+  border-left: 2px solid transparent !important;
+  background: transparent !important;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease !important;
+  position: relative;
+}
+
+.nav-list .nav-list-link::before {
+  content: "·";
+  position: absolute;
+  left: 16px;
+  color: rgba(217,181,116,0.35);
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.nav-list .nav-list-link:hover {
+  color: var(--gold-soft) !important;
+  background: rgba(217,181,116,0.05) !important;
+}
+
+.nav-list .nav-list-link.active {
+  color: var(--ink) !important;
+  background: var(--gold-soft) !important;
+  border-left-color: var(--oxblood) !important;
+}
+
+.nav-list .nav-list-link.active::before {
+  color: var(--oxblood);
+}
+
+/* ---------- Aux nav (top right links) ---------- */
+
+.aux-nav-list-item a {
+  font-family: var(--mono) !important;
+  font-size: 0.62rem !important;
+  letter-spacing: 0.18em !important;
+  text-transform: uppercase !important;
+  color: var(--ink-faded) !important;
+}
+
+.aux-nav-list-item a:hover {
+  color: var(--oxblood) !important;
+}
+
+/* ---------- Main content column ---------- */
+
+.main {
+  background: transparent !important;
+}
+
+.main-content-wrap {
+  background: transparent !important;
+  max-width: 920px;
+}
+
+.main-header {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(26,20,16,0.12) !important;
+  padding: 14px 56px !important;
+  height: 65px !important;
+  min-height: 0 !important;
+  display: flex !important;
+  align-items: center;
+}
+
+.main-header.nav-open { display: flex !important; }
+
+.main-content {
+  font-family: var(--serif) !important;
+  font-size: 1.06rem !important;
+  line-height: 1.7 !important;
+  color: var(--ink) !important;
+  max-width: 760px;
+  padding: 48px 56px 80px !important;
+  background: transparent !important;
+}
+
+/* First paragraph: drop-folio italic intro, like a book chapter */
+.main-content > h1 + p:first-of-type {
+  font-style: italic;
+  font-size: 1.18rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+  border-bottom: 1px solid rgba(139,46,31,0.18);
+  padding-bottom: 22px;
+  margin-bottom: 28px;
+}
+
+/* ---------- Headings ---------- */
+
+.main-content h1,
+.main-content h2,
+.main-content h3,
+.main-content h4,
+.main-content h5,
+.main-content h6 {
+  font-family: var(--serif) !important;
+  color: var(--ink) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.015em !important;
+  line-height: 1.15 !important;
+  background: none !important;
+  -webkit-text-fill-color: var(--ink) !important;
+}
+
+.main-content h1 {
+  font-size: 2.85rem !important;
+  font-weight: 500 !important;
+  margin: 0 0 8px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  display: block !important;
+  position: relative;
+}
+
+/* Chapter mark — a small oxblood serif numeral / ornament under H1 */
+.main-content h1::after {
+  content: "❦";
+  display: block;
+  margin-top: 12px;
+  font-size: 1.1rem;
+  color: var(--oxblood);
+  letter-spacing: 0.4em;
+}
+
+.main-content h2 {
+  font-size: 1.65rem !important;
+  margin: 3rem 0 1rem !important;
+  padding-bottom: 0.5rem !important;
+  border-bottom: 1px solid rgba(26,20,16,0.15) !important;
+  position: relative;
+}
+
+.main-content h2::before {
+  content: "§";
+  position: absolute;
+  left: -1.6em;
+  top: 0.1em;
+  font-size: 1.2rem;
+  font-style: italic;
+  color: var(--gold);
+  font-weight: 400;
+}
+
+.main-content h3 {
+  font-size: 1.22rem !important;
+  font-style: italic !important;
+  color: var(--oxblood-deep) !important;
+  -webkit-text-fill-color: var(--oxblood-deep) !important;
+  margin: 2.2rem 0 0.75rem !important;
+}
+
+.main-content h4 {
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.2em !important;
+  text-transform: uppercase !important;
+  color: var(--ink-faded) !important;
+  -webkit-text-fill-color: var(--ink-faded) !important;
+  margin: 2rem 0 0.6rem !important;
+}
+
+/* ---------- Body text ---------- */
+
+.main-content p,
+.main-content li {
+  color: var(--ink) !important;
+  font-family: var(--serif) !important;
+}
+
+.main-content strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.main-content em {
+  color: var(--ink-soft);
+}
+
+/* ---------- Links ---------- */
+
+.main-content a:not(.btn) {
+  color: var(--oxblood) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(139,46,31,0.35);
+  padding-bottom: 1px;
+  transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.main-content a:not(.btn):hover {
+  color: var(--oxblood-deep) !important;
+  border-bottom-color: var(--oxblood);
+  background: rgba(217,181,116,0.18);
+}
+
+/* ---------- Inline code ---------- */
+
+.main-content code,
+.main-content kbd {
+  font-family: var(--mono) !important;
+  font-size: 0.86em !important;
+  background: rgba(26,20,16,0.06) !important;
+  color: var(--oxblood-deep) !important;
+  padding: 0.1em 0.4em !important;
+  border: 1px solid rgba(26,20,16,0.08) !important;
+  border-radius: 0 !important;
+}
+
+/* ---------- Fenced code blocks ---------- */
+
+div.highlighter-rouge,
+figure.highlight,
+.main-content div.highlight,
+.main-content pre.highlight,
+.main-content pre {
+  background: var(--ink) !important;
+  background-image:
+    linear-gradient(180deg, #211710 0%, #100a06 100%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 2px, transparent 2px 4px) !important;
+  background-blend-mode: normal, overlay;
+  color: var(--paper) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 1.5rem 0 !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+  position: relative;
+}
+
+div.highlighter-rouge {
+  border-left: 3px solid var(--gold) !important;
+}
+
+.main-content div.highlight,
+.main-content pre.highlight,
+.main-content pre {
+  padding: 18px 22px !important;
+  font-family: var(--mono) !important;
+  font-size: 0.85rem !important;
+  line-height: 1.65 !important;
+  overflow-x: auto !important;
+  margin: 0 !important;
+}
+
+/* Nested .highlight inside .highlighter-rouge — strip the doubled box */
+div.highlighter-rouge div.highlight,
+div.highlighter-rouge pre.highlight {
+  background: transparent !important;
+  background-image: none !important;
+  margin: 0 !important;
+}
+
+div.highlighter-rouge::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 6px; right: 12px;
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(217,181,116,0.5);
+}
+
+.main-content pre code,
+.highlight code {
+  background: transparent !important;
+  color: var(--paper) !important;
+  border: 0 !important;
+  padding: 0 !important;
+  font-size: inherit !important;
+}
+
+/* Syntax highlighting — warm tones over dark spine */
+.highlight .c,  .highlight .c1, .highlight .cm { color: #8a7a66; font-style: italic; } /* comments */
+.highlight .k,  .highlight .kd, .highlight .kn, .highlight .kr { color: #d9b574; }    /* keywords — gold */
+.highlight .s,  .highlight .s1, .highlight .s2, .highlight .sb { color: #e8a99a; }    /* strings — pale oxblood */
+.highlight .n,  .highlight .nb { color: var(--paper); }
+.highlight .nf, .highlight .nc { color: #f0c97a; }                                     /* functions/classes */
+.highlight .mi, .highlight .mf, .highlight .mh { color: #c7a574; }                     /* numbers */
+.highlight .o,  .highlight .p  { color: rgba(241,231,208,0.7); }                       /* operators */
+.highlight .nt { color: #d9b574; }                                                     /* tags */
+.highlight .na { color: #e8a99a; }                                                     /* attributes */
+
+/* ---------- Tables (printed-page ledger) ---------- */
+
+.main-content table {
+  width: 100% !important;
+  margin: 1.75rem 0 !important;
+  border: 0 !important;
+  border-top: 2px solid var(--ink) !important;
+  border-bottom: 2px solid var(--ink) !important;
+  border-collapse: collapse !important;
+  background: transparent !important;
+}
+
+.main-content thead {
+  background: transparent !important;
+  border-bottom: 1px solid var(--ink) !important;
+}
+
+.main-content th {
+  font-family: var(--mono) !important;
+  font-size: 0.66rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.2em !important;
+  text-transform: uppercase !important;
+  color: var(--ink-soft) !important;
+  text-align: left !important;
+  padding: 12px 16px !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.main-content td {
+  padding: 12px 16px !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(26,20,16,0.08) !important;
+  background: transparent !important;
+  vertical-align: top;
+  font-family: var(--serif) !important;
+}
+
+.main-content tbody tr:last-child td {
+  border-bottom: 0 !important;
+}
+
+.main-content tbody tr:hover {
+  background: rgba(217,181,116,0.12) !important;
+}
+
+/* Inline code inside tables shouldn't have a box — they're labels */
+.main-content td code {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  color: var(--ink) !important;
+}
+
+/* ---------- Blockquotes (margin notes) ---------- */
+
+.main-content blockquote {
+  margin: 1.75rem 0 !important;
+  padding: 6px 0 6px 24px !important;
+  border-left: 3px solid var(--gold) !important;
+  background: transparent !important;
+  font-family: var(--serif) !important;
+  font-style: italic !important;
+  font-size: 1.05rem !important;
+  color: var(--ink-soft) !important;
+  position: relative;
+}
+
+.main-content blockquote::before {
+  content: "";
+  position: absolute;
+  left: -3px; top: -8px;
+  width: 3px; height: 8px;
+  background: var(--oxblood);
+}
+
+.main-content blockquote p { margin: 0.3em 0 !important; }
+
+/* ---------- Lists ---------- */
+
+.main-content ul,
+.main-content ol {
+  padding-left: 1.5em !important;
+}
+
+.main-content ul > li::marker {
+  color: var(--oxblood);
+  content: "❦  ";
+  font-size: 0.7em;
+}
+
+.main-content ol > li::marker {
+  color: var(--gold);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.main-content li > p { margin: 0.25em 0; }
+
+/* ---------- Horizontal rule ---------- */
+
+.main-content hr {
+  border: 0 !important;
+  height: 22px !important;
+  margin: 2.5rem auto !important;
+  background: none !important;
+  text-align: center;
+  position: relative;
+}
+
+.main-content hr::after {
+  content: "✦ · ✦ · ✦";
+  position: absolute;
+  left: 50%; top: 0;
+  transform: translateX(-50%);
+  color: var(--gold);
+  font-size: 0.85rem;
+  letter-spacing: 0.4em;
+}
+
+/* ---------- Search (lives in main-header) ---------- */
+
+.search {
+  background: transparent !important;
+  position: relative !important;
+  flex: 1 !important;
+  max-width: 420px;
+  height: 36px !important;
+  padding: 0 !important;
+}
+
+.search-input-wrap {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 1px solid rgba(26,20,16,0.18) !important;
+  border-radius: 0 !important;
+  height: 36px !important;
+  position: relative !important;
+  width: 100% !important;
+}
+
+.search-input-wrap:focus-within {
+  border-color: var(--oxblood) !important;
+  box-shadow: none !important;
+}
+
+.search-input {
+  font-family: var(--mono) !important;
+  font-size: 0.74rem !important;
+  letter-spacing: 0.06em !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  color: var(--ink) !important;
+  padding: 8px 14px 8px 36px !important;
+  box-shadow: none !important;
+  height: 100% !important;
+}
+
+.search-input::placeholder {
+  color: var(--ink-faded) !important;
+  font-style: italic;
+  font-family: var(--serif) !important;
+  letter-spacing: 0;
+}
+
+.search-input:focus {
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+.search-icon {
+  color: var(--oxblood) !important;
+  fill: var(--oxblood) !important;
+}
+
+.search-active .search-input-wrap {
+  border-color: var(--oxblood) !important;
+  box-shadow: none !important;
+}
+
+.search-results {
+  background: var(--paper) !important;
+  border: 1px solid var(--ink) !important;
+  box-shadow: 0 12px 32px -8px rgba(26,20,16,0.35) !important;
+  border-radius: 0 !important;
+}
+
+.search-result {
+  border-bottom: 1px solid rgba(26,20,16,0.08) !important;
+}
+
+.search-result-title {
+  font-family: var(--serif) !important;
+  color: var(--ink) !important;
+}
+
+.search-result-rel-url {
+  font-family: var(--mono) !important;
+  font-size: 0.68rem !important;
+  color: var(--ink-faded) !important;
+}
+
+/* ---------- Site footer ---------- */
+
+.site-footer {
+  font-family: var(--mono) !important;
+  font-size: 0.65rem !important;
+  letter-spacing: 0.18em !important;
+  text-transform: uppercase !important;
+  color: var(--ink-faded) !important;
+  border-top: 1px solid rgba(26,20,16,0.15) !important;
+  padding-top: 1.5rem !important;
+  margin-top: 4rem !important;
+  background: transparent !important;
+}
+
+.site-footer a {
+  color: var(--oxblood) !important;
+}
+
+/* ---------- Breadcrumb / TOC ---------- */
+
+.breadcrumb-nav {
+  margin-bottom: 1.5rem;
+}
+
+.breadcrumb-nav-list-item {
+  font-family: var(--mono) !important;
+  font-size: 0.62rem !important;
+  letter-spacing: 0.2em !important;
+  text-transform: uppercase !important;
+}
+
+.breadcrumb-nav-list-item a {
+  color: var(--ink-faded) !important;
+  border: 0 !important;
+}
+
+/* ---------- Selection ---------- */
+
+::selection {
+  background: var(--gold-soft);
+  color: var(--ink);
+}
+
+/* ---------- Scrollbars (webkit) ---------- */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(26,20,16,0.2); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: rgba(26,20,16,0.35); }
+
+.side-bar ::-webkit-scrollbar-thumb { background: rgba(217,181,116,0.2); }
+.side-bar ::-webkit-scrollbar-thumb:hover { background: rgba(217,181,116,0.4); }
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 800px) {
+  .site-footer {
+    display: none !important;
+  }
+  .main-header {
+    height: auto !important;
+    padding: 22px !important;
+  }
+  .main-content {
+    padding: 32px 22px 64px !important;
+    font-size: 1rem !important;
+  }
+  .main-content h1 { font-size: 2.1rem !important; }
+  .main-content h2 { font-size: 1.35rem !important; }
+  .main-content h2::before { display: none; }
+}
+
+@media (min-width: 50rem) {
+  .side-bar {
+    position: fixed !important;
+    height: 100vh !important;
+  }
+}
+
+/* Override just-the-docs button styles where they appear */
+.btn,
+.btn-primary,
+.btn-outline {
+  font-family: var(--mono) !important;
+  font-size: 0.7rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.18em !important;
+  text-transform: uppercase !important;
+  border-radius: 0 !important;
+  padding: 10px 18px !important;
+  background: var(--ink) !important;
+  color: var(--paper) !important;
+  border: 1px solid var(--ink) !important;
+  box-shadow: none !important;
+  transition: background 0.2s ease, color 0.2s ease !important;
+}
+
+.btn:hover,
+.btn-primary:hover,
+.btn-outline:hover {
+  background: var(--oxblood) !important;
+  border-color: var(--oxblood) !important;
+  color: var(--paper) !important;
+}
