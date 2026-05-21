@@ -1,24 +1,106 @@
-import { LogIn, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   ApiError,
   changePassword,
   createUser,
   deleteUser,
+  getServerUrl,
   listUsers,
   login,
+  pingServer,
+  setServerUrl,
   setupAdmin
 } from "./api";
 import type { AuthUser } from "./types";
 
 type AuthMode = "setup" | "login";
 
+export function ServerSetup({
+  onConnected,
+  onCancel
+}: {
+  onConnected: () => void;
+  onCancel?: () => void;
+}) {
+  const [url, setUrl] = useState(() => getServerUrl());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await pingServer(url);
+      setServerUrl(url);
+      onConnected();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not reach that server.";
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-shell">
+      <form className="auth-card" onSubmit={submit}>
+        <span className="eyebrow">
+          <Network size={13} /> Connect to a server
+        </span>
+        <h1>Find your library</h1>
+        <p>
+          Enter the address of your Operalibre server &mdash; an IP and port, or a full URL.
+          We&rsquo;ll verify it can be reached before continuing.
+        </p>
+
+        <label>
+          <span>Server address</span>
+          <input
+            type="text"
+            value={url}
+            placeholder="http://192.168.1.10:4000"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(event) => setUrl(event.currentTarget.value)}
+            required
+            autoFocus
+          />
+        </label>
+
+        <p className="auth-hint">
+          <Globe size={12} /> Examples: <code>192.168.1.10:4000</code>, <code>localhost:4000</code>,
+          <code>https://books.example.com</code>
+        </p>
+
+        {error ? <p className="auth-error">{error}</p> : null}
+
+        <button type="submit" className="auth-submit" disabled={busy}>
+          {busy ? "Testing…" : "Test & connect"}
+        </button>
+
+        {onCancel ? (
+          <button type="button" className="auth-secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+        ) : null}
+      </form>
+    </main>
+  );
+}
+
 export function AuthGate({
   mode,
-  onAuthenticated
+  onAuthenticated,
+  onChangeServer
 }: {
   mode: AuthMode;
   onAuthenticated: (token: string, user: AuthUser) => void;
+  onChangeServer?: () => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -108,6 +190,15 @@ export function AuthGate({
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Working…" : isSetup ? "Create administrator" : "Sign in"}
         </button>
+
+        {onChangeServer ? (
+          <p className="auth-server-meta">
+            Connected to <code>{getServerUrl()}</code>
+            <button type="button" className="auth-linklike" onClick={onChangeServer}>
+              Change server
+            </button>
+          </p>
+        ) : null}
       </form>
     </main>
   );
