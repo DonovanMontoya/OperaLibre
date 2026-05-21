@@ -2,6 +2,12 @@
 
 A private audiobook streaming app with a Rust media server and an iOS-ready web frontend. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
 
+## License
+
+This project is source-available for personal and noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+Commercial use, resale, paid hosting, or inclusion in a paid product requires a separate commercial license from the copyright holder.
+
 ## What is included
 
 - Library scanning for `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff`.
