@@ -221,3 +221,7 @@ export function mediaUrl(path: string) {
 export function bookDownloadUrl(bookId: string) {
   return `${API_BASE}${appendToken(`/api/books/${bookId}/download`)}`;
 }
+
+export function readalongUrl(path: string) {
+  return `${API_BASE}${appendToken(path)}`;
+}

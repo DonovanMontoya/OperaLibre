@@ -48,6 +48,7 @@ use walkdir::WalkDir;
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
+const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 const SESSION_COOKIE_NAME: &str = "audiobook_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 
@@ -171,6 +172,7 @@ struct AuthStatus {
 struct LibraryState {
     books: Vec<Book>,
     track_paths: HashMap<String, PathBuf>,
+    reading_paths: HashMap<String, PathBuf>,
     cover_art: HashMap<String, EmbeddedImage>,
 }
 
@@ -201,10 +203,21 @@ struct Book {
     genres: Vec<String>,
     published_date: Option<String>,
     asin: Option<String>,
+    reading_file: Option<ReadingFile>,
     chapters: Vec<Chapter>,
     metadata: MetadataSummary,
     tracks: Vec<Track>,
     progress: Option<BookProgress>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingFile {
+    id: String,
+    file_name: String,
+    extension: String,
+    content_type: String,
+    url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -671,6 +684,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/cover", get(get_cover_art))
+        .route("/api/books/{book_id}/readalong", get(get_reading_file))
         .route(
             "/api/books/{book_id}/progress",
             get(get_progress).put(update_progress),
@@ -993,6 +1007,32 @@ async fn get_cover_art(
         .body(Body::from(cover.data.clone()))?)
 }
 
+async fn get_reading_file(
+    State(state): State<AppState>,
+    Path(book_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let file_path = {
+        let library = state.library.read().await;
+        let book = library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))?;
+        let reading_file = book
+            .reading_file
+            .as_ref()
+            .ok_or(ApiError::not_found("Readalong file not found"))?;
+        library
+            .reading_paths
+            .get(&reading_file.id)
+            .cloned()
+            .ok_or(ApiError::not_found("Readalong path not found"))?
+    };
+
+    serve_file_response(&file_path, headers, None).await
+}
+
 async fn get_progress(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1083,13 +1123,21 @@ async fn stream_track(
             .ok_or(ApiError::not_found("Track path not found"))?
     };
 
-    let metadata = fs::metadata(&file_path).await?;
+    serve_file_response(&file_path, headers, None).await
+}
+
+async fn serve_file_response(
+    file_path: &FsPath,
+    headers: HeaderMap,
+    content_disposition: Option<String>,
+) -> Result<Response, ApiError> {
+    let metadata = fs::metadata(file_path).await?;
     let file_size = metadata.len();
     if file_size == 0 {
         return Err(ApiError::range_not_satisfiable(file_size));
     }
 
-    let content_type = mime_guess::from_path(&file_path)
+    let content_type = mime_guess::from_path(file_path)
         .first_or_octet_stream()
         .to_string();
 
@@ -1103,7 +1151,7 @@ async fn stream_track(
         None => (StatusCode::OK, 0, file_size - 1),
     };
 
-    let mut file = fs::File::open(&file_path).await?;
+    let mut file = fs::File::open(file_path).await?;
     file.seek(SeekFrom::Start(start)).await?;
     let stream = ReaderStream::new(file.take(end - start + 1));
     let body = Body::from_stream(stream);
@@ -1116,6 +1164,9 @@ async fn stream_track(
 
     if status == StatusCode::PARTIAL_CONTENT {
         response = response.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));
+    }
+    if let Some(content_disposition) = content_disposition {
+        response = response.header(axum::http::header::CONTENT_DISPOSITION, content_disposition);
     }
 
     Ok(response.body(body)?)
@@ -1267,6 +1318,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let files = walk_audio_files(&state.library_root);
     let groups = group_files_into_books(&state.library_root, files);
     let mut track_paths = HashMap::new();
+    let mut reading_paths = HashMap::new();
     let mut cover_art = HashMap::new();
     let mut books = Vec::new();
 
@@ -1363,6 +1415,10 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
         }
+        let reading_file = find_reading_file(&book_id, &group_key, &grouped_files, &title);
+        if let Some(reading_file) = reading_file.as_ref() {
+            reading_paths.insert(reading_file.file.id.clone(), reading_file.path.clone());
+        }
 
         books.push(Book {
             id: book_id,
@@ -1376,6 +1432,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             genres: metadata_summary.genres.clone(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
+            reading_file: reading_file.map(|reading_file| reading_file.file),
             chapters: book_chapters,
             metadata: metadata_summary,
             tracks,
@@ -1386,8 +1443,98 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut library = state.library.write().await;
     library.books = books;
     library.track_paths = track_paths;
+    library.reading_paths = reading_paths;
     library.cover_art = cover_art;
     Ok(())
+}
+
+struct DiscoveredReadingFile {
+    file: ReadingFile,
+    path: PathBuf,
+}
+
+fn find_reading_file(
+    book_id: &str,
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    book_title: &str,
+) -> Option<DiscoveredReadingFile> {
+    let is_folder_book = group_key.is_dir();
+    let search_dir = if is_folder_book {
+        group_key.to_path_buf()
+    } else {
+        group_key.parent()?.to_path_buf()
+    };
+    let audio_stems = grouped_files
+        .iter()
+        .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
+        .map(normalize_match_key)
+        .collect::<Vec<_>>();
+    let group_stem = group_key
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(normalize_match_key);
+    let title_key = normalize_match_key(book_title);
+
+    let mut candidates = WalkDir::new(&search_dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| is_supported_reading_file(path))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| natural_path_key(a).cmp(&natural_path_key(b)));
+
+    let selected = candidates
+        .iter()
+        .find(|path| {
+            let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            let stem_key = normalize_match_key(stem);
+            Some(&stem_key) == group_stem.as_ref()
+                || stem_key == title_key
+                || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
+        })
+        .or_else(|| is_folder_book.then(|| candidates.first()).flatten())?;
+
+    let extension = selected
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let file_name = selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("readalong")
+        .to_string();
+    let id = stable_id(&selected.to_string_lossy());
+    let content_type = mime_guess::from_path(selected)
+        .first_or_octet_stream()
+        .to_string();
+
+    Some(DiscoveredReadingFile {
+        path: selected.clone(),
+        file: ReadingFile {
+            id,
+            file_name,
+            extension,
+            content_type,
+            url: format!("/api/books/{book_id}/readalong"),
+        },
+    })
+}
+
+fn is_supported_reading_file(path: &FsPath) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            READING_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
 }
 
 fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {

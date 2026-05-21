@@ -21,10 +21,19 @@ export type Book = {
   genres: string[];
   publishedDate: string | null;
   asin: string | null;
+  readingFile: ReadingFile | null;
   chapters: Chapter[];
   metadata: MetadataSummary;
   tracks: Track[];
   progress: BookProgress | null;
+};
+
+export type ReadingFile = {
+  id: string;
+  fileName: string;
+  extension: string;
+  contentType: string;
+  url: string;
 };
 
 export type BookProgress = {

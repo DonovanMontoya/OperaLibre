@@ -10,6 +10,7 @@ A private audiobook streaming app with a Rust media server and an iOS-ready web 
 - Embedded cover art extraction and `/api/books/:bookId/cover` serving.
 - Rich tag extraction for album/title, subtitle, author, narrator, publisher, dates, genres, language, description, and raw tag fields.
 - Chapter extraction from M4A/M4B/MP4 chapter tracks or chapter lists, MP3 ID3 `CHAP` frames, and multi-file track boundaries.
+- Readalong file detection and inline reading for `.epub`, `.pdf`, `.txt`, `.html`, and `.htm` companion files stored beside an audiobook.
 - Playback position sync.
 - Playback speed controls.
 - 15-second rewind and 30-second forward controls.
@@ -59,10 +60,14 @@ Each folder is treated as one book:
   /Book One
     01 Opening.mp3
     02 Chapter 1.mp3
+    Book One.pdf
   /Book Two.m4b
+  /Book Two.epub
 ```
 
 A single audio file directly in the root is treated as its own book.
+
+For readalong mode, place a supported companion file next to the audiobook. Folder-based books use a same-name file when present and otherwise use the first supported document in that book folder. Single-file books in the library root require a same-stem companion file, such as `Book Two.m4b` and `Book Two.epub`.
 
 ## Optional Libation / Audible import
 
@@ -103,4 +108,5 @@ The server requires sign-in before any audiobook data is exposed. The first brow
 - Chapter extraction for `.m4b` chapter metadata.
 - Cover art extraction and caching.
 - Bookmarks, clips, notes, and listening history.
+- Word-level readalong sync using generated alignment sidecars that map audiobook timestamps to EPUB text locations and highlight the active word or sentence.
 - Queue, collections, and search.

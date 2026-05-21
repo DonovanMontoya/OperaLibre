@@ -10,10 +10,11 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",
-    "vite": "^6.3.5",
+    "epubjs": "^0.3.93",
+    "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "lucide-react": "^0.511.0"
+    "vite": "^6.3.5"
   },
   "devDependencies": {
     "@types/react": "^19.1.5",
