@@ -12,7 +12,7 @@ import type {
 } from "./types";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
-const TOKEN_STORAGE_KEY = "audiobook.authToken";
+const TOKEN_STORAGE_KEY = "operalibre.authToken";
 
 function defaultApiBase() {
   if (typeof window === "undefined") {

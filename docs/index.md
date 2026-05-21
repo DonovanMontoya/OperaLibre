@@ -1,10 +1,10 @@
 ---
 layout: home
-title: Audiobook Serving
+title: OperaLibre
 nav_order: 1
 ---
 
-# Audiobook Serving
+# OperaLibre
 
 A private, self-hosted audiobook streaming server with an installable web reader. Point it at a folder of audiobooks and stream them to any browser on your network with per-reader progress, chapter navigation, readalong, and optional Libation/Audible import.
 

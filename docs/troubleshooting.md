@@ -72,8 +72,8 @@ journalctl -u audiobook -f
 With `launchd`, route logs in the plist:
 
 ```xml
-<key>StandardOutPath</key><string>/Users/you/audiobook/server.log</string>
-<key>StandardErrorPath</key><string>/Users/you/audiobook/server.err</string>
+<key>StandardOutPath</key><string>/Users/you/operalibre/server.log</string>
+<key>StandardErrorPath</key><string>/Users/you/operalibre/server.err</string>
 ```
 
 ## Filing a bug
@@ -81,7 +81,7 @@ With `launchd`, route logs in the plist:
 Useful info to include:
 
 - Operating system and architecture
-- Output of `audiobook-server --version` (or the commit hash you built from)
+- Output of `operalibre-server --version` (or the commit hash you built from)
 - Relevant `server.config` (redact paths if needed)
 - The first few hundred lines of server output around the failure
 - A minimal example of the library layout that triggers the bug

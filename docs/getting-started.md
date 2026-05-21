@@ -21,8 +21,8 @@ This guide walks you from a fresh clone to streaming your first audiobook.
 ## 1. Clone and install
 
 ```bash
-git clone https://github.com/<you>/audiobook-serving.git
-cd audiobook-serving
+git clone https://github.com/<you>/operalibre.git
+cd operalibre
 npm install
 ```
 
@@ -80,7 +80,7 @@ npm run build
 
 This produces:
 
-- A release Rust binary at `apps/server/target/release/audiobook-server`
+- A release Rust binary at `apps/server/target/release/operalibre-server`
 - A static web bundle at `apps/web/dist/`
 
 See [Deployment](deployment.md) for putting both behind a single port on a home server.

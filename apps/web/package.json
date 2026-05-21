@@ -1,5 +1,5 @@
 {
-  "name": "@audiobook/web",
+  "name": "@operalibre/web",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
