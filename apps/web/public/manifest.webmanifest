@@ -1,0 +1,10 @@
+{
+  "name": "Audiobook Serving",
+  "short_name": "Audiobooks",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#171717",
+  "theme_color": "#171717",
+  "description": "A private audiobook streaming app for a home library.",
+  "icons": []
+}

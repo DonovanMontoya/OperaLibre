@@ -1,0 +1,10 @@
+node_modules
+dist
+target
+*.tsbuildinfo
+.DS_Store
+.env
+data
+library
+Library
+.idea
