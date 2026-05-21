@@ -40,6 +40,10 @@ The server runs on [http://localhost:4000](http://localhost:4000). On another de
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
 
+### Development tools
+
+This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control with the [JJ-VSC](https://github.com/jujutsu-vcs/jj-vsc) extension for VS Code integration.
+
 ## Server config
 
 The server reads `server.config` from the repo root by default. It is a plain `key = value` file:
