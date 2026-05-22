@@ -56,7 +56,11 @@ For production deployments, the simplest custom-client setup is to serve the fro
 
 ### Development tools
 
-This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control with the [JJ-VSC](https://github.com/jujutsu-vcs/jj-vsc) extension for VS Code integration.
+This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control with the [JJ-VSC](https://github.com/jujutsu-vcs/jj-vsc) extension for VS Code integration. It's recommended that you clone with 
+
+```bash
+jj git clone https://github.com/DonovanMontoya/OperaLibre.git
+```
 
 ## Server config
 
