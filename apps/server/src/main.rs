@@ -2220,12 +2220,11 @@ impl LibationConfig {
     }
 
     fn command_args(&self, args: Vec<String>) -> Vec<String> {
-        let mut command_args = Vec::new();
+        let mut command_args = args;
         if let Some(libation_files_dir) = &self.libation_files_dir {
             command_args.push("--libationFiles".to_string());
             command_args.push(libation_files_dir.to_string_lossy().to_string());
         }
-        command_args.extend(args);
         command_args
     }
 }
