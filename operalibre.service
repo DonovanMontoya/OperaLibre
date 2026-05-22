@@ -1,0 +1,14 @@
+[Unit]
+Description=OperaLibre audiobook server
+After=network.target
+
+[Service]
+Type=simple
+User=donovan
+WorkingDirectory=/srv/OperaLibre
+ExecStart=/srv/OperaLibre/apps/server/target/release/operalibre-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

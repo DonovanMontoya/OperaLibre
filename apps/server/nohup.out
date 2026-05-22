@@ -1,0 +1,4 @@
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/operalibre-server app.log 2`
+[2m2026-05-21T23:53:03.978855Z[0m [32m INFO[0m [2moperalibre_server[0m[2m:[0m server configuration loaded [3mlibrary_root[0m[2m=[0m/srv/OperaLibre/apps/server/library [3mdata_dir[0m[2m=[0m/srv/OperaLibre/apps/server/data
+[2m2026-05-21T23:53:03.979385Z[0m [32m INFO[0m [2moperalibre_server[0m[2m:[0m server listening on http://0.0.0.0:4000
