@@ -2,6 +2,8 @@
 
 A private audiobook streaming app with a Rust media server and an iOS-ready web frontend. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
 
+OperaLibre is also designed to work as a headless audiobook server. The included React/Vite web app is the reference frontend, but the Rust server exposes an HTTP API that other web, mobile, desktop, or native clients can build against.
+
 ## License
 
 This project is source-available for personal and noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
@@ -39,6 +41,18 @@ Open [http://localhost:5173](http://localhost:5173).
 The server runs on [http://localhost:4000](http://localhost:4000). On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall.
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
+
+## Custom frontends
+
+The server owns library scanning, authentication, metadata extraction, cover art, readalong files, progress sync, downloads, and byte-range audio streaming. Frontends can treat it as a standalone API/media server and implement their own browsing, playback, and device UX.
+
+- Use `POST /api/auth/login` to obtain a session token.
+- Send the token as `Authorization: Bearer ...` for JSON API requests.
+- Add the token as `?token=...` for media URLs used directly by `<audio>`, `<img>`, or download links.
+- Stream audio from the `streamUrl` returned by book detail responses; the server supports HTTP range requests for seeking.
+- See [docs/api.md](docs/api.md) for the current endpoint list and response conventions.
+
+For production deployments, the simplest custom-client setup is to serve the frontend and API from the same origin through the Rust server or a reverse proxy. If they are served from different origins, review the server CORS behavior and proxy configuration before exposing it outside a trusted network.
 
 ### Development tools
 

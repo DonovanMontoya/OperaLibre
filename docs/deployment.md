@@ -22,6 +22,8 @@ Produces:
 
 The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest, and assets. It can be served by the Rust server, a reverse proxy, or any static host that points API calls back at the server.
 
+You can also omit the bundled web app and run OperaLibre as a headless API/media server for a custom frontend. In that setup, keep the server binary, `server.config`, `data/`, and your audiobook library on the machine that performs scanning and streaming. The custom frontend only needs network access to the server API.
+
 ## Recommended layout on a home server
 
 ```text
@@ -124,6 +126,19 @@ Two notes when fronting with a proxy:
 
 1. **Keep range requests intact.** The `Range` header and `206 Partial Content` responses are what makes seeking through a multi-hour `.m4b` snappy. Cloudflare and similar services often handle this for you; some proxies need explicit configuration.
 2. **Disable response buffering for streams.** Long audio reads should not be buffered into memory before being sent to the client.
+
+## Custom frontends
+
+For custom clients, the most reliable production shape is still same-origin:
+
+```text
+https://books.example.com/        -> custom frontend static files
+https://books.example.com/api/... -> operalibre-server
+```
+
+That keeps cookies, bearer-token API calls, media URLs, and browser security behavior predictable. Different-origin deployments can work, but they require deliberate CORS and credential handling. Avoid exposing a permissive cross-origin API on an untrusted network.
+
+Client authors should treat the API as the contract and the bundled web app as a reference implementation. The important media convention is that JSON API calls can use `Authorization: Bearer ...`, while direct media elements such as `<audio>` and `<img>` should use the authenticated URLs with `?token=...`.
 
 ## iOS / Capacitor
 

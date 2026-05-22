@@ -7,6 +7,8 @@ nav_order: 7
 
 All endpoints are served by the Rust backend on `host:port` (default `0.0.0.0:4000`). With the exception of a small public surface, every endpoint requires an authenticated session.
 
+The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
+
 ## Authentication
 
 The web app obtains a session token via `POST /api/auth/login`. The token is sent on subsequent requests; streaming endpoints also accept the token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work.
@@ -48,9 +50,22 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `GET` | `/api/books/{book_id}/cover` | Cover art image (extracted from tags or sidecar). |
 | `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. |
+| `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
+| `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
+
+Progress updates use JSON with the current track and timing fields:
+
+```json
+{
+  "trackId": "track-id",
+  "positionSeconds": 123.4,
+  "bookPositionSeconds": 456.7,
+  "durationSeconds": 36000.0
+}
+```
 
 #### Libation (optional)
 
