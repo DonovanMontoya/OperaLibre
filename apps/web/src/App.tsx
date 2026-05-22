@@ -1919,27 +1919,7 @@ function MainApp({
                 {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
               </section>
             </div>
-
-            <section className="track-list-section">
-              <div className="track-list-header">
-                <span className="title-of-contents">Table of Contents</span>
-                <span className="section-label"><ListMusic size={13} /> {selectedBook.tracks.length} Chapters</span>
-              </div>
-              <div className="track-list">
-                {selectedBook.tracks.map((track, index) => (
-                  <button
-                    key={track.id}
-                    className={`track-row ${isViewingPlayingBook && track.id === currentTrack.id ? "active" : ""}`}
-                    onClick={() => selectTrack(track)}
-                  >
-                    <span className="num">{String(index + 1).padStart(2, "0")}</span>
-                    <strong>{track.title}</strong>
-                    <em>{formatTime(track.durationSeconds)}</em>
-                  </button>
-                ))}
-              </div>
-            </section>
-
+            
             {selectedBook.chapters.length > 0 ? (
               <section className="track-list-section">
                 <div className="track-list-header">
