@@ -339,6 +339,10 @@ button {
   gap: 8px;
 }
 
+.libation-actions button:last-child {
+  grid-column: 1 / -1;
+}
+
 .libation-actions button,
 .audible-row button {
   min-height: 34px;
@@ -2973,4 +2977,3 @@ select:focus {
     gap: 18px 24px;
   }
 }
-

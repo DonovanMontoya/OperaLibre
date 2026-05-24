@@ -678,6 +678,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/libation/books", get(list_libation_books))
         .route("/api/libation/sync", post(sync_libation_library))
         .route(
+            "/api/libation/liberate-all",
+            post(liberate_all_libation_books),
+        )
+        .route(
             "/api/libation/books/{asin}/liberate",
             post(liberate_libation_book),
         )
@@ -942,6 +946,127 @@ async fn liberate_libation_book(
                     "failed",
                     output.status.code(),
                     Some("Libation liberation failed.".to_string()),
+                )
+                .await;
+            }
+            Err(error) => {
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    None,
+                    Some(error.to_string()),
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(JobCreated { job_id }))
+}
+
+async fn liberate_all_libation_books(
+    State(state): State<AppState>,
+) -> Result<Json<JobCreated>, ApiError> {
+    let config = state.libation_config.clone();
+    if !config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
+        ));
+    }
+
+    let job_id = create_job(&state, "libation-liberate-all").await;
+    let state_for_job = state.clone();
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        update_job_output(
+            &state_for_job,
+            &job_id_for_task,
+            "Starting Libation library scan before downloading all books.\n",
+        )
+        .await;
+
+        let scan_result = run_libation(&config, vec!["scan".to_string()]).await;
+        match scan_result {
+            Ok(output) if output.status.success() => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+            }
+            Ok(output) => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    output.status.code(),
+                    Some("Libation scan failed.".to_string()),
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    None,
+                    Some(error.to_string()),
+                )
+                .await;
+                return;
+            }
+        }
+
+        update_job_output(
+            &state_for_job,
+            &job_id_for_task,
+            "\nStarting Libation download for all books.\n",
+        )
+        .await;
+
+        let books_override = format!("Books={}", config.library_root.to_string_lossy());
+        let liberate_result = run_libation(
+            &config,
+            vec![
+                "liberate".to_string(),
+                "--override".to_string(),
+                books_override,
+            ],
+        )
+        .await;
+
+        match liberate_result {
+            Ok(output) if output.status.success() => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                if let Err(error) = rescan_library(&state_for_job).await {
+                    update_job_finished(
+                        &state_for_job,
+                        &job_id_for_task,
+                        "failed",
+                        output.status.code(),
+                        Some(format!(
+                            "Downloads completed, but local rescan failed: {error}"
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "completed",
+                    output.status.code(),
+                    None,
+                )
+                .await;
+            }
+            Ok(output) => {
+                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    output.status.code(),
+                    Some("Libation download-all failed.".to_string()),
                 )
                 .await;
             }
