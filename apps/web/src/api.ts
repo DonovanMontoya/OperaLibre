@@ -273,6 +273,10 @@ export async function liberateLibationBook(asin: string) {
   });
 }
 
+export async function liberateAllLibationBooks() {
+  return request<JobCreated>("/api/libation/liberate-all", { method: "POST" });
+}
+
 export async function getJob(jobId: string) {
   return request<JobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }

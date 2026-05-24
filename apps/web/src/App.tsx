@@ -42,6 +42,7 @@ import {
   getProgress,
   getStoredToken,
   hasUserConfiguredServer,
+  liberateAllLibationBooks,
   liberateLibationBook,
   logout as apiLogout,
   mediaUrl,
@@ -138,6 +139,9 @@ function jobTitle(job: JobStatus) {
   }
   if (job.kind === "libation-liberate") {
     return "Audible download";
+  }
+  if (job.kind === "libation-liberate-all") {
+    return "Audible download all";
   }
   return job.kind;
 }
@@ -1290,6 +1294,26 @@ function MainApp({
     }
   }
 
+  async function startAllLiberation() {
+    setLibationError(null);
+    setLibationBooksLoaded(false);
+    try {
+      const created = await liberateAllLibationBooks();
+      setActiveJob({
+        id: created.jobId,
+        kind: "libation-liberate-all",
+        status: "running",
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        exitCode: null,
+        output: "Starting Audible library sync and download for all books.",
+        error: null
+      });
+    } catch {
+      setLibationError("Libation download-all could not be started.");
+    }
+  }
+
   return (
     <main className="shell">
       <audio
@@ -1496,6 +1520,14 @@ function MainApp({
               >
                 <CloudDownload size={13} />
                 <span>Sync</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void startAllLiberation()}
+                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
+              >
+                <Download size={13} />
+                <span>Download all</span>
               </button>
             </div>
 
@@ -1919,7 +1951,7 @@ function MainApp({
                 {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
               </section>
             </div>
-            
+
             {selectedBook.chapters.length > 0 ? (
               <section className="track-list-section">
                 <div className="track-list-header">
