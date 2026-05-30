@@ -16,6 +16,7 @@ import {
   ListMusic,
   LogOut,
   Pause,
+  Pencil,
   Play,
   RefreshCcw,
   RotateCcw,
@@ -51,11 +52,12 @@ import {
   saveProgress,
   setStoredToken,
   setUnauthorizedHandler,
-  syncLibationLibrary
+  syncLibationLibrary,
+  updateBookMetadata
 } from "./api";
 import { AuthGate, ServerSetup, UserManagementModal } from "./Auth";
 import { ProfilePage } from "./Profile";
-import type { AuthUser, Book, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
+import type { AuthUser, Book, BookMetadataUpdate, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
@@ -64,6 +66,16 @@ const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
+type MetadataEditorState = {
+  title: string;
+  author: string;
+  narrator: string;
+  publisher: string;
+  publishedDate: string;
+  genres: string;
+  asin: string;
+  description: string;
+};
 
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
@@ -86,6 +98,43 @@ function formatTime(value: number | null | undefined) {
     return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function metadataEditorFromBook(book: Book): MetadataEditorState {
+  return {
+    title: book.title,
+    author: book.author ?? "",
+    narrator: book.narrator ?? "",
+    publisher: book.metadata.publisher ?? "",
+    publishedDate: book.publishedDate ?? "",
+    genres: book.genres.join(", "),
+    asin: book.asin ?? "",
+    description: book.description ?? ""
+  };
+}
+
+function parseGenreInput(value: string) {
+  return value
+    .split(/[;,]/)
+    .map((genre) => genre.trim())
+    .filter(Boolean);
+}
+
+function metadataUpdateFromEditor(form: MetadataEditorState): BookMetadataUpdate {
+  return {
+    title: form.title.trim(),
+    author: form.author.trim(),
+    narrator: form.narrator.trim(),
+    publisher: form.publisher.trim(),
+    publishedDate: form.publishedDate.trim(),
+    genres: parseGenreInput(form.genres),
+    asin: form.asin.trim(),
+    description: form.description.trim()
+  };
 }
 
 function bookSubtitle(book: Book) {
@@ -715,6 +764,10 @@ function MainApp({
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [metadataEditOpen, setMetadataEditOpen] = useState(false);
+  const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
+  const [metadataSaving, setMetadataSaving] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -1269,8 +1322,8 @@ function MainApp({
         output: "Starting Libation library scan.",
         error: null
       });
-    } catch {
-      setLibationError("Libation sync could not be started.");
+    } catch (error) {
+      setLibationError(errorMessage(error, "Libation sync could not be started."));
     }
   }
 
@@ -1289,8 +1342,8 @@ function MainApp({
         output: `Starting liberation for ${book.title}.`,
         error: null
       });
-    } catch {
-      setLibationError(`Liberation could not be started for ${book.title}.`);
+    } catch (error) {
+      setLibationError(errorMessage(error, `Liberation could not be started for ${book.title}.`));
     }
   }
 
@@ -1309,8 +1362,42 @@ function MainApp({
         output: "Starting Audible library sync and download for all books.",
         error: null
       });
-    } catch {
-      setLibationError("Libation download-all could not be started.");
+    } catch (error) {
+      setLibationError(errorMessage(error, "Libation download-all could not be started."));
+    }
+  }
+
+  function openMetadataEditor(book: Book) {
+    setMetadataForm(metadataEditorFromBook(book));
+    setMetadataError(null);
+    setMetadataEditOpen(true);
+  }
+
+  async function saveMetadata(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedBook || !metadataForm) {
+      return;
+    }
+
+    const update = metadataUpdateFromEditor(metadataForm);
+    if (!update.title) {
+      setMetadataError("Title is required.");
+      return;
+    }
+
+    setMetadataSaving(true);
+    setMetadataError(null);
+    try {
+      const updatedBook = await updateBookMetadata(selectedBook.id, update);
+      setBooks((existing) =>
+        existing.map((book) => (book.id === updatedBook.id ? updatedBook : book))
+      );
+      setMetadataEditOpen(false);
+      setMetadataForm(null);
+    } catch (error) {
+      setMetadataError(errorMessage(error, "Book info could not be saved."));
+    } finally {
+      setMetadataSaving(false);
     }
   }
 
@@ -1699,6 +1786,17 @@ function MainApp({
                 <div className="heading-top">
                   <span className="eyebrow"><Bookmark size={13} /> Now Reading</span>
                   <div className="heading-actions">
+                    {currentUser.isAdmin ? (
+                      <button
+                        className="download-btn"
+                        type="button"
+                        onClick={() => openMetadataEditor(selectedBook)}
+                        aria-label={`Edit info for ${selectedBook.title}`}
+                      >
+                        <Pencil size={13} />
+                        <span>Edit Info</span>
+                      </button>
+                    ) : null}
                     {selectedBook.readingFile ? (
                       <button
                         className={`download-btn ${readalongOpen ? "active" : ""}`}
@@ -2030,6 +2128,131 @@ function MainApp({
             </button>
           </div>
         </aside>
+      ) : null}
+
+      {metadataEditOpen && metadataForm ? (
+        <div className="modal-scrim" role="presentation">
+          <form className="modal-card metadata-editor-card" onSubmit={saveMetadata}>
+            <div className="modal-head">
+              <h2><Pencil size={18} /> Edit Book Info</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close metadata editor"
+                onClick={() => {
+                  setMetadataEditOpen(false);
+                  setMetadataForm(null);
+                  setMetadataError(null);
+                }}
+                disabled={metadataSaving}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="metadata-edit-form">
+              <label className="wide">
+                <span>Title</span>
+                <input
+                  type="text"
+                  value={metadataForm.title}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, title: event.currentTarget.value })
+                  }
+                  required
+                />
+              </label>
+              <label>
+                <span>Author</span>
+                <input
+                  type="text"
+                  value={metadataForm.author}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, author: event.currentTarget.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Narrator</span>
+                <input
+                  type="text"
+                  value={metadataForm.narrator}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, narrator: event.currentTarget.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Publisher</span>
+                <input
+                  type="text"
+                  value={metadataForm.publisher}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, publisher: event.currentTarget.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Published date</span>
+                <input
+                  type="text"
+                  value={metadataForm.publishedDate}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, publishedDate: event.currentTarget.value })
+                  }
+                  placeholder="YYYY-MM-DD or year"
+                />
+              </label>
+              <label className="wide">
+                <span>Genres</span>
+                <input
+                  type="text"
+                  value={metadataForm.genres}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, genres: event.currentTarget.value })
+                  }
+                  placeholder="Fantasy, Adventure"
+                />
+              </label>
+              <label className="wide">
+                <span>Audible ASIN</span>
+                <input
+                  type="text"
+                  value={metadataForm.asin}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, asin: event.currentTarget.value })
+                  }
+                  placeholder="B012345678"
+                />
+              </label>
+              <label className="wide">
+                <span>Description</span>
+                <textarea
+                  value={metadataForm.description}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, description: event.currentTarget.value })
+                  }
+                  rows={7}
+                />
+              </label>
+            </div>
+
+            {metadataError ? <p className="metadata-edit-error">{metadataError}</p> : null}
+
+            <div className="metadata-edit-actions">
+              <button
+                type="button"
+                onClick={() => selectedBook && setMetadataForm(metadataEditorFromBook(selectedBook))}
+                disabled={metadataSaving || !selectedBook}
+              >
+                Reset
+              </button>
+              <button type="submit" disabled={metadataSaving}>
+                {metadataSaving ? "Saving..." : "Save Info"}
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
 
       {profileOpen ? (

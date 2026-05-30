@@ -28,6 +28,17 @@ export type Book = {
   progress: BookProgress | null;
 };
 
+export type BookMetadataUpdate = {
+  title: string;
+  author: string;
+  narrator: string;
+  description: string;
+  genres: string[];
+  publishedDate: string;
+  publisher: string;
+  asin: string;
+};
+
 export type ReadingFile = {
   id: string;
   fileName: string;

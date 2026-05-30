@@ -15,7 +15,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -59,8 +59,10 @@ struct AppState {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    metadata_overrides_file: PathBuf,
     libation_config: LibationConfig,
     library: Arc<RwLock<LibraryState>>,
+    metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
     jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
@@ -71,6 +73,25 @@ struct AppState {
 #[serde(transparent)]
 struct ActivityStore {
     by_user: HashMap<String, BTreeMap<String, f64>>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct MetadataOverrideStore {
+    books: HashMap<String, BookMetadataOverride>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookMetadataOverride {
+    title: Option<String>,
+    author: Option<String>,
+    narrator: Option<String>,
+    description: Option<String>,
+    genres: Option<Vec<String>>,
+    published_date: Option<String>,
+    publisher: Option<String>,
+    asin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +320,19 @@ struct ProgressUpdate {
     duration_seconds: Option<f64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookMetadataUpdate {
+    title: String,
+    author: Option<String>,
+    narrator: Option<String>,
+    description: Option<String>,
+    genres: Vec<String>,
+    published_date: Option<String>,
+    publisher: Option<String>,
+    asin: Option<String>,
+}
+
 #[derive(Default)]
 struct TrackMetadata {
     title: Option<String>,
@@ -432,6 +466,7 @@ struct ServerConfig {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    metadata_overrides_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
 }
@@ -466,6 +501,10 @@ impl ServerConfig {
         let activity_file = config_path_value(&values, &config_dir, "activity_file")
             .or_else(|| env_path_value("OPERALIBRE_ACTIVITY_FILE"))
             .unwrap_or_else(|| data_dir.join("activity.json"));
+        let metadata_overrides_file =
+            config_path_value(&values, &config_dir, "metadata_overrides_file")
+                .or_else(|| env_path_value("OPERALIBRE_METADATA_OVERRIDES_FILE"))
+                .unwrap_or_else(|| data_dir.join("metadata-overrides.json"));
 
         Ok(Self {
             host: config_string_value(&values, "host")
@@ -480,6 +519,7 @@ impl ServerConfig {
             users_file,
             sessions_file,
             activity_file,
+            metadata_overrides_file,
             libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
@@ -513,6 +553,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "progress_file",
         "users_file",
         "activity_file",
+        "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
     ];
@@ -628,6 +669,7 @@ async fn main() -> anyhow::Result<()> {
     let users_store = load_users_store(&config.users_file).await?;
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
+    let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
     if users_store.users.is_empty() {
         match fs::remove_file(&config.progress_file).await {
             Ok(_) => tracing::info!(
@@ -649,8 +691,10 @@ async fn main() -> anyhow::Result<()> {
         users_file: config.users_file.clone(),
         sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
+        metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_config: LibationConfig::from_server_config(&config),
         library: Arc::new(RwLock::new(LibraryState::default())),
+        metadata_overrides: Arc::new(RwLock::new(metadata_overrides)),
         jobs: Arc::new(RwLock::new(HashMap::new())),
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
@@ -687,6 +731,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
+        .route("/api/books/{book_id}/metadata", put(update_book_metadata))
         .route("/api/books/{book_id}/cover", get(get_cover_art))
         .route("/api/books/{book_id}/readalong", get(get_reading_file))
         .route(
@@ -1114,6 +1159,50 @@ async fn get_book(
     Ok(Json(book))
 }
 
+async fn update_book_metadata(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+    Json(payload): Json<BookMetadataUpdate>,
+) -> Result<Json<Book>, ApiError> {
+    require_admin(&auth)?;
+
+    let metadata_override = metadata_override_from_update(payload)?;
+    {
+        let library = state.library.read().await;
+        if !library
+            .books
+            .iter()
+            .any(|candidate| candidate.id == book_id)
+        {
+            return Err(ApiError::not_found("Book not found"));
+        }
+    }
+
+    {
+        let mut overrides = state.metadata_overrides.write().await;
+        overrides
+            .books
+            .insert(book_id.clone(), metadata_override.clone());
+        write_metadata_overrides(&state.metadata_overrides_file, &overrides).await?;
+    }
+
+    let updated_book = {
+        let mut library = state.library.write().await;
+        let book = library
+            .books
+            .iter_mut()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))?;
+        apply_book_metadata_override(book, &metadata_override);
+        book.clone()
+    };
+
+    Ok(Json(
+        book_with_progress(&state, &auth.id, updated_book).await?,
+    ))
+}
+
 async fn get_cover_art(
     State(state): State<AppState>,
     Path(book_id): Path<String>,
@@ -1438,9 +1527,95 @@ fn trailing_bracket_pair(value: &str) -> Option<(usize, usize)> {
         .map(|(open, _)| (open, close.0))
 }
 
+fn metadata_override_from_update(
+    update: BookMetadataUpdate,
+) -> Result<BookMetadataOverride, ApiError> {
+    let title = clean_metadata_text(&update.title);
+    if title.is_empty() {
+        return Err(ApiError::bad_request("Title is required."));
+    }
+
+    let asin = match update.asin {
+        Some(value) if clean_metadata_text(&value).is_empty() => Some(String::new()),
+        Some(value) => Some(
+            normalize_asin(&value)
+                .ok_or_else(|| ApiError::bad_request("ASIN must be a 10-character Audible id."))?,
+        ),
+        None => None,
+    };
+
+    Ok(BookMetadataOverride {
+        title: Some(title),
+        author: update.author.map(|value| clean_metadata_text(&value)),
+        narrator: update.narrator.map(|value| clean_metadata_text(&value)),
+        description: update.description.map(|value| clean_metadata_text(&value)),
+        genres: Some(clean_genre_list(update.genres)),
+        published_date: update
+            .published_date
+            .map(|value| clean_metadata_text(&value)),
+        publisher: update.publisher.map(|value| clean_metadata_text(&value)),
+        asin,
+    })
+}
+
+fn clean_genre_list(genres: Vec<String>) -> Vec<String> {
+    unique_strings(
+        genres
+            .into_iter()
+            .flat_map(|value| {
+                value
+                    .split([';', ','])
+                    .map(clean_metadata_text)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|value| !value.is_empty())
+            .collect(),
+    )
+}
+
+fn optional_override_value(value: &str) -> Option<String> {
+    let cleaned = clean_metadata_text(value);
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn apply_book_metadata_override(book: &mut Book, metadata_override: &BookMetadataOverride) {
+    if let Some(title) = metadata_override
+        .title
+        .as_deref()
+        .and_then(optional_override_value)
+    {
+        book.title = title;
+    }
+    if let Some(author) = metadata_override.author.as_deref() {
+        book.author = optional_override_value(author);
+    }
+    if let Some(narrator) = metadata_override.narrator.as_deref() {
+        book.narrator = optional_override_value(narrator);
+    }
+    if let Some(description) = metadata_override.description.as_deref() {
+        book.description = optional_override_value(description);
+        book.metadata.description = book.description.clone();
+    }
+    if let Some(genres) = metadata_override.genres.as_ref() {
+        book.genres = clean_genre_list(genres.clone());
+        book.metadata.genres = book.genres.clone();
+    }
+    if let Some(published_date) = metadata_override.published_date.as_deref() {
+        book.published_date = optional_override_value(published_date);
+        book.metadata.published_date = book.published_date.clone();
+    }
+    if let Some(publisher) = metadata_override.publisher.as_deref() {
+        book.metadata.publisher = optional_override_value(publisher);
+    }
+    if let Some(asin) = metadata_override.asin.as_deref() {
+        book.asin = optional_override_value(asin);
+    }
+}
+
 async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let files = walk_audio_files(&state.library_root);
     let groups = group_files_into_books(&state.library_root, files);
+    let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
     let mut cover_art = HashMap::new();
@@ -1543,8 +1718,8 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             reading_paths.insert(reading_file.file.id.clone(), reading_file.path.clone());
         }
 
-        books.push(Book {
-            id: book_id,
+        let mut book = Book {
+            id: book_id.clone(),
             title,
             author: metadata.iter().find_map(|item| item.author.clone()),
             narrator: metadata.iter().find_map(|item| item.narrator.clone()),
@@ -1560,7 +1735,11 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             metadata: metadata_summary,
             tracks,
             progress: None,
-        });
+        };
+        if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
+            apply_book_metadata_override(&mut book, metadata_override);
+        }
+        books.push(book);
     }
 
     let mut library = state.library.write().await;
@@ -2244,6 +2423,18 @@ async fn books_with_progress(state: &AppState, user_id: &str) -> Result<Vec<Book
         .collect())
 }
 
+async fn book_with_progress(
+    state: &AppState,
+    user_id: &str,
+    mut book: Book,
+) -> Result<Book, ApiError> {
+    let saved_progress = read_progress(&state.progress_file).await?;
+    book.progress = saved_progress
+        .get(&progress_key(user_id, &book.id))
+        .map(|progress| summarize_book_progress(&book, progress));
+    Ok(book)
+}
+
 fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
     let enriched = enrich_progress(book, progress);
     let duration = book.duration_seconds.or_else(|| {
@@ -2311,6 +2502,29 @@ async fn write_progress(
         fs::create_dir_all(parent).await?;
     }
     fs::write(progress_file, serde_json::to_vec_pretty(progress)?).await?;
+    Ok(())
+}
+
+async fn load_metadata_overrides(
+    metadata_overrides_file: &FsPath,
+) -> anyhow::Result<MetadataOverrideStore> {
+    match fs::read_to_string(metadata_overrides_file).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(MetadataOverrideStore::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_metadata_overrides(
+    metadata_overrides_file: &FsPath,
+    store: &MetadataOverrideStore,
+) -> Result<(), ApiError> {
+    if let Some(parent) = metadata_overrides_file.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(metadata_overrides_file, serde_json::to_vec_pretty(store)?).await?;
     Ok(())
 }
 

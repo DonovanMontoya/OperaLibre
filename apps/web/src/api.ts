@@ -2,6 +2,7 @@ import type {
   AuthStatus,
   AuthUser,
   Book,
+  BookMetadataUpdate,
   JobCreated,
   JobStatus,
   LibationBook,
@@ -235,6 +236,13 @@ export async function changePassword(
 
 export async function getBooks() {
   return request<Book[]>("/api/books");
+}
+
+export async function updateBookMetadata(bookId: string, metadata: BookMetadataUpdate) {
+  return request<Book>(`/api/books/${encodeURIComponent(bookId)}/metadata`, {
+    method: "PUT",
+    body: JSON.stringify(metadata)
+  });
 }
 
 export async function rescanLibrary() {
