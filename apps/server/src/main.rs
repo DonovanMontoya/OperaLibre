@@ -57,6 +57,8 @@ const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 const LOGIN_MAX_FAILURES: u32 = 5;
 const LOGIN_LOCKOUT_SECONDS: u64 = 60;
+const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
+const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -3556,7 +3558,7 @@ async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let username = normalize_username(&payload.username);
-    let throttle_key = username.to_lowercase();
+    let throttle_key = login_throttle_key(&username);
     {
         let mut attempts = state.login_attempts.lock().await;
         let now = unix_now_seconds();
@@ -3609,9 +3611,27 @@ async fn login(
     ))
 }
 
+/// Throttle keys come from unauthenticated input, so bound their length
+/// (valid usernames are at most 64 characters anyway) to keep hostile logins
+/// from bloating the attempts map with megabyte-long keys.
+fn login_throttle_key(username: &str) -> String {
+    username
+        .to_lowercase()
+        .chars()
+        .take(LOGIN_THROTTLE_KEY_MAX_CHARS)
+        .collect()
+}
+
 async fn record_login_failure(state: &AppState, throttle_key: &str) {
     let now = unix_now_seconds();
     let mut attempts = state.login_attempts.lock().await;
+    // A flood of unique bogus usernames within the lockout window can't grow
+    // the map without bound: stop tracking new names at the cap. Entries for
+    // already-tracked names keep counting, and stale ones are pruned on every
+    // login attempt.
+    if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
+        return;
+    }
     let entry = attempts
         .entry(throttle_key.to_string())
         .or_insert(LoginThrottle {
@@ -3992,6 +4012,14 @@ mod tests {
         mismatch.insert(super::IF_NONE_MATCH, "\"different\"".parse().unwrap());
         assert!(!if_none_match_matches(&mismatch, &etag));
         assert!(!if_none_match_matches(&HeaderMap::new(), &etag));
+    }
+
+    #[test]
+    fn login_throttle_key_is_bounded() {
+        let long_name = "A".repeat(10_000);
+        let key = super::login_throttle_key(&long_name);
+        assert_eq!(key.chars().count(), super::LOGIN_THROTTLE_KEY_MAX_CHARS);
+        assert_eq!(super::login_throttle_key(" Reader "), " reader ");
     }
 
     #[test]
