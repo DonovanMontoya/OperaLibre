@@ -289,6 +289,10 @@ export async function getJob(jobId: string) {
   return request<JobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
+export async function listJobs() {
+  return request<JobStatus[]>("/api/jobs");
+}
+
 function appendToken(path: string) {
   const token = getStoredToken();
   if (!token) {

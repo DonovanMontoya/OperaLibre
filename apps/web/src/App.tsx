@@ -45,6 +45,7 @@ import {
   hasUserConfiguredServer,
   liberateAllLibationBooks,
   liberateLibationBook,
+  listJobs,
   logout as apiLogout,
   mediaUrl,
   readalongUrl,
@@ -943,6 +944,20 @@ function MainApp({
       void loadLibationStatus();
     }
   }, [currentUser.isAdmin, loadLibationStatus]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin) {
+      return;
+    }
+    void listJobs()
+      .then((jobs) => {
+        const running = jobs.find((job) => job.status === "running");
+        if (running) {
+          setActiveJob((existing) => existing ?? running);
+        }
+      })
+      .catch(() => undefined);
+  }, [currentUser.isAdmin]);
 
   useEffect(() => {
     if (librarySource === "audible" && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
