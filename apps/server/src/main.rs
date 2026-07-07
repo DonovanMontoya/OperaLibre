@@ -15,7 +15,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -764,7 +764,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
-        .route("/api/auth/login", post(login));
+        .route("/api/auth/login", post(login))
+        // Catch-all so unknown API paths return a JSON 404 instead of
+        // falling through to the SPA fallback (or the auth middleware).
+        .route("/api/{*path}", any(api_not_found));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -856,6 +859,10 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn api_not_found() -> ApiError {
+    ApiError::not_found("Unknown API route")
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
