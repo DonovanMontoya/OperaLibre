@@ -59,6 +59,7 @@ libation_files_dir =
 | --- | --- | --- |
 | `host` | `0.0.0.0` | Interface to bind to. Use `127.0.0.1` to restrict access to the local machine, or `0.0.0.0` to accept LAN connections. |
 | `port` | `4000` | TCP port the API listens on. |
+| `allowed_origins` | *(empty)* | Comma-separated list of origins allowed to make cross-origin (CORS) requests, e.g. `https://books.example.com, http://192.168.1.20:5173`. When empty, the server reflects any requesting origin — convenient for development and custom frontends, but set this before exposing the API outside a trusted network. |
 
 ### Library
 

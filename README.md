@@ -52,7 +52,7 @@ The server owns library scanning, authentication, metadata extraction, cover art
 - Stream audio from the `streamUrl` returned by book detail responses; the server supports HTTP range requests for seeking.
 - See [docs/api.md](docs/api.md) for the current endpoint list and response conventions.
 
-For production deployments, the simplest custom-client setup is to serve the frontend and API from the same origin through the Rust server or a reverse proxy. If they are served from different origins, review the server CORS behavior and proxy configuration before exposing it outside a trusted network.
+For production deployments, the simplest custom-client setup is to serve the frontend and API from the same origin through the Rust server or a reverse proxy. If they are served from different origins, set `allowed_origins` in `server.config` to the frontend origins before exposing the server outside a trusted network; when it is unset, the server reflects any requesting origin.
 
 ### Development tools
 

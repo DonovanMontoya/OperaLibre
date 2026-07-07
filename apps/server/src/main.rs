@@ -481,6 +481,7 @@ struct ServerConfig {
     metadata_overrides_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
+    allowed_origins: Vec<String>,
 }
 
 impl ServerConfig {
@@ -536,6 +537,10 @@ impl ServerConfig {
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
                 .or_else(|| env_path_value("LIBATION_FILES_DIR")),
+            allowed_origins: config_string_value(&values, "allowed_origins")
+                .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
+                .map(parse_origin_list)
+                .unwrap_or_default(),
         })
     }
 }
@@ -568,6 +573,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
+        "allowed_origins",
     ];
     let mut values = HashMap::new();
 
@@ -651,6 +657,15 @@ fn env_path_value(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn parse_origin_list(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .map(|origin| origin.trim().trim_end_matches('/'))
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn resolve_config_path(config_dir: &FsPath, value: &str) -> PathBuf {
@@ -761,11 +776,30 @@ async fn main() -> anyhow::Result<()> {
             auth_middleware,
         ));
 
+    let allow_origin = if config.allowed_origins.is_empty() {
+        AllowOrigin::mirror_request()
+    } else {
+        let origins = config
+            .allowed_origins
+            .iter()
+            .map(|origin| {
+                origin.parse::<HeaderValue>().map_err(|error| {
+                    anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        tracing::info!(
+            origins = ?config.allowed_origins,
+            "CORS restricted to configured origins"
+        );
+        AllowOrigin::list(origins)
+    };
+
     let app = public_routes
         .merge(protected_routes)
         .layer(
             CorsLayer::new()
-                .allow_origin(AllowOrigin::mirror_request())
+                .allow_origin(allow_origin)
                 .allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
                 .allow_credentials(true),
@@ -3775,7 +3809,7 @@ impl From<axum::http::Error> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, clean_imported_title, normalize_asin, parse_range};
+    use super::{Session, clean_imported_title, normalize_asin, parse_origin_list, parse_range};
 
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {
@@ -3824,6 +3858,18 @@ mod tests {
         assert_eq!(normalize_asin("B002V1OF7"), None);
         assert_eq!(normalize_asin("1234567890"), None);
         assert_eq!(normalize_asin("B002V1OF7!"), None);
+    }
+
+    #[test]
+    fn parse_origin_list_splits_and_normalizes() {
+        assert_eq!(
+            parse_origin_list("https://a.example/, http://b.example:5173 ,,".to_string()),
+            vec![
+                "https://a.example".to_string(),
+                "http://b.example:5173".to_string()
+            ]
+        );
+        assert!(parse_origin_list("  ".to_string()).is_empty());
     }
 
     #[test]
