@@ -49,6 +49,8 @@ The web app exchanges a username + password for a session token. The token is se
 
 Tokens are random opaque strings. Sessions end on logout, account deletion, or 30 days after sign-in.
 
+Failed sign-ins are rate limited per username: after 5 consecutive failures, further attempts for that username are rejected for 60 seconds.
+
 ## Resetting a forgotten admin password
 
 Accounts are plain JSON on disk, so a lost admin password is recoverable:
