@@ -55,6 +55,8 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
+const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_LOCKOUT_SECONDS: u64 = 60;
 
 #[derive(Clone)]
 struct AppState {
@@ -74,6 +76,24 @@ struct AppState {
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
+    login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoginThrottle {
+    failures: u32,
+    last_failure: u64,
+}
+
+impl LoginThrottle {
+    fn is_locked(&self, now_seconds: u64) -> bool {
+        self.failures >= LOGIN_MAX_FAILURES
+            && now_seconds.saturating_sub(self.last_failure) < LOGIN_LOCKOUT_SECONDS
+    }
+
+    fn is_stale(&self, now_seconds: u64) -> bool {
+        now_seconds.saturating_sub(self.last_failure) >= LOGIN_LOCKOUT_SECONDS
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -728,6 +748,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
         progress_write_lock: Arc::new(Mutex::new(())),
+        login_attempts: Arc::new(Mutex::new(HashMap::new())),
     };
 
     rescan_library(&state).await?;
@@ -3535,6 +3556,21 @@ async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let username = normalize_username(&payload.username);
+    let throttle_key = username.to_lowercase();
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        let now = unix_now_seconds();
+        attempts.retain(|_, throttle| !throttle.is_stale(now));
+        if attempts
+            .get(&throttle_key)
+            .is_some_and(|throttle| throttle.is_locked(now))
+        {
+            return Err(ApiError::too_many_requests(
+                "Too many failed sign-in attempts. Try again in a minute.",
+            ));
+        }
+    }
+
     let matched_user = {
         let users = state.users.read().await;
         users
@@ -3548,11 +3584,14 @@ async fn login(
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
         let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password(&payload.password, &user.password_hash) {
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
+    state.login_attempts.lock().await.remove(&throttle_key);
 
     let token = create_session(&state, &user.id).await?;
     let mut headers = HeaderMap::new();
@@ -3568,6 +3607,22 @@ async fn login(
             user: UserPublic::from(&user),
         }),
     ))
+}
+
+async fn record_login_failure(state: &AppState, throttle_key: &str) {
+    let now = unix_now_seconds();
+    let mut attempts = state.login_attempts.lock().await;
+    let entry = attempts
+        .entry(throttle_key.to_string())
+        .or_insert(LoginThrottle {
+            failures: 0,
+            last_failure: 0,
+        });
+    if entry.is_stale(now) {
+        entry.failures = 0;
+    }
+    entry.failures += 1;
+    entry.last_failure = now;
 }
 
 async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
@@ -3776,6 +3831,13 @@ impl ApiError {
         }
     }
 
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -3841,7 +3903,7 @@ impl From<axum::http::Error> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        HeaderMap, Session, bytes_etag, clean_imported_title, if_none_match_matches,
+        HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
         normalize_asin, parse_origin_list, parse_range,
     };
 
@@ -3930,6 +3992,25 @@ mod tests {
         mismatch.insert(super::IF_NONE_MATCH, "\"different\"".parse().unwrap());
         assert!(!if_none_match_matches(&mismatch, &etag));
         assert!(!if_none_match_matches(&HeaderMap::new(), &etag));
+    }
+
+    #[test]
+    fn login_throttle_locks_after_max_failures() {
+        let now = 10_000;
+        let below_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES - 1,
+            last_failure: now,
+        };
+        assert!(!below_limit.is_locked(now));
+
+        let at_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES,
+            last_failure: now,
+        };
+        assert!(at_limit.is_locked(now));
+        assert!(at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS - 1));
+        assert!(!at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS));
+        assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
     }
 
     #[test]
