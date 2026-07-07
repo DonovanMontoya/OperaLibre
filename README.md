@@ -127,7 +127,7 @@ The server requires sign-in before any audiobook data is exposed. The first brow
 - Accounts are stored in `data/users.json` (configurable via `users_file`). Passwords are hashed with Argon2.
 - Playback progress is tracked per user, so each reader has their own bookmarks.
 - Administrators can add or remove readers, and reset any password, from the **Manage readers** menu under the avatar in the library pane.
-- Sessions live in memory. Restarting the server signs everyone out — they keep their progress and just need to log back in.
+- Sessions are stored in `data/sessions.json` and survive server restarts. They expire after 30 days, matching the session cookie lifetime.
 - Streaming, cover art, and zip download requests carry the session token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated.
 
 ## Next build slices

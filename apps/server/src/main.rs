@@ -34,7 +34,7 @@ use std::{
     env, io,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::{fs, process::Command, sync::RwLock};
@@ -133,8 +133,13 @@ struct UsersStore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session {
     user_id: String,
-    #[allow(dead_code)]
     created_at: u64,
+}
+
+impl Session {
+    fn is_expired(&self, now_seconds: u64) -> bool {
+        now_seconds.saturating_sub(self.created_at) > SESSION_COOKIE_MAX_AGE_SECONDS
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2486,6 +2491,30 @@ fn book_position_seconds(book: &Book, track: &Track, position_seconds: f64) -> f
     track_offset + position_seconds.max(0.0)
 }
 
+/// Serialize to a temporary file in the destination directory and rename it
+/// into place, so a crash mid-write never leaves a truncated store behind.
+async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let mut suffix = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("store");
+    let temp_path = path.with_file_name(format!(
+        "{file_name}.{:016x}.tmp",
+        u64::from_le_bytes(suffix)
+    ));
+    fs::write(&temp_path, serde_json::to_vec_pretty(value)?).await?;
+    if let Err(error) = fs::rename(&temp_path, path).await {
+        let _ = fs::remove_file(&temp_path).await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 async fn read_progress(progress_file: &FsPath) -> Result<HashMap<String, Progress>, ApiError> {
     match fs::read_to_string(progress_file).await {
         Ok(contents) => Ok(serde_json::from_str(&contents)?),
@@ -2498,11 +2527,7 @@ async fn write_progress(
     progress_file: &FsPath,
     progress: &HashMap<String, Progress>,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = progress_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(progress_file, serde_json::to_vec_pretty(progress)?).await?;
-    Ok(())
+    write_json_atomic(progress_file, progress).await
 }
 
 async fn load_metadata_overrides(
@@ -2521,11 +2546,7 @@ async fn write_metadata_overrides(
     metadata_overrides_file: &FsPath,
     store: &MetadataOverrideStore,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = metadata_overrides_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(metadata_overrides_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(metadata_overrides_file, store).await
 }
 
 #[derive(Debug, Clone)]
@@ -2770,11 +2791,9 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 async fn create_job(state: &AppState, kind: &str) -> String {
-    let id = stable_id(&format!(
-        "{kind}:{}:{}",
-        now_rfc3339ish(),
-        state.jobs.read().await.len()
-    ));
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    let id = format!("{:016x}", u64::from_le_bytes(bytes));
     let job = JobStatus {
         id: id.clone(),
         kind: kind.to_string(),
@@ -2830,6 +2849,9 @@ fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
 
     if start.is_empty() {
         let suffix_length = end.parse::<u64>().ok()?;
+        if suffix_length == 0 {
+            return None;
+        }
         let start = file_size.saturating_sub(suffix_length);
         return Some((start, file_size - 1));
     }
@@ -2852,11 +2874,15 @@ fn natural_path_key(path: &FsPath) -> String {
     path.to_string_lossy().to_lowercase()
 }
 
-fn now_rfc3339ish() -> String {
+fn unix_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| format!("{}", duration.as_secs()))
-        .unwrap_or_else(|_| "0".to_string())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_rfc3339ish() -> String {
+    unix_now_seconds().to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2907,11 +2933,7 @@ async fn write_activity_store(
     activity_file: &FsPath,
     store: &ActivityStore,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = activity_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(activity_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(activity_file, store).await
 }
 
 fn today_ymd_utc() -> String {
@@ -2957,7 +2979,7 @@ fn ymd_to_days(ymd: &str) -> Option<i64> {
 
 async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
     let today = today_ymd_utc();
-    {
+    let snapshot = {
         let mut activity = state.activity.write().await;
         let entry = activity
             .by_user
@@ -2966,10 +2988,6 @@ async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
             .entry(today)
             .or_insert(0.0);
         *entry += delta_seconds;
-    }
-
-    let snapshot = {
-        let activity = state.activity.read().await;
         ActivityStore {
             by_user: activity.by_user.clone(),
         }
@@ -3184,16 +3202,17 @@ async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
 }
 
 async fn write_users_store(users_file: &FsPath, store: &UsersStore) -> Result<(), ApiError> {
-    if let Some(parent) = users_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(users_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(users_file, store).await
 }
 
 async fn load_sessions_store(sessions_file: &FsPath) -> anyhow::Result<HashMap<String, Session>> {
     match fs::read_to_string(sessions_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Ok(contents) => {
+            let mut sessions: HashMap<String, Session> = serde_json::from_str(&contents)?;
+            let now = unix_now_seconds();
+            sessions.retain(|_, session| !session.is_expired(now));
+            Ok(sessions)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(error) => Err(error.into()),
     }
@@ -3203,12 +3222,12 @@ async fn write_sessions_store(
     sessions_file: &FsPath,
     sessions: &HashMap<String, Session>,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = sessions_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(sessions_file, serde_json::to_vec_pretty(sessions)?).await?;
-    Ok(())
+    write_json_atomic(sessions_file, sessions).await
 }
+
+static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
+    hash_password("operalibre-timing-equalizer").unwrap_or_default()
+});
 
 fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
@@ -3316,6 +3335,15 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
     let sessions = state.sessions.read().await;
     let session = sessions.get(token)?.clone();
     drop(sessions);
+    if session.is_expired(unix_now_seconds()) {
+        let mut sessions = state.sessions.write().await;
+        if sessions.remove(token).is_some()
+            && let Err(error) = write_sessions_store(&state.sessions_file, &sessions).await
+        {
+            tracing::warn!("failed to persist expired session removal: {}", error.message);
+        }
+        return None;
+    }
     let users = state.users.read().await;
     users
         .users
@@ -3426,6 +3454,9 @@ async fn login(
     };
 
     let Some(user) = matched_user else {
+        // Burn the same time as a real verification so response timing does
+        // not reveal whether the username exists.
+        let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password(&payload.password, &user.password_hash) {
@@ -3452,10 +3483,7 @@ async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiEr
     let token = generate_session_token();
     let session = Session {
         user_id: user_id.to_string(),
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        created_at: unix_now_seconds(),
     };
     let mut sessions = state.sessions.write().await;
     sessions.insert(token.clone(), session);
@@ -3720,7 +3748,7 @@ impl From<axum::http::Error> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_imported_title;
+    use super::{Session, clean_imported_title, normalize_asin, parse_range};
 
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {
@@ -3736,5 +3764,48 @@ mod tests {
             "Dune [Unabridged]"
         );
         assert_eq!(clean_imported_title("[B002V1OF70]"), "[B002V1OF70]");
+    }
+
+    #[test]
+    fn parse_range_handles_common_forms() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=500-", 1000), Some((500, 999)));
+        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-4999", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn parse_range_rejects_unsatisfiable_ranges() {
+        assert_eq!(parse_range("bytes=-0", 1000), None);
+        assert_eq!(parse_range("bytes=1000-", 1000), None);
+        assert_eq!(parse_range("bytes=5-2", 1000), None);
+        assert_eq!(parse_range("items=0-99", 1000), None);
+        assert_eq!(parse_range("bytes=abc-def", 1000), None);
+    }
+
+    #[test]
+    fn suffix_range_longer_than_file_starts_at_zero() {
+        assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn normalize_asin_accepts_only_audible_ids() {
+        assert_eq!(
+            normalize_asin(" B002v1of70 "),
+            Some("B002V1OF70".to_string())
+        );
+        assert_eq!(normalize_asin("B002V1OF7"), None);
+        assert_eq!(normalize_asin("1234567890"), None);
+        assert_eq!(normalize_asin("B002V1OF7!"), None);
+    }
+
+    #[test]
+    fn sessions_expire_after_max_age() {
+        let session = Session {
+            user_id: "user".to_string(),
+            created_at: 1_000,
+        };
+        assert!(!session.is_expired(1_000 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
+        assert!(session.is_expired(1_001 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
     }
 }
