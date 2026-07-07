@@ -79,6 +79,12 @@ The server keeps a small amount of state on disk: user accounts, listening progr
 
 Back up `data_dir` to preserve progress and accounts.
 
+### Web app
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `web_dist_dir` | *(empty)* | Path to a built web bundle (the `apps/web/dist` folder produced by `npm run build`). When set, the server serves the frontend itself: any path that is not an `/api/...` route returns the bundle's files, with unknown paths falling back to `index.html` for client-side routing. This gives a single-origin deployment with no reverse proxy and no CORS concerns. |
+
 ### Optional Libation integration
 
 Leave both blank to disable. See [Libation / Audible Import](libation.md) for the full integration guide.

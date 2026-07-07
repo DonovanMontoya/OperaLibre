@@ -19,6 +19,11 @@ data_dir = data
 progress_file = data/progress.json
 users_file = data/users.json
 
+# Serve the built web app from this server (single-origin deployment).
+# Point at the folder produced by `npm run build`, e.g. apps/web/dist.
+# Leave blank if a reverse proxy or the Vite dev server hosts the frontend.
+web_dist_dir =
+
 # Optional Libation / Audible import.
 # Leave these blank unless you use Libation.
 libation_cli_path =

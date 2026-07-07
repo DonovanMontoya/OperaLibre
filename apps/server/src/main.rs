@@ -45,6 +45,7 @@ use tokio::{
 use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
@@ -505,6 +506,7 @@ struct ServerConfig {
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
     allowed_origins: Vec<String>,
+    web_dist_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -564,6 +566,8 @@ impl ServerConfig {
                 .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
                 .map(parse_origin_list)
                 .unwrap_or_default(),
+            web_dist_dir: config_path_value(&values, &config_dir, "web_dist_dir")
+                .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
     }
 }
@@ -597,6 +601,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "libation_cli_path",
         "libation_files_dir",
         "allowed_origins",
+        "web_dist_dir",
     ];
     let mut values = HashMap::new();
 
@@ -820,8 +825,21 @@ async fn main() -> anyhow::Result<()> {
         AllowOrigin::list(origins)
     };
 
-    let app = public_routes
-        .merge(protected_routes)
+    let mut app = public_routes.merge(protected_routes);
+    if let Some(dist_dir) = config.web_dist_dir.as_ref() {
+        if dist_dir.join("index.html").is_file() {
+            tracing::info!("serving web app from {}", dist_dir.display());
+            app = app.fallback_service(
+                ServeDir::new(dist_dir).fallback(ServeFile::new(dist_dir.join("index.html"))),
+            );
+        } else {
+            tracing::warn!(
+                "web_dist_dir {} has no index.html; static file serving disabled",
+                dist_dir.display()
+            );
+        }
+    }
+    let app = app
         .layer(
             CorsLayer::new()
                 .allow_origin(allow_origin)
