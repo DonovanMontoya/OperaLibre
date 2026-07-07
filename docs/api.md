@@ -52,7 +52,7 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
-| `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. |
+| `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
 
@@ -67,7 +67,7 @@ Progress updates use JSON with the current track and timing fields:
 }
 ```
 
-#### Libation (optional)
+#### Libation (optional, admin only)
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -76,12 +76,12 @@ Progress updates use JSON with the current track and timing fields:
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. |
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
-If Libation is not configured these endpoints respond with an explanatory error.
+These endpoints require an administrator session. If Libation is not configured they respond with an explanatory error.
 
 ## Conventions
 
 - Request and response bodies are JSON unless otherwise noted.
-- Errors return JSON of the shape `{ "error": "message" }` with an appropriate 4xx/5xx status.
+- Errors return JSON of the shape `{ "message": "..." }` with an appropriate 4xx/5xx status.
 - Stream bodies (cover art, audio, readalong, zip download) return their native MIME types.
 
 ## CORS

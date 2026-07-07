@@ -37,7 +37,11 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use tokio::{fs, process::Command, sync::RwLock};
+use tokio::{
+    fs,
+    process::Command,
+    sync::{Mutex, RwLock},
+};
 use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
@@ -67,6 +71,9 @@ struct AppState {
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
+    /// Serializes read-modify-write cycles on the progress file so concurrent
+    /// updates cannot overwrite each other.
+    progress_write_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -704,6 +711,7 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
+        progress_write_lock: Arc::new(Mutex::new(())),
     };
 
     rescan_library(&state).await?;
@@ -793,17 +801,24 @@ async fn rescan(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<Book>>, ApiError> {
+    require_admin(&auth)?;
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth.id).await?))
 }
 
-async fn libation_status(State(state): State<AppState>) -> Json<LibationStatus> {
-    Json(read_libation_status(&state).await)
+async fn libation_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<LibationStatus>, ApiError> {
+    require_admin(&auth)?;
+    Ok(Json(read_libation_status(&state).await))
 }
 
 async fn list_libation_books(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<LibationBook>>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -865,7 +880,9 @@ fn normalize_match_key(value: &str) -> String {
 
 async fn sync_libation_library(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -925,8 +942,10 @@ async fn sync_libation_library(
 
 async fn liberate_libation_book(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(asin): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let asin = asin.trim().to_string();
     if asin.is_empty() {
         return Err(ApiError::bad_request("Missing Audible product id."));
@@ -1017,7 +1036,9 @@ async fn liberate_libation_book(
 
 async fn liberate_all_libation_books(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -1138,8 +1159,10 @@ async fn liberate_all_libation_books(
 
 async fn get_job(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobStatus>, ApiError> {
+    require_admin(&auth)?;
     state
         .jobs
         .read()
@@ -1290,6 +1313,7 @@ async fn update_progress(
         .find(|candidate| candidate.id == update.track_id)
         .ok_or(ApiError::not_found("Track not found"))?;
 
+    let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let previous_position = progress
@@ -3225,9 +3249,8 @@ async fn write_sessions_store(
     write_json_atomic(sessions_file, sessions).await
 }
 
-static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
-    hash_password("operalibre-timing-equalizer").unwrap_or_default()
-});
+static DUMMY_PASSWORD_HASH: LazyLock<String> =
+    LazyLock::new(|| hash_password("operalibre-timing-equalizer").unwrap_or_default());
 
 fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
@@ -3340,7 +3363,10 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
         if sessions.remove(token).is_some()
             && let Err(error) = write_sessions_store(&state.sessions_file, &sessions).await
         {
-            tracing::warn!("failed to persist expired session removal: {}", error.message);
+            tracing::warn!(
+                "failed to persist expired session removal: {}",
+                error.message
+            );
         }
         return None;
     }
@@ -3592,6 +3618,7 @@ async fn delete_user(
     write_sessions_store(&state.sessions_file, &sessions).await?;
     drop(sessions);
 
+    let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let prefix = format!("user:{user_id}:");
     progress.retain(|key, _| !key.starts_with(&prefix));
