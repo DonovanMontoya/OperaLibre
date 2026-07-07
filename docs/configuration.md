@@ -59,6 +59,7 @@ libation_files_dir =
 | --- | --- | --- |
 | `host` | `0.0.0.0` | Interface to bind to. Use `127.0.0.1` to restrict access to the local machine, or `0.0.0.0` to accept LAN connections. |
 | `port` | `4000` | TCP port the API listens on. |
+| `allowed_origins` | *(empty)* | Comma-separated list of origins allowed to make cross-origin (CORS) requests, e.g. `https://books.example.com, http://192.168.1.20:5173`. When empty, the server reflects any requesting origin — convenient for development and custom frontends, but set this before exposing the API outside a trusted network. |
 
 ### Library
 
@@ -77,6 +78,12 @@ The server keeps a small amount of state on disk: user accounts, listening progr
 | `users_file` | `data/users.json` | JSON file storing accounts and Argon2 password hashes. |
 
 Back up `data_dir` to preserve progress and accounts.
+
+### Web app
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `web_dist_dir` | *(empty)* | Path to a built web bundle (the `apps/web/dist` folder produced by `npm run build`). When set, the server serves the frontend itself: any path that is not an `/api/...` route returns the bundle's files, with unknown paths falling back to `index.html` for client-side routing. This gives a single-origin deployment with no reverse proxy and no CORS concerns. |
 
 ### Optional Libation integration
 

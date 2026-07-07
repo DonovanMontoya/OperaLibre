@@ -5,6 +5,11 @@
 host = 0.0.0.0
 port = 4000
 
+# Comma-separated list of origins allowed to make cross-origin (CORS)
+# requests, e.g. https://books.example.com, http://192.168.1.20:5173
+# Leave blank to reflect any requesting origin (development default).
+allowed_origins =
+
 # Folder containing your audiobook files.
 # Relative paths are resolved from this config file's directory.
 library_root = /path/to/audiobooks
@@ -13,6 +18,11 @@ library_root = /path/to/audiobooks
 data_dir = data
 progress_file = data/progress.json
 users_file = data/users.json
+
+# Serve the built web app from this server (single-origin deployment).
+# Point at the folder produced by `npm run build`, e.g. apps/web/dist.
+# Leave blank if a reverse proxy or the Vite dev server hosts the frontend.
+web_dist_dir =
 
 # Optional Libation / Audible import.
 # Leave these blank unless you use Libation.
