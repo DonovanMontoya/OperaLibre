@@ -15,7 +15,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -45,6 +45,7 @@ use tokio::{
 use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
@@ -55,6 +56,10 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
+const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_LOCKOUT_SECONDS: u64 = 60;
+const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
+const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -74,6 +79,24 @@ struct AppState {
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
+    login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoginThrottle {
+    failures: u32,
+    last_failure: u64,
+}
+
+impl LoginThrottle {
+    fn is_locked(&self, now_seconds: u64) -> bool {
+        self.failures >= LOGIN_MAX_FAILURES
+            && now_seconds.saturating_sub(self.last_failure) < LOGIN_LOCKOUT_SECONDS
+    }
+
+    fn is_stale(&self, now_seconds: u64) -> bool {
+        now_seconds.saturating_sub(self.last_failure) >= LOGIN_LOCKOUT_SECONDS
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -483,6 +506,7 @@ struct ServerConfig {
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
     allowed_origins: Vec<String>,
+    web_dist_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -542,6 +566,8 @@ impl ServerConfig {
                 .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
                 .map(parse_origin_list)
                 .unwrap_or_default(),
+            web_dist_dir: config_path_value(&values, &config_dir, "web_dist_dir")
+                .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
     }
 }
@@ -575,6 +601,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "libation_cli_path",
         "libation_files_dir",
         "allowed_origins",
+        "web_dist_dir",
     ];
     let mut values = HashMap::new();
 
@@ -728,6 +755,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
         progress_write_lock: Arc::new(Mutex::new(())),
+        login_attempts: Arc::new(Mutex::new(HashMap::new())),
     };
 
     rescan_library(&state).await?;
@@ -736,7 +764,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
-        .route("/api/auth/login", post(login));
+        .route("/api/auth/login", post(login))
+        // Catch-all so unknown API paths return a JSON 404 instead of
+        // falling through to the SPA fallback (or the auth middleware).
+        .route("/api/{*path}", any(api_not_found));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -758,6 +789,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/libation/books/{asin}/liberate",
             post(liberate_libation_book),
         )
+        .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
@@ -796,8 +828,21 @@ async fn main() -> anyhow::Result<()> {
         AllowOrigin::list(origins)
     };
 
-    let app = public_routes
-        .merge(protected_routes)
+    let mut app = public_routes.merge(protected_routes);
+    if let Some(dist_dir) = config.web_dist_dir.as_ref() {
+        if dist_dir.join("index.html").is_file() {
+            tracing::info!("serving web app from {}", dist_dir.display());
+            app = app.fallback_service(
+                ServeDir::new(dist_dir).fallback(ServeFile::new(dist_dir.join("index.html"))),
+            );
+        } else {
+            tracing::warn!(
+                "web_dist_dir {} has no index.html; static file serving disabled",
+                dist_dir.display()
+            );
+        }
+    }
+    let app = app
         .layer(
             CorsLayer::new()
                 .allow_origin(allow_origin)
@@ -814,6 +859,10 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn api_not_found() -> ApiError {
+    ApiError::not_found("Unknown API route")
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -1190,6 +1239,21 @@ async fn liberate_all_libation_books(
     });
 
     Ok(Json(JobCreated { job_id }))
+}
+
+async fn list_jobs(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<JobStatus>>, ApiError> {
+    require_admin(&auth)?;
+    let jobs = state.jobs.read().await;
+    let mut list: Vec<JobStatus> = jobs.values().cloned().collect();
+    list.sort_by_key(|job| std::cmp::Reverse(job_started_seconds(job)));
+    Ok(Json(list))
+}
+
+fn job_started_seconds(job: &JobStatus) -> u64 {
+    job.started_at.parse().unwrap_or(0)
 }
 
 async fn get_job(
@@ -2893,8 +2957,32 @@ async fn create_job(state: &AppState, kind: &str) -> String {
         output: String::new(),
         error: None,
     };
-    state.jobs.write().await.insert(id.clone(), job);
+    let mut jobs = state.jobs.write().await;
+    jobs.insert(id.clone(), job);
+    prune_finished_jobs(&mut jobs);
     id
+}
+
+const MAX_TRACKED_JOBS: usize = 50;
+
+/// Drops the oldest finished jobs once the map exceeds the cap, so job
+/// history doesn't grow without bound. Running jobs are never removed.
+fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
+    if jobs.len() <= MAX_TRACKED_JOBS {
+        return;
+    }
+    let mut finished: Vec<(String, u64)> = jobs
+        .values()
+        .filter(|job| job.status != "running")
+        .map(|job| (job.id.clone(), job_started_seconds(job)))
+        .collect();
+    finished.sort_by_key(|(_, started_at)| *started_at);
+    for (job_id, _) in finished {
+        if jobs.len() <= MAX_TRACKED_JOBS {
+            break;
+        }
+        jobs.remove(&job_id);
+    }
 }
 
 async fn update_job_output(state: &AppState, job_id: &str, text: &str) {
@@ -3535,6 +3623,21 @@ async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let username = normalize_username(&payload.username);
+    let throttle_key = login_throttle_key(&username);
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        let now = unix_now_seconds();
+        attempts.retain(|_, throttle| !throttle.is_stale(now));
+        if attempts
+            .get(&throttle_key)
+            .is_some_and(|throttle| throttle.is_locked(now))
+        {
+            return Err(ApiError::too_many_requests(
+                "Too many failed sign-in attempts. Try again in a minute.",
+            ));
+        }
+    }
+
     let matched_user = {
         let users = state.users.read().await;
         users
@@ -3548,11 +3651,14 @@ async fn login(
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
         let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password(&payload.password, &user.password_hash) {
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
+    state.login_attempts.lock().await.remove(&throttle_key);
 
     let token = create_session(&state, &user.id).await?;
     let mut headers = HeaderMap::new();
@@ -3568,6 +3674,40 @@ async fn login(
             user: UserPublic::from(&user),
         }),
     ))
+}
+
+/// Throttle keys come from unauthenticated input, so bound their length
+/// (valid usernames are at most 64 characters anyway) to keep hostile logins
+/// from bloating the attempts map with megabyte-long keys.
+fn login_throttle_key(username: &str) -> String {
+    username
+        .to_lowercase()
+        .chars()
+        .take(LOGIN_THROTTLE_KEY_MAX_CHARS)
+        .collect()
+}
+
+async fn record_login_failure(state: &AppState, throttle_key: &str) {
+    let now = unix_now_seconds();
+    let mut attempts = state.login_attempts.lock().await;
+    // A flood of unique bogus usernames within the lockout window can't grow
+    // the map without bound: stop tracking new names at the cap. Entries for
+    // already-tracked names keep counting, and stale ones are pruned on every
+    // login attempt.
+    if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
+        return;
+    }
+    let entry = attempts
+        .entry(throttle_key.to_string())
+        .or_insert(LoginThrottle {
+            failures: 0,
+            last_failure: 0,
+        });
+    if entry.is_stale(now) {
+        entry.failures = 0;
+    }
+    entry.failures += 1;
+    entry.last_failure = now;
 }
 
 async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
@@ -3776,6 +3916,13 @@ impl ApiError {
         }
     }
 
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -3841,7 +3988,7 @@ impl From<axum::http::Error> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        HeaderMap, Session, bytes_etag, clean_imported_title, if_none_match_matches,
+        HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
         normalize_asin, parse_origin_list, parse_range,
     };
 
@@ -3930,6 +4077,61 @@ mod tests {
         mismatch.insert(super::IF_NONE_MATCH, "\"different\"".parse().unwrap());
         assert!(!if_none_match_matches(&mismatch, &etag));
         assert!(!if_none_match_matches(&HeaderMap::new(), &etag));
+    }
+
+    #[test]
+    fn login_throttle_key_is_bounded() {
+        let long_name = "A".repeat(10_000);
+        let key = super::login_throttle_key(&long_name);
+        assert_eq!(key.chars().count(), super::LOGIN_THROTTLE_KEY_MAX_CHARS);
+        assert_eq!(super::login_throttle_key(" Reader "), " reader ");
+    }
+
+    #[test]
+    fn login_throttle_locks_after_max_failures() {
+        let now = 10_000;
+        let below_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES - 1,
+            last_failure: now,
+        };
+        assert!(!below_limit.is_locked(now));
+
+        let at_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES,
+            last_failure: now,
+        };
+        assert!(at_limit.is_locked(now));
+        assert!(at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS - 1));
+        assert!(!at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS));
+        assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
+    }
+
+    #[test]
+    fn prune_finished_jobs_keeps_running_and_newest() {
+        let mut jobs = std::collections::HashMap::new();
+        for index in 0..(super::MAX_TRACKED_JOBS + 10) {
+            let id = format!("job-{index}");
+            jobs.insert(
+                id.clone(),
+                super::JobStatus {
+                    id,
+                    kind: "test".to_string(),
+                    status: if index == 0 { "running" } else { "completed" }.to_string(),
+                    started_at: index.to_string(),
+                    finished_at: None,
+                    exit_code: None,
+                    output: String::new(),
+                    error: None,
+                },
+            );
+        }
+        super::prune_finished_jobs(&mut jobs);
+        assert_eq!(jobs.len(), super::MAX_TRACKED_JOBS);
+        // The running job survives even though it is the oldest.
+        assert!(jobs.contains_key("job-0"));
+        // The oldest finished jobs are the ones dropped.
+        assert!(!jobs.contains_key("job-1"));
+        assert!(jobs.contains_key(&format!("job-{}", super::MAX_TRACKED_JOBS + 9)));
     }
 
     #[test]

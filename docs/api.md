@@ -74,6 +74,7 @@ Progress updates use JSON with the current track and timing fields:
 | `GET` | `/api/libation/status` | Configured accounts and their auth state. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. |
+| `GET` | `/api/jobs` | List background jobs, newest first (the server keeps the most recent 50). |
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
 These endpoints require an administrator session. If Libation is not configured they respond with an explanatory error.
