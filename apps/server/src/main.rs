@@ -9,8 +9,8 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            ACCEPT_RANGES, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE,
-            RANGE, SET_COOKIE,
+            ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE,
+            CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, RANGE, SET_COOKIE,
         },
     },
     middleware::{self, Next},
@@ -309,6 +309,7 @@ struct MetadataField {
 struct EmbeddedImage {
     mime_type: String,
     data: Vec<u8>,
+    etag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1265,9 +1266,12 @@ async fn update_book_metadata(
     ))
 }
 
+const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
+
 async fn get_cover_art(
     State(state): State<AppState>,
     Path(book_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let library = state.library.read().await;
     let cover = library
@@ -1275,11 +1279,31 @@ async fn get_cover_art(
         .get(&book_id)
         .ok_or(ApiError::not_found("Cover art not found"))?;
 
+    if if_none_match_matches(&headers, &cover.etag) {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(ETAG, cover.etag.clone())
+            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+            .body(Body::empty())?);
+    }
+
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, cover.mime_type.clone())
         .header(CONTENT_LENGTH, cover.data.len().to_string())
+        .header(ETAG, cover.etag.clone())
+        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
         .body(Body::from(cover.data.clone()))?)
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|candidate| candidate.trim())
+        .any(|candidate| candidate == "*" || candidate.trim_start_matches("W/") == etag)
 }
 
 async fn get_reading_file(
@@ -2245,7 +2269,14 @@ fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
             .map(|mime| mime.as_str().to_string())
             .unwrap_or_else(|| "application/octet-stream".to_string()),
         data: picture.data().to_vec(),
+        etag: bytes_etag(picture.data()),
     })
+}
+
+fn bytes_etag(data: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    format!("\"{:x}\"", hasher.finalize())
 }
 
 fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
@@ -3809,7 +3840,10 @@ impl From<axum::http::Error> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, clean_imported_title, normalize_asin, parse_origin_list, parse_range};
+    use super::{
+        HeaderMap, Session, bytes_etag, clean_imported_title, if_none_match_matches,
+        normalize_asin, parse_origin_list, parse_range,
+    };
 
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {
@@ -3870,6 +3904,32 @@ mod tests {
             ]
         );
         assert!(parse_origin_list("  ".to_string()).is_empty());
+    }
+
+    #[test]
+    fn if_none_match_recognizes_matching_etags() {
+        let etag = bytes_etag(b"cover-bytes");
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(super::IF_NONE_MATCH, etag.parse().unwrap());
+        assert!(if_none_match_matches(&headers, &etag));
+
+        let mut weak = HeaderMap::new();
+        weak.insert(
+            super::IF_NONE_MATCH,
+            format!("W/{etag}, \"other\"").parse().unwrap(),
+        );
+        assert!(if_none_match_matches(&weak, &etag));
+
+        let mut star = HeaderMap::new();
+        star.insert(super::IF_NONE_MATCH, "*".parse().unwrap());
+        assert!(if_none_match_matches(&star, &etag));
+
+        let mut mismatch = HeaderMap::new();
+        mismatch.insert(super::IF_NONE_MATCH, "\"different\"".parse().unwrap());
+        assert!(!if_none_match_matches(&mismatch, &etag));
+        assert!(!if_none_match_matches(&HeaderMap::new(), &etag));
     }
 
     #[test]
