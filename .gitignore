@@ -9,3 +9,6 @@ data
 library
 Library
 .idea
+nohup.out
+docs/_site
+docs/.jekyll-cache

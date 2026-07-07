@@ -9,13 +9,13 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            ACCEPT_RANGES, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE,
-            RANGE, SET_COOKIE,
+            ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE,
+            CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, RANGE, SET_COOKIE,
         },
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -34,13 +34,18 @@ use std::{
     env, io,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use tokio::{fs, process::Command, sync::RwLock};
+use tokio::{
+    fs,
+    process::Command,
+    sync::{Mutex, RwLock},
+};
 use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
@@ -51,6 +56,10 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
+const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_LOCKOUT_SECONDS: u64 = 60;
+const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
+const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -67,6 +76,27 @@ struct AppState {
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
+    /// Serializes read-modify-write cycles on the progress file so concurrent
+    /// updates cannot overwrite each other.
+    progress_write_lock: Arc<Mutex<()>>,
+    login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoginThrottle {
+    failures: u32,
+    last_failure: u64,
+}
+
+impl LoginThrottle {
+    fn is_locked(&self, now_seconds: u64) -> bool {
+        self.failures >= LOGIN_MAX_FAILURES
+            && now_seconds.saturating_sub(self.last_failure) < LOGIN_LOCKOUT_SECONDS
+    }
+
+    fn is_stale(&self, now_seconds: u64) -> bool {
+        now_seconds.saturating_sub(self.last_failure) >= LOGIN_LOCKOUT_SECONDS
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -133,8 +163,13 @@ struct UsersStore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session {
     user_id: String,
-    #[allow(dead_code)]
     created_at: u64,
+}
+
+impl Session {
+    fn is_expired(&self, now_seconds: u64) -> bool {
+        now_seconds.saturating_sub(self.created_at) > SESSION_COOKIE_MAX_AGE_SECONDS
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +332,7 @@ struct MetadataField {
 struct EmbeddedImage {
     mime_type: String,
     data: Vec<u8>,
+    etag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,6 +505,8 @@ struct ServerConfig {
     metadata_overrides_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
+    allowed_origins: Vec<String>,
+    web_dist_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -524,6 +562,12 @@ impl ServerConfig {
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
                 .or_else(|| env_path_value("LIBATION_FILES_DIR")),
+            allowed_origins: config_string_value(&values, "allowed_origins")
+                .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
+                .map(parse_origin_list)
+                .unwrap_or_default(),
+            web_dist_dir: config_path_value(&values, &config_dir, "web_dist_dir")
+                .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
     }
 }
@@ -556,6 +600,8 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
+        "allowed_origins",
+        "web_dist_dir",
     ];
     let mut values = HashMap::new();
 
@@ -641,6 +687,15 @@ fn env_path_value(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn parse_origin_list(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .map(|origin| origin.trim().trim_end_matches('/'))
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn resolve_config_path(config_dir: &FsPath, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -699,6 +754,8 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
+        progress_write_lock: Arc::new(Mutex::new(())),
+        login_attempts: Arc::new(Mutex::new(HashMap::new())),
     };
 
     rescan_library(&state).await?;
@@ -707,7 +764,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
-        .route("/api/auth/login", post(login));
+        .route("/api/auth/login", post(login))
+        // Catch-all so unknown API paths return a JSON 404 instead of
+        // falling through to the SPA fallback (or the auth middleware).
+        .route("/api/{*path}", any(api_not_found));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -729,6 +789,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/libation/books/{asin}/liberate",
             post(liberate_libation_book),
         )
+        .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
@@ -748,11 +809,43 @@ async fn main() -> anyhow::Result<()> {
             auth_middleware,
         ));
 
-    let app = public_routes
-        .merge(protected_routes)
+    let allow_origin = if config.allowed_origins.is_empty() {
+        AllowOrigin::mirror_request()
+    } else {
+        let origins = config
+            .allowed_origins
+            .iter()
+            .map(|origin| {
+                origin.parse::<HeaderValue>().map_err(|error| {
+                    anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        tracing::info!(
+            origins = ?config.allowed_origins,
+            "CORS restricted to configured origins"
+        );
+        AllowOrigin::list(origins)
+    };
+
+    let mut app = public_routes.merge(protected_routes);
+    if let Some(dist_dir) = config.web_dist_dir.as_ref() {
+        if dist_dir.join("index.html").is_file() {
+            tracing::info!("serving web app from {}", dist_dir.display());
+            app = app.fallback_service(
+                ServeDir::new(dist_dir).fallback(ServeFile::new(dist_dir.join("index.html"))),
+            );
+        } else {
+            tracing::warn!(
+                "web_dist_dir {} has no index.html; static file serving disabled",
+                dist_dir.display()
+            );
+        }
+    }
+    let app = app
         .layer(
             CorsLayer::new()
-                .allow_origin(AllowOrigin::mirror_request())
+                .allow_origin(allow_origin)
                 .allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
                 .allow_credentials(true),
@@ -766,6 +859,10 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn api_not_found() -> ApiError {
+    ApiError::not_found("Unknown API route")
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -788,17 +885,24 @@ async fn rescan(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<Book>>, ApiError> {
+    require_admin(&auth)?;
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth.id).await?))
 }
 
-async fn libation_status(State(state): State<AppState>) -> Json<LibationStatus> {
-    Json(read_libation_status(&state).await)
+async fn libation_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<LibationStatus>, ApiError> {
+    require_admin(&auth)?;
+    Ok(Json(read_libation_status(&state).await))
 }
 
 async fn list_libation_books(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<LibationBook>>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -860,7 +964,9 @@ fn normalize_match_key(value: &str) -> String {
 
 async fn sync_libation_library(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -920,8 +1026,10 @@ async fn sync_libation_library(
 
 async fn liberate_libation_book(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(asin): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let asin = asin.trim().to_string();
     if asin.is_empty() {
         return Err(ApiError::bad_request("Missing Audible product id."));
@@ -1012,7 +1120,9 @@ async fn liberate_libation_book(
 
 async fn liberate_all_libation_books(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -1131,10 +1241,27 @@ async fn liberate_all_libation_books(
     Ok(Json(JobCreated { job_id }))
 }
 
+async fn list_jobs(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<JobStatus>>, ApiError> {
+    require_admin(&auth)?;
+    let jobs = state.jobs.read().await;
+    let mut list: Vec<JobStatus> = jobs.values().cloned().collect();
+    list.sort_by_key(|job| std::cmp::Reverse(job_started_seconds(job)));
+    Ok(Json(list))
+}
+
+fn job_started_seconds(job: &JobStatus) -> u64 {
+    job.started_at.parse().unwrap_or(0)
+}
+
 async fn get_job(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobStatus>, ApiError> {
+    require_admin(&auth)?;
     state
         .jobs
         .read()
@@ -1203,9 +1330,12 @@ async fn update_book_metadata(
     ))
 }
 
+const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
+
 async fn get_cover_art(
     State(state): State<AppState>,
     Path(book_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let library = state.library.read().await;
     let cover = library
@@ -1213,11 +1343,31 @@ async fn get_cover_art(
         .get(&book_id)
         .ok_or(ApiError::not_found("Cover art not found"))?;
 
+    if if_none_match_matches(&headers, &cover.etag) {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(ETAG, cover.etag.clone())
+            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+            .body(Body::empty())?);
+    }
+
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, cover.mime_type.clone())
         .header(CONTENT_LENGTH, cover.data.len().to_string())
+        .header(ETAG, cover.etag.clone())
+        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
         .body(Body::from(cover.data.clone()))?)
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|candidate| candidate.trim())
+        .any(|candidate| candidate == "*" || candidate.trim_start_matches("W/") == etag)
 }
 
 async fn get_reading_file(
@@ -1285,6 +1435,7 @@ async fn update_progress(
         .find(|candidate| candidate.id == update.track_id)
         .ok_or(ApiError::not_found("Track not found"))?;
 
+    let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let previous_position = progress
@@ -2182,7 +2333,14 @@ fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
             .map(|mime| mime.as_str().to_string())
             .unwrap_or_else(|| "application/octet-stream".to_string()),
         data: picture.data().to_vec(),
+        etag: bytes_etag(picture.data()),
     })
+}
+
+fn bytes_etag(data: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    format!("\"{:x}\"", hasher.finalize())
 }
 
 fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
@@ -2486,6 +2644,30 @@ fn book_position_seconds(book: &Book, track: &Track, position_seconds: f64) -> f
     track_offset + position_seconds.max(0.0)
 }
 
+/// Serialize to a temporary file in the destination directory and rename it
+/// into place, so a crash mid-write never leaves a truncated store behind.
+async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let mut suffix = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("store");
+    let temp_path = path.with_file_name(format!(
+        "{file_name}.{:016x}.tmp",
+        u64::from_le_bytes(suffix)
+    ));
+    fs::write(&temp_path, serde_json::to_vec_pretty(value)?).await?;
+    if let Err(error) = fs::rename(&temp_path, path).await {
+        let _ = fs::remove_file(&temp_path).await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 async fn read_progress(progress_file: &FsPath) -> Result<HashMap<String, Progress>, ApiError> {
     match fs::read_to_string(progress_file).await {
         Ok(contents) => Ok(serde_json::from_str(&contents)?),
@@ -2498,11 +2680,7 @@ async fn write_progress(
     progress_file: &FsPath,
     progress: &HashMap<String, Progress>,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = progress_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(progress_file, serde_json::to_vec_pretty(progress)?).await?;
-    Ok(())
+    write_json_atomic(progress_file, progress).await
 }
 
 async fn load_metadata_overrides(
@@ -2521,11 +2699,7 @@ async fn write_metadata_overrides(
     metadata_overrides_file: &FsPath,
     store: &MetadataOverrideStore,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = metadata_overrides_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(metadata_overrides_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(metadata_overrides_file, store).await
 }
 
 #[derive(Debug, Clone)]
@@ -2770,11 +2944,9 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 async fn create_job(state: &AppState, kind: &str) -> String {
-    let id = stable_id(&format!(
-        "{kind}:{}:{}",
-        now_rfc3339ish(),
-        state.jobs.read().await.len()
-    ));
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    let id = format!("{:016x}", u64::from_le_bytes(bytes));
     let job = JobStatus {
         id: id.clone(),
         kind: kind.to_string(),
@@ -2785,8 +2957,32 @@ async fn create_job(state: &AppState, kind: &str) -> String {
         output: String::new(),
         error: None,
     };
-    state.jobs.write().await.insert(id.clone(), job);
+    let mut jobs = state.jobs.write().await;
+    jobs.insert(id.clone(), job);
+    prune_finished_jobs(&mut jobs);
     id
+}
+
+const MAX_TRACKED_JOBS: usize = 50;
+
+/// Drops the oldest finished jobs once the map exceeds the cap, so job
+/// history doesn't grow without bound. Running jobs are never removed.
+fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
+    if jobs.len() <= MAX_TRACKED_JOBS {
+        return;
+    }
+    let mut finished: Vec<(String, u64)> = jobs
+        .values()
+        .filter(|job| job.status != "running")
+        .map(|job| (job.id.clone(), job_started_seconds(job)))
+        .collect();
+    finished.sort_by_key(|(_, started_at)| *started_at);
+    for (job_id, _) in finished {
+        if jobs.len() <= MAX_TRACKED_JOBS {
+            break;
+        }
+        jobs.remove(&job_id);
+    }
 }
 
 async fn update_job_output(state: &AppState, job_id: &str, text: &str) {
@@ -2830,6 +3026,9 @@ fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
 
     if start.is_empty() {
         let suffix_length = end.parse::<u64>().ok()?;
+        if suffix_length == 0 {
+            return None;
+        }
         let start = file_size.saturating_sub(suffix_length);
         return Some((start, file_size - 1));
     }
@@ -2852,11 +3051,15 @@ fn natural_path_key(path: &FsPath) -> String {
     path.to_string_lossy().to_lowercase()
 }
 
-fn now_rfc3339ish() -> String {
+fn unix_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| format!("{}", duration.as_secs()))
-        .unwrap_or_else(|_| "0".to_string())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_rfc3339ish() -> String {
+    unix_now_seconds().to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2907,11 +3110,7 @@ async fn write_activity_store(
     activity_file: &FsPath,
     store: &ActivityStore,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = activity_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(activity_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(activity_file, store).await
 }
 
 fn today_ymd_utc() -> String {
@@ -2957,7 +3156,7 @@ fn ymd_to_days(ymd: &str) -> Option<i64> {
 
 async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
     let today = today_ymd_utc();
-    {
+    let snapshot = {
         let mut activity = state.activity.write().await;
         let entry = activity
             .by_user
@@ -2966,10 +3165,6 @@ async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
             .entry(today)
             .or_insert(0.0);
         *entry += delta_seconds;
-    }
-
-    let snapshot = {
-        let activity = state.activity.read().await;
         ActivityStore {
             by_user: activity.by_user.clone(),
         }
@@ -3184,16 +3379,17 @@ async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
 }
 
 async fn write_users_store(users_file: &FsPath, store: &UsersStore) -> Result<(), ApiError> {
-    if let Some(parent) = users_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(users_file, serde_json::to_vec_pretty(store)?).await?;
-    Ok(())
+    write_json_atomic(users_file, store).await
 }
 
 async fn load_sessions_store(sessions_file: &FsPath) -> anyhow::Result<HashMap<String, Session>> {
     match fs::read_to_string(sessions_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Ok(contents) => {
+            let mut sessions: HashMap<String, Session> = serde_json::from_str(&contents)?;
+            let now = unix_now_seconds();
+            sessions.retain(|_, session| !session.is_expired(now));
+            Ok(sessions)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(error) => Err(error.into()),
     }
@@ -3203,12 +3399,11 @@ async fn write_sessions_store(
     sessions_file: &FsPath,
     sessions: &HashMap<String, Session>,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = sessions_file.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    fs::write(sessions_file, serde_json::to_vec_pretty(sessions)?).await?;
-    Ok(())
+    write_json_atomic(sessions_file, sessions).await
 }
+
+static DUMMY_PASSWORD_HASH: LazyLock<String> =
+    LazyLock::new(|| hash_password("operalibre-timing-equalizer").unwrap_or_default());
 
 fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
@@ -3316,6 +3511,18 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
     let sessions = state.sessions.read().await;
     let session = sessions.get(token)?.clone();
     drop(sessions);
+    if session.is_expired(unix_now_seconds()) {
+        let mut sessions = state.sessions.write().await;
+        if sessions.remove(token).is_some()
+            && let Err(error) = write_sessions_store(&state.sessions_file, &sessions).await
+        {
+            tracing::warn!(
+                "failed to persist expired session removal: {}",
+                error.message
+            );
+        }
+        return None;
+    }
     let users = state.users.read().await;
     users
         .users
@@ -3416,6 +3623,21 @@ async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let username = normalize_username(&payload.username);
+    let throttle_key = login_throttle_key(&username);
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        let now = unix_now_seconds();
+        attempts.retain(|_, throttle| !throttle.is_stale(now));
+        if attempts
+            .get(&throttle_key)
+            .is_some_and(|throttle| throttle.is_locked(now))
+        {
+            return Err(ApiError::too_many_requests(
+                "Too many failed sign-in attempts. Try again in a minute.",
+            ));
+        }
+    }
+
     let matched_user = {
         let users = state.users.read().await;
         users
@@ -3426,11 +3648,17 @@ async fn login(
     };
 
     let Some(user) = matched_user else {
+        // Burn the same time as a real verification so response timing does
+        // not reveal whether the username exists.
+        let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password(&payload.password, &user.password_hash) {
+        record_login_failure(&state, &throttle_key).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
+    state.login_attempts.lock().await.remove(&throttle_key);
 
     let token = create_session(&state, &user.id).await?;
     let mut headers = HeaderMap::new();
@@ -3448,14 +3676,45 @@ async fn login(
     ))
 }
 
+/// Throttle keys come from unauthenticated input, so bound their length
+/// (valid usernames are at most 64 characters anyway) to keep hostile logins
+/// from bloating the attempts map with megabyte-long keys.
+fn login_throttle_key(username: &str) -> String {
+    username
+        .to_lowercase()
+        .chars()
+        .take(LOGIN_THROTTLE_KEY_MAX_CHARS)
+        .collect()
+}
+
+async fn record_login_failure(state: &AppState, throttle_key: &str) {
+    let now = unix_now_seconds();
+    let mut attempts = state.login_attempts.lock().await;
+    // A flood of unique bogus usernames within the lockout window can't grow
+    // the map without bound: stop tracking new names at the cap. Entries for
+    // already-tracked names keep counting, and stale ones are pruned on every
+    // login attempt.
+    if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
+        return;
+    }
+    let entry = attempts
+        .entry(throttle_key.to_string())
+        .or_insert(LoginThrottle {
+            failures: 0,
+            last_failure: 0,
+        });
+    if entry.is_stale(now) {
+        entry.failures = 0;
+    }
+    entry.failures += 1;
+    entry.last_failure = now;
+}
+
 async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
     let token = generate_session_token();
     let session = Session {
         user_id: user_id.to_string(),
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        created_at: unix_now_seconds(),
     };
     let mut sessions = state.sessions.write().await;
     sessions.insert(token.clone(), session);
@@ -3564,6 +3823,7 @@ async fn delete_user(
     write_sessions_store(&state.sessions_file, &sessions).await?;
     drop(sessions);
 
+    let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let prefix = format!("user:{user_id}:");
     progress.retain(|key, _| !key.starts_with(&prefix));
@@ -3656,6 +3916,13 @@ impl ApiError {
         }
     }
 
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -3720,7 +3987,10 @@ impl From<axum::http::Error> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_imported_title;
+    use super::{
+        HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
+        normalize_asin, parse_origin_list, parse_range,
+    };
 
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {
@@ -3736,5 +4006,141 @@ mod tests {
             "Dune [Unabridged]"
         );
         assert_eq!(clean_imported_title("[B002V1OF70]"), "[B002V1OF70]");
+    }
+
+    #[test]
+    fn parse_range_handles_common_forms() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=500-", 1000), Some((500, 999)));
+        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-4999", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn parse_range_rejects_unsatisfiable_ranges() {
+        assert_eq!(parse_range("bytes=-0", 1000), None);
+        assert_eq!(parse_range("bytes=1000-", 1000), None);
+        assert_eq!(parse_range("bytes=5-2", 1000), None);
+        assert_eq!(parse_range("items=0-99", 1000), None);
+        assert_eq!(parse_range("bytes=abc-def", 1000), None);
+    }
+
+    #[test]
+    fn suffix_range_longer_than_file_starts_at_zero() {
+        assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn normalize_asin_accepts_only_audible_ids() {
+        assert_eq!(
+            normalize_asin(" B002v1of70 "),
+            Some("B002V1OF70".to_string())
+        );
+        assert_eq!(normalize_asin("B002V1OF7"), None);
+        assert_eq!(normalize_asin("1234567890"), None);
+        assert_eq!(normalize_asin("B002V1OF7!"), None);
+    }
+
+    #[test]
+    fn parse_origin_list_splits_and_normalizes() {
+        assert_eq!(
+            parse_origin_list("https://a.example/, http://b.example:5173 ,,".to_string()),
+            vec![
+                "https://a.example".to_string(),
+                "http://b.example:5173".to_string()
+            ]
+        );
+        assert!(parse_origin_list("  ".to_string()).is_empty());
+    }
+
+    #[test]
+    fn if_none_match_recognizes_matching_etags() {
+        let etag = bytes_etag(b"cover-bytes");
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(super::IF_NONE_MATCH, etag.parse().unwrap());
+        assert!(if_none_match_matches(&headers, &etag));
+
+        let mut weak = HeaderMap::new();
+        weak.insert(
+            super::IF_NONE_MATCH,
+            format!("W/{etag}, \"other\"").parse().unwrap(),
+        );
+        assert!(if_none_match_matches(&weak, &etag));
+
+        let mut star = HeaderMap::new();
+        star.insert(super::IF_NONE_MATCH, "*".parse().unwrap());
+        assert!(if_none_match_matches(&star, &etag));
+
+        let mut mismatch = HeaderMap::new();
+        mismatch.insert(super::IF_NONE_MATCH, "\"different\"".parse().unwrap());
+        assert!(!if_none_match_matches(&mismatch, &etag));
+        assert!(!if_none_match_matches(&HeaderMap::new(), &etag));
+    }
+
+    #[test]
+    fn login_throttle_key_is_bounded() {
+        let long_name = "A".repeat(10_000);
+        let key = super::login_throttle_key(&long_name);
+        assert_eq!(key.chars().count(), super::LOGIN_THROTTLE_KEY_MAX_CHARS);
+        assert_eq!(super::login_throttle_key(" Reader "), " reader ");
+    }
+
+    #[test]
+    fn login_throttle_locks_after_max_failures() {
+        let now = 10_000;
+        let below_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES - 1,
+            last_failure: now,
+        };
+        assert!(!below_limit.is_locked(now));
+
+        let at_limit = LoginThrottle {
+            failures: super::LOGIN_MAX_FAILURES,
+            last_failure: now,
+        };
+        assert!(at_limit.is_locked(now));
+        assert!(at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS - 1));
+        assert!(!at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS));
+        assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
+    }
+
+    #[test]
+    fn prune_finished_jobs_keeps_running_and_newest() {
+        let mut jobs = std::collections::HashMap::new();
+        for index in 0..(super::MAX_TRACKED_JOBS + 10) {
+            let id = format!("job-{index}");
+            jobs.insert(
+                id.clone(),
+                super::JobStatus {
+                    id,
+                    kind: "test".to_string(),
+                    status: if index == 0 { "running" } else { "completed" }.to_string(),
+                    started_at: index.to_string(),
+                    finished_at: None,
+                    exit_code: None,
+                    output: String::new(),
+                    error: None,
+                },
+            );
+        }
+        super::prune_finished_jobs(&mut jobs);
+        assert_eq!(jobs.len(), super::MAX_TRACKED_JOBS);
+        // The running job survives even though it is the oldest.
+        assert!(jobs.contains_key("job-0"));
+        // The oldest finished jobs are the ones dropped.
+        assert!(!jobs.contains_key("job-1"));
+        assert!(jobs.contains_key(&format!("job-{}", super::MAX_TRACKED_JOBS + 9)));
+    }
+
+    #[test]
+    fn sessions_expire_after_max_age() {
+        let session = Session {
+            user_id: "user".to_string(),
+            created_at: 1_000,
+        };
+        assert!(!session.is_expired(1_000 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
+        assert!(session.is_expired(1_001 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
     }
 }

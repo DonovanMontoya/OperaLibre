@@ -45,6 +45,7 @@ import {
   hasUserConfiguredServer,
   liberateAllLibationBooks,
   liberateLibationBook,
+  listJobs,
   logout as apiLogout,
   mediaUrl,
   readalongUrl,
@@ -939,8 +940,24 @@ function MainApp({
   }, []);
 
   useEffect(() => {
-    void loadLibationStatus();
-  }, [loadLibationStatus]);
+    if (currentUser.isAdmin) {
+      void loadLibationStatus();
+    }
+  }, [currentUser.isAdmin, loadLibationStatus]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin) {
+      return;
+    }
+    void listJobs()
+      .then((jobs) => {
+        const running = jobs.find((job) => job.status === "running");
+        if (running) {
+          setActiveJob((existing) => existing ?? running);
+        }
+      })
+      .catch(() => undefined);
+  }, [currentUser.isAdmin]);
 
   useEffect(() => {
     if (librarySource === "audible" && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
@@ -1432,9 +1449,11 @@ function MainApp({
             <h1>Audio <span className="amp">&amp;</span> Books</h1>
           </div>
           <div className="pane-actions">
-            <button className="icon-button" aria-label="Rescan library" onClick={() => void refreshLibrary()}>
-              <RefreshCcw size={16} />
-            </button>
+            {currentUser.isAdmin ? (
+              <button className="icon-button" aria-label="Rescan library" onClick={() => void refreshLibrary()}>
+                <RefreshCcw size={16} />
+              </button>
+            ) : null}
             <div className="user-menu-wrap">
               <button
                 className="icon-button"
@@ -1543,29 +1562,31 @@ function MainApp({
             </div>
           </div>
 
-          <div className="source-toggle" role="group" aria-label="Library source">
-            <button
-              type="button"
-              className={librarySource === "local" ? "selected" : ""}
-              onClick={() => setLibrarySource("local")}
-              aria-pressed={librarySource === "local"}
-            >
-              <Library size={13} />
-              <span>Local</span>
-            </button>
-            <button
-              type="button"
-              className={librarySource === "audible" ? "selected" : ""}
-              onClick={() => setLibrarySource("audible")}
-              aria-pressed={librarySource === "audible"}
-            >
-              <Cloud size={13} />
-              <span>Audible</span>
-            </button>
-          </div>
+          {currentUser.isAdmin ? (
+            <div className="source-toggle" role="group" aria-label="Library source">
+              <button
+                type="button"
+                className={librarySource === "local" ? "selected" : ""}
+                onClick={() => setLibrarySource("local")}
+                aria-pressed={librarySource === "local"}
+              >
+                <Library size={13} />
+                <span>Local</span>
+              </button>
+              <button
+                type="button"
+                className={librarySource === "audible" ? "selected" : ""}
+                onClick={() => setLibrarySource("audible")}
+                aria-pressed={librarySource === "audible"}
+              >
+                <Cloud size={13} />
+                <span>Audible</span>
+              </button>
+            </div>
+          ) : null}
         </div>
 
-        {librarySource === "audible" ? (
+        {currentUser.isAdmin && librarySource === "audible" ? (
           <section className="libation-panel">
             <div className="libation-status">
               {libationStatus?.enabled ? <Cloud size={15} /> : <ServerOff size={15} />}

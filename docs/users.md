@@ -19,9 +19,9 @@ If you ever delete `users.json`, the server returns to first-run mode on the nex
 | --- | --- | --- |
 | Accounts | `data/users.json` (configurable via `users_file`) | JSON, passwords hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2) |
 | Progress | `data/progress.json` (configurable via `progress_file`) | JSON, keyed per user and per book |
-| Sessions | In-memory only | Cleared on server restart |
+| Sessions | `data/sessions.json` | JSON, random opaque tokens |
 
-Because sessions live in memory, restarting the server signs everyone out. Their accounts and progress survive — they just need to log back in.
+Sessions are persisted to disk, so restarting the server does not sign anyone out. Each session expires 30 days after sign-in.
 
 ## Roles
 
@@ -47,11 +47,13 @@ The web app exchanges a username + password for a session token. The token is se
 - As a cookie/`Authorization` header for normal API calls
 - As a `?token=` query parameter on `<audio>` and `<img>` URLs, so plain HTML elements stay authenticated when streaming audio, fetching cover art, or downloading a zip of a book
 
-Tokens are random opaque strings. Sessions expire only on logout, account deletion, or server restart.
+Tokens are random opaque strings. Sessions end on logout, account deletion, or 30 days after sign-in.
+
+Failed sign-ins are rate limited per username: after 5 consecutive failures, further attempts for that username are rejected for 60 seconds.
 
 ## Resetting a forgotten admin password
 
-Sessions are in-memory but accounts are on disk, so a lost admin password is recoverable:
+Accounts are plain JSON on disk, so a lost admin password is recoverable:
 
 1. Stop the server.
 2. Open `data/users.json` and delete the offending user object — or delete the whole file to return to first-run setup.

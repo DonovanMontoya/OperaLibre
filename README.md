@@ -52,7 +52,7 @@ The server owns library scanning, authentication, metadata extraction, cover art
 - Stream audio from the `streamUrl` returned by book detail responses; the server supports HTTP range requests for seeking.
 - See [docs/api.md](docs/api.md) for the current endpoint list and response conventions.
 
-For production deployments, the simplest custom-client setup is to serve the frontend and API from the same origin through the Rust server or a reverse proxy. If they are served from different origins, review the server CORS behavior and proxy configuration before exposing it outside a trusted network.
+For production deployments, the simplest setup is single-origin: build the web app with `npm run build` and set `web_dist_dir = apps/web/dist` in `server.config` so the Rust server serves both the frontend and the API (a reverse proxy works too). If they are served from different origins, set `allowed_origins` in `server.config` to the frontend origins before exposing the server outside a trusted network; when it is unset, the server reflects any requesting origin.
 
 ### Development tools
 
@@ -127,7 +127,7 @@ The server requires sign-in before any audiobook data is exposed. The first brow
 - Accounts are stored in `data/users.json` (configurable via `users_file`). Passwords are hashed with Argon2.
 - Playback progress is tracked per user, so each reader has their own bookmarks.
 - Administrators can add or remove readers, and reset any password, from the **Manage readers** menu under the avatar in the library pane.
-- Sessions live in memory. Restarting the server signs everyone out — they keep their progress and just need to log back in.
+- Sessions are stored in `data/sessions.json` and survive server restarts. They expire after 30 days, matching the session cookie lifetime.
 - Streaming, cover art, and zip download requests carry the session token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated.
 
 ## Next build slices

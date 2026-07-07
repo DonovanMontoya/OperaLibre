@@ -53,9 +53,9 @@ See [Resetting a forgotten admin password](users.md#resetting-a-forgotten-admin-
 
 See [Libation troubleshooting](libation.md#troubleshooting).
 
-## Sessions get cleared every restart
+## Everyone was signed out
 
-That's by design — sessions live in memory. Accounts and progress survive. Users will need to sign in again.
+Sessions are stored in `data/sessions.json` and survive restarts, but they expire 30 days after sign-in. If everyone was signed out at once, check whether `sessions.json` was deleted or the `data` directory changed.
 
 ## CORS errors in the browser console
 
