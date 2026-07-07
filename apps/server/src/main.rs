@@ -15,7 +15,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
 use id3::frame::Content as Id3Content;
@@ -45,6 +45,7 @@ use tokio::{
 use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
@@ -505,6 +506,7 @@ struct ServerConfig {
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
     allowed_origins: Vec<String>,
+    web_dist_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -564,6 +566,8 @@ impl ServerConfig {
                 .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
                 .map(parse_origin_list)
                 .unwrap_or_default(),
+            web_dist_dir: config_path_value(&values, &config_dir, "web_dist_dir")
+                .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
     }
 }
@@ -597,6 +601,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "libation_cli_path",
         "libation_files_dir",
         "allowed_origins",
+        "web_dist_dir",
     ];
     let mut values = HashMap::new();
 
@@ -759,7 +764,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health))
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
-        .route("/api/auth/login", post(login));
+        .route("/api/auth/login", post(login))
+        // Catch-all so unknown API paths return a JSON 404 instead of
+        // falling through to the SPA fallback (or the auth middleware).
+        .route("/api/{*path}", any(api_not_found));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -781,6 +789,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/libation/books/{asin}/liberate",
             post(liberate_libation_book),
         )
+        .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
@@ -819,8 +828,21 @@ async fn main() -> anyhow::Result<()> {
         AllowOrigin::list(origins)
     };
 
-    let app = public_routes
-        .merge(protected_routes)
+    let mut app = public_routes.merge(protected_routes);
+    if let Some(dist_dir) = config.web_dist_dir.as_ref() {
+        if dist_dir.join("index.html").is_file() {
+            tracing::info!("serving web app from {}", dist_dir.display());
+            app = app.fallback_service(
+                ServeDir::new(dist_dir).fallback(ServeFile::new(dist_dir.join("index.html"))),
+            );
+        } else {
+            tracing::warn!(
+                "web_dist_dir {} has no index.html; static file serving disabled",
+                dist_dir.display()
+            );
+        }
+    }
+    let app = app
         .layer(
             CorsLayer::new()
                 .allow_origin(allow_origin)
@@ -837,6 +859,10 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn api_not_found() -> ApiError {
+    ApiError::not_found("Unknown API route")
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -1213,6 +1239,21 @@ async fn liberate_all_libation_books(
     });
 
     Ok(Json(JobCreated { job_id }))
+}
+
+async fn list_jobs(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<Vec<JobStatus>>, ApiError> {
+    require_admin(&auth)?;
+    let jobs = state.jobs.read().await;
+    let mut list: Vec<JobStatus> = jobs.values().cloned().collect();
+    list.sort_by_key(|job| std::cmp::Reverse(job_started_seconds(job)));
+    Ok(Json(list))
+}
+
+fn job_started_seconds(job: &JobStatus) -> u64 {
+    job.started_at.parse().unwrap_or(0)
 }
 
 async fn get_job(
@@ -2916,8 +2957,32 @@ async fn create_job(state: &AppState, kind: &str) -> String {
         output: String::new(),
         error: None,
     };
-    state.jobs.write().await.insert(id.clone(), job);
+    let mut jobs = state.jobs.write().await;
+    jobs.insert(id.clone(), job);
+    prune_finished_jobs(&mut jobs);
     id
+}
+
+const MAX_TRACKED_JOBS: usize = 50;
+
+/// Drops the oldest finished jobs once the map exceeds the cap, so job
+/// history doesn't grow without bound. Running jobs are never removed.
+fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
+    if jobs.len() <= MAX_TRACKED_JOBS {
+        return;
+    }
+    let mut finished: Vec<(String, u64)> = jobs
+        .values()
+        .filter(|job| job.status != "running")
+        .map(|job| (job.id.clone(), job_started_seconds(job)))
+        .collect();
+    finished.sort_by_key(|(_, started_at)| *started_at);
+    for (job_id, _) in finished {
+        if jobs.len() <= MAX_TRACKED_JOBS {
+            break;
+        }
+        jobs.remove(&job_id);
+    }
 }
 
 async fn update_job_output(state: &AppState, job_id: &str, text: &str) {
@@ -4039,6 +4104,34 @@ mod tests {
         assert!(at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS - 1));
         assert!(!at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS));
         assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
+    }
+
+    #[test]
+    fn prune_finished_jobs_keeps_running_and_newest() {
+        let mut jobs = std::collections::HashMap::new();
+        for index in 0..(super::MAX_TRACKED_JOBS + 10) {
+            let id = format!("job-{index}");
+            jobs.insert(
+                id.clone(),
+                super::JobStatus {
+                    id,
+                    kind: "test".to_string(),
+                    status: if index == 0 { "running" } else { "completed" }.to_string(),
+                    started_at: index.to_string(),
+                    finished_at: None,
+                    exit_code: None,
+                    output: String::new(),
+                    error: None,
+                },
+            );
+        }
+        super::prune_finished_jobs(&mut jobs);
+        assert_eq!(jobs.len(), super::MAX_TRACKED_JOBS);
+        // The running job survives even though it is the oldest.
+        assert!(jobs.contains_key("job-0"));
+        // The oldest finished jobs are the ones dropped.
+        assert!(!jobs.contains_key("job-1"));
+        assert!(jobs.contains_key(&format!("job-{}", super::MAX_TRACKED_JOBS + 9)));
     }
 
     #[test]

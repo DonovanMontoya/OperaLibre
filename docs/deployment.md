@@ -96,6 +96,20 @@ Drop the following at `~/Library/LaunchAgents/com.you.operalibre.plist` and load
 </plist>
 ```
 
+## Serving the web app from the server
+
+The simplest single-origin deployment needs no reverse proxy at all: build the frontend and point the server at the bundle.
+
+```bash
+npm run build
+```
+
+```config
+web_dist_dir = apps/web/dist
+```
+
+The server then serves the frontend at `/` and the API at `/api/...` from the same origin. Unknown paths fall back to `index.html` for client-side routing. Use a reverse proxy in front when you need TLS.
+
 ## Reverse proxy with TLS (nginx)
 
 ```nginx
