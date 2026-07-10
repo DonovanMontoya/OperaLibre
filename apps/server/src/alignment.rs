@@ -1067,7 +1067,9 @@ mod tests {
     fn html_to_text_keeps_offsets_with_unicode_case_folding() {
         // `İ` changes byte length under Unicode lowercasing; scanning must
         // stay aligned with the original bytes.
-        let text = html_to_text("<html><head><title>İİİİ</title></head><body><p>İstanbul is old.</p></body></html>");
+        let text = html_to_text(
+            "<html><head><title>İİİİ</title></head><body><p>İstanbul is old.</p></body></html>",
+        );
         assert!(text.contains("İstanbul is old."));
         assert!(!text.contains("İİİİ"));
     }
