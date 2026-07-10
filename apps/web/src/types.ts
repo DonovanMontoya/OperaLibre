@@ -5,6 +5,7 @@ export type Track = {
   index: number;
   durationSeconds: number | null;
   streamUrl: string;
+  downloadUrl?: string;
   chapters: Chapter[];
   metadata: MetadataSummary;
 };
@@ -17,6 +18,7 @@ export type Book = {
   durationSeconds: number | null;
   trackCount: number;
   coverArtUrl: string | null;
+  coverArtContentType: string | null;
   description: string | null;
   genres: string[];
   publishedDate: string | null;
@@ -175,6 +177,8 @@ export type AuthUser = {
   isAdmin: boolean;
   createdAt: string;
 };
+
+export type ServerType = "operalibre" | "jellyfin";
 
 export type AuthStatus = {
   setupRequired: boolean;

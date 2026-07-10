@@ -38,6 +38,7 @@ import {
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { progressTimestamp } from "./reliability";
 import {
   bookDownloadUrl,
   clearServerUrl,
@@ -51,14 +52,19 @@ import {
   getLibationStatus,
   getMe,
   getProgress,
+  getServerStorageKey,
+  getServerUrl,
+  getServerType,
   getStoredToken,
   hasUserConfiguredServer,
+  isNetworkError,
   liberateAllLibationBooks,
   liberateLibationBook,
   listJobs,
   logout as apiLogout,
   mediaUrl,
   readalongUrl,
+  reportPlaybackStarted,
   rescanLibrary,
   saveProgress,
   setStoredToken,
@@ -66,6 +72,22 @@ import {
   syncLibationLibrary,
   updateBookMetadata
 } from "./api";
+import {
+  cacheLibrary,
+  cacheOfflineUser,
+  cacheProgress,
+  downloadBookForOffline,
+  getCachedLibrary,
+  getCachedProgress,
+  getOfflineCoverUrl,
+  getOfflineTrackUrl,
+  getOfflineUser,
+  isBookDownloaded,
+  releaseOfflineMediaUrl,
+  removeBookDownload
+} from "./offline";
+import { isNativeApp } from "./api";
+import { haptic } from "./native";
 import { AuthGate, ServerSetup, UserManagementModal } from "./Auth";
 import { ProfilePage } from "./Profile";
 import type {
@@ -79,6 +101,7 @@ import type {
   LibationStatus,
   SyncFragment,
   SyncMap,
+  Progress,
   Track
 } from "./types";
 
@@ -126,6 +149,21 @@ function formatTime(value: number | null | undefined) {
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function formatLibationMessage(status: LibationStatus | null): string | null {
+  const rawMessage = status?.message?.trim();
+  if (!rawMessage) {
+    return null;
+  }
+
+  if (/Cannot find settings files at/i.test(rawMessage)) {
+    const serverUrl = getServerUrl();
+    const configuredPath = status?.libationFilesDir ? `\`${status.libationFilesDir}\`` : "`libation_files_dir`";
+    return `The connected OperaLibre server at ${serverUrl} cannot read Libation's settings files. Configure ${configuredPath} on the server to point at the LibationFiles folder that contains AccountsSettings.json and Settings.json, then restart the server.`;
+  }
+
+  return rawMessage;
 }
 
 function metadataEditorFromBook(book: Book): MetadataEditorState {
@@ -287,7 +325,7 @@ function canPreviewReadalong(book: Book) {
 }
 
 function storedStateKey(userId: string, field: "selectedBookId" | "playbackBookId") {
-  return `${APP_STATE_STORAGE_PREFIX}.${userId}.${field}`;
+  return `${APP_STATE_STORAGE_PREFIX}.${getServerStorageKey()}.${userId}.${field}`;
 }
 
 function readStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId") {
@@ -622,6 +660,7 @@ function EpubReadalong({
         readyTimeout = window.setTimeout(() => {
           if (!cancelled) {
             setError("This EPUB is taking longer than expected to open.");
+            abortController.abort();
           }
         }, 15000);
 
@@ -1072,16 +1111,134 @@ function EpubReadalong({
   return focusMode ? createPortal(reader, document.body) : reader;
 }
 
+function DownloadRing({ fraction }: { fraction: number | null }) {
+  const radius = 5.5;
+  const circumference = 2 * Math.PI * radius;
+  const filled = fraction === null ? 0.28 : Math.max(0.02, Math.min(1, fraction));
+  return (
+    <svg
+      className={`download-ring ${fraction === null ? "indeterminate" : ""}`}
+      viewBox="0 0 14 14"
+      width={14}
+      height={14}
+      role="img"
+      aria-label={fraction === null ? "Preparing download" : `Downloading, ${Math.round(fraction * 100)}%`}
+    >
+      <circle className="download-ring-track" cx="7" cy="7" r={radius} />
+      <circle
+        className="download-ring-fill"
+        cx="7"
+        cy="7"
+        r={radius}
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - filled)}
+      />
+    </svg>
+  );
+}
+
 function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   const className = size === "small" ? "cover-mark" : "large-cover";
-  if (book.coverArtUrl) {
-    return <img className={className} src={mediaUrl(book.coverArtUrl)} alt="" />;
+  const [offlineCoverUrl, setOfflineCoverUrl] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    let resolvedUrl: string | null = null;
+    setLoadFailed(false);
+    if (isNativeApp()) {
+      void getOfflineCoverUrl(book).then((url) => {
+        resolvedUrl = url;
+        if (active) {
+          setOfflineCoverUrl(url);
+          // A downloaded cover can arrive after the network fetch failed.
+          if (url) setLoadFailed(false);
+        } else {
+          releaseOfflineMediaUrl(url);
+        }
+      });
+    }
+    return () => {
+      active = false;
+      releaseOfflineMediaUrl(resolvedUrl);
+    };
+  }, [book]);
+  if (book.coverArtUrl && !loadFailed) {
+    return (
+      <img
+        className={className}
+        src={offlineCoverUrl ?? mediaUrl(book.coverArtUrl)}
+        alt=""
+        onError={() => setLoadFailed(true)}
+      />
+    );
   }
   return (
     <span className={className} aria-hidden="true">
       <Headphones size={size === "small" ? 22 : 42} strokeWidth={1.25} />
     </span>
   );
+}
+
+const PULL_REFRESH_THRESHOLD = 64;
+
+/**
+ * iOS-style pull-to-refresh. Tracks a downward drag that starts with the
+ * pane scrolled to the top and fires `onRefresh` once the pull passes the
+ * threshold. Disabled (no handlers attached) outside the native shell.
+ */
+function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unknown>) {
+  const [pull, setPull] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const startY = useRef<number | null>(null);
+  const pullDistance = useRef(0);
+
+  function updatePull(next: number) {
+    if (pullDistance.current < PULL_REFRESH_THRESHOLD && next >= PULL_REFRESH_THRESHOLD) {
+      haptic("light");
+    }
+    pullDistance.current = next;
+    setPull(next);
+  }
+
+  function onTouchStart(event: React.TouchEvent<HTMLElement>) {
+    if (refreshing) {
+      return;
+    }
+    startY.current = event.currentTarget.scrollTop <= 0 ? event.touches[0].clientY : null;
+  }
+
+  function onTouchMove(event: React.TouchEvent<HTMLElement>) {
+    if (refreshing || startY.current === null) {
+      return;
+    }
+    if (event.currentTarget.scrollTop > 0) {
+      startY.current = null;
+      updatePull(0);
+      return;
+    }
+    const delta = event.touches[0].clientY - startY.current;
+    updatePull(delta > 0 ? Math.min(96, delta * 0.45) : 0);
+  }
+
+  function settle() {
+    const distance = pullDistance.current;
+    startY.current = null;
+    updatePull(0);
+    if (!refreshing && distance >= PULL_REFRESH_THRESHOLD) {
+      haptic("medium");
+      setRefreshing(true);
+      void onRefresh().finally(() => setRefreshing(false));
+    }
+  }
+
+  if (!enabled) {
+    return { pull: 0, refreshing: false, handlers: {} };
+  }
+  return {
+    pull,
+    refreshing,
+    handlers: { onTouchStart, onTouchMove, onTouchEnd: settle, onTouchCancel: settle }
+  };
 }
 
 export default function App() {
@@ -1106,6 +1263,7 @@ export default function App() {
         return;
       }
       if (status.user) {
+        cacheOfflineUser(status.user);
         setAuthState({ phase: "ready", user: status.user });
         return;
       }
@@ -1116,13 +1274,22 @@ export default function App() {
       }
       try {
         const user = await getMe();
+        cacheOfflineUser(user);
         setAuthState({ phase: "ready", user });
-      } catch {
+      } catch (error) {
+        // Keep the token when the server is simply unreachable; only a real
+        // rejection should end the session.
+        if (isNetworkError(error)) {
+          const offlineUser = getOfflineUser();
+          setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
+          return;
+        }
         setStoredToken(null);
         setAuthState({ phase: "login" });
       }
     } catch {
-      setAuthState({ phase: "login" });
+      const offlineUser = getOfflineUser();
+      setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
     }
   }, []);
 
@@ -1162,6 +1329,7 @@ export default function App() {
         mode={authState.phase}
         onAuthenticated={(token, user) => {
           setStoredToken(token);
+          cacheOfflineUser(user);
           setAuthState({ phase: "ready", user });
         }}
         onChangeServer={() => {
@@ -1196,10 +1364,14 @@ function MainApp({
   currentUser: AuthUser;
   onLogout: () => void | Promise<void>;
 }) {
+  const isOperaLibre = getServerType() === "operalibre";
+  const native = isNativeApp();
+  const [nativeTab, setNativeTab] = useState<"shelf" | "reading" | "ledger">("reading");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
+  const progressSaveInFlight = useRef(false);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -1219,6 +1391,7 @@ function MainApp({
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("title");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
@@ -1234,6 +1407,7 @@ function MainApp({
   const [libationLoading, setLibationLoading] = useState(false);
   const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
+  const libationMessage = formatLibationMessage(libationStatus);
   const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
@@ -1242,6 +1416,14 @@ function MainApp({
   const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
+  // null while the disk lookup for the current track is in flight; url null
+  // means the track is not downloaded and should stream.
+  const [offlineSource, setOfflineSource] = useState<{ trackId: string; url: string | null } | null>(null);
+  const wantsAutoplayRef = useRef(false);
+  const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
+  const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
+  // fraction is 0–1 across the whole book; null means size not yet known.
+  const [activeDownload, setActiveDownload] = useState<{ bookId: string; fraction: number | null } | null>(null);
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -1309,7 +1491,14 @@ function MainApp({
   }, [currentTrackId, playbackBook]);
 
   const activeTrackIndex = currentTrackIndex(playbackBook, currentTrack);
-  const streamUrl = currentTrack ? mediaUrl(currentTrack.streamUrl) : "";
+  const offlineSourceUrl =
+    offlineSource && offlineSource.trackId === currentTrack?.id ? offlineSource.url : null;
+  // On native, keep the audio source empty until the disk lookup answers so a
+  // downloaded track plays from its file instead of first hitting the network
+  // (which fails offline and can consume the pending resume seek).
+  const offlineSourcePending = native && !!currentTrack && offlineSource?.trackId !== currentTrack.id;
+  const streamUrl =
+    !currentTrack || offlineSourcePending ? "" : offlineSourceUrl ?? mediaUrl(currentTrack.streamUrl);
   const sliderMax = duration || currentTrack?.durationSeconds || 0;
   const bookDuration = playbackBook?.durationSeconds ?? (playbackBook ? durationFromTracks(playbackBook) : 0);
   const bookPosition =
@@ -1381,6 +1570,7 @@ function MainApp({
     try {
       const nextBooks = await getBooks();
       setBooks(nextBooks);
+      if (isNativeApp()) void cacheLibrary(currentUser.id, nextBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
@@ -1392,11 +1582,53 @@ function MainApp({
         )
       );
     } catch {
-      setError("The audiobook server is not reachable.");
+      const cached = isNativeApp() ? await getCachedLibrary(currentUser.id) : [];
+      if (cached.length) {
+        setBooks(cached);
+        setError("Offline mode — showing downloaded books and cached library.");
+      } else {
+        setError("The audiobook server is not reachable.");
+      }
     } finally {
       setIsLoading(false);
     }
   }, [currentUser.id]);
+
+  useEffect(() => {
+    if (!isNativeApp() || !books.length) return;
+    void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
+      .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
+  }, [books]);
+
+  useEffect(() => {
+    let active = true;
+    let resolvedUrl: string | null = null;
+    setOfflineSource(null);
+    if (isNativeApp() && playbackBook && currentTrack) {
+      const trackId = currentTrack.id;
+      void getOfflineTrackUrl(playbackBook, currentTrack)
+        .catch(() => null)
+        .then((url) => {
+          resolvedUrl = url;
+          if (active) setOfflineSource({ trackId, url });
+          else releaseOfflineMediaUrl(url);
+        });
+    }
+    return () => {
+      active = false;
+      releaseOfflineMediaUrl(resolvedUrl);
+    };
+  }, [currentTrack, playbackBook]);
+
+  // Autoplay requested while the audio source was still resolving (native disk
+  // lookup): start playback as soon as the source lands.
+  useEffect(() => {
+    if (!streamUrl || !wantsAutoplayRef.current) {
+      return;
+    }
+    wantsAutoplayRef.current = false;
+    window.setTimeout(() => void audioRef.current?.play(), 0);
+  }, [streamUrl]);
 
   useEffect(() => {
     void loadBooks();
@@ -1466,13 +1698,17 @@ function MainApp({
   }, [loadBooks, syncJob]);
 
   const loadLibationStatus = useCallback(async () => {
+    if (!isOperaLibre || !currentUser.isAdmin) {
+      setLibationStatus(null);
+      return;
+    }
     try {
       const status = await getLibationStatus();
       setLibationStatus(status);
     } catch {
       setLibationStatus(null);
     }
-  }, []);
+  }, [currentUser.isAdmin, isOperaLibre]);
 
   const loadLibationBooks = useCallback(async () => {
     setLibationLoading(true);
@@ -1481,13 +1717,14 @@ function MainApp({
       const nextBooks = await getLibationBooks();
       setLibationBooks(nextBooks);
       setLibationBooksLoaded(true);
+      await loadLibationStatus();
     } catch {
       setLibationError("Libation books could not be loaded.");
       setLibationBooksLoaded(true);
     } finally {
       setLibationLoading(false);
     }
-  }, []);
+  }, [loadLibationStatus]);
 
   useEffect(() => {
     if (currentUser.isAdmin) {
@@ -1542,26 +1779,58 @@ function MainApp({
     }
 
     let cancelled = false;
-    void getProgress(playbackBook.id)
-      .then((progress) => {
-        if (cancelled) {
-          return;
+    const applyProgress = (progress: Progress | null) => {
+      if (cancelled) {
+        return;
+      }
+      const savedTrack = playbackBook.tracks.find((track) => track.id === progress?.trackId);
+      setCurrentTrackId(savedTrack?.id ?? playbackBook.tracks[0]?.id ?? null);
+      setPendingSeek(savedTrack ? progress?.positionSeconds ?? 0 : 0);
+    };
+
+    void (async () => {
+      const cached = isNativeApp()
+        ? await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
+        : null;
+      let server: Progress | null = null;
+      let serverReachable = true;
+      try {
+        server = await getProgress(playbackBook.id);
+      } catch {
+        serverReachable = false;
+      }
+      if (cancelled) {
+        return;
+      }
+      // Progress saved while offline can be newer than the server's copy:
+      // resume from the freshest one, and sync it back up when it wins.
+      const cachedIsNewer =
+        !!cached &&
+        (!server || progressTimestamp(cached.updatedAt) > progressTimestamp(server.updatedAt));
+      if (cachedIsNewer) {
+        applyProgress(cached);
+        if (serverReachable) {
+          void saveProgress(
+            cached.bookId,
+            {
+              trackId: cached.trackId,
+              positionSeconds: cached.positionSeconds,
+              bookPositionSeconds: cached.bookPositionSeconds,
+              durationSeconds: cached.durationSeconds,
+              updatedAt: cached.updatedAt
+            },
+            { isPaused: true }
+          ).catch(() => undefined);
         }
-        const savedTrack = playbackBook.tracks.find((track) => track.id === progress?.trackId);
-        setCurrentTrackId(savedTrack?.id ?? playbackBook.tracks[0]?.id ?? null);
-        setPendingSeek(savedTrack ? progress?.positionSeconds ?? 0 : 0);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCurrentTrackId(playbackBook.tracks[0]?.id ?? null);
-          setPendingSeek(0);
-        }
-      });
+        return;
+      }
+      applyProgress(server ?? cached);
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [playbackBook]);
+  }, [currentUser.id, playbackBook]);
 
   useEffect(() => {
     if (!audioRef.current) {
@@ -1644,15 +1913,36 @@ function MainApp({
       return;
     }
 
-    const saved = await saveProgress(playbackBook.id, {
+    const localProgress = {
+      bookId: playbackBook.id,
       trackId: currentTrack.id,
       positionSeconds: audioRef.current.currentTime,
-      bookPositionSeconds:
-        trackOffsetSeconds(playbackBook, activeTrackIndex) + audioRef.current.currentTime,
-      durationSeconds: Number.isFinite(audioRef.current.duration)
-        ? audioRef.current.duration
-        : currentTrack.durationSeconds
-    }).catch(() => undefined);
+      bookPositionSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex) + audioRef.current.currentTime,
+      durationSeconds: Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
+      updatedAt: new Date().toISOString()
+    };
+    if (isNativeApp()) void cacheProgress(currentUser.id, localProgress);
+    if (progressSaveInFlight.current) {
+      return;
+    }
+    progressSaveInFlight.current = true;
+    const saved = await saveProgress(
+      playbackBook.id,
+      {
+        trackId: localProgress.trackId,
+        positionSeconds: localProgress.positionSeconds,
+        bookPositionSeconds: localProgress.bookPositionSeconds,
+        durationSeconds: localProgress.durationSeconds,
+        updatedAt: localProgress.updatedAt
+      },
+      { isPaused: audioRef.current.paused }
+      // Offline the save fails, but the position was cached above — keep the
+      // shelf's progress display moving from the local copy.
+    )
+      .catch(() => (isNativeApp() ? localProgress : undefined))
+      .finally(() => {
+        progressSaveInFlight.current = false;
+      });
     if (!saved) {
       return;
     }
@@ -1692,6 +1982,36 @@ function MainApp({
     );
   }
 
+  async function downloadForOffline(book: Book) {
+    setDownloadStatus(null);
+    setActiveDownload({ bookId: book.id, fraction: null });
+    try {
+      await downloadBookForOffline(book, mediaUrl, (done, total, percent) => {
+        const fraction = total > 0 ? Math.min(1, (done + (percent ?? 0) / 100) / total) : null;
+        setActiveDownload({ bookId: book.id, fraction });
+      });
+      setDownloadedBookIds((existing) => new Set(existing).add(book.id));
+      setDownloadStatus("Available offline");
+    } catch (downloadError) {
+      setDownloadStatus(errorMessage(downloadError, "Download failed."));
+    } finally {
+      setActiveDownload(null);
+    }
+  }
+
+  async function removeOfflineDownload(book: Book) {
+    await removeBookDownload(book);
+    setDownloadedBookIds((existing) => {
+      const next = new Set(existing);
+      next.delete(book.id);
+      return next;
+    });
+    if (playbackBook?.id === book.id) {
+      setOfflineSource(currentTrack ? { trackId: currentTrack.id, url: null } : null);
+    }
+    setDownloadStatus("Download removed");
+  }
+
   function onTimeUpdate() {
     const audio = audioRef.current;
     if (!audio) {
@@ -1712,6 +2032,7 @@ function MainApp({
     if (!audio) {
       return;
     }
+    setPlaybackError(null);
     audio.playbackRate = speed;
     audio.volume = volume;
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
@@ -1734,6 +2055,7 @@ function MainApp({
     if (!audio) {
       return;
     }
+    haptic("light");
     audio.currentTime = Math.max(0, Math.min(audio.duration || Infinity, audio.currentTime + delta));
     setPosition(audio.currentTime);
     void persistProgress();
@@ -1785,6 +2107,9 @@ function MainApp({
     setPendingSeek(trackPosition);
     setPosition(trackPosition);
     playWhenTrackLoads.current = autoPlay;
+    if (autoPlay) {
+      window.setTimeout(playWhenReady, 0);
+    }
   }
 
   function seekBookPosition(value: number, autoPlay = false) {
@@ -1795,12 +2120,24 @@ function MainApp({
     seekBookPositionInBook(playbackBook, value, autoPlay);
   }
 
+  // Start playback now if the <audio> element has a source, otherwise flag the
+  // intent so the streamUrl effect starts it once the disk lookup resolves.
+  function playWhenReady() {
+    const audio = audioRef.current;
+    if (audio?.getAttribute("src")) {
+      void audio.play();
+      return;
+    }
+    wantsAutoplayRef.current = true;
+  }
+
   function togglePlayback() {
     const audio = audioRef.current;
     if (!audio) {
       return;
     }
 
+    haptic("medium");
     if (audio.paused) {
       void audio.play();
     } else {
@@ -1833,6 +2170,9 @@ function MainApp({
     setPendingSeek(0);
     setPosition(0);
     playWhenTrackLoads.current = autoPlay;
+    if (autoPlay) {
+      window.setTimeout(playWhenReady, 0);
+    }
   }
 
   function jumpToChapter(chapter: Chapter) {
@@ -1861,14 +2201,27 @@ function MainApp({
     if (playbackBook) {
       setSelectedBookId(playbackBook.id);
     }
+    if (native) {
+      haptic("light");
+      setNativeTab("reading");
+      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
     playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openNativeTab(tab: "shelf" | "reading" | "ledger") {
+    haptic("light");
+    setNativeTab(tab);
   }
 
   async function refreshLibrary() {
     setIsLoading(true);
     try {
-      const nextBooks = await rescanLibrary();
+      const nextBooks = isOperaLibre && !currentUser.isAdmin
+        ? await getBooks()
+        : await rescanLibrary();
       setBooks(nextBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -1982,15 +2335,96 @@ function MainApp({
     }
   }
 
+  const showLedgerTab = native && isOperaLibre;
+
+  const refreshShelf = useCallback(async () => {
+    if (librarySource === "audible") {
+      await loadLibationBooks();
+    } else {
+      await loadBooks();
+    }
+  }, [librarySource, loadBooks, loadLibationBooks]);
+  const shelfPull = usePullToRefresh(native, refreshShelf);
+
+  const userMenu = (
+    <div className="user-menu" role="menu">
+      <div className="user-menu-head">
+        <strong>{currentUser.username}</strong>
+        <span>
+          {isOperaLibre
+            ? currentUser.isAdmin ? "Administrator" : "Reader"
+            : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
+        </span>
+      </div>
+      {isOperaLibre ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setUserMenuOpen(false);
+            if (native) {
+              openNativeTab("ledger");
+            } else {
+              setProfileOpen(true);
+            }
+          }}
+        >
+          <ScrollText size={14} /> Reader's ledger
+        </button>
+      ) : null}
+      {isOperaLibre && currentUser.isAdmin ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setUserMenuOpen(false);
+            setUsersModalOpen(true);
+          }}
+        >
+          <UserCog size={14} /> Manage readers
+        </button>
+      ) : null}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          setUserMenuOpen(false);
+          void onLogout();
+        }}
+      >
+        <LogOut size={14} /> Sign out
+      </button>
+    </div>
+  );
+
   return (
-    <main className="shell">
+    <main className={native ? `shell native-shell tab-${nativeTab}` : "shell"}>
+      {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
       <audio
         ref={audioRef}
-        src={streamUrl}
+        src={streamUrl || undefined}
         preload="metadata"
         onLoadedMetadata={onLoadedMetadata}
+        onError={() => {
+          const code = audioRef.current?.error?.code;
+          const message = code === MediaError.MEDIA_ERR_DECODE
+            ? "This audio file could not be decoded."
+            : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+              ? "This audio format is not supported on this device."
+              : code === MediaError.MEDIA_ERR_NETWORK
+                ? "Playback lost its connection to the audiobook server."
+                : "This audio track could not be loaded.";
+          setIsPlaying(false);
+          setPlaybackError(message);
+        }}
         onTimeUpdate={onTimeUpdate}
-        onPlay={() => setIsPlaying(true)}
+        onPlay={() => {
+          setPlaybackError(null);
+          setIsPlaying(true);
+          if (currentTrack && audioRef.current) {
+            void reportPlaybackStarted(currentTrack.id, audioRef.current.currentTime);
+          }
+        }}
         onPause={() => {
           setIsPlaying(false);
           void persistProgress();
@@ -2006,18 +2440,36 @@ function MainApp({
         onClick={() => setLibraryOpen(false)}
       />
 
-      <aside className={`library-pane ${libraryOpen ? "open" : ""}`}>
+      <aside className={`library-pane ${libraryOpen ? "open" : ""}`} {...shelfPull.handlers}>
+        {native ? (
+          <div
+            className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
+            style={
+              shelfPull.refreshing
+                ? undefined
+                : {
+                    opacity: Math.min(1, shelfPull.pull / PULL_REFRESH_THRESHOLD),
+                    transform: `translateX(-50%) rotate(${Math.round(shelfPull.pull * 2.8)}deg)`
+                  }
+            }
+            aria-hidden="true"
+          >
+            <RefreshCcw size={17} strokeWidth={2} />
+          </div>
+        ) : null}
         <div className="pane-title">
           <div>
             <span className="eyebrow"><Library size={13} /> The Collection</span>
             <h1>Audio <span className="amp">&amp;</span> Books</h1>
           </div>
           <div className="pane-actions">
-            {currentUser.isAdmin ? (
-              <button className="icon-button" aria-label="Rescan library" onClick={() => void refreshLibrary()}>
-                <RefreshCcw size={16} />
-              </button>
-            ) : null}
+            <button
+              className="icon-button"
+              aria-label={isOperaLibre && currentUser.isAdmin ? "Rescan library" : "Refresh library"}
+              onClick={() => void refreshLibrary()}
+            >
+              <RefreshCcw size={16} />
+            </button>
             <div className="user-menu-wrap">
               <button
                 className="icon-button"
@@ -2027,46 +2479,22 @@ function MainApp({
               >
                 <span className="user-avatar">{currentUser.username.slice(0, 1).toUpperCase()}</span>
               </button>
-              {userMenuOpen ? (
-                <div className="user-menu" role="menu">
-                  <div className="user-menu-head">
-                    <strong>{currentUser.username}</strong>
-                    <span>{currentUser.isAdmin ? "Administrator" : "Reader"}</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      setProfileOpen(true);
-                    }}
-                  >
-                    <ScrollText size={14} /> Reader's ledger
-                  </button>
-                  {currentUser.isAdmin ? (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        setUsersModalOpen(true);
-                      }}
-                    >
-                      <UserCog size={14} /> Manage readers
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      void onLogout();
-                    }}
-                  >
-                    <LogOut size={14} /> Sign out
-                  </button>
-                </div>
-              ) : null}
+              {userMenuOpen
+                ? native
+                  ? createPortal(
+                      <div className="user-menu-layer">
+                        <button
+                          type="button"
+                          className="user-menu-scrim"
+                          aria-label="Close menu"
+                          onClick={() => setUserMenuOpen(false)}
+                        />
+                        {userMenu}
+                      </div>,
+                      document.body
+                    )
+                  : userMenu
+                : null}
             </div>
             <button
               className="icon-button library-close"
@@ -2126,7 +2554,7 @@ function MainApp({
             </div>
           </div>
 
-          {currentUser.isAdmin ? (
+          {isOperaLibre && currentUser.isAdmin ? (
             <div className="source-toggle" role="group" aria-label="Library source">
               <button
                 type="button"
@@ -2163,7 +2591,7 @@ function MainApp({
               </span>
             </div>
 
-            {libationStatus?.message ? <p>{libationStatus.message}</p> : null}
+            {libationMessage ? <p>{libationMessage}</p> : null}
 
             {libationStatus?.accounts.length ? (
               <div className="account-list">
@@ -2260,9 +2688,12 @@ function MainApp({
                     onClick={() => {
                       selectBook(book);
                       setLibraryOpen(false);
+                      if (native) {
+                        openNativeTab("reading");
+                      }
                     }}
                   >
-                    {viewMode === "grid" || book.coverArtUrl ? (
+                    {native || viewMode === "grid" || book.coverArtUrl ? (
                       <CoverArt book={book} size="small" />
                     ) : (
                       <span className="index">{String(index + 1).padStart(2, "0")}</span>
@@ -2324,6 +2755,9 @@ function MainApp({
                           setSelectedBookId(book.localBookId);
                           setLibrarySource("local");
                           setLibraryOpen(false);
+                          if (native) {
+                            openNativeTab("reading");
+                          }
                         }}
                       >
                         <Library size={14} />
@@ -2371,7 +2805,7 @@ function MainApp({
                 <div className="heading-top">
                   <span className="eyebrow"><Bookmark size={13} /> Now Reading</span>
                   <div className="heading-actions">
-                    {currentUser.isAdmin ? (
+                    {isOperaLibre && currentUser.isAdmin ? (
                       <button
                         className="download-btn"
                         type="button"
@@ -2394,15 +2828,52 @@ function MainApp({
                         <span>Read Along</span>
                       </button>
                     ) : null}
-                    <a
-                      className="download-btn"
-                      href={bookDownloadUrl(selectedBook.id)}
-                      download
-                      aria-label={`Download ${selectedBook.title} as zip`}
-                    >
-                      <Download size={13} />
-                      <span>Download</span>
-                    </a>
+                    {isNativeApp() ? (
+                      <button
+                        className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
+                          activeDownload?.bookId === selectedBook.id ? "downloading" : ""
+                        }`}
+                        type="button"
+                        onClick={() =>
+                          void (downloadedBookIds.has(selectedBook.id)
+                            ? removeOfflineDownload(selectedBook)
+                            : downloadForOffline(selectedBook))
+                        }
+                        disabled={activeDownload !== null}
+                        aria-label={
+                          downloadedBookIds.has(selectedBook.id)
+                            ? `Remove downloaded copy of ${selectedBook.title}`
+                            : `Download ${selectedBook.title} for offline playback`
+                        }
+                      >
+                        {activeDownload?.bookId === selectedBook.id ? (
+                          <DownloadRing fraction={activeDownload.fraction} />
+                        ) : (
+                          <Download size={13} />
+                        )}
+                        <span>
+                          {activeDownload?.bookId === selectedBook.id
+                            ? activeDownload.fraction !== null
+                              ? `${Math.round(activeDownload.fraction * 100)}%`
+                              : "Preparing…"
+                            : downloadedBookIds.has(selectedBook.id)
+                              ? "Downloaded"
+                              : "Download"}
+                        </span>
+                      </button>
+                    ) : isOperaLibre ? (
+                      <a
+                        className="download-btn"
+                        href={bookDownloadUrl(selectedBook.id)}
+                        download
+                        aria-label={`Download ${selectedBook.title} as zip`}
+                      >
+                        <Download size={13} />
+                        <span>Download</span>
+                      </a>
+                    ) : null}
+                    {isNativeApp() && downloadStatus ? <span className="download-status">{downloadStatus}</span> : null}
+                    {playbackError ? <span className="download-status">{playbackError}</span> : null}
                   </div>
                 </div>
                 <h2>
@@ -2879,7 +3350,7 @@ function MainApp({
         </div>
       ) : null}
 
-      {profileOpen ? (
+      {isOperaLibre && profileOpen ? (
         <ProfilePage
           user={currentUser}
           onClose={() => setProfileOpen(false)}
@@ -2891,11 +3362,56 @@ function MainApp({
         />
       ) : null}
 
-      {usersModalOpen ? (
+      {isOperaLibre && usersModalOpen ? (
         <UserManagementModal
           currentUser={currentUser}
           onClose={() => setUsersModalOpen(false)}
         />
+      ) : null}
+
+      {showLedgerTab && nativeTab === "ledger" ? (
+        <ProfilePage
+          user={currentUser}
+          onClose={() => openNativeTab("reading")}
+          onOpenBook={(bookId) => {
+            setSelectedBookId(bookId);
+            openNativeTab("reading");
+          }}
+        />
+      ) : null}
+
+      {native ? (
+        <nav className="spine-tabs" aria-label="Primary">
+          <button
+            type="button"
+            className={`spine-tab ${nativeTab === "shelf" ? "active" : ""}`}
+            aria-current={nativeTab === "shelf" ? "page" : undefined}
+            onClick={() => openNativeTab("shelf")}
+          >
+            <Library size={20} strokeWidth={1.6} />
+            <span>Shelf</span>
+          </button>
+          <button
+            type="button"
+            className={`spine-tab ${nativeTab === "reading" ? "active" : ""}`}
+            aria-current={nativeTab === "reading" ? "page" : undefined}
+            onClick={() => openNativeTab("reading")}
+          >
+            <Headphones size={20} strokeWidth={1.6} />
+            <span>Reading</span>
+          </button>
+          {showLedgerTab ? (
+            <button
+              type="button"
+              className={`spine-tab ${nativeTab === "ledger" ? "active" : ""}`}
+              aria-current={nativeTab === "ledger" ? "page" : undefined}
+              onClick={() => openNativeTab("ledger")}
+            >
+              <ScrollText size={20} strokeWidth={1.6} />
+              <span>Ledger</span>
+            </button>
+          ) : null}
+        </nav>
       ) : null}
     </main>
   );

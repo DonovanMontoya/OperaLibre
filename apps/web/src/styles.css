@@ -28,10 +28,19 @@ html,
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
+  /* iOS ignores overflow-x on body alone; html needs it too or the
+     viewport itself can still be panned sideways. */
+  overflow-x: hidden;
+  /* Prevent iOS WKWebView from auto-inflating ("boosting") text sizes,
+     which otherwise renders rem-based type at ~3-4x on device. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
   min-width: 320px;
+  overflow-x: hidden;
   background: var(--paper);
   background-image:
     radial-gradient(
@@ -60,6 +69,8 @@ button {
   background: none;
   border: 0;
   padding: 0;
+  /* Remove the gray flash box iOS draws over tapped elements. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* --------- Shell --------- */
@@ -67,6 +78,7 @@ button {
   display: grid;
   grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* --------- Library spine --------- */
@@ -84,6 +96,9 @@ button {
   color: var(--paper);
   padding: 36px 28px 40px;
   overflow-y: auto;
+  /* overflow-y alone leaves overflow-x computed as auto, letting wide
+     content pan the whole pane sideways on touch screens. */
+  overflow-x: hidden;
   border-right: 1px solid #000;
   box-shadow: inset -10px 0 24px rgba(0, 0, 0, 0.55);
 }
@@ -164,7 +179,8 @@ button {
   outline: 0;
   padding: 0;
   font-family: "Fraunces", serif;
-  font-size: 0.95rem;
+  /* >=16px so iOS doesn't zoom the page when the field is focused. */
+  font-size: 1rem;
   font-style: italic;
   color: var(--paper);
 }
@@ -187,12 +203,14 @@ button {
 
 .library-sort {
   flex: 1;
+  min-width: 0;
   position: relative;
   display: flex;
 }
 
 .library-sort select {
   flex: 1;
+  min-width: 0;
   min-height: 36px;
   padding: 6px 30px 6px 12px;
   font-family: "JetBrains Mono", monospace;
@@ -854,7 +872,8 @@ button {
 .player-pane {
   position: relative;
   padding: clamp(28px, 5vw, 80px) clamp(28px, 6vw, 96px) 156px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: grid;
   align-content: start;
   gap: 36px;
@@ -995,6 +1014,50 @@ img.large-cover {
   transform: translateY(0);
 }
 
+.download-btn.downloading {
+  opacity: 1;
+}
+
+/* Keep the button from jittering as the percentage counts up. */
+.download-btn.downloading span {
+  min-width: 4ch;
+  text-align: left;
+}
+
+/* App Store-style download ring: dim full track, arc fills clockwise from 12 o'clock. */
+.download-ring {
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+}
+
+.download-ring circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.download-ring-track {
+  opacity: 0.25;
+}
+
+.download-ring-fill {
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s ease;
+}
+
+.download-ring.indeterminate {
+  animation: download-ring-spin 0.9s linear infinite;
+}
+
+@keyframes download-ring-spin {
+  from {
+    transform: rotate(-90deg);
+  }
+  to {
+    transform: rotate(270deg);
+  }
+}
+
 .book-heading h2 {
   margin: 14px 0 12px;
   font-family: "Fraunces", serif;
@@ -1004,6 +1067,7 @@ img.large-cover {
   letter-spacing: -0.035em;
   color: var(--ink);
   max-width: 14ch;
+  overflow-wrap: anywhere;
 }
 
 .book-heading h2 em {
@@ -1130,6 +1194,7 @@ img.large-cover {
 .readalong-frame {
   width: 100%;
   height: min(72vh, 780px);
+  height: min(72dvh, 780px);
   min-height: 420px;
   border: 1px solid rgba(26, 20, 16, 0.18);
   background: #fffdf7;
@@ -1321,6 +1386,7 @@ img.large-cover {
   position: relative;
   width: 100%;
   height: min(72vh, 780px);
+  height: min(72dvh, 780px);
   min-height: 420px;
   overflow: hidden;
   background: var(--reader-surface);
@@ -2247,6 +2313,23 @@ select:focus {
 }
 
 @media (max-width: 620px) {
+  .library-pane {
+    width: 100vw;
+    max-width: none;
+  }
+
+  .library-open-btn,
+  .download-btn,
+  .icon-button,
+  .view-toggle button {
+    min-height: 44px;
+  }
+
+  .player-pane {
+    gap: 20px;
+    padding-bottom: 176px;
+  }
+
   .folio {
     font-size: 0.62rem;
     letter-spacing: 0.18em;
@@ -2260,13 +2343,33 @@ select:focus {
   }
 
   .large-cover {
-    width: 132px;
+    width: min(44vw, 168px);
+    justify-self: center;
   }
 
   .book-heading h2 {
-    font-size: 2.4rem;
-    line-height: 0.98;
+    margin-top: 10px;
+    font-size: clamp(2rem, 10vw, 2.65rem);
+    line-height: 1;
     max-width: none;
+  }
+
+  .heading-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .heading-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .heading-actions .download-btn {
+    justify-content: center;
+    min-width: 0;
+    padding: 8px 10px;
+    letter-spacing: 0.12em;
   }
 
   .book-heading p {
@@ -2290,6 +2393,7 @@ select:focus {
   .readalong-frame {
     min-height: 360px;
     height: 62vh;
+    height: 62dvh;
   }
 
   .epub-toolbar {
@@ -2357,14 +2461,28 @@ select:focus {
   .epub-stage {
     min-height: 360px;
     height: 62vh;
+    height: 62dvh;
   }
 
   .track-line .title {
     font-size: 1.1rem;
   }
 
+  /* With many chapters the 5px segment floor plus gaps exceeds a phone
+     width; drop the floor so the bar always fits the screen. */
+  .chapter-segments {
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .chapter-segment {
+    min-width: 0;
+    flex-basis: 0;
+  }
+
   .transport {
-    gap: 18px;
+    justify-content: space-evenly;
+    gap: 12px;
   }
 
   .round-button.primary {
@@ -2392,13 +2510,14 @@ select:focus {
   }
 
   .segmented button {
-    min-height: 38px;
+    min-height: 44px;
     font-size: 0.82rem;
   }
 
   .track-row {
     grid-template-columns: 32px minmax(0, 1fr) auto;
     gap: 10px;
+    min-height: 52px;
     padding: 12px 4px;
   }
 
@@ -2419,7 +2538,10 @@ select:focus {
     left: 10px;
     right: 10px;
     bottom: 10px;
-    padding: 9px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 12px;
   }
 
   .mini-cover-button {
@@ -2432,7 +2554,7 @@ select:focus {
   }
 
   .mini-meta span {
-    font-size: 0.58rem;
+    font-size: 0.78rem;
   }
 
   .mini-actions {
@@ -2440,18 +2562,26 @@ select:focus {
   }
 
   .mini-actions button {
-    width: 31px;
-    height: 31px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .mini-progress {
+    padding-top: 2px;
+  }
+
+  .mini-progress input[type="range"] {
+    height: 24px;
   }
 }
 
 @media (max-width: 420px) {
   .player-pane {
-    padding: 18px 16px 150px;
+    padding: 16px 16px 176px;
   }
 
   .library-pane {
-    padding: 22px 18px 28px;
+    padding: 18px 16px 28px;
   }
 
   .library-pane h1 {
@@ -2459,12 +2589,78 @@ select:focus {
   }
 
   .book-heading h2 {
-    font-size: 2rem;
+    font-size: clamp(2rem, 10vw, 2.45rem);
+  }
+
+  .folio span:first-child {
+    display: none;
+  }
+
+  .folio {
+    justify-content: flex-end;
+  }
+
+  .server-type-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-card {
+    padding: 1.65rem 1.25rem;
+  }
+
+  .auth-card h1 {
+    font-size: 1.65rem;
+  }
+}
+
+@supports (padding: max(0px)) {
+  .auth-shell {
+    padding-top: max(2rem, env(safe-area-inset-top));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom));
+    padding-left: max(1rem, env(safe-area-inset-left));
+  }
+
+  @media (max-width: 960px) {
+    .library-pane {
+      padding-top: max(28px, env(safe-area-inset-top));
+      padding-bottom: max(32px, env(safe-area-inset-bottom));
+      padding-left: max(22px, env(safe-area-inset-left));
+    }
+
+    .player-pane {
+      padding-top: max(22px, env(safe-area-inset-top));
+      padding-right: max(22px, env(safe-area-inset-right));
+      padding-left: max(22px, env(safe-area-inset-left));
+    }
+  }
+
+  @media (max-width: 620px) {
+    .mini-player {
+      right: max(10px, env(safe-area-inset-right));
+      bottom: max(10px, env(safe-area-inset-bottom));
+      left: max(10px, env(safe-area-inset-left));
+    }
+  }
+
+  @media (max-width: 420px) {
+    .library-pane {
+      padding-top: max(18px, env(safe-area-inset-top));
+      padding-right: max(16px, env(safe-area-inset-right));
+      padding-left: max(16px, env(safe-area-inset-left));
+    }
+
+    .player-pane {
+      padding-top: max(16px, env(safe-area-inset-top));
+      padding-right: max(16px, env(safe-area-inset-right));
+      padding-left: max(16px, env(safe-area-inset-left));
+    }
   }
 }
 
 .auth-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 2rem 1rem;
@@ -2512,6 +2708,49 @@ select:focus {
 .auth-card input:focus-visible {
   outline: 2px solid var(--gold);
   outline-offset: 1px;
+}
+
+.server-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.server-type-grid button {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 9px;
+  background: rgba(255, 252, 244, 0.65);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.server-type-grid button.selected {
+  border-color: var(--oxblood);
+  background: rgba(139, 46, 31, 0.08);
+  color: var(--oxblood-deep);
+  box-shadow: inset 0 0 0 1px rgba(139, 46, 31, 0.16);
+}
+
+.server-type-grid button span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.server-type-grid button strong {
+  font-size: 0.86rem;
+}
+
+.server-type-grid button small {
+  margin-top: 0.1rem;
+  color: var(--ink-faded);
+  font-size: 0.68rem;
 }
 
 .auth-submit {
@@ -2706,7 +2945,9 @@ select:focus {
   padding: 1.5rem 1.5rem 1.75rem;
   width: min(540px, 100%);
   max-height: 85vh;
-  overflow: auto;
+  max-height: 85dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
   box-shadow: 0 30px 60px rgba(26, 20, 16, 0.25);
   display: flex;
   flex-direction: column;
@@ -2759,7 +3000,8 @@ select:focus {
   border-radius: 8px;
   background: rgba(255, 252, 244, 0.92);
   padding: 0.58rem 0.68rem;
-  font: 0.95rem "Fraunces", serif;
+  /* >=16px so iOS doesn't zoom the page when the field is focused. */
+  font: 1rem "Fraunces", serif;
   color: var(--ink);
 }
 
@@ -2860,9 +3102,12 @@ select:focus {
   flex-direction: column;
   gap: 0.3rem;
   font-size: 0.85rem;
+  /* Let grid columns shrink below the input's intrinsic width. */
+  min-width: 0;
 }
 
 .add-user-form input {
+  min-width: 0;
   font: inherit;
   padding: 0.5rem 0.6rem;
   border-radius: 8px;
@@ -2904,6 +3149,7 @@ select:focus {
   inset: 0;
   z-index: 60;
   overflow-y: auto;
+  overflow-x: hidden;
   background:
     radial-gradient(ellipse at top, rgba(20, 14, 9, 0.55), rgba(10, 7, 5, 0.85));
   padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 64px);
@@ -3278,5 +3524,1212 @@ select:focus {
   .headline-secondary {
     grid-template-columns: repeat(2, 1fr);
     gap: 18px 24px;
+  }
+}
+
+/* Phone overrides live last so desktop component defaults cannot override them. */
+@media (max-width: 620px) {
+  input:not([type="range"]),
+  select,
+  textarea {
+    /* iOS zooms the entire WKWebView when a focused control is below 16px. */
+    font-size: 16px !important;
+  }
+
+  .player-pane > *,
+  .book-heading,
+  .book-heading .meta,
+  .heading-top,
+  .heading-actions,
+  .book-heading h2 {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .book-heading {
+    width: 100%;
+  }
+
+  .book-heading h2 {
+    overflow-wrap: anywhere;
+  }
+
+  .auth-shell {
+    align-items: start;
+    padding: 18px 12px 32px;
+  }
+
+  .auth-card {
+    width: 100%;
+    padding: 1.65rem 1.25rem;
+    border-radius: 12px;
+    gap: 0.85rem;
+  }
+
+  .auth-card h1 {
+    font-size: 1.65rem;
+  }
+
+  .auth-card input,
+  .auth-submit,
+  .auth-secondary,
+  .server-type-grid button {
+    min-height: 44px;
+  }
+
+  .modal-scrim {
+    align-items: end;
+    padding: 0;
+  }
+
+  .modal-card {
+    width: 100%;
+    max-height: 92dvh;
+    padding: 1.25rem 1rem max(1.5rem, env(safe-area-inset-bottom));
+    border-radius: 16px 16px 0 0;
+  }
+
+  .metadata-edit-form {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-edit-actions button,
+  .user-menu button {
+    min-height: 44px;
+  }
+
+  .profile-page {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
+@media (max-width: 420px) {
+  .server-type-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .server-type-grid button {
+    padding: 0.65rem 0.8rem;
+  }
+
+  .pane-title {
+    gap: 10px;
+  }
+
+  .pane-actions {
+    gap: 4px;
+  }
+
+  .metadata-edit-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ============================================================
+   Native iOS shell
+   Everything below is scoped to html.native-app, which is only
+   set inside the Capacitor build. The web app is untouched.
+   The idea: the app is the bound book you hold — the library is
+   the dark spine, the reading screen is the paper, and a spine
+   tab bar replaces the web's hamburger drawer.
+   ============================================================ */
+html.native-app {
+  --tabs-h: calc(54px + env(safe-area-inset-bottom));
+  --status-h: env(safe-area-inset-top);
+}
+
+/* Touch hygiene: no web text-selection, no long-press callout, no
+   whole-page rubber-band. Inputs and reading content stay selectable. */
+html.native-app,
+html.native-app body {
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html.native-app input,
+html.native-app textarea,
+html.native-app select,
+html.native-app [contenteditable="true"],
+html.native-app .book-description,
+html.native-app .readalong-panel {
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
+/* The web landing-page load stagger reads like a website; a native
+   screen just appears. Tab switches carry the motion instead. */
+html.native-app .player-pane > * {
+  animation: none;
+}
+
+/* --- Shell becomes a stack of full-screen tab panels --- */
+html.native-app .native-shell {
+  display: block;
+  min-height: 100dvh;
+}
+
+html.native-app .native-shell > .library-pane,
+html.native-app .native-shell > .player-pane {
+  position: fixed;
+  inset: 0;
+  bottom: var(--tabs-h);
+  width: auto;
+  max-width: none;
+  transform: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  z-index: 1;
+  box-shadow: none;
+  transition: opacity 0.26s ease, transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0.26s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app .native-shell > .library-pane,
+  html.native-app .native-shell > .player-pane {
+    transition: none;
+  }
+}
+
+/* Inactive panels are hidden and can't steal scroll or focus. */
+html.native-app .native-shell > .library-pane,
+html.native-app .native-shell > .player-pane {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+html.native-app .native-shell.tab-shelf > .library-pane,
+html.native-app .native-shell.tab-reading > .player-pane {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* Give each screen room for the notch on top and the spine bar below. */
+html.native-app .native-shell > .library-pane {
+  padding: calc(var(--status-h) + 22px)
+    max(20px, env(safe-area-inset-right)) 40px
+    max(20px, env(safe-area-inset-left));
+}
+
+html.native-app .native-shell > .player-pane {
+  padding: calc(var(--status-h) + 18px)
+    max(20px, env(safe-area-inset-right)) 40px
+    max(20px, env(safe-area-inset-left));
+}
+
+/* All UI binds to the device screen — nothing ever pans sideways.
+   Applied at every width because the native shell also runs on iPad,
+   where the phone media queries don't kick in. */
+html.native-app,
+html.native-app body {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+html.native-app .native-shell > .library-pane,
+html.native-app .native-shell > .player-pane,
+html.native-app .profile-shell,
+html.native-app .modal-card {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+html.native-app .chapter-segments {
+  gap: 2px;
+  min-width: 0;
+}
+
+html.native-app .chapter-segment {
+  min-width: 0;
+  flex-basis: 0;
+}
+
+/* Web navigation chrome has no place in the native shell. */
+html.native-app .library-open-btn,
+html.native-app .library-close,
+html.native-app .library-scrim {
+  display: none;
+}
+
+html.native-app .native-shell > .library-pane::before {
+  display: none;
+}
+
+/* --- Notch / Dynamic Island veil --- */
+html.native-app .ios-status-veil {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--status-h);
+  z-index: 90;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+  transition: background 0.26s ease;
+}
+
+html.native-app .native-shell.tab-reading .ios-status-veil {
+  background: rgba(241, 231, 208, 0.72);
+}
+
+html.native-app .native-shell.tab-shelf .ios-status-veil,
+html.native-app .native-shell.tab-ledger .ios-status-veil {
+  background: rgba(16, 10, 7, 0.55);
+}
+
+/* --- The spine tab bar --- */
+html.native-app .spine-tabs {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--tabs-h);
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  align-items: stretch;
+  z-index: 80;
+  background: linear-gradient(180deg, #211710 0%, #0e0a07 100%), var(--spine);
+  border-top: 1px solid rgba(217, 181, 116, 0.22);
+  box-shadow: 0 -14px 34px -20px rgba(0, 0, 0, 0.85);
+}
+
+/* The same gold hairline the mini-player and library spine wear. */
+html.native-app .spine-tabs::before {
+  content: "";
+  position: absolute;
+  inset: -1px 0 auto 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(184, 137, 58, 0.4) 18%,
+    var(--gold-soft) 50%,
+    rgba(184, 137, 58, 0.4) 82%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+html.native-app .spine-tab {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding-top: 6px;
+  color: rgba(241, 231, 208, 0.46);
+  transition: color 0.2s ease, transform 0.08s ease;
+}
+
+html.native-app .spine-tab span {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.56rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+html.native-app .spine-tab.active {
+  color: var(--gold-soft);
+}
+
+html.native-app .spine-tab:active {
+  transform: scale(0.93);
+}
+
+/* Active tab is marked with a slipped-in gold ribbon. */
+html.native-app .spine-tab.active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 30px;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--gold-soft);
+  box-shadow: 0 0 10px -1px rgba(217, 181, 116, 0.7);
+}
+
+/* --- Mini-player as a bookmark ribbon docked above the spine --- */
+html.native-app .mini-player {
+  display: none;
+  left: 0;
+  right: 0;
+  bottom: var(--tabs-h);
+  z-index: 45;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  box-shadow: 0 -10px 26px -18px rgba(0, 0, 0, 0.8);
+}
+
+/* Persist playback controls while browsing the shelf; the Reading
+   screen already has the full transport, so hide it there. */
+html.native-app .native-shell.tab-shelf .mini-player {
+  display: grid;
+}
+
+/* Room for the ribbon when it's showing over the shelf list. */
+html.native-app .native-shell.tab-shelf > .library-pane {
+  padding-bottom: 92px;
+}
+
+/* --- Press feedback instead of sticky hover states --- */
+html.native-app .mini-cover-button:hover,
+html.native-app .mini-actions button:hover,
+html.native-app .library-open-btn:hover {
+  transform: none;
+  background: none;
+}
+
+html.native-app .mini-actions .mini-play:hover {
+  background: var(--gold-soft);
+}
+
+html.native-app .round-button:active,
+html.native-app .mini-actions button:active,
+html.native-app .book-row:active,
+html.native-app .track-row:active,
+html.native-app .segmented button:active,
+html.native-app .chapter-segment:active,
+html.native-app .download-btn:active,
+html.native-app .icon-button:active {
+  transform: scale(0.96);
+}
+
+html.native-app .book-row,
+html.native-app .track-row,
+html.native-app .round-button,
+html.native-app .segmented button {
+  transition: transform 0.09s ease, background 0.2s ease, color 0.2s ease;
+}
+
+/* --- Ledger tab sits above the spine bar, below the notch veil --- */
+html.native-app .profile-shell {
+  bottom: var(--tabs-h);
+  padding-top: calc(var(--status-h) + 20px);
+  padding-bottom: 40px;
+}
+
+/* ============================================================
+   Modern mobile refinements
+   A more contemporary, cover-forward take on the native shell —
+   rounded surfaces, soft shadows, room to breathe — keeping the
+   paper / oxblood / gold / Fraunces identity intact. Native only.
+   ============================================================ */
+html.native-app {
+  --m-radius: 22px;
+  --m-radius-sm: 14px;
+  --m-card-light: rgba(255, 252, 244, 0.5);
+  --m-card-dark: rgba(255, 255, 255, 0.05);
+}
+
+/* --- Frosted, flattened tab bar --- */
+html.native-app .spine-tabs {
+  background: rgba(18, 12, 8, 0.72);
+  -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  backdrop-filter: blur(22px) saturate(1.3);
+  border-top: 1px solid rgba(217, 181, 116, 0.14);
+  box-shadow: none;
+}
+
+html.native-app .spine-tabs::before,
+html.native-app .spine-tab.active::after {
+  display: none;
+}
+
+html.native-app .spine-tab {
+  gap: 5px;
+}
+
+html.native-app .spine-tab svg {
+  transition: transform 0.14s ease;
+}
+
+html.native-app .spine-tab.active svg {
+  transform: translateY(-1px);
+}
+
+/* --- Mini-player becomes a floating rounded card --- */
+html.native-app .mini-player {
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--tabs-h) + 8px);
+  border-radius: 18px;
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  padding-left: 12px;
+  padding-right: 12px;
+  box-shadow: 0 20px 34px -18px rgba(0, 0, 0, 0.75);
+}
+
+html.native-app .mini-player::before {
+  display: none;
+}
+
+html.native-app .mini-cover-button .cover-mark {
+  border-radius: 9px;
+  box-shadow: 0 5px 12px -5px rgba(0, 0, 0, 0.65);
+}
+
+/* ===================== Reading screen ===================== */
+html.native-app .folio {
+  display: none;
+}
+
+html.native-app .player-pane::before {
+  display: none;
+}
+
+html.native-app .native-shell > .player-pane {
+  padding-top: calc(var(--status-h) + 20px);
+  gap: 16px;
+  text-align: center;
+}
+
+/* Keep long-form and list content left-aligned for readability. */
+html.native-app .player-pane .book-description,
+html.native-app .player-pane .track-list-section,
+html.native-app .player-pane .readalong-panel,
+html.native-app .player-pane .libation-panel {
+  text-align: left;
+}
+
+/* Cover as modern album art */
+html.native-app .book-heading {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  gap: 14px;
+  margin-top: 0;
+}
+
+html.native-app .book-heading .meta {
+  text-align: center;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Flatten the header wrapper so the eyebrow, title, byline and utility
+   chips can be reordered — chips drop below the byline instead of
+   splitting the eyebrow from the title. */
+html.native-app .heading-top {
+  display: contents;
+}
+
+html.native-app .book-heading .eyebrow {
+  order: 0;
+}
+html.native-app .book-heading h2 {
+  order: 1;
+}
+html.native-app .book-heading p {
+  order: 2;
+}
+html.native-app .book-heading .heading-actions {
+  order: 3;
+  margin-top: 10px;
+}
+html.native-app .book-heading .book-runtime {
+  order: 4;
+}
+
+html.native-app .large-cover {
+  width: min(44vw, 176px);
+  border-radius: 16px;
+  box-shadow:
+    0 26px 48px -24px rgba(26, 20, 16, 0.58),
+    0 8px 18px -12px rgba(139, 46, 31, 0.3);
+}
+
+html.native-app .large-cover::after {
+  display: none;
+}
+
+html.native-app .book-heading h2 {
+  margin: 4px auto 2px;
+  font-size: clamp(1.9rem, 7vw, 2.6rem);
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  max-width: 16ch;
+}
+
+html.native-app .book-heading p {
+  font-size: 1.02rem;
+  color: var(--ink-faded);
+}
+
+html.native-app .metadata-strip {
+  justify-content: center;
+}
+
+/* Header utility actions as centered pill chips */
+html.native-app .heading-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: auto;
+}
+
+html.native-app .heading-actions .download-btn {
+  min-width: 0;
+  padding: 8px 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(26, 20, 16, 0.14);
+  background: var(--m-card-light);
+  letter-spacing: 0.08em;
+}
+
+html.native-app .heading-actions .download-btn.active,
+html.native-app .heading-actions .download-btn:active {
+  background: var(--oxblood);
+  color: var(--paper);
+  border-color: var(--oxblood);
+  transform: none;
+}
+
+/* The timeline's chapter-now already names the current chapter, so the
+   separate track line is redundant clutter on the phone. */
+html.native-app .track-line {
+  display: none;
+}
+
+/* Chunky rounded scrubber */
+html.native-app .timeline {
+  gap: 14px;
+}
+
+html.native-app .timeline input[type="range"] {
+  height: 30px;
+}
+
+html.native-app .timeline input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.16);
+}
+
+html.native-app .timeline input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.16);
+}
+
+html.native-app .timeline input[type="range"]::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--oxblood);
+  box-shadow: 0 2px 7px -1px rgba(139, 46, 31, 0.6);
+}
+
+html.native-app .timeline input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--oxblood);
+}
+
+/* Transport */
+html.native-app .transport {
+  gap: 28px;
+  padding: 8px 0 6px;
+}
+
+html.native-app .round-button.primary {
+  width: 84px;
+  height: 84px;
+  color: var(--paper);
+  background: linear-gradient(160deg, var(--oxblood) 0%, var(--oxblood-deep) 100%);
+  box-shadow:
+    0 18px 34px -12px rgba(139, 46, 31, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+html.native-app .round-button.primary::after {
+  display: none;
+}
+
+html.native-app .round-button.secondary {
+  width: 60px;
+  height: 60px;
+  border: 0;
+  background: rgba(26, 20, 16, 0.06);
+  color: var(--ink-soft);
+}
+
+html.native-app .round-button.secondary small {
+  bottom: -20px;
+}
+
+/* Control cards */
+html.native-app .controls-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 4px;
+  border: 0;
+}
+
+html.native-app .control-section {
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(26, 20, 16, 0.08);
+  border-radius: var(--m-radius-sm);
+  background: var(--m-card-light);
+  justify-items: start;
+  text-align: left;
+}
+
+html.native-app .control-section:first-child {
+  grid-column: 1 / -1;
+}
+
+html.native-app .segmented {
+  gap: 6px;
+}
+
+html.native-app .segmented button {
+  min-height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(26, 20, 16, 0.12);
+  background: transparent;
+}
+
+html.native-app .segmented button.selected {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: var(--paper);
+}
+
+html.native-app .control-section select {
+  border: 1px solid rgba(26, 20, 16, 0.12);
+  border-radius: 999px;
+  padding: 10px 34px 10px 14px;
+}
+
+/* Chapter list rows */
+html.native-app .track-row {
+  border-radius: var(--m-radius-sm);
+  border-top: 0;
+}
+
+html.native-app .track-row.active {
+  background: rgba(139, 46, 31, 0.08);
+}
+
+/* ===================== Shelf screen ===================== */
+html.native-app .library-search {
+  padding: 12px 14px;
+  border-radius: var(--m-radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(217, 181, 116, 0.16);
+}
+
+html.native-app .book-list.is-list {
+  gap: 4px;
+}
+
+html.native-app .book-list.is-list .book-row {
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 0;
+  border-radius: var(--m-radius-sm);
+  transition: background 0.2s ease;
+}
+
+html.native-app .book-list.is-list .book-row:last-child {
+  border-bottom: 0;
+}
+
+html.native-app .book-list.is-list .book-row::before {
+  display: none;
+}
+
+html.native-app .book-list.is-list .book-row.active {
+  padding-left: 12px;
+  background: rgba(217, 181, 116, 0.1);
+}
+
+html.native-app .book-list.is-list .book-row:active {
+  background: rgba(217, 181, 116, 0.07);
+}
+
+html.native-app .book-row .index {
+  display: none;
+}
+
+html.native-app .book-list.is-list .cover-mark {
+  width: 54px;
+  height: 54px;
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+  box-shadow: 0 6px 14px -8px rgba(0, 0, 0, 0.7);
+}
+
+html.native-app .book-list.is-list .book-row.active .book-text strong {
+  font-style: normal;
+}
+
+/* Author/subtitle line: readable italic instead of mono caps */
+html.native-app .book-text > span:not([class]) {
+  font-family: "Instrument Serif", serif;
+  font-style: italic;
+  font-size: 0.92rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: rgba(241, 231, 208, 0.55);
+}
+
+/* ============================================================
+   iOS-native pass
+   App-native navigation, sheets, controls, touch targets, and
+   interactions. Scoped to html.native-app so the web and macOS
+   layouts are untouched.
+   ============================================================ */
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes scrim-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* --- Tab bar: landscape safe areas, legible labels --- */
+html.native-app .spine-tabs {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+html.native-app .spine-tab span {
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+}
+
+/* Keep the floating mini-player clear of the last shelf rows. */
+html.native-app .native-shell.tab-shelf > .library-pane {
+  padding-bottom: 128px;
+}
+
+/* --- Pull-to-refresh indicator (Shelf) --- */
+html.native-app .pull-indicator {
+  position: fixed;
+  top: calc(var(--status-h) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--gold-soft);
+  background: rgba(33, 23, 16, 0.94);
+  border: 1px solid rgba(217, 181, 116, 0.28);
+  box-shadow: 0 10px 22px -10px rgba(0, 0, 0, 0.7);
+  opacity: 0;
+  pointer-events: none;
+}
+
+html.native-app .pull-indicator.refreshing {
+  opacity: 1;
+}
+
+html.native-app .pull-indicator.refreshing svg {
+  animation: spin 0.9s linear infinite;
+}
+
+/* --- 44pt touch targets --- */
+html.native-app .icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+html.native-app .view-toggle {
+  border-radius: 12px;
+  overflow: hidden;
+  border-color: rgba(217, 181, 116, 0.16);
+}
+
+html.native-app .view-toggle button {
+  width: 46px;
+  min-height: 44px;
+}
+
+html.native-app .library-sort select {
+  min-height: 44px;
+  border-radius: 12px;
+  border-color: rgba(217, 181, 116, 0.16);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+html.native-app .epub-toolbar {
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+}
+
+html.native-app .epub-toolbar button {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+
+html.native-app .mini-actions button {
+  width: 44px;
+  height: 44px;
+}
+
+html.native-app .libation-actions button,
+html.native-app .audible-row button {
+  min-height: 44px;
+  border-radius: 12px;
+}
+
+html.native-app .download-btn {
+  min-height: 40px;
+  border-radius: 999px;
+}
+
+html.native-app .metadata-strip span {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+}
+
+html.native-app .control-section select {
+  min-height: 48px;
+}
+
+/* --- iOS-style segmented source switch --- */
+html.native-app .source-toggle {
+  padding: 3px;
+  gap: 3px;
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html.native-app .source-toggle button {
+  min-height: 40px;
+  border-right: 0;
+  border-radius: 999px;
+}
+
+/* --- Neutralize sticky hover states (iOS applies :hover on tap) --- */
+html.native-app .book-row:hover {
+  padding-left: 12px;
+}
+
+html.native-app .book-list.is-grid .book-row:hover {
+  padding-left: 0;
+}
+
+html.native-app .book-list.is-grid .book-row:hover .cover-mark {
+  transform: none;
+}
+
+html.native-app .track-row:not(.active):hover {
+  padding-left: 4px;
+  color: var(--ink);
+}
+
+html.native-app .track-row:not(.active):hover .num {
+  color: var(--ink-faded);
+}
+
+html.native-app .recent-row:hover {
+  padding-left: 0;
+}
+
+html.native-app .icon-button:hover {
+  transform: none;
+  color: var(--gold-soft);
+  border-color: rgba(217, 181, 116, 0.3);
+}
+
+html.native-app .round-button.primary:hover {
+  transform: none;
+  background: linear-gradient(160deg, var(--oxblood) 0%, var(--oxblood-deep) 100%);
+}
+
+html.native-app .round-button.secondary:hover {
+  transform: none;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+
+html.native-app .download-btn:not(.active):hover {
+  background: transparent;
+  color: var(--ink);
+  border-color: rgba(26, 20, 16, 0.25);
+  transform: none;
+}
+
+html.native-app .heading-actions .download-btn:not(.active):hover {
+  background: var(--m-card-light);
+  border-color: rgba(26, 20, 16, 0.14);
+}
+
+html.native-app .segmented button:not(.selected):hover {
+  border-color: rgba(26, 20, 16, 0.12);
+}
+
+html.native-app .chapter-segment:not(.active):hover {
+  background: rgba(26, 20, 16, 0.13);
+  border-color: rgba(26, 20, 16, 0.08);
+}
+
+html.native-app .libation-actions button:not(:disabled):hover,
+html.native-app .audible-row button:not(:disabled):hover {
+  background: transparent;
+  color: var(--paper);
+}
+
+html.native-app .audible-row .local-marker:hover {
+  background: rgba(184, 137, 58, 0.18);
+  color: var(--ink-soft);
+}
+
+html.native-app .view-toggle button:not(.selected):hover {
+  color: rgba(241, 231, 208, 0.55);
+}
+
+html.native-app .source-toggle button:not(.selected):hover {
+  color: rgba(241, 231, 208, 0.58);
+}
+
+html.native-app .epub-toolbar button:hover {
+  color: var(--ink);
+  background: rgba(255, 252, 244, 0.48);
+  border-color: rgba(26, 20, 16, 0.2);
+}
+
+html.native-app .library-search:focus-within {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* --- Modals present as bottom sheets --- */
+html.native-app .modal-scrim {
+  align-items: end;
+  padding: 0;
+  z-index: 95;
+  background: rgba(10, 6, 4, 0.5);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: scrim-fade 0.24s ease both;
+}
+
+html.native-app .modal-card {
+  width: 100%;
+  max-height: calc(100dvh - var(--status-h) - 12px);
+  border-radius: 22px 22px 0 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding: 12px 18px calc(env(safe-area-inset-bottom) + 20px);
+  animation: sheet-up 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Sheet grabber */
+html.native-app .modal-card::before {
+  content: "";
+  align-self: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.18);
+}
+
+html.native-app .metadata-edit-form input,
+html.native-app .metadata-edit-form textarea,
+html.native-app .add-user-form input {
+  min-height: 48px;
+  border-radius: 12px;
+}
+
+html.native-app .metadata-edit-form textarea {
+  min-height: 0;
+}
+
+html.native-app .metadata-edit-actions button {
+  min-height: 50px;
+  border-radius: 999px;
+}
+
+html.native-app .user-list li {
+  border-radius: 12px;
+}
+
+html.native-app .user-actions button,
+html.native-app .add-user-form button {
+  min-height: 40px;
+}
+
+html.native-app .add-user-form {
+  grid-template-columns: 1fr;
+}
+
+/* --- Account menu as a bottom action sheet --- */
+html.native-app .user-menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+}
+
+html.native-app .user-menu-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 6, 4, 0.45);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: scrim-fade 0.2s ease both;
+}
+
+html.native-app .user-menu {
+  position: fixed;
+  top: auto;
+  left: 10px;
+  right: 10px;
+  bottom: calc(env(safe-area-inset-bottom) + 12px);
+  min-width: 0;
+  padding: 8px;
+  border-radius: 20px;
+  box-shadow: 0 24px 60px -18px rgba(0, 0, 0, 0.5);
+  animation: sheet-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+html.native-app .user-menu::before {
+  content: "";
+  align-self: center;
+  width: 40px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.16);
+  margin-bottom: 4px;
+}
+
+html.native-app .user-menu-head {
+  padding: 8px 12px 12px;
+}
+
+html.native-app .user-menu button[role="menuitem"] {
+  min-height: 52px;
+  padding: 0.6rem 0.8rem;
+  gap: 0.7rem;
+  border-radius: 14px;
+  font-size: 1.02rem;
+}
+
+html.native-app .user-menu button[role="menuitem"]:active {
+  background: rgba(184, 137, 58, 0.18);
+}
+
+/* --- Auth screens read as native onboarding, not a web card --- */
+html.native-app .auth-shell {
+  padding-top: max(2.6rem, calc(env(safe-area-inset-top) + 1.2rem));
+}
+
+html.native-app .auth-card {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 1rem 0.4rem;
+  gap: 1.1rem;
+}
+
+html.native-app .auth-card h1 {
+  font-size: 2.3rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+}
+
+html.native-app .auth-card input {
+  min-height: 52px;
+  padding: 0.7rem 0.95rem;
+  border-radius: 14px;
+  border-color: rgba(26, 20, 16, 0.18);
+  background: rgba(255, 252, 244, 0.75);
+}
+
+html.native-app .auth-submit,
+html.native-app .auth-secondary {
+  min-height: 52px;
+  border-radius: 16px;
+  font-size: 1.05rem;
+}
+
+html.native-app .server-type-grid button {
+  min-height: 56px;
+  border-radius: 14px;
+}
+
+/* --- Ledger is a full-bleed screen, not a modal card --- */
+html.native-app .native-shell.tab-ledger .ios-status-veil {
+  background: rgba(241, 231, 208, 0.72);
+}
+
+html.native-app .profile-shell {
+  display: block;
+  padding: 0;
+  background: var(--paper);
+}
+
+html.native-app .profile-page {
+  max-width: none;
+  min-height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right)) 56px
+    max(20px, env(safe-area-inset-left));
+  gap: 32px;
+}
+
+/* The Ledger is a tab, not a pushed screen — no back affordance. */
+html.native-app .profile-back {
+  display: none;
+}
+
+html.native-app .recent-row {
+  min-height: 60px;
+}
+
+/* --- Motion respect --- */
+@media (prefers-reduced-motion: reduce) {
+  html.native-app .modal-scrim,
+  html.native-app .modal-card,
+  html.native-app .user-menu,
+  html.native-app .user-menu-scrim {
+    animation: none;
   }
 }

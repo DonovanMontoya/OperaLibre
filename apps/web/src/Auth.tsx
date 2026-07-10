@@ -5,14 +5,17 @@ import {
   changePassword,
   createUser,
   deleteUser,
+  defaultServerUrl,
   getServerUrl,
+  getServerType,
+  isNativeApp,
   listUsers,
   login,
   pingServer,
-  setServerUrl,
+  setServerConnection,
   setupAdmin
 } from "./api";
-import type { AuthUser } from "./types";
+import type { AuthUser, ServerType } from "./types";
 
 type AuthMode = "setup" | "login";
 
@@ -23,17 +26,19 @@ export function ServerSetup({
   onConnected: () => void;
   onCancel?: () => void;
 }) {
+  const [serverType, setServerType] = useState<ServerType>(() => getServerType());
   const [url, setUrl] = useState(() => getServerUrl());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const nativeApp = isNativeApp();
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setBusy(true);
     try {
-      await pingServer(url);
-      setServerUrl(url);
+      await pingServer(serverType, url);
+      setServerConnection(serverType, url);
       onConnected();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not reach that server.";
@@ -51,16 +56,49 @@ export function ServerSetup({
         </span>
         <h1>Find your library</h1>
         <p>
-          Enter the address of your Operalibre server &mdash; an IP and port, or a full URL.
-          We&rsquo;ll verify it can be reached before continuing.
+          Choose where your audiobooks live, then enter the server address. We&rsquo;ll verify it
+          can be reached before continuing.
         </p>
 
+        <div className="server-type-grid" role="radiogroup" aria-label="Server type">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={serverType === "operalibre"}
+            className={serverType === "operalibre" ? "selected" : ""}
+            onClick={() => {
+              setServerType("operalibre");
+              setUrl(defaultServerUrl("operalibre"));
+              setError(null);
+            }}
+          >
+            <Network size={17} />
+            <span><strong>OperaLibre</strong><small>Native server</small></span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={serverType === "jellyfin"}
+            className={serverType === "jellyfin" ? "selected" : ""}
+            onClick={() => {
+              setServerType("jellyfin");
+              setUrl(defaultServerUrl("jellyfin"));
+              setError(null);
+            }}
+          >
+            <Globe size={17} />
+            <span><strong>Jellyfin</strong><small>Audiobook library</small></span>
+          </button>
+        </div>
+
         <label>
-          <span>Server address</span>
+          <span>{serverType === "jellyfin" ? "Jellyfin address" : "OperaLibre address"}</span>
           <input
             type="text"
             value={url}
-            placeholder="http://192.168.1.10:4000"
+            placeholder={serverType === "jellyfin"
+              ? nativeApp ? "http://My-Mac.local:8096" : "http://localhost:8096"
+              : nativeApp ? "http://My-Mac.local:4000" : "http://localhost:4000"}
             inputMode="url"
             autoComplete="off"
             autoCapitalize="off"
@@ -68,13 +106,29 @@ export function ServerSetup({
             spellCheck={false}
             onChange={(event) => setUrl(event.currentTarget.value)}
             required
-            autoFocus
+            autoFocus={!nativeApp}
           />
         </label>
 
         <p className="auth-hint">
-          <Globe size={12} /> Examples: <code>192.168.1.10:4000</code>, <code>localhost:4000</code>,
-          <code>https://books.example.com</code>
+          <Globe size={12} />
+          {serverType === "jellyfin" ? (
+            <>
+              {nativeApp ? (
+                <>Use the server computer&rsquo;s LAN address, usually <code>http://My-Mac.local:8096</code></>
+              ) : (
+                <>Default HTTP: <code>localhost:8096</code> HTTPS when enabled: <code>localhost:8920</code></>
+              )}
+            </>
+          ) : (
+            <>
+              {nativeApp ? (
+                <>Use the server computer&rsquo;s LAN address, usually <code>http://My-Mac.local:4000</code></>
+              ) : (
+                <>Default: <code>localhost:4000</code> Remote: <code>https://books.example.com</code></>
+              )}
+            </>
+          )}
         </p>
 
         {error ? <p className="auth-error">{error}</p> : null}
@@ -102,6 +156,8 @@ export function AuthGate({
   onAuthenticated: (token: string, user: AuthUser) => void;
   onChangeServer?: () => void;
 }) {
+  const isJellyfin = getServerType() === "jellyfin";
+  const nativeApp = isNativeApp();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -139,13 +195,15 @@ export function AuthGate({
       <form className="auth-card" onSubmit={submit}>
         <span className="eyebrow">
           {isSetup ? <ShieldCheck size={13} /> : <LogIn size={13} />}{" "}
-          {isSetup ? "First-run setup" : "Sign in"}
+          {isSetup ? "First-run setup" : isJellyfin ? "Jellyfin sign in" : "Sign in"}
         </span>
         <h1>{isSetup ? "Claim this library" : "Welcome back"}</h1>
         <p>
           {isSetup
             ? "Create the first administrator account. You can add more readers later."
-            : "Sign in to track your audiobook progress."}
+            : isJellyfin
+              ? "Use your Jellyfin account to open its audiobook libraries."
+              : "Sign in to track your audiobook progress."}
         </p>
 
         <label>
@@ -155,7 +213,7 @@ export function AuthGate({
             autoComplete="username"
             onChange={(event) => setUsername(event.currentTarget.value)}
             required
-            autoFocus
+            autoFocus={!nativeApp}
           />
         </label>
 
@@ -167,7 +225,7 @@ export function AuthGate({
             autoComplete={isSetup ? "new-password" : "current-password"}
             onChange={(event) => setPassword(event.currentTarget.value)}
             required
-            minLength={6}
+            minLength={isSetup ? 6 : 1}
           />
         </label>
 

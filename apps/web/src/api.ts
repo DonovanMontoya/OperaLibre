@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -11,20 +12,70 @@ import type {
   LoginResponse,
   ProfileStats,
   Progress,
+  ServerType,
   SyncMap
 } from "./types";
+import {
+  getCachedJellyfinProgress,
+  getJellyfinBooks,
+  getJellyfinUser,
+  jellyfinMediaPath,
+  loginToJellyfin,
+  logoutFromJellyfin,
+  pingJellyfin,
+  reportJellyfinPlaybackStart,
+  saveJellyfinProgress
+} from "./jellyfin";
+import { serverStorageKey } from "./reliability";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const TOKEN_STORAGE_KEY = "operalibre.authToken";
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
+const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
+const STARTUP_TIMEOUT_MS = 8_000;
 
-function defaultApiBase() {
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  init.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+    init.signal?.removeEventListener("abort", abort);
+  }
+}
+
+export function defaultServerUrl(serverType: ServerType) {
   if (typeof window === "undefined") {
     return "";
   }
 
+  if (Capacitor.isNativePlatform()) {
+    return "";
+  }
+
   const { hostname, protocol } = window.location;
-  return `${protocol}//${hostname}:4000`;
+  const host = hostname || "localhost";
+  const scheme = protocol === "https:" ? "https:" : "http:";
+  const port = serverType === "jellyfin"
+    ? scheme === "https:" ? 8920 : 8096
+    : 4000;
+  return `${scheme}//${host}:${port}`;
+}
+
+export function isNativeApp(): boolean {
+  return Capacitor.isNativePlatform();
+}
+
+function isLoopbackServerUrl(value: string): boolean {
+  try {
+    const hostname = new URL(normalizeServerUrl(value)).hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeServerUrl(value: string): string {
@@ -37,7 +88,8 @@ function normalizeServerUrl(value: string): string {
   }
   try {
     const parsed = new URL(trimmed);
-    return `${parsed.protocol}//${parsed.host}`;
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${path}`;
   } catch {
     return trimmed.replace(/\/+$/, "");
   }
@@ -57,7 +109,26 @@ function readStoredServerUrl(): string | null {
 }
 
 export function getServerUrl(): string {
-  return readStoredServerUrl() ?? configuredApiBase ?? defaultApiBase();
+  return readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
+}
+
+export function getServerType(): ServerType {
+  if (typeof window === "undefined") {
+    return "operalibre";
+  }
+  return window.localStorage.getItem(SERVER_TYPE_STORAGE_KEY) === "jellyfin"
+    ? "jellyfin"
+    : "operalibre";
+}
+
+export function getServerStorageKey(): string {
+  return serverStorageKey(getServerType(), getServerUrl());
+}
+
+export function setServerType(serverType: ServerType) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(SERVER_TYPE_STORAGE_KEY, serverType);
+  }
 }
 
 export function hasUserConfiguredServer(): boolean {
@@ -77,6 +148,15 @@ export function setServerUrl(rawValue: string) {
   }
 }
 
+export function setServerConnection(serverType: ServerType, rawValue: string) {
+  const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerUrl(rawValue);
+  setServerType(serverType);
+  setServerUrl(rawValue);
+  if (changed) {
+    setStoredToken(null);
+  }
+}
+
 export function clearServerUrl() {
   setServerUrl("");
 }
@@ -85,12 +165,22 @@ function currentApiBase(): string {
   return getServerUrl();
 }
 
-export async function pingServer(rawValue: string): Promise<boolean> {
+export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
   const base = normalizeServerUrl(rawValue);
   if (!base) {
     throw new Error("Server URL is required.");
   }
-  const response = await fetch(`${base}/api/health`, {
+  if (Capacitor.isNativePlatform() && isLoopbackServerUrl(base)) {
+    const port = serverType === "jellyfin" ? 8096 : 4000;
+    throw new Error(
+      `localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:${port}.`
+    );
+  }
+  if (serverType === "jellyfin") {
+    await pingJellyfin(base);
+    return true;
+  }
+  const response = await fetchWithTimeout(`${base}/api/health`, {
     method: "GET",
     credentials: "include"
   });
@@ -138,7 +228,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// fetch rejects with a TypeError when the server is unreachable; anything the
+// server actually answered comes back as ApiError (or a plain Error from the
+// Jellyfin client). Callers use this to tell "offline" apart from "rejected".
+export function isNetworkError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof DOMException && error.name === "AbortError");
+}
+
+async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && init?.body) {
     headers.set("Content-Type", "application/json");
@@ -148,11 +245,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetch(`${currentApiBase()}${path}`, {
+  const response = await fetchWithTimeout(`${currentApiBase()}${path}`, {
     ...init,
     headers,
     credentials: "include"
-  });
+  }, timeoutMs);
 
   if (response.status === 401 && unauthorizedHandler) {
     unauthorizedHandler();
@@ -179,7 +276,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getAuthStatus() {
-  return request<AuthStatus>("/api/auth/status");
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      return { setupRequired: false, user: null };
+    }
+    try {
+      return { setupRequired: false, user: await getJellyfinUser(currentApiBase(), token) };
+    } catch (error) {
+      // Only treat an answered request as "not signed in"; when the server is
+      // unreachable, let the caller fall back to the cached offline session.
+      if (isNetworkError(error)) {
+        throw error;
+      }
+      return { setupRequired: false, user: null };
+    }
+  }
+  return request<AuthStatus>("/api/auth/status", undefined, STARTUP_TIMEOUT_MS);
 }
 
 export async function setupAdmin(username: string, password: string) {
@@ -190,6 +303,9 @@ export async function setupAdmin(username: string, password: string) {
 }
 
 export async function login(username: string, password: string) {
+  if (getServerType() === "jellyfin") {
+    return loginToJellyfin(currentApiBase(), username, password);
+  }
   return request<LoginResponse>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password })
@@ -197,10 +313,24 @@ export async function login(username: string, password: string) {
 }
 
 export async function logout() {
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (token) {
+      await logoutFromJellyfin(currentApiBase(), token);
+    }
+    return { ok: true };
+  }
   return request<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
 }
 
 export async function getMe() {
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      throw new ApiError("Not signed in.", 401);
+    }
+    return getJellyfinUser(currentApiBase(), token);
+  }
   return request<AuthUser>("/api/auth/me");
 }
 
@@ -237,7 +367,16 @@ export async function changePassword(
 }
 
 export async function getBooks() {
-  return request<Book[]>("/api/books");
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      throw new ApiError("Not signed in.", 401);
+    }
+    return getJellyfinBooks(currentApiBase(), token);
+  }
+  // Library loading is part of native startup. Fail promptly so MainApp can
+  // show its cached library instead of waiting on an unreachable VPN route.
+  return request<Book[]>("/api/books", undefined, STARTUP_TIMEOUT_MS);
 }
 
 export async function updateBookMetadata(bookId: string, metadata: BookMetadataUpdate) {
@@ -248,17 +387,32 @@ export async function updateBookMetadata(bookId: string, metadata: BookMetadataU
 }
 
 export async function rescanLibrary() {
+  if (getServerType() === "jellyfin") {
+    return getBooks();
+  }
   return request<Book[]>("/api/library/rescan", { method: "POST" });
 }
 
 export async function getProgress(bookId: string) {
+  if (getServerType() === "jellyfin") {
+    return getCachedJellyfinProgress(bookId);
+  }
   return request<Progress | null>(`/api/books/${bookId}/progress`);
 }
 
 export async function saveProgress(
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+    & Partial<Pick<Progress, "updatedAt">>,
+  options?: { isPaused?: boolean }
 ) {
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      throw new ApiError("Not signed in.", 401);
+    }
+    return saveJellyfinProgress(currentApiBase(), token, bookId, progress, options?.isPaused);
+  }
   return request<Progress>(`/api/books/${bookId}/progress`, {
     method: "PUT",
     body: JSON.stringify(progress)
@@ -266,6 +420,17 @@ export async function saveProgress(
 }
 
 export async function getLibationStatus() {
+  if (getServerType() === "jellyfin") {
+    return {
+      enabled: false,
+      cliPath: null,
+      libationFilesDir: null,
+      libraryRoot: "",
+      accounts: [],
+      authenticated: false,
+      message: "Libation is available only with an OperaLibre server."
+    } satisfies LibationStatus;
+  }
   return request<LibationStatus>("/api/libation/status");
 }
 
@@ -319,13 +484,31 @@ function appendToken(path: string) {
 }
 
 export function mediaUrl(path: string) {
-  return `${currentApiBase()}${appendToken(path)}`;
+  return `${currentApiBase()}${
+    getServerType() === "jellyfin"
+      ? jellyfinMediaPath(path, getStoredToken())
+      : appendToken(path)
+  }`;
 }
 
 export function bookDownloadUrl(bookId: string) {
+  if (getServerType() === "jellyfin") {
+    return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
+  }
   return `${currentApiBase()}${appendToken(`/api/books/${bookId}/download`)}`;
 }
 
 export function readalongUrl(path: string) {
   return `${currentApiBase()}${appendToken(path)}`;
+}
+
+export async function reportPlaybackStarted(itemId: string, positionSeconds: number) {
+  if (getServerType() !== "jellyfin") {
+    return;
+  }
+  const token = getStoredToken();
+  if (!token) {
+    return;
+  }
+  await reportJellyfinPlaybackStart(currentApiBase(), token, itemId, positionSeconds);
 }
