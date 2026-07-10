@@ -7,14 +7,15 @@
     "apps/web"
   ],
   "scripts": {
-    "dev": "concurrently -n server,web -c cyan,magenta \"cargo run --manifest-path apps/server/Cargo.toml\" \"npm run dev -w @operalibre/web\"",
+    "dev": "node script/dev.mjs",
     "dev:server": "cargo run --manifest-path apps/server/Cargo.toml",
     "dev:web": "npm run dev -w @operalibre/web",
     "build": "cargo build --manifest-path apps/server/Cargo.toml && npm run build -w @operalibre/web",
+    "build:ios": "./script/build_ios.sh",
+    "sync:ios": "npm run ios:sync -w @operalibre/web",
     "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && npm run typecheck -w @operalibre/web"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
     "typescript": "^5.8.3"
   },
   "overrides": {
