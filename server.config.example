@@ -28,3 +28,9 @@ web_dist_dir =
 # Leave these blank unless you use Libation.
 libation_cli_path =
 libation_files_dir =
+
+# Optional readalong sync generation (sentence highlighting).
+# Path to the echogarden CLI (npm install -g echogarden). Leave blank to
+# look for `echogarden` on PATH; if it isn't found, sync generation is
+# simply disabled and user-provided .sync.json sidecars still work.
+alignment_cli_path =

@@ -19,6 +19,7 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - Rich tag extraction for album/title, subtitle, author, narrator, publisher, dates, genres, language, description, and raw tag fields.
 - Chapter extraction from M4A/M4B/MP4 chapter tracks or chapter lists, MP3 ID3 `CHAP` frames, and multi-file track boundaries.
 - Readalong file detection and inline reading for `.epub`, `.pdf`, `.txt`, `.html`, and `.htm` companion files stored beside an audiobook.
+- Sentence-level readalong sync for EPUB companions: the reader highlights the sentence being narrated, follows page and chapter changes, and seeks the audio when a sentence is clicked. Sync maps come from `.sync.json` sidecars or are generated server-side with an optional [echogarden](https://github.com/echogarden-project/echogarden) install.
 - Playback position sync.
 - Playback speed controls.
 - 15-second rewind and 30-second forward controls.
@@ -75,6 +76,7 @@ progress_file = data/progress.json
 
 libation_cli_path =
 libation_files_dir =
+alignment_cli_path =
 ```
 
 Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server.
@@ -96,6 +98,8 @@ Each folder is treated as one book:
 A single audio file directly in the root is treated as its own book.
 
 For readalong mode, place a supported companion file next to the audiobook. Folder-based books use a same-name file when present and otherwise use the first supported document in that book folder. Single-file books in the library root require a same-stem companion file, such as `Book Two.m4b` and `Book Two.epub`.
+
+For sentence-level readalong sync, a book with an EPUB companion can also have a `.sync.json` sync map (same stem rules, e.g. `Book Two.sync.json`) mapping audiobook timestamps to EPUB sentences. Administrators can generate one from the readalong pane when [echogarden](https://github.com/echogarden-project/echogarden) is installed (`npm install -g echogarden`, or set `alignment_cli_path`); generated maps are written to `data_dir/sync/`. See [docs/library-layout.md](docs/library-layout.md) for details.
 
 ## Optional Libation / Audible import
 
@@ -136,5 +140,5 @@ The server requires sign-in before any audiobook data is exposed. The first brow
 - Chapter extraction for `.m4b` chapter metadata.
 - Cover art extraction and caching.
 - Bookmarks, clips, notes, and listening history.
-- Word-level readalong sync using generated alignment sidecars that map audiobook timestamps to EPUB text locations and highlight the active word or sentence.
+- Word-level readalong sync (sentence-level sync shipped; the sync map format has room for word granularity).
 - Queue, collections, and search.

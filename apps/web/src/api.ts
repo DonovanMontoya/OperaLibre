@@ -1,4 +1,5 @@
 import type {
+  AlignmentStatus,
   AuthStatus,
   AuthUser,
   Book,
@@ -9,7 +10,8 @@ import type {
   LibationStatus,
   LoginResponse,
   ProfileStats,
-  Progress
+  Progress,
+  SyncMap
 } from "./types";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
@@ -283,6 +285,20 @@ export async function liberateLibationBook(asin: string) {
 
 export async function liberateAllLibationBooks() {
   return request<JobCreated>("/api/libation/liberate-all", { method: "POST" });
+}
+
+export async function getSyncMap(bookId: string) {
+  return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`);
+}
+
+export async function generateSyncMap(bookId: string) {
+  return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
+    method: "POST"
+  });
+}
+
+export async function getAlignmentStatus() {
+  return request<AlignmentStatus>("/api/alignment/status");
 }
 
 export async function getJob(jobId: string) {

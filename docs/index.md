@@ -17,6 +17,7 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 - **Rich metadata** — title/subtitle, author, narrator, publisher, dates, genres, language, description, embedded cover art
 - **Chapters** — M4A/M4B/MP4 chapter tracks, MP3 ID3 `CHAP` frames, and multi-file track boundaries
 - **Readalong** — inline reader for `.epub`, `.pdf`, `.txt`, `.html`, `.htm` companion files
+- **Readalong sync** — sentence highlighting that follows the narration through an EPUB, with server-side sync-map generation via an optional [echogarden](https://github.com/echogarden-project/echogarden) install
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
 - **PWA** — install to the home screen; Capacitor-ready for a future iOS wrapper

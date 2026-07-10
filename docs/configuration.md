@@ -49,6 +49,9 @@ users_file = data/users.json
 # Optional Libation / Audible import.
 libation_cli_path =
 libation_files_dir =
+
+# Optional EPUB narration alignment.
+alignment_cli_path =
 ```
 
 ## Reference
@@ -69,7 +72,7 @@ libation_files_dir =
 
 ### Data files
 
-The server keeps a small amount of state on disk: user accounts, listening progress, and any cached job output.
+The server keeps a small amount of state on disk: user accounts, listening progress, generated readalong sync maps, and any cached job output.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -94,11 +97,20 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 | `libation_cli_path` | *(empty)* | Absolute path to the Libation CLI binary (`libationcli`, `LibationCli`, or `libationcli.exe`). If blank, the server searches `PATH`. |
 | `libation_files_dir` | *(empty)* | Path to the Libation files directory containing `AccountsSettings.json` and `Settings.json`. Required for the web app to surface account status. |
 
+### Optional readalong alignment
+
+Leave this blank to search `PATH` for echogarden. When echogarden is unavailable, automatic generation is disabled but user-provided `.sync.json` sidecars still work. See [Library Layout](library-layout.md#sync-maps-sentence-highlighting) for the sync-map workflow.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `alignment_cli_path` | *(empty)* | Path to the echogarden CLI. Administrators can use it to generate sentence-level EPUB narration sync maps from the readalong pane. |
+
 ## Environment variables
 
 | Variable | Used by | Description |
 | --- | --- | --- |
 | `OPERALIBRE_SERVER_CONFIG` | server | Override the path to `server.config`. |
+| `OPERALIBRE_ALIGNMENT_CLI_PATH` | server | Override the path to the echogarden CLI. |
 | `VITE_API_BASE` | web | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
 
 `VITE_API_BASE` is read at **build time** by Vite. Set it before running `npm run build`:
