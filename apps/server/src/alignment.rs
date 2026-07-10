@@ -219,9 +219,14 @@ fn percent_decode(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Returns the attribute region of each `<name ...>` tag occurrence.
+///
+/// Case-insensitive scanning throughout this module uses `to_ascii_lowercase`
+/// (never `to_lowercase`): the lowered copy must stay byte-for-byte aligned
+/// with the original so offsets found in one can slice the other, and Unicode
+/// case folding can change byte lengths (e.g. `İ`).
 fn find_tags(xml: &str, name: &str) -> Vec<String> {
     let mut results = Vec::new();
-    let lower = xml.to_lowercase();
+    let lower = xml.to_ascii_lowercase();
     let mut search_from = 0;
     let open = format!("<{name}");
     while let Some(found) = lower[search_from..].find(&open) {
@@ -246,7 +251,7 @@ fn find_tags(xml: &str, name: &str) -> Vec<String> {
 }
 
 fn attr_value(tag_body: &str, name: &str) -> Option<String> {
-    let lower = tag_body.to_lowercase();
+    let lower = tag_body.to_ascii_lowercase();
     let mut search_from = 0;
     while let Some(found) = lower[search_from..].find(name) {
         let start = search_from + found;
@@ -302,7 +307,7 @@ const BLOCK_TAGS: &[&str] = &[
 /// collapses whitespace, and inserts paragraph breaks at block elements.
 pub fn html_to_text(document: &str) -> String {
     let body = document
-        .to_lowercase()
+        .to_ascii_lowercase()
         .find("<body")
         .map(|index| document[index..].to_string())
         .unwrap_or_else(|| document.to_string());
@@ -356,7 +361,7 @@ pub fn html_to_text(document: &str) -> String {
         if !tag.starts_with('/') && matches!(tag_name.as_str(), "script" | "style" | "head") {
             let close = format!("</{tag_name}");
             let search_start = index + end + 1;
-            if let Some(close_at) = bytes[search_start..].to_lowercase().find(&close) {
+            if let Some(close_at) = bytes[search_start..].to_ascii_lowercase().find(&close) {
                 let after_close = search_start + close_at;
                 if let Some(close_end) = bytes[after_close..].find('>') {
                     skip_to(&mut chars, after_close + close_end + 1);
@@ -395,7 +400,7 @@ fn decode_entity_at(
         return ch.to_string();
     }
     let rest = &bytes[index..];
-    let Some(end) = rest[..rest.len().min(12)].find(';') else {
+    let Some(end) = find_entity_terminator(rest) else {
         return ch.to_string();
     };
     let entity = &rest[..end + 1];
@@ -407,13 +412,23 @@ fn decode_entity_at(
     decoded
 }
 
+/// Finds a `;` within the first 12 bytes (the longest entity we decode)
+/// without byte-slicing, which could split a multi-byte character.
+fn find_entity_terminator(value: &str) -> Option<usize> {
+    value
+        .char_indices()
+        .take_while(|(index, _)| *index < 12)
+        .find(|(_, ch)| *ch == ';')
+        .map(|(index, _)| index)
+}
+
 fn decode_entities(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         rest = &rest[amp..];
-        let Some(end) = rest[..rest.len().min(12)].find(';') else {
+        let Some(end) = find_entity_terminator(rest) else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -463,7 +478,7 @@ fn decode_entities(value: &str) -> String {
 fn parse_nav_links(document: &str, base_dir: &str) -> Vec<(String, String)> {
     // Restrict to the toc <nav> element when one is marked, otherwise use the
     // whole document.
-    let lower = document.to_lowercase();
+    let lower = document.to_ascii_lowercase();
     let scope = lower
         .find("epub:type=\"toc\"")
         .or_else(|| lower.find("epub:type='toc'"))
@@ -475,7 +490,7 @@ fn parse_nav_links(document: &str, base_dir: &str) -> Vec<(String, String)> {
         .unwrap_or(document);
 
     let mut links = Vec::new();
-    let scope_lower = scope.to_lowercase();
+    let scope_lower = scope.to_ascii_lowercase();
     let mut search_from = 0;
     while let Some(found) = scope_lower[search_from..].find("<a") {
         let start = search_from + found;
@@ -507,7 +522,7 @@ fn parse_nav_links(document: &str, base_dir: &str) -> Vec<(String, String)> {
 
 fn parse_ncx_links(document: &str, base_dir: &str) -> Vec<(String, String)> {
     let mut links = Vec::new();
-    let lower = document.to_lowercase();
+    let lower = document.to_ascii_lowercase();
     let mut last_label = String::new();
     let mut index = 0;
     while let Some(found) = lower[index..].find('<') {
@@ -867,7 +882,7 @@ fn normalize_label_text(value: &str) -> String {
 }
 
 pub fn parse_label(value: &str) -> ParsedLabel {
-    let lower = value.to_lowercase();
+    let lower = value.to_ascii_lowercase();
     let mut number = None;
     let mut remainder = value.to_string();
 
@@ -1035,6 +1050,33 @@ mod tests {
     fn html_to_text_inserts_paragraph_breaks() {
         let text = html_to_text("<body><h1>Title</h1><p>One   two.</p><p>Three.</p></body>");
         assert_eq!(text, "Title\n\nOne two.\n\nThree.");
+    }
+
+    #[test]
+    fn html_to_text_survives_multibyte_near_bare_ampersand() {
+        // A bare `&` followed by multi-byte characters inside the entity
+        // scan window must not split a UTF-8 character.
+        let text = html_to_text("<body><p>Fish &— chips &“quoted” Ω&Ωμ; end</p></body>");
+        assert!(text.contains("Fish"));
+        assert!(text.contains("chips"));
+        let text = html_to_text("<body><p>&abcdefghij—x</p></body>");
+        assert!(text.contains("abcdefghij"));
+    }
+
+    #[test]
+    fn html_to_text_keeps_offsets_with_unicode_case_folding() {
+        // `İ` changes byte length under Unicode lowercasing; scanning must
+        // stay aligned with the original bytes.
+        let text = html_to_text("<html><head><title>İİİİ</title></head><body><p>İstanbul is old.</p></body></html>");
+        assert!(text.contains("İstanbul is old."));
+        assert!(!text.contains("İİİİ"));
+    }
+
+    #[test]
+    fn parse_label_handles_unicode_titles() {
+        let label = parse_label("İİİİ Chapter 4: Bosphorus");
+        assert_eq!(label.number, Some(4));
+        assert_eq!(label.key, "bosphorus");
     }
 
     #[test]

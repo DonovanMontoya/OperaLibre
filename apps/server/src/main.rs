@@ -2286,7 +2286,7 @@ fn find_sync_file(
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .map(|name| name.to_lowercase().ends_with(SYNC_SIDECAR_SUFFIX))
+                    .map(has_sync_sidecar_suffix)
                     .unwrap_or(false)
             })
             .collect::<Vec<_>>();
@@ -2338,6 +2338,15 @@ fn find_sync_file(
     }
 
     None
+}
+
+/// ASCII-case-insensitive `.sync.json` check that never slices the name at a
+/// non-character boundary (file names can contain characters whose byte
+/// length changes under Unicode lowercasing).
+fn has_sync_sidecar_suffix(name: &str) -> bool {
+    name.len() > SYNC_SIDECAR_SUFFIX.len()
+        && name.is_char_boundary(name.len() - SYNC_SIDECAR_SUFFIX.len())
+        && name[name.len() - SYNC_SIDECAR_SUFFIX.len()..].eq_ignore_ascii_case(SYNC_SIDECAR_SUFFIX)
 }
 
 struct DiscoveredReadingFile {

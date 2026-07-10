@@ -437,7 +437,13 @@ function findActiveFragmentIndex(fragments: SyncFragment[], seconds: number) {
       high = mid - 1;
     }
   }
-  return best >= 0 && seconds < fragments[best].endSeconds ? best : -1;
+  if (best < 0) {
+    return -1;
+  }
+  // Keep the fragment active through the silence before the next sentence so
+  // the highlight doesn't flicker off between sentences.
+  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds;
+  return seconds < activeUntil ? best : -1;
 }
 
 // The haystack index and this needle normalization must collapse text the
@@ -545,6 +551,7 @@ function EpubReadalong({
   const searchIndexRef = useRef<DocumentSearchIndex | null>(null);
   const searchCursorRef = useRef(0);
   const highlightCfiRef = useRef<string | null>(null);
+  const highlightThemeRef = useRef<ReaderTheme | null>(null);
   const highlightedFragmentRef = useRef(-1);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
@@ -806,6 +813,11 @@ function EpubReadalong({
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
+    // The night page is dark, so the marker must lighten instead of darken.
+    const highlightStyles =
+      readerTheme === "night"
+        ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
+        : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
     if (!follow || !syncFragments || fragmentIndex < 0) {
       if (rendition && highlightCfiRef.current) {
         try {
@@ -833,6 +845,21 @@ function EpubReadalong({
     }
     autoNavHrefRef.current = null;
     if (highlightedFragmentRef.current === fragmentIndex) {
+      if (highlightThemeRef.current !== readerTheme && highlightCfiRef.current) {
+        try {
+          rendition.annotations.remove(highlightCfiRef.current, "highlight");
+        } catch {
+          // stale annotation already gone
+        }
+        rendition.annotations.highlight(
+          highlightCfiRef.current,
+          {},
+          () => onSeekTo?.(fragment.startSeconds),
+          "readalong-highlight",
+          highlightStyles
+        );
+        highlightThemeRef.current = readerTheme;
+      }
       return;
     }
 
@@ -881,9 +908,10 @@ function EpubReadalong({
       {},
       () => onSeekTo?.(fragment.startSeconds),
       "readalong-highlight",
-      { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" }
+      highlightStyles
     );
     highlightCfiRef.current = cfi;
+    highlightThemeRef.current = readerTheme;
 
     const EpubCfiClass = epubCfiClassRef.current;
     if (EpubCfiClass && location.start?.cfi && location.end?.cfi) {
@@ -899,7 +927,7 @@ function EpubReadalong({
         // invalid comparison; leave the page as-is
       }
     }
-  }, [follow, fragmentIndex, isReady, location, onSeekTo, syncFragments]);
+  }, [follow, fragmentIndex, isReady, location, onSeekTo, readerTheme, syncFragments]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
