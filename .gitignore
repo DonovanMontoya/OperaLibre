@@ -1,5 +1,6 @@
 node_modules
 dist
+.build
 target
 *.tsbuildinfo
 .DS_Store
@@ -12,3 +13,7 @@ Library
 nohup.out
 docs/_site
 docs/.jekyll-cache
+
+# Agent instruction files are kept local, not tracked.
+AGENTS.md
+CLAUDE.md
