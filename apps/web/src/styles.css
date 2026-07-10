@@ -1105,6 +1105,28 @@ img.large-cover {
   color: var(--ink);
 }
 
+.readalong-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.readalong-genstatus {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-faded);
+}
+
+.readalong-genstatus.error {
+  color: var(--oxblood);
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
 .readalong-frame {
   width: 100%;
   height: min(72vh, 780px);
@@ -1120,7 +1142,9 @@ img.large-cover {
 
 .epub-toolbar {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto 38px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-auto-flow: column;
+  grid-auto-columns: 38px;
   align-items: center;
   gap: 8px;
 }
@@ -1140,6 +1164,12 @@ img.large-cover {
   color: var(--paper);
   background: var(--ink);
   border-color: var(--ink);
+}
+
+.epub-toolbar button.active {
+  color: var(--paper);
+  background: var(--oxblood);
+  border-color: var(--oxblood);
 }
 
 .epub-toolbar select {

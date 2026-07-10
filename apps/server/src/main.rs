@@ -50,10 +50,13 @@ use tower_http::{
 };
 use walkdir::WalkDir;
 
+mod alignment;
+
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
+const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 const LOGIN_MAX_FAILURES: u32 = 5;
@@ -70,6 +73,8 @@ struct AppState {
     activity_file: PathBuf,
     metadata_overrides_file: PathBuf,
     libation_config: LibationConfig,
+    alignment_config: AlignmentConfig,
+    sync_dir: PathBuf,
     library: Arc<RwLock<LibraryState>>,
     metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
     jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
@@ -229,6 +234,8 @@ struct LibraryState {
     books: Vec<Book>,
     track_paths: HashMap<String, PathBuf>,
     reading_paths: HashMap<String, PathBuf>,
+    /// Sync map file paths keyed by book id.
+    sync_paths: HashMap<String, PathBuf>,
     cover_art: HashMap<String, EmbeddedImage>,
 }
 
@@ -260,6 +267,7 @@ struct Book {
     published_date: Option<String>,
     asin: Option<String>,
     reading_file: Option<ReadingFile>,
+    sync_file: Option<SyncFile>,
     chapters: Vec<Chapter>,
     metadata: MetadataSummary,
     tracks: Vec<Track>,
@@ -273,6 +281,16 @@ struct ReadingFile {
     file_name: String,
     extension: String,
     content_type: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncFile {
+    file_name: String,
+    /// `sidecar` when found beside the audiobook, `generated` when produced
+    /// by the alignment job into the server's data directory.
+    source: String,
     url: String,
 }
 
@@ -505,6 +523,7 @@ struct ServerConfig {
     metadata_overrides_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
+    alignment_cli_path: Option<PathBuf>,
     allowed_origins: Vec<String>,
     web_dist_dir: Option<PathBuf>,
 }
@@ -562,6 +581,8 @@ impl ServerConfig {
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
                 .or_else(|| env_path_value("LIBATION_FILES_DIR")),
+            alignment_cli_path: config_path_value(&values, &config_dir, "alignment_cli_path")
+                .or_else(|| env_path_value("OPERALIBRE_ALIGNMENT_CLI_PATH")),
             allowed_origins: config_string_value(&values, "allowed_origins")
                 .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
                 .map(parse_origin_list)
@@ -600,6 +621,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
+        "alignment_cli_path",
         "allowed_origins",
         "web_dist_dir",
     ];
@@ -748,6 +770,8 @@ async fn main() -> anyhow::Result<()> {
         activity_file: config.activity_file.clone(),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_config: LibationConfig::from_server_config(&config),
+        alignment_config: AlignmentConfig::from_server_config(&config),
+        sync_dir: config.data_dir.join("sync"),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(RwLock::new(metadata_overrides)),
         jobs: Arc::new(RwLock::new(HashMap::new())),
@@ -795,6 +819,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
         .route("/api/books/{book_id}/cover", get(get_cover_art))
         .route("/api/books/{book_id}/readalong", get(get_reading_file))
+        .route("/api/books/{book_id}/sync", get(get_sync_map))
+        .route(
+            "/api/books/{book_id}/sync/generate",
+            post(generate_sync_map),
+        )
+        .route("/api/alignment/status", get(alignment_status))
         .route(
             "/api/books/{book_id}/progress",
             get(get_progress).put(update_progress),
@@ -1396,6 +1426,304 @@ async fn get_reading_file(
     serve_file_response(&file_path, headers, None).await
 }
 
+async fn get_sync_map(
+    State(state): State<AppState>,
+    Path(book_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let file_path = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))?;
+        library
+            .sync_paths
+            .get(&book_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Sync map not found"))?
+    };
+
+    serve_file_response(&file_path, headers, None).await
+}
+
+async fn alignment_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let config = &state.alignment_config;
+    Json(serde_json::json!({
+        "enabled": config.enabled(),
+        "cliPath": config.cli_path.as_ref().map(|path| path.to_string_lossy().to_string()),
+    }))
+}
+
+async fn generate_sync_map(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
+    let Some(cli_path) = state.alignment_config.cli_path.clone() else {
+        return Err(ApiError::bad_request(
+            "Alignment CLI was not found. Set alignment_cli_path in server.config or put echogarden on PATH.",
+        ));
+    };
+
+    let (epub_path, tracks, book_title) = {
+        let library = state.library.read().await;
+        let book = library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))?;
+        let reading_file = book
+            .reading_file
+            .as_ref()
+            .filter(|reading_file| reading_file.extension == "epub")
+            .ok_or(ApiError::bad_request(
+                "Sync generation needs an EPUB readalong companion for this book.",
+            ))?;
+        let epub_path = library
+            .reading_paths
+            .get(&reading_file.id)
+            .cloned()
+            .ok_or(ApiError::not_found("Readalong path not found"))?;
+        let tracks = book
+            .tracks
+            .iter()
+            .map(|track| {
+                library
+                    .track_paths
+                    .get(&track.id)
+                    .cloned()
+                    .map(|path| SyncTrackInput {
+                        path,
+                        title: track.title.clone(),
+                        duration_seconds: track.duration_seconds,
+                    })
+                    .ok_or(ApiError::not_found("Track path not found"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        (epub_path, tracks, book.title.clone())
+    };
+    if tracks.is_empty() {
+        return Err(ApiError::bad_request("This book has no audio tracks."));
+    }
+
+    let job_id = create_job(&state, "sync-generate").await;
+    let state_for_job = state.clone();
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        update_job_output(
+            &state_for_job,
+            &job_id_for_task,
+            &format!("Starting readalong sync generation for {book_title}.\n"),
+        )
+        .await;
+
+        let result = run_sync_generation(
+            &state_for_job,
+            &job_id_for_task,
+            &book_id,
+            &cli_path,
+            &epub_path,
+            &tracks,
+        )
+        .await;
+
+        match result {
+            Ok(fragment_count) => {
+                update_job_output(
+                    &state_for_job,
+                    &job_id_for_task,
+                    &format!("Wrote sync map with {fragment_count} sentences.\n"),
+                )
+                .await;
+                if let Err(error) = rescan_library(&state_for_job).await {
+                    update_job_finished(
+                        &state_for_job,
+                        &job_id_for_task,
+                        "failed",
+                        None,
+                        Some(format!(
+                            "Sync map generated, but local rescan failed: {error}"
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                update_job_finished(&state_for_job, &job_id_for_task, "completed", Some(0), None)
+                    .await;
+            }
+            Err(error) => {
+                update_job_finished(
+                    &state_for_job,
+                    &job_id_for_task,
+                    "failed",
+                    None,
+                    Some(error.to_string()),
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(JobCreated { job_id }))
+}
+
+struct SyncTrackInput {
+    path: PathBuf,
+    title: String,
+    duration_seconds: Option<f64>,
+}
+
+async fn run_sync_generation(
+    state: &AppState,
+    job_id: &str,
+    book_id: &str,
+    cli_path: &FsPath,
+    epub_path: &FsPath,
+    tracks: &[SyncTrackInput],
+) -> anyhow::Result<usize> {
+    let epub_bytes = fs::read(epub_path).await?;
+    let epub = tokio::task::spawn_blocking(move || alignment::parse_epub(&epub_bytes)).await??;
+    anyhow::ensure!(
+        !epub.sections.is_empty(),
+        "No readable text sections were found in the EPUB."
+    );
+    update_job_output(
+        state,
+        job_id,
+        &format!(
+            "Extracted {} text sections and {} table-of-contents entries from the EPUB.\n",
+            epub.sections.len(),
+            epub.toc.len()
+        ),
+    )
+    .await;
+
+    // One scope per audio file: the whole book for single-file audiobooks,
+    // otherwise chapter runs matched through the table of contents.
+    let scopes = if tracks.len() == 1 {
+        vec![alignment::TrackScope {
+            track_index: 0,
+            section_range: 0..epub.sections.len(),
+        }]
+    } else {
+        let titles = tracks
+            .iter()
+            .map(|track| track.title.clone())
+            .collect::<Vec<_>>();
+        alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
+            .map_err(|message| anyhow::anyhow!(message))?
+    };
+
+    let mut track_start_seconds = vec![0.0f64; tracks.len()];
+    for index in 1..tracks.len() {
+        let previous_duration = tracks[index - 1].duration_seconds.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Track `{}` has no known duration; cannot compute book positions.",
+                tracks[index - 1].title
+            )
+        })?;
+        track_start_seconds[index] = track_start_seconds[index - 1] + previous_duration;
+    }
+
+    let temp_dir = tempfile::tempdir()?;
+    let mut fragments = Vec::new();
+    for (scope_number, scope) in scopes.iter().enumerate() {
+        let track = &tracks[scope.track_index];
+        let transcript = alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
+        if transcript.text.trim().is_empty() {
+            continue;
+        }
+        let transcript_path = temp_dir
+            .path()
+            .join(format!("transcript-{scope_number}.txt"));
+        fs::write(&transcript_path, &transcript.text).await?;
+        let output_path = temp_dir
+            .path()
+            .join(format!("alignment-{scope_number}.json"));
+
+        update_job_output(
+            state,
+            job_id,
+            &format!(
+                "Aligning {} of {}: {} (this can take a while)...\n",
+                scope_number + 1,
+                scopes.len(),
+                track.title
+            ),
+        )
+        .await;
+
+        let output = Command::new(cli_path)
+            .arg("align")
+            .arg(&track.path)
+            .arg(&transcript_path)
+            .arg(&output_path)
+            .arg("--overwrite")
+            .output()
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail = stderr
+                .lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "Alignment failed for `{}` with status {}:\n{}",
+                track.title,
+                output.status,
+                tail
+            );
+        }
+
+        let timeline_json = fs::read_to_string(&output_path).await?;
+        let entries = alignment::parse_timeline(&timeline_json)?;
+        let track_fragments = alignment::fragments_from_timeline(
+            &entries,
+            &transcript,
+            track_start_seconds[scope.track_index],
+        );
+        update_job_output(
+            state,
+            job_id,
+            &format!("  Matched {} sentences.\n", track_fragments.len()),
+        )
+        .await;
+        fragments.extend(track_fragments);
+    }
+
+    anyhow::ensure!(
+        !fragments.is_empty(),
+        "Alignment produced no usable sentence fragments."
+    );
+    fragments.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+    let fragment_count = fragments.len();
+
+    let sync_map = alignment::SyncMap {
+        version: alignment::SYNC_MAP_VERSION,
+        generator: Some("echogarden".to_string()),
+        generated_at: Some(now_rfc3339ish()),
+        fragments,
+    };
+    fs::create_dir_all(&state.sync_dir).await?;
+    let sync_path = state
+        .sync_dir
+        .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
+    write_json_atomic(&sync_path, &sync_map)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+
+    Ok(fragment_count)
+}
+
 async fn get_progress(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1769,6 +2097,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
+    let mut sync_paths = HashMap::new();
     let mut cover_art = HashMap::new();
     let mut books = Vec::new();
 
@@ -1868,6 +2197,16 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if let Some(reading_file) = reading_file.as_ref() {
             reading_paths.insert(reading_file.file.id.clone(), reading_file.path.clone());
         }
+        let sync_file = find_sync_file(
+            &book_id,
+            &group_key,
+            &grouped_files,
+            &title,
+            &state.sync_dir,
+        );
+        if let Some(sync_file) = sync_file.as_ref() {
+            sync_paths.insert(book_id.clone(), sync_file.path.clone());
+        }
 
         let mut book = Book {
             id: book_id.clone(),
@@ -1882,6 +2221,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
             reading_file: reading_file.map(|reading_file| reading_file.file),
+            sync_file: sync_file.map(|sync_file| sync_file.file),
             chapters: book_chapters,
             metadata: metadata_summary,
             tracks,
@@ -1897,8 +2237,107 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     library.books = books;
     library.track_paths = track_paths;
     library.reading_paths = reading_paths;
+    library.sync_paths = sync_paths;
     library.cover_art = cover_art;
     Ok(())
+}
+
+struct DiscoveredSyncFile {
+    file: SyncFile,
+    path: PathBuf,
+}
+
+/// Finds a readalong sync map for a book: a user-provided `.sync.json`
+/// sidecar beside the audiobook wins, then a server-generated file in the
+/// sync data directory.
+fn find_sync_file(
+    book_id: &str,
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    book_title: &str,
+    sync_dir: &FsPath,
+) -> Option<DiscoveredSyncFile> {
+    let url = format!("/api/books/{book_id}/sync");
+    let is_folder_book = group_key.is_dir();
+    let search_dir = if is_folder_book {
+        Some(group_key.to_path_buf())
+    } else {
+        group_key.parent().map(FsPath::to_path_buf)
+    };
+
+    if let Some(search_dir) = search_dir {
+        let audio_stems = grouped_files
+            .iter()
+            .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
+            .map(normalize_match_key)
+            .collect::<Vec<_>>();
+        let group_stem = group_key
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .map(normalize_match_key);
+        let title_key = normalize_match_key(book_title);
+
+        let mut candidates = WalkDir::new(&search_dir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.to_lowercase().ends_with(SYNC_SIDECAR_SUFFIX))
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|a| natural_path_key(a));
+
+        let selected = candidates
+            .iter()
+            .find(|path| {
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    return false;
+                };
+                let stem = &name[..name.len() - SYNC_SIDECAR_SUFFIX.len()];
+                let stem_key = normalize_match_key(stem);
+                Some(&stem_key) == group_stem.as_ref()
+                    || stem_key == title_key
+                    || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
+            })
+            .or_else(|| is_folder_book.then(|| candidates.first()).flatten());
+        if let Some(selected) = selected {
+            return Some(DiscoveredSyncFile {
+                path: selected.clone(),
+                file: SyncFile {
+                    file_name: selected
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("sync.json")
+                        .to_string(),
+                    source: "sidecar".to_string(),
+                    url,
+                },
+            });
+        }
+    }
+
+    let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
+    if generated.is_file() {
+        return Some(DiscoveredSyncFile {
+            file: SyncFile {
+                file_name: generated
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("sync.json")
+                    .to_string(),
+                source: "generated".to_string(),
+                url,
+            },
+            path: generated,
+        });
+    }
+
+    None
 }
 
 struct DiscoveredReadingFile {
@@ -2740,6 +3179,40 @@ impl LibationConfig {
         }
         command_args
     }
+}
+
+#[derive(Debug, Clone)]
+struct AlignmentConfig {
+    cli_path: Option<PathBuf>,
+}
+
+impl AlignmentConfig {
+    fn from_server_config(config: &ServerConfig) -> Self {
+        let cli_path = config
+            .alignment_cli_path
+            .clone()
+            .filter(|path| path.is_file())
+            .or_else(find_alignment_cli_on_path);
+        Self { cli_path }
+    }
+
+    fn enabled(&self) -> bool {
+        self.cli_path.is_some()
+    }
+}
+
+fn find_alignment_cli_on_path() -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    let candidates = ["echogarden", "echogarden.cmd", "echogarden.exe"];
+    for dir in env::split_paths(&path_var) {
+        for candidate in candidates {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn find_libation_cli_on_path() -> Option<PathBuf> {

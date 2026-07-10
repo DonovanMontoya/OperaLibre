@@ -84,6 +84,14 @@ So for a folder named `The Hobbit`, both of these work:
 
 And for `Project Hail Mary.m4b` you need `Project Hail Mary.epub` (or `.pdf`, etc.) sitting beside it in `library_root`.
 
+### Sync maps (sentence highlighting)
+
+When a book has an EPUB companion, a *sync map* enables sentence-level readalong: while the book plays, the reader pane highlights the sentence being narrated, turns pages, and follows chapter changes. Clicking a highlighted sentence seeks the audio to it.
+
+Sync maps are `.sync.json` files matched with the same stem rules as readalong companions (`The Hobbit.sync.json` next to `The Hobbit.m4b`). You can provide them yourself, or let the server generate one: install [echogarden](https://github.com/echogarden-project/echogarden) (`npm install -g echogarden`, or set `alignment_cli_path` in `server.config`), then use the **Sync** button in the readalong pane (admins only). Generated maps are stored under `data_dir/sync/` and a sidecar next to the book always wins over a generated one.
+
+Generation force-aligns each audio file against the EPUB text. Single-file audiobooks are aligned in one pass; multi-file books are scoped by matching track titles against the EPUB's table of contents, so it works best when track names correspond to chapters (`03 - Owl Post` ↔ `Chapter 3: Owl Post`).
+
 ## Metadata fields shown in the UI
 
 Whatever your tags expose — pulled best-effort from each container:

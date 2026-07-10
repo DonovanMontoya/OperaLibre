@@ -14,6 +14,7 @@ import {
   Library,
   List,
   ListMusic,
+  LocateFixed,
   LogOut,
   Pause,
   Pencil,
@@ -23,20 +24,24 @@ import {
   RotateCw,
   Search,
   ServerOff,
+  Sparkles,
   Timer,
   ScrollText,
   UserCog,
   Volume2,
   X
 } from "lucide-react";
-import type { Book as EpubBook, Location, NavItem, Rendition } from "epubjs";
+import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bookDownloadUrl,
   clearServerUrl,
+  generateSyncMap,
+  getAlignmentStatus,
   getAuthStatus,
   getBooks,
   getJob,
+  getSyncMap,
   getLibationBooks,
   getLibationStatus,
   getMe,
@@ -58,7 +63,19 @@ import {
 } from "./api";
 import { AuthGate, ServerSetup, UserManagementModal } from "./Auth";
 import { ProfilePage } from "./Profile";
-import type { AuthUser, Book, BookMetadataUpdate, Chapter, JobStatus, LibationBook, LibationStatus, Track } from "./types";
+import type {
+  AlignmentStatus,
+  AuthUser,
+  Book,
+  BookMetadataUpdate,
+  Chapter,
+  JobStatus,
+  LibationBook,
+  LibationStatus,
+  SyncFragment,
+  SyncMap,
+  Track
+} from "./types";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
@@ -387,25 +404,150 @@ function findTocHrefForSyncTarget(
   return best && best.score >= 70 ? best.href : null;
 }
 
+function hrefsMatch(displayedHref: string, fragmentHref: string) {
+  const clean = (value: string) => {
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // keep as-is
+    }
+    return value.split(/[#?]/)[0].replace(/^\.?\//, "");
+  };
+  const a = clean(displayedHref);
+  const b = clean(fragmentHref);
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+function findActiveFragmentIndex(fragments: SyncFragment[], seconds: number) {
+  let low = 0;
+  let high = fragments.length - 1;
+  let best = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (fragments[mid].startSeconds <= seconds) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best >= 0 && seconds < fragments[best].endSeconds ? best : -1;
+}
+
+// The haystack index and this needle normalization must collapse text the
+// same way so indexOf offsets map back to DOM positions.
+function normalizeSyncNeedle(value: string) {
+  let out = "";
+  let lastWasSpace = true;
+  for (const ch of value) {
+    if (ch === "\u00AD") {
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (!lastWasSpace) {
+        out += " ";
+        lastWasSpace = true;
+      }
+    } else {
+      out += ch.toLowerCase();
+      lastWasSpace = false;
+    }
+  }
+  return out.trim();
+}
+
+type DocumentSearchIndex = {
+  doc: Document;
+  text: string;
+  map: Array<{ node: Text; offset: number }>;
+};
+
+function buildDocumentSearchIndex(doc: Document): DocumentSearchIndex {
+  const pieces: string[] = [];
+  const map: Array<{ node: Text; offset: number }> = [];
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  let lastWasSpace = true;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const textNode = node as Text;
+    const data = textNode.data;
+    for (let offset = 0; offset < data.length; offset += 1) {
+      const ch = data[offset];
+      if (ch === "\u00AD") {
+        continue;
+      }
+      if (/\s/.test(ch)) {
+        if (!lastWasSpace) {
+          pieces.push(" ");
+          map.push({ node: textNode, offset });
+          lastWasSpace = true;
+        }
+      } else {
+        for (const lower of ch.toLowerCase()) {
+          pieces.push(lower);
+          map.push({ node: textNode, offset });
+        }
+        lastWasSpace = false;
+      }
+    }
+  }
+  return { doc, text: pieces.join(""), map };
+}
+
+function findRangeInSearchIndex(index: DocumentSearchIndex, needle: string, fromOffset: number) {
+  if (!needle) {
+    return null;
+  }
+  let at = index.text.indexOf(needle, Math.min(fromOffset, index.text.length));
+  if (at === -1) {
+    at = index.text.indexOf(needle);
+  }
+  if (at === -1) {
+    return null;
+  }
+  const start = index.map[at];
+  const end = index.map[at + needle.length - 1];
+  if (!start || !end) {
+    return null;
+  }
+  const range = index.doc.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, Math.min(end.offset + 1, end.node.data.length));
+  return { range, endOffset: at + needle.length };
+}
+
 function EpubReadalong({
   title,
   url,
-  syncTarget
+  syncTarget,
+  syncFragments,
+  positionSeconds,
+  onSeekTo
 }: {
   title: string;
   url: string;
   syncTarget: EpubSyncTarget | null;
+  syncFragments: SyncFragment[] | null;
+  positionSeconds: number;
+  onSeekTo?: (seconds: number) => void;
 }) {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const syncedTargetRef = useRef<string | null>(null);
+  const epubCfiClassRef = useRef<typeof EpubCFI | null>(null);
+  const searchIndexRef = useRef<DocumentSearchIndex | null>(null);
+  const searchCursorRef = useRef(0);
+  const highlightCfiRef = useRef<string | null>(null);
+  const highlightedFragmentRef = useRef(-1);
+  const autoNavHrefRef = useRef<string | null>(null);
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [follow, setFollow] = useState(true);
 
   useEffect(() => {
     if (!viewerRef.current) {
@@ -420,6 +562,11 @@ function EpubReadalong({
     setErrorDetail(null);
     setIsReady(false);
     syncedTargetRef.current = null;
+    searchIndexRef.current = null;
+    searchCursorRef.current = 0;
+    highlightCfiRef.current = null;
+    highlightedFragmentRef.current = -1;
+    autoNavHrefRef.current = null;
 
     const abortController = new AbortController();
     let readyTimeout: number | null = null;
@@ -436,7 +583,9 @@ function EpubReadalong({
 
     const openBook = async () => {
       try {
-        const { default: ePub } = await import("epubjs");
+        const epubModule = await import("epubjs");
+        const ePub = epubModule.default;
+        epubCfiClassRef.current = epubModule.EpubCFI;
         if (cancelled || !viewerRef.current) {
           return;
         }
@@ -554,6 +703,113 @@ function EpubReadalong({
     void renditionRef.current?.display(href);
   }, [isReady, syncTarget, toc]);
 
+  const fragmentIndex = useMemo(
+    () =>
+      syncFragments && syncFragments.length > 0
+        ? findActiveFragmentIndex(syncFragments, positionSeconds)
+        : -1,
+    [positionSeconds, syncFragments]
+  );
+
+  // Sentence-level readalong: highlight the fragment being narrated and keep
+  // it on screen, following page turns and chapter boundaries.
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (!follow || !syncFragments || fragmentIndex < 0) {
+      if (rendition && highlightCfiRef.current) {
+        try {
+          rendition.annotations.remove(highlightCfiRef.current, "highlight");
+        } catch {
+          // stale annotation already gone
+        }
+      }
+      highlightCfiRef.current = null;
+      highlightedFragmentRef.current = -1;
+      return;
+    }
+    if (!isReady || !rendition || !location) {
+      return;
+    }
+    const fragment = syncFragments[fragmentIndex];
+    const currentHref = location.start?.href ?? "";
+    if (!hrefsMatch(currentHref, fragment.href)) {
+      if (autoNavHrefRef.current !== fragment.href) {
+        autoNavHrefRef.current = fragment.href;
+        highlightedFragmentRef.current = -1;
+        void rendition.display(fragment.href);
+      }
+      return;
+    }
+    autoNavHrefRef.current = null;
+    if (highlightedFragmentRef.current === fragmentIndex) {
+      return;
+    }
+
+    const contentsList = ([] as Contents[]).concat(
+      (rendition.getContents() as unknown as Contents[]) ?? []
+    );
+    const contents = contentsList.find((candidate) => candidate?.document?.body);
+    const doc = contents?.document;
+    if (!contents || !doc) {
+      return;
+    }
+    if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
+      searchIndexRef.current = buildDocumentSearchIndex(doc);
+      searchCursorRef.current = 0;
+    }
+
+    // Mark the fragment handled up front so a missing sentence doesn't retry
+    // on every relocation.
+    highlightedFragmentRef.current = fragmentIndex;
+
+    const found = findRangeInSearchIndex(
+      searchIndexRef.current,
+      normalizeSyncNeedle(fragment.text),
+      searchCursorRef.current
+    );
+    if (!found) {
+      return;
+    }
+    searchCursorRef.current = found.endOffset;
+
+    let cfi: string;
+    try {
+      cfi = contents.cfiFromRange(found.range);
+    } catch {
+      return;
+    }
+    if (highlightCfiRef.current) {
+      try {
+        rendition.annotations.remove(highlightCfiRef.current, "highlight");
+      } catch {
+        // stale annotation already gone
+      }
+    }
+    rendition.annotations.highlight(
+      cfi,
+      {},
+      () => onSeekTo?.(fragment.startSeconds),
+      "readalong-highlight",
+      { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" }
+    );
+    highlightCfiRef.current = cfi;
+
+    const EpubCfiClass = epubCfiClassRef.current;
+    if (EpubCfiClass && location.start?.cfi && location.end?.cfi) {
+      try {
+        const comparator = new EpubCfiClass();
+        if (
+          comparator.compare(cfi, location.end.cfi) >= 0 ||
+          comparator.compare(cfi, location.start.cfi) < 0
+        ) {
+          void rendition.display(cfi);
+        }
+      } catch {
+        // invalid comparison; leave the page as-is
+      }
+    }
+  }, [follow, fragmentIndex, isReady, location, onSeekTo, syncFragments]);
+
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
     ? `${Math.round((percent ?? 0) * 100)}%`
@@ -586,7 +842,33 @@ function EpubReadalong({
             </option>
           ))}
         </select>
-        <span>{syncTarget ? `Sync ${locationLabel}` : locationLabel}</span>
+        <span>
+          {syncFragments && follow && fragmentIndex >= 0
+            ? `Following ${locationLabel}`
+            : syncTarget
+              ? `Sync ${locationLabel}`
+              : locationLabel}
+        </span>
+        {syncFragments && syncFragments.length > 0 ? (
+          <button
+            type="button"
+            className={follow ? "active" : ""}
+            onClick={() =>
+              setFollow((enabled) => {
+                const next = !enabled;
+                if (next) {
+                  highlightedFragmentRef.current = -1;
+                }
+                return next;
+              })
+            }
+            aria-pressed={follow}
+            aria-label={follow ? "Stop following narration" : "Follow narration"}
+            title={follow ? "Stop following narration" : "Follow narration"}
+          >
+            <LocateFixed size={16} />
+          </button>
+        ) : null}
         <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
           <ChevronRight size={16} />
         </button>
@@ -731,6 +1013,7 @@ function MainApp({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
+  const playWhenTrackLoads = useRef(false);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -756,6 +1039,10 @@ function MainApp({
   const [searchQuery, setSearchQuery] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
+  const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
+  const [syncMaps, setSyncMaps] = useState<Record<string, SyncMap | null>>({});
+  const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
+  const [syncJobError, setSyncJobError] = useState<string | null>(null);
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
   const [libationLoading, setLibationLoading] = useState(false);
@@ -873,6 +1160,34 @@ function MainApp({
   const selectedReadalongUrl = selectedBook?.readingFile
     ? readalongUrl(selectedBook.readingFile.url)
     : null;
+  const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
+  const selectedSyncFragments =
+    isViewingPlayingBook && selectedSyncMap && selectedSyncMap.fragments.length > 0
+      ? selectedSyncMap.fragments
+      : null;
+  const canGenerateSync =
+    currentUser.isAdmin &&
+    !!alignmentStatus?.enabled &&
+    selectedBook?.readingFile?.extension === "epub";
+
+  async function startSyncGeneration(book: Book) {
+    setSyncJobError(null);
+    try {
+      const created = await generateSyncMap(book.id);
+      setSyncJob({
+        id: created.jobId,
+        kind: "sync-generate",
+        status: "running",
+        startedAt: "",
+        finishedAt: null,
+        exitCode: null,
+        output: "",
+        error: null
+      });
+    } catch (error) {
+      setSyncJobError(errorMessage(error, "Could not start readalong sync generation."));
+    }
+  }
 
   const loadBooks = useCallback(async () => {
     setIsLoading(true);
@@ -914,6 +1229,55 @@ function MainApp({
       setReadalongOpen(false);
     }
   }, [selectedBook?.readingFile]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin) {
+      return;
+    }
+    void getAlignmentStatus()
+      .then(setAlignmentStatus)
+      .catch(() => setAlignmentStatus(null));
+  }, [currentUser.isAdmin]);
+
+  const syncMapBookId = readalongOpen && selectedBook?.syncFile ? selectedBook.id : null;
+  useEffect(() => {
+    if (!syncMapBookId || syncMaps[syncMapBookId] !== undefined) {
+      return;
+    }
+    let cancelled = false;
+    void getSyncMap(syncMapBookId)
+      .then((map) => {
+        if (!cancelled) {
+          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: null }));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [syncMapBookId, syncMaps]);
+
+  useEffect(() => {
+    if (!syncJob || syncJob.status !== "running") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void getJob(syncJob.id)
+        .then((job) => {
+          setSyncJob(job);
+          if (job.status === "completed") {
+            setSyncMaps({});
+            void loadBooks();
+          }
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [loadBooks, syncJob]);
 
   const loadLibationStatus = useCallback(async () => {
     try {
@@ -1173,6 +1537,10 @@ function MainApp({
     } else {
       setPosition(0);
     }
+    if (playWhenTrackLoads.current) {
+      playWhenTrackLoads.current = false;
+      void audio.play();
+    }
   }
 
   function seekBy(delta: number) {
@@ -1230,9 +1598,7 @@ function MainApp({
     setCurrentTrackId(targetTrack.id);
     setPendingSeek(trackPosition);
     setPosition(trackPosition);
-    if (autoPlay) {
-      window.setTimeout(() => void audioRef.current?.play(), 0);
-    }
+    playWhenTrackLoads.current = autoPlay;
   }
 
   function seekBookPosition(value: number, autoPlay = false) {
@@ -1262,15 +1628,25 @@ function MainApp({
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
+    if (
+      selectedBook?.id === playbackBook?.id &&
+      track.id === currentTrack?.id &&
+      audioRef.current
+    ) {
+      audioRef.current.currentTime = 0;
+      setPosition(0);
+      if (autoPlay) {
+        void audioRef.current.play();
+      }
+      return;
+    }
     if (selectedBook) {
       setPlaybackBookId(selectedBook.id);
     }
     setCurrentTrackId(track.id);
     setPendingSeek(0);
     setPosition(0);
-    if (autoPlay) {
-      window.setTimeout(() => void audioRef.current?.play(), 0);
-    }
+    playWhenTrackLoads.current = autoPlay;
   }
 
   function jumpToChapter(chapter: Chapter) {
@@ -1285,9 +1661,11 @@ function MainApp({
   function playNextTrack() {
     void persistProgress();
     if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
+      playWhenTrackLoads.current = false;
       setIsPlaying(false);
       return;
     }
+    playWhenTrackLoads.current = true;
     setCurrentTrackId(playbackBook.tracks[activeTrackIndex + 1].id);
     setPendingSeek(0);
     setPosition(0);
@@ -1880,16 +2258,55 @@ function MainApp({
                     <span className="section-label"><ScrollText size={13} /> Readalong</span>
                     <strong>{selectedBook.readingFile.fileName}</strong>
                   </div>
-                  <a className="download-btn" href={selectedReadalongUrl} target="_blank" rel="noreferrer">
-                    <Download size={13} />
-                    <span>Open</span>
-                  </a>
+                  <div className="readalong-actions">
+                    {canGenerateSync ? (
+                      <button
+                        type="button"
+                        className="download-btn"
+                        disabled={syncJob?.status === "running"}
+                        onClick={() => void startSyncGeneration(selectedBook)}
+                        title={
+                          selectedBook.syncFile
+                            ? "Regenerate the narration sync map"
+                            : "Generate a narration sync map for sentence highlighting"
+                        }
+                      >
+                        {syncJob?.status === "running" ? (
+                          <LoaderCircle size={13} className="spin-icon" />
+                        ) : (
+                          <Sparkles size={13} />
+                        )}
+                        <span>{selectedBook.syncFile ? "Re-sync" : "Sync"}</span>
+                      </button>
+                    ) : null}
+                    <a className="download-btn" href={selectedReadalongUrl} target="_blank" rel="noreferrer">
+                      <Download size={13} />
+                      <span>Open</span>
+                    </a>
+                  </div>
                 </div>
+                {syncJob && syncJob.status === "running" ? (
+                  <div className="readalong-genstatus">
+                    Generating narration sync… this can take a while for long books.
+                  </div>
+                ) : syncJob && syncJob.status === "failed" ? (
+                  <div className="readalong-genstatus error">
+                    {syncJob.error ?? "Readalong sync generation failed."}
+                  </div>
+                ) : null}
+                {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
                 {selectedBook.readingFile.extension === "epub" ? (
                   <EpubReadalong
                     title={selectedBook.title}
                     url={selectedReadalongUrl}
-                    syncTarget={isViewingPlayingBook && activeChapter ? activeChapter : null}
+                    syncTarget={
+                      !selectedSyncFragments && isViewingPlayingBook && activeChapter
+                        ? activeChapter
+                        : null
+                    }
+                    syncFragments={selectedSyncFragments}
+                    positionSeconds={isViewingPlayingBook ? bookPosition : 0}
+                    onSeekTo={(seconds) => seekBookPosition(seconds, true)}
                   />
                 ) : canPreviewReadalong(selectedBook) ? (
                   <iframe

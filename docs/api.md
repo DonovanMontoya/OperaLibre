@@ -49,12 +49,34 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
 | `GET` | `/api/books/{book_id}/cover` | Cover art image (extracted from tags or sidecar). |
 | `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
+| `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`), if one is matched or generated. |
+| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/alignment/status` | Whether an alignment CLI was found: `{ "enabled": bool, "cliPath": string \| null }`. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
+
+Books that have a sync map expose a `syncFile` object (`fileName`, `source` of `sidecar` or `generated`, and `url`). The sync map itself is JSON:
+
+```json
+{
+  "version": 1,
+  "generator": "echogarden",
+  "fragments": [
+    {
+      "startSeconds": 1.15,
+      "endSeconds": 2.74,
+      "href": "text/ch1.xhtml",
+      "text": "The meadow was quiet in the early morning light."
+    }
+  ]
+}
+```
+
+`startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document.
 
 Progress updates use JSON with the current track and timing fields:
 

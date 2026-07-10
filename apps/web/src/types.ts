@@ -22,6 +22,7 @@ export type Book = {
   publishedDate: string | null;
   asin: string | null;
   readingFile: ReadingFile | null;
+  syncFile: SyncFile | null;
   chapters: Chapter[];
   metadata: MetadataSummary;
   tracks: Track[];
@@ -45,6 +46,31 @@ export type ReadingFile = {
   extension: string;
   contentType: string;
   url: string;
+};
+
+export type SyncFile = {
+  fileName: string;
+  source: "sidecar" | "generated" | string;
+  url: string;
+};
+
+export type SyncFragment = {
+  startSeconds: number;
+  endSeconds: number;
+  href: string;
+  text: string;
+};
+
+export type SyncMap = {
+  version: number;
+  generator?: string | null;
+  generatedAt?: string | null;
+  fragments: SyncFragment[];
+};
+
+export type AlignmentStatus = {
+  enabled: boolean;
+  cliPath: string | null;
 };
 
 export type BookProgress = {
