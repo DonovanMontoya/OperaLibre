@@ -25,7 +25,7 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - 15-second rewind and 30-second forward controls.
 - Sleep timer.
 - Media Session integration for OS-level playback controls where supported.
-- PWA manifest so the web app can be installed and later wrapped with Capacitor for iOS.
+- PWA manifest plus a Capacitor iPhone app that reuses the web frontend.
 
 ## Run locally
 
@@ -42,6 +42,36 @@ Open [http://localhost:5173](http://localhost:5173).
 The server runs on [http://localhost:4000](http://localhost:4000). On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall.
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
+
+## macOS app
+
+The macOS app is a lightweight AppKit/WebKit host for the same React frontend. Build and launch it with:
+
+```bash
+./script/build_and_run.sh
+```
+
+The script builds the web frontend and Swift executable, stages `dist/OperaLibre.app`, and launches the app. Start the audiobook server separately with `npm run dev:server`; the app's first screen asks for its URL and remembers the server and sign-in token between launches. Plain HTTP is supported for local-network servers; use HTTPS for remote hostnames.
+
+Use `./script/build_and_run.sh --verify` to build, launch, and confirm the app process started. The script also supports `--debug`, `--logs`, and `--telemetry`.
+
+### Jellyfin servers
+
+Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
+
+The client supports Jellyfin audiobook listing, multi-file album grouping, cover art, direct audio streaming, and resume-position synchronization. OperaLibre-specific features such as Libation, reader administration, metadata editing, readalong files, and the reader ledger are hidden while connected to Jellyfin.
+
+## iPhone app
+
+The iPhone app uses Capacitor 8 to package the same React frontend in a native iOS 15+ Xcode project. Build the simulator app from the repository root with:
+
+```bash
+npm run build:ios
+```
+
+This rebuilds the frontend, synchronizes it into `apps/web/ios`, and produces an unsigned simulator build under `dist/ios-derived`. To configure signing and run on a physical iPhone, use `npm run ios:open -w @operalibre/web`, select your development team in Xcode, and choose the connected phone.
+
+The app can connect over plain HTTP to local-network and private-overlay addresses, including Tailscale `100.x` addresses, for OperaLibre or Jellyfin servers. Use HTTPS for public remote servers. Its iOS audio session is configured for spoken-audio background playback so an active audiobook can continue while the app is backgrounded or the screen is locked.
 
 ## Custom frontends
 
@@ -114,15 +144,9 @@ libation_files_dir = /path/to/LibationFiles
 
 If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated.
 
-## iOS path
+## iOS development
 
-The frontend is intentionally plain React/Vite so it can move to iOS through Capacitor later:
-
-```bash
-npm install @capacitor/core @capacitor/cli @capacitor/ios -w @operalibre/web
-```
-
-For a native wrapper, set `VITE_API_BASE` to the server URL reachable from the phone, then add Capacitor once the web playback experience is stable.
+The checked-in Xcode project lives in `apps/web/ios`. After changing the React frontend, run `npm run sync:ios` before building in Xcode so the native bundle receives the latest web assets.
 
 ## Users
 
