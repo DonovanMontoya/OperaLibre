@@ -16,9 +16,13 @@ import {
   ListMusic,
   LocateFixed,
   LogOut,
+  Maximize2,
+  Minimize2,
+  Minus,
   Pause,
   Pencil,
   Play,
+  Plus,
   RefreshCcw,
   RotateCcw,
   RotateCw,
@@ -33,6 +37,7 @@ import {
 } from "lucide-react";
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   bookDownloadUrl,
   clearServerUrl,
@@ -84,6 +89,7 @@ const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
+type ReaderTheme = "paper" | "sepia" | "night";
 type MetadataEditorState = {
   title: string;
   author: string;
@@ -541,6 +547,12 @@ function EpubReadalong({
   const highlightCfiRef = useRef<string | null>(null);
   const highlightedFragmentRef = useRef(-1);
   const autoNavHrefRef = useRef<string | null>(null);
+  const lastLocationRef = useRef<Location | null>(null);
+  const readerUrlRef = useRef(url);
+  if (readerUrlRef.current !== url) {
+    readerUrlRef.current = url;
+    lastLocationRef.current = null;
+  }
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
@@ -548,6 +560,15 @@ function EpubReadalong({
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [follow, setFollow] = useState(true);
+  const [readerTheme, setReaderTheme] = useState<ReaderTheme>(() => {
+    const stored = window.localStorage.getItem("operalibre.readerTheme");
+    return stored === "sepia" || stored === "night" ? stored : "paper";
+  });
+  const [fontScale, setFontScale] = useState(() => {
+    const stored = Number(window.localStorage.getItem("operalibre.readerFontScale"));
+    return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
+  });
+  const [focusMode, setFocusMode] = useState(false);
 
   useEffect(() => {
     if (!viewerRef.current) {
@@ -574,6 +595,7 @@ function EpubReadalong({
     let book: EpubBook | null = null;
     let rendition: Rendition | null = null;
     const handleRelocated = (nextLocation: Location) => {
+      lastLocationRef.current = nextLocation;
       setLocation(nextLocation);
       setIsReady(true);
     };
@@ -627,6 +649,43 @@ function EpubReadalong({
           manager: "default"
         });
 
+        rendition.themes.register("operalibre-paper", {
+          body: {
+            color: "#241b15 !important",
+            background: "#fffdf7 !important",
+            "font-family": "Georgia, 'Times New Roman', serif !important",
+            "line-height": "1.78 !important",
+            padding: "0 5% !important"
+          },
+          p: { "margin-bottom": "1.15em !important" },
+          a: { color: "#7c2f2a !important" },
+          img: { "max-width": "100% !important", height: "auto !important" }
+        });
+        rendition.themes.register("operalibre-sepia", {
+          body: {
+            color: "#3b2b1d !important",
+            background: "#f2e5c9 !important",
+            "font-family": "Georgia, 'Times New Roman', serif !important",
+            "line-height": "1.78 !important",
+            padding: "0 5% !important"
+          },
+          p: { "margin-bottom": "1.15em !important" },
+          a: { color: "#7d3f26 !important" },
+          img: { "max-width": "100% !important", height: "auto !important" }
+        });
+        rendition.themes.register("operalibre-night", {
+          body: {
+            color: "#e7dcc8 !important",
+            background: "#171411 !important",
+            "font-family": "Georgia, 'Times New Roman', serif !important",
+            "line-height": "1.78 !important",
+            padding: "0 5% !important"
+          },
+          p: { "margin-bottom": "1.15em !important" },
+          a: { color: "#d9b574 !important" },
+          img: { "max-width": "100% !important", height: "auto !important" }
+        });
+
         bookRef.current = book;
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
@@ -644,7 +703,7 @@ function EpubReadalong({
             }
           });
 
-        await rendition.display();
+        await rendition.display(lastLocationRef.current?.start?.cfi);
         if (!cancelled) {
           setIsReady(true);
           setError(null);
@@ -686,7 +745,39 @@ function EpubReadalong({
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [url]);
+  }, [focusMode, url]);
+
+  useEffect(() => {
+    window.localStorage.setItem("operalibre.readerTheme", readerTheme);
+    if (isReady) {
+      renditionRef.current?.themes.select(`operalibre-${readerTheme}`);
+    }
+  }, [isReady, readerTheme]);
+
+  useEffect(() => {
+    window.localStorage.setItem("operalibre.readerFontScale", String(fontScale));
+    if (isReady) {
+      renditionRef.current?.themes.fontSize(`${fontScale}%`);
+    }
+  }, [fontScale, isReady]);
+
+  useEffect(() => {
+    if (!focusMode) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFocusMode(false);
+      }
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [focusMode]);
 
   useEffect(() => {
     if (!syncTarget || !isReady || toc.length === 0 || syncedTargetRef.current === syncTarget.id) {
@@ -816,64 +907,130 @@ function EpubReadalong({
     : isReady
       ? "Ready"
       : "Loading";
+  const currentTocItem = useMemo(() => {
+    const href = location?.start?.href;
+    if (!href) {
+      return null;
+    }
+    let match: (NavItem & { depth: number }) | null = null;
+    for (const item of toc) {
+      if (hrefsMatch(href, item.href)) {
+        match = item;
+      }
+    }
+    return match;
+  }, [location, toc]);
+  const selectedTocHref = currentTocItem?.href ?? activeHref;
 
-  return (
-    <div className="epub-reader">
-      <div className="epub-toolbar">
-        <button type="button" onClick={() => void renditionRef.current?.prev()} aria-label="Previous page">
-          <ChevronLeft size={16} />
-        </button>
-        <select
-          aria-label={`${title} table of contents`}
-          value={activeHref}
-          onChange={(event) => {
-            const href = event.currentTarget.value;
-            setActiveHref(href);
-            syncedTargetRef.current = null;
-            if (href) {
-              void renditionRef.current?.display(href);
-            }
-          }}
-        >
-          <option value="">Contents</option>
-          {toc.map((item) => (
-            <option key={`${item.href}-${item.label}`} value={item.href}>
-              {"\u00A0".repeat(item.depth * 2)}{item.label}
-            </option>
-          ))}
-        </select>
-        <span>
-          {syncFragments && follow && fragmentIndex >= 0
-            ? `Following ${locationLabel}`
-            : syncTarget
-              ? `Sync ${locationLabel}`
-              : locationLabel}
-        </span>
-        {syncFragments && syncFragments.length > 0 ? (
+  const reader = (
+    <div className={`epub-reader theme-${readerTheme} ${focusMode ? "focus-mode" : ""}`}>
+      <div className="epub-reader-chrome">
+        <div className="epub-toolbar">
+          <button type="button" onClick={() => void renditionRef.current?.prev()} aria-label="Previous page">
+            <ChevronLeft size={17} />
+          </button>
+          <div className="epub-location">
+            <select
+              aria-label={`${title} table of contents`}
+              value={selectedTocHref}
+              onChange={(event) => {
+                const href = event.currentTarget.value;
+                setActiveHref(href);
+                syncedTargetRef.current = null;
+                if (href) {
+                  void renditionRef.current?.display(href);
+                }
+              }}
+            >
+              <option value="">Contents</option>
+              {toc.map((item) => (
+                <option key={`${item.href}-${item.label}`} value={item.href}>
+                  {"\u00A0".repeat(item.depth * 2)}{item.label}
+                </option>
+              ))}
+            </select>
+            <span className="epub-status">
+              {syncFragments && follow && fragmentIndex >= 0
+                ? `Following · ${locationLabel}`
+                : syncTarget
+                  ? `Synced · ${locationLabel}`
+                  : locationLabel}
+            </span>
+          </div>
+          <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
+            <ChevronRight size={17} />
+          </button>
+        </div>
+
+        <div className="epub-preferences" aria-label="Reader appearance">
+          <div className="epub-theme-options" aria-label="Reading theme">
+            {(["paper", "sepia", "night"] as const).map((theme) => (
+              <button
+                type="button"
+                key={theme}
+                className={readerTheme === theme ? "selected" : ""}
+                aria-pressed={readerTheme === theme}
+                onClick={() => setReaderTheme(theme)}
+              >
+                {theme}
+              </button>
+            ))}
+          </div>
+          <div className="epub-font-controls">
+            <button
+              type="button"
+              aria-label="Decrease reader text size"
+              disabled={fontScale <= 85}
+              onClick={() => setFontScale((size) => Math.max(85, size - 10))}
+            >
+              <Minus size={15} />
+            </button>
+            <span aria-label={`Reader text size ${fontScale}%`}>Aa&nbsp; {fontScale}%</span>
+            <button
+              type="button"
+              aria-label="Increase reader text size"
+              disabled={fontScale >= 140}
+              onClick={() => setFontScale((size) => Math.min(140, size + 10))}
+            >
+              <Plus size={15} />
+            </button>
+          </div>
+          {syncFragments && syncFragments.length > 0 ? (
+            <button
+              type="button"
+              className={`epub-tool-button ${follow ? "selected" : ""}`}
+              onClick={() =>
+                setFollow((enabled) => {
+                  const next = !enabled;
+                  if (next) {
+                    highlightedFragmentRef.current = -1;
+                  }
+                  return next;
+                })
+              }
+              aria-pressed={follow}
+              aria-label={follow ? "Stop following narration" : "Follow narration"}
+              title={follow ? "Stop following narration" : "Follow narration"}
+            >
+              <LocateFixed size={15} />
+              <span>Follow</span>
+            </button>
+          ) : null}
           <button
             type="button"
-            className={follow ? "active" : ""}
-            onClick={() =>
-              setFollow((enabled) => {
-                const next = !enabled;
-                if (next) {
-                  highlightedFragmentRef.current = -1;
-                }
-                return next;
-              })
-            }
-            aria-pressed={follow}
-            aria-label={follow ? "Stop following narration" : "Follow narration"}
-            title={follow ? "Stop following narration" : "Follow narration"}
+            className="epub-tool-button"
+            onClick={() => setFocusMode((enabled) => !enabled)}
+            aria-pressed={focusMode}
+            aria-label={focusMode ? "Exit reader focus mode" : "Open reader focus mode"}
+            title={focusMode ? "Exit focus mode (Esc)" : "Focus mode"}
           >
-            <LocateFixed size={16} />
+            {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            <span>{focusMode ? "Close" : "Focus"}</span>
           </button>
-        ) : null}
-        <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
-          <ChevronRight size={16} />
-        </button>
+        </div>
       </div>
       <div className="epub-stage" ref={viewerRef}>
+        <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
         {!isReady && !error ? <span className="epub-loading">Loading EPUB…</span> : null}
         {error ? (
           <span className="epub-error">
@@ -884,6 +1041,7 @@ function EpubReadalong({
       </div>
     </div>
   );
+  return focusMode ? createPortal(reader, document.body) : reader;
 }
 
 function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
