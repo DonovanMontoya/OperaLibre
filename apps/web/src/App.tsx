@@ -25,10 +25,10 @@ import {
   Play,
   Plus,
   RefreshCcw,
-  RotateCcw,
-  RotateCw,
   Search,
   ServerOff,
+  SkipBack,
+  SkipForward,
   Sparkles,
   Timer,
   ScrollText,
@@ -1483,6 +1483,8 @@ function MainApp({
   // null while the disk lookup for the current track is in flight; url null
   // means the track is not downloaded and should stream.
   const [offlineSource, setOfflineSource] = useState<{ trackId: string; url: string | null } | null>(null);
+  const [mediaArtworkUrl, setMediaArtworkUrl] = useState<string | null>(null);
+  const chaptersListRef = useRef<HTMLDivElement | null>(null);
   const wantsAutoplayRef = useRef(false);
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
@@ -1602,6 +1604,11 @@ function MainApp({
   const chapterDuration = activeChapter
     ? Math.max(1, activeChapter.endSeconds - activeChapter.startSeconds)
     : Math.max(1, sliderMax);
+  const activeChapterIndex = activeChapter
+    ? chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id)
+    : -1;
+  const hasPreviousChapter = activeChapterIndex > 0 || chapterElapsed > 5;
+  const hasNextChapter = activeChapterIndex >= 0 && activeChapterIndex < chapterSegments.length - 1;
   const isViewingPlayingBook = !!selectedBook && !!playbackBook && selectedBook.id === playbackBook.id;
   const selectedReadalongUrl = selectedBook?.readingFile
     ? readalongUrl(selectedBook.readingFile.url)
@@ -1931,21 +1938,81 @@ function MainApp({
   }, [volume]);
 
   useEffect(() => {
+    let active = true;
+    if (!playbackBook?.coverArtUrl) {
+      setMediaArtworkUrl(null);
+      return;
+    }
+    const networkArtwork = mediaUrl(playbackBook.coverArtUrl);
+    if (!native) {
+      setMediaArtworkUrl(networkArtwork);
+      return;
+    }
+    void getOfflineCoverUrl(playbackBook).then((localArtwork) => {
+      if (active) setMediaArtworkUrl(localArtwork ?? networkArtwork);
+    });
+    return () => {
+      active = false;
+    };
+  }, [native, playbackBookKey, playbackBook?.coverArtUrl]);
+
+  useEffect(() => {
     if (!playbackBook || !currentTrack || !("mediaSession" in navigator)) {
       return;
     }
 
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: currentTrack.title,
+      title: activeChapter?.title ?? currentTrack.title,
       artist: playbackBook.author ?? "Audiobook",
-      album: playbackBook.title
+      album: playbackBook.title,
+      artwork: mediaArtworkUrl
+        ? [
+            { src: mediaArtworkUrl, sizes: "512x512", type: playbackBook.coverArtContentType ?? "image/jpeg" }
+          ]
+        : undefined
     });
     navigator.mediaSession.setActionHandler("play", () => safePlay(audioRef.current));
     navigator.mediaSession.setActionHandler("pause", () => audioRef.current?.pause());
     navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
     navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
+    navigator.mediaSession.setActionHandler("previoustrack", restartOrPreviousChapter);
+    navigator.mediaSession.setActionHandler("nexttrack", nextChapter);
+    navigator.mediaSession.setActionHandler("seekto", (details) => {
+      if (details.seekTime === undefined) return;
+      if (activeChapter) {
+        seekBookPosition(activeChapter.startSeconds + details.seekTime);
+      } else {
+        seekTo(details.seekTime);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, playbackBookKey]);
+  }, [activeChapter?.id, currentTrackKey, mediaArtworkUrl, playbackBookKey]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator) || !currentTrack) return;
+    const duration = activeChapter ? chapterDuration : Math.max(1, sliderMax);
+    const lockPosition = activeChapter ? chapterElapsed : position;
+    if (!Number.isFinite(duration) || !Number.isFinite(lockPosition) || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        position: Math.max(0, Math.min(lockPosition, duration)),
+        playbackRate: speed
+      });
+    } catch {
+      // Some WebViews expose Media Session metadata without position state.
+    }
+  }, [activeChapter?.id, chapterDuration, chapterElapsed, currentTrackKey, position, sliderMax, speed]);
+
+  useEffect(() => {
+    if (!chaptersOpen || !isViewingPlayingBook || !activeChapter) return;
+    const frame = window.requestAnimationFrame(() => {
+      chaptersListRef.current
+        ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapter.id}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChapter?.id, chaptersOpen, isViewingPlayingBook]);
 
   useEffect(() => {
     if (sleepMinutes <= 0) {
@@ -2274,6 +2341,30 @@ function MainApp({
 
     void persistProgress();
     seekBookPositionInBook(selectedBook, chapter.startSeconds, true);
+  }
+
+  function restartOrPreviousChapter() {
+    if (!playbackBook || !activeChapter) {
+      seekBy(-15);
+      return;
+    }
+    const index = chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id);
+    const target = chapterElapsed > 5 || index <= 0
+      ? activeChapter
+      : chapterSegments[index - 1];
+    seekBookPositionInBook(playbackBook, target.startSeconds, true);
+  }
+
+  function nextChapter() {
+    if (!playbackBook || !activeChapter) {
+      seekBy(30);
+      return;
+    }
+    const index = chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id);
+    const target = chapterSegments[index + 1];
+    if (target) {
+      seekBookPositionInBook(playbackBook, target.startSeconds, true);
+    }
   }
 
   function playNextTrack() {
@@ -3096,16 +3187,28 @@ function MainApp({
                 </div>
 
                 <div className="transport">
-                  <button className="round-button secondary" aria-label="Skip back 15 seconds" onClick={() => seekBy(-15)}>
-                    <RotateCcw size={22} strokeWidth={1.5} />
-                    <small>15s</small>
+                  <button
+                    className="round-button secondary transport-skip"
+                    aria-label={activeChapter
+                      ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"
+                      : "Skip back 15 seconds"}
+                    onClick={restartOrPreviousChapter}
+                    disabled={!!activeChapter && !hasPreviousChapter}
+                  >
+                    <SkipBack size={22} strokeWidth={1.7} />
+                    <small>{activeChapter ? chapterElapsed > 5 ? "Restart" : "Previous" : "15s"}</small>
                   </button>
                   <button className="round-button primary" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
                     {isPlaying ? <Pause size={30} fill="currentColor" /> : <Play size={30} fill="currentColor" />}
                   </button>
-                  <button className="round-button secondary" aria-label="Skip forward 30 seconds" onClick={() => seekBy(30)}>
-                    <RotateCw size={22} strokeWidth={1.5} />
-                    <small>30s</small>
+                  <button
+                    className="round-button secondary transport-skip"
+                    aria-label={activeChapter ? "Next chapter" : "Skip forward 30 seconds"}
+                    onClick={nextChapter}
+                    disabled={!!activeChapter && !hasNextChapter}
+                  >
+                    <SkipForward size={22} strokeWidth={1.7} />
+                    <small>{activeChapter ? "Next" : "30s"}</small>
                   </button>
                 </div>
 
@@ -3272,11 +3375,12 @@ function MainApp({
                   </span>
                 </button>
                 {chaptersOpen ? (
-                  <div className="track-list">
+                  <div className="track-list" ref={chaptersListRef}>
                     {selectedBook.chapters.map((chapter, index) => (
                       <button
                         key={chapter.id}
-                        className={`track-row ${isViewingPlayingBook && chapter.trackId === currentTrack.id && Math.abs(chapter.startSeconds - bookPosition) < 2 ? "active" : ""}`}
+                        data-chapter-id={chapter.id}
+                        className={`track-row ${isViewingPlayingBook && chapter.id === activeChapter?.id ? "active" : ""}`}
                         onClick={() => jumpToChapter(chapter)}
                       >
                         <span className="num">{String(index + 1).padStart(2, "0")}</span>
@@ -3330,14 +3434,24 @@ function MainApp({
           </div>
 
           <div className="mini-actions">
-            <button type="button" aria-label="Skip back 15 seconds" onClick={() => seekBy(-15)}>
-              <RotateCcw size={17} />
+            <button
+              type="button"
+              aria-label={activeChapter ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter" : "Skip back 15 seconds"}
+              onClick={restartOrPreviousChapter}
+              disabled={!!activeChapter && !hasPreviousChapter}
+            >
+              <SkipBack size={17} />
             </button>
             <button type="button" className="mini-play" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
               {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
             </button>
-            <button type="button" aria-label="Skip forward 30 seconds" onClick={() => seekBy(30)}>
-              <RotateCw size={17} />
+            <button
+              type="button"
+              aria-label={activeChapter ? "Next chapter" : "Skip forward 30 seconds"}
+              onClick={nextChapter}
+              disabled={!!activeChapter && !hasNextChapter}
+            >
+              <SkipForward size={17} />
             </button>
           </div>
         </aside>

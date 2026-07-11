@@ -1515,15 +1515,18 @@ img.large-cover {
 }
 
 .timeline {
+  min-width: 0;
   display: grid;
   gap: 12px;
 }
 
 .chapter-now {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  justify-content: space-between;
   gap: 16px;
+  min-width: 0;
+  max-width: 100%;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.72rem;
   letter-spacing: 0.08em;
@@ -1676,8 +1679,8 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 32px;
-  padding: 18px 0;
+  gap: clamp(18px, 7vw, 36px);
+  padding: 18px 0 22px;
 }
 
 .book-preview-actions {
@@ -1763,6 +1766,28 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 500;
   letter-spacing: 0.12em;
   color: var(--ink-faded);
+}
+
+.round-button.transport-skip {
+  display: grid;
+  place-items: center;
+  gap: 3px;
+}
+
+.round-button.transport-skip small {
+  position: static;
+  display: block;
+  font-size: 0.54rem;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.round-button.secondary:disabled,
+.mini-actions button:disabled {
+  cursor: default;
+  opacity: 0.3;
+  transform: none;
 }
 
 .round-button.primary {
@@ -4159,7 +4184,29 @@ html.native-app .track-line {
 
 /* Chunky rounded scrubber */
 html.native-app .timeline {
+  min-width: 0;
   gap: 14px;
+}
+
+html.native-app .chapter-now {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(26, 20, 16, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 253, 247, 0.48);
+}
+
+html.native-app .chapter-now span:first-child {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.67rem;
+  letter-spacing: 0.05em;
+}
+
+html.native-app .chapter-now span:last-child {
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
 }
 
 html.native-app .timeline input[type="range"] {
@@ -4197,8 +4244,8 @@ html.native-app .timeline input[type="range"]::-moz-range-thumb {
 
 /* Transport */
 html.native-app .transport {
-  gap: 28px;
-  padding: 8px 0 6px;
+  gap: clamp(24px, 10vw, 42px);
+  padding: 10px 0 18px;
 }
 
 html.native-app .round-button.primary {
@@ -4224,7 +4271,10 @@ html.native-app .round-button.secondary {
 }
 
 html.native-app .round-button.secondary small {
-  bottom: -20px;
+  position: static;
+  margin: 0;
+  font-size: 0.52rem;
+  letter-spacing: 0.08em;
 }
 
 /* Control cards */
