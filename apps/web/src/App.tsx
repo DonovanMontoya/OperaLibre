@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   Bookmark,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Cloud,
@@ -108,6 +109,19 @@ import type {
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
+// Beyond this the segments are too thin to read or tap, and their fixed
+// borders/gaps overflow a phone screen; fall back to one continuous bar.
+const MAX_CHAPTER_SEGMENTS = 32;
+
+/**
+ * play() rejects for benign reasons (a pause or source change interrupting a
+ * pending play). Left unhandled those rejections are noise at best — and the
+ * macOS shell treats any unhandled rejection as fatal. Real playback failures
+ * still surface through the element's `error` event.
+ */
+function safePlay(audio: HTMLAudioElement | null | undefined) {
+  audio?.play().catch(() => undefined);
+}
 
 type SortMode = "title" | "author" | "duration" | "tracks";
 type ViewMode = "list" | "grid";
@@ -1111,6 +1125,52 @@ function EpubReadalong({
   return focusMode ? createPortal(reader, document.body) : reader;
 }
 
+/**
+ * Range input that only commits the seek when the interaction ends, so
+ * brushing against the bar can't silently move playback — a stray touch can
+ * be dragged back to where it started before letting go.
+ */
+function ScrubSlider({
+  ariaLabel,
+  max,
+  value,
+  onCommit
+}: {
+  ariaLabel: string;
+  max: number;
+  value: number;
+  onCommit: (value: number) => void;
+}) {
+  const [dragValue, setDragValue] = useState<number | null>(null);
+  const pendingRef = useRef<number | null>(null);
+  const commit = () => {
+    if (pendingRef.current !== null) {
+      onCommit(pendingRef.current);
+      pendingRef.current = null;
+    }
+    setDragValue(null);
+  };
+  return (
+    <input
+      aria-label={ariaLabel}
+      type="range"
+      min="0"
+      max={max}
+      step="1"
+      value={dragValue ?? value}
+      onChange={(event) => {
+        const next = Number(event.currentTarget.value);
+        pendingRef.current = next;
+        setDragValue(next);
+      }}
+      onPointerUp={commit}
+      onTouchEnd={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+    />
+  );
+}
+
 function DownloadRing({ fraction }: { fraction: number | null }) {
   const radius = 5.5;
   const circumference = 2 * Math.PI * radius;
@@ -1391,6 +1451,9 @@ function MainApp({
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Serving the cached library because the server is unreachable; books
+  // without a local download can't actually play in this state.
+  const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("title");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
@@ -1413,6 +1476,7 @@ function MainApp({
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [metadataEditOpen, setMetadataEditOpen] = useState(false);
+  const [chaptersOpen, setChaptersOpen] = useState(false);
   const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
@@ -1491,6 +1555,13 @@ function MainApp({
   }, [currentTrackId, playbackBook]);
 
   const activeTrackIndex = currentTrackIndex(playbackBook, currentTrack);
+  // Stable identity keys: every progress save rebuilds `books` (and with it
+  // the playbackBook/currentTrack objects), so effects that manage the audio
+  // source or restore progress must key on ids — re-running them on object
+  // identity would tear down the <audio> src mid-playback every few seconds.
+  const playbackBookKey = playbackBook?.id ?? null;
+  const currentTrackKey = currentTrack?.id ?? null;
+  const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const offlineSourceUrl =
     offlineSource && offlineSource.trackId === currentTrack?.id ? offlineSource.url : null;
   // On native, keep the audio source empty until the disk lookup answers so a
@@ -1570,6 +1641,7 @@ function MainApp({
     try {
       const nextBooks = await getBooks();
       setBooks(nextBooks);
+      setIsOffline(false);
       if (isNativeApp()) void cacheLibrary(currentUser.id, nextBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -1583,6 +1655,7 @@ function MainApp({
       );
     } catch {
       const cached = isNativeApp() ? await getCachedLibrary(currentUser.id) : [];
+      setIsOffline(true);
       if (cached.length) {
         setBooks(cached);
         setError("Offline mode — showing downloaded books and cached library.");
@@ -1598,7 +1671,10 @@ function MainApp({
     if (!isNativeApp() || !books.length) return;
     void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
-  }, [books]);
+    // Keyed on ids: re-statting every downloaded file each time a progress
+    // save rebuilds `books` kept the iOS filesystem busy for no reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookIdsKey]);
 
   useEffect(() => {
     let active = true;
@@ -1618,7 +1694,10 @@ function MainApp({
       active = false;
       releaseOfflineMediaUrl(resolvedUrl);
     };
-  }, [currentTrack, playbackBook]);
+    // Keyed on ids: resetting offlineSource on identity churn blanked the
+    // <audio> src mid-playback (native), stopping the book seconds after play.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrackKey, playbackBookKey]);
 
   // Autoplay requested while the audio source was still resolving (native disk
   // lookup): start playback as soon as the source lands.
@@ -1627,7 +1706,7 @@ function MainApp({
       return;
     }
     wantsAutoplayRef.current = false;
-    window.setTimeout(() => void audioRef.current?.play(), 0);
+    window.setTimeout(() => safePlay(audioRef.current), 0);
   }, [streamUrl]);
 
   useEffect(() => {
@@ -1830,7 +1909,12 @@ function MainApp({
     return () => {
       cancelled = true;
     };
-  }, [currentUser.id, playbackBook]);
+    // Keyed on the book id: this must run only when playback moves to a
+    // different book. Re-running on object identity meant every successful
+    // progress save re-applied the server's copy, yanking playback back to
+    // the previous track/position around track boundaries.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id, playbackBookKey]);
 
   useEffect(() => {
     if (!audioRef.current) {
@@ -1856,11 +1940,12 @@ function MainApp({
       artist: playbackBook.author ?? "Audiobook",
       album: playbackBook.title
     });
-    navigator.mediaSession.setActionHandler("play", () => void audioRef.current?.play());
+    navigator.mediaSession.setActionHandler("play", () => safePlay(audioRef.current));
     navigator.mediaSession.setActionHandler("pause", () => audioRef.current?.pause());
     navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
     navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
-  }, [currentTrack, playbackBook]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrackKey, playbackBookKey]);
 
   useEffect(() => {
     if (sleepMinutes <= 0) {
@@ -2046,7 +2131,7 @@ function MainApp({
     }
     if (playWhenTrackLoads.current) {
       playWhenTrackLoads.current = false;
-      void audio.play();
+      safePlay(audio);
     }
   }
 
@@ -2098,7 +2183,7 @@ function MainApp({
       setPosition(trackPosition);
       void persistProgress();
       if (autoPlay) {
-        void audioRef.current.play();
+        safePlay(audioRef.current);
       }
       return;
     }
@@ -2125,7 +2210,7 @@ function MainApp({
   function playWhenReady() {
     const audio = audioRef.current;
     if (audio?.getAttribute("src")) {
-      void audio.play();
+      safePlay(audio);
       return;
     }
     wantsAutoplayRef.current = true;
@@ -2138,8 +2223,15 @@ function MainApp({
     }
 
     haptic("medium");
+    // No source yet (native disk lookup still resolving): calling play() on
+    // an empty element silently fails — queue the intent instead, and the
+    // streamUrl effect starts playback the moment the source lands.
+    if (!audio.getAttribute("src")) {
+      wantsAutoplayRef.current = true;
+      return;
+    }
     if (audio.paused) {
-      void audio.play();
+      safePlay(audio);
     } else {
       audio.pause();
     }
@@ -2159,7 +2251,7 @@ function MainApp({
       audioRef.current.currentTime = 0;
       setPosition(0);
       if (autoPlay) {
-        void audioRef.current.play();
+        safePlay(audioRef.current);
       }
       return;
     }
@@ -2223,6 +2315,7 @@ function MainApp({
         ? await getBooks()
         : await rescanLibrary();
       setBooks(nextBooks);
+      setIsOffline(false);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
@@ -2234,7 +2327,10 @@ function MainApp({
         )
       );
       setError(null);
-    } catch {
+    } catch (refreshError) {
+      // A rescan rejected by a reachable server is not "offline" — only
+      // mute non-downloaded books when the server can't be reached at all.
+      setIsOffline(isNetworkError(refreshError));
       setError("Library rescan failed.");
     } finally {
       setIsLoading(false);
@@ -2681,10 +2777,11 @@ function MainApp({
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
               {visibleBooks.map((book, index) => {
                 const progressPercent = book.progress?.percentComplete ?? 0;
+                const unavailableOffline = isOffline && !downloadedBookIds.has(book.id);
                 return (
                   <button
                     key={book.id}
-                    className={`book-row ${book.id === selectedBook?.id ? "active" : ""}`}
+                    className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
                     onClick={() => {
                       selectBook(book);
                       setLibraryOpen(false);
@@ -2998,73 +3095,6 @@ function MainApp({
                   </span>
                 </div>
 
-                <div className="timeline">
-                  {activeChapter && chapterSegments.length > 1 ? (
-                    <>
-                      <div className="chapter-now">
-                        <span>{activeChapter.title}</span>
-                        <span>
-                          Chapter {activeChapter.chapterNumber} / {chapterSegments.length}
-                        </span>
-                      </div>
-                      <div className="chapter-segments" aria-label="Book chapter progress">
-                        {chapterSegments.map((chapter) => {
-                          const isActive = chapter.id === activeChapter.id;
-                          const isComplete = bookPosition >= chapter.endSeconds;
-                          const fill =
-                            isComplete
-                              ? 100
-                              : isActive
-                                ? Math.max(0, Math.min(100, (chapterElapsed / chapterDuration) * 100))
-                                : 0;
-
-                          return (
-                            <button
-                              key={chapter.id}
-                              className={`chapter-segment ${isActive ? "active" : ""} ${isComplete ? "complete" : ""}`}
-                              style={{ flexGrow: chapter.durationSeconds }}
-                              title={`${chapter.title} · ${formatTime(chapter.startSeconds)}`}
-                              aria-label={`Jump to ${chapter.title}`}
-                              onClick={() => seekBookPosition(chapter.startSeconds)}
-                            >
-                              <span style={{ width: `${fill}%` }} />
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <input
-                        aria-label={`Playback position in ${activeChapter.title}`}
-                        type="range"
-                        min="0"
-                        max={chapterDuration}
-                        step="1"
-                        value={Math.min(chapterElapsed, chapterDuration)}
-                        onChange={(event) =>
-                          seekBookPosition(activeChapter.startSeconds + Number(event.currentTarget.value))
-                        }
-                      />
-                    </>
-                  ) : (
-                    <input
-                      aria-label="Playback position"
-                      type="range"
-                      min="0"
-                      max={Math.max(1, sliderMax)}
-                      step="1"
-                      value={Math.min(position, Math.max(1, sliderMax))}
-                      onChange={(event) => seekTo(Number(event.currentTarget.value))}
-                    />
-                  )}
-                  <div className="time-row">
-                    <span className="elapsed">
-                      {activeChapter ? formatTime(chapterElapsed) : formatTime(position)}
-                    </span>
-                    <span>
-                      {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
-                    </span>
-                  </div>
-                </div>
-
                 <div className="transport">
                   <button className="round-button secondary" aria-label="Skip back 15 seconds" onClick={() => seekBy(-15)}>
                     <RotateCcw size={22} strokeWidth={1.5} />
@@ -3077,6 +3107,88 @@ function MainApp({
                     <RotateCw size={22} strokeWidth={1.5} />
                     <small>30s</small>
                   </button>
+                </div>
+
+                <div className="timeline">
+                  {activeChapter && chapterSegments.length > 1 ? (
+                    <>
+                      <div className="chapter-now">
+                        <span>{activeChapter.title}</span>
+                        <span>
+                          Chapter {activeChapter.chapterNumber} / {chapterSegments.length}
+                        </span>
+                      </div>
+                      {chapterSegments.length <= MAX_CHAPTER_SEGMENTS ? (
+                        <div className="chapter-segments" aria-label="Book chapter progress">
+                          {chapterSegments.map((chapter) => {
+                            const isActive = chapter.id === activeChapter.id;
+                            const isComplete = bookPosition >= chapter.endSeconds;
+                            const fill =
+                              isComplete
+                                ? 100
+                                : isActive
+                                  ? Math.max(0, Math.min(100, (chapterElapsed / chapterDuration) * 100))
+                                  : 0;
+                            const segmentClass = `chapter-segment ${isActive ? "active" : ""} ${isComplete ? "complete" : ""}`;
+                            // On touch the slivers are impossible to hit on
+                            // purpose and far too easy to hit by accident —
+                            // keep them purely visual there; the chapter list
+                            // below handles deliberate jumps.
+                            return native ? (
+                              <div
+                                key={chapter.id}
+                                className={segmentClass}
+                                style={{ flexGrow: chapter.durationSeconds }}
+                                aria-hidden="true"
+                              >
+                                <span style={{ width: `${fill}%` }} />
+                              </div>
+                            ) : (
+                              <button
+                                key={chapter.id}
+                                className={segmentClass}
+                                style={{ flexGrow: chapter.durationSeconds }}
+                                title={`${chapter.title} · ${formatTime(chapter.startSeconds)}`}
+                                aria-label={`Jump to ${chapter.title}`}
+                                onClick={() => seekBookPosition(chapter.startSeconds)}
+                              >
+                                <span style={{ width: `${fill}%` }} />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="book-progressbar" aria-label="Book progress" role="img">
+                          <span
+                            style={{
+                              width: `${bookDuration > 0 ? Math.min(100, Math.max(0, (bookPosition / bookDuration) * 100)) : 0}%`
+                            }}
+                          />
+                        </div>
+                      )}
+                      <ScrubSlider
+                        ariaLabel={`Playback position in ${activeChapter.title}`}
+                        max={chapterDuration}
+                        value={Math.min(chapterElapsed, chapterDuration)}
+                        onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
+                      />
+                    </>
+                  ) : (
+                    <ScrubSlider
+                      ariaLabel="Playback position"
+                      max={Math.max(1, sliderMax)}
+                      value={Math.min(position, Math.max(1, sliderMax))}
+                      onCommit={seekTo}
+                    />
+                  )}
+                  <div className="time-row">
+                    <span className="elapsed">
+                      {activeChapter ? formatTime(chapterElapsed) : formatTime(position)}
+                    </span>
+                    <span>
+                      {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
+                    </span>
+                  </div>
                 </div>
               </>
             ) : (
@@ -3147,23 +3259,33 @@ function MainApp({
 
             {selectedBook.chapters.length > 0 ? (
               <section className="track-list-section">
-                <div className="track-list-header">
+                <button
+                  type="button"
+                  className="track-list-header track-list-toggle"
+                  aria-expanded={chaptersOpen}
+                  onClick={() => setChaptersOpen((open) => !open)}
+                >
                   <span className="title-of-contents">Embedded Chapters</span>
-                  <span className="section-label"><ListMusic size={13} /> {selectedBook.chapters.length} Markers</span>
-                </div>
-                <div className="track-list">
-                  {selectedBook.chapters.map((chapter, index) => (
-                    <button
-                      key={chapter.id}
-                      className={`track-row ${isViewingPlayingBook && chapter.trackId === currentTrack.id && Math.abs(chapter.startSeconds - bookPosition) < 2 ? "active" : ""}`}
-                      onClick={() => jumpToChapter(chapter)}
-                    >
-                      <span className="num">{String(index + 1).padStart(2, "0")}</span>
-                      <strong>{chapter.title}</strong>
-                      <em>{formatTime(chapter.startSeconds)}</em>
-                    </button>
-                  ))}
-                </div>
+                  <span className="section-label">
+                    <ListMusic size={13} /> {selectedBook.chapters.length} Markers
+                    <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
+                  </span>
+                </button>
+                {chaptersOpen ? (
+                  <div className="track-list">
+                    {selectedBook.chapters.map((chapter, index) => (
+                      <button
+                        key={chapter.id}
+                        className={`track-row ${isViewingPlayingBook && chapter.trackId === currentTrack.id && Math.abs(chapter.startSeconds - bookPosition) < 2 ? "active" : ""}`}
+                        onClick={() => jumpToChapter(chapter)}
+                      >
+                        <span className="num">{String(index + 1).padStart(2, "0")}</span>
+                        <strong>{chapter.title}</strong>
+                        <em>{formatTime(chapter.startSeconds)}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ) : null}
           </>
@@ -3188,15 +3310,11 @@ function MainApp({
           </button>
 
           <div className="mini-progress">
-            <input
-              aria-label="Mini player progress"
-              type="range"
-              min="0"
+            <ScrubSlider
+              ariaLabel="Mini player progress"
               max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
-              step="1"
               value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
-              onChange={(event) => {
-                const nextValue = Number(event.currentTarget.value);
+              onCommit={(nextValue) => {
                 if (activeChapter) {
                   seekBookPosition(activeChapter.startSeconds + nextValue);
                 } else {
