@@ -5,7 +5,7 @@ use argon2::{
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{Path, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
@@ -30,13 +30,13 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     env, io,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, LazyLock},
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::{
     fs,
     process::Command,
@@ -63,6 +63,9 @@ const LOGIN_MAX_FAILURES: u32 = 5;
 const LOGIN_LOCKOUT_SECONDS: u64 = 60;
 const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
 const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
+const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_FILES: usize = 1_000;
+const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
 
 #[derive(Clone)]
 struct AppState {
@@ -85,6 +88,7 @@ struct AppState {
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
     login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+    upload_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -787,6 +791,7 @@ async fn main() -> anyhow::Result<()> {
         activity: Arc::new(RwLock::new(activity_store)),
         progress_write_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        upload_lock: Arc::new(Mutex::new(())),
     };
 
     rescan_library(&state).await?;
@@ -809,6 +814,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/{user_id}/password", post(change_password))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
+        .route(
+            "/api/library/upload",
+            post(upload_audiobook).layer(DefaultBodyLimit::disable()),
+        )
         .route("/api/libation/status", get(libation_status))
         .route("/api/libation/books", get(list_libation_books))
         .route(
@@ -929,6 +938,150 @@ async fn rescan(
     require_admin(&auth)?;
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth.id).await?))
+}
+
+async fn upload_audiobook(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    mut multipart: Multipart,
+) -> Result<Json<Vec<Book>>, ApiError> {
+    require_admin(&auth)?;
+    let _upload_guard = state.upload_lock.lock().await;
+    fs::create_dir_all(&state.library_root).await?;
+
+    let staging_name = format!("{UPLOAD_STAGING_PREFIX}{}", generate_session_token());
+    let staging_path = state.library_root.join(staging_name);
+    fs::create_dir(&staging_path).await?;
+
+    let result = receive_audiobook_upload(&staging_path, &mut multipart).await;
+    let book_name = match result {
+        Ok(book_name) => book_name,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_path).await;
+            return Err(error);
+        }
+    };
+
+    let destination = state.library_root.join(&book_name);
+    match fs::try_exists(&destination).await {
+        Ok(false) => {}
+        Ok(true) => {
+            let _ = fs::remove_dir_all(&staging_path).await;
+            return Err(ApiError::conflict(format!(
+                "A library folder named '{book_name}' already exists. Choose another book name."
+            )));
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_path).await;
+            return Err(error.into());
+        }
+    }
+
+    if let Err(error) = fs::rename(&staging_path, &destination).await {
+        let _ = fs::remove_dir_all(&staging_path).await;
+        return Err(error.into());
+    }
+
+    rescan_library(&state).await?;
+    Ok(Json(books_with_progress(&state, &auth.id).await?))
+}
+
+async fn receive_audiobook_upload(
+    staging_path: &FsPath,
+    multipart: &mut Multipart,
+) -> Result<String, ApiError> {
+    let mut book_name = None;
+    let mut audio_file_count = 0usize;
+    let mut total_bytes = 0u64;
+    let mut uploaded_names = HashSet::new();
+
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
+        match field.name() {
+            Some("bookName") => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
+                    if bytes.len().saturating_add(chunk.len()) > 1_024 {
+                        return Err(ApiError::bad_request("Book name is too long."));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                let value = String::from_utf8(bytes)
+                    .map_err(|_| ApiError::bad_request("Book name must be valid UTF-8."))?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() || trimmed.chars().count() > 200 {
+                    return Err(ApiError::bad_request(
+                        "Book name must be between 1 and 200 characters.",
+                    ));
+                }
+                let safe_name = sanitize_filename(trimmed);
+                if safe_name.len() > 240 {
+                    return Err(ApiError::bad_request("Book name is too long."));
+                }
+                book_name = Some(safe_name);
+            }
+            Some("files") => {
+                if audio_file_count >= MAX_UPLOAD_FILES {
+                    return Err(ApiError::bad_request(format!(
+                        "An audiobook can contain at most {MAX_UPLOAD_FILES} files."
+                    )));
+                }
+                let original_name = field
+                    .file_name()
+                    .ok_or_else(|| ApiError::bad_request("Every upload must have a file name."))?;
+                let file_name = sanitize_filename(original_name);
+                if file_name.len() > 255 {
+                    return Err(ApiError::bad_request(format!(
+                        "The file name '{file_name}' is too long."
+                    )));
+                }
+                if !is_supported_audio_file(FsPath::new(&file_name)) {
+                    return Err(ApiError::bad_request(format!(
+                        "'{file_name}' is not a supported audiobook file."
+                    )));
+                }
+                if !uploaded_names.insert(file_name.to_lowercase()) {
+                    return Err(ApiError::bad_request(format!(
+                        "The upload contains more than one file named '{file_name}'."
+                    )));
+                }
+
+                let output_path = staging_path.join(&file_name);
+                let mut output = fs::File::create(&output_path).await?;
+                let mut file_bytes = 0u64;
+                while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
+                    total_bytes = total_bytes.saturating_add(chunk.len() as u64);
+                    file_bytes = file_bytes.saturating_add(chunk.len() as u64);
+                    if total_bytes > MAX_UPLOAD_BYTES {
+                        return Err(ApiError::payload_too_large(format!(
+                            "Audiobook uploads are limited to {} GiB.",
+                            MAX_UPLOAD_BYTES / 1024 / 1024 / 1024
+                        )));
+                    }
+                    output.write_all(&chunk).await?;
+                }
+                if file_bytes == 0 {
+                    return Err(ApiError::bad_request(format!(
+                        "'{file_name}' is empty and cannot be added to the library."
+                    )));
+                }
+                output.flush().await?;
+                audio_file_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if audio_file_count == 0 {
+        return Err(ApiError::bad_request(
+            "Choose at least one supported audiobook file to upload.",
+        ));
+    }
+
+    book_name.ok_or_else(|| ApiError::bad_request("Book name is required."))
+}
+
+fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
+    ApiError::bad_request(format!("The audiobook upload could not be read: {error}"))
 }
 
 async fn libation_status(
@@ -2511,9 +2664,28 @@ fn is_supported_reading_file(path: &FsPath) -> bool {
         .unwrap_or(false)
 }
 
+fn is_supported_audio_file(path: &FsPath) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            AUDIO_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
+}
+
 fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
     let mut files = WalkDir::new(root)
         .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(UPLOAD_STAGING_PREFIX)
+        })
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
@@ -4457,6 +4629,20 @@ impl ApiError {
         }
     }
 
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -4551,7 +4737,8 @@ impl From<axum::http::Error> for ApiError {
 mod tests {
     use super::{
         HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
-        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
+        is_supported_audio_file, libation_cover_art_url, normalize_asin, parse_origin_list,
+        parse_range, sanitize_filename, walk_audio_files,
     };
 
     #[test]
@@ -4566,6 +4753,41 @@ mod tests {
             None
         );
         assert_eq!(libation_cover_art_url(None), None);
+    }
+
+    #[test]
+    fn upload_names_cannot_escape_the_library_folder() {
+        assert_eq!(
+            sanitize_filename("../../Dune: Part One"),
+            "_.._Dune_ Part One"
+        );
+        assert_eq!(sanitize_filename("..."), "audiobook");
+        assert!(!sanitize_filename("../book").contains('/'));
+        assert!(!sanitize_filename("..\\book").contains('\\'));
+    }
+
+    #[test]
+    fn audiobook_upload_accepts_only_scannable_audio_extensions() {
+        assert!(is_supported_audio_file(super::FsPath::new("Book.M4B")));
+        assert!(is_supported_audio_file(super::FsPath::new("01.mp3")));
+        assert!(!is_supported_audio_file(super::FsPath::new("book.epub")));
+        assert!(!is_supported_audio_file(super::FsPath::new("payload.exe")));
+    }
+
+    #[test]
+    fn library_scan_ignores_incomplete_upload_staging_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let complete = root.path().join("Complete Book");
+        let staging = root
+            .path()
+            .join(format!("{}test", super::UPLOAD_STAGING_PREFIX));
+        std::fs::create_dir_all(&complete).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(complete.join("book.m4b"), b"complete").unwrap();
+        std::fs::write(staging.join("partial.m4b"), b"partial").unwrap();
+
+        let files = walk_audio_files(root.path());
+        assert_eq!(files, vec![complete.join("book.m4b")]);
     }
 
     #[test]

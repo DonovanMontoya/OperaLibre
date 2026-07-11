@@ -20,17 +20,23 @@ import {
   Maximize2,
   Minimize2,
   Minus,
+  Network,
   Pause,
   Pencil,
   Play,
   Plus,
   RefreshCcw,
+  RotateCcw,
+  RotateCw,
   Search,
   ServerOff,
+  Settings,
   SkipBack,
   SkipForward,
   Sparkles,
   Timer,
+  Trash2,
+  Upload,
   ScrollText,
   UserCog,
   Volume2,
@@ -42,6 +48,8 @@ import { createPortal } from "react-dom";
 import { progressTimestamp } from "./reliability";
 import {
   bookDownloadUrl,
+  activateServerAlias,
+  addServerAlias,
   clearServerUrl,
   generateSyncMap,
   getAlignmentStatus,
@@ -54,6 +62,8 @@ import {
   getMe,
   getProgress,
   getServerStorageKey,
+  getServerAliases,
+  getServerIdentityUrl,
   getServerUrl,
   getServerType,
   getStoredToken,
@@ -64,15 +74,20 @@ import {
   listJobs,
   logout as apiLogout,
   mediaUrl,
+  pingServer,
   readalongUrl,
+  reconnectUsingServerAliases,
   reportPlaybackStarted,
+  removeServerAlias,
   rescanLibrary,
   saveProgress,
   setStoredToken,
   setUnauthorizedHandler,
   syncLibationLibrary,
+  uploadAudiobook,
   updateBookMetadata
 } from "./api";
+import type { ServerAlias } from "./api";
 import {
   cacheLibrary,
   cacheOfflineUser,
@@ -107,8 +122,28 @@ import type {
 } from "./types";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
-const SLEEP_OPTIONS = [0, 15, 30, 45, 60];
+const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
+const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
+
+type NativeTab = "shelf" | "reading" | "ledger" | "settings";
+
+function readStoredSpeed() {
+  try {
+    const stored = Number(window.localStorage.getItem(SPEED_STORAGE_KEY));
+    return SPEEDS.includes(stored) ? stored : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function writeStoredSpeed(value: number) {
+  try {
+    window.localStorage.setItem(SPEED_STORAGE_KEY, String(value));
+  } catch {
+    // ignore storage failures
+  }
+}
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
@@ -217,6 +252,27 @@ function bookSubtitle(book: Book) {
   return [book.author, book.narrator ? `Narrated by ${book.narrator}` : null]
     .filter(Boolean)
     .join(" • ");
+}
+
+/**
+ * Some rips carry a chapter or track name in the comment/description tag;
+ * rendering that as the book blurb reads as a glitch. Only show a
+ * description that says something the page doesn't already.
+ */
+function displayBookDescription(book: Book) {
+  const description = book.description?.trim();
+  if (!description) {
+    return null;
+  }
+  const echoes = (value: string) => value.trim().toLowerCase() === description.toLowerCase();
+  if (
+    echoes(book.title) ||
+    book.tracks.some((track) => echoes(track.title)) ||
+    book.chapters.some((chapter) => echoes(chapter.title))
+  ) {
+    return null;
+  }
+  return description;
 }
 
 function currentTrackIndex(book: Book | null, track: Track | null) {
@@ -1360,6 +1416,10 @@ export default function App() {
         // Keep the token when the server is simply unreachable; only a real
         // rejection should end the session.
         if (isNetworkError(error)) {
+          if (await reconnectUsingServerAliases()) {
+            await checkAuth();
+            return;
+          }
           const offlineUser = getOfflineUser();
           setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
           return;
@@ -1367,7 +1427,11 @@ export default function App() {
         setStoredToken(null);
         setAuthState({ phase: "login" });
       }
-    } catch {
+    } catch (error) {
+      if (isNetworkError(error) && await reconnectUsingServerAliases()) {
+        await checkAuth();
+        return;
+      }
       const offlineUser = getOfflineUser();
       setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
     }
@@ -1384,9 +1448,19 @@ export default function App() {
 
   if (authState.phase === "loading") {
     return (
-      <main className="auth-shell">
-        <div className="auth-card">
-          <p>Loading…</p>
+      <main className="auth-shell startup-shell">
+        <div className="startup-loader" role="status" aria-live="polite" aria-label="Opening OperaLibre">
+          <div className="startup-mark" aria-hidden="true">
+            <span className="startup-book startup-book-left"><i /></span>
+            <span className="startup-book startup-book-center"><i /></span>
+            <span className="startup-book startup-book-right"><i /></span>
+            <span className="startup-sweep" />
+          </div>
+          <div className="startup-title" aria-hidden="true">
+            <span>Opera</span><em>Libre</em>
+          </div>
+          <span className="startup-caption">Opening the library</span>
+          <span className="startup-progress" aria-hidden="true"><i /></span>
         </div>
       </main>
     );
@@ -1446,7 +1520,39 @@ function MainApp({
 }) {
   const isOperaLibre = getServerType() === "operalibre";
   const native = isNativeApp();
-  const [nativeTab, setNativeTab] = useState<"shelf" | "reading" | "ledger">("reading");
+  const [nativeTab, setNativeTab] = useState<NativeTab>("reading");
+  const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
+  const [aliasName, setAliasName] = useState("");
+  const [aliasUrl, setAliasUrl] = useState("");
+  const [aliasError, setAliasError] = useState<string | null>(null);
+  const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+
+  function saveAlias(event: React.FormEvent) {
+    event.preventDefault();
+    setAliasError(null);
+    try {
+      addServerAlias(aliasName, aliasUrl);
+      setServerAliases(getServerAliases());
+      setAliasName("");
+      setAliasUrl("");
+    } catch (error) {
+      setAliasError(error instanceof Error ? error.message : "Could not save that alias.");
+    }
+  }
+
+  async function switchToAlias(alias: ServerAlias) {
+    setAliasError(null);
+    setSwitchingAliasId(alias.id);
+    try {
+      await pingServer(getServerType(), alias.url);
+      activateServerAlias(alias);
+      window.location.reload();
+    } catch (error) {
+      setAliasError(error instanceof Error ? error.message : "Could not reach that address.");
+      setSwitchingAliasId(null);
+    }
+  }
+  const [nativePlayerView, setNativePlayerView] = useState<"now" | "details" | "chapters">("now");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
@@ -1464,11 +1570,12 @@ function MainApp({
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(readStoredSpeed);
   const [volume, setVolume] = useState(0.9);
   const [sleepMinutes, setSleepMinutes] = useState(0);
-  const [sleepEndsAt, setSleepEndsAt] = useState<number | null>(null);
   const [sleepRemaining, setSleepRemaining] = useState(0);
+  const sleepDeadlineRef = useRef<number | null>(null);
+  const [sleepSheetOpen, setSleepSheetOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Serving the cached library because the server is unreachable; books
@@ -1494,6 +1601,11 @@ function MainApp({
   const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadBookName, setUploadBookName] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [metadataEditOpen, setMetadataEditOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
@@ -1564,6 +1676,7 @@ function MainApp({
       null,
     [books, playbackBookId, selectedBook]
   );
+  const nowPlayingBook = playbackBook ?? selectedBook;
 
   const currentTrack = useMemo(() => {
     if (!playbackBook) {
@@ -2035,31 +2148,45 @@ function MainApp({
   }, [activeChapter?.id, chaptersOpen, isViewingPlayingBook]);
 
   useEffect(() => {
-    if (sleepMinutes <= 0) {
-      setSleepEndsAt(null);
-      setSleepRemaining(0);
-      return;
-    }
-    setSleepEndsAt(Date.now() + sleepMinutes * 60 * 1000);
-  }, [sleepMinutes]);
-
-  useEffect(() => {
-    if (!sleepEndsAt) {
+    if (!isPlaying || sleepRemaining <= 0) {
+      if (sleepRemaining <= 0) sleepDeadlineRef.current = null;
       return;
     }
 
+    sleepDeadlineRef.current ??= Date.now() + sleepRemaining * 1000;
     const timer = window.setInterval(() => {
-      const remaining = Math.max(0, Math.ceil((sleepEndsAt - Date.now()) / 1000));
-      setSleepRemaining(remaining);
-      if (remaining === 0) {
+      const deadline = sleepDeadlineRef.current;
+      if (deadline === null) return;
+      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSleepRemaining(next);
+      if (next === 0) {
+        sleepDeadlineRef.current = null;
         audioRef.current?.pause();
         setSleepMinutes(0);
-        setSleepEndsAt(null);
       }
     }, 1000);
 
-    return () => window.clearInterval(timer);
-  }, [sleepEndsAt]);
+    return () => {
+      window.clearInterval(timer);
+      const deadline = sleepDeadlineRef.current;
+      if (deadline !== null) {
+        const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+        setSleepRemaining(next);
+        if (next === 0) setSleepMinutes(0);
+        sleepDeadlineRef.current = null;
+      }
+    };
+  }, [isPlaying, sleepRemaining > 0]);
+
+  function configureSleepTimer(minutes: number) {
+    haptic("light");
+    sleepDeadlineRef.current = isPlaying && minutes > 0
+      ? Date.now() + minutes * 60 * 1000
+      : null;
+    setSleepMinutes(minutes);
+    setSleepRemaining(minutes * 60);
+    setSleepSheetOpen(false);
+  }
 
   useEffect(() => {
     const saveBeforeLeaving = () => {
@@ -2326,10 +2453,41 @@ function MainApp({
 
   function selectBook(book: Book) {
     setSelectedBookId(book.id);
+    if (native) {
+      setNativeTab("shelf");
+      setNativePlayerView("details");
+      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }
+
+  function openBookDetails(bookId: string) {
+    setSelectedBookId(bookId);
+    if (native) {
+      haptic("light");
+      setNativeTab("shelf");
+      setNativePlayerView("details");
+      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }
+
+  function openPlaybackView(view: "now" | "details" | "chapters") {
+    if (playbackBook) {
+      setSelectedBookId(playbackBook.id);
+    }
+    setNativeTab("reading");
+    setNativePlayerView(view);
+    if (view === "chapters") {
+      setChaptersOpen(true);
+    }
+    playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
+    if (native) {
+      setNativeTab("reading");
+      setNativePlayerView("now");
+    }
     if (
       selectedBook?.id === playbackBook?.id &&
       track.id === currentTrack?.id &&
@@ -2361,6 +2519,11 @@ function MainApp({
 
     void persistProgress();
     seekBookPositionInBook(selectedBook, chapter.startSeconds, true);
+    if (native) {
+      setNativeTab("reading");
+      setNativePlayerView("now");
+      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    }
   }
 
   function restartOrPreviousChapter() {
@@ -2401,22 +2564,27 @@ function MainApp({
   }
 
   function scrollToPlayer() {
-    if (playbackBook) {
-      setSelectedBookId(playbackBook.id);
-    }
     if (native) {
       haptic("light");
-      setNativeTab("reading");
-      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      openPlaybackView("now");
       return;
+    }
+    if (playbackBook) {
+      setSelectedBookId(playbackBook.id);
     }
     playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function openNativeTab(tab: "shelf" | "reading" | "ledger") {
+  function updateSpeed(value: number) {
+    setSpeed(value);
+    writeStoredSpeed(value);
+  }
+
+  function openNativeTab(tab: NativeTab) {
     haptic("light");
     setNativeTab(tab);
+    if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
   }
 
   async function refreshLibrary() {
@@ -2445,6 +2613,45 @@ function MainApp({
       setError("Library rescan failed.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    setUploadFiles(files);
+    setUploadError(null);
+    if (!uploadBookName.trim() && files.length > 0) {
+      setUploadBookName(files[0].name.replace(/\.[^.]+$/, ""));
+    }
+  }
+
+  async function submitAudiobookUpload(event: React.FormEvent) {
+    event.preventDefault();
+    if (!uploadBookName.trim() || uploadFiles.length === 0) {
+      setUploadError("Enter a book name and choose at least one audiobook file.");
+      return;
+    }
+
+    setUploadBusy(true);
+    setUploadError(null);
+    const existingIds = new Set(books.map((book) => book.id));
+    try {
+      const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
+      const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
+      setBooks(nextBooks);
+      setIsOffline(false);
+      setError(null);
+      if (uploadedBook) {
+        setSelectedBookId(uploadedBook.id);
+      }
+      setLibrarySource("local");
+      setUploadModalOpen(false);
+      setUploadBookName("");
+      setUploadFiles([]);
+    } catch (error) {
+      setUploadError(errorMessage(error, "The audiobook could not be uploaded."));
+    } finally {
+      setUploadBusy(false);
     }
   }
 
@@ -2605,7 +2812,13 @@ function MainApp({
   );
 
   return (
-    <main className={native ? `shell native-shell tab-${nativeTab}` : "shell"}>
+    <main
+      className={
+        native
+          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}`
+          : "shell"
+      }
+    >
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
       <audio
         ref={audioRef}
@@ -2670,6 +2883,18 @@ function MainApp({
             <h1>Audio <span className="amp">&amp;</span> Books</h1>
           </div>
           <div className="pane-actions">
+            {isOperaLibre && currentUser.isAdmin ? (
+              <button
+                className="icon-button"
+                aria-label="Upload audiobook"
+                onClick={() => {
+                  setUploadError(null);
+                  setUploadModalOpen(true);
+                }}
+              >
+                <Upload size={16} />
+              </button>
+            ) : null}
             <button
               className="icon-button"
               aria-label={isOperaLibre && currentUser.isAdmin ? "Rescan library" : "Refresh library"}
@@ -2896,9 +3121,6 @@ function MainApp({
                     onClick={() => {
                       selectBook(book);
                       setLibraryOpen(false);
-                      if (native) {
-                        openNativeTab("reading");
-                      }
                     }}
                   >
                     {native || viewMode === "grid" || book.coverArtUrl ? (
@@ -2961,12 +3183,9 @@ function MainApp({
                           if (!book.localBookId) {
                             return;
                           }
-                          setSelectedBookId(book.localBookId);
+                          openBookDetails(book.localBookId);
                           setLibrarySource("local");
                           setLibraryOpen(false);
-                          if (native) {
-                            openNativeTab("reading");
-                          }
                         }}
                       >
                         <Library size={14} />
@@ -2991,7 +3210,14 @@ function MainApp({
         )}
       </aside>
 
-      <section className="player-pane" ref={playerPaneRef}>
+      <section
+        className={`player-pane ${
+          native
+            ? `native-player-view-${nativePlayerView} ${selectedBook && currentTrack ? "has-native-player" : ""}`
+            : ""
+        }`}
+        ref={playerPaneRef}
+      >
         <button
           type="button"
           className="library-open-btn"
@@ -3003,6 +3229,139 @@ function MainApp({
         </button>
         {selectedBook && currentTrack ? (
           <>
+            {native && nowPlayingBook ? (
+              <section className="native-now-playing" aria-label="Now playing">
+                <div className="native-now-artwork">
+                  <CoverArt book={nowPlayingBook} size="large" />
+                </div>
+
+                <div className="native-now-copy">
+                  <span className="native-now-kicker">
+                    {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
+                  </span>
+                  <h2>{activeChapter?.title ?? currentTrack.title}</h2>
+                  <p>{nowPlayingBook.title}</p>
+                  <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
+                </div>
+
+                <div className="native-now-timeline">
+                  <ScrubSlider
+                    ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
+                    max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
+                    value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+                    onCommit={(value) => {
+                      if (activeChapter) {
+                        seekBookPosition(activeChapter.startSeconds + value);
+                      } else {
+                        seekTo(value);
+                      }
+                    }}
+                  />
+                  <div className="native-now-time-row">
+                    <span>{activeChapter ? formatTime(chapterElapsed) : formatTime(position)}</span>
+                    <span>
+                      {activeChapter
+                        ? `−${formatTime(Math.max(0, chapterDuration - chapterElapsed))}`
+                        : `−${formatTime(Math.max(0, sliderMax - position))}`}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="native-now-transport">
+                  {activeChapter ? (
+                    <button
+                      type="button"
+                      className="native-now-chapter"
+                      aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
+                      onClick={restartOrPreviousChapter}
+                      disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                    >
+                      <SkipBack size={27} strokeWidth={1.65} />
+                      <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="native-now-seek"
+                    aria-label="Rewind 15 seconds"
+                    onClick={() => seekBy(-15)}
+                  >
+                    <RotateCcw size={24} strokeWidth={1.7} />
+                    <span>15s</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="native-now-play"
+                    aria-label={isPlaying ? "Pause" : "Play"}
+                    onClick={togglePlayback}
+                  >
+                    {isPlaying ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
+                  </button>
+                  <button
+                    type="button"
+                    className="native-now-seek"
+                    aria-label="Forward 30 seconds"
+                    onClick={() => seekBy(30)}
+                  >
+                    <RotateCw size={24} strokeWidth={1.7} />
+                    <span>30s</span>
+                  </button>
+                  {activeChapter ? (
+                    <button
+                      type="button"
+                      className="native-now-chapter"
+                      aria-label="Next chapter"
+                      onClick={nextChapter}
+                      disabled={!hasNextChapter}
+                    >
+                      <SkipForward size={27} strokeWidth={1.65} />
+                      <span>Next</span>
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="native-now-utility">
+                  <button
+                    type="button"
+                    onClick={() => updateSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length])}
+                  >
+                    <Gauge size={16} /> {speed}×
+                  </button>
+                  <button type="button" onClick={() => setSleepSheetOpen(true)}>
+                    <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                  </button>
+                  <button type="button" onClick={() => openPlaybackView("details")}>
+                    <Bookmark size={16} /> Details
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openPlaybackView("chapters")}
+                  >
+                    <ListMusic size={16} /> Chapters
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            {native && nativePlayerView !== "now" ? (
+              <button
+                type="button"
+                className="native-player-return"
+                onClick={() => {
+                  if (nativeTab === "shelf") {
+                    haptic("light");
+                    setNativePlayerView("now");
+                    return;
+                  }
+                  openPlaybackView("now");
+                }}
+              >
+                {nativeTab === "shelf" ? (
+                  <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Library</span></>
+                ) : (
+                  <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Now Playing</span></>
+                )}
+              </button>
+            ) : null}
             <div className="folio">
               <span>Vol. I <span className="dot">·</span> The Reading Room</span>
               <span>Folio {String(activeTrackIndex + 1).padStart(3, "0")} / {String(selectedBook.tracks.length).padStart(3, "0")}</span>
@@ -3012,7 +3371,9 @@ function MainApp({
               <CoverArt book={selectedBook} size="large" />
               <div className="meta">
                 <div className="heading-top">
-                  <span className="eyebrow"><Bookmark size={13} /> Now Reading</span>
+                  <span className="eyebrow">
+                    <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
+                  </span>
                   <div className="heading-actions">
                     {isOperaLibre && currentUser.isAdmin ? (
                       <button
@@ -3111,11 +3472,12 @@ function MainApp({
             <div className="metadata-strip">
               {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
-              {selectedBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
-              {selectedBook.chapters.length > 0 ? <span>{selectedBook.chapters.length} chapters</span> : null}
+              {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
             </div>
 
-            {selectedBook.description ? <p className="book-description">{selectedBook.description}</p> : null}
+            {displayBookDescription(selectedBook) ? (
+              <p className="book-description">{displayBookDescription(selectedBook)}</p>
+            ) : null}
 
             {readalongOpen && selectedBook.readingFile && selectedReadalongUrl ? (
               <section className="readalong-panel" aria-label={`${selectedBook.title} readalong`}>
@@ -3172,7 +3534,14 @@ function MainApp({
                     }
                     syncFragments={selectedSyncFragments}
                     positionSeconds={isViewingPlayingBook ? bookPosition : 0}
-                    onSeekTo={(seconds) => seekBookPosition(seconds, true)}
+                    onSeekTo={(seconds) => {
+                      seekBookPositionInBook(selectedBook, seconds, true);
+                      if (native) {
+                        setNativeTab("reading");
+                        setNativePlayerView("now");
+                        playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+                      }
+                    }}
                   />
                 ) : canPreviewReadalong(selectedBook) ? (
                   <iframe
@@ -3214,7 +3583,7 @@ function MainApp({
                       ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"
                       : "Skip back 15 seconds"}
                     onClick={restartOrPreviousChapter}
-                    disabled={!!activeChapter && !hasPreviousChapter}
+                    disabled={!!activeChapter && chapterElapsed <= 5 && !hasPreviousChapter}
                   >
                     <SkipBack size={22} strokeWidth={1.7} />
                     <small>{activeChapter ? chapterElapsed > 5 ? "Restart" : "Previous" : "15s"}</small>
@@ -3317,13 +3686,6 @@ function MainApp({
               </>
             ) : (
               <div className="book-preview-actions">
-                <span>
-                  {playbackBook ? (
-                    <>Still playing <em>{playbackBook.title}</em></>
-                  ) : (
-                    <>Begin a new reading</>
-                  )}
-                </span>
                 <button
                   type="button"
                   className="round-button primary"
@@ -3332,9 +3694,26 @@ function MainApp({
                 >
                   <Play size={30} fill="currentColor" />
                 </button>
+                <span className="preview-cta">
+                  {selectedBook.progress?.status === "inProgress"
+                    ? `Resume${
+                        formatDurationLabel(selectedBook.progress.remainingSeconds)
+                          ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                          : ""
+                      }`
+                    : selectedBook.progress?.status === "finished"
+                      ? "Read it again"
+                      : "Begin this reading"}
+                </span>
+                {playbackBook && playbackBook.id !== selectedBook.id ? (
+                  <button type="button" className="preview-return" onClick={scrollToPlayer}>
+                    Still playing · <em>{playbackBook.title}</em>
+                  </button>
+                ) : null}
               </div>
             )}
 
+            {isViewingPlayingBook ? (
             <div className="controls-grid">
               <section className="control-section">
                 <div className="section-label"><Gauge size={13} /> Cadence</div>
@@ -3343,7 +3722,7 @@ function MainApp({
                     <button
                       key={option}
                       className={speed === option ? "selected" : ""}
-                      onClick={() => setSpeed(option)}
+                      onClick={() => updateSpeed(option)}
                     >
                       {option}×
                     </button>
@@ -3351,35 +3730,41 @@ function MainApp({
                 </div>
               </section>
 
-              <section className="control-section">
-                <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
-                <input
-                  id="volume"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={volume}
-                  onChange={(event) => setVolume(Number(event.currentTarget.value))}
-                />
-              </section>
+              {/* Phones have hardware volume buttons; a second software
+                  volume just adds a card. */}
+              {!native ? (
+                <section className="control-section">
+                  <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
+                  <input
+                    id="volume"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={volume}
+                    onChange={(event) => setVolume(Number(event.currentTarget.value))}
+                  />
+                </section>
+              ) : null}
 
               <section className="control-section">
                 <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
                 <select
                   id="sleep"
                   value={sleepMinutes}
-                  onChange={(event) => setSleepMinutes(Number(event.currentTarget.value))}
+                  onChange={(event) => configureSleepTimer(Number(event.currentTarget.value))}
                 >
+                  <option value={0}>—</option>
                   {SLEEP_OPTIONS.map((option) => (
                     <option key={option} value={option}>
-                      {option === 0 ? "—" : `${option} minutes`}
+                      {`${option} minutes`}
                     </option>
                   ))}
                 </select>
                 {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
               </section>
             </div>
+            ) : null}
 
             {selectedBook.chapters.length > 0 ? (
               <section className="track-list-section">
@@ -3459,7 +3844,7 @@ function MainApp({
               type="button"
               aria-label={activeChapter ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter" : "Skip back 15 seconds"}
               onClick={restartOrPreviousChapter}
-              disabled={!!activeChapter && !hasPreviousChapter}
+              disabled={!!activeChapter && chapterElapsed <= 5 && !hasPreviousChapter}
             >
               <SkipBack size={17} />
             </button>
@@ -3476,6 +3861,55 @@ function MainApp({
             </button>
           </div>
         </aside>
+      ) : null}
+
+      {native && sleepSheetOpen ? (
+        <div className="sleep-sheet-layer" role="presentation">
+          <button
+            type="button"
+            className="sleep-sheet-scrim"
+            aria-label="Close sleep timer"
+            onClick={() => setSleepSheetOpen(false)}
+          />
+          <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="sleep-sheet-title">
+            <div className="sleep-sheet-grabber" aria-hidden="true" />
+            <header>
+              <div>
+                <span className="eyebrow"><Timer size={13} /> Nightfall</span>
+                <h2 id="sleep-sheet-title">Sleep Timer</h2>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close" onClick={() => setSleepSheetOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <p className="sleep-sheet-hint">The timer only runs while your book is playing.</p>
+            <div className="sleep-options">
+              {SLEEP_OPTIONS.map((minutes) => (
+                <button
+                  type="button"
+                  key={minutes}
+                  className={sleepMinutes === minutes && sleepRemaining > 0 ? "selected" : ""}
+                  onClick={() => configureSleepTimer(minutes)}
+                >
+                  <span>{minutes === 60 ? "1 hour" : `${minutes} minutes`}</span>
+                  {sleepMinutes === minutes && sleepRemaining > 0 ? (
+                    <em>{formatTime(sleepRemaining)} left</em>
+                  ) : (
+                    <ChevronRight size={17} />
+                  )}
+                </button>
+              ))}
+              <button
+                type="button"
+                className={`sleep-off ${sleepRemaining === 0 ? "selected" : ""}`}
+                onClick={() => configureSleepTimer(0)}
+              >
+                <span>Off</span>
+                {sleepRemaining === 0 ? <em>Selected</em> : <X size={17} />}
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       {metadataEditOpen && metadataForm ? (
@@ -3608,7 +4042,7 @@ function MainApp({
           user={currentUser}
           onClose={() => setProfileOpen(false)}
           onOpenBook={(bookId) => {
-            setSelectedBookId(bookId);
+            openBookDetails(bookId);
             setProfileOpen(false);
             setLibraryOpen(false);
           }}
@@ -3622,15 +4056,239 @@ function MainApp({
         />
       ) : null}
 
+      {isOperaLibre && currentUser.isAdmin && uploadModalOpen ? (
+        <div className="modal-scrim" role="presentation">
+          <form
+            className="modal-card upload-audiobook-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upload-audiobook-title"
+            onSubmit={submitAudiobookUpload}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow"><Upload size={13} /> Add to the collection</span>
+                <h2 id="upload-audiobook-title">Upload audiobook</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close upload"
+                disabled={uploadBusy}
+                onClick={() => setUploadModalOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="upload-audiobook-hint">
+              Choose one file for an M4B or all audio tracks for a multi-file book. Files are kept
+              together in a new library folder.
+            </p>
+            <label className="upload-audiobook-field">
+              <span>Book name</span>
+              <input
+                value={uploadBookName}
+                onChange={(event) => setUploadBookName(event.currentTarget.value)}
+                placeholder="The name of the library folder"
+                maxLength={200}
+                required
+                disabled={uploadBusy}
+              />
+            </label>
+            <label className="upload-file-picker">
+              <Upload size={22} />
+              <strong>
+                {uploadFiles.length
+                  ? `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"} selected`
+                  : "Choose audio files"}
+              </strong>
+              <span>AAC, AIFF, FLAC, M4A, M4B, MP3, MP4, OGG, Opus, or WAV</span>
+              <input
+                type="file"
+                accept=".aac,.aiff,.flac,.m4a,.m4b,.mp3,.mp4,.ogg,.opus,.wav,audio/*"
+                multiple
+                required
+                disabled={uploadBusy}
+                onChange={chooseUploadFiles}
+              />
+            </label>
+            {uploadFiles.length ? (
+              <ul className="upload-file-list">
+                {uploadFiles.map((file) => <li key={`${file.name}-${file.size}`}>{file.name}</li>)}
+              </ul>
+            ) : null}
+            {uploadError ? <p className="metadata-edit-error">{uploadError}</p> : null}
+            <div className="metadata-edit-actions">
+              <button type="button" disabled={uploadBusy} onClick={() => setUploadModalOpen(false)}>Cancel</button>
+              <button type="submit" disabled={uploadBusy || uploadFiles.length === 0}>
+                {uploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
+                {uploadBusy ? "Uploading…" : "Upload to library"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
       {showLedgerTab && nativeTab === "ledger" ? (
         <ProfilePage
           user={currentUser}
           onClose={() => openNativeTab("reading")}
           onOpenBook={(bookId) => {
-            setSelectedBookId(bookId);
-            openNativeTab("reading");
+            openBookDetails(bookId);
           }}
         />
+      ) : null}
+
+      {native && nativeTab === "settings" ? (
+        <section className="settings-shell" aria-label="Settings">
+          <header className="settings-head">
+            <span className="eyebrow"><Settings size={13} /> The Study</span>
+            <h1>Settings</h1>
+          </header>
+
+          <section className="settings-card">
+            <span className="section-label"><Gauge size={13} /> Playback</span>
+            <div className="settings-field">
+              <span className="settings-label">Cadence</span>
+              <div className="segmented">
+                {SPEEDS.map((option) => (
+                  <button
+                    key={option}
+                    className={speed === option ? "selected" : ""}
+                    onClick={() => updateSpeed(option)}
+                  >
+                    {option}×
+                  </button>
+                ))}
+              </div>
+              <p className="settings-hint">Applies to every book and is remembered on this device.</p>
+            </div>
+          </section>
+
+          <section className="settings-card">
+            <span className="section-label"><Download size={13} /> Downloads</span>
+            {books.some((book) => downloadedBookIds.has(book.id)) ? (
+              <div className="settings-downloads">
+                {books
+                  .filter((book) => downloadedBookIds.has(book.id))
+                  .map((book) => (
+                    <div key={book.id} className="settings-download-row">
+                      <strong>{book.title}</strong>
+                      <button
+                        type="button"
+                        className="download-btn"
+                        onClick={() => void removeOfflineDownload(book)}
+                        aria-label={`Remove downloaded copy of ${book.title}`}
+                      >
+                        <Trash2 size={13} />
+                        <span>Remove</span>
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <p className="settings-hint">No books are downloaded for offline listening yet.</p>
+            )}
+          </section>
+
+          <section className="settings-card">
+            <span className="section-label"><Network size={13} /> Connection</span>
+            <div className="settings-kv">
+              <span>Server</span>
+              <span className="settings-value">
+                {isOperaLibre ? "OperaLibre" : "Jellyfin"} · {getServerUrl()}
+              </span>
+            </div>
+            <div className="settings-kv">
+              <span>Signed in as</span>
+              <span className="settings-value">
+                {currentUser.username} · {currentUser.isAdmin ? "Administrator" : "Reader"}
+              </span>
+            </div>
+            <div className="server-aliases">
+              <span className="settings-label">Address aliases</span>
+              <p className="settings-hint">
+                Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
+              </p>
+              {[
+                { id: "primary", name: "Original address", url: getServerIdentityUrl() },
+                ...serverAliases
+              ].map((alias) => {
+                const active = alias.url === getServerUrl();
+                return (
+                  <div className="server-alias-row" key={alias.id}>
+                    <span>
+                      <strong>{alias.name}</strong>
+                      <small>{alias.url}</small>
+                    </span>
+                    <div>
+                      <button
+                        type="button"
+                        className="download-btn"
+                        disabled={active || switchingAliasId !== null}
+                        onClick={() => void switchToAlias(alias)}
+                      >
+                        {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : "Use"}
+                      </button>
+                      {alias.id !== "primary" ? (
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`Remove ${alias.name} alias`}
+                          onClick={() => {
+                            removeServerAlias(alias.id);
+                            setServerAliases(getServerAliases());
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+              <form className="server-alias-form" onSubmit={saveAlias}>
+                <input
+                  value={aliasName}
+                  onChange={(event) => setAliasName(event.currentTarget.value)}
+                  placeholder="Name (Tailscale)"
+                  aria-label="Alias name"
+                  required
+                />
+                <input
+                  value={aliasUrl}
+                  onChange={(event) => setAliasUrl(event.currentTarget.value)}
+                  placeholder="http://100.x.x.x:4000"
+                  aria-label="Alias server address"
+                  inputMode="url"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  required
+                />
+                <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
+              </form>
+              {aliasError ? <p className="auth-error">{aliasError}</p> : null}
+            </div>
+            <div className="settings-actions">
+              {isOperaLibre && currentUser.isAdmin ? (
+                <>
+                  <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
+                    <Upload size={13} />
+                    <span>Upload audiobook</span>
+                  </button>
+                  <button type="button" className="download-btn" onClick={() => setUsersModalOpen(true)}>
+                    <UserCog size={13} />
+                    <span>Manage readers</span>
+                  </button>
+                </>
+              ) : null}
+              <button type="button" className="download-btn" onClick={() => void onLogout()}>
+                <LogOut size={13} />
+                <span>Sign out</span>
+              </button>
+            </div>
+          </section>
+        </section>
       ) : null}
 
       {native ? (
@@ -3664,6 +4322,15 @@ function MainApp({
               <span>Ledger</span>
             </button>
           ) : null}
+          <button
+            type="button"
+            className={`spine-tab ${nativeTab === "settings" ? "active" : ""}`}
+            aria-current={nativeTab === "settings" ? "page" : undefined}
+            onClick={() => openNativeTab("settings")}
+          >
+            <Settings size={20} strokeWidth={1.6} />
+            <span>Settings</span>
+          </button>
         </nav>
       ) : null}
     </main>

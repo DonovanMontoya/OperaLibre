@@ -32,6 +32,8 @@ const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const TOKEN_STORAGE_KEY = "operalibre.authToken";
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
 const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
+const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
+const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
@@ -95,6 +97,100 @@ function normalizeServerUrl(value: string): string {
   }
 }
 
+export type ServerAlias = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export function getServerAliases(): ServerAlias[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SERVER_ALIASES_STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((alias): alias is ServerAlias =>
+      typeof alias?.id === "string" && typeof alias?.name === "string" && typeof alias?.url === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function storeServerAliases(aliases: ServerAlias[]) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(SERVER_ALIASES_STORAGE_KEY, JSON.stringify(aliases));
+  }
+}
+
+export function addServerAlias(name: string, rawUrl: string): ServerAlias {
+  const trimmedName = name.trim();
+  const url = normalizeServerUrl(rawUrl);
+  if (!trimmedName) throw new Error("Alias name is required.");
+  if (!url) throw new Error("Alias URL is required.");
+  const aliases = getServerAliases();
+  if (aliases.some((alias) => alias.name.toLowerCase() === trimmedName.toLowerCase())) {
+    throw new Error("An alias with that name already exists.");
+  }
+  if (aliases.some((alias) => alias.url.toLowerCase() === url.toLowerCase())) {
+    throw new Error("That server address is already saved.");
+  }
+  const alias = { id: crypto.randomUUID(), name: trimmedName, url };
+  // Existing installs predate the identity key. Pin their current address
+  // before an alias can become active so caches remain tied to one server.
+  if (typeof window !== "undefined" && !window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY)) {
+    window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, getServerUrl());
+  }
+  storeServerAliases([...aliases, alias]);
+  return alias;
+}
+
+export function removeServerAlias(id: string) {
+  storeServerAliases(getServerAliases().filter((alias) => alias.id !== id));
+}
+
+export function activateServerAlias(alias: ServerAlias) {
+  setServerUrl(alias.url);
+}
+
+/**
+ * On iOS, a server can be reachable through different private-network
+ * addresses depending on the network in use. When the active address is
+ * unavailable, promote the first saved alias that answers its health check.
+ * The server identity and authentication token are deliberately retained:
+ * aliases represent the same server.
+ */
+export async function reconnectUsingServerAliases(): Promise<boolean> {
+  if (!Capacitor.isNativePlatform()) {
+    return false;
+  }
+
+  const activeUrl = normalizeServerUrl(getServerUrl()).toLowerCase();
+  const candidates = [
+    { id: "primary", name: "Original address", url: getServerIdentityUrl() },
+    ...getServerAliases()
+  ];
+  const attemptedUrls = new Set<string>();
+  for (const alias of candidates) {
+    const aliasUrl = normalizeServerUrl(alias.url).toLowerCase();
+    if (!aliasUrl || attemptedUrls.has(aliasUrl)) {
+      continue;
+    }
+    attemptedUrls.add(aliasUrl);
+    if (aliasUrl === activeUrl) {
+      continue;
+    }
+    try {
+      await pingServer(getServerType(), alias.url);
+      activateServerAlias(alias);
+      return true;
+    } catch {
+      // Try the next saved address. A later successful health check is the
+      // only condition under which the active address is changed.
+    }
+  }
+  return false;
+}
+
 let storedServerUrl: string | null = null;
 
 function readStoredServerUrl(): string | null {
@@ -122,7 +218,13 @@ export function getServerType(): ServerType {
 }
 
 export function getServerStorageKey(): string {
-  return serverStorageKey(getServerType(), getServerUrl());
+  return serverStorageKey(getServerType(), getServerIdentityUrl());
+}
+
+export function getServerIdentityUrl(): string {
+  return typeof window === "undefined"
+    ? getServerUrl()
+    : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY) ?? getServerUrl();
 }
 
 export function setServerType(serverType: ServerType) {
@@ -152,6 +254,10 @@ export function setServerConnection(serverType: ServerType, rawValue: string) {
   const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerUrl(rawValue);
   setServerType(serverType);
   setServerUrl(rawValue);
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerUrl(rawValue));
+    if (changed) storeServerAliases([]);
+  }
   if (changed) {
     setStoredToken(null);
   }
@@ -237,7 +343,7 @@ export function isNetworkError(error: unknown): boolean {
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (!headers.has("Content-Type") && init?.body) {
+  if (!headers.has("Content-Type") && init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   const token = getStoredToken();
@@ -391,6 +497,17 @@ export async function rescanLibrary() {
     return getBooks();
   }
   return request<Book[]>("/api/library/rescan", { method: "POST" });
+}
+
+export async function uploadAudiobook(bookName: string, files: File[]) {
+  const body = new FormData();
+  body.append("bookName", bookName);
+  files.forEach((file) => body.append("files", file, file.name));
+  return request<Book[]>(
+    "/api/library/upload",
+    { method: "POST", body },
+    24 * 60 * 60 * 1_000
+  );
 }
 
 export async function getProgress(bookId: string) {

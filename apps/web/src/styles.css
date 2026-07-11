@@ -1698,13 +1698,15 @@ input[type="range"]::-moz-range-thumb {
   padding: 18px 0 22px;
 }
 
+/* One centered composition: play, what pressing play does, and a quiet
+   pointer back to whatever is already on the player. */
 .book-preview-actions {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 20px 0;
+  gap: 16px;
+  padding: 32px 0 26px;
   border-top: 1px solid rgba(26, 20, 16, 0.18);
   border-bottom: 1px solid rgba(26, 20, 16, 0.18);
 }
@@ -1723,31 +1725,40 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
-.book-preview-actions {
-  padding: 28px 0;
-  gap: 28px;
+.book-preview-actions .round-button.primary {
+  flex-shrink: 0;
 }
 
-.book-preview-actions > span {
-  min-width: 0;
-  font-family: "Fraunces", serif;
-  font-style: italic;
-  font-size: 1.15rem;
-  line-height: 1.4;
-  color: var(--ink-soft);
+.preview-cta {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+}
+
+.preview-return {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 8px 12px;
+  font-family: "Fraunces", serif;
+  font-style: italic;
+  font-size: 0.98rem;
+  color: var(--ink-faded);
+  transition: color 0.2s ease;
 }
 
-.book-preview-actions > span em {
+.preview-return em {
   font-family: "Instrument Serif", serif;
   font-style: italic;
   color: var(--oxblood);
 }
 
-.book-preview-actions .round-button.primary {
-  flex-shrink: 0;
+.preview-return:hover {
+  color: var(--ink-soft);
 }
 
 .round-button {
@@ -2752,6 +2763,186 @@ select:focus {
   padding: 2rem 1rem;
 }
 
+/* Startup interstitial: three volumes settle onto a shelf while a glint
+   travels across their spines. It is entirely CSS so it appears immediately. */
+.startup-shell {
+  overflow: hidden;
+}
+
+.startup-loader {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: var(--ink);
+}
+
+.startup-mark {
+  position: relative;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 7px;
+  width: 118px;
+  height: 108px;
+  padding-bottom: 8px;
+  overflow: hidden;
+}
+
+.startup-mark::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 4px;
+  left: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--oxblood-deep);
+  box-shadow: 0 5px 12px rgba(79, 33, 23, 0.25);
+  transform: scaleX(0);
+  animation: startup-shelf 1.8s cubic-bezier(0.22, 0.8, 0.25, 1) infinite;
+}
+
+.startup-book {
+  position: relative;
+  width: 25px;
+  height: 72px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 245, 218, 0.22);
+  border-radius: 3px 5px 5px 3px;
+  background: linear-gradient(90deg, #541c14, var(--oxblood) 22%, #a8412c 78%, #682016);
+  box-shadow: inset 4px 0 rgba(28, 12, 8, 0.22), 0 10px 18px -10px rgba(26, 20, 16, 0.65);
+  transform-origin: 50% 100%;
+  animation: startup-book-rise 1.8s cubic-bezier(0.22, 0.8, 0.25, 1) infinite both;
+}
+
+.startup-book::before,
+.startup-book::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  left: 7px;
+  height: 1px;
+  background: rgba(230, 192, 116, 0.72);
+}
+
+.startup-book::before { top: 9px; }
+.startup-book::after { bottom: 9px; }
+
+.startup-book i {
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 11px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--gold-soft);
+  opacity: 0.72;
+}
+
+.startup-book-left {
+  height: 62px;
+  animation-delay: -0.12s;
+}
+
+.startup-book-center {
+  width: 29px;
+  height: 84px;
+  background: linear-gradient(90deg, #231710, #49301e 24%, #6c4a2b 78%, #2c1b12);
+}
+
+.startup-book-right {
+  height: 70px;
+  animation-delay: 0.12s;
+}
+
+.startup-sweep {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  bottom: 10px;
+  width: 20px;
+  background: linear-gradient(90deg, transparent, rgba(255, 238, 190, 0.55), transparent);
+  filter: blur(1px);
+  transform: translateX(-90px) skewX(-12deg);
+  animation: startup-sweep 1.8s ease-in-out infinite;
+}
+
+.startup-title {
+  display: flex;
+  align-items: baseline;
+  font-family: "Fraunces", serif;
+  font-size: 2rem;
+  font-weight: 350;
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+
+.startup-title em {
+  color: var(--oxblood);
+  font-family: "Instrument Serif", serif;
+  font-weight: 400;
+}
+
+.startup-caption {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+}
+
+.startup-progress {
+  width: 104px;
+  height: 2px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.1);
+}
+
+.startup-progress i {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold), var(--oxblood));
+  animation: startup-progress 1.25s ease-in-out infinite;
+}
+
+@keyframes startup-book-rise {
+  0%, 16% { opacity: 0; transform: translateY(36px) rotate(-5deg); }
+  42%, 78% { opacity: 1; transform: translateY(0) rotate(0); }
+  100% { opacity: 0; transform: translateY(-5px); }
+}
+
+@keyframes startup-shelf {
+  0%, 22% { transform: scaleX(0); }
+  50%, 86% { transform: scaleX(1); }
+  100% { transform: scaleX(0); }
+}
+
+@keyframes startup-sweep {
+  0%, 42% { opacity: 0; transform: translateX(-90px) skewX(-12deg); }
+  52% { opacity: 1; }
+  78%, 100% { opacity: 0; transform: translateX(90px) skewX(-12deg); }
+}
+
+@keyframes startup-progress {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(245%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-book,
+  .startup-mark::after,
+  .startup-sweep,
+  .startup-progress i {
+    animation: none;
+  }
+
+  .startup-mark::after { transform: scaleX(1); }
+}
+
 .auth-card {
   background: rgba(255, 250, 235, 0.94);
   border: 1px solid rgba(26, 20, 16, 0.15);
@@ -3124,6 +3315,73 @@ select:focus {
 .metadata-edit-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.upload-audiobook-card {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.upload-audiobook-hint {
+  margin: 0;
+  color: var(--ink-faded);
+  font-family: "Fraunces", serif;
+  line-height: 1.5;
+}
+
+.upload-audiobook-field {
+  display: grid;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-family: "Fraunces", serif;
+}
+
+.upload-audiobook-field input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--ink);
+  font: 1rem "Fraunces", serif;
+}
+
+.upload-file-picker {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px 18px;
+  border: 1px dashed rgba(112, 37, 24, 0.38);
+  border-radius: 10px;
+  background: rgba(112, 37, 24, 0.035);
+  color: var(--oxblood);
+  text-align: center;
+  cursor: pointer;
+}
+
+.upload-file-picker span {
+  color: var(--ink-faded);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.upload-file-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.upload-file-list {
+  max-height: 120px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 0 0 20px;
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
 }
 
 .user-list {
@@ -3799,6 +4057,66 @@ html.native-app .native-shell.tab-reading > .player-pane {
   pointer-events: auto;
 }
 
+/* A selected book is a child page of the Library tab, not a Reading page. */
+html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-18px);
+  pointer-events: none;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* The shelf's mini-player consumes the lower part of the viewport. Keep the
+   book hero compact on its child page so the title and primary actions remain
+   visible above it. */
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading {
+  grid-template-columns: min(31vw, 124px) minmax(0, 1fr);
+  align-items: center;
+  justify-items: stretch;
+  gap: 16px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  width: 100%;
+  justify-self: start;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .meta {
+  align-items: flex-start;
+  text-align: left;
+  gap: 4px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading h2 {
+  max-width: none;
+  margin: 2px 0;
+  font-size: clamp(1.45rem, 6vw, 2rem);
+  line-height: 1.02;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 7px;
+  gap: 6px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn {
+  flex: 1 1 auto;
+  padding-inline: 9px;
+  font-size: 0.56rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-runtime {
+  margin-top: 4px;
+}
+
 /* Give each screen room for the notch on top and the spine bar below. */
 html.native-app .native-shell > .library-pane {
   padding: calc(var(--status-h) + 22px)
@@ -4292,26 +4610,360 @@ html.native-app .round-button.secondary small {
   letter-spacing: 0.08em;
 }
 
-/* Control cards */
+/* Reading is a dedicated, cover-forward player. Book details and chapters
+   remain separate pages so the controls never have to share a screen with
+   the book-page layout. */
+html.native-app .native-now-playing {
+  display: none;
+}
+
+html.native-app .native-player-view-now .native-now-playing {
+  display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 480px;
+  min-height: calc(100dvh - var(--tabs-h) - var(--status-h) - 58px);
+  min-width: 0;
+  align-content: center;
+  gap: clamp(11px, 1.7vh, 17px);
+  margin: 4px auto 16px;
+  padding: clamp(16px, 2.5vh, 22px);
+  overflow: hidden;
+  border: 1px solid rgba(91, 65, 42, 0.14);
+  border-radius: 28px;
+  background:
+    linear-gradient(155deg, rgba(255, 253, 247, 0.62), rgba(236, 220, 190, 0.34)),
+    rgba(255, 252, 244, 0.32);
+  box-shadow:
+    0 24px 52px -36px rgba(39, 24, 14, 0.78),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+html.native-app .has-native-player.native-player-view-now > :not(.native-now-playing) {
+  display: none;
+}
+
+html.native-app .native-player-view-details .native-now-playing,
+html.native-app .native-player-view-chapters .native-now-playing {
+  display: none;
+}
+
+html.native-app .native-player-view-details .track-line,
+html.native-app .native-player-view-details .transport,
+html.native-app .native-player-view-details .timeline,
+html.native-app .native-player-view-details .controls-grid {
+  display: none;
+}
+
+html.native-app .native-player-view-chapters > :not(.native-player-return):not(.track-list-section) {
+  display: none;
+}
+
+html.native-app .native-player-return {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  justify-content: flex-start;
+  gap: 10px;
+  width: auto;
+  min-height: 46px;
+  margin: 0 0 10px;
+  padding: 4px 15px 4px 5px;
+  border: 1px solid rgba(139, 46, 31, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 253, 247, 0.82);
+  color: var(--oxblood-deep);
+  box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+html.native-app .native-player-return-icon {
+  display: grid;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--paper);
+  background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
+  box-shadow: 0 6px 12px -7px rgba(87, 28, 19, 0.8);
+}
+
+html.native-app .native-player-return-icon svg {
+  margin-left: -2px;
+  stroke-width: 2.4;
+}
+
+html.native-app .native-player-return:hover {
+  color: var(--oxblood-deep);
+}
+
+html.native-app .native-player-return:active {
+  transform: scale(0.97);
+}
+
+html.native-app .native-player-view-now .library-open-btn {
+  display: none;
+}
+
+html.native-app .native-now-artwork {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+html.native-app .native-now-artwork .large-cover {
+  width: min(66vw, 294px);
+  max-height: 35vh;
+  border-radius: 22px;
+  box-shadow: 0 30px 46px -24px rgba(24, 15, 10, 0.72);
+}
+
+html.native-app .native-now-artwork .large-cover::after {
+  display: none;
+}
+
+html.native-app .native-now-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  text-align: center;
+}
+
+html.native-app .native-now-kicker {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--oxblood);
+}
+
+html.native-app .native-now-copy h2 {
+  max-width: 24ch;
+  margin: 0 auto;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-family: "Fraunces", serif;
+  font-size: clamp(1.3rem, 5.6vw, 1.8rem);
+  font-weight: 450;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+html.native-app .native-now-copy p,
+html.native-app .native-now-copy > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html.native-app .native-now-copy p {
+  margin: 0;
+  font-family: "Instrument Serif", serif;
+  font-size: 1.16rem;
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+html.native-app .native-now-copy > span:last-child {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-faded);
+}
+
+html.native-app .native-now-timeline {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+html.native-app .native-now-timeline input[type="range"] {
+  height: 28px;
+}
+
+html.native-app .native-now-timeline input[type="range"]::-webkit-slider-runnable-track,
+html.native-app .native-now-timeline input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(26, 20, 16, 0.16);
+}
+
+html.native-app .native-now-timeline input[type="range"]::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  background: var(--oxblood);
+  box-shadow: 0 0 0 3px var(--paper);
+}
+
+html.native-app .native-now-timeline input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--paper);
+  background: var(--oxblood);
+}
+
+html.native-app .native-now-time-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  color: var(--ink-faded);
+}
+
+html.native-app .native-now-time-row span:first-child {
+  color: var(--oxblood);
+}
+
+html.native-app .native-now-transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(5px, 2.2vw, 10px);
+  padding: 2px 4px;
+}
+
+html.native-app .native-now-transport > button:not(.native-now-play) {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: var(--ink-soft);
+}
+
+html.native-app .native-now-transport .native-now-chapter {
+  flex: 1 1 54px;
+  max-width: 64px;
+}
+
+html.native-app .native-now-transport .native-now-seek {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 52px;
+  border-radius: 18px;
+  background: rgba(26, 20, 16, 0.055);
+}
+
+html.native-app .native-now-transport .native-now-seek span {
+  color: var(--oxblood);
+  font-size: 0.52rem;
+}
+
+html.native-app .native-now-transport > button:not(.native-now-play) span {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.57rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+html.native-app .native-now-play {
+  width: 84px;
+  height: 84px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--paper);
+  background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
+  box-shadow: 0 20px 36px -13px rgba(112, 37, 24, 0.62);
+}
+
+html.native-app .native-now-transport button:disabled {
+  opacity: 0.28;
+}
+
+html.native-app .native-now-utility {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+html.native-app .native-now-utility button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 5px 3px;
+  border: 1px solid rgba(26, 20, 16, 0.1);
+  border-radius: 13px;
+  color: var(--ink-soft);
+  background: rgba(255, 253, 247, 0.44);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.5rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+@media (max-height: 740px) {
+  html.native-app .native-player-view-now .native-now-playing {
+    min-height: calc(100dvh - var(--tabs-h) - var(--status-h) - 46px);
+    gap: 9px;
+    padding: 13px 15px;
+  }
+
+  html.native-app .native-now-artwork .large-cover {
+    width: min(56vw, 238px);
+    max-height: 29vh;
+  }
+
+  html.native-app .native-now-copy {
+    gap: 3px;
+  }
+
+  html.native-app .native-now-copy h2 {
+    font-size: clamp(1.12rem, 4.8vw, 1.45rem);
+  }
+
+  html.native-app .native-now-copy p {
+    font-size: 1rem;
+  }
+
+  html.native-app .native-now-play {
+    width: 72px;
+    height: 72px;
+  }
+
+  html.native-app .native-now-utility button {
+    min-height: 42px;
+  }
+}
+
+/* Control cards: one quiet card with hairline dividers instead of three
+   mismatched slabs. */
 html.native-app .controls-grid {
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 0;
   margin-top: 4px;
-  border: 0;
+  border: 1px solid rgba(26, 20, 16, 0.08);
+  border-radius: var(--m-radius-sm);
+  background: var(--m-card-light);
+  overflow: hidden;
 }
 
 html.native-app .control-section {
   gap: 12px;
   padding: 16px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
-  border-radius: var(--m-radius-sm);
-  background: var(--m-card-light);
+  border: 0;
+  border-radius: 0;
+  background: none;
   justify-items: start;
   text-align: left;
 }
 
-html.native-app .control-section:first-child {
-  grid-column: 1 / -1;
+html.native-app .control-section + .control-section {
+  border-top: 1px solid rgba(26, 20, 16, 0.08);
 }
 
 html.native-app .segmented {
@@ -4531,10 +5183,28 @@ html.native-app .download-btn {
   border-radius: 999px;
 }
 
+/* On the phone the boxed chips read as tag soup; set the metadata as a
+   single imprint line, the way a title page would. */
+html.native-app .metadata-strip {
+  gap: 0;
+  row-gap: 2px;
+}
+
 html.native-app .metadata-strip span {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+}
+
+html.native-app .metadata-strip span + span::before {
+  content: "·";
+  margin: 0 10px;
+  color: var(--oxblood);
 }
 
 html.native-app .control-section select {
@@ -4793,6 +5463,14 @@ html.native-app .auth-card input {
   background: rgba(255, 252, 244, 0.75);
 }
 
+/* Keep the startup mark centered even though native auth forms begin near the
+   top of the screen. */
+.auth-shell.startup-shell,
+html.native-app .auth-shell.startup-shell {
+  align-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+}
+
 html.native-app .auth-submit,
 html.native-app .auth-secondary {
   min-height: 52px;
@@ -4831,6 +5509,205 @@ html.native-app .profile-back {
   display: none;
 }
 
+/* --- Settings tab: a full-bleed paper screen like the ledger --- */
+html.native-app .native-shell.tab-settings .ios-status-veil {
+  background: rgba(241, 231, 208, 0.72);
+}
+
+/* Below the modal scrim (z 50) so Manage readers opens on top. */
+.settings-shell {
+  position: fixed;
+  inset: 0;
+  bottom: var(--tabs-h);
+  z-index: 48;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--paper);
+  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right)) 56px
+    max(20px, env(safe-area-inset-left));
+  text-align: left;
+  animation: profile-fade-in 0.2s ease both;
+}
+
+.settings-head {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.settings-head h1 {
+  margin: 0;
+  font-family: "Instrument Serif", serif;
+  font-weight: 400;
+  font-size: 2.4rem;
+  line-height: 1.05;
+  color: var(--ink);
+}
+
+.settings-card {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(26, 20, 16, 0.08);
+  border-radius: var(--m-radius-sm);
+  background: var(--m-card-light);
+}
+
+/* Grid items default to min-width:auto, so a long nowrap book title would
+   widen the track past the card and push buttons off screen; keep every
+   card child clamped to the card so titles ellipsize instead. */
+.settings-card > *,
+.settings-download-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-field {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  width: 100%;
+}
+
+.settings-field .segmented {
+  flex-wrap: wrap;
+}
+
+.settings-label {
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+.settings-hint {
+  margin: 0;
+  font-family: "Fraunces", serif;
+  font-style: italic;
+  font-size: 0.85rem;
+  color: var(--ink-faded);
+}
+
+.settings-kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.settings-kv > span:first-child {
+  flex-shrink: 0;
+  font-family: "Fraunces", serif;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+.settings-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-faded);
+  text-align: right;
+  word-break: break-all;
+}
+
+.settings-downloads {
+  display: grid;
+  width: 100%;
+}
+
+.settings-download-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+}
+
+.settings-download-row:first-child {
+  padding-top: 0;
+}
+
+.settings-download-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.settings-download-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Fraunces", serif;
+  font-weight: 500;
+  font-size: 0.98rem;
+  color: var(--ink);
+}
+
+.settings-download-row .download-btn {
+  flex-shrink: 0;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.server-aliases {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  padding-top: 4px;
+}
+
+.server-alias-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 0;
+  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+}
+
+.server-alias-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.server-alias-row strong { font-family: "Fraunces", serif; font-weight: 500; }
+.server-alias-row small { overflow: hidden; color: var(--ink-faded); text-overflow: ellipsis; white-space: nowrap; }
+.server-alias-row > div { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+
+.server-alias-form {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr) auto;
+  gap: 7px;
+  width: 100%;
+}
+
+.server-alias-form input {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(26, 20, 16, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ink);
+}
+
+@media (max-width: 520px) {
+  .server-alias-form { grid-template-columns: 1fr; }
+  .server-alias-form .download-btn { justify-self: start; }
+}
+
 html.native-app .recent-row {
   min-height: 60px;
 }
@@ -4841,6 +5718,144 @@ html.native-app .recent-row {
   html.native-app .modal-card,
   html.native-app .user-menu,
   html.native-app .user-menu-scrim {
+    animation: none;
+  }
+}
+
+/* --- Sleep timer bottom sheet --- */
+.sleep-sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+}
+
+.sleep-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(12, 8, 6, 0.56);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+  animation: scrim-fade 0.22s ease both;
+}
+
+.sleep-sheet {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 560px);
+  max-height: min(78dvh, 680px);
+  overflow-y: auto;
+  padding: 13px max(22px, env(safe-area-inset-right))
+    max(24px, calc(env(safe-area-inset-bottom) + 16px))
+    max(22px, env(safe-area-inset-left));
+  border: 1px solid rgba(217, 181, 116, 0.18);
+  border-bottom: 0;
+  border-radius: 30px 30px 0 0;
+  color: var(--paper);
+  background:
+    radial-gradient(circle at 80% 0, rgba(139, 46, 31, 0.2), transparent 42%),
+    linear-gradient(180deg, #211713, #120d0b 72%);
+  box-shadow: 0 -24px 60px -28px rgba(0, 0, 0, 0.85);
+  animation: sheet-up 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.sleep-sheet-grabber {
+  width: 42px;
+  height: 5px;
+  margin: 0 auto 18px;
+  border-radius: 999px;
+  background: rgba(241, 231, 208, 0.35);
+}
+
+.sleep-sheet header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.sleep-sheet header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.sleep-sheet .eyebrow {
+  color: var(--gold-soft);
+}
+
+.sleep-sheet h2 {
+  margin: 0;
+  font-family: "Instrument Serif", serif;
+  font-size: 2rem;
+  font-weight: 400;
+}
+
+.sleep-sheet .icon-button {
+  color: var(--paper);
+  border-color: rgba(241, 231, 208, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sleep-sheet-hint {
+  margin: 12px 0 17px;
+  color: rgba(241, 231, 208, 0.58);
+  font-family: "Fraunces", serif;
+  font-size: 0.86rem;
+  font-style: italic;
+}
+
+.sleep-options {
+  display: grid;
+  border-top: 1px solid rgba(241, 231, 208, 0.13);
+}
+
+.sleep-options button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 0 3px;
+  border-bottom: 1px solid rgba(241, 231, 208, 0.13);
+  color: rgba(255, 250, 237, 0.88);
+  text-align: left;
+}
+
+.sleep-options button span {
+  font-family: "Fraunces", serif;
+  font-size: 1rem;
+}
+
+.sleep-options button svg {
+  color: rgba(217, 181, 116, 0.55);
+}
+
+.sleep-options button em {
+  color: var(--gold-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sleep-options button.selected span {
+  color: var(--gold-soft);
+}
+
+.sleep-options .sleep-off span {
+  color: rgba(241, 231, 208, 0.62);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sleep-sheet,
+  .sleep-sheet-scrim {
     animation: none;
   }
 }

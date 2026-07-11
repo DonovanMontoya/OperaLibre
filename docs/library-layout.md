@@ -113,4 +113,6 @@ Cleaner tags = cleaner library. [MP3Tag](https://www.mp3tag.de/en/), [Kid3](http
 
 The library is scanned on startup. To pick up new books without restarting, the web UI has a **Rescan library** action (Settings menu / admin). It hits `POST /api/library/rescan`.
 
+Administrators can also use **Upload audiobook** in the web library header. Choose a single M4B (or other supported audio file), or select every track for a multi-file book. OperaLibre streams the files into a temporary folder, moves the completed upload into `library_root`, and rescans automatically. The book name becomes the new folder name, and an existing folder is never overwritten.
+
 The Libation integration also kicks off a rescan after each successful download.

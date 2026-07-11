@@ -172,7 +172,7 @@ This is a planned future build; the web PWA is the current happy path for mobile
 
 ## Backups
 
-Back up `data_dir` (default `./data/`). That covers user accounts and per-reader progress. The library itself is read-only from the server's point of view — back it up with your usual file backups.
+Back up `data_dir` (default `./data/`). That covers user accounts and per-reader progress. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
 
 ## Updating
 

@@ -56,6 +56,7 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
+| `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
 
