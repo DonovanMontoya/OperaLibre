@@ -10,6 +10,7 @@ data
 library
 Library
 .idea
+xcuserdata
 nohup.out
 docs/_site
 docs/.jekyll-cache
