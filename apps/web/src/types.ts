@@ -153,6 +153,7 @@ export type LibationBook = {
   locale: string | null;
   lastDownloaded: string | null;
   isAudiblePlus: boolean;
+  coverArtUrl: string | null;
   localBookId: string | null;
 };
 

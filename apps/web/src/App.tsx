@@ -1239,6 +1239,26 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   );
 }
 
+function LibationCoverArt({ book }: { book: LibationBook }) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  if (book.coverArtUrl && !loadFailed) {
+    return (
+      <img
+        className="audible-cover"
+        src={mediaUrl(book.coverArtUrl)}
+        alt=""
+        loading="lazy"
+        onError={() => setLoadFailed(true)}
+      />
+    );
+  }
+  return (
+    <span className="audible-cover placeholder" aria-hidden="true">
+      <Headphones size={22} strokeWidth={1.25} />
+    </span>
+  );
+}
+
 const PULL_REFRESH_THRESHOLD = 64;
 
 /**
@@ -2927,7 +2947,8 @@ function MainApp({
                 ].filter(Boolean);
                 return (
                   <div key={book.asin} className={`audible-row ${isLocal ? "is-local" : ""}`}>
-                    <div>
+                    <LibationCoverArt book={book} />
+                    <div className="audible-copy">
                       <strong>{book.title}</strong>
                       <span>{metaParts.join(" · ")}</span>
                     </div>

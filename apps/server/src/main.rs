@@ -14,7 +14,7 @@ use axum::{
         },
     },
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{any, delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose};
@@ -446,6 +446,7 @@ struct LibationBook {
     locale: Option<String>,
     last_downloaded: Option<String>,
     is_audible_plus: bool,
+    cover_art_url: Option<String>,
     local_book_id: Option<String>,
 }
 
@@ -508,6 +509,12 @@ struct LibationExportRecord {
     #[serde(rename = "Is Audible Plus?")]
     #[serde(alias = "IsAudiblePlus")]
     is_audible_plus: Option<bool>,
+    #[serde(rename = "Cover Id")]
+    #[serde(alias = "PictureId")]
+    picture_id: Option<String>,
+    #[serde(rename = "Cover Id Large")]
+    #[serde(alias = "PictureLarge")]
+    picture_large: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -804,6 +811,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/library/rescan", post(rescan))
         .route("/api/libation/status", get(libation_status))
         .route("/api/libation/books", get(list_libation_books))
+        .route(
+            "/api/libation/covers/{picture_id}",
+            get(get_libation_cover_art),
+        )
         .route("/api/libation/sync", post(sync_libation_library))
         .route(
             "/api/libation/liberate-all",
@@ -943,8 +954,70 @@ async fn list_libation_books(
     let library = state.library.read().await;
     for book in books.iter_mut() {
         book.local_book_id = match_local_book(&library.books, book);
+        if let Some(local_book_id) = &book.local_book_id
+            && library.cover_art.contains_key(local_book_id)
+        {
+            book.cover_art_url = Some(format!("/api/books/{local_book_id}/cover"));
+        }
     }
     Ok(Json(books))
+}
+
+fn valid_libation_picture_id(picture_id: &str) -> bool {
+    !picture_id.is_empty()
+        && picture_id.len() <= 200
+        && picture_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+}
+
+fn libation_cover_art_url(picture_id: Option<&str>) -> Option<String> {
+    let picture_id = picture_id?.trim();
+    valid_libation_picture_id(picture_id).then(|| format!("/api/libation/covers/{picture_id}"))
+}
+
+async fn get_libation_cover_art(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(picture_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_admin(&auth)?;
+    if !valid_libation_picture_id(&picture_id) {
+        return Err(ApiError::not_found("Libation cover art not found"));
+    }
+
+    if let Some(files_dir) = &state.libation_config.libation_files_dir {
+        let images_dir = files_dir.join("Images");
+        for suffix in ["Native", "_500x500", "_300x300", "_80x80"] {
+            let path = images_dir.join(format!("{picture_id}{suffix}.jpg"));
+            match fs::read(&path).await {
+                Ok(data) if !data.is_empty() => {
+                    let etag = bytes_etag(&data);
+                    if if_none_match_matches(&headers, &etag) {
+                        return Ok(Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .header(ETAG, etag)
+                            .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+                            .body(Body::empty())?);
+                    }
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "image/jpeg")
+                        .header(CONTENT_LENGTH, data.len().to_string())
+                        .header(ETAG, etag)
+                        .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
+                        .body(Body::from(data))?);
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    let cdn_url =
+        format!("https://images-na.ssl-images-amazon.com/images/I/{picture_id}._SL300_.jpg");
+    Ok(Redirect::temporary(&cdn_url).into_response())
 }
 
 fn match_local_book(local_books: &[Book], libation_book: &LibationBook) -> Option<String> {
@@ -3370,6 +3443,12 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
         .into_iter()
         .filter_map(|record| {
             let asin = non_empty_string(record.audible_product_id?)?;
+            let cover_art_url = libation_cover_art_url(
+                record
+                    .picture_large
+                    .as_deref()
+                    .or(record.picture_id.as_deref()),
+            );
             Some(LibationBook {
                 asin,
                 title: record.title.unwrap_or_else(|| "Untitled".to_string()),
@@ -3385,6 +3464,7 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
                 locale: non_empty_string(record.locale.unwrap_or_default()),
                 last_downloaded: non_empty_string(record.last_downloaded.unwrap_or_default()),
                 is_audible_plus: record.is_audible_plus.unwrap_or(false),
+                cover_art_url,
                 local_book_id: None,
             })
         })
@@ -4471,8 +4551,22 @@ impl From<axum::http::Error> for ApiError {
 mod tests {
     use super::{
         HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
-        normalize_asin, parse_origin_list, parse_range,
+        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
     };
+
+    #[test]
+    fn libation_cover_urls_accept_amazon_picture_ids_only() {
+        assert_eq!(
+            libation_cover_art_url(Some("51Ab+cD._SX50_")),
+            Some("/api/libation/covers/51Ab+cD._SX50_".to_string())
+        );
+        assert_eq!(libation_cover_art_url(Some("../Settings.json")), None);
+        assert_eq!(
+            libation_cover_art_url(Some("https://example.com/cover")),
+            None
+        );
+        assert_eq!(libation_cover_art_url(None), None);
+    }
 
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {

@@ -514,7 +514,7 @@ button {
 
 .audible-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 14px 4px;
@@ -525,10 +525,25 @@ button {
   border-bottom: 1px solid rgba(217, 181, 116, 0.12);
 }
 
-.audible-row > div {
+.audible-row > .audible-copy {
   min-width: 0;
   display: grid;
   gap: 4px;
+}
+
+.audible-cover {
+  width: 52px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
+  border: 1px solid rgba(217, 181, 116, 0.18);
+  background: rgba(217, 181, 116, 0.08);
+  color: rgba(217, 181, 116, 0.55);
+}
+
+.audible-cover.placeholder {
+  overflow: hidden;
 }
 
 .audible-row strong {
