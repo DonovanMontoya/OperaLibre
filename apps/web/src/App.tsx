@@ -30,6 +30,7 @@ import {
   RotateCw,
   Search,
   ServerOff,
+  ShieldCheck,
   Settings,
   SkipBack,
   SkipForward,
@@ -104,7 +105,8 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { haptic } from "./native";
-import { AuthGate, ServerSetup, UserManagementModal } from "./Auth";
+import { AuthGate, ServerSetup } from "./Auth";
+import { AdminPanel } from "./Admin";
 import { ProfilePage } from "./Profile";
 import type {
   AlignmentStatus,
@@ -126,7 +128,7 @@ const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
 
-type NativeTab = "shelf" | "reading" | "ledger" | "settings";
+type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
 
 function readStoredSpeed() {
   try {
@@ -2616,6 +2618,22 @@ function MainApp({
     }
   }
 
+  function applyAdminLibraryChange(nextBooks: Book[]) {
+    const availableIds = new Set(nextBooks.map((book) => book.id));
+    setBooks(nextBooks);
+    setSelectedBookId((existing) => resolveBookId(nextBooks, existing));
+    setPlaybackBookId((existing) => {
+      if (existing && !availableIds.has(existing)) {
+        audioRef.current?.pause();
+        setCurrentTrackId(null);
+        setPosition(0);
+        return resolveBookId(nextBooks, null);
+      }
+      return existing;
+    });
+    if (libationBooksLoaded) void loadLibationBooks();
+  }
+
   function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.currentTarget.files ?? []);
     setUploadFiles(files);
@@ -2792,10 +2810,14 @@ function MainApp({
           role="menuitem"
           onClick={() => {
             setUserMenuOpen(false);
-            setUsersModalOpen(true);
+            if (native) {
+              openNativeTab("admin");
+            } else {
+              setUsersModalOpen(true);
+            }
           }}
         >
-          <UserCog size={14} /> Manage readers
+          <UserCog size={14} /> Administration
         </button>
       ) : null}
       <button
@@ -4049,10 +4071,21 @@ function MainApp({
         />
       ) : null}
 
-      {isOperaLibre && usersModalOpen ? (
-        <UserManagementModal
+      {isOperaLibre && currentUser.isAdmin && !native && usersModalOpen ? (
+        <AdminPanel
           currentUser={currentUser}
+          books={books}
           onClose={() => setUsersModalOpen(false)}
+          onUpload={() => {
+            setUsersModalOpen(false);
+            setUploadModalOpen(true);
+          }}
+          onRescan={refreshLibrary}
+          onBooksChanged={applyAdminLibraryChange}
+          onOpenBook={(bookId) => {
+            openBookDetails(bookId);
+            setUsersModalOpen(false);
+          }}
         />
       ) : null}
 
@@ -4276,9 +4309,9 @@ function MainApp({
                     <Upload size={13} />
                     <span>Upload audiobook</span>
                   </button>
-                  <button type="button" className="download-btn" onClick={() => setUsersModalOpen(true)}>
+                  <button type="button" className="download-btn" onClick={() => openNativeTab("admin")}>
                     <UserCog size={13} />
-                    <span>Manage readers</span>
+                    <span>Administration</span>
                   </button>
                 </>
               ) : null}
@@ -4289,6 +4322,20 @@ function MainApp({
             </div>
           </section>
         </section>
+      ) : null}
+
+      {native && isOperaLibre && currentUser.isAdmin && nativeTab === "admin" ? (
+        <AdminPanel
+          currentUser={currentUser}
+          books={books}
+          onUpload={() => setUploadModalOpen(true)}
+          onRescan={refreshLibrary}
+          onBooksChanged={applyAdminLibraryChange}
+          onOpenBook={(bookId) => {
+            openBookDetails(bookId);
+            openNativeTab("shelf");
+          }}
+        />
       ) : null}
 
       {native ? (
@@ -4320,6 +4367,17 @@ function MainApp({
             >
               <ScrollText size={20} strokeWidth={1.6} />
               <span>Ledger</span>
+            </button>
+          ) : null}
+          {isOperaLibre && currentUser.isAdmin ? (
+            <button
+              type="button"
+              className={`spine-tab ${nativeTab === "admin" ? "active" : ""}`}
+              aria-current={nativeTab === "admin" ? "page" : undefined}
+              onClick={() => openNativeTab("admin")}
+            >
+              <ShieldCheck size={20} strokeWidth={1.6} />
+              <span>Admin</span>
             </button>
           ) : null}
           <button

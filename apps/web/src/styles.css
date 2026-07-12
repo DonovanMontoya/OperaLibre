@@ -5514,6 +5514,246 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   background: rgba(241, 231, 208, 0.72);
 }
 
+/* --- Administration --- */
+.admin-shell {
+  color: var(--ink);
+  text-align: left;
+}
+
+.admin-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  overflow: auto;
+  padding: clamp(24px, 4vw, 56px);
+  background:
+    radial-gradient(circle at 82% 5%, rgba(184, 137, 58, 0.13), transparent 32%),
+    var(--paper);
+}
+
+.admin-head {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.admin-head h1 {
+  margin: 5px 0 3px;
+  font: 400 clamp(2.2rem, 5vw, 4rem)/0.98 "Instrument Serif", serif;
+}
+
+.admin-head p,
+.admin-card p {
+  margin: 0;
+  color: var(--ink-faded);
+  line-height: 1.5;
+}
+
+.admin-nav {
+  width: min(1180px, 100%);
+  margin: 28px auto 20px;
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid rgba(26, 20, 16, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 252, 244, 0.55);
+}
+
+.admin-nav button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink-faded);
+  background: transparent;
+  font: 600 0.69rem "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.admin-nav button.selected {
+  color: var(--paper);
+  background: var(--oxblood);
+  box-shadow: 0 5px 14px rgba(112, 37, 24, 0.18);
+}
+
+.admin-content,
+.admin-message {
+  width: min(1180px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.admin-message {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  padding: 10px 13px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.admin-message.error { color: #7b2018; background: rgba(160, 49, 34, 0.1); }
+.admin-message.success { color: #315b3c; background: rgba(55, 112, 71, 0.1); }
+
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-metrics article,
+.admin-card {
+  border: 1px solid rgba(26, 20, 16, 0.13);
+  border-radius: 12px;
+  background: rgba(255, 252, 244, 0.72);
+  box-shadow: 0 16px 36px -30px rgba(26, 20, 16, 0.55);
+}
+
+.admin-metrics article {
+  display: grid;
+  gap: 5px;
+  padding: 18px;
+}
+
+.admin-metrics article > span,
+.admin-create-user label > span {
+  color: var(--ink-faded);
+  font: 0.64rem "JetBrains Mono", monospace;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.admin-metrics strong { font: 400 2.45rem "Instrument Serif", serif; }
+.admin-metrics small { color: var(--ink-faded); font-size: 0.78rem; }
+
+.admin-card { padding: 20px; }
+.admin-card h2 { margin: 0 0 4px; font: 400 1.55rem "Instrument Serif", serif; }
+
+.admin-quick-actions,
+.admin-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.admin-quick-actions { margin-top: 14px; }
+.admin-quick-actions > div:last-child,
+.admin-section-head > button,
+.admin-row-actions { display: flex; gap: 8px; }
+
+.admin-card button,
+.admin-create-user > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 252, 244, 0.9);
+  color: var(--ink);
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  cursor: pointer;
+}
+
+.admin-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+.admin-card button.danger { color: var(--oxblood); }
+
+.admin-user-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 310px;
+  gap: 14px;
+  align-items: start;
+}
+
+.admin-user-list { display: grid; gap: 10px; margin-top: 18px; }
+.admin-user { border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; overflow: hidden; }
+.admin-user-head { display: flex; align-items: center; gap: 11px; padding: 12px; }
+.admin-avatar { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: var(--paper); background: var(--oxblood); font: 1.1rem "Instrument Serif", serif; }
+.admin-user-head > div:nth-child(2) { min-width: 0; display: grid; flex: 1; }
+.admin-user-head > div:nth-child(2) span { color: var(--ink-faded); font-size: 0.77rem; }
+.admin-row-actions button { min-height: 32px; padding: 5px 9px; }
+
+.admin-access { padding: 12px; border-top: 1px solid rgba(26, 20, 16, 0.1); background: rgba(112, 37, 24, 0.025); }
+.admin-all-access,
+.admin-checkbox { display: flex; align-items: center; gap: 10px; }
+.admin-all-access > span,
+.admin-checkbox > span { display: grid; }
+.admin-all-access small,
+.admin-checkbox small { color: var(--ink-faded); font-size: 0.72rem; }
+.admin-all-access input,
+.admin-checkbox input,
+.admin-book-checks input { accent-color: var(--oxblood); }
+.admin-book-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; max-height: 230px; overflow: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-book-checks label { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 0.82rem; }
+.admin-book-checks label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.admin-create-user { display: grid; gap: 12px; position: sticky; top: 20px; }
+.admin-create-user label:not(.admin-checkbox) { display: grid; gap: 5px; }
+.admin-create-user input[type="text"],
+.admin-create-user input[type="password"],
+.admin-create-user label:not(.admin-checkbox) input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--ink);
+  font: 1rem "Fraunces", serif;
+}
+.admin-create-user > button { color: var(--paper); background: var(--oxblood); border-color: transparent; }
+
+.admin-library-list { display: grid; gap: 7px; margin-top: 18px; }
+.admin-library-row { display: flex; align-items: stretch; gap: 7px; }
+.admin-library-row .admin-book-open { width: 100%; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; justify-content: stretch; text-align: left; border-radius: 9px; }
+.admin-library-row .admin-book-open > span:nth-child(2) { display: grid; min-width: 0; }
+.admin-library-row .admin-book-open strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-library-row .admin-book-open small { color: var(--ink-faded); font-family: "Fraunces", serif; font-weight: 400; }
+.admin-library-row .admin-delete-book { flex: 0 0 auto; border-radius: 9px; }
+.admin-book-cover { width: 34px; height: 42px; display: grid; place-items: center; overflow: hidden; border-radius: 4px; color: var(--paper); background: var(--oxblood); }
+.admin-book-cover img { width: 100%; height: 100%; object-fit: cover; }
+.admin-grant-count { display: flex; align-items: center; gap: 5px; color: var(--ink-faded); }
+.admin-empty { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 28px; color: var(--ink-faded); }
+
+html.native-app .native-shell.tab-admin .ios-status-veil { background: rgba(241, 231, 208, 0.72); }
+html.native-app .admin-shell:not(.admin-overlay) {
+  position: fixed;
+  inset: 0 0 var(--tabs-h);
+  z-index: 48;
+  overflow: auto;
+  padding: calc(var(--status-h) + 22px) max(18px, env(safe-area-inset-right)) 48px max(18px, env(safe-area-inset-left));
+  background: var(--paper);
+}
+
+@media (max-width: 760px) {
+  .admin-overlay { padding: 22px 15px 40px; }
+  .admin-head h1 { font-size: 2.5rem; }
+  .admin-nav button { font-size: 0.6rem; padding: 6px; }
+  .admin-nav button svg { display: none; }
+  .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-user-layout { grid-template-columns: 1fr; }
+  .admin-create-user { position: static; order: -1; }
+  .admin-quick-actions, .admin-section-head { align-items: flex-start; flex-direction: column; }
+  .admin-user-head { align-items: flex-start; flex-wrap: wrap; }
+  .admin-row-actions { width: 100%; padding-left: 47px; }
+  .admin-book-checks { grid-template-columns: 1fr; }
+  .admin-library-row .admin-delete-book span { display: none; }
+}
+
 /* Below the modal scrim (z 50) so Manage readers opens on top. */
 .settings-shell {
   position: fixed;

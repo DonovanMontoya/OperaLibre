@@ -140,6 +140,8 @@ struct User {
     username: String,
     password_hash: String,
     is_admin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowed_book_ids: Option<Vec<String>>,
     created_at: String,
 }
 
@@ -149,6 +151,7 @@ struct UserPublic {
     id: String,
     username: String,
     is_admin: bool,
+    allowed_book_ids: Option<Vec<String>>,
     created_at: String,
 }
 
@@ -158,6 +161,7 @@ impl From<&User> for UserPublic {
             id: user.id.clone(),
             username: user.username.clone(),
             is_admin: user.is_admin,
+            allowed_book_ids: user.allowed_book_ids.clone(),
             created_at: user.created_at.clone(),
         }
     }
@@ -186,6 +190,7 @@ struct AuthUser {
     id: String,
     username: String,
     is_admin: bool,
+    allowed_book_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,6 +214,14 @@ struct CreateUserRequest {
     password: String,
     #[serde(default)]
     is_admin: bool,
+    #[serde(default)]
+    allowed_book_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBookAccessRequest {
+    allowed_book_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +249,9 @@ struct AuthStatus {
 #[derive(Default)]
 struct LibraryState {
     books: Vec<Book>,
+    /// File for a root-level single-track book, or the containing directory
+    /// for a grouped book. Used by the admin-only local-copy deletion route.
+    book_paths: HashMap<String, PathBuf>,
     track_paths: HashMap<String, PathBuf>,
     reading_paths: HashMap<String, PathBuf>,
     /// Sync map file paths keyed by book id.
@@ -812,6 +828,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
+        .route("/api/users/{user_id}/book-access", put(update_book_access))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
         .route(
@@ -853,7 +870,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
         )
-        .route("/api/books/{book_id}/download", get(download_book))
+        .route(
+            "/api/books/{book_id}/download",
+            get(download_book).delete(delete_downloaded_book),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -928,7 +948,7 @@ async fn list_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<Book>>, ApiError> {
-    Ok(Json(books_with_progress(&state, &auth.id).await?))
+    Ok(Json(books_with_progress(&state, &auth).await?))
 }
 
 async fn rescan(
@@ -937,7 +957,7 @@ async fn rescan(
 ) -> Result<Json<Vec<Book>>, ApiError> {
     require_admin(&auth)?;
     rescan_library(&state).await?;
-    Ok(Json(books_with_progress(&state, &auth.id).await?))
+    Ok(Json(books_with_progress(&state, &auth).await?))
 }
 
 async fn upload_audiobook(
@@ -983,7 +1003,7 @@ async fn upload_audiobook(
     }
 
     rescan_library(&state).await?;
-    Ok(Json(books_with_progress(&state, &auth.id).await?))
+    Ok(Json(books_with_progress(&state, &auth).await?))
 }
 
 async fn receive_audiobook_upload(
@@ -1314,6 +1334,7 @@ async fn liberate_libation_book(
             &config,
             vec![
                 "liberate".to_string(),
+                "--force".to_string(),
                 "--id".to_string(),
                 asin,
                 "--override".to_string(),
@@ -1530,8 +1551,10 @@ async fn get_job(
 
 async fn get_book(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
 ) -> Result<Json<Book>, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let library = state.library.read().await;
     let book = library
         .books
@@ -1590,9 +1613,11 @@ const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
 
 async fn get_cover_art(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let library = state.library.read().await;
     let cover = library
         .cover_art
@@ -1628,9 +1653,11 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
 
 async fn get_reading_file(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
         let book = library
@@ -1654,9 +1681,11 @@ async fn get_reading_file(
 
 async fn get_sync_map(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
         library
@@ -1955,6 +1984,7 @@ async fn get_progress(
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let progress = read_progress(&state.progress_file).await?;
     let value = if let Some(saved) = progress.get(&progress_key(&auth.id, &book_id)) {
         let library = state.library.read().await;
@@ -1977,6 +2007,7 @@ async fn update_progress(
     Path(book_id): Path<String>,
     Json(update): Json<ProgressUpdate>,
 ) -> Result<Json<Progress>, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let library = state.library.read().await;
     let book = library
         .books
@@ -2020,9 +2051,11 @@ async fn update_progress(
 
 async fn stream_track(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path((book_id, track_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
         let book = library
@@ -2092,8 +2125,10 @@ async fn serve_file_response(
 
 async fn download_book(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
     let (book_title, tracks) = {
         let library = state.library.read().await;
         let book = library
@@ -2165,6 +2200,49 @@ async fn download_book(
             format!("attachment; filename=\"{safe_filename}.zip\""),
         )
         .body(body)?)
+}
+
+async fn delete_downloaded_book(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+) -> Result<Json<Vec<Book>>, ApiError> {
+    require_admin(&auth)?;
+    let _upload_guard = state.upload_lock.lock().await;
+
+    let book_path = state
+        .library
+        .read()
+        .await
+        .book_paths
+        .get(&book_id)
+        .cloned()
+        .ok_or(ApiError::not_found("Book not found"))?;
+
+    let library_root = fs::canonicalize(&state.library_root).await?;
+    let canonical_book_path = fs::canonicalize(&book_path).await?;
+    if canonical_book_path == library_root || !canonical_book_path.starts_with(&library_root) {
+        return Err(ApiError::forbidden(
+            "The book path is outside the managed library.",
+        ));
+    }
+
+    let metadata = fs::metadata(&canonical_book_path).await?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(&canonical_book_path).await?;
+    } else if metadata.is_file() {
+        fs::remove_file(&canonical_book_path).await?;
+    } else {
+        return Err(ApiError::bad_request(
+            "The downloaded book is not a regular file or folder.",
+        ));
+    }
+
+    // Progress, metadata overrides, access grants, and Libation's catalog are
+    // intentionally retained. If Libation downloads the same ASIN again, the
+    // stable book id reconnects all of that state to the new local copy.
+    rescan_library(&state).await?;
+    Ok(Json(books_with_progress(&state, &auth).await?))
 }
 
 fn sanitize_filename(value: &str) -> String {
@@ -2322,6 +2400,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let groups = group_files_into_books(&state.library_root, files);
     let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
+    let mut book_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
     let mut sync_paths = HashMap::new();
     let mut cover_art = HashMap::new();
@@ -2329,6 +2408,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
 
     for (group_key, grouped_files) in groups {
         let book_id = stable_id(&group_key.to_string_lossy());
+        book_paths.insert(book_id.clone(), group_key.clone());
         let metadata = grouped_files
             .iter()
             .map(|file_path| read_track_metadata(file_path))
@@ -2461,6 +2541,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
 
     let mut library = state.library.write().await;
     library.books = books;
+    library.book_paths = book_paths;
     library.track_paths = track_paths;
     library.reading_paths = reading_paths;
     library.sync_paths = sync_paths;
@@ -3260,14 +3341,15 @@ fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
     enriched
 }
 
-async fn books_with_progress(state: &AppState, user_id: &str) -> Result<Vec<Book>, ApiError> {
+async fn books_with_progress(state: &AppState, auth: &AuthUser) -> Result<Vec<Book>, ApiError> {
     let saved_progress = read_progress(&state.progress_file).await?;
     let books = state.library.read().await.books.clone();
     Ok(books
         .into_iter()
+        .filter(|book| can_access_book(auth, &book.id))
         .map(|mut book| {
             book.progress = saved_progress
-                .get(&progress_key(user_id, &book.id))
+                .get(&progress_key(&auth.id, &book.id))
                 .map(|progress| summarize_book_progress(&book, progress));
             book
         })
@@ -3930,7 +4012,9 @@ async fn profile_stats(
 
     let mut book_lookup: HashMap<&str, &Book> = HashMap::new();
     for book in library.books.iter() {
-        book_lookup.insert(book.id.as_str(), book);
+        if can_access_book(&auth, &book.id) {
+            book_lookup.insert(book.id.as_str(), book);
+        }
     }
 
     let mut recent: Vec<RecentBook> = Vec::new();
@@ -4266,6 +4350,7 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
             id: user.id.clone(),
             username: user.username.clone(),
             is_admin: user.is_admin,
+            allowed_book_ids: user.allowed_book_ids.clone(),
         })
 }
 
@@ -4293,6 +4378,7 @@ async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> Json<
                 id: auth.id,
                 username: auth.username,
                 is_admin: auth.is_admin,
+                allowed_book_ids: auth.allowed_book_ids,
                 created_at: String::new(),
             })
     } else {
@@ -4327,6 +4413,7 @@ async fn setup_admin(
         username,
         password_hash: hash_password(&payload.password)?,
         is_admin: true,
+        allowed_book_ids: None,
         created_at: now_rfc3339ish(),
     };
 
@@ -4479,6 +4566,7 @@ async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
         id: auth.id,
         username: auth.username,
         is_admin: auth.is_admin,
+        allowed_book_ids: auth.allowed_book_ids,
         created_at: String::new(),
     })
 }
@@ -4488,6 +4576,24 @@ fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
         Ok(())
     } else {
         Err(ApiError::forbidden("Administrator access is required."))
+    }
+}
+
+fn can_access_book(auth: &AuthUser, book_id: &str) -> bool {
+    auth.is_admin
+        || auth
+            .allowed_book_ids
+            .as_ref()
+            .is_none_or(|book_ids| book_ids.iter().any(|candidate| candidate == book_id))
+}
+
+fn require_book_access(auth: &AuthUser, book_id: &str) -> Result<(), ApiError> {
+    if can_access_book(auth, book_id) {
+        Ok(())
+    } else {
+        // Keep restricted books indistinguishable from books that are not in
+        // the library, including for direct media and download URLs.
+        Err(ApiError::not_found("Book not found"))
     }
 }
 
@@ -4524,6 +4630,11 @@ async fn create_user(
         username,
         password_hash: hash_password(&payload.password)?,
         is_admin: payload.is_admin,
+        allowed_book_ids: if payload.is_admin {
+            None
+        } else {
+            payload.allowed_book_ids
+        },
         created_at: now_rfc3339ish(),
     };
     users.users.push(new_user.clone());
@@ -4606,6 +4717,56 @@ async fn change_password(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn update_book_access(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<UpdateBookAccessRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    require_admin(&auth)?;
+
+    let allowed_book_ids = if let Some(book_ids) = payload.allowed_book_ids {
+        let available_ids: HashSet<String> = state
+            .library
+            .read()
+            .await
+            .books
+            .iter()
+            .map(|book| book.id.clone())
+            .collect();
+        let mut seen = HashSet::new();
+        let mut normalized = Vec::new();
+        for book_id in book_ids {
+            if !available_ids.contains(&book_id) {
+                return Err(ApiError::bad_request(format!(
+                    "Book `{book_id}` is not in the library."
+                )));
+            }
+            if seen.insert(book_id.clone()) {
+                normalized.push(book_id);
+            }
+        }
+        Some(normalized)
+    } else {
+        None
+    };
+
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    user.allowed_book_ids = if user.is_admin {
+        None
+    } else {
+        allowed_book_ids
+    };
+    let public = UserPublic::from(&*user);
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(public))
 }
 
 #[derive(Debug)]
@@ -4736,10 +4897,36 @@ impl From<axum::http::Error> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        HeaderMap, LoginThrottle, Session, bytes_etag, clean_imported_title, if_none_match_matches,
-        is_supported_audio_file, libation_cover_art_url, normalize_asin, parse_origin_list,
-        parse_range, sanitize_filename, walk_audio_files,
+        AuthUser, HeaderMap, LoginThrottle, Session, bytes_etag, can_access_book,
+        clean_imported_title, if_none_match_matches, is_supported_audio_file,
+        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range, sanitize_filename,
+        walk_audio_files,
     };
+
+    #[test]
+    fn book_access_defaults_to_full_library_and_honors_restrictions() {
+        let unrestricted = AuthUser {
+            id: "reader".to_string(),
+            username: "reader".to_string(),
+            is_admin: false,
+            allowed_book_ids: None,
+        };
+        assert!(can_access_book(&unrestricted, "book-a"));
+
+        let restricted = AuthUser {
+            allowed_book_ids: Some(vec!["book-a".to_string()]),
+            ..unrestricted.clone()
+        };
+        assert!(can_access_book(&restricted, "book-a"));
+        assert!(!can_access_book(&restricted, "book-b"));
+
+        let admin = AuthUser {
+            is_admin: true,
+            allowed_book_ids: Some(Vec::new()),
+            ..unrestricted
+        };
+        assert!(can_access_book(&admin, "book-b"));
+    }
 
     #[test]
     fn libation_cover_urls_accept_amazon_picture_ids_only() {

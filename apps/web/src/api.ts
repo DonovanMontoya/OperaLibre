@@ -448,10 +448,22 @@ export async function listUsers() {
   return request<AuthUser[]>("/api/users");
 }
 
-export async function createUser(username: string, password: string, isAdmin: boolean) {
+export async function createUser(
+  username: string,
+  password: string,
+  isAdmin: boolean,
+  allowedBookIds: string[] | null = null
+) {
   return request<AuthUser>("/api/users", {
     method: "POST",
-    body: JSON.stringify({ username, password, isAdmin })
+    body: JSON.stringify({ username, password, isAdmin, allowedBookIds })
+  });
+}
+
+export async function updateUserBookAccess(userId: string, allowedBookIds: string[] | null) {
+  return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/book-access`, {
+    method: "PUT",
+    body: JSON.stringify({ allowedBookIds })
   });
 }
 
@@ -613,6 +625,12 @@ export function bookDownloadUrl(bookId: string) {
     return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
   }
   return `${currentApiBase()}${appendToken(`/api/books/${bookId}/download`)}`;
+}
+
+export async function deleteDownloadedBook(bookId: string) {
+  return request<Book[]>(`/api/books/${encodeURIComponent(bookId)}/download`, {
+    method: "DELETE"
+  });
 }
 
 export function readalongUrl(path: string) {

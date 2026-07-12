@@ -40,12 +40,13 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `POST` | `/api/users` | Create a reader. |
 | `DELETE` | `/api/users/{user_id}` | Delete a reader. |
 | `POST` | `/api/users/{user_id}/password` | Reset a reader's password. |
+| `PUT` | `/api/users/{user_id}/book-access` | Set a reader's allowed book IDs. Send `{ "allowedBookIds": null }` for the full library or an array for a restricted shelf. |
 
 #### Library
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/books` | List all books in the library. |
+| `GET` | `/api/books` | List books the current user is allowed to access. Administrators always receive the full library. |
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
 | `GET` | `/api/books/{book_id}/cover` | Cover art image (extracted from tags or sidecar). |
 | `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
@@ -53,6 +54,7 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether an alignment CLI was found: `{ "enabled": bool, "cliPath": string \| null }`. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. |
+| `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |

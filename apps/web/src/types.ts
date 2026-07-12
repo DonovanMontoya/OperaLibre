@@ -176,6 +176,7 @@ export type AuthUser = {
   id: string;
   username: string;
   isAdmin: boolean;
+  allowedBookIds: string[] | null;
   createdAt: string;
 };
 
