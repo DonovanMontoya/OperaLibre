@@ -4,6 +4,17 @@ A private audiobook streaming app with a Rust media server and an iOS-ready web 
 
 OperaLibre is also designed to work as a headless audiobook server. The included React/Vite web app is the reference frontend, but the Rust server exposes an HTTP API that other web, mobile, desktop, or native clients can build against.
 
+If you just want to use it, start with the plain-language [Getting Started guide](docs/getting-started.md), then see [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, Jellyfin, and optional Audible imports.
+
+## See it in action
+
+<p align="center">
+  <img src="docs/assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" width="72%">
+  <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" width="22%">
+</p>
+
+The same library and playback experience runs in the browser and in the native iPhone app.
+
 ## License
 
 This project is source-available for personal and noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
@@ -29,17 +40,24 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 
 ## Run locally
 
+You need Node.js 20+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if you do not already have Apple’s command-line developer tools.
+
 ```bash
 npm install
 cp server.config.example server.config
+```
+
+Before starting, edit `server.config` and set `library_root` to the full path of the folder containing your audiobook files. Then run:
+
+```bash
 npm run dev
 ```
 
-Edit `server.config` before starting the server. At minimum, set `library_root` to the folder containing your audiobook files.
+Open [http://localhost:5173](http://localhost:5173), make the first administrator account, and pick a book.
 
-Open [http://localhost:5173](http://localhost:5173).
+For a home setup that runs from one address after building, run `npm run build`, set `web_dist_dir = apps/web/dist` in `server.config`, then start `./apps/server/target/release/operalibre-server` and open [http://localhost:4000](http://localhost:4000). [Deployment](docs/deployment.md) explains how to keep it running after a restart.
 
-The server runs on [http://localhost:4000](http://localhost:4000). On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall.
+On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall. Install the web app from the mobile browser or use the included native iPhone app; step-by-step instructions are in [Using OperaLibre](docs/using-operalibre.md#use-it-on-a-phone-or-tablet).
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
 

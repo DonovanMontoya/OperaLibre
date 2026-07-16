@@ -46,6 +46,9 @@ data_dir = data
 progress_file = data/progress.json
 users_file = data/users.json
 
+# Serve the web app and API from the same address after `npm run build`.
+web_dist_dir = apps/web/dist
+
 # Optional Libation / Audible import.
 libation_cli_path =
 libation_files_dir =

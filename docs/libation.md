@@ -1,6 +1,6 @@
 ---
 title: Libation / Audible Import
-nav_order: 6
+nav_order: 7
 ---
 
 # Libation / Audible Import
@@ -14,6 +14,13 @@ This integration is entirely optional. If you don't configure it, the relevant U
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
 - Libation must be **authenticated** with your Audible account(s). The server does not handle Audible login itself — it just shells out to Libation.
 - Libation's download directory must point at (or feed into) your `library_root`.
+
+## Set it up
+
+1. Install Libation and sign in to Audible in the Libation desktop app. OperaLibre never receives your Audible password.
+2. In Libation’s settings, set the download location to your OperaLibre `library_root` folder, or to a folder inside it. This is what lets OperaLibre find a completed book.
+3. Find the Libation CLI executable and its **LibationFiles** folder. The latter contains `AccountsSettings.json` and `Settings.json`.
+4. Add both full paths to `server.config` and restart OperaLibre.
 
 ## Configuration
 

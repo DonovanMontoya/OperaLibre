@@ -10,6 +10,13 @@ A private, self-hosted audiobook streaming server with an installable web reader
 
 OperaLibre can also run as a headless audiobook server. The included React/Vite app is the reference frontend, while the Rust server exposes an HTTP API for custom web, mobile, desktop, or native clients.
 
+## Web and iPhone apps
+
+<p align="center">
+  <img src="assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" width="72%">
+  <img src="assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" width="22%">
+</p>
+
 ## Features at a glance
 
 - **Streams almost anything** — `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
@@ -20,7 +27,7 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 - **Readalong sync** — sentence highlighting that follows the narration through an EPUB, with server-side sync-map generation via an optional [echogarden](https://github.com/echogarden-project/echogarden) install
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
-- **PWA** — install to the home screen; Capacitor-ready for a future iOS wrapper
+- **Web and iPhone apps** — installable PWA plus a native Capacitor app with background spoken-audio playback
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 
 ## Documentation
@@ -29,10 +36,11 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 2. [Configuration](configuration.md) — every key in `server.config` explained
 3. [Library Layout](library-layout.md) — how to structure your audiobook folder
 4. [Users & Accounts](users.md) — first-run admin setup, adding readers, sessions
-5. [Libation / Audible Import](libation.md) — optional acquisition pipeline
-6. [API Reference](api.md) — HTTP endpoints exposed by the server
-7. [Deployment](deployment.md) — running on a home server or LAN
-8. [Troubleshooting](troubleshooting.md) — common problems and fixes
+5. [Using OperaLibre](using-operalibre.md) — phones, reader accounts, uploads, readalong, Jellyfin, and optional imports
+6. [Libation / Audible Import](libation.md) — optional acquisition pipeline
+7. [API Reference](api.md) — HTTP endpoints exposed by the server
+8. [Deployment](deployment.md) — running on a home server or LAN
+9. [Troubleshooting](troubleshooting.md) — common problems and fixes
 
 ## Architecture
 
@@ -57,4 +65,4 @@ The server owns library scanning, authentication, metadata extraction, cover art
 
 ## License
 
-See [LICENSE](https://github.com/) in the repository root.
+See [LICENSE](../LICENSE.md) in the repository root.

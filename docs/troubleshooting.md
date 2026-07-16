@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-nav_order: 9
+nav_order: 10
 ---
 
 # Troubleshooting
@@ -59,14 +59,14 @@ Sessions are stored in `data/sessions.json` and survive restarts, but they expir
 
 ## CORS errors in the browser console
 
-The server doesn't emit permissive CORS headers. If your web bundle is on a different origin than the API, put both behind a single reverse proxy. See [Deployment](deployment.md).
+The easiest fix is to serve the built web app from OperaLibre itself by setting `web_dist_dir` in `server.config`; then the site and API use one address. If you intentionally host them on different addresses, put the web app’s full origin (for example `https://books.example.com`) in the comma-separated `allowed_origins` setting and restart the server. See [Configuration](configuration.md#network).
 
 ## Where are the logs?
 
 The server logs to stdout/stderr. With `systemd`:
 
 ```bash
-journalctl -u audiobook -f
+journalctl -u operalibre -f
 ```
 
 With `launchd`, route logs in the plist:

@@ -25,7 +25,7 @@ Sessions are persisted to disk, so restarting the server does not sign anyone ou
 
 ## Roles
 
-- **Administrator** — can add and remove readers, reset any password, run library rescans, and (if enabled) drive the Libation integration.
+- **Administrator** — can add and remove readers, reset any password, upload books, run library rescans and readalong sync generation, and (if enabled) drive the Libation integration.
 - **Reader** — can browse, stream, and update their own progress and password.
 
 The first account created is always an administrator.

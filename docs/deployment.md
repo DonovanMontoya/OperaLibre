@@ -1,6 +1,6 @@
 ---
 title: Deployment
-nav_order: 8
+nav_order: 9
 ---
 
 # Deployment
@@ -29,10 +29,12 @@ You can also omit the bundled web app and run OperaLibre as a headless API/media
 ```text
 /opt/operalibre/
   operalibre-server          # the release binary
-  web/                      # contents of apps/web/dist/
+  web/                       # contents of apps/web/dist/
   server.config             # your config
   data/                     # progress.json, users.json
 ```
+
+After building, create that layout by copying the release binary and the *contents* of `apps/web/dist/` into `web/`. Keep `server.config` and `data/` outside the source checkout so updates do not touch your accounts or progress.
 
 Start with:
 
@@ -40,6 +42,14 @@ Start with:
 OPERALIBRE_SERVER_CONFIG=/opt/operalibre/server.config \
   /opt/operalibre/operalibre-server
 ```
+
+In `/opt/operalibre/server.config`, point the server at the copied web bundle:
+
+```config
+web_dist_dir = web
+```
+
+Then open `http://<server-address>:4000` in a browser. This is the recommended one-address setup: the server supplies both the site and its API.
 
 ## systemd unit (Linux)
 
@@ -156,19 +166,13 @@ Client authors should treat the API as the contract and the bundled web app as a
 
 ## iOS / Capacitor
 
-The web app is intentionally a plain React/Vite project so it can be wrapped with [Capacitor](https://capacitorjs.com/) for an iOS native app later:
+The checked-in Capacitor iOS project packages the web app as a native iPhone app. On a Mac with Xcode, open and synchronize it with:
 
 ```bash
-npm install @capacitor/core @capacitor/cli @capacitor/ios -w @operalibre/web
+npm run ios:open -w @operalibre/web
 ```
 
-When building for a native wrapper, set `VITE_API_BASE` to the server URL reachable from the phone:
-
-```bash
-VITE_API_BASE=https://books.example.com npm run build -w @operalibre/web
-```
-
-This is a planned future build; the web PWA is the current happy path for mobile.
+In Xcode, select your development team and an attached iPhone, then press Run. For a server outside the app bundle, enter the reachable server URL on the app’s first screen. The app accepts private-network HTTP addresses and requires HTTPS for public hosts. See [Using OperaLibre](using-operalibre.md#native-iphone-app) for the listener-oriented steps.
 
 ## Backups
 
