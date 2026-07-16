@@ -1,0 +1,89 @@
+OPERALIBRE — COMPLETE PACKAGE
+================================
+
+This is the easiest package for most people. It contains both the audiobook
+server and the web app.
+
+START IT
+--------
+
+First, extract the entire downloaded ZIP or TAR.GZ file. Do not try to run
+OperaLibre from inside the compressed download.
+
+Windows:
+  Double-click "Open OperaLibre.exe". If Windows asks whether to allow
+  network access, allow access on private networks.
+
+macOS:
+  Double-click "Open OperaLibre.app".
+
+  These release files are not Apple-notarized yet. If macOS blocks them,
+  open Terminal, type the following with a space at the end, drag this
+  OperaLibre folder into Terminal, and press Return:
+
+      xattr -dr com.apple.quarantine
+
+  Then double-click "Open OperaLibre.app" again.
+
+Linux:
+  Double-click "open-operalibre", or run it from a terminal:
+
+      ./open-operalibre
+
+Your browser opens automatically. If it does not, open:
+
+  http://localhost:4000
+
+The first page asks you to create the administrator account. This is the
+person who can upload books and add other readers.
+
+OperaLibre continues running in the background after the launcher closes.
+You do not need to leave a command or Terminal window open. Double-click the
+Open action again whenever you want to return to OperaLibre.
+
+STOP IT
+-------
+
+You normally can leave OperaLibre running. To stop it completely:
+
+Windows:
+  Double-click "Stop OperaLibre.exe".
+
+macOS:
+  Double-click "Stop OperaLibre.app".
+
+Linux:
+  Double-click "stop-operalibre", or run ./stop-operalibre.
+
+ADD BOOKS
+---------
+
+The easiest method is the "Upload audiobook" button in OperaLibre.
+You can also copy files into the included audiobooks folder and choose
+"Rescan library" in the app.
+
+YOUR DATA
+---------
+
+Accounts and listening progress are saved in the data folder. Audiobooks are
+saved in the audiobooks folder. Back up both folders before replacing or
+moving this installation.
+
+When upgrading, use the Stop action first, extract the new version into a new
+folder, then copy your old data and audiobooks folders into it before starting.
+
+To use an existing audiobook folder elsewhere on the computer, stop
+OperaLibre and edit library_root in server.config. The full setup guide
+explains how to write the path:
+
+  https://donovanmontoya.github.io/OperaLibre/installing-a-release.html
+
+OTHER DEVICES
+-------------
+
+On another device connected to the same trusted home network, open:
+
+  http://YOUR-COMPUTER-IP:4000
+
+Allow OperaLibre through the computer's firewall if asked. Do not expose this
+plain HTTP address directly to the public internet.

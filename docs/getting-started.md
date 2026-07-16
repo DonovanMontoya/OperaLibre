@@ -1,19 +1,29 @@
 ---
 title: Getting Started
-nav_order: 2
+nav_order: 3
 ---
 
 # Getting Started
 
-This guide walks you from downloading OperaLibre to streaming your first audiobook. You only need a Terminal window for the initial setup. Once it is running, everyday use happens in the app.
+This guide helps you choose between installing a ready-made release and building OperaLibre from source. Once it is running, everyday use happens in the app.
 
 ## Choose the right starting point
 
-- **You have audiobook files on this computer:** follow the steps below.
+- **You have audiobook files on this computer:** download the combined release package below.
 - **Your books are already in Jellyfin:** you do not need to install this server. Open the OperaLibre web, macOS, or iPhone app, choose **Jellyfin**, enter your Jellyfin address, and sign in with your usual Jellyfin account. See [Using OperaLibre](using-operalibre.md#connect-to-jellyfin-instead).
 - **You want to listen from a phone:** finish the local setup first, then see [Use it on a phone or tablet](using-operalibre.md#use-it-on-a-phone-or-tablet).
 
-## Prerequisites
+## Install a release (recommended)
+
+Download the **combined** package for your computer. It includes a background launcher and a ready-to-use configuration; no developer tools are required and no Terminal window stays open.
+
+Follow [Install a Release](installing-a-release.md) for exact Windows, macOS, and Linux instructions, adding books, phone access, backups, and updates.
+
+## Build from source
+
+Use the following steps if you want to develop OperaLibre or build it yourself instead of downloading a release.
+
+### Prerequisites
 
 | Tool | Version | Used for |
 | --- | --- | --- |
@@ -24,7 +34,7 @@ This guide walks you from downloading OperaLibre to streaming your first audiobo
 
 > **Tip:** If `cargo --version` and `node --version` both work, you have everything you need. On a Mac, install Apple’s Command Line Tools too by running `xcode-select --install` once.
 
-## 1. Clone and install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/DonovanMontoya/OperaLibre.git
@@ -34,7 +44,7 @@ npm install
 
 `npm install` installs the web workspace under `apps/web`. The Rust server compiles on first run.
 
-## 2. Create your config
+### 2. Create your config
 
 ```bash
 cp server.config.example server.config
@@ -54,7 +64,7 @@ port = 4000
 library_root = /Users/you/Audiobooks
 ```
 
-## 3. Start OperaLibre
+### 3. Start OperaLibre
 
 ```bash
 npm run dev
@@ -67,11 +77,11 @@ This starts the server and the web app together. Leave this Terminal window open
 
 The Vite web app forwards its requests to the server automatically, so use the **Web UI** address above—not the API address—in your browser.
 
-## 4. Create the admin account
+### 4. Create the admin account
 
 The first browser that hits the app sees a one-time setup form. Fill it in to create the initial administrator account; subsequent visits show the normal sign-in form. See [Users & Accounts](users.md) for details on adding more readers and resetting passwords.
 
-## 5. Start listening
+### 5. Start listening
 
 Pick a book and press play. Progress saves automatically and follows the signed-in reader across devices. See [Using OperaLibre](using-operalibre.md) for uploading a book, adding family members, installing the web app, readalong, and the optional integrations.
 

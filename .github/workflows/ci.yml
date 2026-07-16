@@ -35,6 +35,30 @@ jobs:
       - name: Test
         run: cargo test
 
+  launcher:
+    name: Release launcher (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/launcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
   web:
     name: Web (TypeScript)
     runs-on: ubuntu-latest

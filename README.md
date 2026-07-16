@@ -4,13 +4,25 @@ A private audiobook streaming app with a Rust media server and an iOS-ready web 
 
 OperaLibre is also designed to work as a headless audiobook server. The included React/Vite web app is the reference frontend, but the Rust server exposes an HTTP API that other web, mobile, desktop, or native clients can build against.
 
-If you just want to use it, start with the plain-language [Getting Started guide](docs/getting-started.md), then see [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, Jellyfin, and optional Audible imports.
+If you just want to use it, start with the plain-language [release installation guide](docs/installing-a-release.md), then see [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, Jellyfin, and optional Audible imports.
+
+## Download
+
+The [GitHub releases page](https://github.com/DonovanMontoya/OperaLibre/releases) provides:
+
+- **Combined packages** — the easiest option, with a background launcher that starts the server and opens the web app without keeping a Terminal window open
+- **Server packages** — native server binaries for separate or headless deployments
+- **Frontend package** — static web files for an existing OperaLibre or Jellyfin server
+
+Release builds are provided for Windows x64, Linux x64 and ARM64, and Intel and Apple Silicon Macs. Each archive includes a `START-HERE.txt` guide.
+
+For step-by-step installation, first launch, adding books, phone access, backups, and updates, see [Install a Release](docs/installing-a-release.md).
 
 ## See it in action
 
 <p align="center">
-  <img src="docs/assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" width="72%">
-  <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" width="22%">
+  <img src="docs/assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
+  <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
 </p>
 
 The same library and playback experience runs in the browser and in the native iPhone app.
@@ -38,7 +50,7 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - Media Session integration for OS-level playback controls where supported.
 - PWA manifest plus a Capacitor iPhone app that reuses the web frontend.
 
-## Run locally
+## Build and run locally
 
 You need Node.js 20+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if you do not already have Apple’s command-line developer tools.
 

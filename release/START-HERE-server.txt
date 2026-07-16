@@ -1,0 +1,41 @@
+OPERALIBRE — SERVER-ONLY PACKAGE
+=================================
+
+This package contains the OperaLibre API and media server without the web app.
+Use it with a separately hosted OperaLibre frontend or another compatible
+client.
+
+START IT
+--------
+
+Windows:
+  Double-click start.cmd.
+
+macOS or Linux:
+  Open a terminal in this folder and run:
+
+      ./start.sh
+
+  If macOS blocks the unsigned download, follow the one-time macOS steps at:
+
+      https://donovanmontoya.github.io/OperaLibre/installing-a-release.html
+
+The API listens at http://localhost:4000 by default.
+
+CONFIGURE IT
+------------
+
+Edit server.config before starting if you want to change the port, audiobook
+folder, data folder, allowed frontend origins, Libation, or echogarden.
+
+The default audiobook folder is audiobooks and the default data folder is
+data, both beside the server executable. Accounts and listening progress are
+stored in data, so back it up.
+
+When a frontend is hosted at a different address, add its full origin to
+allowed_origins in server.config, for example:
+
+  allowed_origins = https://books.example.com
+
+Do not expose the server to the public internet without HTTPS and appropriate
+network security.

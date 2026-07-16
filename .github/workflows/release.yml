@@ -1,0 +1,239 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  frontend:
+    name: Frontend package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build -w @operalibre/web
+
+      - name: Stage frontend package
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          package="operalibre-${version}-frontend"
+          node script/package_release.mjs \
+            --kind frontend \
+            --web apps/web/dist \
+            --output "staging/${package}" \
+            --version "${version}"
+          mkdir -p dist
+          cd staging
+          zip -qr "../dist/${package}.zip" "${package}"
+
+      - name: Upload built frontend for native packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+          if-no-files-found: error
+
+      - name: Upload frontend release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-frontend
+          path: dist/*
+          if-no-files-found: error
+
+  native:
+    name: ${{ matrix.platform }} packages
+    needs: frontend
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            executable: apps/server/target/release/operalibre-server
+            launcher: apps/launcher/target/release/operalibre-launcher
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            executable: apps/server/target/release/operalibre-server
+            launcher: apps/launcher/target/release/operalibre-launcher
+          - platform: macos-x64
+            runner: macos-15-intel
+            executable: apps/server/target/release/operalibre-server
+            launcher: apps/launcher/target/release/operalibre-launcher
+          - platform: macos-arm64
+            runner: macos-15
+            executable: apps/server/target/release/operalibre-server
+            launcher: apps/launcher/target/release/operalibre-launcher
+          - platform: windows-x64
+            runner: windows-latest
+            executable: apps/server/target/release/operalibre-server.exe
+            launcher: apps/launcher/target/release/operalibre-launcher.exe
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/server
+          shared-key: release-${{ matrix.platform }}
+
+      - name: Setup Node for packaging
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download built frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web-dist
+
+      - name: Build server
+        run: cargo build --release --locked --manifest-path apps/server/Cargo.toml
+
+      - name: Build background launcher
+        run: cargo build --release --locked --manifest-path apps/launcher/Cargo.toml
+
+      - name: Package for Linux or macOS
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          server_package="operalibre-${version}-server-${{ matrix.platform }}"
+          combined_package="operalibre-${version}-combined-${{ matrix.platform }}"
+
+          node script/package_release.mjs \
+            --kind server \
+            --platform "${{ matrix.platform }}" \
+            --binary "${{ matrix.executable }}" \
+            --output "staging/${server_package}" \
+            --version "${version}"
+
+          node script/package_release.mjs \
+            --kind combined \
+            --platform "${{ matrix.platform }}" \
+            --binary "${{ matrix.executable }}" \
+            --launcher "${{ matrix.launcher }}" \
+            --web web-dist \
+            --output "staging/${combined_package}" \
+            --version "${version}"
+
+          mkdir -p dist
+          tar -C staging -czf "dist/${server_package}.tar.gz" "${server_package}"
+          tar -C staging -czf "dist/${combined_package}.tar.gz" "${combined_package}"
+
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          $serverPackage = "operalibre-$version-server-${{ matrix.platform }}"
+          $combinedPackage = "operalibre-$version-combined-${{ matrix.platform }}"
+
+          node script/package_release.mjs `
+            --kind server `
+            --platform "${{ matrix.platform }}" `
+            --binary "${{ matrix.executable }}" `
+            --output "staging/$serverPackage" `
+            --version "$version"
+
+          node script/package_release.mjs `
+            --kind combined `
+            --platform "${{ matrix.platform }}" `
+            --binary "${{ matrix.executable }}" `
+            --launcher "${{ matrix.launcher }}" `
+            --web web-dist `
+            --output "staging/$combinedPackage" `
+            --version "$version"
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "staging/$serverPackage" -DestinationPath "dist/$serverPackage.zip"
+          Compress-Archive -Path "staging/$combinedPackage" -DestinationPath "dist/$combinedPackage.zip"
+
+      - name: Upload native release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - frontend
+      - native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download release packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="OperaLibre ${RELEASE_TAG}"
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" release-assets/* --clobber
+            gh release edit "${RELEASE_TAG}" \
+              --title "${title}" \
+              --notes-file release/RELEASE_NOTES.md
+          else
+            gh release create "${RELEASE_TAG}" release-assets/* \
+              --verify-tag \
+              --title "${title}" \
+              --notes-file release/RELEASE_NOTES.md
+          fi

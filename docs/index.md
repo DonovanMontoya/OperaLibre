@@ -13,8 +13,8 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 ## Web and iPhone apps
 
 <p align="center">
-  <img src="assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" width="72%">
-  <img src="assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" width="22%">
+  <img src="assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
+  <img src="assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
 </p>
 
 ## Features at a glance
@@ -32,15 +32,16 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 
 ## Documentation
 
-1. [Getting Started](getting-started.md) — install, run, and open the app
-2. [Configuration](configuration.md) — every key in `server.config` explained
-3. [Library Layout](library-layout.md) — how to structure your audiobook folder
-4. [Users & Accounts](users.md) — first-run admin setup, adding readers, sessions
-5. [Using OperaLibre](using-operalibre.md) — phones, reader accounts, uploads, readalong, Jellyfin, and optional imports
-6. [Libation / Audible Import](libation.md) — optional acquisition pipeline
-7. [API Reference](api.md) — HTTP endpoints exposed by the server
-8. [Deployment](deployment.md) — running on a home server or LAN
-9. [Troubleshooting](troubleshooting.md) — common problems and fixes
+1. [Install a Release](installing-a-release.md) — easiest setup for Windows, macOS, and Linux
+2. [Getting Started](getting-started.md) — choose a setup or build from source
+3. [Configuration](configuration.md) — every key in `server.config` explained
+4. [Library Layout](library-layout.md) — how to structure your audiobook folder
+5. [Users & Accounts](users.md) — first-run admin setup, adding readers, sessions
+6. [Using OperaLibre](using-operalibre.md) — phones, reader accounts, uploads, readalong, Jellyfin, and optional imports
+7. [Libation / Audible Import](libation.md) — optional acquisition pipeline
+8. [API Reference](api.md) — HTTP endpoints exposed by the server
+9. [Deployment](deployment.md) — running on a home server or LAN
+10. [Troubleshooting](troubleshooting.md) — common problems and fixes
 
 ## Architecture
 

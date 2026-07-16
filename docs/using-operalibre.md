@@ -1,6 +1,6 @@
 ---
 title: Using OperaLibre
-nav_order: 6
+nav_order: 7
 ---
 
 # Using OperaLibre

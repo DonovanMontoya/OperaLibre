@@ -1,11 +1,49 @@
 ---
 title: Troubleshooting
-nav_order: 10
+nav_order: 11
 ---
 
 # Troubleshooting
 
 Common problems and how to fix them. If you hit something not listed here, open an issue with the relevant lines from the server's stdout/stderr.
+
+## `Error: spawn npm ENOENT` on Windows
+
+This came from the cross-platform development launcher trying to execute the Unix-style `npm` command instead of Windows' npm shim. Current versions invoke npm through Node and do not have this problem.
+
+If you are on an older checkout, update OperaLibre or start the two development processes in separate Command Prompt or PowerShell windows:
+
+```powershell
+npm run dev:server
+```
+
+```powershell
+npm run dev:web
+```
+
+Both windows need to remain open only for this source-development setup. The downloadable combined release uses the background launcher instead.
+
+## A downloaded release will not start
+
+First confirm that you extracted the entire archive. The launcher and server must remain together with `server.config`; they will not work correctly from inside a ZIP preview.
+
+### Windows warns about an unrecognized app
+
+OperaLibre releases are not code-signed yet, so Windows may show a Microsoft Defender SmartScreen warning. Confirm that the file came from the official [OperaLibre releases page](https://github.com/DonovanMontoya/OperaLibre/releases), choose **More info**, then **Run anyway**.
+
+If Windows Defender Firewall asks, allow access on **Private networks**. Public-network access is not needed for normal home use.
+
+### macOS says the developer cannot be verified
+
+OperaLibre releases are not Apple-notarized yet. Follow the one-time quarantine removal steps in [Install a Release](installing-a-release.md#macos), then open `Open OperaLibre.app` again.
+
+### The browser did not open
+
+Browse to <http://localhost:4000> yourself. If that address does not load, check `data/server.log` and `LAUNCH-ERROR.txt` in the OperaLibre folder. A common cause is another program already using port 4000.
+
+### Is OperaLibre still running?
+
+The combined package runs in the background. Closing the browser does not stop it. Use the included Stop action when you want to shut it down, or use the Open action again to return to it.
 
 ## The library is empty
 

@@ -1,0 +1,38 @@
+OPERALIBRE — FRONTEND-ONLY PACKAGE
+===================================
+
+This package contains the static OperaLibre web app. It does not contain an
+audiobook server.
+
+DEPLOY IT
+---------
+
+Upload everything inside the web folder to a static website host or web
+server. The host must:
+
+  * serve index.html at the site root;
+  * fall back to index.html for unknown browser routes;
+  * use HTTPS when connecting to a public HTTPS OperaLibre server.
+
+Open the deployed site, choose OperaLibre or Jellyfin, enter the server
+address, and sign in.
+
+SERVER CORS SETTING
+-------------------
+
+If the frontend and OperaLibre server use different addresses, add the
+frontend's full origin to allowed_origins in the server's server.config:
+
+  allowed_origins = https://books.example.com
+
+Restart the server after changing its configuration.
+
+LOCAL PREVIEW
+-------------
+
+Opening index.html directly from a file browser will not work. If Node.js is
+installed, you can preview this package from its parent folder with:
+
+  npx serve web
+
+Then open the address printed by that command.

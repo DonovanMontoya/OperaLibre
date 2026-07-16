@@ -10,10 +10,10 @@
     "dev": "node script/dev.mjs",
     "dev:server": "cargo run --manifest-path apps/server/Cargo.toml",
     "dev:web": "npm run dev -w @operalibre/web",
-    "build": "cargo build --manifest-path apps/server/Cargo.toml && npm run build -w @operalibre/web",
+    "build": "cargo build --release --manifest-path apps/server/Cargo.toml && cargo build --release --manifest-path apps/launcher/Cargo.toml && npm run build -w @operalibre/web",
     "build:ios": "./script/build_ios.sh",
     "sync:ios": "npm run ios:sync -w @operalibre/web",
-    "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && npm run typecheck -w @operalibre/web"
+    "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && cargo check --manifest-path apps/launcher/Cargo.toml && npm run typecheck -w @operalibre/web"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
