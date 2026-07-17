@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag to release, for example v0.1.0
+        description: Version tag to create or rebuild, for example v0.1.0
         required: true
         type: string
 
@@ -22,17 +22,39 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
+  prepare:
+    name: Resolve release version
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.release-ref.outputs.ref }}
+      tag_exists: ${{ steps.release-ref.outputs.tag_exists }}
+    steps:
+      - name: Resolve tag or current commit
+        id: release-ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "ref=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+            echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+            echo "tag_exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
   frontend:
     name: Frontend package
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -58,14 +80,14 @@ jobs:
           zip -qr "../dist/${package}.zip" "${package}"
 
       - name: Upload built frontend for native packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: apps/web/dist
           if-no-files-found: error
 
       - name: Upload frontend release package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-frontend
           path: dist/*
@@ -73,7 +95,9 @@ jobs:
 
   native:
     name: ${{ matrix.platform }} packages
-    needs: frontend
+    needs:
+      - prepare
+      - frontend
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -101,9 +125,9 @@ jobs:
             launcher: apps/launcher/target/release/operalibre-launcher.exe
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -115,12 +139,12 @@ jobs:
           shared-key: release-${{ matrix.platform }}
 
       - name: Setup Node for packaging
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Download built frontend
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: web-dist
@@ -188,7 +212,7 @@ jobs:
           Compress-Archive -Path "staging/$combinedPackage" -DestinationPath "dist/$combinedPackage.zip"
 
       - name: Upload native release packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/*
@@ -197,6 +221,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs:
+      - prepare
       - frontend
       - native
     runs-on: ubuntu-24.04
@@ -204,12 +229,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Download release packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-assets
@@ -226,6 +251,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           title="OperaLibre ${RELEASE_TAG}"
+          if [[ "${{ needs.prepare.outputs.tag_exists }}" != "true" ]]; then
+            git tag "${RELEASE_TAG}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" release-assets/* --clobber
             gh release edit "${RELEASE_TAG}" \
