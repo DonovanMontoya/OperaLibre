@@ -2055,6 +2055,17 @@ select:focus {
   color: #e8a99a;
 }
 
+.device-empty-state {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+}
+
+.device-empty-state .download-btn {
+  color: var(--paper);
+  border-color: rgba(241, 231, 208, 0.28);
+}
+
 .empty-player {
   align-self: center;
   justify-self: center;
@@ -3099,6 +3110,37 @@ select:focus {
   border-color: var(--ink);
 }
 
+.auth-demo-separator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--ink-faded);
+  font: italic 0.78rem "Fraunces", serif;
+}
+
+.auth-demo-separator::before,
+.auth-demo-separator::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: rgba(26, 20, 16, 0.14);
+}
+
+.auth-demo-button {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.auth-card .auth-demo-note {
+  margin-top: -0.5rem;
+  text-align: center;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 .auth-server-meta {
   margin: 0;
   display: flex;
@@ -3973,7 +4015,7 @@ select:focus {
 }
 
 /* ============================================================
-   Native iOS shell
+   Native mobile shell
    Everything below is scoped to html.native-app, which is only
    set inside the Capacitor build. The web app is untouched.
    The idea: the app is the bound book you hold — the library is
@@ -5899,6 +5941,12 @@ html.native-app .admin-shell:not(.admin-overlay) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.settings-actions .connection-primary {
+  color: var(--paper);
+  border-color: var(--oxblood);
+  background: var(--oxblood);
 }
 
 .server-aliases {

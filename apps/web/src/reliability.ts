@@ -16,3 +16,15 @@ export function progressTimestamp(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+export function normalizedBookTitle(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+export function deviceBookMatchesServer(
+  device: { title: string; trackCount: number },
+  server: { title: string; trackCount: number }
+): boolean {
+  return normalizedBookTitle(device.title) === normalizedBookTitle(server.title)
+    && device.trackCount === server.trackCount;
+}

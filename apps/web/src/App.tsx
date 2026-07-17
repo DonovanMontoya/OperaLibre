@@ -7,6 +7,7 @@ import {
   Cloud,
   CloudDownload,
   Download,
+  FolderOpen,
   Gauge,
   Headphones,
   KeyRound,
@@ -70,6 +71,9 @@ import {
   getStoredToken,
   hasUserConfiguredServer,
   isNetworkError,
+  isLocalMode,
+  enterLocalMode,
+  exitLocalMode,
   liberateAllLibationBooks,
   liberateLibationBook,
   listJobs,
@@ -105,6 +109,16 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { haptic } from "./native";
+import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
+import {
+  DEVICE_USER,
+  getDeviceBooks,
+  getDeviceProgress,
+  importAudiobookFromDevice,
+  mergeDeviceAndServerBooks,
+  removeDeviceBook,
+  saveDeviceProgress
+} from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
 import { ProfilePage } from "./Profile";
@@ -1377,13 +1391,21 @@ function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unknown>) {
 export default function App() {
   const [authState, setAuthState] = useState<
     { phase: "loading" }
-    | { phase: "server" }
+    | { phase: "server"; returnToLocal?: boolean }
     | { phase: "setup" }
     | { phase: "login" }
     | { phase: "ready"; user: AuthUser }
   >({ phase: "loading" });
 
   const checkAuth = useCallback(async () => {
+    if (isDemoMode()) {
+      setAuthState({ phase: "ready", user: DEMO_USER });
+      return;
+    }
+    if (isLocalMode()) {
+      setAuthState({ phase: "ready", user: DEVICE_USER });
+      return;
+    }
     if (!hasUserConfiguredServer()) {
       setAuthState({ phase: "server" });
       return;
@@ -1470,6 +1492,18 @@ export default function App() {
           setAuthState({ phase: "loading" });
           void checkAuth();
         }}
+        onDemo={() => {
+          enterDemoMode();
+          setAuthState({ phase: "ready", user: DEMO_USER });
+        }}
+        onLocal={isNativeApp() ? () => {
+          enterLocalMode();
+          setAuthState({ phase: "ready", user: DEVICE_USER });
+        } : undefined}
+        onCancel={authState.returnToLocal ? () => {
+          enterLocalMode();
+          setAuthState({ phase: "ready", user: DEVICE_USER });
+        } : undefined}
       />
     );
   }
@@ -1495,14 +1529,29 @@ export default function App() {
   return (
     <MainApp
       currentUser={authState.user}
+      onConnectServer={() => {
+        exitLocalMode();
+        setAuthState({ phase: "server", returnToLocal: true });
+      }}
       onLogout={async () => {
+        if (isLocalMode()) {
+          exitLocalMode();
+          setAuthState({ phase: "server" });
+          return;
+        }
+        const leavingDemo = isDemoMode();
         try {
           await apiLogout();
         } catch {
           // ignore
         }
         setStoredToken(null);
-        setAuthState({ phase: "login" });
+        if (leavingDemo) {
+          exitDemoMode();
+          setAuthState({ phase: "server" });
+        } else {
+          setAuthState({ phase: "login" });
+        }
       }}
     />
   );
@@ -1510,12 +1559,16 @@ export default function App() {
 
 function MainApp({
   currentUser,
-  onLogout
+  onLogout,
+  onConnectServer
 }: {
   currentUser: AuthUser;
   onLogout: () => void | Promise<void>;
+  onConnectServer: () => void;
 }) {
   const isOperaLibre = getServerType() === "operalibre";
+  const demoMode = isDemoMode();
+  const localMode = isLocalMode();
   const native = isNativeApp();
   const [nativeTab, setNativeTab] = useState<NativeTab>("reading");
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -1622,6 +1675,7 @@ function MainApp({
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
   // fraction is 0–1 across the whole book; null means size not yet known.
   const [activeDownload, setActiveDownload] = useState<{ bookId: string; fraction: number | null } | null>(null);
+  const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -1778,11 +1832,38 @@ function MainApp({
   const loadBooks = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    const deviceBooks = native ? getDeviceBooks() : [];
+    if (localMode) {
+      setBooks(deviceBooks);
+      setIsOffline(false);
+      setSelectedBookId((existing) => resolveBookId(deviceBooks, existing));
+      setPlaybackBookId((existing) => resolveBookId(deviceBooks, existing));
+      setIsLoading(false);
+      return;
+    }
     try {
-      const nextBooks = await getBooks();
+      const serverBooks = await getBooks();
+      const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
+      for (const book of nextBooks) {
+        if (book.source !== "server" || !book.deviceBookId) continue;
+        const deviceProgress = getDeviceProgress(book.deviceBookId);
+        const deviceBook = deviceBooks.find((candidate) => candidate.id === book.deviceBookId);
+        const trackIndex = deviceBook?.tracks.findIndex((track) => track.id === deviceProgress?.trackId) ?? -1;
+        const serverTrack = trackIndex >= 0 ? book.tracks[trackIndex] : null;
+        const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
+        if (
+          deviceProgress && serverTrack &&
+          (!serverBook?.progress || progressTimestamp(deviceProgress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt))
+        ) {
+          void saveProgress(book.id, {
+            ...deviceProgress,
+            trackId: serverTrack.id
+          }, { isPaused: true }).catch(() => undefined);
+        }
+      }
       setBooks(nextBooks);
       setIsOffline(false);
-      if (isNativeApp()) void cacheLibrary(currentUser.id, nextBooks);
+      if (isNativeApp()) void cacheLibrary(currentUser.id, serverBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
@@ -1794,7 +1875,8 @@ function MainApp({
         )
       );
     } catch {
-      const cached = isNativeApp() ? await getCachedLibrary(currentUser.id) : [];
+      const cachedServer = isNativeApp() ? await getCachedLibrary(currentUser.id) : [];
+      const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
       if (cached.length) {
         setBooks(cached);
@@ -1805,7 +1887,7 @@ function MainApp({
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser.id]);
+  }, [currentUser.id, localMode, native]);
 
   useEffect(() => {
     if (!isNativeApp() || !books.length) return;
@@ -2009,6 +2091,12 @@ function MainApp({
     };
 
     void (async () => {
+      const deviceBookId = playbackBook.deviceBookId;
+      const device = deviceBookId ? getDeviceProgress(deviceBookId) : null;
+      if (playbackBook.source === "device") {
+        applyProgress(device);
+        return;
+      }
       const cached = isNativeApp()
         ? await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
         : null;
@@ -2022,29 +2110,26 @@ function MainApp({
       if (cancelled) {
         return;
       }
-      // Progress saved while offline can be newer than the server's copy:
-      // resume from the freshest one, and sync it back up when it wins.
-      const cachedIsNewer =
-        !!cached &&
-        (!server || progressTimestamp(cached.updatedAt) > progressTimestamp(server.updatedAt));
-      if (cachedIsNewer) {
-        applyProgress(cached);
+      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
+      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
+      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
+      const mappedDevice = device && mappedServerTrack
+        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
+        : null;
+      // Progress saved on the device or while disconnected can be newer than
+      // the server. Resume from the freshest copy and converge the server.
+      const freshestLocal = [mappedDevice, cached]
+        .filter((value): value is Progress => !!value)
+        .sort((a, b) => progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt))[0] ?? null;
+      const localIsNewer = !!freshestLocal && (!server || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(server.updatedAt));
+      if (localIsNewer) {
+        applyProgress(freshestLocal);
         if (serverReachable) {
-          void saveProgress(
-            cached.bookId,
-            {
-              trackId: cached.trackId,
-              positionSeconds: cached.positionSeconds,
-              bookPositionSeconds: cached.bookPositionSeconds,
-              durationSeconds: cached.durationSeconds,
-              updatedAt: cached.updatedAt
-            },
-            { isPaused: true }
-          ).catch(() => undefined);
+          void saveProgress(playbackBook.id, freshestLocal, { isPaused: true }).catch(() => undefined);
         }
         return;
       }
-      applyProgress(server ?? cached);
+      applyProgress(server ?? freshestLocal);
     })();
 
     return () => {
@@ -2221,7 +2306,16 @@ function MainApp({
       durationSeconds: Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
       updatedAt: new Date().toISOString()
     };
+    if (playbackBook.deviceBookId) {
+      const deviceBook = getDeviceBooks().find((book) => book.id === playbackBook.deviceBookId);
+      const deviceTrack = deviceBook?.tracks[activeTrackIndex];
+      if (deviceTrack) saveDeviceProgress(playbackBook.deviceBookId, { ...localProgress, bookId: playbackBook.deviceBookId, trackId: deviceTrack.id });
+    }
     if (isNativeApp()) void cacheProgress(currentUser.id, localProgress);
+    if (playbackBook.source === "device") {
+      updateBookProgress(localProgress);
+      return;
+    }
     if (progressSaveInFlight.current) {
       return;
     }
@@ -2247,6 +2341,10 @@ function MainApp({
       return;
     }
 
+    updateBookProgress(saved);
+  }
+
+  function updateBookProgress(saved: Progress) {
     setBooks((existing) =>
       existing.map((book) => {
         if (book.id !== playbackBook.id) {
@@ -2297,6 +2395,35 @@ function MainApp({
     } finally {
       setActiveDownload(null);
     }
+  }
+
+  async function importFromDevice() {
+    setDownloadStatus(null);
+    try {
+      setDeviceImport({ completed: 0, total: 0 });
+      const book = await importAudiobookFromDevice((completed, total) => setDeviceImport({ completed, total }));
+      setBooks((existing) => [...existing, book]);
+      setDownloadedBookIds((existing) => new Set(existing).add(book.id));
+      setSelectedBookId(book.id);
+      setPlaybackBookId(book.id);
+      setLibrarySource("local");
+      setDownloadStatus(`${book.title} added from this device`);
+      setNativeTab("shelf");
+    } catch (error) {
+      const message = errorMessage(error, "The audiobook could not be imported.");
+      if (!/cancel/i.test(message)) setDownloadStatus(message);
+    } finally {
+      setDeviceImport(null);
+    }
+  }
+
+  async function deleteDeviceBook(book: Book) {
+    const deviceBookId = book.deviceBookId ?? book.id;
+    if (!window.confirm(`Remove ${book.title} and its listening progress from this device?`)) return;
+    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) audioRef.current?.pause();
+    await removeDeviceBook(deviceBookId);
+    await loadBooks();
+    setDownloadStatus("Device copy removed");
   }
 
   async function removeOfflineDownload(book: Book) {
@@ -2590,6 +2717,10 @@ function MainApp({
 
   async function refreshLibrary() {
     setIsLoading(true);
+    if (localMode) {
+      await loadBooks();
+      return;
+    }
     try {
       const nextBooks = isOperaLibre && !currentUser.isAdmin
         ? await getBooks()
@@ -2768,7 +2899,7 @@ function MainApp({
     }
   }
 
-  const showLedgerTab = native && isOperaLibre;
+  const showLedgerTab = native && isOperaLibre && !localMode;
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
@@ -2785,11 +2916,11 @@ function MainApp({
         <strong>{currentUser.username}</strong>
         <span>
           {isOperaLibre
-            ? currentUser.isAdmin ? "Administrator" : "Reader"
+            ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isAdmin ? "Administrator" : "Reader"
             : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         </span>
       </div>
-      {isOperaLibre ? (
+      {isOperaLibre && !localMode ? (
         <button
           type="button"
           role="menuitem"
@@ -2826,10 +2957,11 @@ function MainApp({
         role="menuitem"
         onClick={() => {
           setUserMenuOpen(false);
+          if (localMode) audioRef.current?.pause();
           void onLogout();
         }}
       >
-        <LogOut size={14} /> Sign out
+        <LogOut size={14} /> {localMode ? "Leave local mode" : "Sign out"}
       </button>
     </div>
   );
@@ -2864,7 +2996,7 @@ function MainApp({
         onPlay={() => {
           setPlaybackError(null);
           setIsPlaying(true);
-          if (currentTrack && audioRef.current) {
+          if (currentTrack && audioRef.current && playbackBook?.source !== "device") {
             void reportPlaybackStarted(currentTrack.id, audioRef.current.currentTime);
           }
         }}
@@ -2906,6 +3038,16 @@ function MainApp({
             <h1>Audio <span className="amp">&amp;</span> Books</h1>
           </div>
           <div className="pane-actions">
+            {native ? (
+              <button
+                className="icon-button"
+                aria-label="Add audiobook from device"
+                disabled={deviceImport !== null}
+                onClick={() => void importFromDevice()}
+              >
+                {deviceImport ? <LoaderCircle size={16} className="spin-icon" /> : <FolderOpen size={16} />}
+              </button>
+            ) : null}
             {isOperaLibre && currentUser.isAdmin ? (
               <button
                 className="icon-button"
@@ -3126,7 +3268,14 @@ function MainApp({
             {isLoading ? <div className="empty-state">Loading library…</div> : null}
             {error ? <div className="empty-state error">{error}</div> : null}
             {!isLoading && !error && books.length === 0 ? (
-              <div className="empty-state">No audiobooks found in the configured library folder.</div>
+              <div className="empty-state device-empty-state">
+                <span>{localMode ? "Your on-device shelf is empty." : "No audiobooks found in the configured library folder."}</span>
+                {native ? (
+                  <button type="button" className="download-btn" onClick={() => void importFromDevice()}>
+                    <FolderOpen size={14} /> Choose audiobook files
+                  </button>
+                ) : null}
+              </div>
             ) : null}
             {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
               <div className="empty-state">Nothing matches “{searchQuery}”.</div>
@@ -3400,7 +3549,7 @@ function MainApp({
                     <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
                   </span>
                   <div className="heading-actions">
-                    {isOperaLibre && currentUser.isAdmin ? (
+                    {isOperaLibre && currentUser.isAdmin && selectedBook.source !== "device" ? (
                       <button
                         className="download-btn"
                         type="button"
@@ -3423,7 +3572,17 @@ function MainApp({
                         <span>Read Along</span>
                       </button>
                     ) : null}
-                    {isNativeApp() ? (
+                    {selectedBook.deviceBookId ? (
+                      <span className="download-btn active" aria-label="Imported from this device">
+                        <FolderOpen size={13} />
+                        <span>On device</span>
+                      </span>
+                    ) : demoMode ? (
+                      <span className="download-btn active" aria-label="Included with the on-device demo">
+                        <CloudDownload size={13} />
+                        <span>On device</span>
+                      </span>
+                    ) : isNativeApp() ? (
                       <button
                         className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
                           activeDownload?.bookId === selectedBook.id ? "downloading" : ""
@@ -4202,11 +4361,34 @@ function MainApp({
           </section>
 
           <section className="settings-card">
-            <span className="section-label"><Download size={13} /> Downloads</span>
-            {books.some((book) => downloadedBookIds.has(book.id)) ? (
+            <span className="section-label"><FolderOpen size={13} /> On this device</span>
+            <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
+              {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
+              <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
+            </button>
+            {getDeviceBooks().length ? (
+              <div className="settings-downloads">
+                {getDeviceBooks().map((book) => (
+                  <div key={book.id} className="settings-download-row">
+                    <strong>{book.title}</strong>
+                    <button type="button" className="download-btn" onClick={() => void deleteDeviceBook(book)}>
+                      <Trash2 size={13} /><span>Remove</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
+            {downloadStatus ? <p className="settings-hint">{downloadStatus}</p> : null}
+          </section>
+
+          {!localMode ? <section className="settings-card">
+            <span className="section-label"><Download size={13} /> Server downloads</span>
+            {demoMode ? (
+              <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
+            ) : books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
               <div className="settings-downloads">
                 {books
-                  .filter((book) => downloadedBookIds.has(book.id))
+                  .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
                   .map((book) => (
                     <div key={book.id} className="settings-download-row">
                       <strong>{book.title}</strong>
@@ -4225,23 +4407,23 @@ function MainApp({
             ) : (
               <p className="settings-hint">No books are downloaded for offline listening yet.</p>
             )}
-          </section>
+          </section> : null}
 
           <section className="settings-card">
             <span className="section-label"><Network size={13} /> Connection</span>
             <div className="settings-kv">
               <span>Server</span>
               <span className="settings-value">
-                {isOperaLibre ? "OperaLibre" : "Jellyfin"} · {getServerUrl()}
+                {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `${isOperaLibre ? "OperaLibre" : "Jellyfin"} · ${getServerUrl()}`}
               </span>
             </div>
             <div className="settings-kv">
               <span>Signed in as</span>
               <span className="settings-value">
-                {currentUser.username} · {currentUser.isAdmin ? "Administrator" : "Reader"}
+                {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isAdmin ? "Administrator" : "Reader"}
               </span>
             </div>
-            <div className="server-aliases">
+            {!demoMode && !localMode ? <div className="server-aliases">
               <span className="settings-label">Address aliases</span>
               <p className="settings-hint">
                 Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
@@ -4304,8 +4486,17 @@ function MainApp({
                 <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
               </form>
               {aliasError ? <p className="auth-error">{aliasError}</p> : null}
-            </div>
+            </div> : null}
             <div className="settings-actions">
+              {localMode ? (
+                <button type="button" className="download-btn connection-primary" onClick={() => {
+                  audioRef.current?.pause();
+                  onConnectServer();
+                }}>
+                  <Network size={13} />
+                  <span>Connect a server</span>
+                </button>
+              ) : null}
               {isOperaLibre && currentUser.isAdmin ? (
                 <>
                   <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
@@ -4318,9 +4509,12 @@ function MainApp({
                   </button>
                 </>
               ) : null}
-              <button type="button" className="download-btn" onClick={() => void onLogout()}>
+              <button type="button" className="download-btn" onClick={() => {
+                audioRef.current?.pause();
+                void onLogout();
+              }}>
                 <LogOut size={13} />
-                <span>Sign out</span>
+                <span>{localMode ? "Leave local mode" : "Sign out"}</span>
               </button>
             </div>
           </section>

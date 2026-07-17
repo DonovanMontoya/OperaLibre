@@ -256,6 +256,9 @@ export function getCachedProgress(userId: string, bookId: string) {
 export async function isBookDownloaded(book: Book) {
   if (!book.tracks.length) return false;
   if (isNative()) {
+    if (book.tracks.every((track) => track.localFilePath)) {
+      return (await Promise.all(book.tracks.map((track) => fileExists(track.localFilePath!)))).every(Boolean);
+    }
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
     const checks = await Promise.all(book.tracks.map((track) => fileExists(trackFilePath(book, track))));
@@ -326,6 +329,7 @@ export async function removeBookDownload(book: Book) {
  */
 export async function getOfflineTrackUrl(book: Book, track: Track): Promise<string | null> {
   if (isNative()) {
+    if (track.localFilePath) return nativeFileUrl(track.localFilePath);
     await migrateLegacyBookDirectory(book);
     return nativeFileUrl(trackFilePath(book, track));
   }

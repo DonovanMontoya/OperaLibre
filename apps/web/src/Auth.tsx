@@ -1,4 +1,4 @@
-import { Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { BookOpen, FolderOpen, Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   ApiError,
@@ -21,10 +21,14 @@ type AuthMode = "setup" | "login";
 
 export function ServerSetup({
   onConnected,
-  onCancel
+  onCancel,
+  onDemo,
+  onLocal
 }: {
   onConnected: () => void;
   onCancel?: () => void;
+  onDemo?: () => void;
+  onLocal?: () => void;
 }) {
   const [serverType, setServerType] = useState<ServerType>(() => getServerType());
   const [url, setUrl] = useState(() => getServerUrl());
@@ -136,6 +140,31 @@ export function ServerSetup({
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Testing…" : "Test & connect"}
         </button>
+
+        {onLocal ? (
+          <>
+            <div className="auth-demo-separator"><span>or</span></div>
+            <button type="button" className="auth-secondary auth-demo-button" onClick={onLocal} disabled={busy}>
+              <FolderOpen size={16} />
+              Listen from this device
+            </button>
+            <p className="auth-demo-note">
+              Pick audiobook files from Files on iOS or the Android file picker. No server or account required.
+            </p>
+          </>
+        ) : null}
+
+        {onDemo ? (
+          <>
+            <button type="button" className="auth-secondary auth-demo-button" onClick={onDemo} disabled={busy}>
+              <BookOpen size={16} />
+              Explore the on-device demo
+            </button>
+            <p className="auth-demo-note">
+              No server or sign-in required. Includes only original OperaLibre demo content.
+            </p>
+          </>
+        ) : null}
 
         {onCancel ? (
           <button type="button" className="auth-secondary" onClick={onCancel} disabled={busy}>

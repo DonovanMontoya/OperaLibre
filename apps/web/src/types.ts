@@ -8,6 +8,8 @@ export type Track = {
   downloadUrl?: string;
   chapters: Chapter[];
   metadata: MetadataSummary;
+  /** App-private file copied from the iOS/Android document picker. */
+  localFilePath?: string;
 };
 
 export type Book = {
@@ -29,6 +31,9 @@ export type Book = {
   metadata: MetadataSummary;
   tracks: Track[];
   progress: BookProgress | null;
+  /** Device books need no server; matched server books may retain a device copy. */
+  source?: "server" | "device";
+  deviceBookId?: string;
 };
 
 export type BookMetadataUpdate = {

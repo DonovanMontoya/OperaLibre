@@ -27,6 +27,16 @@ import {
   saveJellyfinProgress
 } from "./jellyfin";
 import { serverStorageKey } from "./reliability";
+import {
+  DEMO_USER,
+  demoMediaUrl,
+  getDemoBooks,
+  getDemoProfileStats,
+  getDemoProgress,
+  isDemoMediaPath,
+  isDemoMode,
+  saveDemoProgress
+} from "./demo";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const TOKEN_STORAGE_KEY = "operalibre.authToken";
@@ -35,6 +45,7 @@ const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
+const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -205,10 +216,13 @@ function readStoredServerUrl(): string | null {
 }
 
 export function getServerUrl(): string {
+  if (isLocalMode()) return "This device";
+  if (isDemoMode()) return "On-device demo";
   return readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
 }
 
 export function getServerType(): ServerType {
+  if (isDemoMode()) return "operalibre";
   if (typeof window === "undefined") {
     return "operalibre";
   }
@@ -218,7 +232,20 @@ export function getServerType(): ServerType {
 }
 
 export function getServerStorageKey(): string {
+  if (isLocalMode()) return "device-local";
   return serverStorageKey(getServerType(), getServerIdentityUrl());
+}
+
+export function isLocalMode(): boolean {
+  return typeof window !== "undefined" && window.localStorage.getItem(LOCAL_MODE_STORAGE_KEY) === "true";
+}
+
+export function enterLocalMode() {
+  window.localStorage.setItem(LOCAL_MODE_STORAGE_KEY, "true");
+}
+
+export function exitLocalMode() {
+  window.localStorage.removeItem(LOCAL_MODE_STORAGE_KEY);
 }
 
 export function getServerIdentityUrl(): string {
@@ -234,7 +261,7 @@ export function setServerType(serverType: ServerType) {
 }
 
 export function hasUserConfiguredServer(): boolean {
-  return !!readStoredServerUrl();
+  return isDemoMode() || !!readStoredServerUrl();
 }
 
 export function setServerUrl(rawValue: string) {
@@ -382,6 +409,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
 }
 
 export async function getAuthStatus() {
+  if (isDemoMode()) return { setupRequired: false, user: DEMO_USER };
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
@@ -419,6 +447,7 @@ export async function login(username: string, password: string) {
 }
 
 export async function logout() {
+  if (isDemoMode()) return { ok: true };
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (token) {
@@ -430,6 +459,7 @@ export async function logout() {
 }
 
 export async function getMe() {
+  if (isDemoMode()) return DEMO_USER;
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
@@ -441,6 +471,7 @@ export async function getMe() {
 }
 
 export async function getProfileStats() {
+  if (isDemoMode()) return getDemoProfileStats();
   return request<ProfileStats>("/api/profile/stats");
 }
 
@@ -485,6 +516,7 @@ export async function changePassword(
 }
 
 export async function getBooks() {
+  if (isDemoMode()) return getDemoBooks();
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
@@ -523,6 +555,7 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
 }
 
 export async function getProgress(bookId: string) {
+  if (isDemoMode()) return getDemoProgress(bookId);
   if (getServerType() === "jellyfin") {
     return getCachedJellyfinProgress(bookId);
   }
@@ -535,6 +568,7 @@ export async function saveProgress(
     & Partial<Pick<Progress, "updatedAt">>,
   options?: { isPaused?: boolean }
 ) {
+  if (isDemoMode()) return saveDemoProgress(bookId, progress);
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
@@ -613,6 +647,7 @@ function appendToken(path: string) {
 }
 
 export function mediaUrl(path: string) {
+  if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
   return `${currentApiBase()}${
     getServerType() === "jellyfin"
       ? jellyfinMediaPath(path, getStoredToken())
@@ -621,6 +656,7 @@ export function mediaUrl(path: string) {
 }
 
 export function bookDownloadUrl(bookId: string) {
+  if (isDemoMode()) return "#";
   if (getServerType() === "jellyfin") {
     return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
   }
@@ -634,6 +670,7 @@ export async function deleteDownloadedBook(bookId: string) {
 }
 
 export function readalongUrl(path: string) {
+  if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
   return `${currentApiBase()}${appendToken(path)}`;
 }
 
