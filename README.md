@@ -1,6 +1,6 @@
 # OperaLibre
 
-A private audiobook streaming app with a Rust media server and an iOS-ready web frontend. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
+A private audiobook streaming app with a Rust media server and native Android and iOS frontends. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
 
 OperaLibre is also designed to work as a headless audiobook server. The included React/Vite web app is the reference frontend, but the Rust server exposes an HTTP API that other web, mobile, desktop, or native clients can build against.
 
@@ -25,7 +25,7 @@ For step-by-step installation, first launch, adding books, phone access, backups
   <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
 </p>
 
-The same library and playback experience runs in the browser and in the native iPhone app.
+The same library and playback experience runs in the browser and in the native Android and iPhone apps.
 
 ## License
 
@@ -47,8 +47,12 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - Playback speed controls.
 - 15-second rewind and 30-second forward controls.
 - Sleep timer.
+- Library search and sorting.
+- Per-user listening profiles, streaks, and recent-book statistics.
+- On-device audiobook downloads and offline playback in the native mobile apps.
 - Media Session integration for OS-level playback controls where supported.
-- PWA manifest plus a Capacitor iPhone app that reuses the web frontend.
+- PWA manifest plus Capacitor Android and iPhone apps that reuse the web frontend.
+- A self-contained on-device demo that works without a server, account, or network connection.
 
 ## Build and run locally
 
@@ -69,7 +73,7 @@ Open [http://localhost:5173](http://localhost:5173), make the first administrato
 
 For a home setup that runs from one address after building, run `npm run build`, set `web_dist_dir = apps/web/dist` in `server.config`, then start `./apps/server/target/release/operalibre-server` and open [http://localhost:4000](http://localhost:4000). [Deployment](docs/deployment.md) explains how to keep it running after a restart.
 
-On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall. Install the web app from the mobile browser or use the included native iPhone app; step-by-step instructions are in [Using OperaLibre](docs/using-operalibre.md#use-it-on-a-phone-or-tablet).
+On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall. Install the web app from the mobile browser or use one of the included native mobile apps; step-by-step instructions are in [Using OperaLibre](docs/using-operalibre.md#use-it-on-a-phone-or-tablet).
 
 The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
 
@@ -90,6 +94,18 @@ Use `./script/build_and_run.sh --verify` to build, launch, and confirm the app p
 Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
 
 The client supports Jellyfin audiobook listing, multi-file album grouping, cover art, direct audio streaming, and resume-position synchronization. OperaLibre-specific features such as Libation, reader administration, metadata editing, readalong files, and the reader ledger are hidden while connected to Jellyfin.
+
+## Android app
+
+The Android app uses Capacitor 8 to package the same React frontend in a native Android 7+ project. With Android Studio, the Android SDK, and JDK 21 installed, build a debug APK from the repository root with:
+
+```bash
+npm run build:android
+```
+
+The APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. To configure signing, run on an emulator or phone, or create a Play Store bundle, use `npm run android:open -w @operalibre/web` and finish the build in Android Studio.
+
+The app supports plain HTTP for local-network and private-overlay OperaLibre or Jellyfin servers. Use HTTPS for public remote servers.
 
 ## iPhone app
 
@@ -174,9 +190,9 @@ libation_files_dir = /path/to/LibationFiles
 
 If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated.
 
-## iOS development
+## Android and iOS development
 
-The checked-in Xcode project lives in `apps/web/ios`. After changing the React frontend, run `npm run sync:ios` before building in Xcode so the native bundle receives the latest web assets.
+The checked-in Android Studio and Xcode projects live in `apps/web/android` and `apps/web/ios`. After changing the React frontend, run `npm run sync:android` or `npm run sync:ios` before building so the native bundle receives the latest web assets.
 
 ## Users
 
@@ -190,9 +206,6 @@ The server requires sign-in before any audiobook data is exposed. The first brow
 
 ## Next build slices
 
-- Device pairing and offline downloads with encrypted local storage for the iOS build.
-- Chapter extraction for `.m4b` chapter metadata.
-- Cover art extraction and caching.
 - Bookmarks, clips, notes, and listening history.
 - Word-level readalong sync (sentence-level sync shipped; the sync map format has room for word granularity).
-- Queue, collections, and search.
+- Queue and collections.

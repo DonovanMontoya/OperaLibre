@@ -10,7 +10,7 @@ A private, self-hosted audiobook streaming server with an installable web reader
 
 OperaLibre can also run as a headless audiobook server. The included React/Vite app is the reference frontend, while the Rust server exposes an HTTP API for custom web, mobile, desktop, or native clients.
 
-## Web and iPhone apps
+## Web, Android, and iPhone apps
 
 <p align="center">
   <img src="assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
@@ -27,7 +27,7 @@ OperaLibre can also run as a headless audiobook server. The included React/Vite 
 - **Readalong sync** — sentence highlighting that follows the narration through an EPUB, with server-side sync-map generation via an optional [echogarden](https://github.com/echogarden-project/echogarden) install
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
-- **Web and iPhone apps** — installable PWA plus a native Capacitor app with background spoken-audio playback
+- **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 
 ## Documentation

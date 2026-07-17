@@ -52,6 +52,17 @@ The repository also includes a native iPhone app with background spoken-audio pl
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
+### Native Android app
+
+The repository includes a native Android 7+ app. Building it requires Android Studio, an installed Android SDK, and JDK 21:
+
+1. From the repository root, run `npm run android:open -w @operalibre/web`.
+2. Let Android Studio finish its first Gradle sync, then select an emulator or connected Android device.
+3. Press Run.
+4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4000`), and sign in.
+
+For a directly installable development build, run `npm run build:android`; the APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. Configure release signing in Android Studio before distributing the app. Private-network HTTP is supported; public servers should use HTTPS.
+
 ## Readalong and sentence highlighting
 
 To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Select a book and open the **Readalong** control in the player.
@@ -68,7 +79,7 @@ Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside
 
 This is only for the server owner. Install and sign in to [Libation](https://github.com/rmcrackan/Libation) on the same computer as OperaLibre, then set its download folder to your OperaLibre library folder (or a folder inside it).
 
-Add the Libation CLI and files-folder paths to `server.config`, restart OperaLibre, and use the **Libation** area in the library to refresh your Audible list and choose **Liberate** for a book. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+Add the Libation CLI and files-folder paths to `server.config`, restart OperaLibre, and use the **Libation** area in the library to refresh your Audible list and choose **Download** for a book. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
 
 ## Connect to Jellyfin instead
 

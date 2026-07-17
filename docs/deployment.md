@@ -164,6 +164,16 @@ That keeps cookies, bearer-token API calls, media URLs, and browser security beh
 
 Client authors should treat the API as the contract and the bundled web app as a reference implementation. The important media convention is that JSON API calls can use `Authorization: Bearer ...`, while direct media elements such as `<audio>` and `<img>` should use the authenticated URLs with `?token=...`.
 
+## Android / Capacitor
+
+The checked-in Capacitor Android project packages the web app as a native Android 7+ app. With Android Studio, the Android SDK, and JDK 21 installed, build a debug APK from the repository root with:
+
+```bash
+npm run build:android
+```
+
+Open and synchronize the project with `npm run android:open -w @operalibre/web` to run it on a device, configure release signing, or generate an Android App Bundle. The app accepts private-network HTTP addresses and requires HTTPS for public hosts.
+
 ## iOS / Capacitor
 
 The checked-in Capacitor iOS project packages the web app as a native iPhone app. On a Mac with Xcode, open and synchronize it with:
