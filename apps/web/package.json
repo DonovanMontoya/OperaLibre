@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc -b && vite build",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "npm run android:sync && cap open android",
     "ios:sync": "npm run build && cap sync ios",
     "ios:open": "npm run ios:sync && cap open ios",
     "preview": "vite preview --host 0.0.0.0",
@@ -13,10 +15,12 @@
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.1",
     "@capacitor/core": "^8.4.1",
     "@capacitor/file-transfer": "^2.0.4",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/ios": "^8.4.1",
+    "@capawesome/capacitor-file-picker": "^8.0.3",
     "epubjs": "^0.3.93",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",

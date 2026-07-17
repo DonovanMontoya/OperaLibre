@@ -6,6 +6,10 @@ const config: CapacitorConfig = {
   webDir: "dist",
   backgroundColor: "#f1e7d0",
   loggingBehavior: "production",
+  android: {
+    allowMixedContent: true,
+    backgroundColor: "#f1e7d0"
+  },
   ios: {
     backgroundColor: "#f1e7d0",
     contentInset: "never",

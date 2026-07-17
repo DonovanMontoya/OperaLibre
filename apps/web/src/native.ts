@@ -1,7 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 
 /**
- * Native-only ergonomics for the Capacitor iOS build. Everything here is a
+ * Native-only ergonomics for the Capacitor Android and iOS builds. Everything here is a
  * no-op on the web so the reference web app is unaffected.
  */
 

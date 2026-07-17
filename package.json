@@ -11,7 +11,9 @@
     "dev:server": "cargo run --manifest-path apps/server/Cargo.toml",
     "dev:web": "npm run dev -w @operalibre/web",
     "build": "cargo build --release --manifest-path apps/server/Cargo.toml && cargo build --release --manifest-path apps/launcher/Cargo.toml && npm run build -w @operalibre/web",
+    "build:android": "./script/build_android.sh",
     "build:ios": "./script/build_ios.sh",
+    "sync:android": "npm run android:sync -w @operalibre/web",
     "sync:ios": "npm run ios:sync -w @operalibre/web",
     "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && cargo check --manifest-path apps/launcher/Cargo.toml && npm run typecheck -w @operalibre/web"
   },

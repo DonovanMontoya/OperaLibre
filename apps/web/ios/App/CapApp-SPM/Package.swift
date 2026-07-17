@@ -13,7 +13,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.1"),
         .package(name: "CapacitorFileTransfer", path: "../../../../../node_modules/@capacitor/file-transfer"),
-        .package(name: "CapacitorFilesystem", path: "../../../../../node_modules/@capacitor/filesystem")
+        .package(name: "CapacitorFilesystem", path: "../../../../../node_modules/@capacitor/filesystem"),
+        .package(name: "CapawesomeCapacitorFilePicker", path: "../../../../../node_modules/@capawesome/capacitor-file-picker")
     ],
     targets: [
         .target(
@@ -22,7 +23,8 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "CapacitorFileTransfer", package: "CapacitorFileTransfer"),
-                .product(name: "CapacitorFilesystem", package: "CapacitorFilesystem")
+                .product(name: "CapacitorFilesystem", package: "CapacitorFilesystem"),
+                .product(name: "CapawesomeCapacitorFilePicker", package: "CapawesomeCapacitorFilePicker")
             ]
         )
     ]
