@@ -318,7 +318,7 @@ function formatElapsed(startedAt: string | null | undefined, finishedAt?: string
 
 function jobTitle(job: JobStatus) {
   if (job.kind === "libation-sync") {
-    return "Audible library sync";
+    return "Checking Audible library";
   }
   if (job.kind === "libation-liberate") {
     return "Audible download";
@@ -384,11 +384,6 @@ function bookProgressLabel(book: Book) {
     return "In progress";
   }
   return "Not started";
-}
-
-function isLiberatedStatus(status: string | null | undefined) {
-  const normalized = status?.toLowerCase() ?? "";
-  return normalized.includes("liberated") || normalized.includes("downloaded");
 }
 
 function canPreviewReadalong(book: Book) {
@@ -1599,8 +1594,11 @@ function MainApp({
   const [libationLoading, setLibationLoading] = useState(false);
   const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
+  const [downloadingLibationBookAsin, setDownloadingLibationBookAsin] = useState<string | null>(null);
+  const [libationRefreshPending, setLibationRefreshPending] = useState(false);
   const libationMessage = formatLibationMessage(libationStatus);
   const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
+  const isRefreshingAudible = libationRefreshPending || (activeJob?.kind === "libation-sync" && activeJob.status === "running");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -1983,6 +1981,7 @@ function MainApp({
         .then((job) => {
           setActiveJob(job);
           if (job.status !== "running") {
+            setDownloadingLibationBookAsin(null);
             void loadLibationStatus();
             void loadLibationBooks();
             void loadBooks();
@@ -2675,7 +2674,7 @@ function MainApp({
 
   async function startLibationSync() {
     setLibationError(null);
-    setLibationBooksLoaded(false);
+    setLibationRefreshPending(true);
     try {
       const created = await syncLibationLibrary();
       setActiveJob({
@@ -2685,17 +2684,19 @@ function MainApp({
         startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
-        output: "Starting Libation library scan.",
+        output: "Checking Audible for new purchases.",
         error: null
       });
     } catch (error) {
-      setLibationError(errorMessage(error, "Libation sync could not be started."));
+      setLibationError(errorMessage(error, "The Audible library refresh could not be started."));
+    } finally {
+      setLibationRefreshPending(false);
     }
   }
 
   async function startLiberation(book: LibationBook) {
     setLibationError(null);
-    setLibationBooksLoaded(false);
+    setDownloadingLibationBookAsin(book.asin);
     try {
       const created = await liberateLibationBook(book.asin);
       setActiveJob({
@@ -2709,13 +2710,13 @@ function MainApp({
         error: null
       });
     } catch (error) {
-      setLibationError(errorMessage(error, `Liberation could not be started for ${book.title}.`));
+      setDownloadingLibationBookAsin(null);
+      setLibationError(errorMessage(error, `The download could not be started for ${book.title}.`));
     }
   }
 
   async function startAllLiberation() {
     setLibationError(null);
-    setLibationBooksLoaded(false);
     try {
       const created = await liberateAllLibationBooks();
       setActiveJob({
@@ -3061,29 +3062,28 @@ function MainApp({
             <div className="libation-actions">
               <button
                 type="button"
-                onClick={() => void loadLibationBooks()}
-                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
-              >
-                <RefreshCcw size={13} />
-                <span>{libationLoading ? "Loading" : "Load"}</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => void startLibationSync()}
-                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
+                aria-busy={isRefreshingAudible}
+                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || downloadingLibationBookAsin !== null || activeJob?.status === "running"}
               >
-                <CloudDownload size={13} />
-                <span>Sync</span>
+                {isRefreshingAudible ? (
+                  <LoaderCircle size={13} className="spin-icon" />
+                ) : (
+                  <RefreshCcw size={13} />
+                )}
+                <span>{isRefreshingAudible ? "Refreshing" : "Refresh Audible"}</span>
               </button>
               <button
                 type="button"
                 onClick={() => void startAllLiberation()}
-                disabled={!libationStatus?.enabled || libationLoading || activeJob?.status === "running"}
+                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || downloadingLibationBookAsin !== null || activeJob?.status === "running"}
               >
                 <Download size={13} />
                 <span>Download all</span>
               </button>
             </div>
+
+            <p className="libation-help">Refresh checks Audible for new purchases. Download adds a title to this OperaLibre library.</p>
 
             {activeJob ? (
               <div className={`job-card ${activeJob.status}`}>
@@ -3184,6 +3184,7 @@ function MainApp({
             <div className="audible-list">
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
+                const isDownloading = downloadingLibationBookAsin === book.asin;
                 const metaParts = [
                   book.authors,
                   formatMinutes(book.lengthMinutes),
@@ -3216,12 +3217,14 @@ function MainApp({
                     ) : (
                       <button
                         type="button"
-                        aria-label={`${isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"} ${book.title}`}
-                        disabled={activeJob?.status === "running"}
+                        className={isDownloading ? "is-downloading" : undefined}
+                        aria-label={`${isDownloading ? "Downloading" : "Download"} ${book.title}`}
+                        aria-busy={isDownloading}
+                        disabled={downloadingLibationBookAsin !== null || activeJob?.status === "running"}
                         onClick={() => void startLiberation(book)}
                       >
-                        <CloudDownload size={14} />
-                        <span>{isLiberatedStatus(book.bookStatus) ? "Sync" : "Liberate"}</span>
+                        {isDownloading ? <LoaderCircle size={14} className="spin-icon" /> : <CloudDownload size={14} />}
+                        <span>{isDownloading ? "Downloading" : "Download"}</span>
                       </button>
                     )}
                   </div>

@@ -357,10 +357,6 @@ button {
   gap: 8px;
 }
 
-.libation-actions button:last-child {
-  grid-column: 1 / -1;
-}
-
 .libation-actions button,
 .audible-row button {
   min-height: 34px;
@@ -389,6 +385,11 @@ button {
 .audible-row button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.audible-row button.is-downloading:disabled {
+  opacity: 1;
+  color: var(--gold-soft);
 }
 
 .job-pill,

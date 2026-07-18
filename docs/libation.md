@@ -41,9 +41,9 @@ If both are blank, the integration stays disabled.
 When configured, an admin sees Libation-aware controls:
 
 - **Status** — which accounts Libation has, and whether they look authenticated.
-- **Library** — the Audible library Libation knows about.
-- **Sync** — re-run a Libation scan to refresh the remote library.
-- **Liberate** — kick off a Libation download for a selected ASIN. Progress shows as a background job.
+- **Library** — the Audible library Libation knows about; it loads automatically when the Audible tab opens.
+- **Refresh Audible** — ask Libation to check Audible for new purchases.
+- **Download** — add a selected Audible title to the OperaLibre library. Progress shows as a background job.
 - **Rescan** — automatic after a successful download; can also be triggered manually.
 
 Under the hood these map to API endpoints:
