@@ -87,6 +87,10 @@ struct AppState {
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
+    /// Libation uses shared account and library files. Run its commands one at
+    /// a time so a second title has a real queue state instead of racing the
+    /// first download.
+    libation_job_lock: Arc<Mutex<()>>,
     login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     upload_lock: Arc<Mutex<()>>,
 }
@@ -475,6 +479,7 @@ struct LibationBook {
 struct JobStatus {
     id: String,
     kind: String,
+    target_id: Option<String>,
     status: String,
     started_at: String,
     finished_at: Option<String>,
@@ -806,6 +811,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
         progress_write_lock: Arc::new(Mutex::new(())),
+        libation_job_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
         upload_lock: Arc::new(Mutex::new(())),
     };
@@ -1109,6 +1115,7 @@ async fn libation_status(
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<LibationStatus>, ApiError> {
     require_admin(&auth)?;
+    let _libation_guard = state.libation_job_lock.lock().await;
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -1123,7 +1130,10 @@ async fn list_libation_books(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
-    let mut books = export_libation_books(&config).await?;
+    let mut books = {
+        let _libation_guard = state.libation_job_lock.lock().await;
+        export_libation_books(&config).await?
+    };
     let library = state.library.read().await;
     for book in books.iter_mut() {
         book.local_book_id = match_local_book(&library.books, book);
@@ -1250,10 +1260,15 @@ async fn sync_libation_library(
         ));
     }
 
-    let job_id = create_job(&state, "libation-sync").await;
+    let (job_id, created) = create_libation_job(&state, "libation-sync", None).await;
+    if !created {
+        return Ok(Json(JobCreated { job_id }));
+    }
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(async move {
+        let _libation_guard = state_for_job.libation_job_lock.lock().await;
+        update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,
             &job_id_for_task,
@@ -1306,10 +1321,8 @@ async fn liberate_libation_book(
     Path(asin): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
     require_admin(&auth)?;
-    let asin = asin.trim().to_string();
-    if asin.is_empty() {
-        return Err(ApiError::bad_request("Missing Audible product id."));
-    }
+    let asin = normalize_asin(&asin)
+        .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
 
     let config = state.libation_config.clone();
     if !config.enabled() {
@@ -1318,10 +1331,16 @@ async fn liberate_libation_book(
         ));
     }
 
-    let job_id = create_job(&state, "libation-liberate").await;
+    let (job_id, created) =
+        create_libation_job(&state, "libation-liberate", Some(asin.clone())).await;
+    if !created {
+        return Ok(Json(JobCreated { job_id }));
+    }
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(async move {
+        let _libation_guard = state_for_job.libation_job_lock.lock().await;
+        update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,
             &job_id_for_task,
@@ -1336,7 +1355,7 @@ async fn liberate_libation_book(
                 "liberate".to_string(),
                 "--force".to_string(),
                 "--id".to_string(),
-                asin,
+                asin.clone(),
                 "--override".to_string(),
                 books_override,
             ],
@@ -1354,6 +1373,25 @@ async fn liberate_libation_book(
                         output.status.code(),
                         Some(format!(
                             "Download completed, but local rescan failed: {error}"
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                let downloaded_book_found =
+                    state_for_job.library.read().await.books.iter().any(|book| {
+                        book.asin
+                            .as_deref()
+                            .is_some_and(|local_asin| local_asin.eq_ignore_ascii_case(&asin))
+                    });
+                if !downloaded_book_found {
+                    update_job_finished(
+                        &state_for_job,
+                        &job_id_for_task,
+                        "failed",
+                        output.status.code(),
+                        Some(format!(
+                            "Libation finished, but {asin} was not found in the OperaLibre library after rescanning."
                         )),
                     )
                     .await;
@@ -1407,10 +1445,15 @@ async fn liberate_all_libation_books(
         ));
     }
 
-    let job_id = create_job(&state, "libation-liberate-all").await;
+    let (job_id, created) = create_libation_job(&state, "libation-liberate-all", None).await;
+    if !created {
+        return Ok(Json(JobCreated { job_id }));
+    }
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(async move {
+        let _libation_guard = state_for_job.libation_job_lock.lock().await;
+        update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,
             &job_id_for_task,
@@ -1524,12 +1567,12 @@ async fn list_jobs(
 ) -> Result<Json<Vec<JobStatus>>, ApiError> {
     require_admin(&auth)?;
     let jobs = state.jobs.read().await;
-    let mut list: Vec<JobStatus> = jobs.values().cloned().collect();
-    list.sort_by_key(|job| std::cmp::Reverse(job_started_seconds(job)));
+    let mut list: Vec<JobStatus> = jobs.values().map(job_for_list).collect();
+    list.sort_by_key(|job| std::cmp::Reverse(job_started_timestamp(job)));
     Ok(Json(list))
 }
 
-fn job_started_seconds(job: &JobStatus) -> u64 {
+fn job_started_timestamp(job: &JobStatus) -> u64 {
     job.started_at.parse().unwrap_or(0)
 }
 
@@ -3760,37 +3803,101 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 async fn create_job(state: &AppState, kind: &str) -> String {
+    create_job_with_state(state, kind, None, "running", false)
+        .await
+        .0
+}
+
+async fn create_libation_job(
+    state: &AppState,
+    kind: &str,
+    target_id: Option<String>,
+) -> (String, bool) {
+    create_job_with_state(state, kind, target_id, "queued", true).await
+}
+
+async fn create_job_with_state(
+    state: &AppState,
+    kind: &str,
+    target_id: Option<String>,
+    status: &str,
+    deduplicate_pending: bool,
+) -> (String, bool) {
     let mut bytes = [0u8; 8];
     OsRng.fill_bytes(&mut bytes);
     let id = format!("{:016x}", u64::from_le_bytes(bytes));
+    let mut jobs = state.jobs.write().await;
+
+    if deduplicate_pending
+        && let Some(existing) = jobs
+            .values()
+            .filter(|job| job.kind == kind && job.target_id == target_id && is_active_job(job))
+            .max_by_key(|job| job_started_timestamp(job))
+    {
+        return (existing.id.clone(), false);
+    }
+
+    let started_at = next_job_timestamp(&jobs).to_string();
     let job = JobStatus {
         id: id.clone(),
         kind: kind.to_string(),
-        status: "running".to_string(),
-        started_at: now_rfc3339ish(),
+        target_id,
+        status: status.to_string(),
+        started_at,
         finished_at: None,
         exit_code: None,
         output: String::new(),
         error: None,
     };
-    let mut jobs = state.jobs.write().await;
     jobs.insert(id.clone(), job);
     prune_finished_jobs(&mut jobs);
-    id
+    (id, true)
 }
 
 const MAX_TRACKED_JOBS: usize = 50;
+const MAX_JOB_OUTPUT_BYTES: usize = 64 * 1024;
+const JOB_LIST_OUTPUT_BYTES: usize = 4 * 1024;
+
+fn is_active_job(job: &JobStatus) -> bool {
+    matches!(job.status.as_str(), "queued" | "running")
+}
+
+fn next_job_timestamp(jobs: &HashMap<String, JobStatus>) -> u64 {
+    let latest = jobs.values().map(job_started_timestamp).max().unwrap_or(0);
+    unix_now_millis().max(latest.saturating_add(1))
+}
+
+fn text_tail(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_string()
+}
+
+fn job_for_list(job: &JobStatus) -> JobStatus {
+    let mut summary = job.clone();
+    summary.output = text_tail(&summary.output, JOB_LIST_OUTPUT_BYTES);
+    summary.error = summary
+        .error
+        .as_deref()
+        .map(|error| text_tail(error, JOB_LIST_OUTPUT_BYTES));
+    summary
+}
 
 /// Drops the oldest finished jobs once the map exceeds the cap, so job
-/// history doesn't grow without bound. Running jobs are never removed.
+/// history doesn't grow without bound. Active jobs are never removed.
 fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
     if jobs.len() <= MAX_TRACKED_JOBS {
         return;
     }
     let mut finished: Vec<(String, u64)> = jobs
         .values()
-        .filter(|job| job.status != "running")
-        .map(|job| (job.id.clone(), job_started_seconds(job)))
+        .filter(|job| matches!(job.status.as_str(), "completed" | "failed"))
+        .map(|job| (job.id.clone(), job_started_timestamp(job)))
         .collect();
     finished.sort_by_key(|(_, started_at)| *started_at);
     for (job_id, _) in finished {
@@ -3801,9 +3908,18 @@ fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
     }
 }
 
+async fn update_job_running(state: &AppState, job_id: &str) {
+    if let Some(job) = state.jobs.write().await.get_mut(job_id) {
+        job.status = "running".to_string();
+    }
+}
+
 async fn update_job_output(state: &AppState, job_id: &str, text: &str) {
     if let Some(job) = state.jobs.write().await.get_mut(job_id) {
         job.output.push_str(text);
+        if job.output.len() > MAX_JOB_OUTPUT_BYTES {
+            job.output = text_tail(&job.output, MAX_JOB_OUTPUT_BYTES);
+        }
     }
 }
 
@@ -3818,12 +3934,14 @@ async fn update_job_finished(
     exit_code: Option<i32>,
     error: Option<String>,
 ) {
-    if let Some(job) = state.jobs.write().await.get_mut(job_id) {
+    let mut jobs = state.jobs.write().await;
+    if let Some(job) = jobs.get_mut(job_id) {
         job.status = status.to_string();
-        job.finished_at = Some(now_rfc3339ish());
+        job.finished_at = Some(unix_now_millis().to_string());
         job.exit_code = exit_code;
         job.error = error;
     }
+    prune_finished_jobs(&mut jobs);
 }
 
 fn stable_id(input: &str) -> String {
@@ -3871,6 +3989,13 @@ fn unix_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn unix_now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
 
@@ -5091,8 +5216,332 @@ mod tests {
         assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
     }
 
+    #[cfg(unix)]
+    fn fake_libation_state(root: &std::path::Path) -> (super::AppState, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let library_root = root.join("library");
+        let data_dir = root.join("data");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let audio_template = root.join("template.wav");
+        let sample_data = vec![0u8; 160];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + sample_data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8_000u32.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(sample_data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&sample_data);
+        std::fs::write(&audio_template, wav).unwrap();
+        assert!(
+            super::read_track_metadata(&audio_template)
+                .duration_seconds
+                .is_some(),
+            "test WAV must be readable by the library scanner"
+        );
+        let log_path = root.join("libation.log");
+        let cli_path = root.join("fake-libation.sh");
+        let script = format!(
+            r#"#!/bin/sh
+command="$1"
+shift
+if [ "$command" = "export" ]; then
+  export_path=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--path" ]; then
+      export_path="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  printf 'start export\n' >> '{log}'
+  sleep 0.02
+  printf '[]' > "$export_path"
+  printf 'end export\n' >> '{log}'
+  exit 0
+fi
+if [ "$command" != "liberate" ]; then
+  exit 0
+fi
+asin=""
+books=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --id)
+      asin="$2"
+      shift 2
+      ;;
+    --override)
+      books="${{2#Books=}}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf 'start %s\n' "$asin" >> '{log}'
+sleep 0.08
+if [ "$asin" != "B000FAIL00" ]; then
+  mkdir -p "$books/Test [$asin]"
+  cp '{audio}' "$books/Test [$asin]/Test [$asin].wav"
+fi
+printf 'end %s\n' "$asin" >> '{log}'
+exit 0
+"#,
+            log = log_path.display(),
+            audio = audio_template.display()
+        );
+        std::fs::write(&cli_path, script).unwrap();
+        let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cli_path, permissions).unwrap();
+
+        let state = super::AppState {
+            library_root: library_root.clone(),
+            progress_file: data_dir.join("progress.json"),
+            users_file: data_dir.join("users.json"),
+            sessions_file: data_dir.join("sessions.json"),
+            activity_file: data_dir.join("activity.json"),
+            metadata_overrides_file: data_dir.join("metadata-overrides.json"),
+            libation_config: super::LibationConfig {
+                cli_path: Some(cli_path),
+                libation_files_dir: None,
+                library_root,
+            },
+            alignment_config: super::AlignmentConfig { cli_path: None },
+            sync_dir: data_dir.join("sync"),
+            library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
+            metadata_overrides: super::Arc::new(super::RwLock::new(
+                super::MetadataOverrideStore::default(),
+            )),
+            jobs: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
+            users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
+            sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
+            activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
+            progress_write_lock: super::Arc::new(super::Mutex::new(())),
+            libation_job_lock: super::Arc::new(super::Mutex::new(())),
+            login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
+            upload_lock: super::Arc::new(super::Mutex::new(())),
+        };
+        (state, log_path)
+    }
+
+    #[cfg(unix)]
+    fn admin_user() -> super::AuthUser {
+        super::AuthUser {
+            id: "admin".to_string(),
+            username: "admin".to_string(),
+            is_admin: true,
+            allowed_book_ids: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn four_libation_downloads_are_serialized_and_keep_their_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, log_path) = fake_libation_state(root.path());
+        let asins = ["B000TEST01", "B000TEST02", "B000TEST03", "B000TEST04"];
+
+        for asin in asins {
+            let _ = super::liberate_libation_book(
+                super::State(state.clone()),
+                super::Extension(admin_user()),
+                super::Path(asin.to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let jobs = state.jobs.read().await;
+            let running = jobs.values().filter(|job| job.status == "running").count();
+            let queued = jobs.values().filter(|job| job.status == "queued").count();
+            assert!(
+                running <= 1,
+                "Libation jobs overlapped: {running} were running"
+            );
+            if running == 1 && queued >= 3 {
+                break;
+            }
+            drop(jobs);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "jobs never entered the expected queue"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let state_for_export = state.clone();
+        let export_task = tokio::spawn(async move {
+            let _ = super::list_libation_books(
+                super::State(state_for_export),
+                super::Extension(admin_user()),
+            )
+            .await
+            .unwrap();
+        });
+
+        loop {
+            let jobs = state.jobs.read().await;
+            let running = jobs.values().filter(|job| job.status == "running").count();
+            let finished = jobs
+                .values()
+                .filter(|job| matches!(job.status.as_str(), "completed" | "failed"))
+                .count();
+            assert!(
+                running <= 1,
+                "Libation jobs overlapped: {running} were running"
+            );
+            if finished == asins.len() {
+                break;
+            }
+            drop(jobs);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "four-download queue timed out"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        export_task.await.unwrap();
+
+        let jobs = state.jobs.read().await;
+        assert_eq!(jobs.len(), asins.len());
+        for asin in asins {
+            let job = jobs
+                .values()
+                .find(|job| job.target_id.as_deref() == Some(asin))
+                .unwrap();
+            assert_eq!(
+                job.status, "completed",
+                "{asin} ended with {:?}; output: {}",
+                job.error, job.output
+            );
+        }
+        drop(jobs);
+
+        let lines = std::fs::read_to_string(log_path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), asins.len() * 2 + 2);
+        for pair in lines.chunks_exact(2) {
+            assert!(pair[0].starts_with("start "));
+            assert_eq!(pair[1], pair[0].replacen("start ", "end ", 1));
+        }
+        assert_eq!(lines[lines.len() - 2], "start export");
+
+        let library = state.library.read().await;
+        for asin in asins {
+            assert!(
+                library
+                    .books
+                    .iter()
+                    .any(|book| book.asin.as_deref() == Some(asin)),
+                "{asin} was not present after the queued downloads finished"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_libation_exit_without_a_decrypted_book_is_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let asin = "B000FAIL00";
+        let created = super::liberate_libation_book(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path(asin.to_string()),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let jobs = state.jobs.read().await;
+            let job = jobs.get(&created.job_id).unwrap();
+            if job.status == "failed" {
+                assert!(
+                    job.error
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("was not found")
+                );
+                break;
+            }
+            drop(jobs);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "failed decrypt was never reported"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn duplicate_download_requests_share_the_active_job() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, log_path) = fake_libation_state(root.path());
+        let asin = "B000TEST09";
+        let first = super::liberate_libation_book(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path(asin.to_string()),
+        )
+        .await
+        .unwrap()
+        .0;
+        let second = super::liberate_libation_book(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path(asin.to_string()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(first.job_id, second.job_id);
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let jobs = state.jobs.read().await;
+            let job = jobs.get(&first.job_id).unwrap();
+            if job.status == "completed" {
+                assert_eq!(jobs.len(), 1);
+                break;
+            }
+            drop(jobs);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "deduplicated download timed out"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let starts = std::fs::read_to_string(log_path)
+            .unwrap()
+            .lines()
+            .filter(|line| *line == format!("start {asin}"))
+            .count();
+        assert_eq!(starts, 1, "the same title was decrypted more than once");
+    }
+
     #[test]
-    fn prune_finished_jobs_keeps_running_and_newest() {
+    fn prune_finished_jobs_keeps_active_and_newest() {
         let mut jobs = std::collections::HashMap::new();
         for index in 0..(super::MAX_TRACKED_JOBS + 10) {
             let id = format!("job-{index}");
@@ -5101,7 +5550,13 @@ mod tests {
                 super::JobStatus {
                     id,
                     kind: "test".to_string(),
-                    status: if index == 0 { "running" } else { "completed" }.to_string(),
+                    target_id: None,
+                    status: match index {
+                        0 => "running",
+                        1 => "queued",
+                        _ => "completed",
+                    }
+                    .to_string(),
                     started_at: index.to_string(),
                     finished_at: None,
                     exit_code: None,
@@ -5112,11 +5567,55 @@ mod tests {
         }
         super::prune_finished_jobs(&mut jobs);
         assert_eq!(jobs.len(), super::MAX_TRACKED_JOBS);
-        // The running job survives even though it is the oldest.
+        // Active jobs survive even though they are the oldest.
         assert!(jobs.contains_key("job-0"));
+        assert!(jobs.contains_key("job-1"));
         // The oldest finished jobs are the ones dropped.
-        assert!(!jobs.contains_key("job-1"));
+        assert!(!jobs.contains_key("job-2"));
         assert!(jobs.contains_key(&format!("job-{}", super::MAX_TRACKED_JOBS + 9)));
+    }
+
+    #[test]
+    fn job_list_summaries_bound_output_without_breaking_unicode() {
+        let output = "résumé ".repeat(2_000);
+        let job = super::JobStatus {
+            id: "job-output".to_string(),
+            kind: "test".to_string(),
+            target_id: None,
+            status: "completed".to_string(),
+            started_at: "1".to_string(),
+            finished_at: Some("2".to_string()),
+            exit_code: Some(0),
+            output: output.clone(),
+            error: Some(output),
+        };
+
+        let summary = super::job_for_list(&job);
+        assert!(summary.output.len() <= super::JOB_LIST_OUTPUT_BYTES);
+        assert!(summary.error.unwrap().len() <= super::JOB_LIST_OUTPUT_BYTES);
+        assert!(summary.output.ends_with("résumé "));
+    }
+
+    #[test]
+    fn job_timestamps_advance_when_the_clock_value_is_already_used() {
+        let mut jobs = std::collections::HashMap::new();
+        let latest = super::unix_now_millis().saturating_add(10_000);
+        jobs.insert(
+            "latest".to_string(),
+            super::JobStatus {
+                id: "latest".to_string(),
+                kind: "test".to_string(),
+                target_id: None,
+                status: "running".to_string(),
+                started_at: latest.to_string(),
+                finished_at: None,
+                exit_code: None,
+                output: String::new(),
+                error: None,
+            },
+        );
+
+        assert_eq!(super::next_job_timestamp(&jobs), latest + 1);
     }
 
     #[test]

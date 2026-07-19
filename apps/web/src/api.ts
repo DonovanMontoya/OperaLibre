@@ -381,6 +381,9 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
   const response = await fetchWithTimeout(`${currentApiBase()}${path}`, {
     ...init,
     headers,
+    // API JSON represents live playback, job, and library state. WebKit may
+    // otherwise reuse an earlier GET while a background operation is settling.
+    cache: init?.cache ?? "no-store",
     credentials: "include"
   }, timeoutMs);
 

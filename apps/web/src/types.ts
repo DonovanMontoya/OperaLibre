@@ -165,6 +165,7 @@ export type LibationBook = {
 export type JobStatus = {
   id: string;
   kind: string;
+  targetId: string | null;
   status: "running" | "completed" | "failed" | string;
   startedAt: string;
   finishedAt: string | null;
