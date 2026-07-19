@@ -358,7 +358,8 @@ button {
 }
 
 .libation-actions button,
-.audible-row button {
+.audible-row button,
+.audible-row .audible-download-status {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
@@ -390,6 +391,38 @@ button {
 .audible-row button.is-downloading:disabled {
   opacity: 1;
   color: var(--gold-soft);
+}
+
+.audible-row .audible-download-status {
+  box-sizing: border-box;
+  color: var(--gold-soft);
+  border-color: rgba(217, 181, 116, 0.14);
+  background: rgba(217, 181, 116, 0.055);
+}
+
+.audible-row .audible-download-status > span {
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+.audible-row .audible-download-status.queued {
+  color: rgba(241, 231, 208, 0.62);
+  background: rgba(241, 231, 208, 0.035);
+}
+
+.audible-row .audible-download-status.finalizing {
+  color: #d6b76f;
+}
+
+.audible-download-action:active,
+.audible-row .local-marker:active {
+  transform: scale(0.97);
+}
+
+.audible-row .audible-download-action.retry {
+  color: #e8a99a;
+  border-color: rgba(232, 169, 154, 0.34);
 }
 
 .job-pill,
@@ -1112,6 +1145,10 @@ img.large-cover {
   letter-spacing: 0.005em;
 }
 
+.book-credits span + span::before {
+  content: " • ";
+}
+
 .book-runtime {
   display: inline-flex;
   align-items: baseline;
@@ -1710,20 +1747,6 @@ input[type="range"]::-moz-range-thumb {
   padding: 32px 0 26px;
   border-top: 1px solid rgba(26, 20, 16, 0.18);
   border-bottom: 1px solid rgba(26, 20, 16, 0.18);
-}
-
-.book-preview-actions::before {
-  content: "❦";
-  position: absolute;
-  left: 50%;
-  top: -10px;
-  transform: translateX(-50%);
-  padding: 0 12px;
-  background: var(--paper);
-  color: var(--oxblood);
-  font-family: "Instrument Serif", serif;
-  font-size: 1rem;
-  pointer-events: none;
 }
 
 .book-preview-actions .round-button.primary {
@@ -5216,7 +5239,8 @@ html.native-app .mini-actions button {
 }
 
 html.native-app .libation-actions button,
-html.native-app .audible-row button {
+html.native-app .audible-row button,
+html.native-app .audible-download-status {
   min-height: 44px;
   border-radius: 12px;
 }
@@ -5324,6 +5348,236 @@ html.native-app .heading-actions .download-btn:not(.active):hover {
   border-color: rgba(26, 20, 16, 0.14);
 }
 
+/* The library detail page shares its lower edge with the persistent player.
+   Keep the player compact, and reserve matching scroll room so the final
+   chapter rows can always clear it. */
+html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+  gap: 12px;
+  padding-top: calc(var(--status-h) + 12px);
+  padding-bottom: 88px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
+  min-height: 40px;
+  margin-bottom: 2px;
+  padding: 3px 12px 3px 4px;
+  font-size: 0.58rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .native-player-return-icon {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-credits {
+  max-width: 100%;
+  font-size: 0.88rem;
+  line-height: 1.22;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-credits span {
+  display: block;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-credits span + span::before {
+  display: none;
+  content: "";
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn.device-status {
+  flex: 0 0 auto;
+  min-height: 30px;
+  margin-top: 2px;
+  padding: 4px 9px;
+  color: var(--ink-faded);
+  background: rgba(26, 20, 16, 0.045);
+  border-color: rgba(26, 20, 16, 0.09);
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn.device-status svg {
+  color: var(--oxblood);
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-runtime {
+  gap: 9px;
+  padding-block: 5px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-runtime-label {
+  font-size: 0.56rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .book-runtime-value {
+  font-size: 1.45rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-player {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: 1fr;
+  min-height: 58px;
+  gap: 7px;
+  padding: 6px 9px 9px;
+  border-radius: 15px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-cover-button {
+  width: 30px;
+  height: 42px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-meta {
+  gap: 2px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-meta::before {
+  font-size: 0.48rem;
+  letter-spacing: 0.2em;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-meta strong {
+  font-size: 0.84rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-meta > span {
+  font-size: 0.72rem;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-actions {
+  gap: 5px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-actions button {
+  width: 36px;
+  height: 36px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-actions .mini-play {
+  width: 40px;
+  height: 40px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-progress {
+  position: absolute;
+  right: 9px;
+  bottom: 1px;
+  left: 9px;
+  display: block;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-progress input[type="range"] {
+  display: block;
+  height: 7px;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-progress input[type="range"]::-webkit-slider-thumb {
+  width: 7px;
+  height: 7px;
+  margin-top: -2.5px;
+  box-shadow: 0 0 0 2px var(--spine), 0 0 0 1px var(--gold-soft);
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-progress input[type="range"]::-moz-range-thumb {
+  width: 7px;
+  height: 7px;
+  border-width: 2px;
+  box-shadow: none;
+}
+
+html.native-app .native-shell.tab-shelf.library-book-open .mini-progress > span {
+  display: none;
+}
+
+/* A labeled action belongs to the title-page hierarchy more naturally than
+   a second oversized transport control. */
+html.native-app .preview-primary {
+  min-width: min(100%, 260px);
+  min-height: 50px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  padding: 8px 20px 8px 9px;
+  border-radius: 999px;
+  color: var(--paper);
+  background: linear-gradient(160deg, var(--oxblood) 0%, var(--oxblood-deep) 100%);
+  box-shadow: 0 12px 24px -14px rgba(139, 46, 31, 0.72);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+html.native-app .preview-primary-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+html.native-app .preview-primary:active {
+  transform: scale(0.98);
+}
+
+html.native-app .book-preview-actions {
+  gap: 10px;
+  padding: 18px 0 15px;
+}
+
+html.native-app .preview-return {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid rgba(139, 46, 31, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 253, 247, 0.42);
+  color: var(--oxblood);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+html.native-app .preview-return em {
+  font-family: "Fraunces", serif;
+  font-size: 0.82rem;
+  text-transform: none;
+}
+
+html.native-app .chapter-jump-top {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: calc(var(--tabs-h) + 82px);
+  z-index: 46;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 8px 14px 8px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  color: var(--paper);
+  background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
+  box-shadow: 0 14px 28px -12px rgba(55, 22, 15, 0.76);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  animation: rise 0.2s ease both;
+}
+
+html.native-app .chapter-jump-top:active {
+  transform: scale(0.96);
+}
+
 html.native-app .segmented button:not(.selected):hover {
   border-color: rgba(26, 20, 16, 0.12);
 }
@@ -5337,6 +5591,29 @@ html.native-app .libation-actions button:not(:disabled):hover,
 html.native-app .audible-row button:not(:disabled):hover {
   background: transparent;
   color: var(--paper);
+}
+
+html.native-app .libation-actions button[aria-busy="true"]:disabled,
+html.native-app .libation-actions button[aria-busy="true"]:disabled:hover {
+  opacity: 1;
+  color: var(--gold-soft);
+  border-color: rgba(217, 181, 116, 0.14);
+  background: rgba(217, 181, 116, 0.055);
+}
+
+html.native-app .libation-actions button:disabled:not([aria-busy="true"]):hover {
+  color: var(--paper);
+  background: transparent;
+}
+
+html.native-app .audible-download-status:hover {
+  color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.055);
+}
+
+html.native-app .audible-download-status.queued:hover {
+  color: rgba(241, 231, 208, 0.62);
+  background: rgba(241, 231, 208, 0.035);
 }
 
 html.native-app .audible-row .local-marker:hover {
@@ -6140,6 +6417,52 @@ html.native-app .recent-row {
 
 .sleep-options .sleep-off span {
   color: rgba(241, 231, 208, 0.62);
+}
+
+.chapter-sheet {
+  max-height: min(82dvh, 720px);
+}
+
+.chapter-sheet-options button {
+  min-width: 0;
+}
+
+.chapter-sheet-options .chapter-sheet-label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+
+.chapter-sheet-label small {
+  color: rgba(217, 181, 116, 0.52);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  letter-spacing: 0.08em;
+}
+
+.chapter-sheet-label strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Fraunces", serif;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.chapter-sheet-options button.selected .chapter-sheet-label strong {
+  color: var(--gold-soft);
+}
+
+.chapter-sheet-options .chapter-sheet-time {
+  flex: 0 0 auto;
+  color: rgba(241, 231, 208, 0.48);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.61rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
 }
 
 @media (prefers-reduced-motion: reduce) {

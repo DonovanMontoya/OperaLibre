@@ -1,9 +1,11 @@
 import {
   AlertCircle,
+  ArrowUp,
   Bookmark,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
   Cloud,
   CloudDownload,
   Download,
@@ -48,6 +50,7 @@ import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { progressTimestamp } from "./reliability";
+import { isLibationAdding } from "./libationState";
 import {
   bookDownloadUrl,
   activateServerAlias,
@@ -141,8 +144,10 @@ const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
+const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 
 type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
+type NativePlayerSheet = "speed" | "sleep" | "chapters" | null;
 
 function readStoredSpeed() {
   try {
@@ -322,8 +327,8 @@ function formatElapsed(startedAt: string | null | undefined, finishedAt?: string
   if (!startedAt) {
     return null;
   }
-  const start = Number(new Date(startedAt));
-  const end = finishedAt ? Number(new Date(finishedAt)) : Date.now();
+  const start = progressTimestamp(startedAt);
+  const end = finishedAt ? progressTimestamp(finishedAt) : Date.now();
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
     return null;
   }
@@ -343,6 +348,39 @@ function jobTitle(job: JobStatus) {
   return job.kind;
 }
 
+function isPendingJob(job: JobStatus) {
+  return job.status === "queued" || job.status === "running";
+}
+
+function reconcileLibationJobs(jobs: JobStatus[], previousJobs: JobStatus[]) {
+  const previousById = new Map(previousJobs.map((job) => [job.id, job]));
+  return jobs
+    .filter((job) => job.kind.startsWith("libation-"))
+    .map((job) => ({
+      ...job,
+      // Servers from before queued downloads were introduced do not return a
+      // targetId. Keep the optimistic association so the title's button stays
+      // attached to its job while that server is being upgraded.
+      targetId: job.targetId ?? previousById.get(job.id)?.targetId ?? null
+    }));
+}
+
+function jobStateLabel(job: JobStatus) {
+  if (job.status === "queued") {
+    return "Queued";
+  }
+  if (job.status !== "running") {
+    return job.status;
+  }
+  if (job.kind === "libation-sync") {
+    return "Syncing";
+  }
+  if (job.kind === "libation-liberate" || job.kind === "libation-liberate-all") {
+    return "Downloading";
+  }
+  return "Running";
+}
+
 function jobDetailLines(job: JobStatus) {
   const text = [job.error, job.output].filter(Boolean).join("\n");
   return text
@@ -355,6 +393,9 @@ function jobDetailLines(job: JobStatus) {
 function jobSummary(job: JobStatus) {
   if (job.error) {
     return job.error;
+  }
+  if (job.status === "queued") {
+    return "Waiting for the current Libation operation to finish.";
   }
   const lines = job.output
     .split("\n")
@@ -1625,7 +1666,7 @@ function MainApp({
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const sleepDeadlineRef = useRef<number | null>(null);
-  const [sleepSheetOpen, setSleepSheetOpen] = useState(false);
+  const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Serving the cached library because the server is unreachable; books
@@ -1647,11 +1688,21 @@ function MainApp({
   const [libationLoading, setLibationLoading] = useState(false);
   const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
-  const [downloadingLibationBookAsin, setDownloadingLibationBookAsin] = useState<string | null>(null);
+  const [libationRequests, setLibationRequests] = useState<Set<string>>(new Set());
+  const [libationAllPending, setLibationAllPending] = useState(false);
+  const [libationJobs, setLibationJobs] = useState<JobStatus[]>([]);
+  const libationJobsRef = useRef<JobStatus[]>([]);
+  const libationJobsGenerationRef = useRef(0);
+  const [libationFinalizingAsins, setLibationFinalizingAsins] = useState<Set<string>>(new Set());
+  const [libationFinalizationFailures, setLibationFinalizationFailures] = useState<Set<string>>(new Set());
+  const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
   const [libationRefreshPending, setLibationRefreshPending] = useState(false);
   const libationMessage = formatLibationMessage(libationStatus);
-  const [activeJob, setActiveJob] = useState<JobStatus | null>(null);
-  const isRefreshingAudible = libationRefreshPending || (activeJob?.kind === "libation-sync" && activeJob.status === "running");
+  const pendingLibationJobs = libationJobs.filter(isPendingJob);
+  const displayedLibationJobs = pendingLibationJobs.length > 0 ? pendingLibationJobs : libationJobs.slice(0, 1);
+  const refreshLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-sync");
+  const downloadAllLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-liberate-all");
+  const isRefreshingAudible = libationRefreshPending || !!refreshLibationJob;
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -1662,6 +1713,7 @@ function MainApp({
   const [profileOpen, setProfileOpen] = useState(false);
   const [metadataEditOpen, setMetadataEditOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
+  const [showChapterJumpTop, setShowChapterJumpTop] = useState(false);
   const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
@@ -1670,6 +1722,7 @@ function MainApp({
   const [offlineSource, setOfflineSource] = useState<{ trackId: string; url: string | null } | null>(null);
   const [mediaArtworkUrl, setMediaArtworkUrl] = useState<string | null>(null);
   const chaptersListRef = useRef<HTMLDivElement | null>(null);
+  const trackListSectionRef = useRef<HTMLElement | null>(null);
   const wantsAutoplayRef = useRef(false);
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
@@ -1817,6 +1870,7 @@ function MainApp({
       setSyncJob({
         id: created.jobId,
         kind: "sync-generate",
+        targetId: book.id,
         status: "running",
         startedAt: "",
         finishedAt: null,
@@ -2011,12 +2065,19 @@ function MainApp({
     }
   }, [currentUser.isAdmin, isOperaLibre]);
 
-  const loadLibationBooks = useCallback(async () => {
+  const loadLibationBooks = useCallback(async (clearError = true) => {
     setLibationLoading(true);
-    setLibationError(null);
+    if (clearError) {
+      setLibationError(null);
+    }
     try {
       const nextBooks = await getLibationBooks();
       setLibationBooks(nextBooks);
+      const confirmedAsins = new Set(nextBooks.filter((book) => !!book.localBookId).map((book) => book.asin));
+      setLibationFinalizingAsins((current) => {
+        const next = new Set([...current].filter((asin) => !confirmedAsins.has(asin)));
+        return next.size === current.size ? current : next;
+      });
       setLibationBooksLoaded(true);
       await loadLibationStatus();
     } catch {
@@ -2037,14 +2098,21 @@ function MainApp({
     if (!currentUser.isAdmin) {
       return;
     }
+    let cancelled = false;
+    const generation = libationJobsGenerationRef.current;
     void listJobs()
       .then((jobs) => {
-        const running = jobs.find((job) => job.status === "running");
-        if (running) {
-          setActiveJob((existing) => existing ?? running);
+        if (cancelled || generation !== libationJobsGenerationRef.current) {
+          return;
         }
+        const next = reconcileLibationJobs(jobs, libationJobsRef.current);
+        libationJobsRef.current = next;
+        setLibationJobs(next);
       })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [currentUser.isAdmin]);
 
   useEffect(() => {
@@ -2054,26 +2122,170 @@ function MainApp({
   }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
 
   useEffect(() => {
-    if (!activeJob || activeJob.status !== "running") {
+    if (!libationJobs.some(isPendingJob)) {
       return;
     }
 
+    let cancelled = false;
+    let requestInFlight = false;
     const timer = window.setInterval(() => {
-      void getJob(activeJob.id)
-        .then((job) => {
-          setActiveJob(job);
-          if (job.status !== "running") {
-            setDownloadingLibationBookAsin(null);
-            void loadLibationStatus();
-            void loadLibationBooks();
+      if (requestInFlight) {
+        return;
+      }
+      requestInFlight = true;
+      const generation = libationJobsGenerationRef.current;
+      void listJobs()
+        .then((jobs) => {
+          if (cancelled || generation !== libationJobsGenerationRef.current) {
+            return;
+          }
+          const previous = libationJobsRef.current;
+          const next = reconcileLibationJobs(jobs, previous);
+          const nextById = new Map(next.map((job) => [job.id, job]));
+          const finishedJobs = previous
+            .map((job) => nextById.get(job.id))
+            .filter((current): current is JobStatus => !!current)
+            .filter((current) => {
+              const prior = previous.find((job) => job.id === current.id);
+              return !!prior && isPendingJob(prior) && !isPendingJob(current);
+            });
+          libationJobsRef.current = next;
+          setLibationJobs(next);
+          if (finishedJobs.length > 0) {
+            const completedAsins = finishedJobs.flatMap((job) => {
+              if (job.status !== "completed") {
+                return [];
+              }
+              if (job.kind === "libation-liberate" && job.targetId) {
+                return [job.targetId];
+              }
+              if (job.kind === "libation-liberate-all") {
+                return libationBooks.filter((book) => !book.localBookId).map((book) => book.asin);
+              }
+              return [];
+            });
+            if (completedAsins.length > 0) {
+              const now = Date.now();
+              for (const asin of completedAsins) {
+                libationFinalizationStartedRef.current.set(asin, now);
+              }
+              setLibationFinalizingAsins((current) => new Set([...current, ...completedAsins]));
+            }
             void loadBooks();
+            if (!next.some(isPendingJob)) {
+              void loadLibationBooks(false);
+            }
+            const failedJob = finishedJobs.find((job) => job.status === "failed");
+            if (failedJob) {
+              setLibationError(jobSummary(failedJob));
+            }
           }
         })
-        .catch(() => undefined);
-    }, 1800);
+        .catch(() => undefined)
+        .finally(() => {
+          requestInFlight = false;
+        });
+    }, 1200);
 
-    return () => window.clearInterval(timer);
-  }, [activeJob, loadBooks, loadLibationBooks, loadLibationStatus]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [libationJobs, loadBooks, loadLibationBooks]);
+
+  useEffect(() => {
+    if (libationJobs.some(isPendingJob)) {
+      return;
+    }
+    const remainingAsins = new Set(
+      [...libationFinalizingAsins].filter(
+        (asin) =>
+          !libationFinalizationFailures.has(asin) &&
+          !libationBooks.some((book) => book.asin === asin && !!book.localBookId)
+      )
+    );
+    if (remainingAsins.size === 0) {
+      return;
+    }
+    for (const asin of remainingAsins) {
+      if (!libationFinalizationStartedRef.current.has(asin)) {
+        libationFinalizationStartedRef.current.set(asin, Date.now());
+      }
+    }
+
+    let cancelled = false;
+    let checking = false;
+    let timer: number | null = null;
+    const confirmDownloads = async () => {
+      if (checking || remainingAsins.size === 0) {
+        return;
+      }
+      checking = true;
+      try {
+        const nextBooks = await getLibationBooks();
+        if (cancelled) {
+          return;
+        }
+        setLibationBooks(nextBooks);
+        setLibationBooksLoaded(true);
+
+        const now = Date.now();
+        const failedAsins: string[] = [];
+        for (const asin of remainingAsins) {
+          const localBook = nextBooks.find((book) => book.asin === asin && !!book.localBookId);
+          if (localBook) {
+            remainingAsins.delete(asin);
+            libationFinalizationStartedRef.current.delete(asin);
+            setLibationFinalizingAsins((current) => {
+              const next = new Set(current);
+              next.delete(asin);
+              return next;
+            });
+            continue;
+          }
+          const startedAt = libationFinalizationStartedRef.current.get(asin) ?? now;
+          if (now - startedAt >= LIBATION_CONFIRM_TIMEOUT_MS) {
+            failedAsins.push(asin);
+            remainingAsins.delete(asin);
+            libationFinalizationStartedRef.current.delete(asin);
+          }
+        }
+
+        if (failedAsins.length > 0) {
+          setLibationFinalizingAsins((current) => {
+            const next = new Set(current);
+            for (const asin of failedAsins) {
+              next.delete(asin);
+            }
+            return next;
+          });
+          setLibationFinalizationFailures((current) => new Set([...current, ...failedAsins]));
+          const failedTitle = libationBooks.find((book) => book.asin === failedAsins[0])?.title;
+          setLibationError(
+            `${failedTitle ?? "The title"} never appeared in the local library. Decryption or import may have failed.`
+          );
+        }
+        if (remainingAsins.size === 0 && timer !== null) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+      } catch {
+        // Keep the title in Adding while the server is temporarily unreachable;
+        // a connection failure is not evidence that decryption failed.
+      } finally {
+        checking = false;
+      }
+    };
+
+    void confirmDownloads();
+    timer = window.setInterval(() => void confirmDownloads(), 1500);
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [libationFinalizationFailures, libationFinalizingAsins, libationJobs]);
 
   useEffect(() => {
     if (!playbackBook) {
@@ -2271,7 +2483,7 @@ function MainApp({
       : null;
     setSleepMinutes(minutes);
     setSleepRemaining(minutes * 60);
-    setSleepSheetOpen(false);
+    setNativePlayerSheet(null);
   }
 
   useEffect(() => {
@@ -2582,6 +2794,8 @@ function MainApp({
   function selectBook(book: Book) {
     setSelectedBookId(book.id);
     if (native) {
+      setChaptersOpen(book.id === playbackBook?.id && book.chapters.length > 0);
+      setShowChapterJumpTop(false);
       setNativeTab("shelf");
       setNativePlayerView("details");
       playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
@@ -2591,6 +2805,9 @@ function MainApp({
   function openBookDetails(bookId: string) {
     setSelectedBookId(bookId);
     if (native) {
+      const book = books.find((candidate) => candidate.id === bookId);
+      setChaptersOpen(bookId === playbackBook?.id && !!book?.chapters.length);
+      setShowChapterJumpTop(false);
       haptic("light");
       setNativeTab("shelf");
       setNativePlayerView("details");
@@ -2654,6 +2871,17 @@ function MainApp({
     }
   }
 
+  function jumpToChapterFromSheet(chapter: Chapter) {
+    if (!playbackBook) {
+      return;
+    }
+    haptic("light");
+    void persistProgress();
+    setSelectedBookId(playbackBook.id);
+    seekBookPositionInBook(playbackBook, chapter.startSeconds, true);
+    setNativePlayerSheet(null);
+  }
+
   function restartOrPreviousChapter() {
     if (!playbackBook || !activeChapter) {
       seekBy(-15);
@@ -2702,6 +2930,23 @@ function MainApp({
     }
     playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handlePlayerPaneScroll(event: React.UIEvent<HTMLElement>) {
+    if (!native || nativeTab !== "shelf" || nativePlayerView !== "details" || !chaptersOpen || !isViewingPlayingBook) {
+      if (showChapterJumpTop) setShowChapterJumpTop(false);
+      return;
+    }
+    const sectionTop = trackListSectionRef.current?.offsetTop ?? Number.POSITIVE_INFINITY;
+    const threshold = sectionTop + 140;
+    const shouldShow = event.currentTarget.scrollTop > threshold;
+    if (shouldShow !== showChapterJumpTop) setShowChapterJumpTop(shouldShow);
+  }
+
+  function jumpToPlayerTop() {
+    haptic("light");
+    playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    setShowChapterJumpTop(false);
   }
 
   function updateSpeed(value: number) {
@@ -2803,15 +3048,26 @@ function MainApp({
     }
   }
 
+  function trackLibationJob(job: JobStatus) {
+    // Any jobs response already in flight may have been captured before this
+    // POST reached the server. Invalidate it so it cannot erase the optimistic
+    // job and stop the poller.
+    libationJobsGenerationRef.current += 1;
+    const next = [job, ...libationJobsRef.current.filter((existing) => existing.id !== job.id)];
+    libationJobsRef.current = next;
+    setLibationJobs(next);
+  }
+
   async function startLibationSync() {
     setLibationError(null);
     setLibationRefreshPending(true);
     try {
       const created = await syncLibationLibrary();
-      setActiveJob({
+      trackLibationJob({
         id: created.jobId,
         kind: "libation-sync",
-        status: "running",
+        targetId: null,
+        status: "queued",
         startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
@@ -2827,13 +3083,25 @@ function MainApp({
 
   async function startLiberation(book: LibationBook) {
     setLibationError(null);
-    setDownloadingLibationBookAsin(book.asin);
+    libationFinalizationStartedRef.current.delete(book.asin);
+    setLibationFinalizingAsins((current) => {
+      const next = new Set(current);
+      next.delete(book.asin);
+      return next;
+    });
+    setLibationFinalizationFailures((current) => {
+      const next = new Set(current);
+      next.delete(book.asin);
+      return next;
+    });
+    setLibationRequests((current) => new Set(current).add(book.asin));
     try {
       const created = await liberateLibationBook(book.asin);
-      setActiveJob({
+      trackLibationJob({
         id: created.jobId,
         kind: "libation-liberate",
-        status: "running",
+        targetId: book.asin,
+        status: "queued",
         startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
@@ -2841,19 +3109,26 @@ function MainApp({
         error: null
       });
     } catch (error) {
-      setDownloadingLibationBookAsin(null);
       setLibationError(errorMessage(error, `The download could not be started for ${book.title}.`));
+    } finally {
+      setLibationRequests((current) => {
+        const next = new Set(current);
+        next.delete(book.asin);
+        return next;
+      });
     }
   }
 
   async function startAllLiberation() {
     setLibationError(null);
+    setLibationAllPending(true);
     try {
       const created = await liberateAllLibationBooks();
-      setActiveJob({
+      trackLibationJob({
         id: created.jobId,
         kind: "libation-liberate-all",
-        status: "running",
+        targetId: null,
+        status: "queued",
         startedAt: new Date().toISOString(),
         finishedAt: null,
         exitCode: null,
@@ -2862,6 +3137,8 @@ function MainApp({
       });
     } catch (error) {
       setLibationError(errorMessage(error, "Libation download-all could not be started."));
+    } finally {
+      setLibationAllPending(false);
     }
   }
 
@@ -3206,60 +3483,70 @@ function MainApp({
                 type="button"
                 onClick={() => void startLibationSync()}
                 aria-busy={isRefreshingAudible}
-                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || downloadingLibationBookAsin !== null || activeJob?.status === "running"}
+                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}
               >
-                {isRefreshingAudible ? (
+                {refreshLibationJob?.status === "queued" ? (
+                  <List size={13} />
+                ) : isRefreshingAudible ? (
                   <LoaderCircle size={13} className="spin-icon" />
                 ) : (
                   <RefreshCcw size={13} />
                 )}
-                <span>{isRefreshingAudible ? "Refreshing" : "Refresh Audible"}</span>
+                <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
               </button>
               <button
                 type="button"
                 onClick={() => void startAllLiberation()}
-                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || downloadingLibationBookAsin !== null || activeJob?.status === "running"}
+                aria-busy={libationAllPending || !!downloadAllLibationJob}
+                disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}
               >
-                <Download size={13} />
-                <span>Download all</span>
+                {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
+                <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
               </button>
             </div>
 
             <p className="libation-help">Refresh checks Audible for new purchases. Download adds a title to this OperaLibre library.</p>
 
-            {activeJob ? (
-              <div className={`job-card ${activeJob.status}`}>
+            {displayedLibationJobs.map((job) => {
+              const targetTitle = job.targetId
+                ? libationBooks.find((book) => book.asin === job.targetId)?.title
+                : null;
+              return (
+              <div key={job.id} className={`job-card ${job.status}`}>
                 <div className="job-card-head">
                   <span className="job-state">
-                    {activeJob.status === "running" ? (
-                      <LoaderCircle size={13} />
-                    ) : activeJob.status === "failed" ? (
+                    {job.status === "queued" ? (
+                      <List size={13} />
+                    ) : job.status === "running" ? (
+                      <LoaderCircle size={13} className="spin-icon" />
+                    ) : job.status === "failed" ? (
                       <AlertCircle size={13} />
                     ) : (
                       <CloudDownload size={13} />
                     )}
-                    {activeJob.status === "running" ? "Running" : activeJob.status}
+                    {jobStateLabel(job)}
                   </span>
-                  <strong>{jobTitle(activeJob)}</strong>
+                  <strong>{targetTitle ?? jobTitle(job)}</strong>
                 </div>
-                <p>{jobSummary(activeJob)}</p>
+                <p>{jobSummary(job)}</p>
                 <dl className="job-meta">
                   <div>
                     <dt>Elapsed</dt>
-                    <dd>{formatElapsed(activeJob.startedAt, activeJob.finishedAt) ?? "Starting"}</dd>
+                    <dd>{formatElapsed(job.startedAt, job.finishedAt) ?? "Starting"}</dd>
                   </div>
-                  {activeJob.exitCode !== null ? (
+                  {job.exitCode !== null ? (
                     <div>
                       <dt>Exit</dt>
-                      <dd>{activeJob.exitCode}</dd>
+                      <dd>{job.exitCode}</dd>
                     </div>
                   ) : null}
                 </dl>
-                {activeJob.status !== "running" || activeJob.error ? (
-                  <pre className="job-output">{jobDetailLines(activeJob).join("\n")}</pre>
+                {!isPendingJob(job) || job.error ? (
+                  <pre className="job-output">{jobDetailLines(job).join("\n")}</pre>
                 ) : null}
               </div>
-            ) : null}
+              );
+            })}
           </section>
         ) : null}
 
@@ -3333,7 +3620,23 @@ function MainApp({
             <div className="audible-list">
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
-                const isDownloading = downloadingLibationBookAsin === book.asin;
+                const pendingDownloadJob =
+                  pendingLibationJobs.find(
+                    (job) => job.kind === "libation-liberate" && job.targetId === book.asin
+                  ) ?? downloadAllLibationJob;
+                const latestBookJob = libationJobs.find(
+                  (job) => job.kind === "libation-liberate" && job.targetId === book.asin
+                );
+                const isStarting = libationAllPending || libationRequests.has(book.asin);
+                const isQueued = pendingDownloadJob?.status === "queued";
+                const isDownloading = pendingDownloadJob?.status === "running";
+                const finalizationFailed = libationFinalizationFailures.has(book.asin);
+                const isFinalizing = isLibationAdding({
+                  isLocal,
+                  confirmationPending: libationFinalizingAsins.has(book.asin),
+                  confirmationFailed: finalizationFailed
+                });
+                const didFail = latestBookJob?.status === "failed" || finalizationFailed;
                 const metaParts = [
                   book.authors,
                   formatMinutes(book.lengthMinutes),
@@ -3360,20 +3663,31 @@ function MainApp({
                           setLibraryOpen(false);
                         }}
                       >
-                        <Library size={14} />
+                        <CircleCheck size={14} />
                         <span>In library</span>
                       </button>
+                    ) : isStarting || isQueued || isDownloading || isFinalizing ? (
+                      <span
+                        className={`audible-download-status ${
+                          isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing ? "finalizing" : "starting"
+                        }`}
+                        role="status"
+                        aria-label={`${
+                          isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing ? "Adding to library" : "Starting download"
+                        } ${book.title}`}
+                      >
+                        {isQueued ? <List size={14} /> : <LoaderCircle size={14} className="spin-icon" />}
+                        <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing ? "Adding" : "Starting"}</span>
+                      </span>
                     ) : (
                       <button
                         type="button"
-                        className={isDownloading ? "is-downloading" : undefined}
-                        aria-label={`${isDownloading ? "Downloading" : "Download"} ${book.title}`}
-                        aria-busy={isDownloading}
-                        disabled={downloadingLibationBookAsin !== null || activeJob?.status === "running"}
+                        className={`audible-download-action ${didFail ? "retry" : ""}`}
+                        aria-label={`${didFail ? "Retry download" : "Download"} ${book.title}`}
                         onClick={() => void startLiberation(book)}
                       >
-                        {isDownloading ? <LoaderCircle size={14} className="spin-icon" /> : <CloudDownload size={14} />}
-                        <span>{isDownloading ? "Downloading" : "Download"}</span>
+                        <CloudDownload size={14} />
+                        <span>{didFail ? "Retry" : "Download"}</span>
                       </button>
                     )}
                   </div>
@@ -3391,6 +3705,7 @@ function MainApp({
             : ""
         }`}
         ref={playerPaneRef}
+        onScroll={handlePlayerPaneScroll}
       >
         <button
           type="button"
@@ -3497,11 +3812,11 @@ function MainApp({
                 <div className="native-now-utility">
                   <button
                     type="button"
-                    onClick={() => updateSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length])}
+                    onClick={() => setNativePlayerSheet("speed")}
                   >
                     <Gauge size={16} /> {speed}×
                   </button>
-                  <button type="button" onClick={() => setSleepSheetOpen(true)}>
+                  <button type="button" onClick={() => setNativePlayerSheet("sleep")}>
                     <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
                   </button>
                   <button type="button" onClick={() => openPlaybackView("details")}>
@@ -3509,7 +3824,10 @@ function MainApp({
                   </button>
                   <button
                     type="button"
-                    onClick={() => openPlaybackView("chapters")}
+                    onClick={() => {
+                      if (playbackBook) setSelectedBookId(playbackBook.id);
+                      setNativePlayerSheet("chapters");
+                    }}
                   >
                     <ListMusic size={16} /> Chapters
                   </button>
@@ -3573,13 +3891,13 @@ function MainApp({
                       </button>
                     ) : null}
                     {selectedBook.deviceBookId ? (
-                      <span className="download-btn active" aria-label="Imported from this device">
+                      <span className="download-btn active device-status" aria-label="Imported from this device">
                         <FolderOpen size={13} />
                         <span>On device</span>
                       </span>
                     ) : demoMode ? (
-                      <span className="download-btn active" aria-label="Included with the on-device demo">
-                        <CloudDownload size={13} />
+                      <span className="download-btn active device-status" aria-label="Included with the on-device demo">
+                        <CircleCheck size={13} />
                         <span>On device</span>
                       </span>
                     ) : isNativeApp() ? (
@@ -3641,7 +3959,11 @@ function MainApp({
                     );
                   })}
                 </h2>
-                <p>{bookSubtitle(selectedBook) || `${selectedBook.trackCount} tracks`}</p>
+                <p className="book-credits">
+                  {selectedBook.author ? <span>{selectedBook.author}</span> : null}
+                  {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
+                  {!selectedBook.author && !selectedBook.narrator ? <span>{selectedBook.trackCount} tracks</span> : null}
+                </p>
                 {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
                   <div className="book-runtime" aria-label="Total runtime">
                     <span className="book-runtime-label">Runtime</span>
@@ -3870,28 +4192,56 @@ function MainApp({
               </>
             ) : (
               <div className="book-preview-actions">
-                <button
-                  type="button"
-                  className="round-button primary"
-                  aria-label={`Play ${selectedBook.title}`}
-                  onClick={() => selectedBook.tracks[0] && selectTrack(selectedBook.tracks[0])}
-                >
-                  <Play size={30} fill="currentColor" />
-                </button>
-                <span className="preview-cta">
-                  {selectedBook.progress?.status === "inProgress"
-                    ? `Resume${
-                        formatDurationLabel(selectedBook.progress.remainingSeconds)
-                          ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                          : ""
-                      }`
-                    : selectedBook.progress?.status === "finished"
-                      ? "Read it again"
-                      : "Begin this reading"}
-                </span>
+                {native ? (
+                  <button
+                    type="button"
+                    className="preview-primary"
+                    aria-label={`Play ${selectedBook.title}`}
+                    onClick={() => selectedBook.tracks[0] && selectTrack(selectedBook.tracks[0])}
+                  >
+                    <span className="preview-primary-icon"><Play size={19} fill="currentColor" /></span>
+                    <span>
+                      {selectedBook.progress?.status === "inProgress"
+                        ? `Resume${
+                            formatDurationLabel(selectedBook.progress.remainingSeconds)
+                              ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                              : ""
+                          }`
+                        : selectedBook.progress?.status === "finished"
+                          ? "Read it again"
+                          : "Begin this reading"}
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="round-button primary"
+                      aria-label={`Play ${selectedBook.title}`}
+                      onClick={() => selectedBook.tracks[0] && selectTrack(selectedBook.tracks[0])}
+                    >
+                      <Play size={30} fill="currentColor" />
+                    </button>
+                    <span className="preview-cta">
+                      {selectedBook.progress?.status === "inProgress"
+                        ? `Resume${
+                            formatDurationLabel(selectedBook.progress.remainingSeconds)
+                              ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                              : ""
+                          }`
+                        : selectedBook.progress?.status === "finished"
+                          ? "Read it again"
+                          : "Begin this reading"}
+                    </span>
+                  </>
+                )}
                 {playbackBook && playbackBook.id !== selectedBook.id ? (
                   <button type="button" className="preview-return" onClick={scrollToPlayer}>
-                    Still playing · <em>{playbackBook.title}</em>
+                    {native ? (
+                      <><Play size={13} fill="currentColor" /><span>Return to <em>{playbackBook.title}</em></span></>
+                    ) : (
+                      <>Still playing · <em>{playbackBook.title}</em></>
+                    )}
                   </button>
                 ) : null}
               </div>
@@ -3951,12 +4301,15 @@ function MainApp({
             ) : null}
 
             {selectedBook.chapters.length > 0 ? (
-              <section className="track-list-section">
+              <section className="track-list-section" ref={trackListSectionRef}>
                 <button
                   type="button"
                   className="track-list-header track-list-toggle"
                   aria-expanded={chaptersOpen}
-                  onClick={() => setChaptersOpen((open) => !open)}
+                  onClick={() => setChaptersOpen((open) => {
+                    if (open) setShowChapterJumpTop(false);
+                    return !open;
+                  })}
                 >
                   <span className="title-of-contents">Embedded Chapters</span>
                   <span className="section-label">
@@ -3981,6 +4334,12 @@ function MainApp({
                   </div>
                 ) : null}
               </section>
+            ) : null}
+            {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
+              <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">
+                <ArrowUp size={16} />
+                <span>Top</span>
+              </button>
             ) : null}
           </>
         ) : (
@@ -4047,13 +4406,94 @@ function MainApp({
         </aside>
       ) : null}
 
-      {native && sleepSheetOpen ? (
+      {native && nativePlayerSheet === "speed" ? (
+        <div className="sleep-sheet-layer" role="presentation">
+          <button
+            type="button"
+            className="sleep-sheet-scrim"
+            aria-label="Close playback speed"
+            onClick={() => setNativePlayerSheet(null)}
+          />
+          <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
+            <div className="sleep-sheet-grabber" aria-hidden="true" />
+            <header>
+              <div>
+                <span className="eyebrow"><Gauge size={13} /> Cadence</span>
+                <h2 id="speed-sheet-title">Playback Speed</h2>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+                <X size={18} />
+              </button>
+            </header>
+            <p className="sleep-sheet-hint">Choose the pace that feels most natural for this reading.</p>
+            <div className="sleep-options">
+              {SPEEDS.map((option) => (
+                <button
+                  type="button"
+                  key={option}
+                  className={speed === option ? "selected" : ""}
+                  onClick={() => {
+                    haptic("light");
+                    updateSpeed(option);
+                    setNativePlayerSheet(null);
+                  }}
+                >
+                  <span>{option}×{option === 1 ? " · Normal" : ""}</span>
+                  {speed === option ? <em>Selected</em> : <ChevronRight size={17} />}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {native && nativePlayerSheet === "chapters" && playbackBook ? (
+        <div className="sleep-sheet-layer" role="presentation">
+          <button
+            type="button"
+            className="sleep-sheet-scrim"
+            aria-label="Close chapters"
+            onClick={() => setNativePlayerSheet(null)}
+          />
+          <section className="sleep-sheet chapter-sheet" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
+            <div className="sleep-sheet-grabber" aria-hidden="true" />
+            <header>
+              <div>
+                <span className="eyebrow"><ListMusic size={13} /> Contents</span>
+                <h2 id="chapter-sheet-title">Chapters</h2>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+                <X size={18} />
+              </button>
+            </header>
+            <p className="sleep-sheet-hint">{playbackBook.title} · {playbackBook.chapters.length} markers</p>
+            <div className="sleep-options chapter-sheet-options">
+              {playbackBook.chapters.map((chapter, index) => (
+                <button
+                  type="button"
+                  key={chapter.id}
+                  className={activeChapter?.id === chapter.id ? "selected" : ""}
+                  onClick={() => jumpToChapterFromSheet(chapter)}
+                >
+                  <span className="chapter-sheet-label">
+                    <small>{String(index + 1).padStart(2, "0")}</small>
+                    <strong>{chapter.title}</strong>
+                  </span>
+                  {activeChapter?.id === chapter.id ? <em>Playing</em> : <span className="chapter-sheet-time">{formatTime(chapter.startSeconds)}</span>}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {native && nativePlayerSheet === "sleep" ? (
         <div className="sleep-sheet-layer" role="presentation">
           <button
             type="button"
             className="sleep-sheet-scrim"
             aria-label="Close sleep timer"
-            onClick={() => setSleepSheetOpen(false)}
+            onClick={() => setNativePlayerSheet(null)}
           />
           <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="sleep-sheet-title">
             <div className="sleep-sheet-grabber" aria-hidden="true" />
@@ -4062,7 +4502,7 @@ function MainApp({
                 <span className="eyebrow"><Timer size={13} /> Nightfall</span>
                 <h2 id="sleep-sheet-title">Sleep Timer</h2>
               </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setSleepSheetOpen(false)}>
+              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
                 <X size={18} />
               </button>
             </header>
