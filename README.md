@@ -89,6 +89,10 @@ The script builds the web frontend and Swift executable, stages `dist/OperaLibre
 
 Use `./script/build_and_run.sh --verify` to build, launch, and confirm the app process started. The script also supports `--debug`, `--logs`, and `--telemetry`.
 
+## iOS app
+
+The iOS app is currently Testflight Only. Please enroll here: https://testflight.apple.com/join/x69Ffa33
+
 ### Jellyfin servers
 
 Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
