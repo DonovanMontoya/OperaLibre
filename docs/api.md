@@ -19,7 +19,7 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | --- | --- | --- |
 | `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. |
 | `GET` | `/api/auth/status` | Reports whether first-run setup is needed. |
-| `POST` | `/api/auth/setup` | One-time admin creation. Only accepted when no users exist. |
+| `POST` | `/api/auth/setup` | One-time owner creation. Only accepted when no users exist. |
 | `POST` | `/api/auth/login` | Exchange username + password for a session token. |
 
 ### Authenticated endpoints
@@ -36,11 +36,14 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/users` | List readers. |
-| `POST` | `/api/users` | Create a reader. |
-| `DELETE` | `/api/users/{user_id}` | Delete a reader. |
-| `POST` | `/api/users/{user_id}/password` | Reset a reader's password. |
+| `GET` | `/api/users` | List accounts and their role/Libation permissions. |
+| `POST` | `/api/users` | Create an account. Creating an admin or owner requires an owner. |
+| `DELETE` | `/api/users/{user_id}` | Delete an account. Admin/owner targets require an owner; the final owner is protected. |
+| `POST` | `/api/users/{user_id}/password` | Reset a password. Admin/owner targets require an owner. |
 | `PUT` | `/api/users/{user_id}/book-access` | Set a reader's allowed book IDs. Send `{ "allowedBookIds": null }` for the full library or an array for a restricted shelf. |
+| `PUT` | `/api/users/{user_id}/role` | Set owner/admin/reader status. Owner only. |
+| `PUT` | `/api/users/{user_id}/libation-access` | Set direct or approval-required Libation access. Admin targets require an owner. |
+| `PUT` | `/api/users/{user_id}/libation-approval` | Grant or revoke an administrator's request-approval permission. Owner only. |
 
 #### Library
 
@@ -92,17 +95,23 @@ Progress updates use JSON with the current track and timing fields:
 }
 ```
 
-#### Libation (optional, admin only)
+#### Libation (optional)
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/libation/status` | Configured accounts and their auth state. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. |
+| `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
+| `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
+| `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
+| `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |
+| `POST` | `/api/libation/requests/{asin}` | Submit a per-title approval request. |
+| `PUT` | `/api/libation/requests/{request_id}/decision` | Approve or decline another account's request. Approval permission required. |
 | `GET` | `/api/jobs` | List background jobs, newest first (the server keeps the most recent 50). |
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
-These endpoints require an administrator session. If Libation is not configured they respond with an explanatory error.
+Libation status, refresh, download-all, and jobs require an administrator. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
 
 ## Conventions
 

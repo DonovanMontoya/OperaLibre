@@ -63,6 +63,7 @@ import {
   getJob,
   getSyncMap,
   getLibationBooks,
+  getLibationAccess,
   getLibationStatus,
   getMe,
   getProgress,
@@ -79,12 +80,14 @@ import {
   exitLocalMode,
   liberateAllLibationBooks,
   liberateLibationBook,
+  listLibationRequests,
   listJobs,
   logout as apiLogout,
   mediaUrl,
   pingServer,
   readalongUrl,
   reconnectUsingServerAliases,
+  requestLibationBook,
   reportPlaybackStarted,
   removeServerAlias,
   rescanLibrary,
@@ -133,6 +136,7 @@ import type {
   Chapter,
   JobStatus,
   LibationBook,
+  LibationDownloadRequest,
   LibationStatus,
   SyncFragment,
   SyncMap,
@@ -145,6 +149,7 @@ const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
+const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 
 type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | null;
@@ -1506,6 +1511,11 @@ export default function App() {
     return () => setUnauthorizedHandler(null);
   }, [checkAuth]);
 
+  const handleCurrentUserChanged = useCallback((user: AuthUser) => {
+    cacheOfflineUser(user);
+    setAuthState({ phase: "ready", user });
+  }, []);
+
   if (authState.phase === "loading") {
     return (
       <main className="auth-shell startup-shell">
@@ -1570,6 +1580,7 @@ export default function App() {
   return (
     <MainApp
       currentUser={authState.user}
+      onCurrentUserChanged={handleCurrentUserChanged}
       onConnectServer={() => {
         exitLocalMode();
         setAuthState({ phase: "server", returnToLocal: true });
@@ -1600,10 +1611,12 @@ export default function App() {
 
 function MainApp({
   currentUser,
+  onCurrentUserChanged,
   onLogout,
   onConnectServer
 }: {
   currentUser: AuthUser;
+  onCurrentUserChanged: (user: AuthUser) => void;
   onLogout: () => void | Promise<void>;
   onConnectServer: () => void;
 }) {
@@ -1617,6 +1630,27 @@ function MainApp({
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOperaLibre || demoMode || localMode) {
+      return;
+    }
+    let cancelled = false;
+    const refreshCurrentUser = () => {
+      void getMe()
+        .then((user) => {
+          if (!cancelled) onCurrentUserChanged(user);
+        })
+        .catch(() => undefined);
+    };
+    const timer = window.setInterval(refreshCurrentUser, 30_000);
+    window.addEventListener("focus", refreshCurrentUser);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshCurrentUser);
+    };
+  }, [demoMode, isOperaLibre, localMode, onCurrentUserChanged]);
 
   function saveAlias(event: React.FormEvent) {
     event.preventDefault();
@@ -1685,6 +1719,9 @@ function MainApp({
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
+  const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
+  const libationDownloadRequestsRef = useRef<LibationDownloadRequest[]>([]);
+  const libationRequestsLoadedRef = useRef(false);
   const [libationLoading, setLibationLoading] = useState(false);
   const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
@@ -1703,6 +1740,7 @@ function MainApp({
   const refreshLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-sync");
   const downloadAllLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-liberate-all");
   const isRefreshingAudible = libationRefreshPending || !!refreshLibationJob;
+  const canBrowseLibation = isOperaLibre && (currentUser.isAdmin || (native && !!libationStatus?.enabled));
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -2053,17 +2091,29 @@ function MainApp({
   }, [loadBooks, syncJob]);
 
   const loadLibationStatus = useCallback(async () => {
-    if (!isOperaLibre || !currentUser.isAdmin) {
+    if (!isOperaLibre || (!currentUser.isAdmin && !native)) {
       setLibationStatus(null);
       return;
     }
     try {
-      const status = await getLibationStatus();
-      setLibationStatus(status);
+      if (currentUser.isAdmin) {
+        setLibationStatus(await getLibationStatus());
+      } else {
+        const access = await getLibationAccess();
+        setLibationStatus({
+          enabled: access.enabled,
+          cliPath: null,
+          libationFilesDir: null,
+          libraryRoot: "",
+          accounts: [],
+          authenticated: access.enabled,
+          message: access.enabled ? null : "Libation is not configured on this server."
+        });
+      }
     } catch {
       setLibationStatus(null);
     }
-  }, [currentUser.isAdmin, isOperaLibre]);
+  }, [currentUser.isAdmin, isOperaLibre, native]);
 
   const loadLibationBooks = useCallback(async (clearError = true) => {
     setLibationLoading(true);
@@ -2089,10 +2139,10 @@ function MainApp({
   }, [loadLibationStatus]);
 
   useEffect(() => {
-    if (currentUser.isAdmin) {
+    if (currentUser.isAdmin || native) {
       void loadLibationStatus();
     }
-  }, [currentUser.isAdmin, loadLibationStatus]);
+  }, [currentUser.isAdmin, loadLibationStatus, native]);
 
   useEffect(() => {
     if (!currentUser.isAdmin) {
@@ -2120,6 +2170,50 @@ function MainApp({
       void loadLibationBooks();
     }
   }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
+
+  useEffect(() => {
+    if (
+      librarySource !== "audible" ||
+      currentUser.libationAccess !== "approval"
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const refreshRequests = () => {
+      void listLibationRequests()
+        .then((requests) => {
+          if (cancelled) return;
+          const ownRequests = requests.filter((request) => request.userId === currentUser.id);
+          const prior = libationDownloadRequestsRef.current;
+          const newlyCompletedAsins = libationRequestsLoadedRef.current
+            ? ownRequests
+                .filter(
+                  (request) =>
+                    request.status === "completed" &&
+                    prior.find((item) => item.id === request.id)?.status !== "completed"
+                )
+                .map((request) => request.asin)
+            : [];
+          libationDownloadRequestsRef.current = ownRequests;
+          libationRequestsLoadedRef.current = true;
+          setLibationDownloadRequests(ownRequests);
+          const approvedAsins = ownRequests
+            .filter((request) => request.status === "approved" && request.jobId)
+            .map((request) => request.asin);
+          const activeAsins = [...approvedAsins, ...newlyCompletedAsins];
+          if (activeAsins.length > 0) {
+            setLibationFinalizingAsins((current) => new Set([...current, ...activeAsins]));
+          }
+        })
+        .catch(() => undefined);
+    };
+    refreshRequests();
+    const timer = window.setInterval(refreshRequests, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser.id, currentUser.libationAccess, librarySource]);
 
   useEffect(() => {
     if (!libationJobs.some(isPendingJob)) {
@@ -2231,9 +2325,11 @@ function MainApp({
 
         const now = Date.now();
         const failedAsins: string[] = [];
+        let confirmedDownload = false;
         for (const asin of remainingAsins) {
           const localBook = nextBooks.find((book) => book.asin === asin && !!book.localBookId);
           if (localBook) {
+            confirmedDownload = true;
             remainingAsins.delete(asin);
             libationFinalizationStartedRef.current.delete(asin);
             setLibationFinalizingAsins((current) => {
@@ -2244,11 +2340,18 @@ function MainApp({
             continue;
           }
           const startedAt = libationFinalizationStartedRef.current.get(asin) ?? now;
-          if (now - startedAt >= LIBATION_CONFIRM_TIMEOUT_MS) {
+          const timeout = currentUser.isAdmin
+            ? LIBATION_CONFIRM_TIMEOUT_MS
+            : LIBATION_READER_DOWNLOAD_TIMEOUT_MS;
+          if (now - startedAt >= timeout) {
             failedAsins.push(asin);
             remainingAsins.delete(asin);
             libationFinalizationStartedRef.current.delete(asin);
           }
+        }
+
+        if (confirmedDownload) {
+          window.setTimeout(() => void loadBooks(), 250);
         }
 
         if (failedAsins.length > 0) {
@@ -2285,7 +2388,7 @@ function MainApp({
         window.clearInterval(timer);
       }
     };
-  }, [libationFinalizationFailures, libationFinalizingAsins, libationJobs]);
+  }, [currentUser.isAdmin, libationFinalizationFailures, libationFinalizingAsins, libationJobs, loadBooks]);
 
   useEffect(() => {
     if (!playbackBook) {
@@ -3096,18 +3199,43 @@ function MainApp({
     });
     setLibationRequests((current) => new Set(current).add(book.asin));
     try {
+      let actingUser = currentUser;
+      if (isOperaLibre && !demoMode && !localMode) {
+        try {
+          actingUser = await getMe();
+          onCurrentUserChanged(actingUser);
+        } catch {
+          // Let the acquisition request surface a useful server or network
+          // error if the account refresh is temporarily unavailable.
+        }
+      }
+      if (actingUser.libationAccess === "approval") {
+        const request = await requestLibationBook(book.asin, book.title);
+        setLibationDownloadRequests((current) => {
+          const next = [request, ...current.filter((item) => item.id !== request.id)];
+          libationDownloadRequestsRef.current = next;
+          libationRequestsLoadedRef.current = true;
+          return next;
+        });
+        return;
+      }
       const created = await liberateLibationBook(book.asin);
-      trackLibationJob({
-        id: created.jobId,
-        kind: "libation-liberate",
-        targetId: book.asin,
-        status: "queued",
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        exitCode: null,
-        output: `Starting liberation for ${book.title}.`,
-        error: null
-      });
+      if (actingUser.isAdmin) {
+        trackLibationJob({
+          id: created.jobId,
+          kind: "libation-liberate",
+          targetId: book.asin,
+          status: "queued",
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          exitCode: null,
+          output: `Starting liberation for ${book.title}.`,
+          error: null
+        });
+      } else {
+        libationFinalizationStartedRef.current.set(book.asin, Date.now());
+        setLibationFinalizingAsins((current) => new Set([...current, book.asin]));
+      }
     } catch (error) {
       setLibationError(errorMessage(error, `The download could not be started for ${book.title}.`));
     } finally {
@@ -3193,7 +3321,7 @@ function MainApp({
         <strong>{currentUser.username}</strong>
         <span>
           {isOperaLibre
-            ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isAdmin ? "Administrator" : "Reader"
+            ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"
             : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         </span>
       </div>
@@ -3428,7 +3556,7 @@ function MainApp({
             </div>
           </div>
 
-          {isOperaLibre && currentUser.isAdmin ? (
+          {canBrowseLibation ? (
             <div className="source-toggle" role="group" aria-label="Library source">
               <button
                 type="button"
@@ -3494,7 +3622,7 @@ function MainApp({
                 )}
                 <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
               </button>
-              <button
+              {currentUser.libationAccess === "direct" ? <button
                 type="button"
                 onClick={() => void startAllLiberation()}
                 aria-busy={libationAllPending || !!downloadAllLibationJob}
@@ -3502,10 +3630,10 @@ function MainApp({
               >
                 {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
                 <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
-              </button>
+              </button> : null}
             </div>
 
-            <p className="libation-help">Refresh checks Audible for new purchases. Download adds a title to this OperaLibre library.</p>
+            <p className="libation-help">{currentUser.libationAccess === "direct" ? "Refresh checks Audible for new purchases. Download adds a title to this OperaLibre library." : "You can browse Audible, but each download requires approval from another authorized administrator or owner."}</p>
 
             {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
@@ -3547,6 +3675,17 @@ function MainApp({
               </div>
               );
             })}
+          </section>
+        ) : null}
+
+        {!currentUser.isAdmin && librarySource === "audible" ? (
+          <section className="libation-panel reader-libation-panel">
+            <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
+            <p>
+              {currentUser.libationAccess === "direct"
+                ? "Your administrator allows you to add titles directly to the shared library."
+                : "Choose Request on a title. An administrator must approve it before Libation downloads it."}
+            </p>
           </section>
         ) : null}
 
@@ -3620,6 +3759,11 @@ function MainApp({
             <div className="audible-list">
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
+                const downloadRequest = libationDownloadRequests.find(
+                  (request) => request.asin === book.asin && request.status !== "rejected"
+                );
+                const isAwaitingApproval = downloadRequest?.status === "pending";
+                const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
                 const pendingDownloadJob =
                   pendingLibationJobs.find(
                     (job) => job.kind === "libation-liberate" && job.targetId === book.asin
@@ -3666,28 +3810,33 @@ function MainApp({
                         <CircleCheck size={14} />
                         <span>In library</span>
                       </button>
-                    ) : isStarting || isQueued || isDownloading || isFinalizing ? (
+                    ) : isAwaitingApproval ? (
+                      <span className="audible-download-status queued" role="status" aria-label={`Requested ${book.title}`}>
+                        <List size={14} />
+                        <span>Requested</span>
+                      </span>
+                    ) : isStarting || isQueued || isDownloading || isFinalizing || (isApprovedRequest && !finalizationFailed) ? (
                       <span
                         className={`audible-download-status ${
-                          isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing ? "finalizing" : "starting"
+                          isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing || isApprovedRequest ? "finalizing" : "starting"
                         }`}
                         role="status"
                         aria-label={`${
-                          isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing ? "Adding to library" : "Starting download"
+                          isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding to library" : "Starting download"
                         } ${book.title}`}
                       >
                         {isQueued ? <List size={14} /> : <LoaderCircle size={14} className="spin-icon" />}
-                        <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing ? "Adding" : "Starting"}</span>
+                        <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding" : "Starting"}</span>
                       </span>
                     ) : (
                       <button
                         type="button"
                         className={`audible-download-action ${didFail ? "retry" : ""}`}
-                        aria-label={`${didFail ? "Retry download" : "Download"} ${book.title}`}
+                        aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"} ${book.title}`}
                         onClick={() => void startLiberation(book)}
                       >
                         <CloudDownload size={14} />
-                        <span>{didFail ? "Retry" : "Download"}</span>
+                        <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"}</span>
                       </button>
                     )}
                   </div>
@@ -4860,7 +5009,7 @@ function MainApp({
             <div className="settings-kv">
               <span>Signed in as</span>
               <span className="settings-value">
-                {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isAdmin ? "Administrator" : "Reader"}
+                {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"}
               </span>
             </div>
             {!demoMode && !localMode ? <div className="server-aliases">

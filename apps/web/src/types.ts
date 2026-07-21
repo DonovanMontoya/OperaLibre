@@ -162,6 +162,26 @@ export type LibationBook = {
   localBookId: string | null;
 };
 
+export type LibationAccess = "direct" | "approval";
+
+export type LibationAccessStatus = {
+  enabled: boolean;
+  libationAccess: LibationAccess;
+};
+
+export type LibationDownloadRequest = {
+  id: string;
+  userId: string;
+  username: string;
+  asin: string;
+  title: string;
+  status: "pending" | "approved" | "rejected" | string;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  jobId: string | null;
+};
+
 export type JobStatus = {
   id: string;
   kind: string;
@@ -182,7 +202,10 @@ export type AuthUser = {
   id: string;
   username: string;
   isAdmin: boolean;
+  isOwner: boolean;
+  canApproveLibationRequests: boolean;
   allowedBookIds: string[] | null;
+  libationAccess: LibationAccess;
   createdAt: string;
 };
 

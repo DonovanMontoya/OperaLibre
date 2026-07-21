@@ -9,7 +9,7 @@ The server requires sign-in before any audiobook data is served. Accounts, sessi
 
 ## First-run setup
 
-The first browser to load the app sees a one-time setup form that creates the initial administrator account. After that, the home screen is a standard sign-in form. There is no way to skip auth — even the library list is gated.
+The first browser to load the app sees a one-time setup form that creates the initial owner account. After that, the home screen is a standard sign-in form. There is no way to skip auth — even the library list is gated.
 
 If you ever delete `users.json`, the server returns to first-run mode on the next request.
 
@@ -25,18 +25,27 @@ Sessions are persisted to disk, so restarting the server does not sign anyone ou
 
 ## Roles
 
-- **Administrator** — can add and remove readers, reset any password, upload books, run library rescans and readalong sync generation, and (if enabled) drive the Libation integration.
+- **Owner** — has full administrator access and can promote or demote owners and administrators. Owners always have direct Libation downloads and request-approval permission.
+- **Administrator** — can add and remove readers, reset reader passwords, upload books, and run library operations. An owner separately chooses whether each administrator downloads directly or requests each title, and whether they can approve requests.
 - **Reader** — can browse, stream, and update their own progress and password.
 
-The first account created is always an administrator.
+The first account created is always an owner. When upgrading an existing server, the oldest existing administrator becomes the initial owner; existing administrators retain direct-download and approval permissions.
 
-## Managing readers
+## Managing accounts
 
-From the web app, open the avatar menu in the library pane and choose **Manage readers**. From there an admin can:
+From the web app, open **Administration → Users & access**. Owners can:
+
+- Promote or demote accounts between owner, administrator, and reader
+- Choose direct downloads or approval-required requests for each administrator or reader
+- Grant or revoke request-approval permission for administrators
+- Create, reset, and remove administrator accounts
+
+Administrators can:
 
 - Add a new reader (username + initial password)
 - Remove a reader (their progress is also removed)
-- Reset any reader's password
+- Reset a reader's password
+- Choose whether a reader can download Libation titles directly or must request approval for each title
 
 Each reader has independent progress, so a household can share one server without stepping on each other's bookmarks.
 
@@ -59,6 +68,6 @@ Accounts are plain JSON on disk, so a lost admin password is recoverable:
 2. Open `data/users.json` and delete the offending user object — or delete the whole file to return to first-run setup.
 3. Restart the server.
 
-If you delete just one user, another admin can create them again with a new password. If you delete the file, the next browser to load the app gets the setup form.
+If you delete just one user, an authorized administrator can create them again with a new password. The server will not allow the final owner to be deleted or demoted. If you delete the file, the next browser to load the app gets the setup form.
 
 > Avoid hand-editing the password hash. Argon2 hashes include parameters and salts; let the server generate them.

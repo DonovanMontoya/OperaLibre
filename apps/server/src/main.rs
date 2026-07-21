@@ -66,6 +66,8 @@ const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
 const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_FILES: usize = 1_000;
 const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
+const MAX_PENDING_LIBATION_REQUESTS_PER_USER: usize = 100;
+const MAX_TRACKED_LIBATION_REQUESTS: usize = 1_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -75,6 +77,7 @@ struct AppState {
     sessions_file: PathBuf,
     activity_file: PathBuf,
     metadata_overrides_file: PathBuf,
+    libation_requests_file: PathBuf,
     libation_config: LibationConfig,
     alignment_config: AlignmentConfig,
     sync_dir: PathBuf,
@@ -84,6 +87,7 @@ struct AppState {
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
+    libation_requests: Arc<RwLock<LibationRequestStore>>,
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
@@ -144,8 +148,14 @@ struct User {
     username: String,
     password_hash: String,
     is_admin: bool,
+    #[serde(default)]
+    is_owner: bool,
+    #[serde(default)]
+    can_approve_libation_requests: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     allowed_book_ids: Option<Vec<String>>,
+    #[serde(default)]
+    libation_access: LibationAccess,
     created_at: String,
 }
 
@@ -155,7 +165,10 @@ struct UserPublic {
     id: String,
     username: String,
     is_admin: bool,
+    is_owner: bool,
+    can_approve_libation_requests: bool,
     allowed_book_ids: Option<Vec<String>>,
+    libation_access: LibationAccess,
     created_at: String,
 }
 
@@ -164,17 +177,36 @@ impl From<&User> for UserPublic {
         Self {
             id: user.id.clone(),
             username: user.username.clone(),
-            is_admin: user.is_admin,
+            is_admin: user.is_admin || user.is_owner,
+            is_owner: user.is_owner,
+            can_approve_libation_requests: user.is_owner
+                || (user.is_admin && user.can_approve_libation_requests),
             allowed_book_ids: user.allowed_book_ids.clone(),
+            libation_access: if user.is_owner {
+                LibationAccess::Direct
+            } else {
+                user.libation_access
+            },
             created_at: user.created_at.clone(),
         }
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct UsersStore {
     #[serde(default)]
+    permissions_version: u32,
+    #[serde(default)]
     users: Vec<User>,
+}
+
+impl Default for UsersStore {
+    fn default() -> Self {
+        Self {
+            permissions_version: 1,
+            users: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,7 +226,77 @@ struct AuthUser {
     id: String,
     username: String,
     is_admin: bool,
+    is_owner: bool,
+    can_approve_libation_requests: bool,
     allowed_book_ids: Option<Vec<String>>,
+    libation_access: LibationAccess,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum LibationAccess {
+    Direct,
+    #[default]
+    Approval,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct LibationRequestStore {
+    #[serde(default)]
+    requests: Vec<LibationDownloadRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationDownloadRequest {
+    id: String,
+    user_id: String,
+    username: String,
+    asin: String,
+    title: String,
+    status: String,
+    requested_at: String,
+    decided_at: Option<String>,
+    decided_by: Option<String>,
+    job_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateLibationAccessRequest {
+    libation_access: LibationAccess,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateUserRoleRequest {
+    is_admin: bool,
+    #[serde(default)]
+    is_owner: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateLibationApprovalRequest {
+    can_approve_libation_requests: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateLibationDownloadRequest {
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecideLibationDownloadRequest {
+    approved: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationAccessResponse {
+    enabled: bool,
+    libation_access: LibationAccess,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +320,12 @@ struct CreateUserRequest {
     password: String,
     #[serde(default)]
     is_admin: bool,
+    #[serde(default)]
+    is_owner: bool,
+    #[serde(default)]
+    can_approve_libation_requests: bool,
+    #[serde(default)]
+    libation_access: Option<LibationAccess>,
     #[serde(default)]
     allowed_book_ids: Option<Vec<String>>,
 }
@@ -553,6 +661,7 @@ struct ServerConfig {
     sessions_file: PathBuf,
     activity_file: PathBuf,
     metadata_overrides_file: PathBuf,
+    libation_requests_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
     alignment_cli_path: Option<PathBuf>,
@@ -594,6 +703,7 @@ impl ServerConfig {
             config_path_value(&values, &config_dir, "metadata_overrides_file")
                 .or_else(|| env_path_value("OPERALIBRE_METADATA_OVERRIDES_FILE"))
                 .unwrap_or_else(|| data_dir.join("metadata-overrides.json"));
+        let libation_requests_file = data_dir.join("libation-requests.json");
 
         Ok(Self {
             host: config_string_value(&values, "host")
@@ -609,6 +719,7 @@ impl ServerConfig {
             sessions_file,
             activity_file,
             metadata_overrides_file,
+            libation_requests_file,
             libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
@@ -779,6 +890,7 @@ async fn main() -> anyhow::Result<()> {
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
     let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
+    let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
     if users_store.users.is_empty() {
         match fs::remove_file(&config.progress_file).await {
             Ok(_) => tracing::info!(
@@ -801,6 +913,7 @@ async fn main() -> anyhow::Result<()> {
         sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
+        libation_requests_file: config.libation_requests_file.clone(),
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
         sync_dir: config.data_dir.join("sync"),
@@ -810,6 +923,7 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
+        libation_requests: Arc::new(RwLock::new(libation_requests)),
         progress_write_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
@@ -835,6 +949,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
         .route("/api/users/{user_id}/book-access", put(update_book_access))
+        .route("/api/users/{user_id}/role", put(update_user_role))
+        .route(
+            "/api/users/{user_id}/libation-access",
+            put(update_libation_access),
+        )
+        .route(
+            "/api/users/{user_id}/libation-approval",
+            put(update_libation_approval),
+        )
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
         .route(
@@ -842,6 +965,16 @@ async fn main() -> anyhow::Result<()> {
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/libation/status", get(libation_status))
+        .route("/api/libation/access", get(get_libation_access))
+        .route("/api/libation/requests", get(list_libation_requests))
+        .route(
+            "/api/libation/requests/{asin}",
+            post(create_libation_download_request),
+        )
+        .route(
+            "/api/libation/requests/{request_id}/decision",
+            put(decide_libation_download_request),
+        )
         .route("/api/libation/books", get(list_libation_books))
         .route(
             "/api/libation/covers/{picture_id}",
@@ -1119,11 +1252,242 @@ async fn libation_status(
     Ok(Json(read_libation_status(&state).await))
 }
 
+async fn get_libation_access(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Json<LibationAccessResponse> {
+    Json(LibationAccessResponse {
+        enabled: state.libation_config.enabled(),
+        libation_access: if auth.is_owner {
+            LibationAccess::Direct
+        } else {
+            auth.libation_access
+        },
+    })
+}
+
+async fn list_libation_requests(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Json<Vec<LibationDownloadRequest>> {
+    let requests = state.libation_requests.read().await;
+    let mut visible = requests
+        .requests
+        .iter()
+        .filter(|request| auth.can_approve_libation_requests || request.user_id == auth.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    visible.sort_by_key(|request| {
+        (
+            request.status != "pending",
+            std::cmp::Reverse(request.requested_at.clone()),
+        )
+    });
+    Json(visible)
+}
+
+async fn create_libation_download_request(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(asin): Path<String>,
+    Json(payload): Json<CreateLibationDownloadRequest>,
+) -> Result<Json<LibationDownloadRequest>, ApiError> {
+    if auth.libation_access != LibationAccess::Approval {
+        return Err(ApiError::bad_request(
+            "This account can start Libation downloads without an approval request.",
+        ));
+    }
+    if !state.libation_config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation is not configured on this server.",
+        ));
+    }
+    let asin = normalize_asin(&asin)
+        .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    let title = payload.title.trim();
+    if title.is_empty() || title.chars().count() > 500 {
+        return Err(ApiError::bad_request(
+            "The requested book title must be between 1 and 500 characters.",
+        ));
+    }
+
+    let mut requests = state.libation_requests.write().await;
+    if let Some(existing) = requests.requests.iter().find(|request| {
+        request.user_id == auth.id && request.asin == asin && request.status == "pending"
+    }) {
+        return Ok(Json(existing.clone()));
+    }
+    if requests
+        .requests
+        .iter()
+        .filter(|request| request.user_id == auth.id && request.status == "pending")
+        .count()
+        >= MAX_PENDING_LIBATION_REQUESTS_PER_USER
+    {
+        return Err(ApiError::too_many_requests(
+            "This reader has too many pending Libation requests.",
+        ));
+    }
+    while requests.requests.len() >= MAX_TRACKED_LIBATION_REQUESTS {
+        let Some(index) = requests
+            .requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| request.status != "pending")
+            .min_by_key(|(_, request)| &request.requested_at)
+            .map(|(index, _)| index)
+        else {
+            return Err(ApiError::too_many_requests(
+                "The Libation request queue is full.",
+            ));
+        };
+        requests.requests.remove(index);
+    }
+    let request = LibationDownloadRequest {
+        id: stable_id(&format!(
+            "libation-request:{}:{}:{}",
+            auth.id,
+            asin,
+            now_rfc3339ish()
+        )),
+        user_id: auth.id,
+        username: auth.username,
+        asin,
+        title: title.to_string(),
+        status: "pending".to_string(),
+        requested_at: now_rfc3339ish(),
+        decided_at: None,
+        decided_by: None,
+        job_id: None,
+    };
+    requests.requests.push(request.clone());
+    write_libation_requests(&state.libation_requests_file, &requests).await?;
+    Ok(Json(request))
+}
+
+async fn decide_libation_download_request(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(request_id): Path<String>,
+    Json(payload): Json<DecideLibationDownloadRequest>,
+) -> Result<Json<LibationDownloadRequest>, ApiError> {
+    require_libation_approver(&auth)?;
+    if payload.approved && !state.libation_config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation is not configured on this server.",
+        ));
+    }
+
+    let request = {
+        let mut requests = state.libation_requests.write().await;
+        let request = requests
+            .requests
+            .iter_mut()
+            .find(|request| request.id == request_id)
+            .ok_or(ApiError::not_found("Download request not found."))?;
+        if request.user_id == auth.id {
+            return Err(ApiError::forbidden(
+                "A requester cannot decide their own Libation request.",
+            ));
+        }
+        if request.status != "pending" {
+            return Err(ApiError::conflict(
+                "This download request has already been decided.",
+            ));
+        }
+        request.status = if payload.approved {
+            "approved"
+        } else {
+            "rejected"
+        }
+        .to_string();
+        request.decided_at = Some(now_rfc3339ish());
+        request.decided_by = Some(auth.username);
+        let request = request.clone();
+        write_libation_requests(&state.libation_requests_file, &requests).await?;
+        request
+    };
+
+    if !payload.approved {
+        return Ok(Json(request));
+    }
+
+    let created =
+        match start_libation_download(&state, request.asin.clone(), Some(request.user_id.clone()))
+            .await
+        {
+            Ok(created) => created.0,
+            Err(error) => {
+                let mut requests = state.libation_requests.write().await;
+                if let Some(stored) = requests
+                    .requests
+                    .iter_mut()
+                    .find(|item| item.id == request.id)
+                {
+                    stored.status = "pending".to_string();
+                    stored.decided_at = None;
+                    stored.decided_by = None;
+                }
+                let _ = write_libation_requests(&state.libation_requests_file, &requests).await;
+                return Err(error);
+            }
+        };
+    let mut requests = state.libation_requests.write().await;
+    let stored = requests
+        .requests
+        .iter_mut()
+        .find(|item| item.id == request.id)
+        .ok_or(ApiError::not_found("Download request not found."))?;
+    stored.job_id = Some(created.job_id);
+    let response = stored.clone();
+    write_libation_requests(&state.libation_requests_file, &requests).await?;
+    drop(requests);
+    schedule_libation_request_completion(
+        state.clone(),
+        response.id.clone(),
+        response.job_id.clone().unwrap_or_default(),
+    );
+    Ok(Json(response))
+}
+
+fn schedule_libation_request_completion(state: AppState, request_id: String, job_id: String) {
+    tokio::spawn(async move {
+        let final_status = loop {
+            let status = state
+                .jobs
+                .read()
+                .await
+                .get(&job_id)
+                .map(|job| job.status.clone());
+            match status.as_deref() {
+                Some("completed") => break "completed",
+                Some("failed") | None => break "failed",
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        };
+        let mut requests = state.libation_requests.write().await;
+        let Some(request) = requests
+            .requests
+            .iter_mut()
+            .find(|request| request.id == request_id && request.status == "approved")
+        else {
+            return;
+        };
+        request.status = final_status.to_string();
+        if let Err(error) = write_libation_requests(&state.libation_requests_file, &requests).await
+        {
+            tracing::warn!(
+                "failed to persist Libation request completion: {}",
+                error.message
+            );
+        }
+    });
+}
+
 async fn list_libation_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<LibationBook>>, ApiError> {
-    require_admin(&auth)?;
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -1137,6 +1501,14 @@ async fn list_libation_books(
     let library = state.library.read().await;
     for book in books.iter_mut() {
         book.local_book_id = match_local_book(&library.books, book);
+        if !auth.is_admin
+            && book
+                .local_book_id
+                .as_deref()
+                .is_some_and(|book_id| !can_access_book(&auth, book_id))
+        {
+            book.local_book_id = None;
+        }
         if let Some(local_book_id) = &book.local_book_id
             && library.cover_art.contains_key(local_book_id)
         {
@@ -1165,7 +1537,7 @@ async fn get_libation_cover_art(
     Path(picture_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    require_admin(&auth)?;
+    let _ = auth;
     if !valid_libation_picture_id(&picture_id) {
         return Err(ApiError::not_found("Libation cover art not found"));
     }
@@ -1320,10 +1692,22 @@ async fn liberate_libation_book(
     Extension(auth): Extension<AuthUser>,
     Path(asin): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    require_admin(&auth)?;
     let asin = normalize_asin(&asin)
         .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    if auth.libation_access != LibationAccess::Direct {
+        return Err(ApiError::forbidden(
+            "This account must request approval for Libation downloads.",
+        ));
+    }
+    let grant_to_user = (!auth.is_admin).then_some(auth.id);
+    start_libation_download(&state, asin, grant_to_user).await
+}
 
+async fn start_libation_download(
+    state: &AppState,
+    asin: String,
+    grant_to_user: Option<String>,
+) -> Result<Json<JobCreated>, ApiError> {
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -1331,8 +1715,34 @@ async fn liberate_libation_book(
         ));
     }
 
+    if let Some(user_id) = grant_to_user.as_deref() {
+        let local_book_id = state
+            .library
+            .read()
+            .await
+            .books
+            .iter()
+            .find(|book| {
+                book.asin
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&asin))
+            })
+            .map(|book| book.id.clone());
+        if let Some(book_id) = local_book_id {
+            grant_user_book_access(state, user_id, &book_id).await?;
+            let (job_id, _) =
+                create_job_with_state(state, "libation-access-grant", Some(asin), "running", false)
+                    .await;
+            update_job_finished(state, &job_id, "completed", None, None).await;
+            return Ok(Json(JobCreated { job_id }));
+        }
+    }
+
     let (job_id, created) =
-        create_libation_job(&state, "libation-liberate", Some(asin.clone())).await;
+        create_libation_job(state, "libation-liberate", Some(asin.clone())).await;
+    if let Some(user_id) = grant_to_user {
+        schedule_libation_access_grant(state.clone(), job_id.clone(), asin.clone(), user_id);
+    }
     if !created {
         return Ok(Json(JobCreated { job_id }));
     }
@@ -1433,11 +1843,79 @@ async fn liberate_libation_book(
     Ok(Json(JobCreated { job_id }))
 }
 
+fn schedule_libation_access_grant(state: AppState, job_id: String, asin: String, user_id: String) {
+    tokio::spawn(async move {
+        loop {
+            let status = state
+                .jobs
+                .read()
+                .await
+                .get(&job_id)
+                .map(|job| job.status.clone());
+            match status.as_deref() {
+                Some("completed") => break,
+                Some("failed") | None => return,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
+
+        let book_id = state
+            .library
+            .read()
+            .await
+            .books
+            .iter()
+            .find(|book| {
+                book.asin
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&asin))
+            })
+            .map(|book| book.id.clone());
+        let Some(book_id) = book_id else { return };
+
+        if let Err(error) = grant_user_book_access(&state, &user_id, &book_id).await {
+            tracing::warn!(
+                "failed to grant requested Libation book access: {}",
+                error.message
+            );
+        }
+    });
+}
+
+async fn grant_user_book_access(
+    state: &AppState,
+    user_id: &str,
+    book_id: &str,
+) -> Result<(), ApiError> {
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    let Some(allowed_book_ids) = user.allowed_book_ids.as_mut() else {
+        return Ok(());
+    };
+    if allowed_book_ids
+        .iter()
+        .any(|candidate| candidate == book_id)
+    {
+        return Ok(());
+    }
+    allowed_book_ids.push(book_id.to_string());
+    write_users_store(&state.users_file, &users).await
+}
+
 async fn liberate_all_libation_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
     require_admin(&auth)?;
+    if auth.libation_access != LibationAccess::Direct {
+        return Err(ApiError::forbidden(
+            "This administrator must request approval for Libation downloads.",
+        ));
+    }
     let config = state.libation_config.clone();
     if !config.enabled() {
         return Err(ApiError::bad_request(
@@ -4315,14 +4793,85 @@ fn build_streak_calendar(activity: &BTreeMap<String, f64>, days: i64) -> Vec<Str
 
 async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
     match fs::read_to_string(users_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Ok(contents) => {
+            let mut store: UsersStore = serde_json::from_str(&contents)?;
+            if migrate_users_permissions(&mut store) {
+                write_users_store(users_file, &store)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
+            }
+            Ok(store)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(UsersStore::default()),
         Err(error) => Err(error.into()),
     }
 }
 
+fn migrate_users_permissions(store: &mut UsersStore) -> bool {
+    if store.permissions_version >= 1 {
+        return false;
+    }
+    for user in &mut store.users {
+        if user.is_admin {
+            user.libation_access = LibationAccess::Direct;
+            user.can_approve_libation_requests = true;
+        }
+    }
+    if !store.users.iter().any(|user| user.is_owner) {
+        if let Some(first_admin) = store.users.iter_mut().find(|user| user.is_admin) {
+            first_admin.is_owner = true;
+        } else if let Some(first_user) = store.users.first_mut() {
+            first_user.is_admin = true;
+            first_user.is_owner = true;
+            first_user.libation_access = LibationAccess::Direct;
+            first_user.can_approve_libation_requests = true;
+        }
+    }
+    store.permissions_version = 1;
+    true
+}
+
 async fn write_users_store(users_file: &FsPath, store: &UsersStore) -> Result<(), ApiError> {
     write_json_atomic(users_file, store).await
+}
+
+async fn load_libation_requests(path: &FsPath) -> anyhow::Result<LibationRequestStore> {
+    match fs::read_to_string(path).await {
+        Ok(contents) => {
+            let mut store: LibationRequestStore = serde_json::from_str(&contents)?;
+            if recover_interrupted_libation_requests(&mut store) {
+                write_libation_requests(path, &store)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
+            }
+            Ok(store)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(LibationRequestStore::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn recover_interrupted_libation_requests(store: &mut LibationRequestStore) -> bool {
+    let mut changed = false;
+    for request in &mut store.requests {
+        if request.status == "approved" {
+            request.status = "pending".to_string();
+            request.decided_at = None;
+            request.decided_by = None;
+            request.job_id = None;
+            changed = true;
+        }
+    }
+    changed
+}
+
+async fn write_libation_requests(
+    path: &FsPath,
+    store: &LibationRequestStore,
+) -> Result<(), ApiError> {
+    write_json_atomic(path, store).await
 }
 
 async fn load_sessions_store(sessions_file: &FsPath) -> anyhow::Result<HashMap<String, Session>> {
@@ -4474,8 +5023,16 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
         .map(|user| AuthUser {
             id: user.id.clone(),
             username: user.username.clone(),
-            is_admin: user.is_admin,
+            is_admin: user.is_admin || user.is_owner,
+            is_owner: user.is_owner,
+            can_approve_libation_requests: user.is_owner
+                || (user.is_admin && user.can_approve_libation_requests),
             allowed_book_ids: user.allowed_book_ids.clone(),
+            libation_access: if user.is_owner {
+                LibationAccess::Direct
+            } else {
+                user.libation_access
+            },
         })
 }
 
@@ -4503,7 +5060,10 @@ async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> Json<
                 id: auth.id,
                 username: auth.username,
                 is_admin: auth.is_admin,
+                is_owner: auth.is_owner,
+                can_approve_libation_requests: auth.can_approve_libation_requests,
                 allowed_book_ids: auth.allowed_book_ids,
+                libation_access: auth.libation_access,
                 created_at: String::new(),
             })
     } else {
@@ -4538,12 +5098,20 @@ async fn setup_admin(
         username,
         password_hash: hash_password(&payload.password)?,
         is_admin: true,
+        is_owner: true,
+        can_approve_libation_requests: true,
         allowed_book_ids: None,
+        libation_access: LibationAccess::Direct,
         created_at: now_rfc3339ish(),
     };
 
     {
         let mut users = state.users.write().await;
+        if !users.users.is_empty() {
+            return Err(ApiError::conflict(
+                "Setup was completed by another request. Sign in instead.",
+            ));
+        }
         users.users.push(new_user.clone());
         write_users_store(&state.users_file, &users).await?;
     }
@@ -4691,7 +5259,10 @@ async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
         id: auth.id,
         username: auth.username,
         is_admin: auth.is_admin,
+        is_owner: auth.is_owner,
+        can_approve_libation_requests: auth.can_approve_libation_requests,
         allowed_book_ids: auth.allowed_book_ids,
+        libation_access: auth.libation_access,
         created_at: String::new(),
     })
 }
@@ -4701,6 +5272,24 @@ fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
         Ok(())
     } else {
         Err(ApiError::forbidden("Administrator access is required."))
+    }
+}
+
+fn require_owner(auth: &AuthUser) -> Result<(), ApiError> {
+    if auth.is_owner {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Owner access is required."))
+    }
+}
+
+fn require_libation_approver(auth: &AuthUser) -> Result<(), ApiError> {
+    if auth.can_approve_libation_requests {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "Permission to approve Libation requests is required.",
+        ))
     }
 }
 
@@ -4737,6 +5326,13 @@ async fn create_user(
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
     require_admin(&auth)?;
+    let is_owner = payload.is_owner;
+    let is_admin = payload.is_admin || is_owner;
+    if is_admin && !auth.is_owner {
+        return Err(ApiError::forbidden(
+            "Only an owner can create an administrator or owner account.",
+        ));
+    }
     let username = normalize_username(&payload.username);
     validate_username(&username)?;
     validate_password(&payload.password)?;
@@ -4754,11 +5350,23 @@ async fn create_user(
         id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
         username,
         password_hash: hash_password(&payload.password)?,
-        is_admin: payload.is_admin,
-        allowed_book_ids: if payload.is_admin {
+        is_admin,
+        is_owner,
+        can_approve_libation_requests: is_owner
+            || (is_admin && payload.can_approve_libation_requests),
+        allowed_book_ids: if is_admin {
             None
         } else {
             payload.allowed_book_ids
+        },
+        libation_access: if is_owner {
+            LibationAccess::Direct
+        } else {
+            payload.libation_access.unwrap_or(if is_admin {
+                LibationAccess::Direct
+            } else {
+                LibationAccess::Approval
+            })
         },
         created_at: now_rfc3339ish(),
     };
@@ -4780,11 +5388,20 @@ async fn delete_user(
     }
 
     let mut users = state.users.write().await;
-    let original_len = users.users.len();
-    users.users.retain(|user| user.id != user_id);
-    if users.users.len() == original_len {
-        return Err(ApiError::not_found("User not found."));
+    let target = users
+        .users
+        .iter()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    if (target.is_admin || target.is_owner) && !auth.is_owner {
+        return Err(ApiError::forbidden(
+            "Only an owner can delete an administrator or owner.",
+        ));
     }
+    if target.is_owner && users.users.iter().filter(|user| user.is_owner).count() <= 1 {
+        return Err(ApiError::conflict("The final owner cannot be deleted."));
+    }
+    users.users.retain(|user| user.id != user_id);
     write_users_store(&state.users_file, &users).await?;
     drop(users);
 
@@ -4822,6 +5439,12 @@ async fn change_password(
         .iter_mut()
         .find(|user| user.id == user_id)
         .ok_or(ApiError::not_found("User not found."))?;
+
+    if !changing_self && (user.is_admin || user.is_owner) && !auth.is_owner {
+        return Err(ApiError::forbidden(
+            "Only an owner can reset an administrator or owner's password.",
+        ));
+    }
 
     if changing_self {
         let current = payload.current_password.unwrap_or_default();
@@ -4889,6 +5512,102 @@ async fn update_book_access(
     } else {
         allowed_book_ids
     };
+    let public = UserPublic::from(&*user);
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(public))
+}
+
+async fn update_libation_access(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<UpdateLibationAccessRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    require_admin(&auth)?;
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    if user.is_owner {
+        return Err(ApiError::bad_request(
+            "Owners always have direct Libation access.",
+        ));
+    }
+    if user.is_admin && !auth.is_owner {
+        return Err(ApiError::forbidden(
+            "Only an owner can change an administrator's Libation access.",
+        ));
+    }
+    user.libation_access = payload.libation_access;
+    let public = UserPublic::from(&*user);
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(public))
+}
+
+async fn update_user_role(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<UpdateUserRoleRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    require_owner(&auth)?;
+    let mut users = state.users.write().await;
+    let target_index = users
+        .users
+        .iter()
+        .position(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    let was_owner = users.users[target_index].is_owner;
+    if was_owner
+        && !payload.is_owner
+        && users.users.iter().filter(|user| user.is_owner).count() <= 1
+    {
+        return Err(ApiError::conflict("The final owner cannot be demoted."));
+    }
+
+    let user = &mut users.users[target_index];
+    user.is_owner = payload.is_owner;
+    user.is_admin = payload.is_admin || payload.is_owner;
+    if user.is_owner {
+        user.libation_access = LibationAccess::Direct;
+        user.can_approve_libation_requests = true;
+        user.allowed_book_ids = None;
+    } else if user.is_admin {
+        user.allowed_book_ids = None;
+    } else {
+        user.can_approve_libation_requests = false;
+    }
+    let public = UserPublic::from(&*user);
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(public))
+}
+
+async fn update_libation_approval(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<UpdateLibationApprovalRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    require_owner(&auth)?;
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == user_id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    if !user.is_admin && !user.is_owner {
+        return Err(ApiError::bad_request(
+            "Only administrators can approve Libation requests.",
+        ));
+    }
+    if user.is_owner && !payload.can_approve_libation_requests {
+        return Err(ApiError::bad_request(
+            "Owners always have permission to approve Libation requests.",
+        ));
+    }
+    user.can_approve_libation_requests = payload.can_approve_libation_requests;
     let public = UserPublic::from(&*user);
     write_users_store(&state.users_file, &users).await?;
     Ok(Json(public))
@@ -5034,7 +5753,10 @@ mod tests {
             id: "reader".to_string(),
             username: "reader".to_string(),
             is_admin: false,
+            is_owner: false,
+            can_approve_libation_requests: false,
             allowed_book_ids: None,
+            libation_access: super::LibationAccess::Approval,
         };
         assert!(can_access_book(&unrestricted, "book-a"));
 
@@ -5051,6 +5773,90 @@ mod tests {
             ..unrestricted
         };
         assert!(can_access_book(&admin, "book-b"));
+    }
+
+    #[test]
+    fn legacy_readers_default_to_per_download_libation_approval() {
+        let user: super::User = serde_json::from_value(serde_json::json!({
+            "id": "reader",
+            "username": "reader",
+            "passwordHash": "unused",
+            "isAdmin": false,
+            "allowedBookIds": null,
+            "createdAt": "0"
+        }))
+        .unwrap();
+        assert_eq!(user.libation_access, super::LibationAccess::Approval);
+    }
+
+    #[test]
+    fn legacy_permissions_promote_the_first_admin_to_owner() {
+        let mut store: super::UsersStore = serde_json::from_value(serde_json::json!({
+            "users": [
+                { "id": "first", "username": "first", "passwordHash": "unused", "isAdmin": true, "createdAt": "0" },
+                { "id": "second", "username": "second", "passwordHash": "unused", "isAdmin": true, "createdAt": "1" }
+            ]
+        }))
+        .unwrap();
+
+        assert!(super::migrate_users_permissions(&mut store));
+        assert_eq!(store.permissions_version, 1);
+        assert!(store.users[0].is_owner);
+        assert!(!store.users[1].is_owner);
+        assert!(
+            store
+                .users
+                .iter()
+                .all(|user| user.can_approve_libation_requests)
+        );
+        assert!(
+            store
+                .users
+                .iter()
+                .all(|user| user.libation_access == super::LibationAccess::Direct)
+        );
+        assert!(!super::migrate_users_permissions(&mut store));
+    }
+
+    #[test]
+    fn interrupted_libation_approvals_return_to_pending() {
+        let mut store: super::LibationRequestStore = serde_json::from_value(serde_json::json!({
+            "requests": [
+                {
+                    "id": "request-1",
+                    "userId": "reader",
+                    "username": "reader",
+                    "asin": "B000TEST10",
+                    "title": "Interrupted",
+                    "status": "approved",
+                    "requestedAt": "1",
+                    "decidedAt": "2",
+                    "decidedBy": "owner",
+                    "jobId": "job-1"
+                },
+                {
+                    "id": "request-2",
+                    "userId": "reader",
+                    "username": "reader",
+                    "asin": "B000TEST11",
+                    "title": "Finished",
+                    "status": "completed",
+                    "requestedAt": "1",
+                    "decidedAt": "2",
+                    "decidedBy": "owner",
+                    "jobId": "job-2"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(super::recover_interrupted_libation_requests(&mut store));
+        assert_eq!(store.requests[0].status, "pending");
+        assert!(store.requests[0].decided_at.is_none());
+        assert!(store.requests[0].decided_by.is_none());
+        assert!(store.requests[0].job_id.is_none());
+        assert_eq!(store.requests[1].status, "completed");
+        assert!(!super::recover_interrupted_libation_requests(&mut store));
     }
 
     #[test]
@@ -5313,6 +6119,7 @@ exit 0
             sessions_file: data_dir.join("sessions.json"),
             activity_file: data_dir.join("activity.json"),
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
+            libation_requests_file: data_dir.join("libation-requests.json"),
             libation_config: super::LibationConfig {
                 cli_path: Some(cli_path),
                 libation_files_dir: None,
@@ -5328,6 +6135,9 @@ exit 0
             users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
             sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
             activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
+            libation_requests: super::Arc::new(super::RwLock::new(
+                super::LibationRequestStore::default(),
+            )),
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
             libation_job_lock: super::Arc::new(super::Mutex::new(())),
             login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
@@ -5342,8 +6152,198 @@ exit 0
             id: "admin".to_string(),
             username: "admin".to_string(),
             is_admin: true,
+            is_owner: false,
+            can_approve_libation_requests: true,
             allowed_book_ids: None,
+            libation_access: super::LibationAccess::Direct,
         }
+    }
+
+    #[cfg(unix)]
+    fn owner_user() -> super::AuthUser {
+        super::AuthUser {
+            id: "owner".to_string(),
+            username: "owner".to_string(),
+            is_admin: true,
+            is_owner: true,
+            can_approve_libation_requests: true,
+            allowed_book_ids: None,
+            libation_access: super::LibationAccess::Direct,
+        }
+    }
+
+    #[cfg(unix)]
+    fn stored_user(id: &str, is_admin: bool, is_owner: bool) -> super::User {
+        super::User {
+            id: id.to_string(),
+            username: id.to_string(),
+            password_hash: "unused".to_string(),
+            is_admin: is_admin || is_owner,
+            is_owner,
+            can_approve_libation_requests: is_owner,
+            allowed_book_ids: None,
+            libation_access: if is_owner {
+                super::LibationAccess::Direct
+            } else {
+                super::LibationAccess::Approval
+            },
+            created_at: "0".to_string(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn approval_reader() -> super::AuthUser {
+        super::AuthUser {
+            id: "reader".to_string(),
+            username: "reader".to_string(),
+            is_admin: false,
+            is_owner: false,
+            can_approve_libation_requests: false,
+            allowed_book_ids: None,
+            libation_access: super::LibationAccess::Approval,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn concurrent_first_run_setup_creates_only_one_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let first = super::setup_admin(
+            super::State(state.clone()),
+            super::Json(super::SetupRequest {
+                username: "first-owner".to_string(),
+                password: "password-one".to_string(),
+            }),
+        );
+        let second = super::setup_admin(
+            super::State(state.clone()),
+            super::Json(super::SetupRequest {
+                username: "second-owner".to_string(),
+                password: "password-two".to_string(),
+            }),
+        );
+
+        let (first_result, second_result) = tokio::join!(first, second);
+        assert_ne!(first_result.is_ok(), second_result.is_ok());
+        let users = state.users.read().await;
+        assert_eq!(users.users.len(), 1);
+        assert!(users.users[0].is_owner);
+        assert!(users.users[0].is_admin);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_owners_can_manage_admin_roles_and_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        {
+            let mut users = state.users.write().await;
+            users.users = vec![
+                stored_user("owner", true, true),
+                stored_user("admin", true, false),
+                stored_user("reader", false, false),
+            ];
+        }
+
+        let denied = super::update_user_role(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path("reader".to_string()),
+            super::Json(super::UpdateUserRoleRequest {
+                is_admin: true,
+                is_owner: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
+
+        let promoted = super::update_user_role(
+            super::State(state.clone()),
+            super::Extension(owner_user()),
+            super::Path("reader".to_string()),
+            super::Json(super::UpdateUserRoleRequest {
+                is_admin: true,
+                is_owner: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(promoted.is_admin);
+        assert!(!promoted.is_owner);
+
+        let access_denied = super::update_libation_access(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path("reader".to_string()),
+            super::Json(super::UpdateLibationAccessRequest {
+                libation_access: super::LibationAccess::Direct,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(access_denied.status, super::StatusCode::FORBIDDEN);
+
+        let approver = super::update_libation_approval(
+            super::State(state.clone()),
+            super::Extension(owner_user()),
+            super::Path("reader".to_string()),
+            super::Json(super::UpdateLibationApprovalRequest {
+                can_approve_libation_requests: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(approver.can_approve_libation_requests);
+
+        let final_owner = super::update_user_role(
+            super::State(state),
+            super::Extension(owner_user()),
+            super::Path("owner".to_string()),
+            super::Json(super::UpdateUserRoleRequest {
+                is_admin: true,
+                is_owner: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(final_owner.status, super::StatusCode::CONFLICT);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn approval_requests_are_deduplicated_and_can_be_declined() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let asin = "B000TEST10".to_string();
+        let create = || {
+            super::create_libation_download_request(
+                super::State(state.clone()),
+                super::Extension(approval_reader()),
+                super::Path(asin.clone()),
+                super::Json(super::CreateLibationDownloadRequest {
+                    title: "Requested title".to_string(),
+                }),
+            )
+        };
+        let first = create().await.unwrap().0;
+        let second = create().await.unwrap().0;
+        assert_eq!(first.id, second.id);
+        assert_eq!(state.libation_requests.read().await.requests.len(), 1);
+
+        let declined = super::decide_libation_download_request(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+            super::Path(first.id),
+            super::Json(super::DecideLibationDownloadRequest { approved: false }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(declined.status, "rejected");
     }
 
     #[cfg(unix)]

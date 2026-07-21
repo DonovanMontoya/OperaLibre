@@ -7,7 +7,10 @@ import type {
   BookMetadataUpdate,
   JobCreated,
   JobStatus,
+  LibationAccess,
+  LibationAccessStatus,
   LibationBook,
+  LibationDownloadRequest,
   LibationStatus,
   LoginResponse,
   ProfileStats,
@@ -486,11 +489,39 @@ export async function createUser(
   username: string,
   password: string,
   isAdmin: boolean,
-  allowedBookIds: string[] | null = null
+  allowedBookIds: string[] | null = null,
+  isOwner = false,
+  libationAccess: LibationAccess = isAdmin ? "direct" : "approval",
+  canApproveLibationRequests = false
 ) {
   return request<AuthUser>("/api/users", {
     method: "POST",
-    body: JSON.stringify({ username, password, isAdmin, allowedBookIds })
+    body: JSON.stringify({
+      username,
+      password,
+      isAdmin,
+      isOwner,
+      allowedBookIds,
+      libationAccess,
+      canApproveLibationRequests
+    })
+  });
+}
+
+export async function updateUserRole(userId: string, isAdmin: boolean, isOwner: boolean) {
+  return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/role`, {
+    method: "PUT",
+    body: JSON.stringify({ isAdmin, isOwner })
+  });
+}
+
+export async function updateUserLibationApproval(
+  userId: string,
+  canApproveLibationRequests: boolean
+) {
+  return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/libation-approval`, {
+    method: "PUT",
+    body: JSON.stringify({ canApproveLibationRequests })
   });
 }
 
@@ -498,6 +529,13 @@ export async function updateUserBookAccess(userId: string, allowedBookIds: strin
   return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/book-access`, {
     method: "PUT",
     body: JSON.stringify({ allowedBookIds })
+  });
+}
+
+export async function updateUserLibationAccess(userId: string, libationAccess: LibationAccess) {
+  return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/libation-access`, {
+    method: "PUT",
+    body: JSON.stringify({ libationAccess })
   });
 }
 
@@ -602,6 +640,28 @@ export async function getLibationStatus() {
 
 export async function getLibationBooks() {
   return request<LibationBook[]>("/api/libation/books");
+}
+
+export async function getLibationAccess() {
+  return request<LibationAccessStatus>("/api/libation/access");
+}
+
+export async function listLibationRequests() {
+  return request<LibationDownloadRequest[]>("/api/libation/requests");
+}
+
+export async function requestLibationBook(asin: string, title: string) {
+  return request<LibationDownloadRequest>(
+    `/api/libation/requests/${encodeURIComponent(asin)}`,
+    { method: "POST", body: JSON.stringify({ title }) }
+  );
+}
+
+export async function decideLibationRequest(requestId: string, approved: boolean) {
+  return request<LibationDownloadRequest>(
+    `/api/libation/requests/${encodeURIComponent(requestId)}/decision`,
+    { method: "PUT", body: JSON.stringify({ approved }) }
+  );
 }
 
 export async function syncLibationLibrary() {

@@ -46,6 +46,8 @@ When configured, an admin sees Libation-aware controls:
 - **Download** — add a selected Audible title to the OperaLibre library. Progress shows as a background job.
 - **Rescan** — automatic after a successful download; can also be triggered manually.
 
+In the installed iOS, Android, and macOS apps, readers and administrators can browse the Audible catalog. Each reader defaults to **Approval required**. Under **Administration → Users & access**, administrators can change reader download access, while owners can also configure administrators. Owners separately choose which administrators may approve requests. Approval-required accounts submit a per-title request; an authorized administrator or owner other than the requester decides it under **Administration → Requests**. An approved or direct reader download is automatically added to a restricted shelf.
+
 Under the hood these map to API endpoints:
 
 | Endpoint | Purpose |
@@ -53,6 +55,11 @@ Under the hood these map to API endpoints:
 | `GET /api/libation/status` | Account/auth state |
 | `GET /api/libation/books` | Libation's known library |
 | `POST /api/libation/sync` | Tell Libation to refresh its library |
+| `POST /api/libation/books/{asin}/liberate` | Download one title when the reader has direct permission |
+| `GET /api/libation/access` | Current reader's Libation policy and availability |
+| `GET /api/libation/requests` | Own requests, or all requests for an authorized approver |
+| `POST /api/libation/requests/{asin}` | Request approval for one title |
+| `PUT /api/libation/requests/{request_id}/decision` | Approve or decline another account's request (approval permission required) |
 | `GET /api/jobs/{job_id}` | Poll a background liberation job |
 | `POST /api/library/rescan` | Re-scan `library_root` |
 

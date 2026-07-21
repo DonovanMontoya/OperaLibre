@@ -154,7 +154,10 @@ function mapUser(user: JellyfinUser): AuthUser {
     id: user.Id,
     username: user.Name,
     isAdmin: user.Policy?.IsAdministrator ?? false,
+    isOwner: false,
+    canApproveLibationRequests: false,
     allowedBookIds: null,
+    libationAccess: "approval",
     createdAt: user.LastLoginDate ?? new Date(0).toISOString()
   };
 }

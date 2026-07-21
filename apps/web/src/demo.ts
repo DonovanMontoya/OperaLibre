@@ -8,7 +8,10 @@ export const DEMO_USER: AuthUser = {
   id: "operalibre-on-device-demo",
   username: "Demo Reader",
   isAdmin: false,
+  isOwner: false,
+  canApproveLibationRequests: false,
   allowedBookIds: null,
+  libationAccess: "approval",
   createdAt: "1735689600"
 };
 

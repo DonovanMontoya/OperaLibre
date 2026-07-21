@@ -6008,6 +6008,10 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-row-actions button { min-height: 32px; padding: 5px 9px; }
 
 .admin-access { padding: 12px; border-top: 1px solid rgba(26, 20, 16, 0.1); background: rgba(112, 37, 24, 0.025); }
+.admin-libation-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-libation-access > span { display: grid; }
+.admin-libation-access small { color: var(--ink-faded); font-size: 0.72rem; }
+.admin-libation-access select { min-width: 190px; padding: 8px 10px; border: 1px solid rgba(26, 20, 16, 0.18); border-radius: 8px; color: var(--ink); background: rgba(255, 252, 244, 0.9); font: 0.78rem "Fraunces", serif; }
 .admin-all-access,
 .admin-checkbox { display: flex; align-items: center; gap: 10px; }
 .admin-all-access > span,
@@ -6038,6 +6042,13 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-create-user > button { color: var(--paper); background: var(--oxblood); border-color: transparent; }
 
 .admin-library-list { display: grid; gap: 7px; margin-top: 18px; }
+.admin-request-list { display: grid; gap: 8px; margin-top: 18px; }
+.admin-request { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; }
+.admin-request > div:first-child { display: grid; min-width: 0; }
+.admin-request > div:first-child strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-request > div:first-child span { color: var(--ink-faded); font-size: 0.76rem; }
+.admin-request-state { color: var(--ink-faded); font: 0.64rem "JetBrains Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.admin-request.pending .admin-request-state { color: var(--oxblood); }
 .admin-library-row { display: flex; align-items: stretch; gap: 7px; }
 .admin-library-row .admin-book-open { width: 100%; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; justify-content: stretch; text-align: left; border-radius: 9px; }
 .admin-library-row .admin-book-open > span:nth-child(2) { display: grid; min-width: 0; }
@@ -6070,6 +6081,10 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-quick-actions, .admin-section-head { align-items: flex-start; flex-direction: column; }
   .admin-user-head { align-items: flex-start; flex-wrap: wrap; }
   .admin-row-actions { width: 100%; padding-left: 47px; }
+  .admin-libation-access { align-items: stretch; flex-direction: column; }
+  .admin-libation-access select { min-width: 0; width: 100%; }
+  .admin-request { grid-template-columns: minmax(0, 1fr) auto; }
+  .admin-request .admin-row-actions { grid-column: 1 / -1; padding-left: 0; }
   .admin-book-checks { grid-template-columns: 1fr; }
   .admin-library-row .admin-delete-book span { display: none; }
 }

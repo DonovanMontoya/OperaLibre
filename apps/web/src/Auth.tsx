@@ -229,7 +229,7 @@ export function AuthGate({
         <h1>{isSetup ? "Claim this library" : "Welcome back"}</h1>
         <p>
           {isSetup
-            ? "Create the first administrator account. You can add more readers later."
+            ? "Create the first owner account. You can add administrators and readers later."
             : isJellyfin
               ? "Use your Jellyfin account to open its audiobook libraries."
               : "Sign in to track your audiobook progress."}
@@ -275,7 +275,7 @@ export function AuthGate({
         {error ? <p className="auth-error">{error}</p> : null}
 
         <button type="submit" className="auth-submit" disabled={busy}>
-          {busy ? "Working…" : isSetup ? "Create administrator" : "Sign in"}
+          {busy ? "Working…" : isSetup ? "Create owner" : "Sign in"}
         </button>
 
         {onChangeServer ? (
