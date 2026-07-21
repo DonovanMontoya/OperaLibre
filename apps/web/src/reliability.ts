@@ -77,6 +77,61 @@ export function readProgressCheckpoint(
   }
 }
 
+/**
+ * Which book the shelf should reopen on. Progress timestamps arrive as epoch
+ * seconds as well as ISO strings, so they must go through progressTimestamp —
+ * `new Date("1783894082")` is Invalid Date, and a NaN comparator leaves the
+ * list in library order, handing the play bar whichever book sorts first.
+ */
+export function mostRecentlyListenedBookId(
+  books: Array<{ id: string; progress?: { updatedAt: string } | null }>
+): string | null {
+  return books
+    .filter((book) => book.progress?.updatedAt)
+    .sort(
+      (a, b) =>
+        progressTimestamp(b.progress!.updatedAt) - progressTimestamp(a.progress!.updatedAt)
+    )[0]?.id ?? null;
+}
+
+export function resolveBookId(
+  books: Array<{ id: string; progress?: { updatedAt: string } | null }>,
+  preferredId: string | null,
+  fallbackId: string | null = null
+): string | null {
+  if (preferredId && books.some((book) => book.id === preferredId)) {
+    return preferredId;
+  }
+  if (fallbackId && books.some((book) => book.id === fallbackId)) {
+    return fallbackId;
+  }
+  return mostRecentlyListenedBookId(books) ?? books[0]?.id ?? null;
+}
+
+/**
+ * The library listing embeds each book's server-side progress summary. It has
+ * no track id, but resolveProgressLocation can map the whole-book offset, so
+ * it works as a resume point when `/progress` itself cannot be fetched — the
+ * exact state of a reinstalled app whose local copies were wiped.
+ */
+export function progressFromBookSummary(
+  bookId: string,
+  summary:
+    | { status: string; bookPositionSeconds: number; durationSeconds: number | null; updatedAt: string }
+    | null
+    | undefined
+): Progress | null {
+  if (!summary || summary.status === "notStarted") return null;
+  return {
+    bookId,
+    trackId: "",
+    positionSeconds: 0,
+    bookPositionSeconds: Math.max(0, summary.bookPositionSeconds),
+    durationSeconds: summary.durationSeconds,
+    updatedAt: summary.updatedAt
+  };
+}
+
 export function freshestProgress(
   ...candidates: Array<Progress | null | undefined>
 ): Progress | null {

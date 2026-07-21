@@ -4,6 +4,15 @@ import Foundation
 import MediaPlayer
 import UIKit
 
+private struct NativeAudioCheckpoint: Codable {
+    let scopeKey: String
+    let trackId: String
+    let positionSeconds: Double
+    let bookPositionSeconds: Double
+    let durationSeconds: Double?
+    let updatedAt: Double
+}
+
 @objc(NativeAudioPlugin)
 public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "NativeAudioPlugin"
@@ -16,6 +25,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getRecoveryState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise)
     ]
 
@@ -24,9 +34,14 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var stalledObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    private var becameActiveObserver: NSObjectProtocol?
+    private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
     private var pendingPosition: Double = 0
     private var shouldAutoplay = false
+    private var wasPlayingBeforeInterruption = false
+    private var interruptionIsActive = false
     private var generation = 0
     private var remoteCommandTargets: [Any] = []
     private var nowPlayingTitle = "OperaLibre"
@@ -34,9 +49,17 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var nowPlayingAlbum = ""
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var artworkGeneration = 0
+    private let checkpointKey = "operalibre.native-audio-checkpoint.v1"
+    private var recoveryScopeKey: String?
+    private var recoveryTrackId: String?
+    private var recoveryBookOffset: Double = 0
+    private var lastCheckpointWrite = 0.0
 
     deinit {
         tearDownPlayer()
+        for observer in [interruptionObserver, becameActiveObserver, enteredBackgroundObserver] {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
         let commandCenter = MPRemoteCommandCenter.shared()
         for target in remoteCommandTargets {
             commandCenter.playCommand.removeTarget(target)
@@ -58,6 +81,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let rate = clampedRate(call.getDouble("rate") ?? 1)
         let volume = clampedVolume(call.getDouble("volume") ?? 1)
         let autoplay = call.getBool("autoplay") ?? false
+        let scopeKey = call.getString("recoveryScopeKey")
+        let trackId = call.getString("recoveryTrackId")
+        let bookOffset = max(0, call.getDouble("recoveryBookOffsetSeconds") ?? 0)
 
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -71,6 +97,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.desiredRate = rate
             self.pendingPosition = position
             self.shouldAutoplay = autoplay
+            self.recoveryScopeKey = scopeKey
+            self.recoveryTrackId = trackId
+            self.recoveryBookOffset = bookOffset
+            self.lastCheckpointWrite = 0
+            self.installSessionObserversIfNeeded()
 
             let item = AVPlayerItem(url: url)
             // Apple's time-domain algorithm is designed for spoken audio and
@@ -103,6 +134,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             if player.currentItem?.status == .readyToPlay {
                 self.activateAudioSession()
                 player.playImmediately(atRate: self.desiredRate)
+                self.persistCheckpoint(force: true)
                 self.updateNowPlayingInfo()
             }
             call.resolve()
@@ -113,6 +145,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async { [weak self] in
             self?.shouldAutoplay = false
             self?.player?.pause()
+            self?.persistCheckpoint(force: true)
             self?.updateNowPlayingInfo()
             call.resolve()
         }
@@ -132,8 +165,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             let time = CMTime(seconds: position, preferredTimescale: 600)
             player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                guard let self, self.shouldAutoplay, player.timeControlStatus != .playing else { return }
-                player.playImmediately(atRate: self.desiredRate)
+                guard let self else { return }
+                self.persistCheckpoint(force: true)
+                if self.shouldAutoplay, player.timeControlStatus != .playing {
+                    player.playImmediately(atRate: self.desiredRate)
+                }
             }
             call.resolve()
         }
@@ -183,6 +219,24 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc public func getRecoveryState(_ call: CAPPluginCall) {
+        guard
+            let requestedScope = call.getString("scopeKey"),
+            let checkpoint = loadCheckpoint(),
+            checkpoint.scopeKey == requestedScope
+        else {
+            call.resolve([:])
+            return
+        }
+        var result = JSObject()
+        result["trackId"] = checkpoint.trackId
+        result["positionSeconds"] = checkpoint.positionSeconds
+        result["bookPositionSeconds"] = checkpoint.bookPositionSeconds
+        result["updatedAt"] = checkpoint.updatedAt
+        if let duration = checkpoint.durationSeconds { result["durationSeconds"] = duration }
+        call.resolve(result)
+    }
+
     @objc public func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             self?.generation += 1
@@ -205,6 +259,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                             self.activateAudioSession()
                             player.playImmediately(atRate: self.desiredRate)
                         }
+                        self.persistCheckpoint(force: true)
                         self.updateNowPlayingInfo()
                     }
                 case .failed:
@@ -220,6 +275,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             queue: .main
         ) { [weak self] _ in
             guard let self, generation == self.generation else { return }
+            self.persistCheckpoint(force: false)
             // Once WKWebView is suspended, crossing the Capacitor bridge on
             // every timer tick can starve AVPlayer's time-pitch processing.
             // The native player and Now Playing center keep their own clocks.
@@ -271,6 +327,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.shouldAutoplay = true
             self.activateAudioSession()
             player.playImmediately(atRate: self.desiredRate)
+            self.persistCheckpoint(force: true)
             self.updateNowPlayingInfo()
             return .success
         })
@@ -278,6 +335,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self, let player = self.player else { return .commandFailed }
             self.shouldAutoplay = false
             player.pause()
+            self.persistCheckpoint(force: true)
             self.updateNowPlayingInfo()
             return .success
         })
@@ -286,6 +344,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             if player.timeControlStatus == .playing {
                 self.shouldAutoplay = false
                 player.pause()
+                self.persistCheckpoint(force: true)
             } else {
                 self.shouldAutoplay = true
                 self.activateAudioSession()
@@ -311,6 +370,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             let position = max(0, positionEvent.positionTime)
             self.pendingPosition = position
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                self?.persistCheckpoint(force: true)
                 self?.updateNowPlayingInfo()
             }
             return .success
@@ -324,8 +384,89 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let target = max(0, duration > 0 ? min(duration, position + offset) : position + offset)
         pendingPosition = target
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            self?.persistCheckpoint(force: true)
             self?.updateNowPlayingInfo()
         }
+    }
+
+    private func installSessionObserversIfNeeded() {
+        guard interruptionObserver == nil else { return }
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleAudioInterruption(notification)
+        }
+        becameActiveObserver = center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            // Some short notification interruptions do not deliver their end
+            // callback until the app is active again. Resume the exact native
+            // clock if playback was running before that interruption.
+            if self.wasPlayingBeforeInterruption && self.shouldAutoplay {
+                self.interruptionIsActive = false
+                self.resumeAfterInterruption()
+            }
+            self.persistCheckpoint(force: true)
+            self.emitState()
+        }
+        enteredBackgroundObserver = center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.persistCheckpoint(force: true)
+        }
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard
+            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: rawType)
+        else { return }
+
+        switch type {
+        case .began:
+            interruptionIsActive = true
+            // iOS may have already changed AVPlayer to paused by the time this
+            // notification is delivered. The retained play intent is the
+            // reliable signal that playback should continue afterward.
+            wasPlayingBeforeInterruption = shouldAutoplay
+            pendingPosition = finiteSeconds(player?.currentTime() ?? .invalid)
+            player?.pause()
+            persistCheckpoint(force: true)
+            updateNowPlayingInfo()
+            if UIApplication.shared.applicationState == .active { emitState() }
+        case .ended:
+            interruptionIsActive = false
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            if wasPlayingBeforeInterruption && shouldAutoplay && options.contains(.shouldResume) {
+                resumeAfterInterruption()
+            } else {
+                wasPlayingBeforeInterruption = false
+                persistCheckpoint(force: true)
+                updateNowPlayingInfo()
+                if UIApplication.shared.applicationState == .active { emitState() }
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func resumeAfterInterruption() {
+        guard !interruptionIsActive, let player else { return }
+        wasPlayingBeforeInterruption = false
+        activateAudioSession()
+        player.playImmediately(atRate: desiredRate)
+        persistCheckpoint(force: true)
+        updateNowPlayingInfo()
+        if UIApplication.shared.applicationState == .active { emitState() }
     }
 
     private func activateAudioSession() {
@@ -336,6 +477,34 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         } catch {
             emitError("Unable to activate background audio: \(error.localizedDescription)")
         }
+    }
+
+    private func persistCheckpoint(force: Bool) {
+        guard
+            let player,
+            let scopeKey = recoveryScopeKey,
+            let trackId = recoveryTrackId
+        else { return }
+        let now = Date().timeIntervalSince1970 * 1000
+        if !force && now - lastCheckpointWrite < 2_000 { return }
+        let position = finiteSeconds(player.currentTime())
+        let duration = finiteSeconds(player.currentItem?.duration ?? .invalid)
+        let checkpoint = NativeAudioCheckpoint(
+            scopeKey: scopeKey,
+            trackId: trackId,
+            positionSeconds: position,
+            bookPositionSeconds: recoveryBookOffset + position,
+            durationSeconds: duration > 0 ? duration : nil,
+            updatedAt: now
+        )
+        guard let data = try? JSONEncoder().encode(checkpoint) else { return }
+        UserDefaults.standard.set(data, forKey: checkpointKey)
+        lastCheckpointWrite = now
+    }
+
+    private func loadCheckpoint() -> NativeAudioCheckpoint? {
+        guard let data = UserDefaults.standard.data(forKey: checkpointKey) else { return nil }
+        return try? JSONDecoder().decode(NativeAudioCheckpoint.self, from: data)
     }
 
     private func updateNowPlayingInfo() {
@@ -397,6 +566,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func tearDownPlayer() {
+        persistCheckpoint(force: true)
         statusObservation?.invalidate()
         statusObservation = nil
         if let timeObserver, let player {
@@ -415,6 +585,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         player?.replaceCurrentItem(with: nil)
         player = nil
         shouldAutoplay = false
+        wasPlayingBeforeInterruption = false
+        interruptionIsActive = false
+        recoveryScopeKey = nil
+        recoveryTrackId = nil
+        recoveryBookOffset = 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 

@@ -100,9 +100,12 @@ Progress updates use JSON with the current track and timing fields:
   "trackId": "track-id",
   "positionSeconds": 123.4,
   "bookPositionSeconds": 456.7,
-  "durationSeconds": 36000.0
+  "durationSeconds": 36000.0,
+  "updatedAtMs": 1753200000000
 }
 ```
+
+`updatedAtMs` is the optional client-side epoch-millisecond timestamp of when the position was recorded. When provided, the server rejects writes meaningfully older than the stored copy (returning the stored progress unchanged) so a replayed offline checkpoint or a freshly reinstalled client cannot roll back progress saved more recently from another device. Writes that move a book backwards by a large margin are accepted, but the replaced copy is preserved in `progress.backups.json` next to the progress store.
 
 #### Libation (optional)
 

@@ -6,6 +6,20 @@ type NativeAudioState = {
   isPlaying: boolean;
 };
 
+export type NativeAudioRecoveryState = {
+  trackId: string;
+  positionSeconds: number;
+  bookPositionSeconds: number;
+  durationSeconds?: number;
+  updatedAt: number;
+};
+
+type NativeAudioRecoveryIdentity = {
+  scopeKey: string;
+  trackId: string;
+  bookOffsetSeconds: number;
+};
+
 interface NativeAudioPlugin {
   load(options: {
     url: string;
@@ -13,6 +27,9 @@ interface NativeAudioPlugin {
     rate: number;
     volume: number;
     autoplay: boolean;
+    recoveryScopeKey: string;
+    recoveryTrackId: string;
+    recoveryBookOffsetSeconds: number;
   }): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void>;
@@ -25,6 +42,7 @@ interface NativeAudioPlugin {
     album: string;
     artworkUrl?: string;
   }): Promise<void>;
+  getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
   stop(): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "ended", listener: () => void): Promise<PluginListenerHandle>;
@@ -59,6 +77,17 @@ export function seekNativeAudio(positionSeconds: number) {
   return NativeAudio.seek({ positionSeconds });
 }
 
+export async function getNativeAudioRecovery(scopeKey: string): Promise<NativeAudioRecoveryState | null> {
+  if (!usesNativeAudioPlayer()) return null;
+  const state = await NativeAudio.getRecoveryState({ scopeKey });
+  return typeof state.trackId === "string"
+    && Number.isFinite(state.positionSeconds)
+    && Number.isFinite(state.bookPositionSeconds)
+    && Number.isFinite(state.updatedAt)
+    ? state as NativeAudioRecoveryState
+    : null;
+}
+
 /**
  * Keep the existing HTML media element as OperaLibre's control/UI clock, but
  * make AVPlayer the only audible engine on iOS. This preserves the mature web
@@ -67,7 +96,8 @@ export function seekNativeAudio(positionSeconds: number) {
  */
 export function attachNativeAudioPlayer(
   audio: HTMLAudioElement,
-  onError: (message: string) => void
+  onError: (message: string) => void,
+  recovery: NativeAudioRecoveryIdentity
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -97,7 +127,10 @@ export function attachNativeAudioPlayer(
       positionSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
       rate: audio.playbackRate,
       volume: audio.volume,
-      autoplay: false
+      autoplay: false,
+      recoveryScopeKey: recovery.scopeKey,
+      recoveryTrackId: recovery.trackId,
+      recoveryBookOffsetSeconds: recovery.bookOffsetSeconds
     }));
   };
   const rateChange = () => safely(NativeAudio.setRate({ rate: audio.playbackRate }));

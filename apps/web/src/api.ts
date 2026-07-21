@@ -31,7 +31,7 @@ import {
   reportJellyfinPlaybackStart,
   saveJellyfinProgress
 } from "./jellyfin";
-import { serverStorageKey } from "./reliability";
+import { progressTimestamp, serverStorageKey } from "./reliability";
 import {
   DEMO_USER,
   demoMediaUrl,
@@ -627,9 +627,15 @@ export async function saveProgress(
     }
     return saveJellyfinProgress(currentApiBase(), token, bookId, progress, options?.isPaused);
   }
+  // The server keeps the copy with the newest client timestamp; sending it
+  // lets a replayed offline checkpoint be rejected instead of rolling back
+  // progress another device saved more recently.
+  const { updatedAt, ...fields } = progress;
   return request<Progress>(`/api/books/${bookId}/progress`, {
     method: "PUT",
-    body: JSON.stringify(progress)
+    body: JSON.stringify(
+      updatedAt ? { ...fields, updatedAtMs: progressTimestamp(updatedAt) } : fields
+    )
   });
 }
 

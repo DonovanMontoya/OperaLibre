@@ -510,6 +510,10 @@ struct ProgressUpdate {
     position_seconds: f64,
     book_position_seconds: Option<f64>,
     duration_seconds: Option<f64>,
+    /// Client-side epoch milliseconds of when this position was recorded.
+    /// Optional for backwards compatibility; without it the write is always
+    /// accepted and stamped with the server clock, as before.
+    updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2591,10 +2595,25 @@ async fn update_progress(
     let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
-    let previous_position = progress
-        .get(&key)
+    let previous = progress.get(&key).cloned();
+    let previous_position = previous
+        .as_ref()
         .map(|previous| previous.book_position_seconds)
         .unwrap_or(0.0);
+    // Cap client timestamps at the server clock so one device with a
+    // future-skewed clock cannot lock every other device out of this book.
+    let now_seconds = unix_now_seconds() as f64;
+    let incoming_seconds = update
+        .updated_at_ms
+        .map(|ms| (ms as f64 / 1000.0).min(now_seconds));
+    if let (Some(previous), Some(incoming)) = (&previous, incoming_seconds) {
+        if progress_write_is_stale(&previous.updated_at, incoming) {
+            // A replayed checkpoint — an offline queue flushing or a
+            // reinstalled client syncing old local state — must not roll back
+            // a position some device recorded more recently.
+            return Ok(Json(previous.clone()));
+        }
+    }
     let saved = Progress {
         book_id: book.id.clone(),
         track_id: track.id.clone(),
@@ -2604,8 +2623,14 @@ async fn update_progress(
             .unwrap_or_else(|| book_position_seconds(book, track, update.position_seconds))
             .max(0.0),
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
-        updated_at: now_rfc3339ish(),
+        updated_at: format!("{}", incoming_seconds.unwrap_or(now_seconds).round() as u64),
     };
+    if let Some(previous) = &previous {
+        let regression_seconds = previous.book_position_seconds - saved.book_position_seconds;
+        if regression_seconds > PROGRESS_BACKUP_REGRESSION_SECONDS {
+            backup_progress_regression(&state.progress_file, &key, previous).await;
+        }
+    }
     progress.insert(key, saved.clone());
     write_progress(&state.progress_file, &progress).await?;
 
@@ -4025,6 +4050,43 @@ async fn write_progress(
     progress: &HashMap<String, Progress>,
 ) -> Result<(), ApiError> {
     write_json_atomic(progress_file, progress).await
+}
+
+/// Slack absorbs realistic clock skew between devices; a genuinely stale
+/// replay (offline queue flush, reinstalled client) is hours or days old.
+const PROGRESS_STALE_WRITE_SLACK_SECONDS: f64 = 300.0;
+
+/// How far backwards an accepted write must jump before the replaced copy is
+/// preserved on disk.
+const PROGRESS_BACKUP_REGRESSION_SECONDS: f64 = 300.0;
+
+const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
+
+fn progress_write_is_stale(stored_updated_at: &str, incoming_seconds: f64) -> bool {
+    // Stored stamps are epoch seconds; anything unparsable never blocks a
+    // write.
+    let stored = stored_updated_at.parse::<f64>().unwrap_or(0.0);
+    incoming_seconds + PROGRESS_STALE_WRITE_SLACK_SECONDS < stored
+}
+
+/// Large backwards jumps are occasionally legitimate (restarting a book), but
+/// they are also the shape of every progress-loss bug, so the replaced copy is
+/// kept in a sibling file where it can always be recovered from disk.
+async fn backup_progress_regression(progress_file: &FsPath, key: &str, previous: &Progress) {
+    let path = progress_file.with_extension("backups.json");
+    let mut backups: HashMap<String, Vec<Progress>> = match fs::read_to_string(&path).await {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    };
+    let entries = backups.entry(key.to_string()).or_default();
+    entries.push(previous.clone());
+    if entries.len() > PROGRESS_BACKUPS_PER_BOOK {
+        let excess = entries.len() - PROGRESS_BACKUPS_PER_BOOK;
+        entries.drain(0..excess);
+    }
+    if write_json_atomic(&path, &backups).await.is_err() {
+        tracing::warn!("failed to write progress backup file {}", path.display());
+    }
 }
 
 async fn load_metadata_overrides(
@@ -5791,9 +5853,21 @@ mod tests {
     use super::{
         AuthUser, HeaderMap, LoginThrottle, Session, bytes_etag, can_access_book,
         clean_imported_title, if_none_match_matches, is_supported_audio_file,
-        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range, sanitize_filename,
-        walk_audio_files,
+        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
+        progress_write_is_stale, sanitize_filename, walk_audio_files,
     };
+
+    #[test]
+    fn stale_progress_writes_are_detected_with_clock_slack() {
+        // A replayed checkpoint from hours before the stored copy is stale.
+        assert!(progress_write_is_stale("1753200000", 1753100000.0));
+        // Ordinary clock skew between devices must not block saves.
+        assert!(!progress_write_is_stale("1753200000", 1753199800.0));
+        // Newer writes always pass.
+        assert!(!progress_write_is_stale("1753200000", 1753200050.0));
+        // Unparsable stored stamps never block a write.
+        assert!(!progress_write_is_stale("2025-07-11T01:00:00.000Z", 0.0));
+    }
 
     #[test]
     fn book_access_defaults_to_full_library_and_honors_restrictions() {

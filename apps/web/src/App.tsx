@@ -51,11 +51,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   freshestProgress,
+  progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
+  resolveBookId,
   resolveProgressLocation,
   writeProgressCheckpoint
 } from "./reliability";
+import {
+  formatPlaybackSpeed,
+  normalizePlaybackSpeed,
+  PLAYBACK_SPEED_MAX,
+  PLAYBACK_SPEED_MIN,
+  PLAYBACK_SPEED_PRESETS,
+  PLAYBACK_SPEED_STEP,
+  PLAYBACK_SPEED_VALUES,
+  readPlaybackSpeed,
+  writePlaybackSpeed
+} from "./playbackSpeed";
 import { isLibationAdding } from "./libationState";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import {
@@ -122,9 +135,10 @@ import {
   removeBookDownload
 } from "./offline";
 import { isNativeApp } from "./api";
-import { haptic } from "./native";
+import { haptic, selectionHaptic } from "./native";
 import {
   attachNativeAudioPlayer,
+  getNativeAudioRecovery,
   pauseNativeAudio,
   playNativeAudio,
   seekNativeAudio,
@@ -160,10 +174,8 @@ import type {
   Track
 } from "./types";
 
-const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
-const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
@@ -191,8 +203,7 @@ function audioSourceMatches(audio: HTMLAudioElement, source: string) {
 
 function readStoredSpeed() {
   try {
-    const stored = Number(window.localStorage.getItem(SPEED_STORAGE_KEY));
-    return SPEEDS.includes(stored) ? stored : 1;
+    return readPlaybackSpeed(window.localStorage);
   } catch {
     return 1;
   }
@@ -200,10 +211,200 @@ function readStoredSpeed() {
 
 function writeStoredSpeed(value: number) {
   try {
-    window.localStorage.setItem(SPEED_STORAGE_KEY, String(value));
+    writePlaybackSpeed(window.localStorage, value);
   } catch {
     // ignore storage failures
   }
+}
+
+function PlaybackSpeedControl({
+  value,
+  onChange,
+  rotary = false
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  rotary?: boolean;
+}) {
+  const formattedSpeed = formatPlaybackSpeed(value);
+  const currentIndex = PLAYBACK_SPEED_VALUES.indexOf(normalizePlaybackSpeed(value));
+  const [wheelDragIndex, setWheelDragIndex] = useState<number | null>(null);
+  const visualWheelIndex = wheelDragIndex ?? currentIndex;
+  const atMinimum = value <= PLAYBACK_SPEED_MIN;
+  const atMaximum = value >= PLAYBACK_SPEED_MAX;
+  const dragState = useRef<{
+    lastIndex: number;
+    pointerId: number;
+    startIndex: number;
+    startX: number;
+  } | null>(null);
+
+  function selectIndex(index: number, withHaptic = false) {
+    const nextIndex = Math.min(PLAYBACK_SPEED_VALUES.length - 1, Math.max(0, index));
+    const nextValue = PLAYBACK_SPEED_VALUES[nextIndex];
+    if (nextValue === value) return;
+    if (withHaptic) haptic("light");
+    onChange(nextValue);
+  }
+
+  return (
+    <div className="speed-control">
+      {rotary ? (
+        <>
+          <div className="speed-wheel-shell">
+            <button
+              type="button"
+              aria-label={`Decrease playback speed by ${PLAYBACK_SPEED_STEP} times`}
+              disabled={atMinimum}
+              onClick={() => selectIndex(currentIndex - 1, true)}
+            >
+              <Minus size={17} />
+            </button>
+            <div
+              className={`speed-wheel${wheelDragIndex === null ? "" : " dragging"}`}
+              role="slider"
+              tabIndex={0}
+              aria-label="Playback speed"
+              aria-orientation="horizontal"
+              aria-valuemin={PLAYBACK_SPEED_MIN}
+              aria-valuemax={PLAYBACK_SPEED_MAX}
+              aria-valuenow={value}
+              aria-valuetext={`${formattedSpeed} times${value === 1 ? ", normal" : ""}`}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+                  event.preventDefault();
+                  selectIndex(currentIndex - 1, true);
+                } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  selectIndex(currentIndex + 1, true);
+                } else if (event.key === "Home") {
+                  event.preventDefault();
+                  selectIndex(0, true);
+                } else if (event.key === "End") {
+                  event.preventDefault();
+                  selectIndex(PLAYBACK_SPEED_VALUES.length - 1, true);
+                }
+              }}
+              onPointerDown={(event) => {
+                dragState.current = {
+                  lastIndex: currentIndex,
+                  pointerId: event.pointerId,
+                  startIndex: currentIndex,
+                  startX: event.clientX
+                };
+                setWheelDragIndex(currentIndex);
+                selectionHaptic("start");
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const drag = dragState.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                const dragIndex = Math.min(
+                  PLAYBACK_SPEED_VALUES.length - 1,
+                  Math.max(0, drag.startIndex + (drag.startX - event.clientX) / 42)
+                );
+                setWheelDragIndex(dragIndex);
+                const nextIndex = Math.round(dragIndex);
+                if (nextIndex === drag.lastIndex) return;
+                drag.lastIndex = nextIndex;
+                selectionHaptic("change");
+                selectIndex(nextIndex);
+              }}
+              onPointerUp={(event) => {
+                if (dragState.current?.pointerId !== event.pointerId) return;
+                dragState.current = null;
+                setWheelDragIndex(null);
+                selectionHaptic("end");
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+              }}
+              onPointerCancel={() => {
+                dragState.current = null;
+                setWheelDragIndex(null);
+                selectionHaptic("end");
+              }}
+              onWheel={(event) => {
+                if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+                event.preventDefault();
+                selectIndex(currentIndex + (event.deltaX > 0 ? 1 : -1), true);
+              }}
+            >
+              <div className="speed-wheel-lens" aria-hidden="true" />
+              <div className="speed-wheel-pointer" aria-hidden="true" />
+              {PLAYBACK_SPEED_VALUES.map((option, index) => {
+                const offset = index - visualWheelIndex;
+                if (Math.abs(offset) > 3.5) return null;
+                const distance = Math.min(3, Math.round(Math.abs(offset)));
+                return (
+                  <span
+                    key={option}
+                    className={`speed-wheel-value distance-${distance}${index === currentIndex ? " selected" : ""}`}
+                    style={{
+                      "--speed-x": `${offset * 42}px`,
+                      "--speed-turn": `${offset * -32}deg`
+                    } as React.CSSProperties}
+                    aria-hidden="true"
+                  >
+                    {formatPlaybackSpeed(option)}
+                  </span>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              aria-label={`Increase playback speed by ${PLAYBACK_SPEED_STEP} times`}
+              disabled={atMaximum}
+              onClick={() => selectIndex(currentIndex + 1, true)}
+            >
+              <Plus size={17} />
+            </button>
+          </div>
+          <p className="speed-wheel-hint">
+            <span>Swipe to rotate</span>
+            <span>{formattedSpeed}× · {PLAYBACK_SPEED_STEP}× steps</span>
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="speed-slider-heading">
+            <output aria-live="polite">{formattedSpeed}×</output>
+            <span>{PLAYBACK_SPEED_STEP}× steps</span>
+          </div>
+          <input
+            type="range"
+            min={PLAYBACK_SPEED_MIN}
+            max={PLAYBACK_SPEED_MAX}
+            step={PLAYBACK_SPEED_STEP}
+            value={value}
+            aria-label="Playback speed"
+            aria-valuetext={`${formattedSpeed} times${value === 1 ? ", normal" : ""}`}
+            onChange={(event) => onChange(normalizePlaybackSpeed(Number(event.currentTarget.value)))}
+          />
+          <div className="speed-range-labels" aria-hidden="true">
+            <span>{PLAYBACK_SPEED_MIN}×</span>
+            <span>{PLAYBACK_SPEED_MAX}×</span>
+          </div>
+        </>
+      )}
+      <div className="speed-presets" aria-label="Playback speed presets">
+        {PLAYBACK_SPEED_PRESETS.map((option) => (
+          <button
+            type="button"
+            key={option}
+            className={value === option ? "selected" : ""}
+            aria-pressed={value === option}
+            onClick={() => {
+              if (rotary && value !== option) haptic("light");
+              onChange(option);
+            }}
+          >
+            {formatPlaybackSpeed(option)}×
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Beyond this the segments are too thin to read or tap, and their fixed
@@ -491,23 +692,8 @@ function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBo
   }
 }
 
-function mostRecentlyListenedBookId(books: Book[]) {
-  return books
-    .filter((book) => book.progress?.updatedAt)
-    .sort(
-      (a, b) =>
-        Number(new Date(b.progress!.updatedAt)) - Number(new Date(a.progress!.updatedAt))
-    )[0]?.id ?? null;
-}
-
-function resolveBookId(books: Book[], preferredId: string | null, fallbackId: string | null = null) {
-  if (preferredId && books.some((book) => book.id === preferredId)) {
-    return preferredId;
-  }
-  if (fallbackId && books.some((book) => book.id === fallbackId)) {
-    return fallbackId;
-  }
-  return mostRecentlyListenedBookId(books) ?? books[0]?.id ?? null;
+function nativeAudioRecoveryScope(userId: string, bookId: string) {
+  return `${getServerStorageKey()}:${userId}:${bookId}`;
 }
 
 function flattenToc(items: NavItem[], depth = 0): Array<NavItem & { depth: number }> {
@@ -1356,6 +1542,9 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
         className={className}
         src={offlineCoverUrl ?? mediaUrl(book.coverArtUrl)}
         alt=""
+        loading={size === "small" ? "lazy" : "eager"}
+        decoding="async"
+        fetchPriority={size === "large" ? "high" : "auto"}
         onError={() => setLoadFailed(true)}
       />
     );
@@ -1449,14 +1638,29 @@ function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unknown>) {
   };
 }
 
+type AuthState =
+  | { phase: "loading" }
+  | { phase: "server"; returnToLocal?: boolean }
+  | { phase: "setup" }
+  | { phase: "login" }
+  | { phase: "ready"; user: AuthUser };
+
+function initialAuthState(): AuthState {
+  if (isDemoMode()) return { phase: "ready", user: DEMO_USER };
+  if (isLocalMode()) return { phase: "ready", user: DEVICE_USER };
+  if (!hasUserConfiguredServer()) return { phase: "server" };
+
+  // A native launch should not sit behind a network timeout. This is the same
+  // cached identity used for offline mode; checkAuth validates it in the
+  // background and still returns to login if the server rejects the session.
+  const cachedUser = isNativeApp() && getStoredToken() ? getOfflineUser() : null;
+  return cachedUser
+    ? { phase: "ready", user: cachedUser }
+    : { phase: "loading" };
+}
+
 export default function App() {
-  const [authState, setAuthState] = useState<
-    { phase: "loading" }
-    | { phase: "server"; returnToLocal?: boolean }
-    | { phase: "setup" }
-    | { phase: "login" }
-    | { phase: "ready"; user: AuthUser }
-  >({ phase: "loading" });
+  const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
   const checkAuth = useCallback(async () => {
     if (isDemoMode()) {
@@ -1701,6 +1905,7 @@ function MainApp({
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
+  const initialLibraryHydrated = useRef(false);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -1709,7 +1914,14 @@ function MainApp({
     readStoredBookId(currentUser.id, "playbackBookId")
   );
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
-  const [pendingSeek, setPendingSeek] = useState<PendingSeek | null>(null);
+  const [pendingSeek, setPendingSeekState] = useState<PendingSeek | null>(null);
+  // Mirrored in a ref so persistProgress (called from pagehide/visibility
+  // listeners holding stale closures) always sees the live value.
+  const pendingSeekRef = useRef<PendingSeek | null>(null);
+  const setPendingSeek = (value: PendingSeek | null) => {
+    pendingSeekRef.current = value;
+    setPendingSeekState(value);
+  };
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1977,16 +2189,54 @@ function MainApp({
     setIsLoading(true);
     setError(null);
     const deviceBooks = native ? getDeviceBooks() : [];
+    const applyLoadedBooks = (nextBooks: Book[]) => {
+      setBooks(nextBooks);
+      setSelectedBookId((existing) =>
+        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
+      );
+      setPlaybackBookId((existing) =>
+        resolveBookId(
+          nextBooks,
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          readStoredBookId(currentUser.id, "selectedBookId")
+        )
+      );
+    };
     if (localMode) {
-      setBooks(deviceBooks);
+      applyLoadedBooks(deviceBooks);
       setIsOffline(false);
-      setSelectedBookId((existing) => resolveBookId(deviceBooks, existing));
-      setPlaybackBookId((existing) => resolveBookId(deviceBooks, existing));
       setIsLoading(false);
       return;
     }
+
+    const liveLibraryRequest = getBooks().then(
+      (serverBooks) => ({ ok: true as const, serverBooks }),
+      (requestError: unknown) => ({ ok: false as const, requestError })
+    );
+    let hydratedServerBooks: Book[] = [];
+    if (!initialLibraryHydrated.current) {
+      initialLibraryHydrated.current = true;
+
+      // Device imports are synchronous, so they can paint on the first native
+      // frame. The IndexedDB shelf follows immediately on every platform while
+      // the live request runs.
+      if (deviceBooks.length) {
+        applyLoadedBooks(deviceBooks);
+        setIsLoading(false);
+      }
+      hydratedServerBooks = await getCachedLibrary(currentUser.id).catch(() => []);
+      const hydratedBooks = mergeDeviceAndServerBooks(hydratedServerBooks, deviceBooks);
+      if (hydratedBooks.length) {
+        applyLoadedBooks(hydratedBooks);
+        setIsOffline(false);
+        setIsLoading(false);
+      }
+    }
+
     try {
-      const serverBooks = await getBooks();
+      const liveLibrary = await liveLibraryRequest;
+      if (!liveLibrary.ok) throw liveLibrary.requestError;
+      const serverBooks = liveLibrary.serverBooks;
       const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
       // Reconcile every durable local copy, not only imported device media.
       // This brings progress recorded while offline back to the server even if
@@ -2030,9 +2280,9 @@ function MainApp({
           positionSeconds: location.positionSeconds
         }, { isPaused: true }).catch(() => undefined);
       })).catch(() => undefined);
-      setBooks(nextBooks);
+      applyLoadedBooks(nextBooks);
       setIsOffline(false);
-      if (isNativeApp()) void cacheLibrary(currentUser.id, serverBooks);
+      void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
         // Audio tags commonly omit the publisher blurb. Libation already has
         // the correct Audible description and returns its matched local book
@@ -2044,22 +2294,14 @@ function MainApp({
           })
           .catch(() => undefined);
       }
-      setSelectedBookId((existing) =>
-        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      setPlaybackBookId((existing) =>
-        resolveBookId(
-          nextBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          readStoredBookId(currentUser.id, "selectedBookId")
-        )
-      );
     } catch {
-      const cachedServer = isNativeApp() ? await getCachedLibrary(currentUser.id) : [];
+      const cachedServer = hydratedServerBooks.length
+        ? hydratedServerBooks
+        : await getCachedLibrary(currentUser.id);
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
       if (cached.length) {
-        setBooks(cached);
+        applyLoadedBooks(cached);
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
         setError("The audiobook server is not reachable.");
@@ -2533,10 +2775,29 @@ function MainApp({
       const location = resolveProgressLocation(playbackBook.tracks, progress);
       setCurrentTrackId(location?.trackId ?? null);
       setPendingSeek(location);
+      // Show the restored time immediately; the media element seeks to it
+      // once metadata loads.
+      setPosition(location?.positionSeconds ?? 0);
       restoredProgressBookId.current = playbackBook.id;
     };
 
     void (async () => {
+      const recoveredNative = nativeAudio
+        ? await getNativeAudioRecovery(nativeAudioRecoveryScope(currentUser.id, playbackBook.id)).catch(() => null)
+        : null;
+      const recoveryTrack = recoveredNative
+        ? playbackBook.tracks.find((track) => track.id === recoveredNative.trackId)
+        : null;
+      const nativeProgress: Progress | null = recoveredNative && recoveryTrack
+        ? {
+            bookId: playbackBook.id,
+            trackId: recoveryTrack.id,
+            positionSeconds: recoveredNative.positionSeconds,
+            bookPositionSeconds: recoveredNative.bookPositionSeconds,
+            durationSeconds: recoveredNative.durationSeconds ?? recoveryTrack.durationSeconds,
+            updatedAt: new Date(recoveredNative.updatedAt).toISOString()
+          }
+        : null;
       const deviceBookId = playbackBook.deviceBookId;
       const device = deviceBookId ? getDeviceProgress(deviceBookId) : null;
       const checkpoint = readProgressCheckpoint(
@@ -2547,10 +2808,31 @@ function MainApp({
       );
       const cached = await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null);
       if (playbackBook.source === "device") {
-        const local = freshestProgress(device, checkpoint, cached);
+        const local = freshestProgress(device, checkpoint, cached, nativeProgress);
         if (local) updateBookProgress(playbackBook.id, local);
         applyProgress(local);
         return;
+      }
+      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
+      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
+      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
+      const mappedDevice = device && mappedServerTrack
+        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
+        : null;
+      // Progress saved on the device or while disconnected can be newer than
+      // the server. Resume from the freshest copy and converge the server.
+      const freshestLocal = freshestProgress(mappedDevice, checkpoint, cached, nativeProgress);
+      // The summary embedded in the library listing is also the server's
+      // copy. It backstops a failed or empty progress fetch — without it, a
+      // fresh install that hits one failed request opens the book at zero and
+      // the next save wipes the real position on the server too.
+      const listed = progressFromBookSummary(playbackBook.id, playbackBook.progress);
+      // Resume from the best copy already on the device before asking the
+      // server. Waiting on that request left the player at 0:00 for the whole
+      // network timeout whenever the server was unreachable.
+      const optimistic = freshestProgress(freshestLocal, listed);
+      if (optimistic) {
+        applyProgress(optimistic);
       }
       let server: Progress | null = null;
       let serverReachable = true;
@@ -2562,25 +2844,23 @@ function MainApp({
       if (cancelled) {
         return;
       }
-      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
-      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
-      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
-      const mappedDevice = device && mappedServerTrack
-        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
-        : null;
-      // Progress saved on the device or while disconnected can be newer than
-      // the server. Resume from the freshest copy and converge the server.
-      const freshestLocal = freshestProgress(mappedDevice, checkpoint, cached);
-      const localIsNewer = !!freshestLocal && (!server || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(server.updatedAt));
+      const lastKnownServer = server ?? listed;
+      const localIsNewer = !!freshestLocal && (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
       if (localIsNewer) {
         updateBookProgress(playbackBook.id, freshestLocal);
-        applyProgress(freshestLocal);
         if (serverReachable) {
           void saveProgress(playbackBook.id, freshestLocal, { isPaused: true }).catch(() => undefined);
         }
-        return;
       }
-      applyProgress(server ?? freshestLocal);
+      const target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
+      // Re-seek only when the reconciled copy is genuinely fresher than what
+      // was already applied; re-applying an equal copy would yank playback.
+      if (
+        !optimistic ||
+        (target && progressTimestamp(target.updatedAt) > progressTimestamp(optimistic.updatedAt))
+      ) {
+        applyProgress(target);
+      }
     })();
 
     return () => {
@@ -2602,9 +2882,17 @@ function MainApp({
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!nativeAudio || !audio) return;
-    return attachNativeAudioPlayer(audio, (message) => setPlaybackError(message));
-  }, [currentTrackKey, nativeAudio]);
+    if (!nativeAudio || !audio || !playbackBook || !currentTrack) return;
+    return attachNativeAudioPlayer(
+      audio,
+      (message) => setPlaybackError(message),
+      {
+        scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
+        trackId: currentTrack.id,
+        bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex)
+      }
+    );
+  }, [currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
 
   // Progress often arrives after preload has already emitted loadedmetadata.
   // Apply that late checkpoint as soon as the target media element is ready.
@@ -2796,15 +3084,28 @@ function MainApp({
       return;
     }
 
-    const trackPosition = Number.isFinite(audioRef.current.currentTime)
-      ? Math.max(0, audioRef.current.currentTime)
-      : Math.max(0, position);
+    // While a seek is queued the media element does not reflect the real
+    // position yet — a restore or track jump reads currentTime 0 until
+    // metadata loads. Persist the seek target instead; persisting element
+    // time here would overwrite the real position everywhere, including the
+    // server's only copy.
+    const pending = pendingSeekRef.current;
+    if (pending && pending.trackId !== currentTrack.id) {
+      return;
+    }
+    const trackPosition = pending
+      ? Math.max(0, pending.positionSeconds)
+      : Number.isFinite(audioRef.current.currentTime)
+        ? Math.max(0, audioRef.current.currentTime)
+        : Math.max(0, position);
     const localProgress: Progress = {
       bookId: playbackBook.id,
       trackId: currentTrack.id,
       positionSeconds: trackPosition,
       bookPositionSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex) + trackPosition,
-      durationSeconds: Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
+      durationSeconds: pending
+        ? currentTrack.durationSeconds
+        : Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
       updatedAt: new Date().toISOString()
     };
     progressMutationVersion.current += 1;
@@ -3360,8 +3661,9 @@ function MainApp({
   }
 
   function updateSpeed(value: number) {
-    setSpeed(value);
-    writeStoredSpeed(value);
+    const normalized = normalizePlaybackSpeed(value);
+    setSpeed(normalized);
+    writeStoredSpeed(normalized);
   }
 
   function openNativeTab(tab: NativeTab) {
@@ -4580,29 +4882,47 @@ function MainApp({
                 </div>
 
                 <div className="transport">
+                  {activeChapter ? (
+                    <button
+                      className="round-button secondary transport-skip"
+                      aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
+                      onClick={restartOrPreviousChapter}
+                      disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                    >
+                      <SkipBack size={22} strokeWidth={1.7} />
+                      <small>{chapterElapsed > 5 ? "Restart" : "Previous"}</small>
+                    </button>
+                  ) : null}
                   <button
                     className="round-button secondary transport-skip"
-                    aria-label={activeChapter
-                      ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"
-                      : "Skip back 15 seconds"}
-                    onClick={restartOrPreviousChapter}
-                    disabled={!!activeChapter && chapterElapsed <= 5 && !hasPreviousChapter}
+                    aria-label="Rewind 15 seconds"
+                    onClick={() => seekBy(-15)}
                   >
-                    <SkipBack size={22} strokeWidth={1.7} />
-                    <small>{activeChapter ? chapterElapsed > 5 ? "Restart" : "Previous" : "15s"}</small>
+                    <RotateCcw size={22} strokeWidth={1.7} />
+                    <small>15s</small>
                   </button>
                   <button className="round-button primary" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
                     {isPlaying ? <Pause size={30} fill="currentColor" /> : <Play size={30} fill="currentColor" />}
                   </button>
                   <button
                     className="round-button secondary transport-skip"
-                    aria-label={activeChapter ? "Next chapter" : "Skip forward 30 seconds"}
-                    onClick={nextChapter}
-                    disabled={!!activeChapter && !hasNextChapter}
+                    aria-label="Forward 30 seconds"
+                    onClick={() => seekBy(30)}
                   >
-                    <SkipForward size={22} strokeWidth={1.7} />
-                    <small>{activeChapter ? "Next" : "30s"}</small>
+                    <RotateCw size={22} strokeWidth={1.7} />
+                    <small>30s</small>
                   </button>
+                  {activeChapter ? (
+                    <button
+                      className="round-button secondary transport-skip"
+                      aria-label="Next chapter"
+                      onClick={nextChapter}
+                      disabled={!hasNextChapter}
+                    >
+                      <SkipForward size={22} strokeWidth={1.7} />
+                      <small>Next</small>
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="timeline">
@@ -4757,17 +5077,7 @@ function MainApp({
             <div className="controls-grid">
               <section className="control-section">
                 <div className="section-label"><Gauge size={13} /> Cadence</div>
-                <div className="segmented">
-                  {SPEEDS.map((option) => (
-                    <button
-                      key={option}
-                      className={speed === option ? "selected" : ""}
-                      onClick={() => updateSpeed(option)}
-                    >
-                      {option}×
-                    </button>
-                  ))}
-                </div>
+                <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
               </section>
 
               {/* Phones have hardware volume buttons; a second software
@@ -4889,25 +5199,39 @@ function MainApp({
           </div>
 
           <div className="mini-actions">
-            <button
-              type="button"
-              aria-label={activeChapter ? chapterElapsed > 5 ? "Restart chapter" : "Previous chapter" : "Skip back 15 seconds"}
-              onClick={restartOrPreviousChapter}
-              disabled={!!activeChapter && chapterElapsed <= 5 && !hasPreviousChapter}
-            >
-              <SkipBack size={17} />
+            {activeChapter ? (
+              <button
+                type="button"
+                className="mini-chapter"
+                aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
+                onClick={restartOrPreviousChapter}
+                disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+              >
+                <SkipBack size={17} />
+              </button>
+            ) : null}
+            <button type="button" className="mini-seek" aria-label="Rewind 15 seconds" onClick={() => seekBy(-15)}>
+              <RotateCcw size={16} />
+              <small>15</small>
             </button>
             <button type="button" className="mini-play" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
               {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
             </button>
-            <button
-              type="button"
-              aria-label={activeChapter ? "Next chapter" : "Skip forward 30 seconds"}
-              onClick={nextChapter}
-              disabled={!!activeChapter && !hasNextChapter}
-            >
-              <SkipForward size={17} />
+            <button type="button" className="mini-seek" aria-label="Forward 30 seconds" onClick={() => seekBy(30)}>
+              <RotateCw size={16} />
+              <small>30</small>
             </button>
+            {activeChapter ? (
+              <button
+                type="button"
+                className="mini-chapter"
+                aria-label="Next chapter"
+                onClick={nextChapter}
+                disabled={!hasNextChapter}
+              >
+                <SkipForward size={17} />
+              </button>
+            ) : null}
           </div>
         </aside>
       ) : null}
@@ -4931,24 +5255,18 @@ function MainApp({
                 <X size={18} />
               </button>
             </header>
-            <p className="sleep-sheet-hint">Choose the pace that feels most natural for this reading.</p>
-            <div className="sleep-options">
-              {SPEEDS.map((option) => (
-                <button
-                  type="button"
-                  key={option}
-                  className={speed === option ? "selected" : ""}
-                  onClick={() => {
-                    haptic("light");
-                    updateSpeed(option);
-                    setNativePlayerSheet(null);
-                  }}
-                >
-                  <span>{option}×{option === 1 ? " · Normal" : ""}</span>
-                  {speed === option ? <em>Selected</em> : <ChevronRight size={17} />}
-                </button>
-              ))}
-            </div>
+            <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
+            <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+            <button
+              type="button"
+              className="speed-sheet-done"
+              onClick={() => {
+                haptic("light");
+                setNativePlayerSheet(null);
+              }}
+            >
+              Done
+            </button>
           </section>
         </div>
       ) : null}
@@ -5291,17 +5609,7 @@ function MainApp({
             <span className="section-label"><Gauge size={13} /> Playback</span>
             <div className="settings-field">
               <span className="settings-label">Cadence</span>
-              <div className="segmented">
-                {SPEEDS.map((option) => (
-                  <button
-                    key={option}
-                    className={speed === option ? "selected" : ""}
-                    onClick={() => updateSpeed(option)}
-                  >
-                    {option}×
-                  </button>
-                ))}
-              </div>
+              <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
               <p className="settings-hint">Applies to every book and is remembered on this device.</p>
             </div>
           </section>

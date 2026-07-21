@@ -94,7 +94,9 @@ button {
     );
   background-blend-mode: normal, overlay;
   color: var(--paper);
-  padding: 36px 28px 40px;
+  /* The mini-player floats over this pane too, so the last shelf rows need
+     the same clearance the reading pane already reserves. */
+  padding: 36px 28px 140px;
   overflow-y: auto;
   /* overflow-y alone leaves overflow-x computed as auto, letting wide
      content pan the whole pane sideways on touch screens. */
@@ -689,7 +691,8 @@ button {
 
 .book-list.is-grid .cover-mark {
   width: 100%;
-  aspect-ratio: 2 / 3;
+  height: auto;
+  aspect-ratio: 1;
   box-shadow:
     inset 4px 0 0 rgba(0, 0, 0, 0.28),
     inset 6px 0 0 rgba(184, 137, 58, 0.35),
@@ -790,7 +793,7 @@ button {
 .cover-mark {
   width: 32px;
   aspect-ratio: 2 / 3;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 1px 3px 3px 1px;
   background: var(--oxblood);
   color: var(--gold-soft);
@@ -798,6 +801,13 @@ button {
   align-items: center;
   justify-content: center;
   box-shadow: inset 3px 0 0 rgba(0, 0, 0, 0.25);
+}
+
+/* As with the hero cover, artwork sets its own ratio; the 2:3 spine shape
+   above is for the fallback glyph. */
+img.cover-mark {
+  aspect-ratio: auto;
+  height: auto;
 }
 
 .book-text {
@@ -1004,8 +1014,13 @@ button {
     0 4px 8px -2px rgba(26, 20, 16, 0.4);
 }
 
+/* Real artwork keeps its own proportions. Audiobook covers are square, so the
+   2:3 spine frame — which stays for the placeholder below — would crop a third
+   of the art away. */
 img.large-cover {
-  object-fit: cover;
+  aspect-ratio: auto;
+  height: auto;
+  object-fit: contain;
   display: block;
 }
 
@@ -1978,6 +1993,214 @@ input[type="range"]::-moz-range-thumb {
   border-color: var(--ink);
 }
 
+.speed-control {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.speed-slider-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-slider-heading output {
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.speed-slider-heading span {
+  color: var(--ink-faded);
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+}
+
+.speed-control > input[type="range"] {
+  height: 20px;
+}
+
+.speed-range-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-faded);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.speed-wheel-shell {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 7px;
+}
+
+.speed-wheel-shell > button {
+  display: grid;
+  place-items: center;
+  min-height: 42px;
+  padding: 0;
+  color: var(--ink);
+  border: 1px solid rgba(26, 20, 16, 0.16);
+  border-radius: 999px;
+  background: transparent;
+  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.speed-wheel-shell > button:hover:not(:disabled) {
+  color: var(--oxblood);
+  border-color: var(--oxblood);
+  transform: translateY(-1px);
+}
+
+.speed-wheel-shell > button:disabled {
+  cursor: default;
+  opacity: 0.32;
+}
+
+.speed-wheel {
+  position: relative;
+  height: 72px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(26, 20, 16, 0.1);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.28);
+  perspective: 260px;
+  touch-action: pan-y;
+  cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+}
+
+.speed-wheel:focus-visible {
+  outline: 2px solid var(--oxblood);
+  outline-offset: 2px;
+}
+
+.speed-wheel.dragging {
+  cursor: grabbing;
+}
+
+.speed-wheel-lens {
+  position: absolute;
+  z-index: 0;
+  top: 50%;
+  left: 50%;
+  width: 62px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: 0 9px 22px -14px rgba(26, 20, 16, 0.7);
+  transform: translate(-50%, -50%);
+}
+
+.speed-wheel-pointer {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  left: 50%;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--oxblood);
+  transform: translateX(-50%);
+}
+
+.speed-wheel-value {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  opacity: 0;
+  transform: translate(-50%, -50%) translateX(var(--speed-x)) rotateY(var(--speed-turn));
+  transform-origin: center;
+  transition: color 0.18s ease, font-size 0.18s ease, opacity 0.18s ease, transform 0.18s ease;
+}
+
+.speed-wheel.dragging .speed-wheel-value {
+  transition: color 0.1s ease, font-size 0.1s ease, opacity 0.1s ease;
+}
+
+.speed-wheel-value.distance-1 { opacity: 0.72; }
+.speed-wheel-value.distance-2 { opacity: 0.4; }
+.speed-wheel-value.distance-3 { opacity: 0.18; }
+
+.speed-wheel-value.selected {
+  color: var(--paper);
+  font-size: 1rem;
+  font-weight: 600;
+  opacity: 1;
+}
+
+.speed-wheel-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  color: var(--ink-faded);
+  font-family: "Fraunces", serif;
+  font-size: 0.68rem;
+  font-style: italic;
+}
+
+.speed-wheel-hint span:last-child {
+  flex-shrink: 0;
+  color: var(--oxblood);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.57rem;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-presets {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.speed-presets button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 3px;
+  color: var(--ink-soft);
+  border: 1px solid rgba(26, 20, 16, 0.13);
+  border-radius: 5px;
+  background: transparent;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.speed-presets button:hover {
+  border-color: var(--ink-soft);
+}
+
+.speed-presets button.selected {
+  color: var(--paper);
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
 select {
   min-height: 38px;
   padding: 6px 32px 6px 12px;
@@ -2214,10 +2437,12 @@ select:focus {
   pointer-events: none;
 }
 
+/* Height-driven so the button takes the shape of whatever art it holds
+   instead of cropping it into a 2:3 box. */
 .mini-cover-button {
   position: relative;
-  width: 44px;
-  height: 60px;
+  width: auto;
+  height: 56px;
   flex-shrink: 0;
   transition: transform 0.3s ease;
 }
@@ -2227,8 +2452,9 @@ select:focus {
 }
 
 .mini-cover-button .cover-mark {
-  width: 100%;
+  width: auto;
   height: 100%;
+  max-width: 100%;
   box-shadow:
     inset 4px 0 0 rgba(0, 0, 0, 0.32),
     inset 6px 0 0 rgba(184, 137, 58, 0.4),
@@ -2349,6 +2575,22 @@ select:focus {
   border-color: var(--gold-soft);
 }
 
+/* The seek buttons carry their interval in the ring, the way the native
+   player labels its 15s / 30s controls. */
+.mini-actions .mini-seek {
+  position: relative;
+}
+
+.mini-actions .mini-seek small {
+  position: absolute;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.5rem;
+  letter-spacing: 0;
+  line-height: 1;
+  padding-top: 1px;
+  pointer-events: none;
+}
+
 /* --------- Page-load reveal --------- */
 @keyframes rise {
   from {
@@ -2437,7 +2679,7 @@ select:focus {
       inset -6px 0 18px rgba(0, 0, 0, 0.55),
       24px 0 60px -20px rgba(0, 0, 0, 0.7);
     border-right: 1px solid #000;
-    padding: 28px 22px 32px;
+    padding: 28px 22px 140px;
   }
 
   .library-pane.open {
@@ -2728,8 +2970,8 @@ select:focus {
   }
 
   .mini-cover-button {
-    width: 36px;
-    height: 50px;
+    width: auto;
+    height: 46px;
   }
 
   .mini-meta strong {
@@ -2747,6 +2989,12 @@ select:focus {
   .mini-actions button {
     width: 40px;
     height: 40px;
+  }
+
+  /* Five controls won't fit the phone-width bar; seek and play win, and
+     chapter nav stays reachable in the reading pane. */
+  .mini-actions .mini-chapter {
+    display: none;
   }
 
   .mini-progress {
@@ -5058,6 +5306,66 @@ html.native-app .native-now-utility button {
   }
 }
 
+/* iPad: the phone-width column left most of the display empty. Pair the
+   artwork with the controls instead of stacking them in a narrow strip.
+   Both dimensions are gated so phone landscape — wide but short — keeps the
+   single column it is designed for.
+
+   The width gate is deliberately well above the 768px that turns on the
+   two-column shell below: past that point this view lives in the right-hand
+   column, not the whole display, so it needs the extra room before the
+   artwork and controls can sit side by side. In practice that means landscape
+   iPads pair them and portrait iPads keep stacking. */
+@media (min-width: 1100px) and (min-height: 700px) {
+  html.native-app .native-player-view-now .native-now-playing {
+    max-width: min(1060px, 94vw);
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    grid-template-areas:
+      "art copy"
+      "art timeline"
+      "art transport"
+      "art utility";
+    align-items: center;
+    column-gap: clamp(32px, 4.5vw, 64px);
+    row-gap: clamp(16px, 2.2vh, 26px);
+    padding: clamp(30px, 4vh, 52px);
+    border-radius: 34px;
+  }
+
+  html.native-app .native-now-artwork {
+    grid-area: art;
+    align-self: center;
+    padding-top: 0;
+  }
+
+  html.native-app .native-now-artwork .large-cover {
+    width: 100%;
+    max-width: 440px;
+    max-height: none;
+    border-radius: 26px;
+  }
+
+  html.native-app .native-now-copy {
+    grid-area: copy;
+    text-align: left;
+    gap: 8px;
+  }
+
+  html.native-app .native-now-timeline {
+    grid-area: timeline;
+  }
+
+  html.native-app .native-now-transport {
+    grid-area: transport;
+    justify-content: flex-start;
+    gap: clamp(14px, 2.2vw, 30px);
+  }
+
+  html.native-app .native-now-utility {
+    grid-area: utility;
+  }
+}
+
 /* Control cards: one quiet card with hairline dividers instead of three
    mismatched slabs. */
 html.native-app .controls-grid {
@@ -6539,6 +6847,84 @@ html.native-app .recent-row {
   color: rgba(241, 231, 208, 0.62);
 }
 
+.sleep-sheet .speed-control {
+  gap: 11px;
+}
+
+.sleep-sheet .speed-wheel-shell > button {
+  color: var(--paper);
+  border-color: rgba(241, 231, 208, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled) {
+  color: var(--gold-soft);
+  border-color: rgba(217, 181, 116, 0.7);
+}
+
+.sleep-sheet .speed-wheel-hint {
+  color: rgba(241, 231, 208, 0.55);
+}
+
+.sleep-sheet .speed-wheel-hint span:last-child {
+  color: var(--gold-soft);
+}
+
+.sleep-sheet .speed-wheel {
+  border-color: rgba(241, 231, 208, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sleep-sheet .speed-wheel:focus-visible {
+  outline-color: var(--gold-soft);
+}
+
+.sleep-sheet .speed-wheel-lens {
+  background: var(--gold-soft);
+  box-shadow: 0 10px 24px -14px rgba(0, 0, 0, 0.9);
+}
+
+.sleep-sheet .speed-wheel-pointer {
+  background: var(--gold-soft);
+}
+
+.sleep-sheet .speed-wheel-value {
+  color: rgba(255, 250, 237, 0.72);
+}
+
+.sleep-sheet .speed-wheel-value.selected {
+  color: var(--ink);
+}
+
+.sleep-sheet .speed-presets button {
+  color: rgba(255, 250, 237, 0.75);
+  border-color: rgba(241, 231, 208, 0.14);
+}
+
+.sleep-sheet .speed-presets button:hover {
+  border-color: rgba(217, 181, 116, 0.55);
+}
+
+.sleep-sheet .speed-presets button.selected {
+  color: var(--ink);
+  border-color: var(--gold-soft);
+  background: var(--gold-soft);
+}
+
+.speed-sheet-done {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 18px;
+  color: var(--ink);
+  border-radius: 999px;
+  background: var(--gold-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 .chapter-sheet {
   max-height: min(82dvh, 720px);
 }
@@ -6589,5 +6975,152 @@ html.native-app .recent-row {
   .sleep-sheet,
   .sleep-sheet-scrim {
     animation: none;
+  }
+}
+
+/* ============================================================
+   iPad — regular-width native layout
+
+   The phone shell stacks the library and player panes as
+   full-screen tab pages. On an iPad there is room for both at
+   once, so the shell goes back to the two-column reading desk
+   the browser build already uses: library spine on the left,
+   player on the right, spine tab bar still along the bottom.
+
+   Gated on height as well as width so an iPhone held in
+   landscape (up to 932pt wide, but never 700pt tall) keeps the
+   phone layout. Every iPad clears 768x700 in both orientations.
+   iPad Split View narrower than 768pt falls back to the phone
+   layout too, which is what we want.
+   ============================================================ */
+@media (min-width: 768px) and (min-height: 700px) {
+  html.native-app {
+    --ipad-pane-w: clamp(300px, 32vw, 400px);
+  }
+
+  html.native-app .native-shell {
+    display: grid;
+    grid-template-columns: var(--ipad-pane-w) minmax(0, 1fr);
+    min-height: 100dvh;
+  }
+
+  /* Both panes are live columns: always visible, each scrolling on
+     its own, never cross-fading. The tab bar and book selection now
+     only change what the right column shows. */
+  html.native-app .native-shell > .library-pane,
+  html.native-app .native-shell > .player-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+    position: relative;
+    inset: auto;
+    height: 100dvh;
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  html.native-app .native-shell > .library-pane {
+    border-right: 1px solid #000;
+    box-shadow: inset -10px 0 24px rgba(0, 0, 0, 0.55);
+  }
+
+  /* The tab bar spans the full width, so both columns clear it.
+     The mini-player only overlaps the right column (below). */
+  html.native-app .native-shell > .library-pane,
+  html.native-app .native-shell.tab-shelf > .library-pane {
+    padding-bottom: calc(var(--tabs-h) + 24px);
+  }
+
+  html.native-app .native-shell > .player-pane {
+    padding-bottom: calc(var(--tabs-h) + 108px);
+  }
+
+  /* The mini-player belongs to the right column now — docking it
+     full-width would cover the library list it sits beside. */
+  html.native-app .mini-player {
+    left: calc(var(--ipad-pane-w) + 16px);
+    right: 16px;
+  }
+
+  /* "Back to Library" is meaningless when the library never left. */
+  html.native-app .native-shell.tab-shelf .native-player-return {
+    display: none;
+  }
+
+  /* The native book heading centres itself in a single column because a
+     phone has no room for anything else. The player column does, so lay the
+     cover beside the copy the way the browser build always has. */
+  html.native-app .book-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+    justify-items: start;
+    align-items: end;
+    gap: clamp(20px, 3vw, 40px);
+  }
+
+  html.native-app .book-heading .meta {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  html.native-app .large-cover {
+    width: clamp(120px, 16vw, 200px);
+  }
+
+  html.native-app .book-heading h2 {
+    margin: 14px 0 12px;
+    font-size: clamp(2.2rem, 3.4vw, 3.1rem);
+    max-width: 20ch;
+  }
+
+  html.native-app .metadata-strip {
+    justify-content: flex-start;
+  }
+
+  /* The book page reached from the shelf squeezes the hero harder still, to
+     stay clear of the mini-player on a phone. Undo that too — these
+     selectors are more specific than the block above, so they need
+     restating rather than inheriting it. */
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: end;
+    justify-items: start;
+    gap: clamp(20px, 3vw, 40px);
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+    width: clamp(120px, 16vw, 200px);
+    justify-self: start;
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading h2 {
+    margin: 14px 0 12px;
+    font-size: clamp(2.2rem, 3.4vw, 3.1rem);
+    line-height: 1.04;
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+    width: auto;
+    margin-top: 10px;
+    gap: 8px;
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn {
+    flex: 0 0 auto;
+    padding-inline: 14px;
+    font-size: 0.6rem;
+  }
+
+  /* One veil now spans two differently-coloured columns, so it has to
+     change colour where they meet. Overlay tabs (ledger, settings,
+     admin) cover the whole width and keep their single tint. */
+  html.native-app .native-shell.tab-shelf .ios-status-veil,
+  html.native-app .native-shell.tab-reading .ios-status-veil {
+    background: linear-gradient(
+      90deg,
+      rgba(16, 10, 7, 0.55) 0 var(--ipad-pane-w),
+      rgba(241, 231, 208, 0.72) var(--ipad-pane-w)
+    );
   }
 }

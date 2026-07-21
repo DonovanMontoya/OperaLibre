@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { Haptics, ImpactStyle } from "@capacitor/haptics";
 
 /**
  * Native-only ergonomics for the Capacitor Android and iOS builds. Everything here is a
@@ -33,21 +34,26 @@ export function markNativePlatform(): void {
 
 type HapticStyle = "light" | "medium" | "heavy";
 
-/**
- * Fire a light impact through Capacitor's plugin proxy if @capacitor/haptics
- * is installed. Accessing the plugin off the global proxy means we never take
- * a build-time dependency on it: if it isn't installed, this silently does
- * nothing.
- */
 export function haptic(style: HapticStyle = "light"): void {
   if (!Capacitor.isNativePlatform()) {
     return;
   }
-  try {
-    const plugins = (Capacitor as unknown as { Plugins?: Record<string, any> }).Plugins;
-    const Haptics = plugins?.Haptics;
-    Haptics?.impact?.({ style: style.charAt(0).toUpperCase() + style.slice(1) });
-  } catch {
-    // Plugin not installed — no-op.
+  const impactStyle = {
+    light: ImpactStyle.Light,
+    medium: ImpactStyle.Medium,
+    heavy: ImpactStyle.Heavy
+  }[style];
+  void Haptics.impact({ style: impactStyle }).catch(() => undefined);
+}
+
+export function selectionHaptic(phase: "start" | "change" | "end"): void {
+  if (!Capacitor.isNativePlatform()) {
+    return;
   }
+  const feedback = {
+    start: () => Haptics.selectionStart(),
+    change: () => Haptics.selectionChanged(),
+    end: () => Haptics.selectionEnd()
+  }[phase];
+  void feedback().catch(() => undefined);
 }

@@ -16,6 +16,7 @@
 	},
 	"packageClassList": [
 		"FilesystemPlugin",
+		"HapticsPlugin",
 		"FilePickerPlugin"
 	]
 }
