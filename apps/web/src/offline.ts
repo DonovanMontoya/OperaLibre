@@ -1,7 +1,12 @@
 import { Capacitor } from "@capacitor/core";
-import { FileTransfer } from "@capacitor/file-transfer";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { getServerStorageKey } from "./api";
+import {
+  getBackgroundBookDownloadStatus,
+  runBackgroundBookDownload,
+  type BackgroundDownloadFile,
+  type BackgroundDownloadStatus
+} from "./backgroundDownloads";
 import type { AuthUser, Book, Progress, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -104,6 +109,13 @@ function coverExtension(book: Book) {
 
 const coverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
 
+export const backgroundDownloadJobId = (book: Book) =>
+  `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}`;
+
+export function getBookBackgroundDownloadStatus(book: Book) {
+  return getBackgroundBookDownloadStatus(backgroundDownloadJobId(book));
+}
+
 const migratedLegacyBooks = new Set<string>();
 async function migrateLegacyBookDirectory(book: Book) {
   const migrationKey = `${getServerStorageKey()}:${book.id}`;
@@ -149,48 +161,6 @@ async function nativeFileUrl(path: string) {
   if (!(await fileExists(path))) return null;
   const { uri } = await Filesystem.getUri({ path, directory: MEDIA_DIRECTORY });
   return Capacitor.convertFileSrc(uri);
-}
-
-/**
- * Download straight to disk through the native layer (URLSession) so tracks
- * never pass through WebView memory — fetching multi-hundred-MB audiobook
- * blobs is what crashed the old IndexedDB approach on iOS.
- */
-async function downloadToFile(
-  url: string,
-  path: string,
-  label: string,
-  onPercent?: (percent: number) => void
-) {
-  const listener = onPercent
-    ? await FileTransfer.addListener("progress", (status) => {
-        if (status.type === "download" && status.url === url && status.contentLength > 0) {
-          onPercent(Math.min(100, Math.round((status.bytes / status.contentLength) * 100)));
-        }
-      })
-    : null;
-  try {
-    // FileTransfer requires an absolute native destination URI. The old
-    // Filesystem downloader accepted a Directory/path pair, but is deprecated
-    // and has proven unreliable for large iOS audiobook transfers.
-    const destination = await Filesystem.getUri({ path, directory: MEDIA_DIRECTORY });
-    await FileTransfer.downloadFile({
-      url,
-      path: destination.uri,
-      progress: !!onPercent,
-      connectTimeout: 60_000,
-      readTimeout: 600_000
-    });
-  } catch (error) {
-    // Don't leave a partial file behind: it would make the book look downloaded.
-    if (await fileExists(path)) {
-      await Filesystem.deleteFile({ path, directory: MEDIA_DIRECTORY }).catch(() => undefined);
-    }
-    const reason = error instanceof Error && error.message ? ` ${error.message}` : "";
-    throw new Error(`Could not download ${label}.${reason}`);
-  } finally {
-    await listener?.remove();
-  }
 }
 
 // Downloads from before the filesystem migration sit as large blobs in
@@ -273,22 +243,39 @@ export async function isBookDownloaded(book: Book) {
 export async function downloadBookForOffline(
   book: Book,
   resolveUrl: (path: string) => string,
-  onProgress: (completedTracks: number, totalTracks: number, currentTrackPercent?: number) => void
+  onProgress: (
+    completedTracks: number,
+    totalTracks: number,
+    currentTrackPercent?: number,
+    state?: BackgroundDownloadStatus["state"]
+  ) => void
 ) {
   const total = book.tracks.length;
   if (isNative()) {
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
-    for (const [index, track] of book.tracks.entries()) {
-      onProgress(index, total, 0);
-      await downloadToFile(resolveUrl(track.downloadUrl ?? track.streamUrl), trackFilePath(book, track), track.title, (percent) =>
-        onProgress(index, total, percent)
-      );
-      onProgress(index + 1, total);
-    }
+    const files: BackgroundDownloadFile[] = await Promise.all(book.tracks.map(async (track) => ({
+      url: resolveUrl(track.downloadUrl ?? track.streamUrl),
+      path: (await Filesystem.getUri({ path: trackFilePath(book, track), directory: MEDIA_DIRECTORY })).uri,
+      label: track.title,
+      required: true
+    })));
     if (book.coverArtUrl) {
-      await downloadToFile(resolveUrl(book.coverArtUrl), coverFilePath(book), "cover art").catch(() => undefined);
+      files.push({
+        url: resolveUrl(book.coverArtUrl),
+        path: (await Filesystem.getUri({ path: coverFilePath(book), directory: MEDIA_DIRECTORY })).uri,
+        label: "cover art",
+        required: false
+      });
     }
+    // Stable IDs let a relaunched app reattach to work the OS is already
+    // running instead of scheduling a duplicate copy of the same book.
+    const jobId = backgroundDownloadJobId(book);
+    await runBackgroundBookDownload(jobId, book.title, files, (fraction, state) => {
+      const trackProgress = fraction * total;
+      const completed = Math.min(total, Math.floor(trackProgress));
+      onProgress(completed, total, completed < total ? (trackProgress - completed) * 100 : undefined, state);
+    });
     return;
   }
 

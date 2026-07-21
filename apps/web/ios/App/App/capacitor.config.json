@@ -15,7 +15,6 @@
 		"allowsLinkPreview": false
 	},
 	"packageClassList": [
-		"FileTransferPlugin",
 		"FilesystemPlugin",
 		"FilePickerPlugin"
 	]

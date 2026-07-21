@@ -14,7 +14,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } catch {
             NSLog("Unable to configure audiobook playback audio session: %@", error.localizedDescription)
         }
-
+        BackgroundDownloadManager.shared.prepare()
         return true
     }
 
@@ -51,6 +51,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Feel free to add additional processing here, but if you want the App API to support
         // tracking app url opens, make sure to keep this call
         return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
+    }
+
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        BackgroundDownloadManager.shared.handleEvents(identifier: identifier, completionHandler: completionHandler)
     }
 
 }

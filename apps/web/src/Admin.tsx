@@ -1,8 +1,10 @@
 import {
+  ArrowUpCircle,
   BookOpen,
   Check,
   CloudDownload,
   Database,
+  ExternalLink,
   KeyRound,
   LoaderCircle,
   RefreshCcw,
@@ -20,6 +22,8 @@ import {
   deleteDownloadedBook,
   deleteUser,
   decideLibationRequest,
+  getUpdateStatus,
+  installServerUpdate,
   listLibationRequests,
   listUsers,
   mediaUrl,
@@ -28,7 +32,7 @@ import {
   updateUserLibationAccess,
   updateUserRole
 } from "./api";
-import type { AuthUser, Book, LibationAccess, LibationDownloadRequest } from "./types";
+import type { AuthUser, Book, LibationAccess, LibationDownloadRequest, UpdateStatus } from "./types";
 
 type AdminSection = "overview" | "users" | "requests" | "books";
 type AccountRole = "owner" | "admin" | "reader";
@@ -60,6 +64,9 @@ export function AdminPanel({
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<AccountRole>("reader");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(true);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
 
   async function refreshUsers() {
     setLoading(true);
@@ -75,8 +82,20 @@ export function AdminPanel({
     }
   }
 
+  async function refreshUpdate(force = false) {
+    setUpdateChecking(true);
+    try {
+      setUpdateStatus(await getUpdateStatus(30_000, force));
+    } catch {
+      // Update discovery should never prevent administration of the server.
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
   useEffect(() => {
     void refreshUsers();
+    void refreshUpdate();
   }, []);
 
   const readers = users.filter((user) => !user.isAdmin);
@@ -251,6 +270,41 @@ export function AdminPanel({
     void saveAccess(user, next);
   }
 
+  async function handleInstallUpdate() {
+    if (!updateStatus?.updateAvailable || !updateStatus.canAutoUpdate || !currentUser.isOwner) return;
+    if (!window.confirm(
+      `Update this server from ${updateStatus.currentVersion} to ${updateStatus.latestVersion}?\n\nOperaLibre will restart and this page will reconnect automatically.`
+    )) return;
+
+    const targetVersion = updateStatus.latestVersion;
+    setUpdateInstalling(true);
+    setError(null);
+    setNotice("Downloading the verified update package…");
+    try {
+      await installServerUpdate();
+      setNotice("The server is restarting. This page will reconnect when the update is ready…");
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+        try {
+          const status = await getUpdateStatus(3_000);
+          if (status.currentVersion === targetVersion) {
+            window.location.reload();
+            return;
+          }
+        } catch {
+          // The expected restart window temporarily makes the API unavailable.
+        }
+      }
+      setNotice("The update is still finishing. Reload this page in a moment.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not install the server update.");
+      setNotice(null);
+    } finally {
+      setUpdateInstalling(false);
+    }
+  }
+
   return (
     <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
       <header className="admin-head">
@@ -279,6 +333,35 @@ export function AdminPanel({
           </button>
         ))}
       </nav>
+
+      {updateStatus?.updateAvailable ? (
+        <section className="admin-update-banner" aria-live="polite">
+          <div className="admin-update-icon"><ArrowUpCircle size={22} /></div>
+          <div className="admin-update-copy">
+            <span>Server update available</span>
+            <strong>OperaLibre {updateStatus.latestVersion}</strong>
+            <p>
+              This server is running {updateStatus.currentVersion}.
+              {updateStatus.canAutoUpdate
+                ? currentUser.isOwner
+                  ? " Install the verified package and restart from here."
+                  : " An owner can install the update from this page."
+                : ` ${updateStatus.message ?? "This installation must be updated manually."}`}
+            </p>
+          </div>
+          <div className="admin-update-actions">
+            {currentUser.isOwner && updateStatus.canAutoUpdate ? (
+              <button type="button" disabled={updateInstalling} onClick={() => void handleInstallUpdate()}>
+                {updateInstalling ? <LoaderCircle size={15} className="spin-icon" /> : <ArrowUpCircle size={15} />}
+                {updateInstalling ? "Updating…" : "Update server"}
+              </button>
+            ) : null}
+            <a className="quiet-button" href={updateStatus.releaseUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={14} /> Release notes
+            </a>
+          </div>
+        </section>
+      ) : null}
 
       {error ? <p className="admin-message error">{error}</p> : null}
       {notice ? <p className="admin-message success"><Check size={14} /> {notice}</p> : null}
@@ -310,6 +393,16 @@ export function AdminPanel({
                 Rescan library
               </button>
             </div>
+          </section>
+          <section className="admin-card admin-version-card">
+            <div>
+              <span className="section-label"><ArrowUpCircle size={13} /> Server software</span>
+              <h2>{updateStatus ? `OperaLibre ${updateStatus.currentVersion}` : "OperaLibre server"}</h2>
+              <p>{updateChecking ? "Checking for updates…" : updateStatus ? "This server checks GitHub Releases for new versions." : "Update status is temporarily unavailable."}</p>
+            </div>
+            <button type="button" className="quiet-button" disabled={updateChecking || updateInstalling} onClick={() => void refreshUpdate(true)}>
+              {updateChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />} Check for updates
+            </button>
           </section>
         </div>
       ) : null}

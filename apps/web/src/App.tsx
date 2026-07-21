@@ -49,8 +49,15 @@ import {
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { progressTimestamp } from "./reliability";
+import {
+  freshestProgress,
+  progressTimestamp,
+  readProgressCheckpoint,
+  resolveProgressLocation,
+  writeProgressCheckpoint
+} from "./reliability";
 import { isLibationAdding } from "./libationState";
+import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import {
   bookDownloadUrl,
   activateServerAlias,
@@ -104,6 +111,7 @@ import {
   cacheOfflineUser,
   cacheProgress,
   downloadBookForOffline,
+  getBookBackgroundDownloadStatus,
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
@@ -115,6 +123,14 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { haptic } from "./native";
+import {
+  attachNativeAudioPlayer,
+  pauseNativeAudio,
+  playNativeAudio,
+  seekNativeAudio,
+  updateNativeAudioNowPlaying,
+  usesNativeAudioPlayer
+} from "./nativeAudio";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
   DEVICE_USER,
@@ -150,9 +166,28 @@ const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 const SPEED_STORAGE_KEY = "operalibre.playbackSpeed";
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
+const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
 type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | null;
+type DeviceDownloadActivity = {
+  bookId: string;
+  fraction: number | null;
+  state: "queued" | "running";
+  queuedAt: number;
+};
+type DeviceNotice = { message: string; bookId?: string };
+type PendingSeek = { trackId: string; positionSeconds: number };
+type QueuedProgressSave = { bookId: string; progress: Progress; isPaused: boolean };
+
+function audioSourceMatches(audio: HTMLAudioElement, source: string) {
+  if (!source) return false;
+  try {
+    return audio.currentSrc === new URL(source, document.baseURI).href;
+  } catch {
+    return audio.currentSrc === source;
+  }
+}
 
 function readStoredSpeed() {
   try {
@@ -170,6 +205,7 @@ function writeStoredSpeed(value: number) {
     // ignore storage failures
   }
 }
+
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
@@ -278,27 +314,6 @@ function bookSubtitle(book: Book) {
   return [book.author, book.narrator ? `Narrated by ${book.narrator}` : null]
     .filter(Boolean)
     .join(" • ");
-}
-
-/**
- * Some rips carry a chapter or track name in the comment/description tag;
- * rendering that as the book blurb reads as a glitch. Only show a
- * description that says something the page doesn't already.
- */
-function displayBookDescription(book: Book) {
-  const description = book.description?.trim();
-  if (!description) {
-    return null;
-  }
-  const echoes = (value: string) => value.trim().toLowerCase() === description.toLowerCase();
-  if (
-    echoes(book.title) ||
-    book.tracks.some((track) => echoes(track.title)) ||
-    book.chapters.some((chapter) => echoes(chapter.title))
-  ) {
-    return null;
-  }
-  return description;
 }
 
 function currentTrackIndex(book: Book | null, track: Track | null) {
@@ -1683,6 +1698,9 @@ function MainApp({
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
   const progressSaveInFlight = useRef(false);
+  const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
+  const progressMutationVersion = useRef(0);
+  const restoredProgressBookId = useRef<string | null>(null);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -1691,10 +1709,11 @@ function MainApp({
     readStoredBookId(currentUser.id, "playbackBookId")
   );
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
-  const [pendingSeek, setPendingSeek] = useState<number | null>(null);
+  const [pendingSeek, setPendingSeek] = useState<PendingSeek | null>(null);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const nativePlaybackPlayingRef = useRef(false);
   const [speed, setSpeed] = useState(readStoredSpeed);
   const [volume, setVolume] = useState(0.9);
   const [sleepMinutes, setSleepMinutes] = useState(0);
@@ -1755,6 +1774,7 @@ function MainApp({
   const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   // null while the disk lookup for the current track is in flight; url null
   // means the track is not downloaded and should stream.
   const [offlineSource, setOfflineSource] = useState<{ trackId: string; url: string | null } | null>(null);
@@ -1762,10 +1782,13 @@ function MainApp({
   const chaptersListRef = useRef<HTMLDivElement | null>(null);
   const trackListSectionRef = useRef<HTMLElement | null>(null);
   const wantsAutoplayRef = useRef(false);
+  const nativeAudio = usesNativeAudioPlayer();
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
-  const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
-  // fraction is 0–1 across the whole book; null means size not yet known.
-  const [activeDownload, setActiveDownload] = useState<{ bookId: string; fraction: number | null } | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
+  // Native jobs are persisted and serialized by iOS; this map only mirrors
+  // their current queue/progress for the UI.
+  const [activeDownloads, setActiveDownloads] = useState<Record<string, DeviceDownloadActivity>>({});
+  const activeDownloadIdsRef = useRef<Set<string>>(new Set());
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
 
   const visibleBooks = useMemo(() => {
@@ -1812,6 +1835,13 @@ function MainApp({
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
     [books, selectedBookId]
   );
+  const selectedDescription = selectedBook ? displayBookDescription(selectedBook) : null;
+  const descriptionCanExpand = (selectedDescription?.length ?? 0) > 260;
+  const selectedDownload = selectedBook ? activeDownloads[selectedBook.id] : undefined;
+  const deviceDownloadQueue = useMemo(
+    () => Object.values(activeDownloads).sort((a, b) => a.queuedAt - b.queuedAt),
+    [activeDownloads]
+  );
 
   const playbackBook = useMemo(
     () =>
@@ -1856,6 +1886,25 @@ function MainApp({
     playbackBook && currentTrack
       ? trackOffsetSeconds(playbackBook, activeTrackIndex) + position
       : 0;
+  const boundedBookPosition = bookDuration > 0
+    ? Math.min(bookDuration, Math.max(0, bookPosition))
+    : 0;
+  // Keep every visible playback clock on the same whole-second boundary.
+  // The media element reports fractional time at browser-dependent rates;
+  // formatting each derived time independently made elapsed and remaining
+  // labels appear to tick out of sync whenever offsets or durations had a
+  // fractional second.
+  const displayTrackPosition = Math.floor(Math.max(0, position));
+  const displayBookPosition =
+    playbackBook && currentTrack
+      ? trackOffsetSeconds(playbackBook, activeTrackIndex) + displayTrackPosition
+      : 0;
+  const displayBookRemainingSeconds = bookDuration > 0
+    ? Math.max(0, bookDuration - displayBookPosition)
+    : null;
+  const bookCompletionPercent = bookDuration > 0
+    ? Math.min(100, Math.floor((boundedBookPosition / bookDuration) * 100))
+    : null;
   const chapterSegments = useMemo(() => {
     if (!playbackBook || !bookDuration || playbackBook.chapters.length === 0) {
       return [];
@@ -1879,6 +1928,9 @@ function MainApp({
   const chapterElapsed = activeChapter
     ? Math.max(0, bookPosition - activeChapter.startSeconds)
     : position;
+  const displayChapterElapsed = activeChapter
+    ? Math.max(0, displayBookPosition - activeChapter.startSeconds)
+    : displayTrackPosition;
   const chapterDuration = activeChapter
     ? Math.max(1, activeChapter.endSeconds - activeChapter.startSeconds)
     : Math.max(1, sliderMax);
@@ -1936,26 +1988,62 @@ function MainApp({
     try {
       const serverBooks = await getBooks();
       const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
-      for (const book of nextBooks) {
-        if (book.source !== "server" || !book.deviceBookId) continue;
-        const deviceProgress = getDeviceProgress(book.deviceBookId);
-        const deviceBook = deviceBooks.find((candidate) => candidate.id === book.deviceBookId);
-        const trackIndex = deviceBook?.tracks.findIndex((track) => track.id === deviceProgress?.trackId) ?? -1;
-        const serverTrack = trackIndex >= 0 ? book.tracks[trackIndex] : null;
+      // Reconcile every durable local copy, not only imported device media.
+      // This brings progress recorded while offline back to the server even if
+      // the user opens a different book after reconnecting.
+      void Promise.all(nextBooks.map(async (book) => {
+        if (book.source !== "server") return;
+        const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
+        const deviceBook = book.deviceBookId
+          ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
+          : null;
+        const deviceTrackIndex = deviceBook?.tracks.findIndex(
+          (track) => track.id === deviceProgress?.trackId
+        ) ?? -1;
+        const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
+          ? {
+              ...deviceProgress,
+              bookId: book.id,
+              trackId: book.tracks[deviceTrackIndex].id
+            }
+          : null;
+        const checkpoint = readProgressCheckpoint(
+          window.localStorage,
+          getServerStorageKey(),
+          currentUser.id,
+          book.id
+        );
+        const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+        const local = freshestProgress(mappedDevice, checkpoint, cached);
         const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
         if (
-          deviceProgress && serverTrack &&
-          (!serverBook?.progress || progressTimestamp(deviceProgress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt))
+          !local ||
+          (serverBook?.progress && progressTimestamp(local.updatedAt) <= progressTimestamp(serverBook.progress.updatedAt))
         ) {
-          void saveProgress(book.id, {
-            ...deviceProgress,
-            trackId: serverTrack.id
-          }, { isPaused: true }).catch(() => undefined);
+          return;
         }
-      }
+        const location = resolveProgressLocation(book.tracks, local);
+        if (!location) return;
+        await saveProgress(book.id, {
+          ...local,
+          trackId: location.trackId,
+          positionSeconds: location.positionSeconds
+        }, { isPaused: true }).catch(() => undefined);
+      })).catch(() => undefined);
       setBooks(nextBooks);
       setIsOffline(false);
       if (isNativeApp()) void cacheLibrary(currentUser.id, serverBooks);
+      if (isOperaLibre) {
+        // Audio tags commonly omit the publisher blurb. Libation already has
+        // the correct Audible description and returns its matched local book
+        // id, so enrich in the background without delaying the shelf.
+        void getLibationBooks()
+          .then((catalog) => {
+            setLibationBooks(catalog);
+            setLibationBooksLoaded(true);
+          })
+          .catch(() => undefined);
+      }
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
@@ -1979,7 +2067,21 @@ function MainApp({
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser.id, localMode, native]);
+  }, [currentUser.id, isOperaLibre, localMode, native]);
+
+  useEffect(() => {
+    if (!libationBooks.length) return;
+    setBooks((current) => {
+      const enriched = enrichBooksFromLibation(current, libationBooks);
+      if (enriched !== current && isNativeApp()) {
+        void cacheLibrary(
+          currentUser.id,
+          enriched.filter((book) => book.source !== "device")
+        );
+      }
+      return enriched;
+    });
+  }, [currentUser.id, libationBooks]);
 
   useEffect(() => {
     if (!isNativeApp() || !books.length) return;
@@ -1987,6 +2089,28 @@ function MainApp({
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
     // Keyed on ids: re-statting every downloaded file each time a progress
     // save rebuilds `books` kept the iOS filesystem busy for no reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookIdsKey]);
+
+  // Reattach the UI to persisted native jobs after a relaunch. Enqueueing is
+  // idempotent, so this also supplies file metadata needed to recover jobs
+  // created by older builds without duplicating their URLSession tasks.
+  useEffect(() => {
+    if (!isNativeApp() || !books.length) return;
+    let cancelled = false;
+    void Promise.all(books.map(async (book) => {
+      const status = await getBookBackgroundDownloadStatus(book).catch(() => null);
+      return { book, status };
+    })).then((entries) => {
+      if (cancelled) return;
+      for (const { book, status } of entries) {
+        if (status?.state === "queued" || status?.state === "running") {
+          void downloadForOffline(book);
+        }
+      }
+    });
+    return () => { cancelled = true; };
+    // Stable ids prevent progress saves from repeatedly reattaching the queue.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookIdsKey]);
 
@@ -2020,7 +2144,7 @@ function MainApp({
       return;
     }
     wantsAutoplayRef.current = false;
-    window.setTimeout(() => safePlay(audioRef.current), 0);
+    window.setTimeout(() => startPlayback(audioRef.current), 0);
   }, [streamUrl]);
 
   useEffect(() => {
@@ -2030,6 +2154,10 @@ function MainApp({
   useEffect(() => {
     writeStoredBookId(currentUser.id, "selectedBookId", selectedBookId);
   }, [currentUser.id, selectedBookId]);
+
+  useEffect(() => {
+    setDescriptionExpanded(false);
+  }, [selectedBookId]);
 
   useEffect(() => {
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
@@ -2396,25 +2524,34 @@ function MainApp({
     }
 
     let cancelled = false;
+    restoredProgressBookId.current = null;
+    const restoreVersion = progressMutationVersion.current;
     const applyProgress = (progress: Progress | null) => {
-      if (cancelled) {
+      if (cancelled || progressMutationVersion.current !== restoreVersion) {
         return;
       }
-      const savedTrack = playbackBook.tracks.find((track) => track.id === progress?.trackId);
-      setCurrentTrackId(savedTrack?.id ?? playbackBook.tracks[0]?.id ?? null);
-      setPendingSeek(savedTrack ? progress?.positionSeconds ?? 0 : 0);
+      const location = resolveProgressLocation(playbackBook.tracks, progress);
+      setCurrentTrackId(location?.trackId ?? null);
+      setPendingSeek(location);
+      restoredProgressBookId.current = playbackBook.id;
     };
 
     void (async () => {
       const deviceBookId = playbackBook.deviceBookId;
       const device = deviceBookId ? getDeviceProgress(deviceBookId) : null;
+      const checkpoint = readProgressCheckpoint(
+        window.localStorage,
+        getServerStorageKey(),
+        currentUser.id,
+        playbackBook.id
+      );
+      const cached = await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null);
       if (playbackBook.source === "device") {
-        applyProgress(device);
+        const local = freshestProgress(device, checkpoint, cached);
+        if (local) updateBookProgress(playbackBook.id, local);
+        applyProgress(local);
         return;
       }
-      const cached = isNativeApp()
-        ? await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
-        : null;
       let server: Progress | null = null;
       let serverReachable = true;
       try {
@@ -2433,11 +2570,10 @@ function MainApp({
         : null;
       // Progress saved on the device or while disconnected can be newer than
       // the server. Resume from the freshest copy and converge the server.
-      const freshestLocal = [mappedDevice, cached]
-        .filter((value): value is Progress => !!value)
-        .sort((a, b) => progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt))[0] ?? null;
+      const freshestLocal = freshestProgress(mappedDevice, checkpoint, cached);
       const localIsNewer = !!freshestLocal && (!server || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(server.updatedAt));
       if (localIsNewer) {
+        updateBookProgress(playbackBook.id, freshestLocal);
         applyProgress(freshestLocal);
         if (serverReachable) {
           void saveProgress(playbackBook.id, freshestLocal, { isPaused: true }).catch(() => undefined);
@@ -2463,6 +2599,34 @@ function MainApp({
     }
     audioRef.current.playbackRate = speed;
   }, [speed]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!nativeAudio || !audio) return;
+    return attachNativeAudioPlayer(audio, (message) => setPlaybackError(message));
+  }, [currentTrackKey, nativeAudio]);
+
+  // Progress often arrives after preload has already emitted loadedmetadata.
+  // Apply that late checkpoint as soon as the target media element is ready.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (
+      pendingSeek === null ||
+      pendingSeek.trackId !== currentTrackKey ||
+      !audio ||
+      audio.readyState < HTMLMediaElement.HAVE_METADATA ||
+      !audioSourceMatches(audio, streamUrl)
+    ) {
+      return;
+    }
+    const restoredPosition = Math.max(
+      0,
+      Math.min(pendingSeek.positionSeconds, audio.duration || pendingSeek.positionSeconds)
+    );
+    setPlaybackPosition(audio, restoredPosition);
+    setPosition(restoredPosition);
+    setPendingSeek(null);
+  }, [currentTrackKey, pendingSeek, streamUrl]);
 
   useEffect(() => {
     if (!audioRef.current) {
@@ -2491,22 +2655,36 @@ function MainApp({
   }, [native, playbackBookKey, playbackBook?.coverArtUrl]);
 
   useEffect(() => {
-    if (!playbackBook || !currentTrack || !("mediaSession" in navigator)) {
+    if (!playbackBook || !currentTrack) {
       return;
     }
 
-    navigator.mediaSession.metadata = new MediaMetadata({
+    const nowPlaying = {
       title: activeChapter?.title ?? currentTrack.title,
       artist: playbackBook.author ?? "Audiobook",
       album: playbackBook.title,
+      artworkUrl: mediaArtworkUrl ?? undefined
+    };
+    if (nativeAudio) {
+      void updateNativeAudioNowPlaying(nowPlaying).catch((error) => {
+        setPlaybackError(error instanceof Error ? error.message : "Could not update iOS Now Playing.");
+      });
+      return;
+    }
+    if (!("mediaSession" in navigator)) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: nowPlaying.title,
+      artist: nowPlaying.artist,
+      album: nowPlaying.album,
       artwork: mediaArtworkUrl
         ? [
             { src: mediaArtworkUrl, sizes: "512x512", type: playbackBook.coverArtContentType ?? "image/jpeg" }
           ]
         : undefined
     });
-    navigator.mediaSession.setActionHandler("play", () => safePlay(audioRef.current));
-    navigator.mediaSession.setActionHandler("pause", () => audioRef.current?.pause());
+    navigator.mediaSession.setActionHandler("play", () => startPlayback(audioRef.current));
+    navigator.mediaSession.setActionHandler("pause", () => pausePlayback(audioRef.current));
     navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
     navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
     navigator.mediaSession.setActionHandler("previoustrack", restartOrPreviousChapter);
@@ -2520,10 +2698,10 @@ function MainApp({
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeChapter?.id, currentTrackKey, mediaArtworkUrl, playbackBookKey]);
+  }, [activeChapter?.id, currentTrackKey, mediaArtworkUrl, nativeAudio, playbackBookKey]);
 
   useEffect(() => {
-    if (!("mediaSession" in navigator) || !currentTrack) return;
+    if (nativeAudio || !("mediaSession" in navigator) || !currentTrack) return;
     const duration = activeChapter ? chapterDuration : Math.max(1, sliderMax);
     const lockPosition = activeChapter ? chapterElapsed : position;
     if (!Number.isFinite(duration) || !Number.isFinite(lockPosition) || duration <= 0) return;
@@ -2536,7 +2714,7 @@ function MainApp({
     } catch {
       // Some WebViews expose Media Session metadata without position state.
     }
-  }, [activeChapter?.id, chapterDuration, chapterElapsed, currentTrackKey, position, sliderMax, speed]);
+  }, [activeChapter?.id, chapterDuration, chapterElapsed, currentTrackKey, nativeAudio, position, sliderMax, speed]);
 
   useEffect(() => {
     if (!chaptersOpen || !isViewingPlayingBook || !activeChapter) return;
@@ -2562,7 +2740,7 @@ function MainApp({
       setSleepRemaining(next);
       if (next === 0) {
         sleepDeadlineRef.current = null;
-        audioRef.current?.pause();
+        pausePlayback(audioRef.current);
         setSleepMinutes(0);
       }
     }, 1000);
@@ -2608,61 +2786,98 @@ function MainApp({
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
-  async function persistProgress() {
-    if (!playbackBook || !currentTrack || !audioRef.current) {
+  function persistProgress() {
+    if (
+      !playbackBook ||
+      restoredProgressBookId.current !== playbackBook.id ||
+      !currentTrack ||
+      !audioRef.current
+    ) {
       return;
     }
 
-    const localProgress = {
+    const trackPosition = Number.isFinite(audioRef.current.currentTime)
+      ? Math.max(0, audioRef.current.currentTime)
+      : Math.max(0, position);
+    const localProgress: Progress = {
       bookId: playbackBook.id,
       trackId: currentTrack.id,
-      positionSeconds: audioRef.current.currentTime,
-      bookPositionSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex) + audioRef.current.currentTime,
+      positionSeconds: trackPosition,
+      bookPositionSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex) + trackPosition,
       durationSeconds: Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
       updatedAt: new Date().toISOString()
     };
+    progressMutationVersion.current += 1;
+    writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
+    void cacheProgress(currentUser.id, localProgress).catch(() => undefined);
     if (playbackBook.deviceBookId) {
       const deviceBook = getDeviceBooks().find((book) => book.id === playbackBook.deviceBookId);
       const deviceTrack = deviceBook?.tracks[activeTrackIndex];
       if (deviceTrack) saveDeviceProgress(playbackBook.deviceBookId, { ...localProgress, bookId: playbackBook.deviceBookId, trackId: deviceTrack.id });
     }
-    if (isNativeApp()) void cacheProgress(currentUser.id, localProgress);
+    updateBookProgress(playbackBook.id, localProgress);
     if (playbackBook.source === "device") {
-      updateBookProgress(localProgress);
       return;
     }
+
+    queuedProgressSaves.current.set(playbackBook.id, {
+      bookId: playbackBook.id,
+      progress: localProgress,
+      isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused
+    });
+    void flushProgressSaveQueue();
+  }
+
+  async function flushProgressSaveQueue() {
     if (progressSaveInFlight.current) {
       return;
     }
     progressSaveInFlight.current = true;
-    const saved = await saveProgress(
-      playbackBook.id,
-      {
-        trackId: localProgress.trackId,
-        positionSeconds: localProgress.positionSeconds,
-        bookPositionSeconds: localProgress.bookPositionSeconds,
-        durationSeconds: localProgress.durationSeconds,
-        updatedAt: localProgress.updatedAt
-      },
-      { isPaused: audioRef.current.paused }
-      // Offline the save fails, but the position was cached above — keep the
-      // shelf's progress display moving from the local copy.
-    )
-      .catch(() => (isNativeApp() ? localProgress : undefined))
-      .finally(() => {
-        progressSaveInFlight.current = false;
-      });
-    if (!saved) {
-      return;
+    try {
+      // A slow request must not cause a newer position to be discarded. Each
+      // in-flight save is followed by the most recent checkpoint queued while
+      // it was running.
+      while (queuedProgressSaves.current.size > 0) {
+        const entry = queuedProgressSaves.current.values().next().value as QueuedProgressSave;
+        queuedProgressSaves.current.delete(entry.bookId);
+        try {
+          const saved = await saveProgress(
+            entry.bookId,
+            {
+              trackId: entry.progress.trackId,
+              positionSeconds: entry.progress.positionSeconds,
+              bookPositionSeconds: entry.progress.bookPositionSeconds,
+              durationSeconds: entry.progress.durationSeconds,
+              updatedAt: entry.progress.updatedAt
+            },
+            { isPaused: entry.isPaused }
+          );
+          const local = readProgressCheckpoint(
+            window.localStorage,
+            getServerStorageKey(),
+            currentUser.id,
+            entry.bookId
+          );
+          if (!local || progressTimestamp(saved.updatedAt) >= progressTimestamp(local.updatedAt)) {
+            updateBookProgress(entry.bookId, saved);
+          }
+        } catch {
+          // The synchronous checkpoint and IndexedDB copy already contain the
+          // position. A later playback tick or reconnect will retry the server.
+        }
+      }
+    } finally {
+      progressSaveInFlight.current = false;
+      if (queuedProgressSaves.current.size > 0) {
+        void flushProgressSaveQueue();
+      }
     }
-
-    updateBookProgress(saved);
   }
 
-  function updateBookProgress(saved: Progress) {
+  function updateBookProgress(bookId: string, saved: Progress) {
     setBooks((existing) =>
       existing.map((book) => {
-        if (book.id !== playbackBook.id) {
+        if (book.id !== bookId) {
           return book;
         }
         const durationSeconds = book.durationSeconds ?? durationFromTracks(book);
@@ -2696,19 +2911,43 @@ function MainApp({
   }
 
   async function downloadForOffline(book: Book) {
+    if (activeDownloadIdsRef.current.has(book.id)) return;
+    activeDownloadIdsRef.current.add(book.id);
+    if (playbackBook?.id === book.id) {
+      persistProgress();
+    }
     setDownloadStatus(null);
-    setActiveDownload({ bookId: book.id, fraction: null });
+    setActiveDownloads((existing) => ({
+      ...existing,
+      [book.id]: { bookId: book.id, fraction: null, state: "queued", queuedAt: Date.now() }
+    }));
     try {
-      await downloadBookForOffline(book, mediaUrl, (done, total, percent) => {
+      await downloadBookForOffline(book, mediaUrl, (done, total, percent, state) => {
         const fraction = total > 0 ? Math.min(1, (done + (percent ?? 0) / 100) / total) : null;
-        setActiveDownload({ bookId: book.id, fraction });
+        setActiveDownloads((existing) => ({
+          ...existing,
+          [book.id]: {
+            bookId: book.id,
+            fraction,
+            state: state === "queued" ? "queued" : "running",
+            queuedAt: existing[book.id]?.queuedAt ?? Date.now()
+          }
+        }));
       });
       setDownloadedBookIds((existing) => new Set(existing).add(book.id));
-      setDownloadStatus("Available offline");
+      setDownloadStatus({ bookId: book.id, message: `${book.title} is available offline` });
     } catch (downloadError) {
-      setDownloadStatus(errorMessage(downloadError, "Download failed."));
+      setDownloadStatus({
+        bookId: book.id,
+        message: `${book.title}: ${errorMessage(downloadError, "Download failed.")}`
+      });
     } finally {
-      setActiveDownload(null);
+      activeDownloadIdsRef.current.delete(book.id);
+      setActiveDownloads((existing) => {
+        const next = { ...existing };
+        delete next[book.id];
+        return next;
+      });
     }
   }
 
@@ -2722,11 +2961,11 @@ function MainApp({
       setSelectedBookId(book.id);
       setPlaybackBookId(book.id);
       setLibrarySource("local");
-      setDownloadStatus(`${book.title} added from this device`);
+      setDownloadStatus({ bookId: book.id, message: `${book.title} added from this device` });
       setNativeTab("shelf");
     } catch (error) {
       const message = errorMessage(error, "The audiobook could not be imported.");
-      if (!/cancel/i.test(message)) setDownloadStatus(message);
+      if (!/cancel/i.test(message)) setDownloadStatus({ message });
     } finally {
       setDeviceImport(null);
     }
@@ -2734,24 +2973,40 @@ function MainApp({
 
   async function deleteDeviceBook(book: Book) {
     const deviceBookId = book.deviceBookId ?? book.id;
-    if (!window.confirm(`Remove ${book.title} and its listening progress from this device?`)) return;
-    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) audioRef.current?.pause();
+    if (!window.confirm(`Remove ${book.title} from this device? Your listening progress will be kept.`)) return;
+    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) {
+      persistProgress();
+    }
+    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) pausePlayback(audioRef.current);
     await removeDeviceBook(deviceBookId);
     await loadBooks();
-    setDownloadStatus("Device copy removed");
+    setDownloadStatus({ message: "Device copy removed" });
   }
 
   async function removeOfflineDownload(book: Book) {
+    if (!window.confirm(`Remove the downloaded copy of ${book.title} from this device? Your listening progress will be kept.`)) return;
+    const removingActiveSource = playbackBook?.id === book.id && !!currentTrack && !!audioRef.current;
+    const resumeTrack = removingActiveSource ? currentTrack : null;
+    const resumePosition = removingActiveSource ? Math.max(0, audioRef.current!.currentTime) : 0;
+    const resumePlayback = removingActiveSource
+      ? nativeAudio ? nativePlaybackPlayingRef.current : !audioRef.current!.paused
+      : false;
+    if (removingActiveSource && resumeTrack) {
+      persistProgress();
+      pausePlayback(audioRef.current);
+      setPendingSeek({ trackId: resumeTrack.id, positionSeconds: resumePosition });
+      playWhenTrackLoads.current = resumePlayback;
+    }
     await removeBookDownload(book);
     setDownloadedBookIds((existing) => {
       const next = new Set(existing);
       next.delete(book.id);
       return next;
     });
-    if (playbackBook?.id === book.id) {
-      setOfflineSource(currentTrack ? { trackId: currentTrack.id, url: null } : null);
+    if (removingActiveSource && resumeTrack) {
+      setOfflineSource({ trackId: resumeTrack.id, url: null });
     }
-    setDownloadStatus("Download removed");
+    setDownloadStatus({ bookId: book.id, message: "Download removed" });
   }
 
   function onTimeUpdate() {
@@ -2763,10 +3018,49 @@ function MainApp({
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
 
     const now = Date.now();
-    if (now - saveStartedAt.current > 5000) {
+    if (now - saveStartedAt.current >= PROGRESS_SAVE_INTERVAL_MS) {
       saveStartedAt.current = now;
       void persistProgress();
     }
+  }
+
+  function startPlayback(audio: HTMLAudioElement | null | undefined) {
+    if (!audio) return;
+    if (!nativeAudio) {
+      safePlay(audio);
+      return;
+    }
+    nativePlaybackPlayingRef.current = true;
+    setIsPlaying(true);
+    void playNativeAudio().catch((error) => {
+      nativePlaybackPlayingRef.current = false;
+      setIsPlaying(false);
+      setPlaybackError(errorMessage(error, "Native audio playback failed."));
+    });
+  }
+
+  function pausePlayback(audio: HTMLAudioElement | null | undefined) {
+    if (!audio) return;
+    if (!nativeAudio) {
+      audio.pause();
+      return;
+    }
+    nativePlaybackPlayingRef.current = false;
+    setIsPlaying(false);
+    void pauseNativeAudio().catch((error) => {
+      setPlaybackError(errorMessage(error, "Native audio playback could not be paused."));
+    });
+  }
+
+  function setPlaybackPosition(audio: HTMLAudioElement, value: number) {
+    const nextPosition = Math.max(0, Math.min(value, audio.duration || value));
+    audio.currentTime = nextPosition;
+    if (nativeAudio) {
+      void seekNativeAudio(nextPosition).catch((error) => {
+        setPlaybackError(errorMessage(error, "Native audio could not seek."));
+      });
+    }
+    return nextPosition;
   }
 
   function onLoadedMetadata() {
@@ -2779,16 +3073,28 @@ function MainApp({
     audio.volume = volume;
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
 
-    if (pendingSeek !== null) {
-      audio.currentTime = Math.min(pendingSeek, audio.duration || pendingSeek);
-      setPosition(audio.currentTime);
+    if (
+      pendingSeek !== null &&
+      pendingSeek.trackId === currentTrackKey &&
+      audioSourceMatches(audio, streamUrl)
+    ) {
+      const restoredPosition = Math.min(
+        pendingSeek.positionSeconds,
+        audio.duration || pendingSeek.positionSeconds
+      );
+      setPlaybackPosition(audio, restoredPosition);
+      setPosition(restoredPosition);
       setPendingSeek(null);
+    } else if (pendingSeek !== null) {
+      // Ignore a late metadata event from the source being replaced. The
+      // target track still owns this pending resume position.
+      return;
     } else {
-      setPosition(0);
+      setPosition(audio.currentTime);
     }
     if (playWhenTrackLoads.current) {
       playWhenTrackLoads.current = false;
-      safePlay(audio);
+      startPlayback(audio);
     }
   }
 
@@ -2798,8 +3104,8 @@ function MainApp({
       return;
     }
     haptic("light");
-    audio.currentTime = Math.max(0, Math.min(audio.duration || Infinity, audio.currentTime + delta));
-    setPosition(audio.currentTime);
+    const nextPosition = setPlaybackPosition(audio, audio.currentTime + delta);
+    setPosition(nextPosition);
     void persistProgress();
   }
 
@@ -2807,8 +3113,8 @@ function MainApp({
     if (!audioRef.current) {
       return;
     }
-    audioRef.current.currentTime = value;
-    setPosition(value);
+    const nextPosition = setPlaybackPosition(audioRef.current, value);
+    setPosition(nextPosition);
     void persistProgress();
   }
 
@@ -2836,17 +3142,17 @@ function MainApp({
     setPlaybackBookId(book.id);
 
     if (playbackBook?.id === book.id && targetTrack.id === currentTrack?.id && audioRef.current) {
-      audioRef.current.currentTime = trackPosition;
-      setPosition(trackPosition);
+      const nextPosition = setPlaybackPosition(audioRef.current, trackPosition);
+      setPosition(nextPosition);
       void persistProgress();
       if (autoPlay) {
-        safePlay(audioRef.current);
+        startPlayback(audioRef.current);
       }
       return;
     }
 
     setCurrentTrackId(targetTrack.id);
-    setPendingSeek(trackPosition);
+    setPendingSeek({ trackId: targetTrack.id, positionSeconds: trackPosition });
     setPosition(trackPosition);
     playWhenTrackLoads.current = autoPlay;
     if (autoPlay) {
@@ -2867,7 +3173,7 @@ function MainApp({
   function playWhenReady() {
     const audio = audioRef.current;
     if (audio?.getAttribute("src")) {
-      safePlay(audio);
+      startPlayback(audio);
       return;
     }
     wantsAutoplayRef.current = true;
@@ -2887,10 +3193,10 @@ function MainApp({
       wantsAutoplayRef.current = true;
       return;
     }
-    if (audio.paused) {
-      safePlay(audio);
+    if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) {
+      startPlayback(audio);
     } else {
-      audio.pause();
+      pausePlayback(audio);
     }
   }
 
@@ -2941,10 +3247,10 @@ function MainApp({
       track.id === currentTrack?.id &&
       audioRef.current
     ) {
-      audioRef.current.currentTime = 0;
+      setPlaybackPosition(audioRef.current, 0);
       setPosition(0);
       if (autoPlay) {
-        safePlay(audioRef.current);
+        startPlayback(audioRef.current);
       }
       return;
     }
@@ -2952,7 +3258,7 @@ function MainApp({
       setPlaybackBookId(selectedBook.id);
     }
     setCurrentTrackId(track.id);
-    setPendingSeek(0);
+    setPendingSeek({ trackId: track.id, positionSeconds: 0 });
     setPosition(0);
     playWhenTrackLoads.current = autoPlay;
     if (autoPlay) {
@@ -3018,7 +3324,8 @@ function MainApp({
     }
     playWhenTrackLoads.current = true;
     setCurrentTrackId(playbackBook.tracks[activeTrackIndex + 1].id);
-    setPendingSeek(0);
+    const nextTrack = playbackBook.tracks[activeTrackIndex + 1];
+    setPendingSeek({ trackId: nextTrack.id, positionSeconds: 0 });
     setPosition(0);
   }
 
@@ -3102,7 +3409,7 @@ function MainApp({
     setSelectedBookId((existing) => resolveBookId(nextBooks, existing));
     setPlaybackBookId((existing) => {
       if (existing && !availableIds.has(existing)) {
-        audioRef.current?.pause();
+        pausePlayback(audioRef.current);
         setCurrentTrackId(null);
         setPosition(0);
         return resolveBookId(nextBooks, null);
@@ -3362,7 +3669,7 @@ function MainApp({
         role="menuitem"
         onClick={() => {
           setUserMenuOpen(false);
-          if (localMode) audioRef.current?.pause();
+          if (localMode) pausePlayback(audioRef.current);
           void onLogout();
         }}
       >
@@ -3381,8 +3688,10 @@ function MainApp({
     >
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
       <audio
+        key={currentTrackKey ?? "no-track"}
         ref={audioRef}
         src={streamUrl || undefined}
+        muted={nativeAudio}
         preload="metadata"
         onLoadedMetadata={onLoadedMetadata}
         onError={() => {
@@ -3399,13 +3708,21 @@ function MainApp({
         }}
         onTimeUpdate={onTimeUpdate}
         onPlay={() => {
+          if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
           setIsPlaying(true);
-          if (currentTrack && audioRef.current && playbackBook?.source !== "device") {
+          if (
+            currentTrack &&
+            audioRef.current &&
+            playbackBook &&
+            playbackBook.source !== "device" &&
+            restoredProgressBookId.current === playbackBook.id
+          ) {
             void reportPlaybackStarted(currentTrack.id, audioRef.current.currentTime);
           }
         }}
         onPause={() => {
+          if (nativeAudio) nativePlaybackPlayingRef.current = false;
           setIsPlaying(false);
           void persistProgress();
         }}
@@ -3896,13 +4213,22 @@ function MainApp({
                     }}
                   />
                   <div className="native-now-time-row">
-                    <span>{activeChapter ? formatTime(chapterElapsed) : formatTime(position)}</span>
+                    <span>{activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}</span>
                     <span>
                       {activeChapter
-                        ? `−${formatTime(Math.max(0, chapterDuration - chapterElapsed))}`
-                        : `−${formatTime(Math.max(0, sliderMax - position))}`}
+                        ? `−${formatTime(Math.max(0, chapterDuration - displayChapterElapsed))}`
+                        : `−${formatTime(Math.max(0, sliderMax - displayTrackPosition))}`}
                     </span>
                   </div>
+                  {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
+                    <div
+                      className="book-time-row"
+                      aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
+                    >
+                      <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
+                      <span>{bookCompletionPercent}% complete</span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="native-now-transport">
@@ -4052,7 +4378,7 @@ function MainApp({
                     ) : isNativeApp() ? (
                       <button
                         className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
-                          activeDownload?.bookId === selectedBook.id ? "downloading" : ""
+                          selectedDownload ? "downloading" : ""
                         }`}
                         type="button"
                         onClick={() =>
@@ -4060,23 +4386,25 @@ function MainApp({
                             ? removeOfflineDownload(selectedBook)
                             : downloadForOffline(selectedBook))
                         }
-                        disabled={activeDownload !== null}
+                        disabled={!!selectedDownload}
                         aria-label={
                           downloadedBookIds.has(selectedBook.id)
                             ? `Remove downloaded copy of ${selectedBook.title}`
                             : `Download ${selectedBook.title} for offline playback`
                         }
                       >
-                        {activeDownload?.bookId === selectedBook.id ? (
-                          <DownloadRing fraction={activeDownload.fraction} />
+                        {selectedDownload ? (
+                          <DownloadRing fraction={selectedDownload.fraction} />
                         ) : (
                           <Download size={13} />
                         )}
                         <span>
-                          {activeDownload?.bookId === selectedBook.id
-                            ? activeDownload.fraction !== null
-                              ? `${Math.round(activeDownload.fraction * 100)}%`
-                              : "Preparing…"
+                          {selectedDownload
+                            ? selectedDownload.state === "queued"
+                              ? "Queued"
+                              : selectedDownload.fraction !== null
+                                ? `${Math.round(selectedDownload.fraction * 100)}%`
+                                : "Preparing…"
                             : downloadedBookIds.has(selectedBook.id)
                               ? "Downloaded"
                               : "Download"}
@@ -4093,7 +4421,9 @@ function MainApp({
                         <span>Download</span>
                       </a>
                     ) : null}
-                    {isNativeApp() && downloadStatus ? <span className="download-status">{downloadStatus}</span> : null}
+                    {isNativeApp() && downloadStatus?.bookId === selectedBook.id ? (
+                      <span className="download-status">{downloadStatus.message}</span>
+                    ) : null}
                     {playbackError ? <span className="download-status">{playbackError}</span> : null}
                   </div>
                 </div>
@@ -4130,8 +4460,26 @@ function MainApp({
               {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
             </div>
 
-            {displayBookDescription(selectedBook) ? (
-              <p className="book-description">{displayBookDescription(selectedBook)}</p>
+            {selectedDescription ? (
+              <div className="book-description-wrap">
+                <p
+                  className={`book-description ${descriptionCanExpand && !descriptionExpanded ? "clamped" : ""}`}
+                  id="selected-book-description"
+                >
+                  {selectedDescription}
+                </p>
+                {descriptionCanExpand ? (
+                  <button
+                    type="button"
+                    className="book-description-toggle"
+                    aria-controls="selected-book-description"
+                    aria-expanded={descriptionExpanded}
+                    onClick={() => setDescriptionExpanded((expanded) => !expanded)}
+                  >
+                    {descriptionExpanded ? "Less" : "More"}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             {readalongOpen && selectedBook.readingFile && selectedReadalongUrl ? (
@@ -4216,7 +4564,7 @@ function MainApp({
                 {activeChapter ? (
                   <div className="readalong-sync">
                     <span>{activeChapter.title}</span>
-                    <span>{formatTime(bookPosition)}</span>
+                    <span>{formatTime(displayBookPosition)}</span>
                   </div>
                 ) : null}
               </section>
@@ -4331,12 +4679,21 @@ function MainApp({
                   )}
                   <div className="time-row">
                     <span className="elapsed">
-                      {activeChapter ? formatTime(chapterElapsed) : formatTime(position)}
+                      {activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}
                     </span>
                     <span>
                       {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
                     </span>
                   </div>
+                  {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
+                    <div
+                      className="book-time-row"
+                      aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
+                    >
+                      <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
+                      <span>{bookCompletionPercent}% complete</span>
+                    </div>
+                  ) : null}
                 </div>
               </>
             ) : (
@@ -4526,8 +4883,8 @@ function MainApp({
             />
             <span>
               {activeChapter
-                ? `${formatTime(chapterElapsed)} / ${formatTime(chapterDuration)}`
-                : `${formatTime(position)} / ${formatTime(sliderMax)}`}
+                ? `${formatTime(displayChapterElapsed)} / ${formatTime(chapterDuration)}`
+                : `${formatTime(displayTrackPosition)} / ${formatTime(sliderMax)}`}
             </span>
           </div>
 
@@ -4967,34 +5324,57 @@ function MainApp({
                 ))}
               </div>
             ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
-            {downloadStatus ? <p className="settings-hint">{downloadStatus}</p> : null}
+            {downloadStatus ? <p className="settings-hint">{downloadStatus.message}</p> : null}
           </section>
 
           {!localMode ? <section className="settings-card">
             <span className="section-label"><Download size={13} /> Server downloads</span>
             {demoMode ? (
               <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
-            ) : books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
-              <div className="settings-downloads">
-                {books
-                  .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
-                  .map((book) => (
-                    <div key={book.id} className="settings-download-row">
-                      <strong>{book.title}</strong>
-                      <button
-                        type="button"
-                        className="download-btn"
-                        onClick={() => void removeOfflineDownload(book)}
-                        aria-label={`Remove downloaded copy of ${book.title}`}
-                      >
-                        <Trash2 size={13} />
-                        <span>Remove</span>
-                      </button>
-                    </div>
-                  ))}
-              </div>
             ) : (
-              <p className="settings-hint">No books are downloaded for offline listening yet.</p>
+              <>
+                {deviceDownloadQueue.length > 0 ? (
+                  <div className="settings-downloads" aria-label="Download queue">
+                    {deviceDownloadQueue.map((activity, index) => {
+                      const book = books.find((candidate) => candidate.id === activity.bookId);
+                      return (
+                        <div key={activity.bookId} className="settings-download-row">
+                          <strong>{book?.title ?? "Audiobook"}</strong>
+                          <span className="download-status">
+                            {activity.state === "queued"
+                              ? `Queued${index > 0 ? ` · ${index + 1}` : ""}`
+                              : activity.fraction === null
+                                ? "Starting…"
+                                : `${Math.round(activity.fraction * 100)}%`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
+                  <div className="settings-downloads">
+                    {books
+                      .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
+                      .map((book) => (
+                        <div key={book.id} className="settings-download-row">
+                          <strong>{book.title}</strong>
+                          <button
+                            type="button"
+                            className="download-btn"
+                            onClick={() => void removeOfflineDownload(book)}
+                            aria-label={`Remove downloaded copy of ${book.title}`}
+                          >
+                            <Trash2 size={13} />
+                            <span>Remove</span>
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                ) : deviceDownloadQueue.length === 0 ? (
+                  <p className="settings-hint">No books are downloaded for offline listening yet.</p>
+                ) : null}
+              </>
             )}
           </section> : null}
 
@@ -5079,7 +5459,7 @@ function MainApp({
             <div className="settings-actions">
               {localMode ? (
                 <button type="button" className="download-btn connection-primary" onClick={() => {
-                  audioRef.current?.pause();
+                  pausePlayback(audioRef.current);
                   onConnectServer();
                 }}>
                   <Network size={13} />
@@ -5099,7 +5479,7 @@ function MainApp({
                 </>
               ) : null}
               <button type="button" className="download-btn" onClick={() => {
-                audioRef.current?.pause();
+                pausePlayback(audioRef.current);
                 void onLogout();
               }}>
                 <LogOut size={13} />

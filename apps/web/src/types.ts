@@ -198,6 +198,23 @@ export type JobCreated = {
   jobId: string;
 };
 
+export type UpdateStatus = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  canAutoUpdate: boolean;
+  platform: string | null;
+  releaseUrl: string;
+  publishedAt: string | null;
+  notes: string | null;
+  message: string | null;
+};
+
+export type UpdateInstallStarted = {
+  version: string;
+  restarting: boolean;
+};
+
 export type AuthUser = {
   id: string;
   username: string;

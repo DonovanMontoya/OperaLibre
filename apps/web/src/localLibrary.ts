@@ -215,9 +215,8 @@ export async function removeDeviceBook(bookId: string) {
   const path = book?.tracks[0]?.localFilePath?.split("/").slice(0, -1).join("/");
   if (path) await Filesystem.rmdir({ path, directory: Directory.Data, recursive: true }).catch(() => undefined);
   writeJson(LIBRARY_KEY, storedBooks().filter((candidate) => candidate.id !== bookId));
-  const progress = storedProgress();
-  delete progress[bookId];
-  writeJson(PROGRESS_KEY, progress);
+  // Media and listening history have different lifetimes. Keep the compact
+  // progress record even when the on-device files are removed.
 }
 
 /** Attach a picked-file copy to an equivalent server book and hide the duplicate device row. */

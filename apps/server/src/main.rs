@@ -5,7 +5,7 @@ use argon2::{
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
@@ -51,6 +51,7 @@ use tower_http::{
 use walkdir::WalkDir;
 
 mod alignment;
+mod updates;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
@@ -68,6 +69,10 @@ const MAX_UPLOAD_FILES: usize = 1_000;
 const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
 const MAX_PENDING_LIBATION_REQUESTS_PER_USER: usize = 100;
 const MAX_TRACKED_LIBATION_REQUESTS: usize = 1_000;
+// ReaderStream otherwise reads in very small chunks. A larger media chunk
+// keeps browser buffers supplied through brief scheduler or network jitter,
+// which matters more as playback speed increases.
+const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
 #[derive(Clone)]
 struct AppState {
@@ -80,6 +85,7 @@ struct AppState {
     libation_requests_file: PathBuf,
     libation_config: LibationConfig,
     alignment_config: AlignmentConfig,
+    update_manager: updates::UpdateManager,
     sync_dir: PathBuf,
     library: Arc<RwLock<LibraryState>>,
     metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
@@ -916,6 +922,11 @@ async fn main() -> anyhow::Result<()> {
         libation_requests_file: config.libation_requests_file.clone(),
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
+        update_manager: updates::UpdateManager::new(
+            config.data_dir.clone(),
+            config.web_dist_dir.clone(),
+            config.port,
+        )?,
         sync_dir: config.data_dir.join("sync"),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(RwLock::new(metadata_overrides)),
@@ -945,6 +956,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/profile/stats", get(profile_stats))
+        .route("/api/update", get(update_status))
+        .route("/api/update/install", post(install_update))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -1080,7 +1093,41 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "ok": true,
         "libraryRoot": state.library_root,
         "bookCount": library.books.len(),
+        "version": updates::current_version(),
     }))
+}
+
+#[derive(Deserialize)]
+struct UpdateStatusQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+async fn update_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(query): Query<UpdateStatusQuery>,
+) -> Result<Json<updates::UpdateStatus>, ApiError> {
+    require_admin(&auth)?;
+    state
+        .update_manager
+        .check(query.refresh)
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::bad_gateway(format!("Could not check for updates: {error}")))
+}
+
+async fn install_update(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    require_owner(&auth)?;
+    state
+        .update_manager
+        .install()
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::bad_request(format!("Could not install the update: {error}")))
 }
 
 async fn list_books(
@@ -2625,7 +2672,8 @@ async fn serve_file_response(
 
     let mut file = fs::File::open(file_path).await?;
     file.seek(SeekFrom::Start(start)).await?;
-    let stream = ReaderStream::new(file.take(end - start + 1));
+    let stream =
+        ReaderStream::with_capacity(file.take(end - start + 1), MEDIA_STREAM_BUFFER_CAPACITY);
     let body = Body::from_stream(stream);
 
     let mut response = Response::builder()
@@ -6126,6 +6174,8 @@ exit 0
                 library_root,
             },
             alignment_config: super::AlignmentConfig { cli_path: None },
+            update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000)
+                .unwrap(),
             sync_dir: data_dir.join("sync"),
             library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
             metadata_overrides: super::Arc::new(super::RwLock::new(
@@ -6230,6 +6280,17 @@ exit 0
         assert_eq!(users.users.len(), 1);
         assert!(users.users[0].is_owner);
         assert!(users.users[0].is_admin);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_an_owner_can_start_a_server_update() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let denied = super::install_update(super::State(state), super::Extension(admin_user()))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
     }
 
     #[cfg(unix)]

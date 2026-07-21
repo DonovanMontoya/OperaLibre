@@ -13,8 +13,9 @@ The [GitHub releases page](https://github.com/DonovanMontoya/OperaLibre/releases
 - **Combined packages** — the easiest option, with a background launcher that starts the server and opens the web app without keeping a Terminal window open
 - **Server packages** — native server binaries for separate or headless deployments
 - **Frontend package** — static web files for an existing OperaLibre or Jellyfin server
+- **Update packages** — platform-specific, digest-verified bundles consumed by the combined package's Administration screen
 
-Release builds are provided for Windows x64, Linux x64 and ARM64, and Intel and Apple Silicon Macs. Each archive includes a `START-HERE.txt` guide.
+Release builds are provided for Windows x64, Linux x64 and ARM64, and Intel and Apple Silicon Macs. Combined installations notify administrators about new versions; owners can install verified updates from the app. Each user-facing archive includes a `START-HERE.txt` guide.
 
 For step-by-step installation, first launch, adding books, phone access, backups, and updates, see [Install a Release](docs/installing-a-release.md).
 

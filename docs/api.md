@@ -32,6 +32,15 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | `GET` | `/api/auth/me` | Return the current user. |
 | `GET` | `/api/profile/stats` | Listening stats for the current user. |
 
+#### Server updates
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/update` | Compare the running version with the latest GitHub release. Admin only. Add `?refresh=true` to bypass the 15-minute metadata cache. |
+| `POST` | `/api/update/install` | Download, verify, and stage the platform update, then restart a launcher-managed combined installation. Owner only. |
+
+The status response reports `currentVersion`, `latestVersion`, `updateAvailable`, `canAutoUpdate`, `platform`, release details, and a message when manual installation is required. Automatic installation preserves user data, the audiobook library, and `server.config`; the external launcher performs replacement and rollback after the server exits.
+
 #### User management (admin)
 
 | Method | Path | Description |

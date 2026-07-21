@@ -16,7 +16,9 @@ import type {
   ProfileStats,
   Progress,
   ServerType,
-  SyncMap
+  SyncMap,
+  UpdateInstallStarted,
+  UpdateStatus
 } from "./types";
 import {
   getCachedJellyfinProgress,
@@ -479,6 +481,14 @@ export async function getMe() {
 export async function getProfileStats() {
   if (isDemoMode()) return getDemoProfileStats();
   return request<ProfileStats>("/api/profile/stats");
+}
+
+export async function getUpdateStatus(timeoutMs = 30_000, refresh = false) {
+  return request<UpdateStatus>(`/api/update${refresh ? "?refresh=true" : ""}`, undefined, timeoutMs);
+}
+
+export async function installServerUpdate() {
+  return request<UpdateInstallStarted>("/api/update/install", { method: "POST" }, 10 * 60_000);
 }
 
 export async function listUsers() {

@@ -124,13 +124,28 @@ async function stageNative({ binary, kind, launcher, output, platform, version, 
   }
 }
 
+async function stageUpdate({ binary, launcher, output, platform, version, web }) {
+  const windows = platform.startsWith("windows");
+  const binaryName = windows ? "operalibre-server.exe" : "operalibre-server";
+  const updaterName = windows ? "operalibre-updater.exe" : "operalibre-updater";
+
+  await copyExecutable(binary, path.join(output, binaryName));
+  await copyExecutable(launcher, path.join(output, updaterName));
+  await cp(web, path.join(output, "web"), { recursive: true });
+  await writeFile(path.join(output, "VERSION.txt"), `${version}\n`);
+  await writeFile(
+    path.join(output, "UPDATE.json"),
+    `${JSON.stringify({ schemaVersion: 1, version, platform }, null, 2)}\n`,
+  );
+}
+
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   const kind = requireOption(options, "kind");
   const output = path.resolve(requireOption(options, "output"));
   const version = requireOption(options, "version");
 
-  if (!["server", "frontend", "combined"].includes(kind)) {
+  if (!["server", "frontend", "combined", "update"].includes(kind)) {
     throw new Error(`Unsupported package kind: ${kind}`);
   }
 
@@ -140,6 +155,18 @@ async function main() {
   if (kind === "frontend") {
     await stageFrontend({
       output,
+      version,
+      web: requireOption(options, "web"),
+    });
+    return;
+  }
+
+  if (kind === "update") {
+    await stageUpdate({
+      binary: requireOption(options, "binary"),
+      launcher: requireOption(options, "launcher"),
+      output,
+      platform: requireOption(options, "platform"),
       version,
       web: requireOption(options, "web"),
     });

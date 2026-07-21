@@ -132,8 +132,14 @@ If `library_root` points somewhere else, back up that audiobook folder instead.
 
 ## Update to a newer release
 
-1. Stop OperaLibre with the included Stop action.
-2. Download and extract the new combined package into a new folder.
+OperaLibre checks the latest GitHub release when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
+
+Automatic install is available when OperaLibre is running from a combined release package and was started with its included Open action. It preserves `data`, `audiobooks`, and `server.config`. The prior server and web files remain under `data/update-backups` for rollback; if the new server cannot start, the launcher restores and starts the previous version automatically.
+
+Custom deployments, server-only packages, and system services still show the available version and release-notes link, but must be updated manually:
+
+1. Stop OperaLibre.
+2. Download and extract the new combined or server package into a new folder.
 3. Copy the old `data` folder into the new package, replacing the empty one.
 4. If you used the default library, copy the old `audiobooks` folder into the new package too.
 5. If you edited `server.config`, copy your settings into the new file.
@@ -141,3 +147,5 @@ If `library_root` points somewhere else, back up that audiobook folder instead.
 7. Keep the old folder until you know the update works.
 
 Do not extract an update directly over a running installation. Keeping the old folder makes it easy to go back.
+
+The first release that introduces in-app updating must itself be installed manually. Later combined-package releases can be installed from Administration.

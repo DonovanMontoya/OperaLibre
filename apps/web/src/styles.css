@@ -1192,14 +1192,46 @@ img.large-cover {
   color: var(--ink-faded);
 }
 
-.book-description {
+.book-description-wrap {
   max-width: 760px;
   margin: -12px 0 0;
+}
+
+.book-description {
+  margin: 0;
   font-family: "Fraunces", serif;
   font-size: 1.05rem;
   font-style: italic;
   line-height: 1.55;
   color: var(--ink-soft);
+}
+
+.book-description.clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.book-description-toggle {
+  margin-top: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--red);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.book-description-toggle::after {
+  content: " ↓";
+}
+
+.book-description-toggle[aria-expanded="true"]::after {
+  content: " ↑";
 }
 
 .readalong-panel {
@@ -1723,6 +1755,25 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .time-row .elapsed {
+  color: var(--oxblood);
+  font-weight: 500;
+}
+
+.book-time-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  color: var(--ink-faded);
+}
+
+.book-time-row span:last-child {
+  flex-shrink: 0;
   color: var(--oxblood);
   font-weight: 500;
 }
@@ -4472,6 +4523,7 @@ html.native-app .native-shell > .player-pane {
 
 /* Keep long-form and list content left-aligned for readability. */
 html.native-app .player-pane .book-description,
+html.native-app .player-pane .book-description-wrap,
 html.native-app .player-pane .track-list-section,
 html.native-app .player-pane .readalong-panel,
 html.native-app .player-pane .libation-panel {
@@ -5926,6 +5978,54 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-message.error { color: #7b2018; background: rgba(160, 49, 34, 0.1); }
 .admin-message.success { color: #315b3c; background: rgba(55, 112, 71, 0.1); }
 
+.admin-update-banner {
+  width: min(1180px, 100%);
+  margin: 0 auto 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(156, 104, 21, 0.3);
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.17), rgba(255, 252, 244, 0.82));
+  box-shadow: 0 16px 36px -30px rgba(26, 20, 16, 0.55);
+}
+
+.admin-update-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--paper);
+  background: var(--oxblood);
+}
+
+.admin-update-copy { display: grid; gap: 2px; }
+.admin-update-copy > span { color: var(--oxblood); font: 600 0.62rem "JetBrains Mono", monospace; letter-spacing: 0.09em; text-transform: uppercase; }
+.admin-update-copy > strong { font: 400 1.35rem "Instrument Serif", serif; }
+.admin-update-copy p { margin: 0; color: var(--ink-faded); font-size: 0.82rem; line-height: 1.45; }
+.admin-update-actions { display: flex; gap: 8px; }
+.admin-update-actions button,
+.admin-update-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 999px;
+  color: var(--paper);
+  background: var(--oxblood);
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  text-decoration: none;
+  cursor: pointer;
+}
+.admin-update-actions .quiet-button { color: var(--ink); background: rgba(255, 252, 244, 0.9); }
+.admin-update-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
+
 .admin-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5969,6 +6069,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 }
 
 .admin-quick-actions { margin-top: 14px; }
+.admin-version-card { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .admin-quick-actions > div:last-child,
 .admin-section-head > button,
 .admin-row-actions { display: flex; gap: 8px; }
@@ -6079,6 +6180,10 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-user-layout { grid-template-columns: 1fr; }
   .admin-create-user { position: static; order: -1; }
   .admin-quick-actions, .admin-section-head { align-items: flex-start; flex-direction: column; }
+  .admin-update-banner { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .admin-update-actions { grid-column: 1 / -1; width: 100%; }
+  .admin-update-actions button, .admin-update-actions a { flex: 1; }
+  .admin-version-card { align-items: flex-start; flex-direction: column; }
   .admin-user-head { align-items: flex-start; flex-wrap: wrap; }
   .admin-row-actions { width: 100%; padding-left: 47px; }
   .admin-libation-access { align-items: stretch; flex-direction: column; }

@@ -151,6 +151,8 @@ jobs:
 
       - name: Build server
         run: cargo build --release --locked --manifest-path apps/server/Cargo.toml
+        env:
+          OPERALIBRE_VERSION: ${{ env.RELEASE_TAG }}
 
       - name: Build background launcher
         run: cargo build --release --locked --manifest-path apps/launcher/Cargo.toml
@@ -162,6 +164,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           server_package="operalibre-${version}-server-${{ matrix.platform }}"
           combined_package="operalibre-${version}-combined-${{ matrix.platform }}"
+          update_package="operalibre-${version}-update-${{ matrix.platform }}"
 
           node script/package_release.mjs \
             --kind server \
@@ -179,9 +182,19 @@ jobs:
             --output "staging/${combined_package}" \
             --version "${version}"
 
+          node script/package_release.mjs \
+            --kind update \
+            --platform "${{ matrix.platform }}" \
+            --binary "${{ matrix.executable }}" \
+            --launcher "${{ matrix.launcher }}" \
+            --web web-dist \
+            --output "staging/${update_package}" \
+            --version "${version}"
+
           mkdir -p dist
           tar -C staging -czf "dist/${server_package}.tar.gz" "${server_package}"
           tar -C staging -czf "dist/${combined_package}.tar.gz" "${combined_package}"
+          (cd staging && zip -qr "../dist/${update_package}.zip" "${update_package}")
 
       - name: Package for Windows
         if: runner.os == 'Windows'
@@ -190,6 +203,7 @@ jobs:
           $version = $env:RELEASE_TAG.TrimStart("v")
           $serverPackage = "operalibre-$version-server-${{ matrix.platform }}"
           $combinedPackage = "operalibre-$version-combined-${{ matrix.platform }}"
+          $updatePackage = "operalibre-$version-update-${{ matrix.platform }}"
 
           node script/package_release.mjs `
             --kind server `
@@ -207,9 +221,19 @@ jobs:
             --output "staging/$combinedPackage" `
             --version "$version"
 
+          node script/package_release.mjs `
+            --kind update `
+            --platform "${{ matrix.platform }}" `
+            --binary "${{ matrix.executable }}" `
+            --launcher "${{ matrix.launcher }}" `
+            --web web-dist `
+            --output "staging/$updatePackage" `
+            --version "$version"
+
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive -Path "staging/$serverPackage" -DestinationPath "dist/$serverPackage.zip"
           Compress-Archive -Path "staging/$combinedPackage" -DestinationPath "dist/$combinedPackage.zip"
+          Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
 
       - name: Upload native release packages
         uses: actions/upload-artifact@v7
