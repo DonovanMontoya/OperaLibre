@@ -2606,13 +2606,13 @@ async fn update_progress(
     let incoming_seconds = update
         .updated_at_ms
         .map(|ms| (ms as f64 / 1000.0).min(now_seconds));
-    if let (Some(previous), Some(incoming)) = (&previous, incoming_seconds) {
-        if progress_write_is_stale(&previous.updated_at, incoming) {
-            // A replayed checkpoint — an offline queue flushing or a
-            // reinstalled client syncing old local state — must not roll back
-            // a position some device recorded more recently.
-            return Ok(Json(previous.clone()));
-        }
+    if let (Some(previous), Some(incoming)) = (&previous, incoming_seconds)
+        && progress_write_is_stale(&previous.updated_at, incoming)
+    {
+        // A replayed checkpoint — an offline queue flushing or a
+        // reinstalled client syncing old local state — must not roll back
+        // a position some device recorded more recently.
+        return Ok(Json(previous.clone()));
     }
     let saved = Progress {
         book_id: book.id.clone(),
