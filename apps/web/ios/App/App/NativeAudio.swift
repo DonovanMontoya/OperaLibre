@@ -13,6 +13,22 @@ private struct NativeAudioCheckpoint: Codable {
     let updatedAt: Double
 }
 
+private struct NativeNowPlayingChapter {
+    let title: String
+    let startSeconds: Double
+    let durationSeconds: Double
+}
+
+private struct NativeAudioQueuedTrack {
+    var url: URL
+    let trackId: String
+    let bookOffsetSeconds: Double
+    var title: String
+    var artist: String
+    var album: String
+    var chapters: [NativeNowPlayingChapter]
+}
+
 @objc(NativeAudioPlugin)
 public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "NativeAudioPlugin"
@@ -31,6 +47,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private var player: AVPlayer?
     private var statusObservation: NSKeyValueObservation?
+    private var currentItemObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var stalledObserver: NSObjectProtocol?
@@ -47,6 +64,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var nowPlayingTitle = "OperaLibre"
     private var nowPlayingArtist = "Audiobook"
     private var nowPlayingAlbum = ""
+    private var nowPlayingChapters: [NativeNowPlayingChapter] = []
+    private var suppliedNowPlayingChapter: NativeNowPlayingChapter?
+    private var activeNowPlayingChapterIndex: Int?
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var artworkGeneration = 0
     private let checkpointKey = "operalibre.native-audio-checkpoint.v1"
@@ -54,6 +74,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var recoveryTrackId: String?
     private var recoveryBookOffset: Double = 0
     private var lastCheckpointWrite = 0.0
+    private var queuedTracks: [NativeAudioQueuedTrack] = []
+    private var queuedItems: [AVPlayerItem] = []
+    private var activeQueueIndex = 0
+    private var finishedWhileInactive = false
 
     deinit {
         tearDownPlayer()
@@ -84,6 +108,56 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let scopeKey = call.getString("recoveryScopeKey")
         let trackId = call.getString("recoveryTrackId")
         let bookOffset = max(0, call.getDouble("recoveryBookOffsetSeconds") ?? 0)
+        var requestedQueue: [NativeAudioQueuedTrack] =
+            (call.getArray("queue", JSObject.self) ?? []).compactMap { entry -> NativeAudioQueuedTrack? in
+                guard
+                    let source = entry["url"] as? String,
+                    let queueURL = resolveNativeAudioSourceURL(source),
+                    let queueTrackId = entry["trackId"] as? String,
+                    !queueTrackId.isEmpty
+                else { return nil }
+                let chapters = ((entry["chapters"] as? [JSObject]) ?? []).compactMap { chapter -> NativeNowPlayingChapter? in
+                    guard
+                        let title = chapter["title"] as? String,
+                        let start = jsDouble(chapter["startSeconds"]),
+                        let duration = jsDouble(chapter["durationSeconds"]),
+                        start.isFinite,
+                        duration.isFinite,
+                        duration > 0
+                    else { return nil }
+                    return NativeNowPlayingChapter(
+                        title: title,
+                        startSeconds: start,
+                        durationSeconds: duration
+                    )
+                }
+                return NativeAudioQueuedTrack(
+                    url: queueURL,
+                    trackId: queueTrackId,
+                    bookOffsetSeconds: max(0, jsDouble(entry["bookOffsetSeconds"]) ?? 0),
+                    title: entry["title"] as? String ?? "OperaLibre",
+                    artist: entry["artist"] as? String ?? "Audiobook",
+                    album: entry["album"] as? String ?? "",
+                    chapters: chapters.sorted { $0.startSeconds < $1.startSeconds }
+                )
+            }
+        let currentTrackId = trackId ?? requestedQueue.first?.trackId ?? "current-track"
+        if requestedQueue.first?.trackId == currentTrackId {
+            requestedQueue[0].url = url
+        } else {
+            requestedQueue.insert(
+                NativeAudioQueuedTrack(
+                    url: url,
+                    trackId: currentTrackId,
+                    bookOffsetSeconds: bookOffset,
+                    title: "OperaLibre",
+                    artist: "Audiobook",
+                    album: "",
+                    chapters: []
+                ),
+                at: 0
+            )
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -91,30 +165,45 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            // A shelf Resume tap can reach play() while React is still
+            // replacing the previous track. Preserve that queued intent
+            // across teardown so the newly loaded item actually starts.
+            let retainedPlayIntent = self.shouldAutoplay
             self.tearDownPlayer()
             self.generation += 1
             let loadGeneration = self.generation
             self.desiredRate = rate
             self.pendingPosition = position
-            self.shouldAutoplay = autoplay
+            self.shouldAutoplay = autoplay || retainedPlayIntent
             self.recoveryScopeKey = scopeKey
             self.recoveryTrackId = trackId
             self.recoveryBookOffset = bookOffset
             self.lastCheckpointWrite = 0
+            self.queuedTracks = requestedQueue
+            self.activeQueueIndex = 0
+            self.finishedWhileInactive = false
             self.installSessionObserversIfNeeded()
 
-            let item = AVPlayerItem(url: url)
-            // Apple's time-domain algorithm is designed for spoken audio and
-            // preserves pitch continuously throughout OperaLibre's 0.75–2x range.
-            item.audioTimePitchAlgorithm = .timeDomain
-
-            let player = AVPlayer(playerItem: item)
+            let items = requestedQueue.map { track in
+                let item = AVPlayerItem(url: track.url)
+                // Apple's time-domain algorithm is designed for spoken audio and
+                // preserves pitch throughout OperaLibre's 0.75–2x range.
+                item.audioTimePitchAlgorithm = .timeDomain
+                return item
+            }
+            self.queuedItems = items
+            let player = AVQueuePlayer(items: items)
+            player.actionAtItemEnd = .advance
             player.automaticallyWaitsToMinimizeStalling = true
             player.preventsDisplaySleepDuringVideoPlayback = false
             player.volume = volume
             self.player = player
+            self.activateQueuedTrack(at: 0)
+            // Queue activation resets later tracks to their natural beginning,
+            // but the first track must honor the restored resume position.
+            self.pendingPosition = position
             self.configureRemoteCommandsIfNeeded()
-            self.installObservers(player: player, item: item, generation: loadGeneration)
+            self.installObservers(player: player, item: items[0], generation: loadGeneration)
             call.resolve()
         }
     }
@@ -196,6 +285,39 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let artist = call.getString("artist") ?? "Audiobook"
         let album = call.getString("album") ?? ""
         let artworkURL = call.getString("artworkUrl")
+        let suppliedChapterStart = call.getDouble("chapterStartSeconds")
+        let suppliedChapterDuration = call.getDouble("chapterDurationSeconds")
+        let suppliedChapter: NativeNowPlayingChapter? =
+            if let suppliedChapterStart,
+               let suppliedChapterDuration,
+               suppliedChapterStart.isFinite,
+               suppliedChapterDuration.isFinite,
+               suppliedChapterDuration > 0
+            {
+                NativeNowPlayingChapter(
+                    title: title,
+                    startSeconds: suppliedChapterStart,
+                    durationSeconds: suppliedChapterDuration
+                )
+            } else {
+                nil
+            }
+        let chapters: [NativeNowPlayingChapter] =
+            (call.getArray("chapters", JSObject.self) ?? []).compactMap { chapter -> NativeNowPlayingChapter? in
+                guard
+                    let title = chapter["title"] as? String,
+                    let start = jsDouble(chapter["startSeconds"]),
+                    let duration = jsDouble(chapter["durationSeconds"]),
+                    start.isFinite,
+                    duration.isFinite,
+                    duration > 0
+                else { return nil }
+                return NativeNowPlayingChapter(
+                    title: title,
+                    startSeconds: start,
+                    durationSeconds: duration
+                )
+            }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -205,6 +327,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.nowPlayingTitle = title
             self.nowPlayingArtist = artist
             self.nowPlayingAlbum = album
+            self.nowPlayingChapters = chapters.sorted { $0.startSeconds < $1.startSeconds }
+            self.suppliedNowPlayingChapter = suppliedChapter
+            self.activeNowPlayingChapterIndex = nil
             self.loadArtwork(from: artworkURL)
             self.updateNowPlayingInfo()
             call.resolve()
@@ -270,12 +395,45 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
 
+        currentItemObservation = player.observe(
+            \.currentItem,
+            options: [.new]
+        ) { [weak self, weak player] _, _ in
+            DispatchQueue.main.async {
+                guard
+                    let self,
+                    let player,
+                    generation == self.generation,
+                    let currentItem = player.currentItem,
+                    let index = self.queuedItems.firstIndex(where: { $0 === currentItem }),
+                    index != self.activeQueueIndex
+                else { return }
+                self.activateQueuedTrack(at: index)
+                self.persistCheckpoint(force: true)
+                self.updateNowPlayingInfo()
+                if self.shouldAutoplay && player.timeControlStatus != .playing {
+                    self.activateAudioSession()
+                    player.playImmediately(atRate: self.desiredRate)
+                }
+                if UIApplication.shared.applicationState == .active {
+                    self.emitTrackChanged()
+                    self.emitState()
+                }
+            }
+        }
+
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
         ) { [weak self] _ in
             guard let self, generation == self.generation else { return }
             self.persistCheckpoint(force: false)
+            let chapterIndex = self.nowPlayingChapterIndex(
+                at: self.finiteSeconds(player.currentTime())
+            )
+            if chapterIndex != self.activeNowPlayingChapterIndex {
+                self.updateNowPlayingInfo()
+            }
             // Once WKWebView is suspended, crossing the Capacitor bridge on
             // every timer tick can starve AVPlayer's time-pitch processing.
             // The native player and Now Playing center keep their own clocks.
@@ -286,21 +444,30 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
+            object: nil,
             queue: .main
-        ) { [weak self] _ in
-            guard let self, generation == self.generation else { return }
-            self.shouldAutoplay = false
-            self.updateNowPlayingInfo()
-            if UIApplication.shared.applicationState == .active {
-                self.emitState()
-                self.notifyListeners("ended", data: [:])
+        ) { [weak self] notification in
+            guard
+                let self,
+                generation == self.generation,
+                let endedItem = notification.object as? AVPlayerItem,
+                let endedIndex = self.queuedItems.firstIndex(where: { $0 === endedItem })
+            else { return }
+            if endedIndex >= self.queuedItems.count - 1 {
+                self.shouldAutoplay = false
+                self.updateNowPlayingInfo()
+                if UIApplication.shared.applicationState == .active {
+                    self.emitState()
+                    self.notifyListeners("ended", data: [:])
+                } else {
+                    self.finishedWhileInactive = true
+                }
             }
         }
 
         stalledObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
-            object: item,
+            object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self, generation == self.generation else { return }
@@ -308,6 +475,33 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.notifyListeners("stalled", data: [:])
             }
         }
+    }
+
+    private func activateQueuedTrack(at index: Int) {
+        guard queuedTracks.indices.contains(index) else { return }
+        let track = queuedTracks[index]
+        activeQueueIndex = index
+        pendingPosition = 0
+        recoveryTrackId = track.trackId
+        recoveryBookOffset = track.bookOffsetSeconds
+        lastCheckpointWrite = 0
+        nowPlayingTitle = track.title
+        nowPlayingArtist = track.artist
+        nowPlayingAlbum = track.album
+        nowPlayingChapters = track.chapters
+        suppliedNowPlayingChapter = nil
+        activeNowPlayingChapterIndex = nil
+    }
+
+    private func emitTrackChanged() {
+        guard let trackId = recoveryTrackId, let player else { return }
+        let position = finiteSeconds(player.currentTime())
+        notifyListeners("trackChanged", data: [
+            "trackId": trackId,
+            "positionSeconds": position,
+            "bookPositionSeconds": recoveryBookOffset + position,
+            "isPlaying": player.timeControlStatus == .playing
+        ])
     }
 
     private func configureRemoteCommandsIfNeeded() {
@@ -367,7 +561,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 let player = self.player,
                 let positionEvent = event as? MPChangePlaybackPositionCommandEvent
             else { return .commandFailed }
-            let position = max(0, positionEvent.positionTime)
+            let chapterStart = self.activeNowPlayingChapter()?.startSeconds ?? 0
+            let itemDuration = self.finiteSeconds(player.currentItem?.duration ?? .invalid)
+            let requestedPosition = max(0, positionEvent.positionTime + chapterStart)
+            let position = itemDuration > 0 ? min(itemDuration, requestedPosition) : requestedPosition
             self.pendingPosition = position
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 self?.persistCheckpoint(force: true)
@@ -413,7 +610,14 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.resumeAfterInterruption()
             }
             self.persistCheckpoint(force: true)
-            self.emitState()
+            if self.finishedWhileInactive {
+                self.finishedWhileInactive = false
+                self.emitState()
+                self.notifyListeners("ended", data: [:])
+            } else {
+                self.emitTrackChanged()
+                self.emitState()
+            }
         }
         enteredBackgroundObserver = center.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
@@ -512,11 +716,17 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-        let duration = finiteSeconds(item.duration)
-        let position = finiteSeconds(player.currentTime())
+        let itemDuration = finiteSeconds(item.duration)
+        let itemPosition = finiteSeconds(player.currentTime())
+        activeNowPlayingChapterIndex = nowPlayingChapterIndex(at: itemPosition)
+        let chapter = activeNowPlayingChapter()
+        let duration = chapter?.durationSeconds ?? itemDuration
+        let position = chapter.map {
+            min($0.durationSeconds, max(0, itemPosition - $0.startSeconds))
+        } ?? itemPosition
         let isPlaying = player.timeControlStatus == .playing
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: nowPlayingTitle,
+            MPMediaItemPropertyTitle: chapter?.title ?? nowPlayingTitle,
             MPMediaItemPropertyArtist: nowPlayingArtist,
             MPMediaItemPropertyAlbumTitle: nowPlayingAlbum,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
@@ -533,6 +743,19 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+    }
+
+    private func nowPlayingChapterIndex(at position: Double) -> Int? {
+        nowPlayingChapters.lastIndex {
+            position >= $0.startSeconds && position <= $0.startSeconds + $0.durationSeconds
+        }
+    }
+
+    private func activeNowPlayingChapter() -> NativeNowPlayingChapter? {
+        if let activeNowPlayingChapterIndex {
+            return nowPlayingChapters[activeNowPlayingChapterIndex]
+        }
+        return suppliedNowPlayingChapter
     }
 
     private func loadArtwork(from source: String?) {
@@ -569,6 +792,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         persistCheckpoint(force: true)
         statusObservation?.invalidate()
         statusObservation = nil
+        currentItemObservation?.invalidate()
+        currentItemObservation = nil
         if let timeObserver, let player {
             player.removeTimeObserver(timeObserver)
         }
@@ -582,7 +807,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         stalledObserver = nil
         player?.pause()
-        player?.replaceCurrentItem(with: nil)
+        if let queuePlayer = player as? AVQueuePlayer {
+            queuePlayer.removeAllItems()
+        } else {
+            player?.replaceCurrentItem(with: nil)
+        }
         player = nil
         shouldAutoplay = false
         wasPlayingBeforeInterruption = false
@@ -590,17 +819,18 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         recoveryScopeKey = nil
         recoveryTrackId = nil
         recoveryBookOffset = 0
+        nowPlayingChapters = []
+        suppliedNowPlayingChapter = nil
+        activeNowPlayingChapterIndex = nil
+        queuedTracks = []
+        queuedItems = []
+        activeQueueIndex = 0
+        finishedWhileInactive = false
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     private func resolveSourceURL(_ source: String) -> URL? {
-        guard let url = URL(string: source) else { return nil }
-        guard url.scheme == "capacitor" else { return url }
-        let marker = "/_capacitor_file_"
-        guard url.path.hasPrefix(marker) else { return nil }
-        let filePath = String(url.path.dropFirst(marker.count)).removingPercentEncoding
-            ?? String(url.path.dropFirst(marker.count))
-        return URL(fileURLWithPath: filePath)
+        resolveNativeAudioSourceURL(source)
     }
 
     private func finiteSeconds(_ time: CMTime) -> Double {
@@ -615,4 +845,20 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private func clampedVolume(_ value: Double) -> Float {
         Float(min(1, max(0, value)))
     }
+}
+
+private func resolveNativeAudioSourceURL(_ source: String) -> URL? {
+    guard let url = URL(string: source) else { return nil }
+    guard url.scheme == "capacitor" else { return url }
+    let marker = "/_capacitor_file_"
+    guard url.path.hasPrefix(marker) else { return nil }
+    let filePath = String(url.path.dropFirst(marker.count)).removingPercentEncoding
+        ?? String(url.path.dropFirst(marker.count))
+    return URL(fileURLWithPath: filePath)
+}
+
+private func jsDouble(_ value: Any?) -> Double? {
+    if let value = value as? Double { return value }
+    if let value = value as? NSNumber { return value.doubleValue }
+    return nil
 }

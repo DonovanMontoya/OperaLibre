@@ -1,4 +1,5 @@
 import type { AuthUser, Book, MetadataSummary, ProfileStats, Progress } from "./types";
+import { summarizeBookProgress } from "./reliability.ts";
 
 const DEMO_MODE_STORAGE_KEY = "operalibre.demoMode";
 const DEMO_PROGRESS_STORAGE_PREFIX = "operalibre.demoProgress";
@@ -163,34 +164,38 @@ export function getDemoProgress(bookId: string): Progress | null {
 export function saveDemoProgress(
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
-    & Partial<Pick<Progress, "updatedAt">>
+    & Partial<Pick<Progress, "updatedAt" | "finishedOverride">>
 ): Progress {
+  const existing = getDemoProgress(bookId);
   const saved: Progress = {
     bookId,
     trackId: progress.trackId,
     positionSeconds: progress.positionSeconds,
     bookPositionSeconds: progress.bookPositionSeconds,
     durationSeconds: progress.durationSeconds,
-    updatedAt: progress.updatedAt ?? new Date().toISOString()
+    updatedAt: progress.updatedAt ?? new Date().toISOString(),
+    finishedOverride: progress.finishedOverride ?? existing?.finishedOverride ?? null
   };
   fallbackProgress.set(bookId, saved);
   if (storageAvailable()) window.localStorage.setItem(progressKey(bookId), JSON.stringify(saved));
   return saved;
 }
 
-function bookProgress(book: Book, progress: Progress | null): Book["progress"] {
-  if (!progress) return null;
-  const duration = book.durationSeconds ?? 0;
-  const remaining = Math.max(0, duration - progress.bookPositionSeconds);
-  const percent = duration > 0 ? Math.min(100, (progress.bookPositionSeconds / duration) * 100) : null;
-  return {
-    status: remaining <= 1 ? "finished" : progress.bookPositionSeconds > 0 ? "inProgress" : "notStarted",
-    bookPositionSeconds: progress.bookPositionSeconds,
-    durationSeconds: book.durationSeconds,
-    remainingSeconds: remaining,
-    percentComplete: percent,
-    updatedAt: progress.updatedAt
-  };
+export function setDemoBookCompletion(book: Book, finished: boolean) {
+  const existing = getDemoProgress(book.id);
+  const firstTrack = book.tracks[0];
+  if (!firstTrack) {
+    throw new Error("This book has no playable tracks.");
+  }
+  const progress = saveDemoProgress(book.id, {
+    trackId: existing?.trackId ?? firstTrack.id,
+    positionSeconds: existing?.positionSeconds ?? 0,
+    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
+    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: existing?.updatedAt,
+    finishedOverride: finished
+  });
+  return summarizeBookProgress(book, progress)!;
 }
 
 export function getDemoBooks(): Book[] {
@@ -204,7 +209,7 @@ export function getDemoBooks(): Book[] {
       chapters: track.chapters.map((chapter) => ({ ...chapter })),
       metadata: { ...track.metadata, genres: [...track.metadata.genres], rawFields: [] }
     })),
-    progress: bookProgress(book, getDemoProgress(book.id))
+    progress: summarizeBookProgress(book, getDemoProgress(book.id))
   }));
 }
 

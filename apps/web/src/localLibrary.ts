@@ -1,8 +1,12 @@
 import { FilePicker, type PickedFile } from "@capawesome/capacitor-file-picker";
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
-import type { AuthUser, Book, BookProgress, MetadataSummary, Progress, Track } from "./types";
-import { deviceBookMatchesServer, progressTimestamp } from "./reliability";
+import type { AuthUser, Book, MetadataSummary, Progress, Track } from "./types";
+import {
+  deviceBookMatchesServer,
+  progressTimestamp,
+  summarizeBookProgress
+} from "./reliability.ts";
 
 const LIBRARY_KEY = "operalibre.deviceLibrary.v1";
 const PROGRESS_KEY = "operalibre.deviceProgress.v1";
@@ -63,23 +67,6 @@ function inferredTitle(name: string) {
     .trim() || "Imported audiobook";
 }
 
-function progressSummary(book: Book, progress: Progress | null): BookProgress | null {
-  if (!progress) return null;
-  const duration = book.durationSeconds;
-  const remaining = duration === null ? null : Math.max(0, duration - progress.bookPositionSeconds);
-  const percent = duration && duration > 0 ? Math.min(100, (progress.bookPositionSeconds / duration) * 100) : null;
-  return {
-    status: remaining !== null && (remaining <= 30 || (percent ?? 0) >= 99.5)
-      ? "finished"
-      : progress.bookPositionSeconds > 0 ? "inProgress" : "notStarted",
-    bookPositionSeconds: progress.bookPositionSeconds,
-    durationSeconds: duration,
-    remainingSeconds: remaining,
-    percentComplete: percent,
-    updatedAt: progress.updatedAt
-  };
-}
-
 function storedBooks() {
   return readJson<Book[]>(LIBRARY_KEY, []);
 }
@@ -94,7 +81,11 @@ export function getDeviceProgress(bookId: string) {
 
 export function saveDeviceProgress(bookId: string, progress: Progress) {
   const all = storedProgress();
-  all[bookId] = { ...progress, bookId };
+  all[bookId] = {
+    ...progress,
+    bookId,
+    finishedOverride: progress.finishedOverride ?? all[bookId]?.finishedOverride ?? null
+  };
   writeJson(PROGRESS_KEY, all);
 }
 
@@ -104,8 +95,30 @@ export function getDeviceBooks(): Book[] {
     ...book,
     source: "device",
     deviceBookId: book.id,
-    progress: progressSummary(book, progress[book.id] ?? null)
+    progress: summarizeBookProgress(book, progress[book.id] ?? null)
   }));
+}
+
+export function setDeviceBookCompletion(book: Book, finished: boolean) {
+  const existing = getDeviceProgress(book.id);
+  const firstTrack = book.tracks[0];
+  if (!firstTrack) {
+    throw new Error("This book has no playable tracks.");
+  }
+  const progress: Progress = {
+    bookId: book.id,
+    trackId: existing?.trackId ?? firstTrack.id,
+    positionSeconds: existing?.positionSeconds ?? 0,
+    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
+    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: existing?.updatedAt ?? new Date().toISOString(),
+    finishedOverride: finished
+  };
+  saveDeviceProgress(book.id, progress);
+  return {
+    progress,
+    summary: summarizeBookProgress(book, progress)!
+  };
 }
 
 async function mediaDuration(path: string): Promise<number | null> {
@@ -223,11 +236,16 @@ export async function removeDeviceBook(bookId: string) {
 export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = getDeviceBooks()): Book[] {
   const unmatched = new Set(deviceBooks.map((book) => book.id));
   const merged = serverBooks.map((serverBook) => {
-    const deviceBook = deviceBooks.find((candidate) =>
+    const candidates = deviceBooks.filter((candidate) =>
       unmatched.has(candidate.id) &&
       deviceBookMatchesServer(candidate, serverBook)
     );
-    if (!deviceBook) return { ...serverBook, source: "server" as const };
+    if (candidates.length !== 1) return { ...serverBook, source: "server" as const };
+    const deviceBook = candidates[0];
+    const matchingServerCount = serverBooks.filter((candidate) =>
+      deviceBookMatchesServer(deviceBook, candidate)
+    ).length;
+    if (matchingServerCount !== 1) return { ...serverBook, source: "server" as const };
     unmatched.delete(deviceBook.id);
     const deviceProgressIsNewer = !!deviceBook.progress && (
       !serverBook.progress || progressTimestamp(deviceBook.progress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt)

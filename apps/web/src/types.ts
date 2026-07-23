@@ -82,6 +82,8 @@ export type AlignmentStatus = {
 
 export type BookProgress = {
   status: "notStarted" | "inProgress" | "finished";
+  /** Explicit reader choice; null/undefined means infer completion from position. */
+  finishedOverride?: boolean | null;
   bookPositionSeconds: number;
   durationSeconds: number | null;
   remainingSeconds: number | null;
@@ -123,6 +125,8 @@ export type Progress = {
   bookPositionSeconds: number;
   durationSeconds: number | null;
   updatedAt: string;
+  /** Explicit reader choice; null/undefined means infer completion from position. */
+  finishedOverride?: boolean | null;
 };
 
 export type LibationAccount = {
@@ -213,6 +217,17 @@ export type UpdateStatus = {
 export type UpdateInstallStarted = {
   version: string;
   restarting: boolean;
+};
+
+export type FrontendUpdateStatus = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  canAutoUpdate: boolean;
+  releaseUrl: string;
+  publishedAt: string | null;
+  notes: string | null;
+  message: string | null;
 };
 
 export type AuthUser = {

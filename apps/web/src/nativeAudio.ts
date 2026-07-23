@@ -14,10 +14,25 @@ export type NativeAudioRecoveryState = {
   updatedAt: number;
 };
 
+export type NativeAudioQueueTrack = {
+  url: string;
+  trackId: string;
+  bookOffsetSeconds: number;
+  title: string;
+  artist: string;
+  album: string;
+  chapters: Array<{
+    title: string;
+    startSeconds: number;
+    durationSeconds: number;
+  }>;
+};
+
 type NativeAudioRecoveryIdentity = {
   scopeKey: string;
   trackId: string;
   bookOffsetSeconds: number;
+  queue: () => NativeAudioQueueTrack[];
 };
 
 interface NativeAudioPlugin {
@@ -30,6 +45,7 @@ interface NativeAudioPlugin {
     recoveryScopeKey: string;
     recoveryTrackId: string;
     recoveryBookOffsetSeconds: number;
+    queue: NativeAudioQueueTrack[];
   }): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void>;
@@ -41,11 +57,27 @@ interface NativeAudioPlugin {
     artist: string;
     album: string;
     artworkUrl?: string;
+    chapterStartSeconds?: number;
+    chapterDurationSeconds?: number;
+    chapters: Array<{
+      title: string;
+      startSeconds: number;
+      durationSeconds: number;
+    }>;
   }): Promise<void>;
   getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
   stop(): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "ended", listener: () => void): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "trackChanged",
+    listener: (event: {
+      trackId: string;
+      positionSeconds: number;
+      bookPositionSeconds: number;
+      isPlaying: boolean;
+    }) => void
+  ): Promise<PluginListenerHandle>;
   addListener(eventName: "error", listener: (event: { message: string }) => void): Promise<PluginListenerHandle>;
 }
 
@@ -60,6 +92,13 @@ export function updateNativeAudioNowPlaying(options: {
   artist: string;
   album: string;
   artworkUrl?: string;
+  chapterStartSeconds?: number;
+  chapterDurationSeconds?: number;
+  chapters: Array<{
+    title: string;
+    startSeconds: number;
+    durationSeconds: number;
+  }>;
 }) {
   if (!usesNativeAudioPlayer()) return Promise.resolve();
   return NativeAudio.setNowPlaying(options);
@@ -97,7 +136,13 @@ export async function getNativeAudioRecovery(scopeKey: string): Promise<NativeAu
 export function attachNativeAudioPlayer(
   audio: HTMLAudioElement,
   onError: (message: string) => void,
-  recovery: NativeAudioRecoveryIdentity
+  recovery: NativeAudioRecoveryIdentity,
+  onTrackChanged: (
+    trackId: string,
+    positionSeconds: number,
+    bookPositionSeconds: number,
+    isPlaying: boolean
+  ) => void
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -122,15 +167,29 @@ export function attachNativeAudioPlayer(
   const load = () => {
     const url = audio.currentSrc;
     if (!url) return;
+    endedFromNative = false;
+    const configuredQueue = recovery.queue();
+    const queue = configuredQueue.length > 0
+      ? configuredQueue.map((track, index) => index === 0 ? { ...track, url } : track)
+      : [{
+          url,
+          trackId: recovery.trackId,
+          bookOffsetSeconds: recovery.bookOffsetSeconds,
+          title: "OperaLibre",
+          artist: "Audiobook",
+          album: "",
+          chapters: []
+        }];
     safely(NativeAudio.load({
       url,
       positionSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
       rate: audio.playbackRate,
       volume: audio.volume,
-      autoplay: false,
+      autoplay: nativeIsPlaying,
       recoveryScopeKey: recovery.scopeKey,
       recoveryTrackId: recovery.trackId,
-      recoveryBookOffsetSeconds: recovery.bookOffsetSeconds
+      recoveryBookOffsetSeconds: recovery.bookOffsetSeconds,
+      queue
     }));
   };
   const rateChange = () => safely(NativeAudio.setRate({ rate: audio.playbackRate }));
@@ -142,6 +201,7 @@ export function attachNativeAudioPlayer(
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
   audio.addEventListener("emptied", emptied);
+  audio.addEventListener("operalibre-native-queue-change", load);
 
   if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) load();
 
@@ -176,6 +236,19 @@ export function attachNativeAudioPlayer(
     else listenerHandles.push(handle);
   });
 
+  void NativeAudio.addListener("trackChanged", (event) => {
+    if (disposed || !event.trackId || event.trackId === recovery.trackId) return;
+    onTrackChanged(
+      event.trackId,
+      event.positionSeconds,
+      event.bookPositionSeconds,
+      event.isPlaying
+    );
+  }).then((handle) => {
+    if (disposed) void handle.remove();
+    else listenerHandles.push(handle);
+  });
+
   void NativeAudio.addListener("error", ({ message }) => {
     failOverToWebAudio(message || "Native audio playback failed.");
   }).then((handle) => {
@@ -189,6 +262,7 @@ export function attachNativeAudioPlayer(
     audio.removeEventListener("ratechange", rateChange);
     audio.removeEventListener("volumechange", volumeChange);
     audio.removeEventListener("emptied", emptied);
+    audio.removeEventListener("operalibre-native-queue-change", load);
     audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();

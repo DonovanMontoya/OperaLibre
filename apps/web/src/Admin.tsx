@@ -22,8 +22,11 @@ import {
   deleteDownloadedBook,
   deleteUser,
   decideLibationRequest,
+  getFrontendUpdateStatus,
   getUpdateStatus,
+  installFrontendUpdate,
   installServerUpdate,
+  isNativeApp,
   listLibationRequests,
   listUsers,
   mediaUrl,
@@ -32,7 +35,15 @@ import {
   updateUserLibationAccess,
   updateUserRole
 } from "./api";
-import type { AuthUser, Book, LibationAccess, LibationDownloadRequest, UpdateStatus } from "./types";
+import type {
+  AuthUser,
+  Book,
+  FrontendUpdateStatus,
+  LibationAccess,
+  LibationDownloadRequest,
+  UpdateStatus
+} from "./types";
+import { FRONTEND_VERSION } from "./version";
 
 type AdminSection = "overview" | "users" | "requests" | "books";
 type AccountRole = "owner" | "admin" | "reader";
@@ -65,8 +76,10 @@ export function AdminPanel({
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<AccountRole>("reader");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [frontendUpdateStatus, setFrontendUpdateStatus] = useState<FrontendUpdateStatus | null>(null);
   const [updateChecking, setUpdateChecking] = useState(true);
   const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [frontendUpdateInstalling, setFrontendUpdateInstalling] = useState(false);
 
   async function refreshUsers() {
     setLoading(true);
@@ -85,10 +98,22 @@ export function AdminPanel({
   async function refreshUpdate(force = false) {
     setUpdateChecking(true);
     try {
-      setUpdateStatus(await getUpdateStatus(30_000, force));
-    } catch {
-      // Update discovery should never prevent administration of the server.
+      const [serverResult, frontendResult] = await Promise.allSettled([
+        getUpdateStatus(30_000, force),
+        isNativeApp()
+          ? Promise.resolve(null)
+          : getFrontendUpdateStatus(
+              30_000,
+              force,
+              FRONTEND_VERSION === "dev" ? undefined : FRONTEND_VERSION
+            )
+      ]);
+      if (serverResult.status === "fulfilled") setUpdateStatus(serverResult.value);
+      if (frontendResult.status === "fulfilled" && frontendResult.value) {
+        setFrontendUpdateStatus(frontendResult.value);
+      }
     } finally {
+      // Update discovery should never prevent administration of the server.
       setUpdateChecking(false);
     }
   }
@@ -305,6 +330,30 @@ export function AdminPanel({
     }
   }
 
+  async function handleInstallFrontendUpdate() {
+    if (
+      !frontendUpdateStatus?.updateAvailable
+      || !frontendUpdateStatus.canAutoUpdate
+      || !currentUser.isOwner
+    ) return;
+    if (!window.confirm(
+      `Update the web frontend from ${frontendUpdateStatus.currentVersion} to ${frontendUpdateStatus.latestVersion}?\n\nThe server and active playback will keep running. This page will reload when the new frontend is ready.`
+    )) return;
+
+    setFrontendUpdateInstalling(true);
+    setError(null);
+    setNotice("Downloading the verified web frontend package…");
+    try {
+      await installFrontendUpdate();
+      setNotice("The new web frontend is ready. Reloading…");
+      window.location.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not install the frontend update.");
+      setNotice(null);
+      setFrontendUpdateInstalling(false);
+    }
+  }
+
   return (
     <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
       <header className="admin-head">
@@ -351,12 +400,56 @@ export function AdminPanel({
           </div>
           <div className="admin-update-actions">
             {currentUser.isOwner && updateStatus.canAutoUpdate ? (
-              <button type="button" disabled={updateInstalling} onClick={() => void handleInstallUpdate()}>
+              <button
+                type="button"
+                disabled={updateInstalling || frontendUpdateInstalling}
+                onClick={() => void handleInstallUpdate()}
+              >
                 {updateInstalling ? <LoaderCircle size={15} className="spin-icon" /> : <ArrowUpCircle size={15} />}
                 {updateInstalling ? "Updating…" : "Update server"}
               </button>
             ) : null}
             <a className="quiet-button" href={updateStatus.releaseUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={14} /> Release notes
+            </a>
+          </div>
+        </section>
+      ) : null}
+
+      {frontendUpdateStatus?.updateAvailable ? (
+        <section className="admin-update-banner frontend-update-banner" aria-live="polite">
+          <div className="admin-update-icon"><ArrowUpCircle size={22} /></div>
+          <div className="admin-update-copy">
+            <span>Web frontend update available</span>
+            <strong>OperaLibre web {frontendUpdateStatus.latestVersion}</strong>
+            <p>
+              This browser frontend is version {frontendUpdateStatus.currentVersion}.
+              {frontendUpdateStatus.canAutoUpdate
+                ? currentUser.isOwner
+                  ? " Install the verified frontend package without restarting the server."
+                  : " An owner can install the frontend update from this page."
+                : ` ${frontendUpdateStatus.message ?? "This frontend must be updated manually."}`}
+            </p>
+          </div>
+          <div className="admin-update-actions">
+            {currentUser.isOwner && frontendUpdateStatus.canAutoUpdate ? (
+              <button
+                type="button"
+                disabled={frontendUpdateInstalling || updateInstalling}
+                onClick={() => void handleInstallFrontendUpdate()}
+              >
+                {frontendUpdateInstalling
+                  ? <LoaderCircle size={15} className="spin-icon" />
+                  : <ArrowUpCircle size={15} />}
+                {frontendUpdateInstalling ? "Updating…" : "Update frontend"}
+              </button>
+            ) : null}
+            <a
+              className="quiet-button"
+              href={frontendUpdateStatus.releaseUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
               <ExternalLink size={14} /> Release notes
             </a>
           </div>
@@ -400,8 +493,40 @@ export function AdminPanel({
               <h2>{updateStatus ? `OperaLibre ${updateStatus.currentVersion}` : "OperaLibre server"}</h2>
               <p>{updateChecking ? "Checking for updates…" : updateStatus ? "This server checks GitHub Releases for new versions." : "Update status is temporarily unavailable."}</p>
             </div>
-            <button type="button" className="quiet-button" disabled={updateChecking || updateInstalling} onClick={() => void refreshUpdate(true)}>
+            <button
+              type="button"
+              className="quiet-button"
+              disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
+              onClick={() => void refreshUpdate(true)}
+            >
               {updateChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />} Check for updates
+            </button>
+          </section>
+          <section className="admin-card admin-version-card">
+            <div>
+              <span className="section-label"><ArrowUpCircle size={13} /> Web frontend</span>
+              <h2>
+                {frontendUpdateStatus
+                  ? `OperaLibre web ${frontendUpdateStatus.currentVersion}`
+                  : "OperaLibre web frontend"}
+              </h2>
+              <p>
+                {updateChecking
+                  ? "Checking for updates…"
+                  : frontendUpdateStatus
+                    ? "The browser interface checks the standalone frontend release package."
+                    : "Frontend update status is temporarily unavailable."}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="quiet-button"
+              disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
+              onClick={() => void refreshUpdate(true)}
+            >
+              {updateChecking
+                ? <LoaderCircle size={14} className="spin-icon" />
+                : <RefreshCcw size={14} />} Check for updates
             </button>
           </section>
         </div>

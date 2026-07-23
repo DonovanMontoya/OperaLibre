@@ -64,6 +64,8 @@ jobs:
 
       - name: Build frontend
         run: npm run build -w @operalibre/web
+        env:
+          OPERALIBRE_VERSION: ${{ env.RELEASE_TAG }}
 
       - name: Stage frontend package
         shell: bash

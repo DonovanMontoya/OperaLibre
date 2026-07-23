@@ -5,6 +5,7 @@ import type {
   AuthUser,
   Book,
   BookMetadataUpdate,
+  BookProgress,
   JobCreated,
   JobStatus,
   LibationAccess,
@@ -18,6 +19,7 @@ import type {
   ServerType,
   SyncMap,
   UpdateInstallStarted,
+  FrontendUpdateStatus,
   UpdateStatus
 } from "./types";
 import {
@@ -29,7 +31,8 @@ import {
   logoutFromJellyfin,
   pingJellyfin,
   reportJellyfinPlaybackStart,
-  saveJellyfinProgress
+  saveJellyfinProgress,
+  setJellyfinBookCompletion
 } from "./jellyfin";
 import { progressTimestamp, serverStorageKey } from "./reliability";
 import {
@@ -40,7 +43,8 @@ import {
   getDemoProgress,
   isDemoMediaPath,
   isDemoMode,
-  saveDemoProgress
+  saveDemoProgress,
+  setDemoBookCompletion
 } from "./demo";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
@@ -491,6 +495,29 @@ export async function installServerUpdate() {
   return request<UpdateInstallStarted>("/api/update/install", { method: "POST" }, 10 * 60_000);
 }
 
+export async function getFrontendUpdateStatus(
+  timeoutMs = 30_000,
+  refresh = false,
+  currentVersion?: string
+) {
+  const query = new URLSearchParams();
+  if (refresh) query.set("refresh", "true");
+  if (currentVersion) query.set("currentVersion", currentVersion);
+  return request<FrontendUpdateStatus>(
+    `/api/frontend-update${query.size ? `?${query.toString()}` : ""}`,
+    undefined,
+    timeoutMs
+  );
+}
+
+export async function installFrontendUpdate() {
+  return request<UpdateInstallStarted>(
+    "/api/frontend-update/install",
+    { method: "POST" },
+    10 * 60_000
+  );
+}
+
 export async function listUsers() {
   return request<AuthUser[]>("/api/users");
 }
@@ -587,6 +614,23 @@ export async function updateBookMetadata(bookId: string, metadata: BookMetadataU
   });
 }
 
+export async function setBookCompletion(book: Book, finished: boolean): Promise<BookProgress> {
+  if (isDemoMode()) {
+    return setDemoBookCompletion(book, finished);
+  }
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      throw new ApiError("Not signed in.", 401);
+    }
+    return setJellyfinBookCompletion(currentApiBase(), token, book, finished);
+  }
+  return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
+    method: "PUT",
+    body: JSON.stringify({ finished })
+  });
+}
+
 export async function rescanLibrary() {
   if (getServerType() === "jellyfin") {
     return getBooks();
@@ -617,7 +661,7 @@ export async function saveProgress(
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
     & Partial<Pick<Progress, "updatedAt">>,
-  options?: { isPaused?: boolean; intentionalRegression?: boolean }
+  options?: { isPaused?: boolean; intentionalRegression?: boolean; intentionalSeek?: boolean }
 ) {
   if (isDemoMode()) return saveDemoProgress(bookId, progress);
   if (getServerType() === "jellyfin") {
@@ -638,7 +682,8 @@ export async function saveProgress(
     body: JSON.stringify({
       ...fields,
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
-      ...(options?.intentionalRegression ? { intentionalRegression: true } : {})
+      ...(options?.intentionalRegression ? { intentionalRegression: true } : {}),
+      ...(options?.intentionalSeek ? { intentionalSeek: true } : {})
     })
   });
 }

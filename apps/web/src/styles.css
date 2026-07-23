@@ -1084,6 +1084,12 @@ img.large-cover {
   transform: translateY(-1px);
 }
 
+.heading-actions .download-btn:disabled {
+  opacity: 0.58;
+  cursor: wait;
+  transform: none;
+}
+
 .download-btn:active {
   transform: translateY(0);
 }

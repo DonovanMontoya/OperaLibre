@@ -162,6 +162,19 @@ fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         .to_string_lossy()
         .parse::<u16>()
         .map_err(|_| "The update server port is invalid.".to_string())?;
+    // Servers older than the --layout argument omit it; those are always
+    // combined installations.
+    let includes_web = match optional_named_update_argument(arguments, "--layout") {
+        None => true,
+        Some(layout) if layout == "combined" => true,
+        Some(layout) if layout == "server-only" => false,
+        Some(layout) => {
+            return Err(format!(
+                "The update layout {} is not supported.",
+                layout.to_string_lossy()
+            ));
+        }
+    };
 
     let package_root = PathBuf::from(package_root);
     let install_root = PathBuf::from(install_root);
@@ -183,20 +196,24 @@ fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let install_web = install_root.join("web");
     let install_version = install_root.join("VERSION.txt");
     move_if_exists(&install_server, &backup_root.join(server_name))?;
-    move_if_exists(&install_web, &backup_root.join("web"))?;
+    if includes_web {
+        move_if_exists(&install_web, &backup_root.join("web"))?;
+    }
     move_if_exists(&install_version, &backup_root.join("VERSION.txt"))?;
 
     let install_result = (|| {
         move_required(&package_root.join(server_name), &install_server)?;
-        move_required(&package_root.join("web"), &install_web)?;
+        if includes_web {
+            move_required(&package_root.join("web"), &install_web)?;
+            refresh_launchers(&package_root, &install_root)?;
+        }
         move_required(&package_root.join("VERSION.txt"), &install_version)?;
-        refresh_launchers(&package_root, &install_root)?;
         set_executable(&install_server)?;
         start_server(&install_root, false)
     })();
 
     if let Err(update_error) = install_result {
-        let rollback_result = rollback_update(&install_root, &backup_root);
+        let rollback_result = rollback_update(&install_root, &backup_root, includes_web);
         return match rollback_result {
             Ok(()) => Err(format!(
                 "The update failed and OperaLibre restored the previous version: {update_error}"
@@ -226,11 +243,18 @@ fn named_update_argument(
     arguments: &[std::ffi::OsString],
     name: &str,
 ) -> Result<std::ffi::OsString, String> {
+    optional_named_update_argument(arguments, name)
+        .ok_or_else(|| format!("The {name} update argument is missing."))
+}
+
+fn optional_named_update_argument(
+    arguments: &[std::ffi::OsString],
+    name: &str,
+) -> Option<std::ffi::OsString> {
     arguments
         .windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
-        .ok_or_else(|| format!("The {name} update argument is missing."))
 }
 
 fn validate_update_paths(package_root: &Path, install_root: &Path) -> Result<(), String> {
@@ -244,7 +268,7 @@ fn validate_update_paths(package_root: &Path, install_root: &Path) -> Result<(),
         return Err("The staged update package is incomplete.".to_string());
     }
     if !install_root.join("data").is_dir() || !install_root.join("server.config").is_file() {
-        return Err("The target is not a managed OperaLibre combined installation.".to_string());
+        return Err("The target is not a managed OperaLibre installation.".to_string());
     }
     Ok(())
 }
@@ -279,6 +303,54 @@ fn process_is_running(pid: u32) -> bool {
         .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
 }
 
+fn process_command_matches(command: &str, expected_executable: &Path) -> bool {
+    let expected = expected_executable.to_string_lossy();
+    let command = command.trim();
+    command == expected
+        || command
+            .strip_prefix(expected.as_ref())
+            .is_some_and(|remainder| remainder.chars().next().is_some_and(char::is_whitespace))
+}
+
+#[cfg(unix)]
+fn process_is_operalibre_server(pid: u32, root: &Path) -> bool {
+    let expected = fs::canonicalize(root.join(server_binary_name()))
+        .unwrap_or_else(|_| root.join(server_binary_name()));
+    #[cfg(target_os = "linux")]
+    if let Ok(actual) = fs::read_link(format!("/proc/{pid}/exe")) {
+        return fs::canonicalize(&actual).unwrap_or(actual) == expected;
+    }
+
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            process_command_matches(&String::from_utf8_lossy(&output.stdout), &expected)
+        })
+}
+
+#[cfg(windows)]
+fn process_is_operalibre_server(pid: u32, root: &Path) -> bool {
+    let expected = fs::canonicalize(root.join(server_binary_name()))
+        .unwrap_or_else(|_| root.join(server_binary_name()));
+    let script =
+        format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').ExecutablePath");
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|actual| {
+            actual
+                .trim()
+                .eq_ignore_ascii_case(expected.to_string_lossy().as_ref())
+        })
+}
+
 fn server_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "operalibre-server.exe"
@@ -307,17 +379,23 @@ fn move_required(source: &Path, destination: &Path) -> Result<(), String> {
     move_if_exists(source, destination)
 }
 
-fn rollback_update(install_root: &Path, backup_root: &Path) -> Result<(), String> {
+fn rollback_update(
+    install_root: &Path,
+    backup_root: &Path,
+    includes_web: bool,
+) -> Result<(), String> {
     let server_name = server_binary_name();
     let _ = stop_server(install_root);
     remove_if_exists(&install_root.join(server_name))?;
-    remove_if_exists(&install_root.join("web"))?;
     remove_if_exists(&install_root.join("VERSION.txt"))?;
     move_required(
         &backup_root.join(server_name),
         &install_root.join(server_name),
     )?;
-    move_required(&backup_root.join("web"), &install_root.join("web"))?;
+    if includes_web {
+        remove_if_exists(&install_root.join("web"))?;
+        move_required(&backup_root.join("web"), &install_root.join("web"))?;
+    }
     move_if_exists(
         &backup_root.join("VERSION.txt"),
         &install_root.join("VERSION.txt"),
@@ -405,6 +483,16 @@ fn stop_server(root: &Path) -> Result<(), String> {
     let pid_number = pid
         .parse::<u32>()
         .map_err(|_| "The saved server process ID is invalid.".to_string())?;
+    if !process_is_running(pid_number) {
+        let _ = fs::remove_file(pid_path);
+        return Ok(());
+    }
+    if !process_is_operalibre_server(pid_number, root) {
+        let _ = fs::remove_file(pid_path);
+        return Err(format!(
+            "The saved process ID {pid} no longer belongs to this OperaLibre installation. No process was stopped."
+        ));
+    }
 
     #[cfg(windows)]
     let status = Command::new("taskkill")
@@ -527,8 +615,18 @@ fn show_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::named_update_argument;
-    use std::ffi::OsString;
+    use super::{named_update_argument, optional_named_update_argument, process_command_matches};
+    use std::{ffi::OsString, path::Path};
+
+    #[test]
+    fn missing_layout_argument_is_optional() {
+        let arguments = [
+            OsString::from("operalibre-updater"),
+            OsString::from("--apply-update"),
+            OsString::from("/tmp/update"),
+        ];
+        assert_eq!(optional_named_update_argument(&arguments, "--layout"), None);
+    }
 
     #[test]
     fn update_arguments_preserve_paths_with_spaces() {
@@ -543,5 +641,26 @@ mod tests {
             named_update_argument(&arguments, "--install-root").unwrap(),
             OsString::from("/Applications/Opera Libre")
         );
+    }
+
+    #[test]
+    fn process_verification_requires_the_exact_server_executable() {
+        let expected = Path::new("/Applications/Opera Libre/operalibre-server");
+        assert!(process_command_matches(
+            "/Applications/Opera Libre/operalibre-server",
+            expected
+        ));
+        assert!(process_command_matches(
+            "/Applications/Opera Libre/operalibre-server --config server.config",
+            expected
+        ));
+        assert!(!process_command_matches(
+            "/Applications/Opera Libre/operalibre-server-helper",
+            expected
+        ));
+        assert!(!process_command_matches(
+            "/usr/bin/python server.py",
+            expected
+        ));
     }
 }

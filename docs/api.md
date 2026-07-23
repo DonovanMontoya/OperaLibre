@@ -37,9 +37,18 @@ The web app obtains a session token via `POST /api/auth/login`. The token is sen
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/update` | Compare the running version with the latest GitHub release. Admin only. Add `?refresh=true` to bypass the 15-minute metadata cache. |
-| `POST` | `/api/update/install` | Download, verify, and stage the platform update, then restart a launcher-managed combined installation. Owner only. |
+| `POST` | `/api/update/install` | Download, verify, and stage the platform update, then restart a release-package installation (combined or server-only). Owner only. |
 
-The status response reports `currentVersion`, `latestVersion`, `updateAvailable`, `canAutoUpdate`, `platform`, release details, and a message when manual installation is required. Automatic installation preserves user data, the audiobook library, and `server.config`; the external launcher performs replacement and rollback after the server exits.
+The status response reports `currentVersion`, `latestVersion`, `updateAvailable`, `canAutoUpdate`, `platform`, release details, and a message when manual installation is required. Automatic installation preserves user data, the audiobook library, and `server.config`; the external updater performs replacement and rollback after the server exits. Combined installations also receive the bundled web app and refreshed launchers; server-only installations (including those pointing `web_dist_dir` at a custom frontend) update just the server binary and leave the frontend untouched.
+
+#### Web frontend updates
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/frontend-update` | Compare the browser frontend with the latest standalone frontend release. Admin only. Add `?refresh=true` to bypass the 15-minute metadata cache and `currentVersion=<semver>` when the frontend is hosted separately. |
+| `POST` | `/api/frontend-update/install` | Download, verify, and install the standalone frontend package without restarting the server. Owner only. |
+
+Frontend installation is available when the server directly serves a versioned web bundle from `web_dist_dir`. The existing bundle is copied to `data/update-backups` before replacement. Separately hosted frontends still report release availability but must be deployed through their hosting provider.
 
 #### User management (admin)
 
@@ -69,6 +78,7 @@ The status response reports `currentVersion`, `latestVersion`, `updateAvailable`
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
+| `PUT` | `/api/books/{book_id}/completion` | Explicitly mark the book finished or unfinished for the current user without changing playback position. Body: `{ "finished": true }`. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. |
 
@@ -101,11 +111,19 @@ Progress updates use JSON with the current track and timing fields:
   "positionSeconds": 123.4,
   "bookPositionSeconds": 456.7,
   "durationSeconds": 36000.0,
-  "updatedAtMs": 1753200000000
+  "updatedAtMs": 1753200000000,
+  "intentionalRegression": false,
+  "intentionalSeek": false
 }
 ```
 
-`updatedAtMs` is the optional client-side epoch-millisecond timestamp of when the position was recorded. When provided, the server rejects writes meaningfully older than the stored copy (returning the stored progress unchanged) so a replayed offline checkpoint or a freshly reinstalled client cannot roll back progress saved more recently from another device. Writes that move a book backwards by a large margin are accepted, but the replaced copy is preserved in `progress.backups.json` next to the progress store.
+`updatedAtMs` is the optional client-side epoch-millisecond timestamp of when the position was recorded. When provided, the server rejects writes meaningfully older than the stored copy (returning the stored progress unchanged) so a replayed offline checkpoint or a freshly reinstalled client cannot roll back progress saved more recently from another device.
+
+`intentionalRegression` (optional, default `false`) marks a deliberate backwards jump — the listener restarting a book, scrubbing, or picking an earlier chapter. Without it, a write within the first 60 seconds of a book that would erase more than 5 minutes of stored progress is refused (the stored copy is returned unchanged): a near-zero write with a fresh timestamp is the signature of a client that failed to restore its position, which the timestamp check cannot catch. Other backwards jumps are accepted, but when large, the replaced copy is preserved in `progress.backups.json` next to the progress store.
+
+`intentionalSeek` (optional, default `false`) marks any user-initiated jump, forward or backward. The checkpoint is still saved, but the position difference is excluded from listening-time and streak statistics.
+
+Progress responses may include `finishedOverride`. `true` or `false` records the reader's explicit completion choice; when absent, completion continues to be inferred from playback position.
 
 #### Libation (optional)
 

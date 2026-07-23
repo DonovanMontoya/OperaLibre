@@ -1,4 +1,5 @@
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
+import { summarizeBookProgress } from "./reliability.ts";
 
 const CLIENT_NAME = "OperaLibre";
 const CLIENT_VERSION = "0.1.0";
@@ -282,7 +283,8 @@ function mapBook(items: JellyfinItem[]): Book | null {
         positionSeconds: allPlayed ? activeTrack.durationSeconds ?? 0 : activePosition,
         bookPositionSeconds: effectivePosition,
         durationSeconds: totalDuration || null,
-        updatedAt: lastPlayedAt
+        updatedAt: lastPlayedAt,
+        finishedOverride: allPlayed ? true : null
       }
     : null;
   progressByBook.set(id, progress);
@@ -330,6 +332,7 @@ function mapBook(items: JellyfinItem[]): Book | null {
     progress: progress
       ? {
           status: allPlayed ? "finished" : "inProgress",
+          finishedOverride: allPlayed ? true : null,
           bookPositionSeconds: effectivePosition,
           durationSeconds: totalDuration || null,
           remainingSeconds: remaining,
@@ -439,10 +442,43 @@ export async function saveJellyfinProgress(
   const saved: Progress = {
     bookId,
     ...progress,
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    finishedOverride: progressByBook.get(bookId)?.finishedOverride ?? null
   };
   progressByBook.set(bookId, saved);
   return saved;
+}
+
+export async function setJellyfinBookCompletion(
+  baseUrl: string,
+  token: string,
+  book: Book,
+  finished: boolean
+) {
+  if (!book.tracks.length) {
+    throw new Error("This book has no playable tracks.");
+  }
+  await Promise.all(book.tracks.map((track) =>
+    jellyfinRequest<unknown>(
+      baseUrl,
+      `/UserPlayedItems/${encodeURIComponent(track.id)}`,
+      token,
+      { method: finished ? "POST" : "DELETE" }
+    )
+  ));
+  const existing = progressByBook.get(book.id);
+  const firstTrack = book.tracks[0];
+  const progress: Progress = {
+    bookId: book.id,
+    trackId: existing?.trackId ?? firstTrack.id,
+    positionSeconds: existing?.positionSeconds ?? 0,
+    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
+    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: existing?.updatedAt ?? new Date().toISOString(),
+    finishedOverride: finished
+  };
+  progressByBook.set(book.id, progress);
+  return summarizeBookProgress(book, progress)!;
 }
 
 export async function reportJellyfinPlaybackStart(

@@ -10,6 +10,8 @@ import {
   resolveBookId,
   resolveProgressLocation,
   serverStorageKey,
+  splitRoundedHours,
+  summarizeBookProgress,
   writeProgressCheckpoint
 } from "../src/reliability.ts";
 import type { Progress } from "../src/types.ts";
@@ -80,17 +82,96 @@ test("the shelf reopens on the newest listen, not the first book in the library"
 test("device books reconcile only with equivalent server books", () => {
   assert.equal(
     deviceBookMatchesServer(
-      { title: "The Odyssey: An Audiobook", trackCount: 4 },
-      { title: "the odyssey—an audiobook", trackCount: 4 }
+      {
+        title: "The Odyssey: An Audiobook",
+        trackCount: 2,
+        durationSeconds: 120,
+        tracks: [
+          { fileName: "01 - Invocation.mp3", durationSeconds: 60 },
+          { fileName: "02 - Ithaca.mp3", durationSeconds: 60 }
+        ]
+      },
+      {
+        title: "the odyssey—an audiobook",
+        trackCount: 2,
+        durationSeconds: 120.4,
+        tracks: [
+          { fileName: "01 Invocation.MP3", durationSeconds: 60.2 },
+          { fileName: "02 Ithaca.mp3", durationSeconds: 60.2 }
+        ]
+      }
     ),
     true
   );
   assert.equal(
     deviceBookMatchesServer(
-      { title: "The Odyssey", trackCount: 1 },
-      { title: "The Odyssey", trackCount: 12 }
+      {
+        title: "The Odyssey",
+        trackCount: 1,
+        durationSeconds: 3600,
+        tracks: [{ fileName: "Odyssey.m4b", durationSeconds: 3600 }]
+      },
+      {
+        title: "The Odyssey",
+        trackCount: 1,
+        durationSeconds: 4200,
+        tracks: [{ fileName: "Odyssey.m4b", durationSeconds: 4200 }]
+      }
     ),
     false
+  );
+});
+
+test("same-title editions do not match when their track identity differs", () => {
+  assert.equal(
+    deviceBookMatchesServer(
+      {
+        title: "Collected Stories",
+        trackCount: 1,
+        durationSeconds: 3600,
+        tracks: [{ fileName: "Edition A.m4b", durationSeconds: 3600 }]
+      },
+      {
+        title: "Collected Stories",
+        trackCount: 1,
+        durationSeconds: 3600,
+        tracks: [{ fileName: "Edition B.m4b", durationSeconds: 3600 }]
+      }
+    ),
+    false
+  );
+});
+
+test("rounded hours carry sixty minutes into the hour", () => {
+  assert.deepEqual(splitRoundedHours(1.999), { whole: "2", minutes: 0 });
+  assert.deepEqual(splitRoundedHours(1.5), { whole: "1", minutes: 30 });
+});
+
+test("manual completion changes status without changing the resume position", () => {
+  const book = {
+    durationSeconds: 60,
+    tracks: [
+      { durationSeconds: 30 },
+      { durationSeconds: 30 }
+    ]
+  };
+  const markedFinished = summarizeBookProgress(
+    book,
+    progress({ bookPositionSeconds: 12, finishedOverride: true })
+  );
+  assert.equal(markedFinished?.status, "finished");
+  assert.equal(markedFinished?.bookPositionSeconds, 12);
+
+  const markedUnfinished = summarizeBookProgress(
+    book,
+    progress({ bookPositionSeconds: 60, finishedOverride: false })
+  );
+  assert.equal(markedUnfinished?.status, "inProgress");
+  assert.equal(markedUnfinished?.bookPositionSeconds, 60);
+
+  assert.equal(
+    summarizeBookProgress(book, progress({ bookPositionSeconds: 60 }))?.status,
+    "finished"
   );
 });
 

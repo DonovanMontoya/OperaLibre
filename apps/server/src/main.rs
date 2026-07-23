@@ -29,6 +29,7 @@ use lofty::{
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, io,
@@ -73,10 +74,12 @@ const MAX_TRACKED_LIBATION_REQUESTS: usize = 1_000;
 // keeps browser buffers supplied through brief scheduler or network jitter,
 // which matters more as playback speed increases.
 const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
+const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 
 #[derive(Clone)]
 struct AppState {
     library_root: PathBuf,
+    library_identities_file: PathBuf,
     progress_file: PathBuf,
     users_file: PathBuf,
     sessions_file: PathBuf,
@@ -377,6 +380,33 @@ struct LibraryState {
     cover_art: HashMap<String, EmbeddedImage>,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryIdentityStore {
+    #[serde(default)]
+    books: Vec<BookIdentity>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookIdentity {
+    fingerprint: String,
+    book_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    tracks: Vec<TrackIdentity>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackIdentity {
+    fingerprint: String,
+    track_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Track {
@@ -436,6 +466,8 @@ struct SyncFile {
 #[serde(rename_all = "camelCase")]
 struct BookProgress {
     status: BookProgressStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_override: Option<bool>,
     book_position_seconds: f64,
     duration_seconds: Option<f64>,
     remaining_seconds: Option<f64>,
@@ -501,6 +533,8 @@ struct Progress {
     book_position_seconds: f64,
     duration_seconds: Option<f64>,
     updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finished_override: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -519,6 +553,15 @@ struct ProgressUpdate {
     /// refuses near-zero writes that would erase substantial progress.
     #[serde(default)]
     intentional_regression: bool,
+    /// Set for either a forward or backward user-initiated seek. Position
+    /// movement from this checkpoint must not be counted as listening time.
+    #[serde(default)]
+    intentional_seek: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionUpdate {
+    finished: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -901,6 +944,13 @@ async fn main() -> anyhow::Result<()> {
         "server configuration loaded"
     );
 
+    // Auto-update eligibility checks compare this marker against the running
+    // process, so record it even when the release launcher did not start us
+    // (server-only packages start via start.sh / start.cmd).
+    if let Err(error) = record_server_pid(&config.data_dir) {
+        tracing::warn!("could not record the server process ID: {error}");
+    }
+
     let users_store = load_users_store(&config.users_file).await?;
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
@@ -923,6 +973,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         library_root: config.library_root.clone(),
+        library_identities_file: config.data_dir.join("library-identities.json"),
         progress_file: config.progress_file.clone(),
         users_file: config.users_file.clone(),
         sessions_file: config.sessions_file.clone(),
@@ -967,6 +1018,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/profile/stats", get(profile_stats))
         .route("/api/update", get(update_status))
         .route("/api/update/install", post(install_update))
+        .route("/api/frontend-update", get(frontend_update_status))
+        .route(
+            "/api/frontend-update/install",
+            post(install_frontend_update),
+        )
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -1026,6 +1082,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/books/{book_id}/progress",
             get(get_progress).put(update_progress),
+        )
+        .route(
+            "/api/books/{book_id}/completion",
+            put(update_book_completion),
         )
         .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
@@ -1092,6 +1152,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(data_dir)?;
+    std::fs::write(
+        data_dir.join("operalibre-server.pid"),
+        std::process::id().to_string(),
+    )
+}
+
 async fn api_not_found() -> ApiError {
     ApiError::not_found("Unknown API route")
 }
@@ -1110,6 +1178,8 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
 struct UpdateStatusQuery {
     #[serde(default)]
     refresh: bool,
+    #[serde(default, rename = "currentVersion")]
+    current_version: Option<String>,
 }
 
 async fn update_status(
@@ -1137,6 +1207,37 @@ async fn install_update(
         .await
         .map(Json)
         .map_err(|error| ApiError::bad_request(format!("Could not install the update: {error}")))
+}
+
+async fn frontend_update_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(query): Query<UpdateStatusQuery>,
+) -> Result<Json<updates::FrontendUpdateStatus>, ApiError> {
+    require_admin(&auth)?;
+    state
+        .update_manager
+        .check_frontend(query.refresh, query.current_version.as_deref())
+        .await
+        .map(Json)
+        .map_err(|error| {
+            ApiError::bad_gateway(format!("Could not check for frontend updates: {error}"))
+        })
+}
+
+async fn install_frontend_update(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
+    require_owner(&auth)?;
+    state
+        .update_manager
+        .install_frontend()
+        .await
+        .map(Json)
+        .map_err(|error| {
+            ApiError::bad_request(format!("Could not install the frontend update: {error}"))
+        })
 }
 
 async fn list_books(
@@ -2253,7 +2354,29 @@ async fn get_reading_file(
             .ok_or(ApiError::not_found("Readalong path not found"))?
     };
 
-    serve_file_response(&file_path, headers, None).await
+    let isolate_html = file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
+        });
+    let mut response = serve_file_response(&file_path, headers, None).await?;
+    if isolate_html {
+        // Companion files come from the audiobook library, not the
+        // application bundle. Keep them inert even when a listener chooses
+        // "Open" and views the document outside the sandboxed inline frame.
+        response.headers_mut().insert(
+            "content-security-policy",
+            HeaderValue::from_static(
+                "sandbox; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:",
+            ),
+        );
+        response.headers_mut().insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+    }
+    Ok(response)
 }
 
 async fn get_sync_map(
@@ -2601,10 +2724,21 @@ async fn update_progress(
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let previous = progress.get(&key).cloned();
-    let previous_position = previous
-        .as_ref()
-        .map(|previous| previous.book_position_seconds)
-        .unwrap_or(0.0);
+    let progress_key_prefix = format!("user:{}:book:", auth.id);
+    let accessible_book_ids = library
+        .books
+        .iter()
+        .filter(|book| can_access_book(&auth, &book.id))
+        .map(|book| book.id.as_str())
+        .collect::<HashSet<_>>();
+    let historical_position_seconds = progress
+        .iter()
+        .filter(|(key, value)| {
+            key.starts_with(&progress_key_prefix)
+                && accessible_book_ids.contains(value.book_id.as_str())
+        })
+        .map(|(_, value)| value.book_position_seconds.max(0.0))
+        .sum::<f64>();
     // Cap client timestamps at the server clock so one device with a
     // future-skewed clock cannot lock every other device out of this book.
     let now_seconds = unix_now_seconds() as f64;
@@ -2629,6 +2763,9 @@ async fn update_progress(
             .max(0.0),
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
         updated_at: format!("{}", incoming_seconds.unwrap_or(now_seconds).round() as u64),
+        finished_override: previous
+            .as_ref()
+            .and_then(|progress| progress.finished_override),
     };
     if let Some(previous) = &previous {
         if progress_write_is_suspect_reset(
@@ -2649,12 +2786,59 @@ async fn update_progress(
     progress.insert(key, saved.clone());
     write_progress(&state.progress_file, &progress).await?;
 
-    let listened_delta = (saved.book_position_seconds - previous_position).max(0.0);
-    if listened_delta > 0.0 && listened_delta < 4.0 * 3600.0 {
-        record_activity(&state, &auth.id, listened_delta).await;
+    let listened_delta =
+        plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
+    if listened_delta > 0.0 {
+        record_activity(
+            &state,
+            &auth.id,
+            listened_delta,
+            historical_position_seconds,
+        )
+        .await;
     }
 
     Ok(Json(saved))
+}
+
+async fn update_book_completion(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+    Json(update): Json<CompletionUpdate>,
+) -> Result<Json<BookProgress>, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let book = state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .find(|candidate| candidate.id == book_id)
+        .cloned()
+        .ok_or(ApiError::not_found("Book not found"))?;
+    let first_track = book
+        .tracks
+        .first()
+        .ok_or(ApiError::bad_request("This book has no playable tracks."))?;
+
+    let _progress_guard = state.progress_write_lock.lock().await;
+    let mut progress = read_progress(&state.progress_file).await?;
+    let key = progress_key(&auth.id, &book.id);
+    let saved = progress.entry(key).or_insert_with(|| Progress {
+        book_id: book.id.clone(),
+        track_id: first_track.id.clone(),
+        position_seconds: 0.0,
+        book_position_seconds: 0.0,
+        duration_seconds: first_track.duration_seconds,
+        updated_at: unix_now_seconds().to_string(),
+        finished_override: None,
+    });
+    saved.finished_override = Some(update.finished);
+    let saved = saved.clone();
+    write_progress(&state.progress_file, &progress).await?;
+
+    Ok(Json(summarize_book_progress(&book, &saved)))
 }
 
 async fn stream_track(
@@ -2692,18 +2876,37 @@ async fn serve_file_response(
 ) -> Result<Response, ApiError> {
     let metadata = fs::metadata(file_path).await?;
     let file_size = metadata.len();
-    if file_size == 0 {
-        return Err(ApiError::range_not_satisfiable(file_size));
-    }
-
     let content_type = mime_guess::from_path(file_path)
         .first_or_octet_stream()
         .to_string();
+    if file_size == 0 {
+        if headers.contains_key(RANGE) {
+            return range_not_satisfiable_response(file_size);
+        }
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .header(ACCEPT_RANGES, "bytes")
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, "0");
+        if let Some(content_disposition) = content_disposition {
+            response =
+                response.header(axum::http::header::CONTENT_DISPOSITION, content_disposition);
+        }
+        return Ok(response.body(Body::empty())?);
+    }
 
-    let requested_range = headers
-        .get(RANGE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| parse_range(value, file_size));
+    let requested_range = match headers.get(RANGE) {
+        None => None,
+        Some(value) => {
+            let Ok(value) = value.to_str() else {
+                return range_not_satisfiable_response(file_size);
+            };
+            let Some(range) = parse_range(value, file_size) else {
+                return range_not_satisfiable_response(file_size);
+            };
+            Some(range)
+        }
+    };
 
     let (status, start, end) = match requested_range {
         Some(range) => (StatusCode::PARTIAL_CONTENT, range.0, range.1),
@@ -2730,6 +2933,14 @@ async fn serve_file_response(
     }
 
     Ok(response.body(body)?)
+}
+
+fn range_not_satisfiable_response(file_size: u64) -> Result<Response, ApiError> {
+    Ok(Response::builder()
+        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+        .header(CONTENT_RANGE, format!("bytes */{file_size}"))
+        .header(CONTENT_LENGTH, "0")
+        .body(Body::empty())?)
 }
 
 async fn download_book(
@@ -3004,9 +3215,159 @@ fn apply_book_metadata_override(book: &mut Book, metadata_override: &BookMetadat
     }
 }
 
+async fn load_library_identities(path: &FsPath) -> anyhow::Result<LibraryIdentityStore> {
+    match fs::read_to_string(path).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(LibraryIdentityStore::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn library_identity_path(root: &FsPath, path: &FsPath) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn remember_identity_path(paths: &mut Vec<String>, path: &str) {
+    const MAX_IDENTITY_PATH_ALIASES: usize = 32;
+    if paths.iter().any(|candidate| candidate == path) {
+        return;
+    }
+    paths.push(path.to_string());
+    if paths.len() > MAX_IDENTITY_PATH_ALIASES {
+        paths.remove(0);
+    }
+}
+
+fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
+    const SAMPLE_BYTES: usize = 64 * 1024;
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut hasher = Sha256::new();
+    hasher.update(size.to_le_bytes());
+
+    let mut sample = vec![0_u8; SAMPLE_BYTES];
+    let first_read = std::io::Read::read(&mut file, &mut sample)?;
+    hasher.update((first_read as u64).to_le_bytes());
+    hasher.update(&sample[..first_read]);
+
+    if size > SAMPLE_BYTES as u64 {
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-(SAMPLE_BYTES as i64)))?;
+        let last_read = std::io::Read::read(&mut file, &mut sample)?;
+        hasher.update((last_read as u64).to_le_bytes());
+        hasher.update(&sample[..last_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn book_identity_fingerprint(track_fingerprints: &[String]) -> String {
+    let mut sorted = track_fingerprints.to_vec();
+    sorted.sort();
+    let mut hasher = Sha256::new();
+    for fingerprint in sorted {
+        hasher.update((fingerprint.len() as u64).to_le_bytes());
+        hasher.update(fingerprint.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+struct LibraryIdentityCandidate<'a> {
+    book_fingerprint: &'a str,
+    group_alias: &'a str,
+    group_key: &'a FsPath,
+    library_root: &'a FsPath,
+    grouped_files: &'a [PathBuf],
+    track_fingerprints: &'a [String],
+}
+
+fn resolve_library_identity(
+    store: &mut LibraryIdentityStore,
+    used_books: &mut HashSet<usize>,
+    candidate: LibraryIdentityCandidate<'_>,
+) -> (String, Vec<String>) {
+    let LibraryIdentityCandidate {
+        book_fingerprint,
+        group_alias,
+        group_key,
+        library_root,
+        grouped_files,
+        track_fingerprints,
+    } = candidate;
+    let identity_index = store
+        .books
+        .iter()
+        .enumerate()
+        .find(|(index, identity)| {
+            !used_books.contains(index) && identity.paths.iter().any(|path| path == group_alias)
+        })
+        .or_else(|| {
+            store.books.iter().enumerate().find(|(index, identity)| {
+                !used_books.contains(index) && identity.fingerprint == book_fingerprint
+            })
+        })
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| {
+            let index = store.books.len();
+            store.books.push(BookIdentity {
+                fingerprint: book_fingerprint.to_string(),
+                book_id: stable_id(&group_key.to_string_lossy()),
+                paths: vec![group_alias.to_string()],
+                tracks: Vec::new(),
+            });
+            index
+        });
+    used_books.insert(identity_index);
+
+    let identity = &mut store.books[identity_index];
+    identity.fingerprint = book_fingerprint.to_string();
+    remember_identity_path(&mut identity.paths, group_alias);
+
+    let mut used_tracks = HashSet::new();
+    let mut track_ids = Vec::with_capacity(grouped_files.len());
+    for (file_path, fingerprint) in grouped_files.iter().zip(track_fingerprints) {
+        let alias = library_identity_path(library_root, file_path);
+        let track_index = identity
+            .tracks
+            .iter()
+            .enumerate()
+            .find(|(index, track)| {
+                !used_tracks.contains(index) && track.paths.iter().any(|path| path == &alias)
+            })
+            .or_else(|| {
+                identity.tracks.iter().enumerate().find(|(index, track)| {
+                    !used_tracks.contains(index) && track.fingerprint == *fingerprint
+                })
+            })
+            .map(|(index, _)| index)
+            .unwrap_or_else(|| {
+                let index = identity.tracks.len();
+                identity.tracks.push(TrackIdentity {
+                    fingerprint: fingerprint.clone(),
+                    track_id: stable_id(&file_path.to_string_lossy()),
+                    paths: vec![alias.clone()],
+                });
+                index
+            });
+        used_tracks.insert(track_index);
+        let track = &mut identity.tracks[track_index];
+        track.fingerprint = fingerprint.clone();
+        remember_identity_path(&mut track.paths, &alias);
+        track_ids.push(track.track_id.clone());
+    }
+
+    (identity.book_id.clone(), track_ids)
+}
+
 async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let files = walk_audio_files(&state.library_root);
     let groups = group_files_into_books(&state.library_root, files);
+    let mut identities = load_library_identities(&state.library_identities_file).await?;
+    let mut used_book_identities = HashSet::new();
     let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
     let mut book_paths = HashMap::new();
@@ -3016,7 +3377,24 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut books = Vec::new();
 
     for (group_key, grouped_files) in groups {
-        let book_id = stable_id(&group_key.to_string_lossy());
+        let track_fingerprints = grouped_files
+            .iter()
+            .map(|path| file_identity_fingerprint(path))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let book_fingerprint = book_identity_fingerprint(&track_fingerprints);
+        let group_alias = library_identity_path(&state.library_root, &group_key);
+        let (book_id, track_ids) = resolve_library_identity(
+            &mut identities,
+            &mut used_book_identities,
+            LibraryIdentityCandidate {
+                book_fingerprint: &book_fingerprint,
+                group_alias: &group_alias,
+                group_key: &group_key,
+                library_root: &state.library_root,
+                grouped_files: &grouped_files,
+                track_fingerprints: &track_fingerprints,
+            },
+        );
         book_paths.insert(book_id.clone(), group_key.clone());
         let metadata = grouped_files
             .iter()
@@ -3027,7 +3405,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .iter()
             .enumerate()
             .map(|(index, file_path)| {
-                let track_id = stable_id(&file_path.to_string_lossy());
+                let track_id = track_ids[index].clone();
                 track_paths.insert(track_id.clone(), file_path.clone());
                 let chapters = metadata[index]
                     .chapters
@@ -3147,6 +3525,10 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         }
         books.push(book);
     }
+
+    write_json_atomic(&state.library_identities_file, &identities)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
 
     let mut library = state.library.write().await;
     library.books = books;
@@ -3990,24 +4372,39 @@ fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
     let percent_complete = duration
         .filter(|duration| *duration > 0.0)
         .map(|duration| ((position / duration) * 100.0).clamp(0.0, 100.0));
-    let status = match (duration, remaining, position) {
-        (Some(duration), Some(remaining), _) if duration > 0.0 && remaining <= 30.0 => {
-            BookProgressStatus::Finished
-        }
-        (Some(duration), _, position) if duration > 0.0 && position / duration >= 0.995 => {
-            BookProgressStatus::Finished
-        }
-        (_, _, position) if position > 0.0 => BookProgressStatus::InProgress,
-        _ => BookProgressStatus::NotStarted,
-    };
+    let status = book_progress_status(duration, remaining, position, enriched.finished_override);
 
     BookProgress {
         status,
+        finished_override: enriched.finished_override,
         book_position_seconds: position,
         duration_seconds: duration,
         remaining_seconds: remaining,
         percent_complete,
         updated_at: enriched.updated_at,
+    }
+}
+
+fn book_progress_status(
+    duration: Option<f64>,
+    remaining: Option<f64>,
+    position: f64,
+    finished_override: Option<bool>,
+) -> BookProgressStatus {
+    match finished_override {
+        Some(true) => BookProgressStatus::Finished,
+        Some(false) if position > 0.0 => BookProgressStatus::InProgress,
+        Some(false) => BookProgressStatus::NotStarted,
+        None => match (duration, remaining, position) {
+            (Some(duration), Some(remaining), _) if duration > 0.0 && remaining <= 30.0 => {
+                BookProgressStatus::Finished
+            }
+            (Some(duration), _, position) if duration > 0.0 && position / duration >= 0.995 => {
+                BookProgressStatus::Finished
+            }
+            (_, _, position) if position > 0.0 => BookProgressStatus::InProgress,
+            _ => BookProgressStatus::NotStarted,
+        },
     }
 }
 
@@ -4080,6 +4477,32 @@ const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
 /// Positions this close to the start of a book are treated as "not started"
 /// when they arrive over substantial stored progress.
 const PROGRESS_NEAR_ZERO_SECONDS: f64 = 60.0;
+
+fn plausible_listened_delta(
+    previous: Option<&Progress>,
+    saved: &Progress,
+    intentional_seek: bool,
+) -> f64 {
+    let Some(previous) = previous else {
+        // A first checkpoint may be a restore from another installation; no
+        // elapsed interval exists from which listening can be inferred.
+        return 0.0;
+    };
+    if intentional_seek {
+        return 0.0;
+    }
+    let position_delta = (saved.book_position_seconds - previous.book_position_seconds).max(0.0);
+    if position_delta <= 0.0 {
+        return 0.0;
+    }
+    let previous_timestamp = previous.updated_at.parse::<f64>().unwrap_or(0.0);
+    let saved_timestamp = saved.updated_at.parse::<f64>().unwrap_or(0.0);
+    let elapsed = (saved_timestamp - previous_timestamp).max(0.0);
+    // OperaLibre tops out at 2x. A small grace window covers rounded
+    // timestamps and progress-save scheduling jitter without allowing a
+    // multi-hour scrub to become activity.
+    position_delta.min(elapsed * 2.1 + 5.0)
+}
 
 fn progress_write_is_stale(stored_updated_at: &str, incoming_seconds: f64) -> bool {
     // Stored stamps are epoch seconds; anything unparsable never blocks a
@@ -4717,16 +5140,36 @@ fn ymd_to_days(ymd: &str) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
-async fn record_activity(state: &AppState, user_id: &str, delta_seconds: f64) {
+fn ensure_activity_baseline(
+    user_activity: &mut BTreeMap<String, f64>,
+    historical_position_seconds: f64,
+) {
+    if user_activity.contains_key(ACTIVITY_BASELINE_KEY) {
+        return;
+    }
+    let recorded_seconds = user_activity
+        .iter()
+        .filter(|(date, _)| date.as_str() != ACTIVITY_BASELINE_KEY)
+        .map(|(_, seconds)| seconds.max(0.0))
+        .sum::<f64>();
+    user_activity.insert(
+        ACTIVITY_BASELINE_KEY.to_string(),
+        (historical_position_seconds - recorded_seconds).max(0.0),
+    );
+}
+
+async fn record_activity(
+    state: &AppState,
+    user_id: &str,
+    delta_seconds: f64,
+    historical_position_seconds: f64,
+) {
     let today = today_ymd_utc();
     let snapshot = {
         let mut activity = state.activity.write().await;
-        let entry = activity
-            .by_user
-            .entry(user_id.to_string())
-            .or_default()
-            .entry(today)
-            .or_insert(0.0);
+        let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
+        ensure_activity_baseline(user_activity, historical_position_seconds);
+        let entry = user_activity.entry(today).or_insert(0.0);
         *entry += delta_seconds;
         ActivityStore {
             by_user: activity.by_user.clone(),
@@ -4810,20 +5253,30 @@ async fn profile_stats(
     let activity = state.activity.read().await;
     let user_activity = activity.by_user.get(&auth.id).cloned().unwrap_or_default();
 
-    let total_seconds_activity: f64 = user_activity.values().sum();
-    let total_hours_read = if total_seconds_activity > 0.0 {
-        total_seconds_activity / 3600.0
+    let activity_baseline = user_activity
+        .get(ACTIVITY_BASELINE_KEY)
+        .copied()
+        .unwrap_or(0.0)
+        .max(0.0);
+    let total_seconds_activity: f64 = user_activity
+        .iter()
+        .filter(|(date, _)| date.as_str() != ACTIVITY_BASELINE_KEY)
+        .map(|(_, seconds)| seconds.max(0.0))
+        .sum();
+    let tracked_total_seconds = activity_baseline + total_seconds_activity;
+    let total_hours_read = if tracked_total_seconds > 0.0 {
+        tracked_total_seconds / 3600.0
     } else {
         hours_from_positions / 3600.0
     };
 
     let days_active = user_activity
-        .values()
-        .filter(|seconds| **seconds > 30.0)
+        .iter()
+        .filter(|(date, seconds)| date.as_str() != ACTIVITY_BASELINE_KEY && **seconds > 30.0)
         .count() as u32;
 
     let avg_daily_minutes = if days_active > 0 {
-        (total_hours_read * 60.0) / days_active as f64
+        (total_seconds_activity / 60.0) / days_active as f64
     } else {
         0.0
     };
@@ -5826,13 +6279,6 @@ impl ApiError {
             message: message.into(),
         }
     }
-
-    fn range_not_satisfiable(file_size: u64) -> Self {
-        Self {
-            status: StatusCode::RANGE_NOT_SATISFIABLE,
-            message: format!("Requested range not satisfiable for {file_size} bytes"),
-        }
-    }
 }
 
 impl IntoResponse for ApiError {
@@ -5885,8 +6331,8 @@ impl From<axum::http::Error> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthUser, HeaderMap, LoginThrottle, Session, bytes_etag, can_access_book,
-        clean_imported_title, if_none_match_matches, is_supported_audio_file,
+        AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
+        can_access_book, clean_imported_title, if_none_match_matches, is_supported_audio_file,
         libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
         progress_write_is_stale, progress_write_is_suspect_reset, sanitize_filename,
         walk_audio_files,
@@ -6111,9 +6557,97 @@ mod tests {
         assert_eq!(parse_range("bytes=abc-def", 1000), None);
     }
 
+    #[tokio::test]
+    async fn invalid_requested_range_returns_416_with_file_size() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audio.mp3");
+        std::fs::write(&path, vec![0_u8; 1000]).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::RANGE,
+            HeaderValue::from_static("bytes=1000-"),
+        );
+
+        let response = super::serve_file_response(&path, headers, None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_RANGE],
+            "bytes */1000"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_file_without_range_returns_empty_200() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("empty.txt");
+        std::fs::write(&path, []).unwrap();
+
+        let response = super::serve_file_response(&path, HeaderMap::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[axum::http::header::CONTENT_LENGTH], "0");
+    }
+
     #[test]
     fn suffix_range_longer_than_file_starts_at_zero() {
         assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn activity_delta_ignores_seeks_and_caps_impossible_movement() {
+        let previous = super::Progress {
+            book_id: "book".to_string(),
+            track_id: "track".to_string(),
+            position_seconds: 100.0,
+            book_position_seconds: 100.0,
+            duration_seconds: Some(1000.0),
+            updated_at: "1000".to_string(),
+            finished_override: None,
+        };
+        let saved = super::Progress {
+            position_seconds: 700.0,
+            book_position_seconds: 700.0,
+            updated_at: "1002".to_string(),
+            ..previous.clone()
+        };
+
+        assert_eq!(
+            super::plausible_listened_delta(Some(&previous), &saved, true),
+            0.0
+        );
+        assert_eq!(
+            super::plausible_listened_delta(Some(&previous), &saved, false),
+            9.2
+        );
+        assert_eq!(super::plausible_listened_delta(None, &saved, false), 0.0);
+    }
+
+    #[test]
+    fn explicit_completion_overrides_position_without_moving_it() {
+        assert!(matches!(
+            super::book_progress_status(Some(1000.0), Some(900.0), 100.0, Some(true)),
+            super::BookProgressStatus::Finished
+        ));
+        assert!(matches!(
+            super::book_progress_status(Some(1000.0), Some(0.0), 1000.0, Some(false)),
+            super::BookProgressStatus::InProgress
+        ));
+        assert!(matches!(
+            super::book_progress_status(Some(1000.0), Some(0.0), 1000.0, None),
+            super::BookProgressStatus::Finished
+        ));
+    }
+
+    #[test]
+    fn activity_baseline_preserves_history_without_double_counting() {
+        let mut activity = std::collections::BTreeMap::from([("2026-07-23".to_string(), 600.0)]);
+        super::ensure_activity_baseline(&mut activity, 3_600.0);
+        assert_eq!(activity[super::ACTIVITY_BASELINE_KEY], 3_000.0);
+        super::ensure_activity_baseline(&mut activity, 7_200.0);
+        assert_eq!(activity[super::ACTIVITY_BASELINE_KEY], 3_000.0);
     }
 
     #[test]
@@ -6284,6 +6818,7 @@ exit 0
 
         let state = super::AppState {
             library_root: library_root.clone(),
+            library_identities_file: data_dir.join("library-identities.json"),
             progress_file: data_dir.join("progress.json"),
             users_file: data_dir.join("users.json"),
             sessions_file: data_dir.join("sessions.json"),
@@ -6409,9 +6944,16 @@ exit 0
     async fn only_an_owner_can_start_a_server_update() {
         let root = tempfile::tempdir().unwrap();
         let (state, _) = fake_libation_state(root.path());
-        let denied = super::install_update(super::State(state), super::Extension(admin_user()))
-            .await
-            .unwrap_err();
+        let denied =
+            super::install_update(super::State(state.clone()), super::Extension(admin_user()))
+                .await
+                .unwrap_err();
+        assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
+
+        let denied =
+            super::install_frontend_update(super::State(state), super::Extension(admin_user()))
+                .await
+                .unwrap_err();
         assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
     }
 
@@ -6809,5 +7351,55 @@ exit 0
         };
         assert!(!session.is_expired(1_000 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
         assert!(session.is_expired(1_001 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
+    }
+
+    #[test]
+    fn library_identity_survives_folder_and_track_renames() {
+        let root = tempfile::tempdir().unwrap();
+        let first_folder = root.path().join("Old Book Name");
+        std::fs::create_dir_all(&first_folder).unwrap();
+        let first_track = first_folder.join("01 old name.mp3");
+        std::fs::write(&first_track, b"stable audiobook bytes").unwrap();
+
+        let fingerprint = super::file_identity_fingerprint(&first_track).unwrap();
+        let book_fingerprint = super::book_identity_fingerprint(std::slice::from_ref(&fingerprint));
+        let mut identities = super::LibraryIdentityStore::default();
+        let mut used = std::collections::HashSet::new();
+        let (first_book_id, first_track_ids) = super::resolve_library_identity(
+            &mut identities,
+            &mut used,
+            super::LibraryIdentityCandidate {
+                book_fingerprint: &book_fingerprint,
+                group_alias: "Old Book Name",
+                group_key: &first_folder,
+                library_root: root.path(),
+                grouped_files: std::slice::from_ref(&first_track),
+                track_fingerprints: std::slice::from_ref(&fingerprint),
+            },
+        );
+
+        let second_folder = root.path().join("New Book Name");
+        std::fs::rename(&first_folder, &second_folder).unwrap();
+        let renamed_track = second_folder.join("01 new name.mp3");
+        std::fs::rename(second_folder.join("01 old name.mp3"), &renamed_track).unwrap();
+        let renamed_fingerprint = super::file_identity_fingerprint(&renamed_track).unwrap();
+        let renamed_book_fingerprint =
+            super::book_identity_fingerprint(std::slice::from_ref(&renamed_fingerprint));
+        let mut used = std::collections::HashSet::new();
+        let (second_book_id, second_track_ids) = super::resolve_library_identity(
+            &mut identities,
+            &mut used,
+            super::LibraryIdentityCandidate {
+                book_fingerprint: &renamed_book_fingerprint,
+                group_alias: "New Book Name",
+                group_key: &second_folder,
+                library_root: root.path(),
+                grouped_files: std::slice::from_ref(&renamed_track),
+                track_fingerprints: std::slice::from_ref(&renamed_fingerprint),
+            },
+        );
+
+        assert_eq!(second_book_id, first_book_id);
+        assert_eq!(second_track_ids, first_track_ids);
     }
 }

@@ -136,6 +136,8 @@ OperaLibre checks the latest GitHub release when an administrator opens **Admini
 
 Automatic install is available when OperaLibre is running from a combined release package and was started with its included Open action. It preserves `data`, `audiobooks`, and `server.config`. The prior server and web files remain under `data/update-backups` for rollback; if the new server cannot start, the launcher restores and starts the previous version automatically.
 
+The browser frontend is tracked separately. When a newer standalone frontend package is available, an owner can choose **Update frontend** to verify and replace only the served web files. The server and playback keep running, the previous frontend is copied to `data/update-backups`, and the Administration page reloads into the new bundle.
+
 Custom deployments, server-only packages, and system services still show the available version and release-notes link, but must be updated manually:
 
 1. Stop OperaLibre.

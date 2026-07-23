@@ -1,4 +1,4 @@
-import type { Progress } from "./types";
+import type { BookProgress, Progress } from "./types";
 
 const PROGRESS_CHECKPOINT_PREFIX = "operalibre.progressCheckpoint.v1";
 
@@ -37,7 +37,12 @@ function isProgress(value: unknown): value is Progress {
     && Number.isFinite(progress.positionSeconds)
     && Number.isFinite(progress.bookPositionSeconds)
     && (progress.durationSeconds === null || Number.isFinite(progress.durationSeconds))
-    && typeof progress.updatedAt === "string";
+    && typeof progress.updatedAt === "string"
+    && (
+      progress.finishedOverride === undefined
+      || progress.finishedOverride === null
+      || typeof progress.finishedOverride === "boolean"
+    );
 }
 
 /**
@@ -199,14 +204,119 @@ export function resolveProgressLocation(
   return { trackId: tracks[0].id, positionSeconds: 0 };
 }
 
+export function summarizeBookProgress(
+  book: {
+    durationSeconds: number | null;
+    tracks: Array<{ durationSeconds: number | null }>;
+  },
+  progress: Progress | null
+): BookProgress | null {
+  if (!progress) return null;
+  const trackDuration = book.tracks.reduce(
+    (total, track) => total + Math.max(0, track.durationSeconds ?? 0),
+    0
+  );
+  const duration = book.durationSeconds ?? (trackDuration > 0 ? trackDuration : null);
+  const position = duration !== null
+    ? Math.min(duration, Math.max(0, progress.bookPositionSeconds))
+    : Math.max(0, progress.bookPositionSeconds);
+  const remaining = duration !== null ? Math.max(0, duration - position) : null;
+  const percent = duration !== null && duration > 0
+    ? Math.min(100, Math.max(0, (position / duration) * 100))
+    : null;
+  const inferredFinished =
+    duration !== null
+    && duration > 0
+    && (remaining! <= 30 || percent! >= 99.5);
+  const status =
+    progress.finishedOverride === true
+      ? "finished"
+      : progress.finishedOverride === false
+        ? position > 0 ? "inProgress" : "notStarted"
+        : inferredFinished
+          ? "finished"
+          : position > 0 ? "inProgress" : "notStarted";
+  return {
+    status,
+    finishedOverride: progress.finishedOverride ?? null,
+    bookPositionSeconds: position,
+    durationSeconds: duration,
+    remainingSeconds: remaining,
+    percentComplete: percent,
+    updatedAt: progress.updatedAt
+  };
+}
+
 export function normalizedBookTitle(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function normalizedTrackName(value: string): string {
+  return value
+    .replace(/\.[^.]+$/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function durationsMatch(left: number | null, right: number | null): boolean {
+  if (!Number.isFinite(left) || !Number.isFinite(right) || left === null || right === null) {
+    return false;
+  }
+  const tolerance = Math.max(2, Math.max(left, right) * 0.005);
+  return Math.abs(left - right) <= tolerance;
+}
+
 export function deviceBookMatchesServer(
-  device: { title: string; trackCount: number },
-  server: { title: string; trackCount: number }
+  device: {
+    title: string;
+    trackCount: number;
+    durationSeconds?: number | null;
+    asin?: string | null;
+    tracks?: Array<{ fileName: string; durationSeconds: number | null }>;
+  },
+  server: {
+    title: string;
+    trackCount: number;
+    durationSeconds?: number | null;
+    asin?: string | null;
+    tracks?: Array<{ fileName: string; durationSeconds: number | null }>;
+  }
 ): boolean {
-  return normalizedBookTitle(device.title) === normalizedBookTitle(server.title)
-    && device.trackCount === server.trackCount;
+  const deviceAsin = device.asin?.trim().toUpperCase();
+  const serverAsin = server.asin?.trim().toUpperCase();
+  if (deviceAsin && serverAsin) {
+    return deviceAsin === serverAsin;
+  }
+  if (
+    normalizedBookTitle(device.title) !== normalizedBookTitle(server.title)
+    || device.trackCount !== server.trackCount
+    || !durationsMatch(device.durationSeconds ?? null, server.durationSeconds ?? null)
+  ) {
+    return false;
+  }
+  if (
+    !device.tracks
+    || !server.tracks
+    || device.tracks.length !== device.trackCount
+    || server.tracks.length !== server.trackCount
+  ) {
+    return false;
+  }
+  return device.tracks.every((track, index) => {
+    const serverTrack = server.tracks![index];
+    return normalizedTrackName(track.fileName) === normalizedTrackName(serverTrack.fileName)
+      && durationsMatch(track.durationSeconds, serverTrack.durationSeconds);
+  });
+}
+
+export function splitRoundedHours(hours: number) {
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return { whole: "0", minutes: 0 };
+  }
+  const totalMinutes = Math.round(hours * 60);
+  return {
+    whole: Math.floor(totalMinutes / 60).toString(),
+    minutes: totalMinutes % 60
+  };
 }

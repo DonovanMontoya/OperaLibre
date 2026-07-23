@@ -20,7 +20,7 @@ Produces:
 | Server binary | `apps/server/target/release/operalibre-server` |
 | Web bundle | `apps/web/dist/` |
 
-The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest, and assets. It can be served by the Rust server, a reverse proxy, or any static host that points API calls back at the server.
+The web bundle is plain static files — `index.html`, JS, CSS, the PWA manifest, assets, and a `VERSION.txt` marker. It can be served by the Rust server, a reverse proxy, or any static host that points API calls back at the server.
 
 You can also omit the bundled web app and run OperaLibre as a headless API/media server for a custom frontend. In that setup, keep the server binary, `server.config`, `data/`, and your audiobook library on the machine that performs scanning and streaming. The custom frontend only needs network access to the server API.
 
@@ -35,6 +35,8 @@ You can also omit the bundled web app and run OperaLibre as a headless API/media
 ```
 
 After building, create that layout by copying the release binary and the *contents* of `apps/web/dist/` into `web/`. Keep `server.config` and `data/` outside the source checkout so updates do not touch your accounts or progress.
+
+When the Rust server serves this versioned `web/` directory directly, an owner can install verified frontend-only updates from Administration without restarting the server. OperaLibre saves the prior bundle under `data/update-backups`. Frontends deployed to a separate static host must still be updated through that host.
 
 Start with:
 
@@ -186,7 +188,7 @@ In Xcode, select your development team and an attached iPhone, then press Run. F
 
 ## Backups
 
-Back up `data_dir` (default `./data/`). That covers user accounts and per-reader progress. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
+Back up `data_dir` (default `./data/`). That covers user accounts, per-reader progress, and the durable identity map that keeps books connected to their history when library folders are moved or renamed. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
 
 ## Updating
 

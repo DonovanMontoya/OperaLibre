@@ -1,6 +1,7 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, mediaUrl } from "./api";
+import { splitRoundedHours } from "./reliability";
 import type { AuthUser, ProfileRecentBook, ProfileStats, StreakDay } from "./types";
 
 type ProfilePageProps = {
@@ -8,15 +9,6 @@ type ProfilePageProps = {
   onClose: () => void;
   onOpenBook: (bookId: string) => void;
 };
-
-function formatHours(hours: number) {
-  if (!Number.isFinite(hours) || hours <= 0) {
-    return { whole: "0", minutes: 0 };
-  }
-  const whole = Math.floor(hours);
-  const minutes = Math.round((hours - whole) * 60);
-  return { whole: whole.toString(), minutes };
-}
 
 function relativeTime(value: string | null) {
   if (!value) return null;
@@ -82,7 +74,7 @@ export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
 
   const joined = joinDate(user.createdAt);
   const lastSeen = stats ? relativeTime(stats.lastListenedAt) : null;
-  const hours = stats ? formatHours(stats.totalHoursRead) : { whole: "0", minutes: 0 };
+  const hours = stats ? splitRoundedHours(stats.totalHoursRead) : { whole: "0", minutes: 0 };
 
   return (
     <main className="profile-shell" onClick={onClose}>

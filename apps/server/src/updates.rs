@@ -12,7 +12,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{fs, process::Command, sync::Mutex};
 
@@ -27,6 +27,7 @@ const RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/DonovanMontoya/OperaLibre/releases/download/";
 const RELEASE_PAGE_PREFIX: &str = "https://github.com/DonovanMontoya/OperaLibre/releases/";
 const MAX_UPDATE_PACKAGE_BYTES: u64 = 250 * 1024 * 1024;
+const MAX_FRONTEND_PACKAGE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_UPDATE_EXTRACTED_BYTES: u64 = 750 * 1024 * 1024;
 const UPDATE_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
@@ -41,12 +42,19 @@ pub struct UpdateManager {
     port: u16,
     client: Client,
     cache: Arc<Mutex<Option<CachedUpdateStatus>>>,
+    frontend_cache: Arc<Mutex<Option<CachedFrontendUpdateStatus>>>,
     installing: Arc<AtomicBool>,
 }
 
 struct CachedUpdateStatus {
     checked_at: Instant,
     status: UpdateStatus,
+}
+
+struct CachedFrontendUpdateStatus {
+    checked_at: Instant,
+    reported_current_version: Option<String>,
+    status: FrontendUpdateStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +78,19 @@ pub struct UpdateInstallStarted {
     pub restarting: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendUpdateStatus {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub can_auto_update: bool,
+    pub release_url: String,
+    pub published_at: Option<String>,
+    pub notes: Option<String>,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -85,6 +106,26 @@ struct GithubReleaseAsset {
     browser_download_url: String,
     size: u64,
     digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallLayout {
+    Combined,
+    ServerOnly,
+}
+
+impl InstallLayout {
+    fn as_updater_arg(self) -> &'static str {
+        match self {
+            InstallLayout::Combined => "combined",
+            InstallLayout::ServerOnly => "server-only",
+        }
+    }
+}
+
+struct ManagedInstall {
+    root: PathBuf,
+    layout: InstallLayout,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +152,7 @@ impl UpdateManager {
             port,
             client,
             cache: Arc::new(Mutex::new(None)),
+            frontend_cache: Arc::new(Mutex::new(None)),
             installing: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -145,6 +187,42 @@ impl UpdateManager {
         result
     }
 
+    pub async fn check_frontend(
+        &self,
+        force: bool,
+        reported_current_version: Option<&str>,
+    ) -> anyhow::Result<FrontendUpdateStatus> {
+        let reported_current_version = reported_current_version.map(normalize_version);
+        if !force {
+            let cache = self.frontend_cache.lock().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.checked_at.elapsed() < UPDATE_CACHE_TTL
+                && cached.reported_current_version == reported_current_version
+            {
+                return Ok(cached.status.clone());
+            }
+        }
+
+        let release = self.fetch_latest_release().await?;
+        let status =
+            self.frontend_status_for_release(&release, reported_current_version.as_deref())?;
+        *self.frontend_cache.lock().await = Some(CachedFrontendUpdateStatus {
+            checked_at: Instant::now(),
+            reported_current_version,
+            status: status.clone(),
+        });
+        Ok(status)
+    }
+
+    pub async fn install_frontend(&self) -> anyhow::Result<UpdateInstallStarted> {
+        if self.installing.swap(true, Ordering::SeqCst) {
+            bail!("An OperaLibre update is already being installed.");
+        }
+        let result = self.install_frontend_inner().await;
+        self.installing.store(false, Ordering::SeqCst);
+        result
+    }
+
     async fn install_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
         let release = self.fetch_latest_release().await?;
         let status = self.status_for_release(&release)?;
@@ -166,7 +244,7 @@ impl UpdateManager {
         let (asset, expected_digest) =
             validated_update_asset(&release, &status.latest_version, platform)?;
 
-        let install_root = managed_install_root(&self.data_dir, self.web_dist_dir.as_deref())?;
+        let install = managed_install(&self.data_dir, self.web_dist_dir.as_deref())?;
         let staging_dir = self
             .data_dir
             .join("updates")
@@ -178,43 +256,14 @@ impl UpdateManager {
         }
         fs::create_dir_all(&staging_dir).await?;
 
-        let mut response = self
-            .client
-            .get(&asset.browser_download_url)
-            .timeout(Duration::from_secs(10 * 60))
-            .send()
-            .await?
-            .error_for_status()?;
-        if response
-            .content_length()
-            .is_some_and(|content_length| content_length != asset.size)
-        {
-            bail!("The downloaded update package size did not match the release metadata.");
-        }
-
-        let archive_path = staging_dir.join("update.zip");
-        let mut archive = fs::File::create(&archive_path).await?;
-        let mut digest = Sha256::new();
-        let mut downloaded = 0_u64;
-        while let Some(chunk) = response.chunk().await? {
-            downloaded = downloaded
-                .checked_add(chunk.len() as u64)
-                .ok_or_else(|| anyhow!("The downloaded update package is too large."))?;
-            if downloaded > MAX_UPDATE_PACKAGE_BYTES || downloaded > asset.size {
-                bail!("The downloaded update package is larger than the release metadata.");
-            }
-            digest.update(&chunk);
-            tokio::io::AsyncWriteExt::write_all(&mut archive, &chunk).await?;
-        }
-        tokio::io::AsyncWriteExt::flush(&mut archive).await?;
-        drop(archive);
-        if downloaded != asset.size {
-            bail!("The downloaded update package size did not match the release metadata.");
-        }
-        let actual_digest = format!("{:x}", digest.finalize());
-        if !actual_digest.eq_ignore_ascii_case(expected_digest) {
-            bail!("The downloaded update package failed SHA-256 verification.");
-        }
+        let archive_path = self
+            .download_verified_asset(
+                asset,
+                expected_digest,
+                &staging_dir,
+                MAX_UPDATE_PACKAGE_BYTES,
+            )
+            .await?;
 
         let extract_dir = staging_dir.join("extracted");
         extract_zip(archive_path, extract_dir.clone()).await?;
@@ -243,7 +292,9 @@ impl UpdateManager {
             .arg("--apply-update")
             .arg(&package_root)
             .arg("--install-root")
-            .arg(&install_root)
+            .arg(&install.root)
+            .arg("--layout")
+            .arg(install.layout.as_updater_arg())
             .arg("--server-pid")
             .arg(std::process::id().to_string())
             .arg("--port")
@@ -265,6 +316,112 @@ impl UpdateManager {
             version: status.latest_version,
             restarting: true,
         })
+    }
+
+    async fn install_frontend_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
+        let release = self.fetch_latest_release().await?;
+        let status = self.frontend_status_for_release(&release, None)?;
+        if !status.update_available {
+            bail!("The web frontend is already up to date.");
+        }
+        if !status.can_auto_update {
+            bail!(
+                "{}",
+                status.message.unwrap_or_else(|| {
+                    "This web frontend installation must be updated manually.".to_string()
+                })
+            );
+        }
+        let (asset, expected_digest) = validated_frontend_asset(&release, &status.latest_version)?;
+        let web_dist_dir = managed_frontend_dir(self.web_dist_dir.as_deref())?;
+        let staging_dir = self
+            .data_dir
+            .join("updates")
+            .join(format!("frontend-staging-{}", status.latest_version));
+        match fs::remove_dir_all(&staging_dir).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::create_dir_all(&staging_dir).await?;
+
+        let archive_path = self
+            .download_verified_asset(
+                asset,
+                expected_digest,
+                &staging_dir,
+                MAX_FRONTEND_PACKAGE_BYTES,
+            )
+            .await?;
+        let extract_dir = staging_dir.join("extracted");
+        extract_zip(archive_path, extract_dir.clone()).await?;
+        let package_root =
+            extract_dir.join(format!("operalibre-{}-frontend", status.latest_version));
+        validate_frontend_package(&package_root, &status.latest_version).await?;
+        fs::write(
+            package_root.join("web/VERSION.txt"),
+            format!("{}\n", status.latest_version),
+        )
+        .await?;
+        install_frontend_files(
+            package_root.join("web"),
+            web_dist_dir,
+            self.data_dir.clone(),
+        )
+        .await?;
+        *self.frontend_cache.lock().await = None;
+
+        Ok(UpdateInstallStarted {
+            version: status.latest_version,
+            restarting: false,
+        })
+    }
+
+    async fn download_verified_asset(
+        &self,
+        asset: &GithubReleaseAsset,
+        expected_digest: &str,
+        staging_dir: &Path,
+        maximum_bytes: u64,
+    ) -> anyhow::Result<PathBuf> {
+        let mut response = self
+            .client
+            .get(&asset.browser_download_url)
+            .timeout(Duration::from_secs(10 * 60))
+            .send()
+            .await?
+            .error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|content_length| content_length != asset.size)
+        {
+            bail!("The downloaded update package size did not match the release metadata.");
+        }
+
+        let archive_path = staging_dir.join("update.zip");
+        let mut archive = fs::File::create(&archive_path).await?;
+        let mut digest = Sha256::new();
+        let mut downloaded = 0_u64;
+        while let Some(chunk) = response.chunk().await? {
+            downloaded = downloaded
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| anyhow!("The downloaded update package is too large."))?;
+            if downloaded > maximum_bytes || downloaded > asset.size {
+                bail!("The downloaded update package is larger than the release metadata.");
+            }
+            digest.update(&chunk);
+            tokio::io::AsyncWriteExt::write_all(&mut archive, &chunk).await?;
+        }
+        tokio::io::AsyncWriteExt::flush(&mut archive).await?;
+        drop(archive);
+        if downloaded != asset.size {
+            bail!("The downloaded update package size did not match the release metadata.");
+        }
+        let actual_digest = format!("{:x}", digest.finalize());
+        if !actual_digest.eq_ignore_ascii_case(expected_digest) {
+            bail!("The downloaded update package failed SHA-256 verification.");
+        }
+        Ok(archive_path)
     }
 
     async fn fetch_latest_release(&self) -> anyhow::Result<GithubRelease> {
@@ -292,7 +449,7 @@ impl UpdateManager {
         let package_available = platform.as_deref().is_some_and(|platform| {
             validated_update_asset(release, &latest_text, platform).is_ok()
         });
-        let capability = managed_install_root(&self.data_dir, self.web_dist_dir.as_deref());
+        let capability = managed_install(&self.data_dir, self.web_dist_dir.as_deref());
         let can_auto_update = package_available && capability.is_ok();
         let message = if !package_available {
             Some("No automatic update package is available for this server platform.".to_string())
@@ -305,6 +462,54 @@ impl UpdateManager {
             update_available: latest > current,
             can_auto_update,
             platform,
+            release_url: release.html_url.clone(),
+            published_at: release.published_at.clone(),
+            notes: release.body.as_deref().map(truncate_notes),
+            message,
+        })
+    }
+
+    fn frontend_status_for_release(
+        &self,
+        release: &GithubRelease,
+        reported_current_version: Option<&str>,
+    ) -> anyhow::Result<FrontendUpdateStatus> {
+        if !release.html_url.starts_with(RELEASE_PAGE_PREFIX) {
+            bail!("GitHub returned an untrusted release URL.");
+        }
+        let installed_version = installed_frontend_version(self.web_dist_dir.as_deref());
+        let installed_current = installed_version.as_ref().ok().cloned();
+        let current_text = reported_current_version
+            .map(normalize_version)
+            .or(installed_current)
+            .unwrap_or_else(current_version);
+        let current =
+            Version::parse(&current_text).context("Invalid installed frontend version")?;
+        let latest_text = normalize_version(&release.tag_name);
+        let latest = Version::parse(&latest_text).context("Invalid release version")?;
+        let package_available = validated_frontend_asset(release, &latest_text).is_ok();
+        let capability = installed_version.and_then(|installed_version| {
+            if reported_current_version
+                .map(normalize_version)
+                .is_some_and(|reported| reported != installed_version)
+            {
+                bail!(
+                    "This browser frontend is not served by this OperaLibre server and must be updated through its hosting provider."
+                );
+            }
+            Ok(())
+        });
+        let can_auto_update = package_available && capability.is_ok();
+        let message = if !package_available {
+            Some("No automatic web frontend package is available for this release.".to_string())
+        } else {
+            capability.err().map(|error| error.to_string())
+        };
+        Ok(FrontendUpdateStatus {
+            current_version: current.to_string(),
+            latest_version: latest.to_string(),
+            update_available: latest > current,
+            can_auto_update,
             release_url: release.html_url.clone(),
             published_at: release.published_at.clone(),
             notes: release.body.as_deref().map(truncate_notes),
@@ -337,6 +542,34 @@ fn validated_update_asset<'a>(
     Ok((asset, digest))
 }
 
+fn validated_frontend_asset<'a>(
+    release: &'a GithubRelease,
+    version: &str,
+) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
+    let name = format!("operalibre-{version}-frontend.zip");
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
+    let digest = asset
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| anyhow!("The frontend package has no valid SHA-256 digest."))?;
+    if asset.size == 0 || asset.size > MAX_FRONTEND_PACKAGE_BYTES {
+        bail!("The frontend package has an invalid size.");
+    }
+    if !asset
+        .browser_download_url
+        .starts_with(RELEASE_DOWNLOAD_PREFIX)
+    {
+        bail!("The frontend package has an untrusted download URL.");
+    }
+    Ok((asset, digest))
+}
+
 fn find_update_asset<'a>(
     release: &'a GithubRelease,
     version: &str,
@@ -350,7 +583,42 @@ fn find_update_asset<'a>(
         .ok_or_else(|| anyhow!("Release asset {name} was not found."))
 }
 
-fn managed_install_root(data_dir: &Path, web_dist_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
+fn managed_frontend_dir(web_dist_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let web_dist_dir =
+        web_dist_dir.ok_or_else(|| anyhow!("This server does not serve the web frontend."))?;
+    if !web_dist_dir.join("index.html").is_file() {
+        bail!("The configured web frontend has no index.html.");
+    }
+    let parent = web_dist_dir
+        .parent()
+        .ok_or_else(|| anyhow!("The configured web frontend has no parent folder."))?;
+    if !parent.is_dir() {
+        bail!("The configured web frontend parent folder does not exist.");
+    }
+    canonical_or_absolute(web_dist_dir)
+}
+
+fn installed_frontend_version(web_dist_dir: Option<&Path>) -> anyhow::Result<String> {
+    let web_dist_dir = managed_frontend_dir(web_dist_dir)?;
+    let direct_marker = web_dist_dir.join("VERSION.txt");
+    let marker = if direct_marker.is_file() {
+        direct_marker
+    } else {
+        let parent_marker = web_dist_dir
+            .parent()
+            .ok_or_else(|| anyhow!("The configured web frontend has no parent folder."))?
+            .join("VERSION.txt");
+        if !parent_marker.is_file() {
+            bail!("The installed web frontend has no VERSION.txt marker.");
+        }
+        parent_marker
+    };
+    let version = normalize_version(&std::fs::read_to_string(marker)?);
+    Version::parse(&version).context("The installed web frontend version is invalid")?;
+    Ok(version)
+}
+
+fn managed_install(data_dir: &Path, web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
     let executable = std::env::current_exe()?;
     let root = executable
         .parent()
@@ -358,24 +626,30 @@ fn managed_install_root(data_dir: &Path, web_dist_dir: Option<&Path>) -> anyhow:
         .to_path_buf();
     let version_file = root.join("VERSION.txt");
     if !version_file.is_file() {
-        bail!("Automatic install is available for combined release packages only.");
+        bail!("Automatic install is available for OperaLibre release packages only.");
     }
     let installed_version = std::fs::read_to_string(&version_file)?.trim().to_string();
     if normalize_version(&installed_version) != current_version() {
         bail!("VERSION.txt does not match the running server version.");
     }
-    let expected_web = root.join("web");
-    let configured_web = web_dist_dir
-        .ok_or_else(|| anyhow!("This server does not use the bundled web application."))?;
-    if canonical_or_absolute(configured_web)? != canonical_or_absolute(&expected_web)? {
-        bail!("The configured web application is outside the managed release package.");
-    }
+    let layout = install_layout(&root, web_dist_dir)?;
     let pid = std::fs::read_to_string(data_dir.join("operalibre-server.pid"))
-        .context("The server was not started by the OperaLibre release launcher")?;
+        .context("The server has not recorded its process ID yet")?;
     if pid.trim() != std::process::id().to_string() {
-        bail!("The server was not started by the OperaLibre release launcher.");
+        bail!("The recorded server process ID does not match this server.");
     }
-    Ok(root)
+    Ok(ManagedInstall { root, layout })
+}
+
+fn install_layout(root: &Path, web_dist_dir: Option<&Path>) -> anyhow::Result<InstallLayout> {
+    let Some(configured_web) = web_dist_dir else {
+        return Ok(InstallLayout::ServerOnly);
+    };
+    if canonical_or_absolute(configured_web)? == canonical_or_absolute(&root.join("web"))? {
+        Ok(InstallLayout::Combined)
+    } else {
+        Ok(InstallLayout::ServerOnly)
+    }
 }
 
 fn canonical_or_absolute(path: &Path) -> anyhow::Result<PathBuf> {
@@ -414,6 +688,99 @@ async fn validate_update_package(root: &Path, version: &str, platform: &str) -> 
         || !root.join("VERSION.txt").is_file()
     {
         bail!("The update package is incomplete.");
+    }
+    Ok(())
+}
+
+async fn validate_frontend_package(root: &Path, version: &str) -> anyhow::Result<()> {
+    let packaged_version = normalize_version(
+        &fs::read_to_string(root.join("VERSION.txt"))
+            .await
+            .context("The frontend package has no VERSION.txt marker.")?,
+    );
+    if packaged_version != version {
+        bail!("The frontend package version does not match this release.");
+    }
+    if !root.join("web/index.html").is_file() {
+        bail!("The frontend package is incomplete.");
+    }
+    Ok(())
+}
+
+async fn install_frontend_files(
+    source: PathBuf,
+    destination: PathBuf,
+    data_dir: PathBuf,
+) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Could not create a frontend update timestamp")?
+            .as_millis();
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow!("The configured web frontend has no parent folder."))?;
+        let staged = parent.join(format!(
+            ".operalibre-frontend-staged-{}-{timestamp}",
+            std::process::id()
+        ));
+        let rollback = parent.join(format!(
+            ".operalibre-frontend-rollback-{}-{timestamp}",
+            std::process::id()
+        ));
+        let backup = data_dir
+            .join("update-backups")
+            .join(format!("{timestamp}-frontend"))
+            .join("web");
+
+        copy_directory(&destination, &backup)
+            .context("Could not create the frontend rollback copy")?;
+        if let Err(error) = copy_directory(&source, &staged) {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(error).context("Could not stage the new web frontend");
+        }
+        std::fs::rename(&destination, &rollback)
+            .context("Could not move the installed web frontend aside")?;
+        if let Err(error) = std::fs::rename(&staged, &destination) {
+            let rollback_result = std::fs::rename(&rollback, &destination);
+            return match rollback_result {
+                Ok(()) => Err(error).context(
+                    "Could not install the web frontend; the previous version was restored",
+                ),
+                Err(rollback_error) => Err(anyhow!(
+                    "Could not install the web frontend ({error}) and could not restore the previous version ({rollback_error}). The rollback copy remains at {}.",
+                    backup.display()
+                )),
+            };
+        }
+        if let Err(error) = std::fs::remove_dir_all(&rollback) {
+            tracing::warn!(
+                "could not remove temporary frontend rollback folder {}: {error}",
+                rollback.display()
+            );
+        }
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        } else {
+            bail!(
+                "The web frontend contains an unsupported filesystem entry at {}.",
+                entry.path().display()
+            );
+        }
     }
     Ok(())
 }
@@ -497,9 +864,31 @@ fn truncate_notes(notes: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        GithubRelease, GithubReleaseAsset, normalize_version, truncate_notes,
-        validated_update_asset,
+        GithubRelease, GithubReleaseAsset, InstallLayout, UpdateManager, install_frontend_files,
+        install_layout, installed_frontend_version, normalize_version, truncate_notes,
+        validated_frontend_asset, validated_update_asset,
     };
+
+    #[test]
+    fn install_layouts_are_classified_by_the_configured_frontend() {
+        let root = tempfile::tempdir().unwrap();
+        let bundled_web = root.path().join("web");
+        std::fs::create_dir_all(&bundled_web).unwrap();
+        let custom_web = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            install_layout(root.path(), Some(&bundled_web)).unwrap(),
+            InstallLayout::Combined
+        );
+        assert_eq!(
+            install_layout(root.path(), Some(custom_web.path())).unwrap(),
+            InstallLayout::ServerOnly
+        );
+        assert_eq!(
+            install_layout(root.path(), None).unwrap(),
+            InstallLayout::ServerOnly
+        );
+    }
 
     #[test]
     fn release_versions_are_normalized() {
@@ -535,5 +924,94 @@ mod tests {
         assert!(validated_update_asset(&release, "1.2.3", "macos-x64").is_err());
         release.assets[0].digest = Some("sha256:not-a-digest".to_string());
         assert!(validated_update_asset(&release, "1.2.3", "macos-arm64").is_err());
+    }
+
+    #[test]
+    fn frontend_assets_require_an_exact_name_and_valid_digest() {
+        let mut release = GithubRelease {
+            tag_name: "v1.2.3".to_string(),
+            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
+                .to_string(),
+            published_at: None,
+            body: None,
+            assets: vec![GithubReleaseAsset {
+                name: "operalibre-1.2.3-frontend.zip".to_string(),
+                browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip".to_string(),
+                size: 1024,
+                digest: Some(format!("sha256:{}", "b".repeat(64))),
+            }],
+        };
+
+        assert!(validated_frontend_asset(&release, "1.2.3").is_ok());
+        assert!(validated_frontend_asset(&release, "1.2.4").is_err());
+        release.assets[0].browser_download_url = "https://example.com/frontend.zip".to_string();
+        assert!(validated_frontend_asset(&release, "1.2.3").is_err());
+    }
+
+    #[tokio::test]
+    async fn frontend_install_replaces_files_and_keeps_a_rollback_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("served-web");
+        let data = root.path().join("data");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source.join("index.html"), "new frontend").unwrap();
+        std::fs::write(source.join("VERSION.txt"), "2.0.0\n").unwrap();
+        std::fs::write(destination.join("index.html"), "old frontend").unwrap();
+        std::fs::write(destination.join("VERSION.txt"), "1.0.0\n").unwrap();
+
+        install_frontend_files(source, destination.clone(), data.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(destination.join("index.html")).unwrap(),
+            "new frontend"
+        );
+        assert_eq!(
+            installed_frontend_version(Some(&destination)).unwrap(),
+            "2.0.0"
+        );
+        let backups = std::fs::read_dir(data.join("update-backups"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path().join("web/index.html")).unwrap(),
+            "old frontend"
+        );
+    }
+
+    #[test]
+    fn separately_hosted_frontends_are_reported_but_not_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let web = root.path().join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), "server frontend").unwrap();
+        std::fs::write(web.join("VERSION.txt"), "1.0.0\n").unwrap();
+        let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000).unwrap();
+        let release = GithubRelease {
+            tag_name: "v2.0.0".to_string(),
+            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v2.0.0"
+                .to_string(),
+            published_at: None,
+            body: None,
+            assets: vec![GithubReleaseAsset {
+                name: "operalibre-2.0.0-frontend.zip".to_string(),
+                browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v2.0.0/operalibre-2.0.0-frontend.zip".to_string(),
+                size: 1024,
+                digest: Some(format!("sha256:{}", "c".repeat(64))),
+            }],
+        };
+
+        let status = manager
+            .frontend_status_for_release(&release, Some("1.5.0"))
+            .unwrap();
+        assert_eq!(status.current_version, "1.5.0");
+        assert!(status.update_available);
+        assert!(!status.can_auto_update);
+        assert!(status.message.unwrap().contains("hosting provider"));
     }
 }
