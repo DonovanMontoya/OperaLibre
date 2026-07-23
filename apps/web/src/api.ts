@@ -617,7 +617,7 @@ export async function saveProgress(
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
     & Partial<Pick<Progress, "updatedAt">>,
-  options?: { isPaused?: boolean }
+  options?: { isPaused?: boolean; intentionalRegression?: boolean }
 ) {
   if (isDemoMode()) return saveDemoProgress(bookId, progress);
   if (getServerType() === "jellyfin") {
@@ -629,13 +629,17 @@ export async function saveProgress(
   }
   // The server keeps the copy with the newest client timestamp; sending it
   // lets a replayed offline checkpoint be rejected instead of rolling back
-  // progress another device saved more recently.
+  // progress another device saved more recently. intentionalRegression marks
+  // a deliberate backwards jump (restart, rewind) — without it the server
+  // refuses near-zero writes that would erase substantial progress.
   const { updatedAt, ...fields } = progress;
   return request<Progress>(`/api/books/${bookId}/progress`, {
     method: "PUT",
-    body: JSON.stringify(
-      updatedAt ? { ...fields, updatedAtMs: progressTimestamp(updatedAt) } : fields
-    )
+    body: JSON.stringify({
+      ...fields,
+      ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
+      ...(options?.intentionalRegression ? { intentionalRegression: true } : {})
+    })
   });
 }
 

@@ -51,6 +51,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   freshestProgress,
+  isSuspectProgressReset,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -190,7 +191,12 @@ type DeviceDownloadActivity = {
 };
 type DeviceNotice = { message: string; bookId?: string };
 type PendingSeek = { trackId: string; positionSeconds: number };
-type QueuedProgressSave = { bookId: string; progress: Progress; isPaused: boolean };
+type QueuedProgressSave = {
+  bookId: string;
+  progress: Progress;
+  isPaused: boolean;
+  intentional: boolean;
+};
 
 function audioSourceMatches(audio: HTMLAudioElement, source: string) {
   if (!source) return false;
@@ -1905,6 +1911,16 @@ function MainApp({
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
+  // Whether the listener moved playback (play, seek, track change) since the
+  // current book was restored. Until then no progress is persisted anywhere:
+  // re-stamping the restored — or failed-to-restore — position with a fresh
+  // timestamp is exactly how an idle device erases real progress recorded on
+  // another one.
+  const playbackTouchedRef = useRef(false);
+  // Whether any of those moves was a deliberate seek (scrub, chapter jump,
+  // restart). Rides along on saves so the server can tell an intentional
+  // backwards jump from a broken client pushing near-zero.
+  const deliberateSeekRef = useRef(false);
   const initialLibraryHydrated = useRef(false);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
@@ -2767,6 +2783,8 @@ function MainApp({
 
     let cancelled = false;
     restoredProgressBookId.current = null;
+    playbackTouchedRef.current = false;
+    deliberateSeekRef.current = false;
     const restoreVersion = progressMutationVersion.current;
     const applyProgress = (progress: Progress | null) => {
       if (cancelled || progressMutationVersion.current !== restoreVersion) {
@@ -2829,23 +2847,49 @@ function MainApp({
       const listed = progressFromBookSummary(playbackBook.id, playbackBook.progress);
       // Resume from the best copy already on the device before asking the
       // server. Waiting on that request left the player at 0:00 for the whole
-      // network timeout whenever the server was unreachable.
-      const optimistic = freshestProgress(freshestLocal, listed);
+      // network timeout whenever the server was unreachable. A near-zero
+      // local copy that outranks substantial listed progress by timestamp
+      // alone is distrusted the same way the reconciliation below distrusts
+      // it — showing 0:00 here is what tempts a listener to "fix" it.
+      const optimistic = isSuspectProgressReset(freshestLocal, listed)
+        ? listed
+        : freshestProgress(freshestLocal, listed);
       if (optimistic) {
         applyProgress(optimistic);
       }
       let server: Progress | null = null;
       let serverReachable = true;
-      try {
-        server = await getProgress(playbackBook.id);
-      } catch {
-        serverReachable = false;
+      // One failed fetch must not strand this device on a stale or empty
+      // copy — that is how a second device ends up at 0:00 and later pushes
+      // it over real progress. Retry briefly before reconciling.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          server = await getProgress(playbackBook.id);
+          serverReachable = true;
+          break;
+        } catch {
+          serverReachable = false;
+        }
+        if (cancelled || attempt === 2) {
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 4_000 * (attempt + 1)));
       }
       if (cancelled) {
         return;
       }
+      if (playbackTouchedRef.current) {
+        // The listener already moved playback in this session; their live
+        // position and its queued saves outrank whatever this late fetch
+        // returned, and re-applying it would yank playback.
+        return;
+      }
       const lastKnownServer = server ?? listed;
-      const localIsNewer = !!freshestLocal && (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
+      const suspectLocalReset = isSuspectProgressReset(freshestLocal, lastKnownServer);
+      const localIsNewer =
+        !!freshestLocal &&
+        !suspectLocalReset &&
+        (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
       if (localIsNewer) {
         updateBookProgress(playbackBook.id, freshestLocal);
         if (serverReachable) {
@@ -2854,9 +2898,11 @@ function MainApp({
       }
       const target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
       // Re-seek only when the reconciled copy is genuinely fresher than what
-      // was already applied; re-applying an equal copy would yank playback.
+      // was already applied (or the applied copy was a distrusted reset);
+      // re-applying an equal copy would yank playback.
       if (
         !optimistic ||
+        suspectLocalReset ||
         (target && progressTimestamp(target.updatedAt) > progressTimestamp(optimistic.updatedAt))
       ) {
         applyProgress(target);
@@ -3083,6 +3129,14 @@ function MainApp({
     ) {
       return;
     }
+    // Nothing moved playback since this book was restored: there is nothing
+    // new to save, and writing the restored position back with a fresh
+    // timestamp would let a device whose restore silently failed outrank —
+    // and then erase — real progress recorded elsewhere. Opening a book and
+    // closing it again must write nothing.
+    if (!playbackTouchedRef.current) {
+      return;
+    }
 
     // While a seek is queued the media element does not reflect the real
     // position yet — a restore or track jump reads currentTime 0 until
@@ -3124,7 +3178,8 @@ function MainApp({
     queuedProgressSaves.current.set(playbackBook.id, {
       bookId: playbackBook.id,
       progress: localProgress,
-      isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused
+      isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
+      intentional: deliberateSeekRef.current
     });
     void flushProgressSaveQueue();
   }
@@ -3151,7 +3206,7 @@ function MainApp({
               durationSeconds: entry.progress.durationSeconds,
               updatedAt: entry.progress.updatedAt
             },
-            { isPaused: entry.isPaused }
+            { isPaused: entry.isPaused, intentionalRegression: entry.intentional }
           );
           const local = readProgressCheckpoint(
             window.localStorage,
@@ -3325,8 +3380,19 @@ function MainApp({
     }
   }
 
+  // Marks that the listener moved playback in this session (and optionally
+  // that the move was a deliberate seek). persistProgress writes nothing
+  // until one of these has happened.
+  function markPlaybackTouched(deliberateSeek = false) {
+    playbackTouchedRef.current = true;
+    if (deliberateSeek) {
+      deliberateSeekRef.current = true;
+    }
+  }
+
   function startPlayback(audio: HTMLAudioElement | null | undefined) {
     if (!audio) return;
+    markPlaybackTouched();
     if (!nativeAudio) {
       safePlay(audio);
       return;
@@ -3405,6 +3471,7 @@ function MainApp({
       return;
     }
     haptic("light");
+    markPlaybackTouched(true);
     const nextPosition = setPlaybackPosition(audio, audio.currentTime + delta);
     setPosition(nextPosition);
     void persistProgress();
@@ -3414,12 +3481,14 @@ function MainApp({
     if (!audioRef.current) {
       return;
     }
+    markPlaybackTouched(true);
     const nextPosition = setPlaybackPosition(audioRef.current, value);
     setPosition(nextPosition);
     void persistProgress();
   }
 
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
+    markPlaybackTouched(true);
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     let offset = 0;
@@ -3539,6 +3608,7 @@ function MainApp({
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
+    markPlaybackTouched(true);
     if (native) {
       setNativeTab("reading");
       setNativePlayerView("now");
@@ -4010,6 +4080,10 @@ function MainApp({
         }}
         onTimeUpdate={onTimeUpdate}
         onPlay={() => {
+          // Playback can also start natively (lock screen, CarPlay) without
+          // going through startPlayback; real listening must always count as
+          // touched or its progress would never be persisted.
+          markPlaybackTouched();
           if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
           setIsPlaying(true);

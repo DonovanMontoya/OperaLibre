@@ -140,6 +140,31 @@ export function freshestProgress(
     .sort((a, b) => progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt))[0] ?? null;
 }
 
+/** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
+export const NEAR_ZERO_PROGRESS_SECONDS = 60;
+/** Mirrors the server's PROGRESS_BACKUP_REGRESSION_SECONDS. */
+export const PROGRESS_RESET_GUARD_SECONDS = 300;
+
+/**
+ * A local copy at the very start of the book that outranks substantial server
+ * progress by timestamp alone is the signature of a device that once failed
+ * to restore and then persisted near-zero. A listener who deliberately
+ * started over synced that restart to the server too, so the two copies
+ * agree and this never fires. Preferring the server's position here can only
+ * discard a restart-to-zero — never real listening.
+ */
+export function isSuspectProgressReset(
+  local: Progress | null | undefined,
+  reference: Progress | null | undefined
+): boolean {
+  return (
+    !!local &&
+    !!reference &&
+    local.bookPositionSeconds < NEAR_ZERO_PROGRESS_SECONDS &&
+    reference.bookPositionSeconds - local.bookPositionSeconds > PROGRESS_RESET_GUARD_SECONDS
+  );
+}
+
 /** Recover from a changed/missing track id using the durable whole-book offset. */
 export function resolveProgressLocation(
   tracks: Array<{ id: string; durationSeconds: number | null }>,

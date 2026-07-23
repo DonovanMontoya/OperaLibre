@@ -514,6 +514,11 @@ struct ProgressUpdate {
     /// Optional for backwards compatibility; without it the write is always
     /// accepted and stamped with the server clock, as before.
     updated_at_ms: Option<u64>,
+    /// Set when the listener deliberately jumped backwards (restarting a
+    /// book, scrubbing, picking an earlier chapter). Without it the server
+    /// refuses near-zero writes that would erase substantial progress.
+    #[serde(default)]
+    intentional_regression: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2626,6 +2631,16 @@ async fn update_progress(
         updated_at: format!("{}", incoming_seconds.unwrap_or(now_seconds).round() as u64),
     };
     if let Some(previous) = &previous {
+        if progress_write_is_suspect_reset(
+            previous.book_position_seconds,
+            saved.book_position_seconds,
+            update.intentional_regression,
+        ) {
+            // Keep the stored copy, exactly like a stale write: the client
+            // that failed to restore converges back to the real position on
+            // its next successful fetch.
+            return Ok(Json(previous.clone()));
+        }
         let regression_seconds = previous.book_position_seconds - saved.book_position_seconds;
         if regression_seconds > PROGRESS_BACKUP_REGRESSION_SECONDS {
             backup_progress_regression(&state.progress_file, &key, previous).await;
@@ -4062,11 +4077,30 @@ const PROGRESS_BACKUP_REGRESSION_SECONDS: f64 = 300.0;
 
 const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
 
+/// Positions this close to the start of a book are treated as "not started"
+/// when they arrive over substantial stored progress.
+const PROGRESS_NEAR_ZERO_SECONDS: f64 = 60.0;
+
 fn progress_write_is_stale(stored_updated_at: &str, incoming_seconds: f64) -> bool {
     // Stored stamps are epoch seconds; anything unparsable never blocks a
     // write.
     let stored = stored_updated_at.parse::<f64>().unwrap_or(0.0);
     incoming_seconds + PROGRESS_STALE_WRITE_SLACK_SECONDS < stored
+}
+
+/// A near-zero write that erases substantial progress is the signature of a
+/// client that failed to restore its position, not of a listener starting
+/// over — deliberate restarts and rewinds are flagged by the client. The
+/// timestamp-staleness check cannot catch this case because the broken
+/// client's write is genuinely fresh.
+fn progress_write_is_suspect_reset(
+    previous_book_position: f64,
+    incoming_book_position: f64,
+    intentional: bool,
+) -> bool {
+    !intentional
+        && incoming_book_position < PROGRESS_NEAR_ZERO_SECONDS
+        && previous_book_position - incoming_book_position > PROGRESS_BACKUP_REGRESSION_SECONDS
 }
 
 /// Large backwards jumps are occasionally legitimate (restarting a book), but
@@ -5854,8 +5888,22 @@ mod tests {
         AuthUser, HeaderMap, LoginThrottle, Session, bytes_etag, can_access_book,
         clean_imported_title, if_none_match_matches, is_supported_audio_file,
         libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
-        progress_write_is_stale, sanitize_filename, walk_audio_files,
+        progress_write_is_stale, progress_write_is_suspect_reset, sanitize_filename,
+        walk_audio_files,
     };
+
+    #[test]
+    fn near_zero_writes_over_real_progress_are_suspect_resets() {
+        // A client that failed to restore pushes ~0 over hours of progress.
+        assert!(progress_write_is_suspect_reset(7200.0, 0.0, false));
+        assert!(progress_write_is_suspect_reset(7200.0, 45.0, false));
+        // A deliberate restart is flagged by the client and accepted.
+        assert!(!progress_write_is_suspect_reset(7200.0, 0.0, true));
+        // Ordinary rewinds past the near-zero band are not resets.
+        assert!(!progress_write_is_suspect_reset(7200.0, 3600.0, false));
+        // A book that has barely started cannot lose substantial progress.
+        assert!(!progress_write_is_suspect_reset(90.0, 0.0, false));
+    }
 
     #[test]
     fn stale_progress_writes_are_detected_with_clock_slack() {

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   deviceBookMatchesServer,
   freshestProgress,
+  isSuspectProgressReset,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -114,6 +115,28 @@ test("a native background checkpoint wins when the WebView was suspended", () =>
   const web = progress({ updatedAt: "2025-07-11T01:00:00.000Z", bookPositionSeconds: 12 });
   const native = progress({ updatedAt: "1752195605000", bookPositionSeconds: 95 });
   assert.equal(freshestProgress(web, native)?.bookPositionSeconds, 95);
+});
+
+test("a near-zero local copy over substantial server progress is a suspect reset", () => {
+  const hoursIn = progress({ bookPositionSeconds: 7200, updatedAt: "2026-07-23T01:00:00.000Z" });
+  // A fresh timestamp cannot make a failed restore's ~0 outrank real listening.
+  const failedRestore = progress({ bookPositionSeconds: 0, updatedAt: "2026-07-23T09:00:00.000Z" });
+  assert.equal(isSuspectProgressReset(failedRestore, hoursIn), true);
+
+  // A deliberate restart synced to the server leaves both copies near zero.
+  const restartedServer = progress({ bookPositionSeconds: 3 });
+  assert.equal(isSuspectProgressReset(failedRestore, restartedServer), false);
+
+  // Ordinary rewinds are far from zero and never suspect.
+  const rewound = progress({ bookPositionSeconds: 3600 });
+  assert.equal(isSuspectProgressReset(rewound, hoursIn), false);
+
+  // A book that has barely started cannot lose substantial progress.
+  const barelyStarted = progress({ bookPositionSeconds: 90 });
+  assert.equal(isSuspectProgressReset(progress({ bookPositionSeconds: 0 }), barelyStarted), false);
+
+  assert.equal(isSuspectProgressReset(null, hoursIn), false);
+  assert.equal(isSuspectProgressReset(failedRestore, null), false);
 });
 
 test("whole-book position recovers progress when a saved track id changes", () => {
