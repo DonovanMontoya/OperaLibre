@@ -47,6 +47,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private var player: AVPlayer?
     private var statusObservation: NSKeyValueObservation?
+    private var failureObservations: [NSKeyValueObservation] = []
     private var currentItemObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
@@ -391,6 +392,26 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     self.emitError(item.error?.localizedDescription ?? "The audio track could not be loaded.")
                 default:
                     break
+                }
+            }
+        }
+
+        // The observation above owns the resume seek and so only covers the
+        // item playback starts on. Later queue entries still have to report a
+        // load failure, otherwise AVQueuePlayer skips a missing track in
+        // silence and the web layer never fails over.
+        failureObservations = queuedItems.dropFirst().map { queuedItem in
+            queuedItem.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
+                DispatchQueue.main.async {
+                    guard
+                        let self,
+                        generation == self.generation,
+                        observedItem.status == .failed
+                    else { return }
+                    self.emitError(
+                        observedItem.error?.localizedDescription
+                            ?? "The audio track could not be loaded."
+                    )
                 }
             }
         }
@@ -792,6 +813,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         persistCheckpoint(force: true)
         statusObservation?.invalidate()
         statusObservation = nil
+        for observation in failureObservations {
+            observation.invalidate()
+        }
+        failureObservations = []
         currentItemObservation?.invalidate()
         currentItemObservation = nil
         if let timeObserver, let player {

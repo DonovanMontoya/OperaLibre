@@ -385,6 +385,18 @@ struct LibraryState {
 struct LibraryIdentityStore {
     #[serde(default)]
     books: Vec<BookIdentity>,
+    /// Track fingerprints keyed by library-relative path, so a rescan only
+    /// re-reads files whose size or modification time actually changed.
+    #[serde(default)]
+    fingerprint_cache: BTreeMap<String, CachedFingerprint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedFingerprint {
+    fingerprint: String,
+    size: u64,
+    modified_ms: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2724,21 +2736,35 @@ async fn update_progress(
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let previous = progress.get(&key).cloned();
-    let progress_key_prefix = format!("user:{}:book:", auth.id);
-    let accessible_book_ids = library
-        .books
-        .iter()
-        .filter(|book| can_access_book(&auth, &book.id))
-        .map(|book| book.id.as_str())
-        .collect::<HashSet<_>>();
-    let historical_position_seconds = progress
-        .iter()
-        .filter(|(key, value)| {
-            key.starts_with(&progress_key_prefix)
-                && accessible_book_ids.contains(value.book_id.as_str())
-        })
-        .map(|(_, value)| value.book_position_seconds.max(0.0))
-        .sum::<f64>();
+    // Seeding the activity baseline walks the whole library and every stored
+    // checkpoint, but it only ever happens once per user. Clients checkpoint
+    // every few seconds, so skip the walk entirely once the baseline exists.
+    let needs_activity_baseline = !state
+        .activity
+        .read()
+        .await
+        .by_user
+        .get(&auth.id)
+        .is_some_and(|entries| entries.contains_key(ACTIVITY_BASELINE_KEY));
+    let historical_position_seconds = if needs_activity_baseline {
+        let progress_key_prefix = format!("user:{}:book:", auth.id);
+        let accessible_book_ids = library
+            .books
+            .iter()
+            .filter(|book| can_access_book(&auth, &book.id))
+            .map(|book| book.id.as_str())
+            .collect::<HashSet<_>>();
+        progress
+            .iter()
+            .filter(|(key, value)| {
+                key.starts_with(&progress_key_prefix)
+                    && accessible_book_ids.contains(value.book_id.as_str())
+            })
+            .map(|(_, value)| value.book_position_seconds.max(0.0))
+            .sum::<f64>()
+    } else {
+        0.0
+    };
     // Cap client timestamps at the server clock so one device with a
     // future-skewed clock cannot lock every other device out of this book.
     let now_seconds = unix_now_seconds() as f64;
@@ -3265,6 +3291,75 @@ fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// A file that cannot be read keeps a stable identity derived from its path
+/// instead of failing the whole scan. The prefix can never collide with the
+/// hex digest a successful fingerprint produces.
+fn path_identity_fingerprint(path: &FsPath) -> String {
+    format!("path:{}", stable_id(&path.to_string_lossy()))
+}
+
+/// Fingerprints every track in the library once per scan, reusing the stored
+/// digest whenever a file's size and modification time are unchanged. Reading
+/// 128 KB per track on every rescan is the dominant cost on large libraries,
+/// so the steady state here is one stat per file.
+///
+/// Blocking: run this on a blocking task, not on a runtime worker.
+fn fingerprint_tracks(
+    library_root: &FsPath,
+    files: &[PathBuf],
+    previous: BTreeMap<String, CachedFingerprint>,
+) -> (
+    HashMap<PathBuf, String>,
+    BTreeMap<String, CachedFingerprint>,
+) {
+    let mut fingerprints = HashMap::with_capacity(files.len());
+    // Rebuilt from scratch so entries for removed files are pruned.
+    let mut cache = BTreeMap::new();
+
+    for path in files {
+        let alias = library_identity_path(library_root, path);
+        let stat = std::fs::metadata(path).ok().map(|metadata| {
+            let modified_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since_epoch| u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0);
+            (metadata.len(), modified_ms)
+        });
+        let reused = stat.and_then(|(size, modified_ms)| {
+            previous
+                .get(&alias)
+                .filter(|entry| entry.size == size && entry.modified_ms == modified_ms)
+                .map(|entry| entry.fingerprint.clone())
+        });
+        let fingerprint = match reused {
+            Some(fingerprint) => fingerprint,
+            None => file_identity_fingerprint(path).unwrap_or_else(|error| {
+                tracing::warn!("could not fingerprint {}: {error}", path.display());
+                path_identity_fingerprint(path)
+            }),
+        };
+        // Path-derived stand-ins are never cached: the next scan should retry
+        // the read in case the file became readable again.
+        if let Some((size, modified_ms)) = stat
+            && !fingerprint.starts_with("path:")
+        {
+            cache.insert(
+                alias,
+                CachedFingerprint {
+                    fingerprint: fingerprint.clone(),
+                    size,
+                    modified_ms,
+                },
+            );
+        }
+        fingerprints.insert(path.clone(), fingerprint);
+    }
+
+    (fingerprints, cache)
+}
+
 fn book_identity_fingerprint(track_fingerprints: &[String]) -> String {
     let mut sorted = track_fingerprints.to_vec();
     sorted.sort();
@@ -3367,6 +3462,22 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let files = walk_audio_files(&state.library_root);
     let groups = group_files_into_books(&state.library_root, files);
     let mut identities = load_library_identities(&state.library_identities_file).await?;
+
+    // Every track is fingerprinted up front on a blocking task: the reads are
+    // synchronous and a large library would otherwise stall a runtime worker
+    // for the whole scan.
+    let scanned_files = groups
+        .iter()
+        .flat_map(|(_, grouped_files)| grouped_files.iter().cloned())
+        .collect::<Vec<_>>();
+    let library_root = state.library_root.clone();
+    let cached_fingerprints = std::mem::take(&mut identities.fingerprint_cache);
+    let (track_fingerprints_by_path, fingerprint_cache) = tokio::task::spawn_blocking(move || {
+        fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
+    })
+    .await?;
+    identities.fingerprint_cache = fingerprint_cache;
+
     let mut used_book_identities = HashSet::new();
     let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
@@ -3379,8 +3490,13 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     for (group_key, grouped_files) in groups {
         let track_fingerprints = grouped_files
             .iter()
-            .map(|path| file_identity_fingerprint(path))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .map(|path| {
+                track_fingerprints_by_path
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_else(|| path_identity_fingerprint(path))
+            })
+            .collect::<Vec<_>>();
         let book_fingerprint = book_identity_fingerprint(&track_fingerprints);
         let group_alias = library_identity_path(&state.library_root, &group_key);
         let (book_id, track_ids) = resolve_library_identity(
@@ -7401,5 +7517,53 @@ exit 0
 
         assert_eq!(second_book_id, first_book_id);
         assert_eq!(second_track_ids, first_track_ids);
+    }
+
+    #[test]
+    fn unchanged_tracks_reuse_cached_fingerprints_and_removed_ones_are_pruned() {
+        let root = tempfile::tempdir().unwrap();
+        let track = root.path().join("01 chapter.mp3");
+        std::fs::write(&track, b"stable audiobook bytes").unwrap();
+        let files = std::slice::from_ref(&track);
+
+        let (first, cache) =
+            super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("01 chapter.mp3"));
+
+        // A cached digest is trusted while size and mtime hold, so a doctored
+        // entry coming back out proves the file was not re-read.
+        let mut doctored = cache.clone();
+        doctored.get_mut("01 chapter.mp3").unwrap().fingerprint = "cached-digest".to_string();
+        let (reused, _) = super::fingerprint_tracks(root.path(), files, doctored.clone());
+        assert_eq!(reused[&track], "cached-digest");
+
+        // A size change invalidates the entry and forces a real read.
+        let mut stale = doctored;
+        stale.get_mut("01 chapter.mp3").unwrap().size += 1;
+        let (rehashed, retained) = super::fingerprint_tracks(root.path(), files, stale);
+        assert_eq!(rehashed[&track], first[&track]);
+
+        let (_, pruned) = super::fingerprint_tracks(root.path(), &[], retained);
+        assert!(pruned.is_empty());
+    }
+
+    #[test]
+    fn unreadable_tracks_keep_a_stable_identity_instead_of_failing_the_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("gone.mp3");
+        let files = std::slice::from_ref(&missing);
+
+        let (fingerprints, cache) =
+            super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
+        let fingerprint = fingerprints[&missing].clone();
+        assert!(fingerprint.starts_with("path:"));
+        // Never cached, so a file that becomes readable again is picked up on
+        // the next scan rather than being stuck on the stand-in.
+        assert!(cache.is_empty());
+
+        let (repeated, _) =
+            super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
+        assert_eq!(repeated[&missing], fingerprint);
     }
 }

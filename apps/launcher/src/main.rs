@@ -205,8 +205,11 @@ fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         move_required(&package_root.join(server_name), &install_server)?;
         if includes_web {
             move_required(&package_root.join("web"), &install_web)?;
-            refresh_launchers(&package_root, &install_root)?;
         }
+        // Independent of the web bundle: every managed installation has
+        // launchers, and leaving them behind strands the updater at the
+        // version that shipped with the original download.
+        refresh_launchers(&package_root, &install_root)?;
         move_required(&package_root.join("VERSION.txt"), &install_version)?;
         set_executable(&install_server)?;
         start_server(&install_root, false)
