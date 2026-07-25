@@ -5,9 +5,9 @@ use argon2::{
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, Request, State},
     http::{
-        HeaderMap, HeaderValue, StatusCode,
+        HeaderMap, HeaderValue, Method, StatusCode,
         header::{
             ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE,
             CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, RANGE, SET_COOKIE,
@@ -33,7 +33,7 @@ use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path as FsPath, PathBuf},
     sync::{Arc, LazyLock},
 };
@@ -41,7 +41,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::{
     fs,
     process::Command,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -62,14 +62,34 @@ const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_IP_MAX_FAILURES: u32 = 25;
 const LOGIN_LOCKOUT_SECONDS: u64 = 60;
 const LOGIN_THROTTLE_KEY_MAX_CHARS: usize = 64;
 const LOGIN_THROTTLE_MAX_ENTRIES: usize = 10_000;
-const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+const PASSWORD_TASK_CONCURRENCY: usize = 4;
+const MIN_PASSWORD_CHARS: usize = 12;
+const MAX_PASSWORD_CHARS: usize = 1_024;
+const MAX_SESSIONS_PER_USER: usize = 20;
+const MAX_SESSIONS_TOTAL: usize = 1_000;
+const GIBIBYTE_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_GIB: u64 = 20;
+const DEFAULT_MAX_BOOK_DOWNLOAD_GIB: u64 = 25;
+const DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS: usize = 1;
+const MAX_CONFIGURED_BOOK_DOWNLOAD_CONCURRENCY: usize = 32;
+const SETUP_TOKEN_LIFETIME_SECONDS: u64 = 30 * 60;
+const OFFICIAL_APP_ORIGINS: &[&str] = &[
+    "capacitor://localhost",
+    "http://localhost",
+    "http://127.0.0.1:49201",
+];
 const MAX_UPLOAD_FILES: usize = 1_000;
 const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
 const MAX_PENDING_LIBATION_REQUESTS_PER_USER: usize = 100;
 const MAX_TRACKED_LIBATION_REQUESTS: usize = 1_000;
+const DEFAULT_LIBATION_AUTO_REFRESH_HOURS: u64 = 24;
+const DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR: u64 = 3;
+const LIBATION_READER_REFRESH_WINDOW_SECONDS: u64 = 60 * 60;
+const LIBATION_REFRESH_SCHEDULER_POLL_SECONDS: u64 = 15 * 60;
 // ReaderStream otherwise reads in very small chunks. A larger media chunk
 // keeps browser buffers supplied through brief scheduler or network jitter,
 // which matters more as playback speed increases.
@@ -78,6 +98,10 @@ const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 
 #[derive(Clone)]
 struct AppState {
+    deployment_mode: DeploymentMode,
+    setup_token: Arc<Mutex<Option<SetupToken>>>,
+    max_upload_bytes: Option<u64>,
+    max_book_download_bytes: Option<u64>,
     library_root: PathBuf,
     library_identities_file: PathBuf,
     progress_file: PathBuf,
@@ -86,6 +110,7 @@ struct AppState {
     activity_file: PathBuf,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
+    libation_refreshes_file: PathBuf,
     libation_config: LibationConfig,
     alignment_config: AlignmentConfig,
     update_manager: updates::UpdateManager,
@@ -97,14 +122,21 @@ struct AppState {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
     libation_requests: Arc<RwLock<LibationRequestStore>>,
+    libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
+    /// Library scans read and replace one shared identity snapshot. Serialize
+    /// them so overlapping imports, downloads, and manual rescans cannot
+    /// publish stale state over a newer scan.
+    rescan_lock: Arc<Mutex<()>>,
     /// Libation uses shared account and library files. Run its commands one at
     /// a time so a second title has a real queue state instead of racing the
     /// first download.
     libation_job_lock: Arc<Mutex<()>>,
     login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
+    password_task_slots: Arc<Semaphore>,
+    download_task_slots: Arc<Semaphore>,
     upload_lock: Arc<Mutex<()>>,
 }
 
@@ -115,8 +147,8 @@ struct LoginThrottle {
 }
 
 impl LoginThrottle {
-    fn is_locked(&self, now_seconds: u64) -> bool {
-        self.failures >= LOGIN_MAX_FAILURES
+    fn is_locked(&self, now_seconds: u64, max_failures: u32) -> bool {
+        self.failures >= max_failures
             && now_seconds.saturating_sub(self.last_failure) < LOGIN_LOCKOUT_SECONDS
     }
 
@@ -241,6 +273,9 @@ struct AuthUser {
     libation_access: LibationAccess,
 }
 
+#[derive(Debug, Clone)]
+struct SessionToken(String);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum LibationAccess {
@@ -253,6 +288,15 @@ enum LibationAccess {
 struct LibationRequestStore {
     #[serde(default)]
     requests: Vec<LibationDownloadRequest>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationRefreshStore {
+    #[serde(default)]
+    last_successful_scan: Option<u64>,
+    #[serde(default)]
+    manual_refreshes: HashMap<String, Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +350,8 @@ struct DecideLibationDownloadRequest {
 struct LibationAccessResponse {
     enabled: bool,
     libation_access: LibationAccess,
+    auto_refresh_hours: Option<u64>,
+    manual_refreshes_per_hour: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,6 +366,8 @@ struct LoginRequest {
 struct SetupRequest {
     username: String,
     password: String,
+    #[serde(default)]
+    setup_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +405,7 @@ struct ChangePasswordRequest {
 #[serde(rename_all = "camelCase")]
 struct LoginResponse {
     token: String,
+    media_token: String,
     user: UserPublic,
 }
 
@@ -364,7 +413,10 @@ struct LoginResponse {
 #[serde(rename_all = "camelCase")]
 struct AuthStatus {
     setup_required: bool,
+    setup_token_required: bool,
+    setup_local_only: bool,
     user: Option<UserPublic>,
+    media_token: Option<String>,
 }
 
 #[derive(Default)]
@@ -619,6 +671,8 @@ struct LibationStatus {
     accounts: Vec<LibationAccount>,
     authenticated: bool,
     message: Option<String>,
+    auto_refresh_hours: Option<u64>,
+    manual_refreshes_per_hour: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -722,8 +776,12 @@ struct LibationExportRecord {
 
 #[derive(Debug, Clone)]
 struct ServerConfig {
+    deployment_mode: DeploymentMode,
     host: String,
     port: u16,
+    max_upload_bytes: Option<u64>,
+    max_book_download_bytes: Option<u64>,
+    max_concurrent_book_downloads: usize,
     library_root: PathBuf,
     data_dir: PathBuf,
     progress_file: PathBuf,
@@ -734,9 +792,110 @@ struct ServerConfig {
     libation_requests_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
+    libation_auto_refresh_hours: u64,
+    libation_reader_refreshes_per_hour: u64,
     alignment_cli_path: Option<PathBuf>,
     allowed_origins: Vec<String>,
     web_dist_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeploymentMode {
+    Local,
+    Lan,
+    Proxy,
+}
+
+impl DeploymentMode {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "local" => Ok(Self::Local),
+            "lan" => Ok(Self::Lan),
+            "proxy" => Ok(Self::Proxy),
+            _ => anyhow::bail!(
+                "Invalid deployment_mode `{value}`: expected `local`, `lan`, or `proxy`."
+            ),
+        }
+    }
+
+    fn default_host(self) -> &'static str {
+        match self {
+            Self::Lan => "0.0.0.0",
+            Self::Local | Self::Proxy => "127.0.0.1",
+        }
+    }
+
+    fn secure_cookies(self) -> bool {
+        !matches!(self, Self::Lan)
+    }
+
+    fn allows_remote_setup(self) -> bool {
+        !matches!(self, Self::Local)
+    }
+
+    fn setup_token_required(self, remote_client: bool) -> bool {
+        matches!(self, Self::Proxy) || (matches!(self, Self::Lan) && remote_client)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Lan => "lan",
+            Self::Proxy => "proxy",
+        }
+    }
+}
+
+fn resolve_deployment_settings(
+    configured_mode: Option<String>,
+    configured_host: Option<String>,
+) -> anyhow::Result<(DeploymentMode, String)> {
+    let deployment_mode = configured_mode
+        .map(|value| DeploymentMode::parse(&value))
+        .transpose()?
+        .unwrap_or_else(|| {
+            configured_host
+                .as_deref()
+                .and_then(|host| host.parse::<IpAddr>().ok())
+                .filter(|address| !address.is_loopback())
+                .map(|_| DeploymentMode::Lan)
+                .unwrap_or(DeploymentMode::Local)
+        });
+    let host = configured_host.unwrap_or_else(|| deployment_mode.default_host().to_string());
+    let host_address = host.parse::<IpAddr>().map_err(|error| {
+        anyhow::anyhow!("Invalid server host `{host}`: use a numeric IP address ({error})")
+    })?;
+    if matches!(
+        deployment_mode,
+        DeploymentMode::Local | DeploymentMode::Proxy
+    ) && !host_address.is_loopback()
+    {
+        anyhow::bail!(
+            "deployment_mode = {} requires a loopback host such as 127.0.0.1; use deployment_mode = lan for a direct trusted-network listener",
+            deployment_mode.as_str()
+        );
+    }
+    Ok((deployment_mode, host))
+}
+
+#[derive(Debug)]
+struct SetupToken {
+    digest: [u8; 32],
+    expires_at: u64,
+}
+
+impl SetupToken {
+    fn new(token: &str, now_seconds: u64) -> Self {
+        Self {
+            digest: setup_token_digest(token),
+            expires_at: now_seconds.saturating_add(SETUP_TOKEN_LIFETIME_SECONDS),
+        }
+    }
+
+    fn matches(&self, candidate: &str, now_seconds: u64) -> bool {
+        now_seconds <= self.expires_at
+            && constant_time_eq(&self.digest, &setup_token_digest(candidate))
+    }
 }
 
 impl ServerConfig {
@@ -774,14 +933,41 @@ impl ServerConfig {
                 .or_else(|| env_path_value("OPERALIBRE_METADATA_OVERRIDES_FILE"))
                 .unwrap_or_else(|| data_dir.join("metadata-overrides.json"));
         let libation_requests_file = data_dir.join("libation-requests.json");
+        let libation_auto_refresh_hours = config_u64_value(&values, "libation_auto_refresh_hours")?
+            .unwrap_or(DEFAULT_LIBATION_AUTO_REFRESH_HOURS);
+        let libation_reader_refreshes_per_hour =
+            config_u64_value(&values, "libation_reader_refreshes_per_hour")?
+                .unwrap_or(DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR);
+
+        let configured_host =
+            config_string_value(&values, "host").or_else(|| env_string_value("HOST"));
+        let configured_mode = config_string_value(&values, "deployment_mode")
+            .or_else(|| env_string_value("OPERALIBRE_DEPLOYMENT_MODE"));
+        let (deployment_mode, host) =
+            resolve_deployment_settings(configured_mode, configured_host)?;
+        let max_upload_bytes = config_gib_limit(&values, "max_upload_gib", DEFAULT_MAX_UPLOAD_GIB)?;
+        let max_book_download_bytes = config_gib_limit(
+            &values,
+            "max_book_download_gib",
+            DEFAULT_MAX_BOOK_DOWNLOAD_GIB,
+        )?;
+        let max_concurrent_book_downloads = config_bounded_usize(
+            &values,
+            "max_concurrent_book_downloads",
+            DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
+            1,
+            MAX_CONFIGURED_BOOK_DOWNLOAD_CONCURRENCY,
+        )?;
 
         Ok(Self {
-            host: config_string_value(&values, "host")
-                .or_else(|| env_string_value("HOST"))
-                .unwrap_or_else(|| "0.0.0.0".to_string()),
+            deployment_mode,
+            host,
             port: config_u16_value(&values, "port")?
                 .or_else(|| env_u16_value("PORT"))
                 .unwrap_or(4000),
+            max_upload_bytes,
+            max_book_download_bytes,
+            max_concurrent_book_downloads,
             library_root,
             data_dir,
             progress_file,
@@ -794,6 +980,8 @@ impl ServerConfig {
                 .or_else(|| env_path_value("LIBATION_CLI_PATH")),
             libation_files_dir: config_path_value(&values, &config_dir, "libation_files_dir")
                 .or_else(|| env_path_value("LIBATION_FILES_DIR")),
+            libation_auto_refresh_hours,
+            libation_reader_refreshes_per_hour,
             alignment_cli_path: config_path_value(&values, &config_dir, "alignment_cli_path")
                 .or_else(|| env_path_value("OPERALIBRE_ALIGNMENT_CLI_PATH")),
             allowed_origins: config_string_value(&values, "allowed_origins")
@@ -823,8 +1011,12 @@ fn read_server_config_file(
 
 fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>> {
     let allowed_keys = [
+        "deployment_mode",
         "host",
         "port",
+        "max_upload_gib",
+        "max_book_download_gib",
+        "max_concurrent_book_downloads",
         "library_root",
         "audiobook_library",
         "data_dir",
@@ -834,6 +1026,8 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
+        "libation_auto_refresh_hours",
+        "libation_reader_refreshes_per_hour",
         "alignment_cli_path",
         "allowed_origins",
         "web_dist_dir",
@@ -898,6 +1092,50 @@ fn config_u16_value(values: &HashMap<String, String>, key: &str) -> anyhow::Resu
     })?))
 }
 
+fn config_u64_value(values: &HashMap<String, String>, key: &str) -> anyhow::Result<Option<u64>> {
+    let Some(value) = config_string_value(values, key) else {
+        return Ok(None);
+    };
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("Invalid server.config `{key}` value `{value}`: {error}"))
+}
+
+fn config_gib_limit(
+    values: &HashMap<String, String>,
+    key: &str,
+    default_gib: u64,
+) -> anyhow::Result<Option<u64>> {
+    let gib = config_u64_value(values, key)?.unwrap_or(default_gib);
+    if gib == 0 {
+        return Ok(None);
+    }
+    gib.checked_mul(GIBIBYTE_BYTES).map(Some).ok_or_else(|| {
+        anyhow::anyhow!("Invalid server.config `{key}` value `{gib}`: size overflows bytes")
+    })
+}
+
+fn config_bounded_usize(
+    values: &HashMap<String, String>,
+    key: &str,
+    default: usize,
+    minimum: usize,
+    maximum: usize,
+) -> anyhow::Result<usize> {
+    let value = config_u64_value(values, key)?
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("Invalid server.config `{key}` value: {error}"))?
+        .unwrap_or(default);
+    if !(minimum..=maximum).contains(&value) {
+        anyhow::bail!(
+            "Invalid server.config `{key}` value `{value}`: expected {minimum} through {maximum}"
+        );
+    }
+    Ok(value)
+}
+
 fn env_u16_value(key: &str) -> Option<u16> {
     env::var(key)
         .ok()
@@ -951,23 +1189,45 @@ async fn main() -> anyhow::Result<()> {
 
     let config = ServerConfig::load()?;
     tracing::info!(
+        deployment_mode = config.deployment_mode.as_str(),
+        max_upload_gib = config.max_upload_bytes.map(|bytes| bytes / GIBIBYTE_BYTES).unwrap_or(0),
+        max_book_download_gib = config.max_book_download_bytes.map(|bytes| bytes / GIBIBYTE_BYTES).unwrap_or(0),
+        max_concurrent_book_downloads = config.max_concurrent_book_downloads,
         library_root = %config.library_root.display(),
         data_dir = %config.data_dir.display(),
         "server configuration loaded"
     );
+    if config.max_upload_bytes.is_none() || config.max_book_download_bytes.is_none() {
+        tracing::warn!(
+            "one or more transfer size limits are disabled; ensure storage exhaustion is controlled externally"
+        );
+    }
 
     // Auto-update eligibility checks compare this marker against the running
     // process, so record it even when the release launcher did not start us
     // (server-only packages start via start.sh / start.cmd).
-    if let Err(error) = record_server_pid(&config.data_dir) {
-        tracing::warn!("could not record the server process ID: {error}");
-    }
+    record_server_pid(&config.data_dir)?;
+    secure_existing_state_files(&config).await?;
 
     let users_store = load_users_store(&config.users_file).await?;
+    let setup_token =
+        if users_store.users.is_empty() && config.deployment_mode.allows_remote_setup() {
+            let token = generate_session_token();
+            tracing::warn!(
+                bootstrap_token = %token,
+                valid_for_minutes = SETUP_TOKEN_LIFETIME_SECONDS / 60,
+                "first-run remote setup is enabled; enter this one-time token in the setup form"
+            );
+            Some(SetupToken::new(&token, unix_now_seconds()))
+        } else {
+            None
+        };
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
     let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
     let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
+    let libation_refreshes =
+        load_libation_refreshes(&config.data_dir.join("libation-refreshes.json")).await?;
     if users_store.users.is_empty() {
         match fs::remove_file(&config.progress_file).await {
             Ok(_) => tracing::info!(
@@ -984,6 +1244,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = AppState {
+        deployment_mode: config.deployment_mode,
+        setup_token: Arc::new(Mutex::new(setup_token)),
+        max_upload_bytes: config.max_upload_bytes,
+        max_book_download_bytes: config.max_book_download_bytes,
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
         progress_file: config.progress_file.clone(),
@@ -992,6 +1256,7 @@ async fn main() -> anyhow::Result<()> {
         activity_file: config.activity_file.clone(),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
+        libation_refreshes_file: config.data_dir.join("libation-refreshes.json"),
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
         update_manager: updates::UpdateManager::new(
@@ -1007,13 +1272,18 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
         libation_requests: Arc::new(RwLock::new(libation_requests)),
+        libation_refreshes: Arc::new(Mutex::new(libation_refreshes)),
         progress_write_lock: Arc::new(Mutex::new(())),
+        rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
+        download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         upload_lock: Arc::new(Mutex::new(())),
     };
 
     rescan_library(&state).await?;
+    schedule_automatic_libation_refresh(state.clone());
 
     let public_routes = Router::new()
         .route("/api/health", get(health))
@@ -1112,24 +1382,21 @@ async fn main() -> anyhow::Result<()> {
             auth_middleware,
         ));
 
-    let allow_origin = if config.allowed_origins.is_empty() {
-        AllowOrigin::mirror_request()
-    } else {
-        let origins = config
-            .allowed_origins
-            .iter()
-            .map(|origin| {
-                origin.parse::<HeaderValue>().map_err(|error| {
-                    anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
-                })
+    let origins = OFFICIAL_APP_ORIGINS
+        .iter()
+        .copied()
+        .chain(config.allowed_origins.iter().map(String::as_str))
+        .map(|origin| {
+            origin.parse::<HeaderValue>().map_err(|error| {
+                anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
             })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        tracing::info!(
-            origins = ?config.allowed_origins,
-            "CORS restricted to configured origins"
-        );
-        AllowOrigin::list(origins)
-    };
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    tracing::info!(
+        configured_origins = ?config.allowed_origins,
+        "CORS restricted to official app and configured origins"
+    );
+    let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
     let mut app = public_routes.merge(protected_routes);
     if let Some(dist_dir) = config.web_dist_dir.as_ref() {
@@ -1147,40 +1414,124 @@ async fn main() -> anyhow::Result<()> {
     }
     let app = app
         .layer(
-            CorsLayer::new()
-                .allow_origin(allow_origin)
-                .allow_methods(AllowMethods::mirror_request())
+            cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
                 .allow_credentials(true),
         )
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
+                // Never record the query string: media credentials are
+                // deliberately carried in URLs for native media elements.
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        )
+        .layer(middleware::from_fn(security_headers))
         .with_state(state);
 
     let address: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
+    if config.deployment_mode == DeploymentMode::Lan {
+        tracing::warn!(
+            %address,
+            "LAN mode permits plain HTTP and non-Secure browser cookies; use only on a trusted LAN/VPN and never expose this port directly to the Internet"
+        );
+    } else if config.deployment_mode == DeploymentMode::Proxy {
+        tracing::info!(%address, "proxy mode expects a same-machine TLS reverse proxy");
+    }
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!("server listening on http://{address}");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
 
 fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir)?;
-    std::fs::write(
-        data_dir.join("operalibre-server.pid"),
-        std::process::id().to_string(),
-    )
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let pid_path = data_dir.join("operalibre-server.pid");
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+async fn secure_existing_state_files(config: &ServerConfig) -> io::Result<()> {
+    for path in [
+        &config.progress_file,
+        &config.users_file,
+        &config.sessions_file,
+        &config.activity_file,
+        &config.metadata_overrides_file,
+        &config.libation_requests_file,
+    ] {
+        if fs::try_exists(path).await? {
+            secure_file_permissions(path).await?;
+        }
+    }
+    for path in [
+        config.data_dir.join("library-identities.json"),
+        config.data_dir.join("libation-refreshes.json"),
+    ] {
+        if fs::try_exists(&path).await? {
+            secure_file_permissions(&path).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn api_not_found() -> ApiError {
     ApiError::not_found("Unknown API route")
 }
 
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    for (name, value) in [
+        (
+            "strict-transport-security",
+            "max-age=63072000; includeSubDomains",
+        ),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "SAMEORIGIN"),
+        ("referrer-policy", "no-referrer"),
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        ),
+    ] {
+        if !headers.contains_key(name) {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+    }
+    if !headers.contains_key("content-security-policy") {
+        headers.insert(
+            "content-security-policy",
+            HeaderValue::from_static(
+                "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: http: https:; connect-src 'self' http: https:; frame-src 'self' data: blob:; worker-src 'self' blob:; form-action 'self'",
+            ),
+        );
+    }
+    response
+}
+
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let library = state.library.read().await;
     Json(serde_json::json!({
         "ok": true,
-        "libraryRoot": state.library_root,
         "bookCount": library.books.len(),
         "version": updates::current_version(),
     }))
@@ -1281,7 +1632,8 @@ async fn upload_audiobook(
     let staging_path = state.library_root.join(staging_name);
     fs::create_dir(&staging_path).await?;
 
-    let result = receive_audiobook_upload(&staging_path, &mut multipart).await;
+    let result =
+        receive_audiobook_upload(&staging_path, &mut multipart, state.max_upload_bytes).await;
     let book_name = match result {
         Ok(book_name) => book_name,
         Err(error) => {
@@ -1317,6 +1669,7 @@ async fn upload_audiobook(
 async fn receive_audiobook_upload(
     staging_path: &FsPath,
     multipart: &mut Multipart,
+    max_upload_bytes: Option<u64>,
 ) -> Result<String, ApiError> {
     let mut book_name = None;
     let mut audio_file_count = 0usize;
@@ -1379,10 +1732,12 @@ async fn receive_audiobook_upload(
                 while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
                     total_bytes = total_bytes.saturating_add(chunk.len() as u64);
                     file_bytes = file_bytes.saturating_add(chunk.len() as u64);
-                    if total_bytes > MAX_UPLOAD_BYTES {
+                    if let Some(limit) = max_upload_bytes
+                        && total_bytes > limit
+                    {
                         return Err(ApiError::payload_too_large(format!(
                             "Audiobook uploads are limited to {} GiB.",
-                            MAX_UPLOAD_BYTES / 1024 / 1024 / 1024
+                            limit / GIBIBYTE_BYTES
                         )));
                     }
                     output.write_all(&chunk).await?;
@@ -1432,6 +1787,8 @@ async fn get_libation_access(
         } else {
             auth.libation_access
         },
+        auto_refresh_hours: state.libation_config.auto_refresh_hours,
+        manual_refreshes_per_hour: state.libation_config.reader_refreshes_per_hour,
     })
 }
 
@@ -1700,6 +2057,13 @@ fn libation_cover_art_url(picture_id: Option<&str>) -> Option<String> {
     valid_libation_picture_id(picture_id).then(|| format!("/api/libation/covers/{picture_id}"))
 }
 
+fn libation_cover_art_url_from_ids(
+    picture_large: Option<&str>,
+    picture_id: Option<&str>,
+) -> Option<String> {
+    libation_cover_art_url(picture_large).or_else(|| libation_cover_art_url(picture_id))
+}
+
 async fn get_libation_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1793,20 +2157,89 @@ async fn sync_libation_library(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    require_admin(&auth)?;
-    let config = state.libation_config.clone();
-    if !config.enabled() {
+    if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
 
-    let (job_id, created) = create_libation_job(&state, "libation-sync", None).await;
-    if !created {
-        return Ok(Json(JobCreated { job_id }));
+    let (job_id, created) = reserve_manual_libation_refresh(&state, &auth).await?;
+    if created {
+        spawn_libation_sync_job(state.clone(), job_id.clone());
     }
+    Ok(Json(JobCreated { job_id }))
+}
+
+async fn reserve_manual_libation_refresh(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<(String, bool), ApiError> {
+    if auth.is_admin {
+        return Ok(create_libation_job(state, "libation-sync", None).await);
+    }
+
+    let mut refreshes = state.libation_refreshes.lock().await;
+    if let Some(job_id) = active_libation_sync_job(state).await {
+        return Ok((job_id, false));
+    }
+
+    let now = unix_now_seconds();
+    for timestamps in refreshes.manual_refreshes.values_mut() {
+        timestamps.retain(|timestamp| {
+            now.saturating_sub(*timestamp) < LIBATION_READER_REFRESH_WINDOW_SECONDS
+        });
+    }
+    refreshes
+        .manual_refreshes
+        .retain(|_, timestamps| !timestamps.is_empty());
+
+    let refresh_limit = state.libation_config.reader_refreshes_per_hour;
+    let refresh_limit_count = usize::try_from(refresh_limit).unwrap_or(usize::MAX);
+    let timestamps = refreshes
+        .manual_refreshes
+        .entry(auth.id.clone())
+        .or_default();
+    if refresh_limit > 0 && timestamps.len() >= refresh_limit_count {
+        if let Some(first_refresh) = timestamps.first() {
+            let elapsed = now.saturating_sub(*first_refresh);
+            let remaining_minutes = (LIBATION_READER_REFRESH_WINDOW_SECONDS - elapsed).div_ceil(60);
+            return Err(ApiError::too_many_requests(format!(
+                "You have used all {refresh_limit} Audible refreshes for this hour. Try again in {remaining_minutes} minute{}.",
+                if remaining_minutes == 1 { "" } else { "s" }
+            )));
+        }
+    }
+
+    let (job_id, created) = create_libation_job(state, "libation-sync", None).await;
+    if created && refresh_limit > 0 {
+        timestamps.push(now);
+        if let Err(error) =
+            write_libation_refreshes(&state.libation_refreshes_file, &refreshes).await
+        {
+            tracing::warn!(
+                "failed to persist Libation refresh limit: {}",
+                error.message
+            );
+        }
+    }
+    Ok((job_id, created))
+}
+
+async fn active_libation_sync_job(state: &AppState) -> Option<String> {
+    state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.kind == "libation-sync" && is_active_job(job))
+        .max_by_key(|job| job_started_timestamp(job))
+        .map(|job| job.id.clone())
+}
+
+fn spawn_libation_sync_job(state: AppState, job_id: String) {
+    let config = state.libation_config.clone();
     let state_for_job = state.clone();
-    let job_id_for_task = job_id.clone();
+    let job_id_for_task = job_id;
     tokio::spawn(async move {
         let _libation_guard = state_for_job.libation_job_lock.lock().await;
         update_job_running(&state_for_job, &job_id_for_task).await;
@@ -1820,6 +2253,7 @@ async fn sync_libation_library(
         match result {
             Ok(output) if output.status.success() => {
                 append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                record_successful_libation_scan(&state_for_job).await;
                 update_job_finished(
                     &state_for_job,
                     &job_id_for_task,
@@ -1852,8 +2286,57 @@ async fn sync_libation_library(
             }
         }
     });
+}
 
-    Ok(Json(JobCreated { job_id }))
+async fn record_successful_libation_scan(state: &AppState) {
+    let mut refreshes = state.libation_refreshes.lock().await;
+    refreshes.last_successful_scan = Some(unix_now_seconds());
+    if let Err(error) = write_libation_refreshes(&state.libation_refreshes_file, &refreshes).await {
+        tracing::warn!(
+            "failed to persist successful Libation refresh: {}",
+            error.message
+        );
+    }
+}
+
+fn schedule_automatic_libation_refresh(state: AppState) {
+    let Some(interval_hours) = state.libation_config.auto_refresh_hours else {
+        return;
+    };
+    if !state.libation_config.enabled() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let interval_seconds = interval_hours.saturating_mul(60 * 60);
+        let poll_seconds = interval_seconds
+            .min(LIBATION_REFRESH_SCHEDULER_POLL_SECONDS)
+            .max(1);
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(poll_seconds));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            timer.tick().await;
+            let due = {
+                let refreshes = state.libation_refreshes.lock().await;
+                refreshes
+                    .last_successful_scan
+                    .is_none_or(|last| unix_now_seconds().saturating_sub(last) >= interval_seconds)
+            };
+            if !due {
+                continue;
+            }
+
+            let (job_id, created) = create_libation_job(&state, "libation-sync", None).await;
+            if created {
+                tracing::info!(
+                    interval_hours,
+                    "starting scheduled Libation library refresh"
+                );
+                spawn_libation_sync_job(state.clone(), job_id);
+            }
+        }
+    });
 }
 
 async fn liberate_libation_book(
@@ -2112,6 +2595,7 @@ async fn liberate_all_libation_books(
         match scan_result {
             Ok(output) if output.status.success() => {
                 append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                record_successful_libation_scan(&state_for_job).await;
             }
             Ok(output) => {
                 append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
@@ -2228,15 +2712,27 @@ async fn get_job(
     Extension(auth): Extension<AuthUser>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobStatus>, ApiError> {
-    require_admin(&auth)?;
-    state
+    let job = state
         .jobs
         .read()
         .await
         .get(&job_id)
         .cloned()
-        .map(Json)
-        .ok_or(ApiError::not_found("Job not found"))
+        .ok_or(ApiError::not_found("Job not found"))?;
+    if auth.is_admin {
+        return Ok(Json(job));
+    }
+
+    // Non-administrators only learn about jobs whose unguessable IDs were
+    // returned to them by a request they initiated. Avoid exposing command
+    // output, which can contain server paths or Libation account details.
+    let mut summary = job;
+    summary.output.clear();
+    summary.error = summary
+        .error
+        .as_ref()
+        .map(|_| "The background operation failed.".to_string());
+    Ok(Json(summary))
 }
 
 async fn get_book(
@@ -2980,6 +3476,16 @@ async fn download_book(
     Path(book_id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
+    let download_permit = state
+        .download_task_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::too_many_requests(
+                "The configured number of book archives are already being prepared or downloaded. Try again shortly.",
+            )
+        })?;
+    let max_book_download_bytes = state.max_book_download_bytes;
     let (book_title, tracks) = {
         let library = state.library.read().await;
         let book = library
@@ -3005,41 +3511,50 @@ async fn download_book(
         return Err(ApiError::not_found("No tracks available for download"));
     }
 
-    let zip_path = tokio::task::spawn_blocking(move || -> anyhow::Result<PathBuf> {
-        let temp = tempfile::Builder::new()
-            .prefix("operalibre-")
-            .suffix(".zip")
-            .tempfile()?;
-        let (file, path) = temp.keep()?;
-        let mut writer = zip::ZipWriter::new(file);
-        let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored)
-            .large_file(true);
-        for (file_name, source_path) in tracks {
-            writer.start_file(sanitize_zip_entry(&file_name), options)?;
-            let mut source = std::fs::File::open(&source_path)?;
-            std::io::copy(&mut source, &mut writer)?;
-        }
-        writer.finish()?;
-        Ok(path)
-    })
-    .await
-    .map_err(|error| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: error.to_string(),
-    })??;
+    let (zip_path, download_permit) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(PathBuf, OwnedSemaphorePermit)> {
+            let source_bytes = tracks.iter().try_fold(0_u64, |total, (_, path)| {
+                total
+                    .checked_add(std::fs::metadata(path)?.len())
+                    .ok_or_else(|| anyhow::anyhow!("The book is too large to archive."))
+            })?;
+            if let Some(limit) = max_book_download_bytes
+                && source_bytes > limit
+            {
+                anyhow::bail!(
+                    "Book downloads are limited to {} GiB.",
+                    limit / GIBIBYTE_BYTES
+                );
+            }
+            let temp = tempfile::Builder::new()
+                .prefix("operalibre-")
+                .suffix(".zip")
+                .tempfile()?;
+            let (file, path) = temp.keep()?;
+            let mut writer = zip::ZipWriter::new(file);
+            let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .large_file(true);
+            for (file_name, source_path) in tracks {
+                writer.start_file(sanitize_zip_entry(&file_name), options)?;
+                let mut source = std::fs::File::open(&source_path)?;
+                std::io::copy(&mut source, &mut writer)?;
+            }
+            writer.finish()?;
+            Ok((path, download_permit))
+        })
+        .await
+        .map_err(|error| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: error.to_string(),
+        })??;
 
     let file = fs::File::open(&zip_path).await?;
     let metadata = file.metadata().await?;
     let file_size = metadata.len();
 
-    let cleanup_path = zip_path.clone();
-    tokio::spawn(async move {
-        let _ = fs::remove_file(cleanup_path).await;
-    });
-
     let safe_filename = sanitize_filename(&book_title);
-    let stream = ReaderStream::new(file);
+    let stream = ReaderStream::new(RemoveOnDropFile::new(file, zip_path, download_permit));
     let body = Body::from_stream(stream);
 
     Ok(Response::builder()
@@ -3051,6 +3566,49 @@ async fn download_book(
             format!("attachment; filename=\"{safe_filename}.zip\""),
         )
         .body(body)?)
+}
+
+struct RemoveOnDropFile {
+    file: Option<fs::File>,
+    path: PathBuf,
+    _download_permit: OwnedSemaphorePermit,
+}
+
+impl RemoveOnDropFile {
+    fn new(file: fs::File, path: PathBuf, download_permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            file: Some(file),
+            path,
+            _download_permit: download_permit,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for RemoveOnDropFile {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let file = self.file.as_mut().expect("file is present until drop");
+        std::pin::Pin::new(file).poll_read(context, buffer)
+    }
+}
+
+impl Drop for RemoveOnDropFile {
+    fn drop(&mut self) {
+        // Windows cannot unlink an open file. Close the handle before cleanup
+        // so completed and cancelled downloads both remove their temporary ZIP.
+        drop(self.file.take());
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                "failed to remove temporary download: {error}"
+            );
+        }
+    }
 }
 
 async fn delete_downloaded_book(
@@ -3464,8 +4022,13 @@ fn resolve_library_identity(
 }
 
 async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
-    let files = walk_audio_files(&state.library_root);
-    let groups = group_files_into_books(&state.library_root, files);
+    let _rescan_guard = state.rescan_lock.lock().await;
+    let scan_root = state.library_root.clone();
+    let groups = tokio::task::spawn_blocking(move || {
+        let files = walk_audio_files(&scan_root);
+        group_files_into_books(&scan_root, files)
+    })
+    .await?;
     let mut identities = load_library_identities(&state.library_identities_file).await?;
 
     // Every track is fingerprinted up front on a blocking task: the reads are
@@ -3475,12 +4038,23 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .iter()
         .flat_map(|(_, grouped_files)| grouped_files.iter().cloned())
         .collect::<Vec<_>>();
+    let metadata_files = scanned_files.clone();
     let library_root = state.library_root.clone();
     let cached_fingerprints = std::mem::take(&mut identities.fingerprint_cache);
-    let (track_fingerprints_by_path, fingerprint_cache) = tokio::task::spawn_blocking(move || {
+    let fingerprint_task = tokio::task::spawn_blocking(move || {
         fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
-    })
-    .await?;
+    });
+    let metadata_task = tokio::task::spawn_blocking(move || {
+        metadata_files
+            .into_iter()
+            .map(|path| {
+                let metadata = read_track_metadata(&path);
+                (path, metadata)
+            })
+            .collect::<HashMap<_, _>>()
+    });
+    let (track_fingerprints_by_path, fingerprint_cache) = fingerprint_task.await?;
+    let mut metadata_by_path = metadata_task.await?;
     identities.fingerprint_cache = fingerprint_cache;
 
     let mut used_book_identities = HashSet::new();
@@ -3519,7 +4093,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         book_paths.insert(book_id.clone(), group_key.clone());
         let metadata = grouped_files
             .iter()
-            .map(|file_path| read_track_metadata(file_path))
+            .map(|file_path| metadata_by_path.remove(file_path).unwrap_or_default())
             .collect::<Vec<_>>();
 
         let tracks = grouped_files
@@ -4562,11 +5136,33 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
         "{file_name}.{:016x}.tmp",
         u64::from_le_bytes(suffix)
     ));
-    fs::write(&temp_path, serde_json::to_vec_pretty(value)?).await?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut temp_file = options.open(&temp_path).await?;
+    temp_file
+        .write_all(&serde_json::to_vec_pretty(value)?)
+        .await?;
+    temp_file.flush().await?;
+    drop(temp_file);
+    secure_file_permissions(&temp_path).await?;
     if let Err(error) = fs::rename(&temp_path, path).await {
         let _ = fs::remove_file(&temp_path).await;
         return Err(error.into());
     }
+    secure_file_permissions(path).await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn secure_file_permissions(path: &FsPath) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
+}
+
+#[cfg(not(unix))]
+async fn secure_file_permissions(_path: &FsPath) -> io::Result<()> {
     Ok(())
 }
 
@@ -4712,6 +5308,8 @@ struct LibationConfig {
     cli_path: Option<PathBuf>,
     libation_files_dir: Option<PathBuf>,
     library_root: PathBuf,
+    auto_refresh_hours: Option<u64>,
+    reader_refreshes_per_hour: u64,
 }
 
 impl LibationConfig {
@@ -4730,6 +5328,9 @@ impl LibationConfig {
             cli_path,
             libation_files_dir,
             library_root: config.library_root.clone(),
+            auto_refresh_hours: (config.libation_auto_refresh_hours > 0)
+                .then_some(config.libation_auto_refresh_hours),
+            reader_refreshes_per_hour: config.libation_reader_refreshes_per_hour,
         }
     }
 
@@ -4812,6 +5413,8 @@ async fn read_libation_status(state: &AppState) -> LibationStatus {
                 "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH."
                     .to_string(),
             ),
+            auto_refresh_hours: config.auto_refresh_hours,
+            manual_refreshes_per_hour: config.reader_refreshes_per_hour,
         };
     };
 
@@ -4848,6 +5451,8 @@ async fn read_libation_status(state: &AppState) -> LibationStatus {
                 accounts,
                 authenticated,
                 message,
+                auto_refresh_hours: config.auto_refresh_hours,
+                manual_refreshes_per_hour: config.reader_refreshes_per_hour,
             }
         }
         Ok(output) => LibationStatus {
@@ -4861,6 +5466,8 @@ async fn read_libation_status(state: &AppState) -> LibationStatus {
             accounts: Vec::new(),
             authenticated: false,
             message: Some(command_output_text(&output)),
+            auto_refresh_hours: config.auto_refresh_hours,
+            manual_refreshes_per_hour: config.reader_refreshes_per_hour,
         },
         Err(error) => LibationStatus {
             enabled: true,
@@ -4873,6 +5480,8 @@ async fn read_libation_status(state: &AppState) -> LibationStatus {
             accounts: Vec::new(),
             authenticated: false,
             message: Some(error.to_string()),
+            auto_refresh_hours: config.auto_refresh_hours,
+            manual_refreshes_per_hour: config.reader_refreshes_per_hour,
         },
     }
 }
@@ -4927,11 +5536,9 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
         .into_iter()
         .filter_map(|record| {
             let asin = non_empty_string(record.audible_product_id?)?;
-            let cover_art_url = libation_cover_art_url(
-                record
-                    .picture_large
-                    .as_deref()
-                    .or(record.picture_id.as_deref()),
+            let cover_art_url = libation_cover_art_url_from_ids(
+                record.picture_large.as_deref(),
+                record.picture_id.as_deref(),
             );
             Some(LibationBook {
                 asin,
@@ -5307,17 +5914,14 @@ async fn record_activity(
     historical_position_seconds: f64,
 ) {
     let today = today_ymd_utc();
-    let snapshot = {
-        let mut activity = state.activity.write().await;
-        let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
-        ensure_activity_baseline(user_activity, historical_position_seconds);
-        let entry = user_activity.entry(today).or_insert(0.0);
-        *entry += delta_seconds;
-        ActivityStore {
-            by_user: activity.by_user.clone(),
-        }
-    };
-    if let Err(error) = write_activity_store(&state.activity_file, &snapshot).await {
+    // Keep mutation and persistence under one lock. Otherwise two snapshots can
+    // be written in reverse order and an older activity total can win on disk.
+    let mut activity = state.activity.write().await;
+    let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
+    ensure_activity_baseline(user_activity, historical_position_seconds);
+    let entry = user_activity.entry(today).or_insert(0.0);
+    *entry += delta_seconds;
+    if let Err(error) = write_activity_store(&state.activity_file, &activity).await {
         tracing::warn!("failed to persist activity log: {}", error.message);
     }
 }
@@ -5613,6 +6217,23 @@ async fn write_libation_requests(
     write_json_atomic(path, store).await
 }
 
+async fn load_libation_refreshes(path: &FsPath) -> anyhow::Result<LibationRefreshStore> {
+    match fs::read_to_string(path).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(LibationRefreshStore::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_libation_refreshes(
+    path: &FsPath,
+    store: &LibationRefreshStore,
+) -> Result<(), ApiError> {
+    write_json_atomic(path, store).await
+}
+
 async fn load_sessions_store(sessions_file: &FsPath) -> anyhow::Result<HashMap<String, Session>> {
     match fs::read_to_string(sessions_file).await {
         Ok(contents) => {
@@ -5650,10 +6271,75 @@ fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
+async fn hash_password_async(state: &AppState, password: String) -> Result<String, ApiError> {
+    let _permit = state
+        .password_task_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))?
+}
+
+async fn verify_password_async(
+    state: &AppState,
+    password: String,
+    hash: String,
+) -> Result<bool, ApiError> {
+    let _permit = state
+        .password_task_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
+    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+}
+
+async fn verify_dummy_password_async(state: &AppState, password: String) -> Result<bool, ApiError> {
+    let _permit = state
+        .password_task_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
+    tokio::task::spawn_blocking(move || verify_password(&password, &DUMMY_PASSWORD_HASH))
+        .await
+        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+}
+
 fn generate_session_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn media_token_for_session(session_token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-media-v1\0");
+    digest.update(session_token.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn setup_token_digest(token: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-setup-v1\0");
+    digest.update(token.as_bytes());
+    digest.finalize().into()
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0_u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
 }
 
 fn normalize_username(value: &str) -> String {
@@ -5661,10 +6347,16 @@ fn normalize_username(value: &str) -> String {
 }
 
 fn validate_password(password: &str) -> Result<(), ApiError> {
-    if password.chars().count() < 6 {
-        return Err(ApiError::bad_request(
-            "Password must be at least 6 characters long.",
-        ));
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "Password must be at least {MIN_PASSWORD_CHARS} characters long."
+        )));
+    }
+    if length > MAX_PASSWORD_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "Password must be at most {MAX_PASSWORD_CHARS} characters long."
+        )));
     }
     Ok(())
 }
@@ -5712,19 +6404,60 @@ fn token_from_headers(headers: &HeaderMap) -> Option<String> {
     token_from_authorization(headers).or_else(|| token_from_cookies(headers))
 }
 
-fn session_cookie(token: &str) -> String {
+fn session_cookie(token: &str, secure: bool) -> String {
+    let secure_attribute = if secure { "; Secure" } else { "" };
     format!(
-        "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax"
+        "{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE_SECONDS}{secure_attribute}; HttpOnly; SameSite=Lax"
     )
 }
 
-fn expired_session_cookie() -> String {
-    format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+fn expired_session_cookie(secure: bool) -> String {
+    let secure_attribute = if secure { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0{secure_attribute}; HttpOnly; SameSite=Lax")
 }
 
-fn extract_request_token(req: &Request) -> Option<String> {
+fn request_client_ip(peer_address: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    if !peer_address.ip().is_loopback() {
+        return peer_address.ip();
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        // The nearest trusted proxy appends the address it observed at the
+        // end. Taking the last value prevents a client-supplied leading XFF
+        // value from bypassing throttles or local-only setup.
+        .and_then(|value| value.split(',').next_back())
+        .map(str::trim)
+        .and_then(|value| value.parse::<IpAddr>().ok())
+        .unwrap_or_else(|| peer_address.ip())
+}
+
+fn query_token_allowed(method: &Method, path: &str) -> bool {
+    if method != Method::GET {
+        return false;
+    }
+    let segments: Vec<_> = path.trim_matches('/').split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["api", "books", _, "cover"]
+            | ["api", "books", _, "readalong"]
+            | ["api", "books", _, "download"]
+            | ["api", "books", _, "tracks", _, "stream"]
+            | ["api", "libation", "covers", _]
+    )
+}
+
+enum RequestCredential {
+    Session(String),
+    Media(String),
+}
+
+fn extract_request_credential(req: &Request) -> Option<RequestCredential> {
     if let Some(token) = token_from_headers(req.headers()) {
-        return Some(token);
+        return Some(RequestCredential::Session(token));
+    }
+    if !query_token_allowed(req.method(), req.uri().path()) {
+        return None;
     }
     let query = req.uri().query()?;
     for pair in query.split('&') {
@@ -5732,7 +6465,7 @@ fn extract_request_token(req: &Request) -> Option<String> {
             continue;
         };
         if key == "token" && !value.is_empty() {
-            return Some(value.to_string());
+            return Some(RequestCredential::Media(value.to_string()));
         }
     }
     None
@@ -5775,50 +6508,110 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
         })
 }
 
+async fn resolve_media_session(state: &AppState, media_token: &str) -> Option<(AuthUser, String)> {
+    let session_token = {
+        let sessions = state.sessions.read().await;
+        sessions
+            .keys()
+            .find(|token| media_token_for_session(token) == media_token)
+            .cloned()?
+    };
+    resolve_session(state, &session_token)
+        .await
+        .map(|user| (user, session_token))
+}
+
 async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let Some(token) = extract_request_token(&req) else {
+    let Some(credential) = extract_request_credential(&req) else {
         return Err(ApiError::unauthorized("Missing authentication token."));
     };
-    let Some(user) = resolve_session(&state, &token).await else {
+    let resolved = match credential {
+        RequestCredential::Session(token) => resolve_session(&state, &token)
+            .await
+            .map(|user| (user, token)),
+        RequestCredential::Media(token) => resolve_media_session(&state, &token).await,
+    };
+    let Some((user, session_token)) = resolved else {
         return Err(ApiError::unauthorized("Session is invalid or expired."));
     };
     req.extensions_mut().insert(user);
+    req.extensions_mut().insert(SessionToken(session_token));
     Ok(next.run(req).await)
 }
 
-async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> Json<AuthStatus> {
+async fn auth_status(
+    State(state): State<AppState>,
+    ConnectInfo(peer_address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     let setup_required = state.users.read().await.users.is_empty();
-    let user = if let Some(token) = token_from_headers(&headers) {
-        resolve_session(&state, &token)
-            .await
-            .map(|auth| UserPublic {
-                id: auth.id,
-                username: auth.username,
-                is_admin: auth.is_admin,
-                is_owner: auth.is_owner,
-                can_approve_libation_requests: auth.can_approve_libation_requests,
-                allowed_book_ids: auth.allowed_book_ids,
-                libation_access: auth.libation_access,
-                created_at: String::new(),
-            })
+    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
+    let (user, media_token) = if let Some(token) = token_from_headers(&headers) {
+        match resolve_session(&state, &token).await {
+            Some(auth) => (
+                Some(UserPublic {
+                    id: auth.id,
+                    username: auth.username,
+                    is_admin: auth.is_admin,
+                    is_owner: auth.is_owner,
+                    can_approve_libation_requests: auth.can_approve_libation_requests,
+                    allowed_book_ids: auth.allowed_book_ids,
+                    libation_access: auth.libation_access,
+                    created_at: String::new(),
+                }),
+                Some(media_token_for_session(&token)),
+            ),
+            None => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
 
-    Json(AuthStatus {
-        setup_required,
-        user,
-    })
+    (
+        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(AuthStatus {
+            setup_required,
+            setup_token_required: setup_required
+                && state.deployment_mode.setup_token_required(remote_client),
+            setup_local_only: setup_required
+                && remote_client
+                && !state.deployment_mode.allows_remote_setup(),
+            user,
+            media_token,
+        }),
+    )
 }
 
 async fn setup_admin(
     State(state): State<AppState>,
+    ConnectInfo(peer_address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<SetupRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
+    if remote_client && !state.deployment_mode.allows_remote_setup() {
+        return Err(ApiError::forbidden(
+            "First-run setup must be completed from the server itself in local mode.",
+        ));
+    }
+    if state.deployment_mode.setup_token_required(remote_client) {
+        let candidate = payload.setup_token.as_deref().unwrap_or_default();
+        let valid_token = state
+            .setup_token
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|token| token.matches(candidate, unix_now_seconds()));
+        if !valid_token {
+            return Err(ApiError::forbidden(
+                "The setup token is invalid or expired. Restart the server to generate a new token.",
+            ));
+        }
+    }
     {
         let users = state.users.read().await;
         if !users.users.is_empty() {
@@ -5835,7 +6628,7 @@ async fn setup_admin(
     let new_user = User {
         id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
         username,
-        password_hash: hash_password(&payload.password)?,
+        password_hash: hash_password_async(&state, payload.password.clone()).await?,
         is_admin: true,
         is_owner: true,
         can_approve_libation_requests: true,
@@ -5854,17 +6647,24 @@ async fn setup_admin(
         users.users.push(new_user.clone());
         write_users_store(&state.users_file, &users).await?;
     }
+    state.setup_token.lock().await.take();
 
     let token = create_session(&state, &new_user.id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(&token))
-            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+        HeaderValue::from_str(&session_cookie(
+            &token,
+            state.deployment_mode.secure_cookies(),
+        ))
+        .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
     );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("pragma", HeaderValue::from_static("no-cache"));
     Ok((
         headers,
         Json(LoginResponse {
+            media_token: media_token_for_session(&token),
             token,
             user: UserPublic::from(&new_user),
         }),
@@ -5873,22 +6673,34 @@ async fn setup_admin(
 
 async fn login(
     State(state): State<AppState>,
+    ConnectInfo(peer_address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let username = normalize_username(&payload.username);
     let throttle_key = login_throttle_key(&username);
+    let ip_throttle_key = login_ip_throttle_key(request_client_ip(peer_address, &headers));
     {
         let mut attempts = state.login_attempts.lock().await;
         let now = unix_now_seconds();
         attempts.retain(|_, throttle| !throttle.is_stale(now));
         if attempts
             .get(&throttle_key)
-            .is_some_and(|throttle| throttle.is_locked(now))
+            .is_some_and(|throttle| throttle.is_locked(now, LOGIN_MAX_FAILURES))
+            || attempts
+                .get(&ip_throttle_key)
+                .is_some_and(|throttle| throttle.is_locked(now, LOGIN_IP_MAX_FAILURES))
         {
             return Err(ApiError::too_many_requests(
                 "Too many failed sign-in attempts. Try again in a minute.",
             ));
         }
+    }
+
+    if payload.password.chars().count() > MAX_PASSWORD_CHARS {
+        let _ = verify_dummy_password_async(&state, "oversized-password".to_string()).await?;
+        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
+        return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
     let matched_user = {
@@ -5903,26 +6715,35 @@ async fn login(
     let Some(user) = matched_user else {
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
-        let _ = verify_password(&payload.password, &DUMMY_PASSWORD_HASH);
-        record_login_failure(&state, &throttle_key).await;
+        let _ = verify_dummy_password_async(&state, payload.password).await?;
+        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
-    if !verify_password(&payload.password, &user.password_hash) {
-        record_login_failure(&state, &throttle_key).await;
+    if !verify_password_async(&state, payload.password, user.password_hash.clone()).await? {
+        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
-    state.login_attempts.lock().await.remove(&throttle_key);
+    let mut attempts = state.login_attempts.lock().await;
+    attempts.remove(&throttle_key);
+    attempts.remove(&ip_throttle_key);
+    drop(attempts);
 
     let token = create_session(&state, &user.id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(&token))
-            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+        HeaderValue::from_str(&session_cookie(
+            &token,
+            state.deployment_mode.secure_cookies(),
+        ))
+        .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
     );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("pragma", HeaderValue::from_static("no-cache"));
     Ok((
         headers,
         Json(LoginResponse {
+            media_token: media_token_for_session(&token),
             token,
             user: UserPublic::from(&user),
         }),
@@ -5933,34 +6754,46 @@ async fn login(
 /// (valid usernames are at most 64 characters anyway) to keep hostile logins
 /// from bloating the attempts map with megabyte-long keys.
 fn login_throttle_key(username: &str) -> String {
-    username
-        .to_lowercase()
-        .chars()
-        .take(LOGIN_THROTTLE_KEY_MAX_CHARS)
-        .collect()
+    format!(
+        "user:{}",
+        username
+            .to_lowercase()
+            .chars()
+            .take(LOGIN_THROTTLE_KEY_MAX_CHARS)
+            .collect::<String>()
+    )
 }
 
-async fn record_login_failure(state: &AppState, throttle_key: &str) {
+fn login_ip_throttle_key(client_ip: IpAddr) -> String {
+    format!("ip:{client_ip}")
+}
+
+async fn record_login_failures<'a>(
+    state: &AppState,
+    throttle_keys: impl IntoIterator<Item = &'a String>,
+) {
     let now = unix_now_seconds();
     let mut attempts = state.login_attempts.lock().await;
     // A flood of unique bogus usernames within the lockout window can't grow
     // the map without bound: stop tracking new names at the cap. Entries for
     // already-tracked names keep counting, and stale ones are pruned on every
     // login attempt.
-    if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
-        return;
+    for throttle_key in throttle_keys {
+        if attempts.len() >= LOGIN_THROTTLE_MAX_ENTRIES && !attempts.contains_key(throttle_key) {
+            continue;
+        }
+        let entry = attempts
+            .entry(throttle_key.clone())
+            .or_insert(LoginThrottle {
+                failures: 0,
+                last_failure: 0,
+            });
+        if entry.is_stale(now) {
+            entry.failures = 0;
+        }
+        entry.failures += 1;
+        entry.last_failure = now;
     }
-    let entry = attempts
-        .entry(throttle_key.to_string())
-        .or_insert(LoginThrottle {
-            failures: 0,
-            last_failure: 0,
-        });
-    if entry.is_stale(now) {
-        entry.failures = 0;
-    }
-    entry.failures += 1;
-    entry.last_failure = now;
 }
 
 async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
@@ -5970,9 +6803,55 @@ async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiEr
         created_at: unix_now_seconds(),
     };
     let mut sessions = state.sessions.write().await;
+    prune_sessions_for_new_session(&mut sessions, user_id, session.created_at);
     sessions.insert(token.clone(), session);
     write_sessions_store(&state.sessions_file, &sessions).await?;
     Ok(token)
+}
+
+fn prune_sessions_for_new_session(
+    sessions: &mut HashMap<String, Session>,
+    user_id: &str,
+    now_seconds: u64,
+) {
+    sessions.retain(|_, session| !session.is_expired(now_seconds));
+
+    let mut user_sessions = sessions
+        .iter()
+        .filter(|(_, session)| session.user_id == user_id)
+        .map(|(token, session)| (token.clone(), session.created_at))
+        .collect::<Vec<_>>();
+    user_sessions.sort_by_key(|(_, created_at)| *created_at);
+    let remove_for_user = user_sessions
+        .len()
+        .saturating_add(1)
+        .saturating_sub(MAX_SESSIONS_PER_USER);
+    for (token, _) in user_sessions.into_iter().take(remove_for_user) {
+        sessions.remove(&token);
+    }
+
+    let mut all_sessions = sessions
+        .iter()
+        .map(|(token, session)| (token.clone(), session.created_at))
+        .collect::<Vec<_>>();
+    all_sessions.sort_by_key(|(_, created_at)| *created_at);
+    let remove_total = all_sessions
+        .len()
+        .saturating_add(1)
+        .saturating_sub(MAX_SESSIONS_TOTAL);
+    for (token, _) in all_sessions.into_iter().take(remove_total) {
+        sessions.remove(&token);
+    }
+}
+
+fn revoke_password_change_sessions(
+    sessions: &mut HashMap<String, Session>,
+    user_id: &str,
+    current_session: Option<&str>,
+) {
+    sessions.retain(|token, session| {
+        session.user_id != user_id || current_session.is_some_and(|current| token == current)
+    });
 }
 
 async fn logout(
@@ -5987,8 +6866,10 @@ async fn logout(
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         SET_COOKIE,
-        HeaderValue::from_str(&expired_session_cookie())
-            .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
+        HeaderValue::from_str(&expired_session_cookie(
+            state.deployment_mode.secure_cookies(),
+        ))
+        .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
     );
     Ok((response_headers, Json(serde_json::json!({ "ok": true }))))
 }
@@ -6088,7 +6969,7 @@ async fn create_user(
     let new_user = User {
         id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
         username,
-        password_hash: hash_password(&payload.password)?,
+        password_hash: hash_password_async(&state, payload.password.clone()).await?,
         is_admin,
         is_owner,
         can_approve_libation_requests: is_owner
@@ -6161,6 +7042,7 @@ async fn delete_user(
 async fn change_password(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Extension(current_session): Extension<SessionToken>,
     Path(user_id): Path<String>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -6187,21 +7069,23 @@ async fn change_password(
 
     if changing_self {
         let current = payload.current_password.unwrap_or_default();
-        if !verify_password(&current, &user.password_hash) {
+        if !verify_password_async(&state, current, user.password_hash.clone()).await? {
             return Err(ApiError::unauthorized("Current password is incorrect."));
         }
     }
 
-    user.password_hash = hash_password(&payload.new_password)?;
+    user.password_hash = hash_password_async(&state, payload.new_password).await?;
     let target_id = user.id.clone();
     write_users_store(&state.users_file, &users).await?;
     drop(users);
 
-    if !changing_self {
-        let mut sessions = state.sessions.write().await;
-        sessions.retain(|_, session| session.user_id != target_id);
-        write_sessions_store(&state.sessions_file, &sessions).await?;
-    }
+    let mut sessions = state.sessions.write().await;
+    revoke_password_change_sessions(
+        &mut sessions,
+        &target_id,
+        changing_self.then_some(current_session.0.as_str()),
+    );
+    write_sessions_store(&state.sessions_file, &sessions).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -6425,10 +7309,16 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let message = if self.status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = %self.message, "request failed with an internal error");
+            "Internal server error.".to_string()
+        } else {
+            self.message
+        };
         (
             self.status,
             [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
-            Json(serde_json::json!({ "message": self.message })),
+            Json(serde_json::json!({ "message": message })),
         )
             .into_response()
     }
@@ -6629,6 +7519,13 @@ mod tests {
             None
         );
         assert_eq!(libation_cover_art_url(None), None);
+        assert_eq!(
+            super::libation_cover_art_url_from_ids(
+                Some("https://example.com/invalid-large-cover"),
+                Some("51FallbackCover")
+            ),
+            Some("/api/libation/covers/51FallbackCover".to_string())
+        );
     }
 
     #[test]
@@ -6883,8 +7780,167 @@ mod tests {
     fn login_throttle_key_is_bounded() {
         let long_name = "A".repeat(10_000);
         let key = super::login_throttle_key(&long_name);
-        assert_eq!(key.chars().count(), super::LOGIN_THROTTLE_KEY_MAX_CHARS);
-        assert_eq!(super::login_throttle_key(" Reader "), " reader ");
+        assert_eq!(
+            key.chars().count(),
+            "user:".len() + super::LOGIN_THROTTLE_KEY_MAX_CHARS
+        );
+        assert_eq!(super::login_throttle_key(" Reader "), "user: reader ");
+    }
+
+    #[test]
+    fn proxy_client_addresses_are_trusted_only_from_loopback() {
+        let mut headers = super::HeaderMap::new();
+        headers.insert("x-forwarded-for", "127.0.0.1, 203.0.113.8".parse().unwrap());
+        assert_eq!(
+            super::request_client_ip("127.0.0.1:4000".parse().unwrap(), &headers),
+            "203.0.113.8".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(
+            super::request_client_ip("198.51.100.4:4000".parse().unwrap(), &headers),
+            "198.51.100.4".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn session_cookies_require_https() {
+        let cookie = super::session_cookie("token", true);
+        assert!(cookie.contains("; Secure;"));
+        assert!(cookie.contains("; HttpOnly;"));
+        assert!(cookie.contains("; SameSite=Lax"));
+
+        let lan_cookie = super::session_cookie("token", false);
+        assert!(!lan_cookie.contains("; Secure"));
+        assert!(lan_cookie.contains("; HttpOnly;"));
+    }
+
+    #[test]
+    fn password_lengths_are_bounded() {
+        assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS)).is_ok());
+        assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS - 1)).is_err());
+        assert!(super::validate_password(&"x".repeat(super::MAX_PASSWORD_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn deployment_profiles_choose_safe_defaults() {
+        assert_eq!(
+            super::DeploymentMode::parse("local")
+                .unwrap()
+                .default_host(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            super::DeploymentMode::parse("lan").unwrap().default_host(),
+            "0.0.0.0"
+        );
+        assert!(
+            super::DeploymentMode::parse("proxy")
+                .unwrap()
+                .secure_cookies()
+        );
+        assert!(!super::DeploymentMode::Lan.secure_cookies());
+        assert!(super::DeploymentMode::Proxy.setup_token_required(false));
+        assert!(super::DeploymentMode::Lan.setup_token_required(true));
+        assert!(!super::DeploymentMode::Lan.setup_token_required(false));
+        assert!(super::DeploymentMode::parse("public").is_err());
+
+        let (legacy_mode, legacy_host) =
+            super::resolve_deployment_settings(None, Some("0.0.0.0".to_string())).unwrap();
+        assert_eq!(legacy_mode, super::DeploymentMode::Lan);
+        assert_eq!(legacy_host, "0.0.0.0");
+
+        let (lan_mode, lan_host) =
+            super::resolve_deployment_settings(Some("lan".to_string()), None).unwrap();
+        assert_eq!(lan_mode, super::DeploymentMode::Lan);
+        assert_eq!(lan_host, "0.0.0.0");
+
+        assert!(
+            super::resolve_deployment_settings(
+                Some("proxy".to_string()),
+                Some("0.0.0.0".to_string())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn setup_tokens_are_bounded_and_expire() {
+        let token = super::SetupToken::new("one-time-secret", 100);
+        assert!(token.matches("one-time-secret", 100));
+        assert!(!token.matches("wrong-secret", 100));
+        assert!(!token.matches(
+            "one-time-secret",
+            100 + super::SETUP_TOKEN_LIFETIME_SECONDS + 1
+        ));
+    }
+
+    #[test]
+    fn transfer_limits_are_configurable_and_bounded() {
+        let mut values = std::collections::HashMap::new();
+        assert_eq!(
+            super::config_gib_limit(&values, "max_upload_gib", 20).unwrap(),
+            Some(20 * super::GIBIBYTE_BYTES)
+        );
+
+        values.insert("max_upload_gib".to_string(), "0".to_string());
+        assert_eq!(
+            super::config_gib_limit(&values, "max_upload_gib", 20).unwrap(),
+            None
+        );
+        values.insert("max_upload_gib".to_string(), "2".to_string());
+        assert_eq!(
+            super::config_gib_limit(&values, "max_upload_gib", 20).unwrap(),
+            Some(2 * super::GIBIBYTE_BYTES)
+        );
+
+        values.insert(
+            "max_concurrent_book_downloads".to_string(),
+            "32".to_string(),
+        );
+        assert_eq!(
+            super::config_bounded_usize(&values, "max_concurrent_book_downloads", 1, 1, 32)
+                .unwrap(),
+            32
+        );
+        values.insert(
+            "max_concurrent_book_downloads".to_string(),
+            "33".to_string(),
+        );
+        assert!(
+            super::config_bounded_usize(&values, "max_concurrent_book_downloads", 1, 1, 32)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn query_tokens_are_limited_to_read_only_media_routes() {
+        use super::Method;
+
+        assert!(super::query_token_allowed(
+            &Method::GET,
+            "/api/books/book/cover"
+        ));
+        assert!(super::query_token_allowed(
+            &Method::GET,
+            "/api/books/book/tracks/track/stream"
+        ));
+        assert!(super::query_token_allowed(
+            &Method::GET,
+            "/api/libation/covers/picture"
+        ));
+        assert!(!super::query_token_allowed(&Method::GET, "/api/users"));
+        assert!(!super::query_token_allowed(
+            &Method::DELETE,
+            "/api/books/book/download"
+        ));
+    }
+
+    #[test]
+    fn media_credentials_are_distinct_from_session_credentials() {
+        let session = "secret-session-token";
+        let media = super::media_token_for_session(session);
+        assert_ne!(media, session);
+        assert_eq!(media, super::media_token_for_session(session));
+        assert_ne!(media, super::media_token_for_session("another-session"));
     }
 
     #[test]
@@ -6894,15 +7950,21 @@ mod tests {
             failures: super::LOGIN_MAX_FAILURES - 1,
             last_failure: now,
         };
-        assert!(!below_limit.is_locked(now));
+        assert!(!below_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
 
         let at_limit = LoginThrottle {
             failures: super::LOGIN_MAX_FAILURES,
             last_failure: now,
         };
-        assert!(at_limit.is_locked(now));
-        assert!(at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS - 1));
-        assert!(!at_limit.is_locked(now + super::LOGIN_LOCKOUT_SECONDS));
+        assert!(at_limit.is_locked(now, super::LOGIN_MAX_FAILURES));
+        assert!(at_limit.is_locked(
+            now + super::LOGIN_LOCKOUT_SECONDS - 1,
+            super::LOGIN_MAX_FAILURES
+        ));
+        assert!(!at_limit.is_locked(
+            now + super::LOGIN_LOCKOUT_SECONDS,
+            super::LOGIN_MAX_FAILURES
+        ));
         assert!(at_limit.is_stale(now + super::LOGIN_LOCKOUT_SECONDS));
     }
 
@@ -6997,6 +8059,12 @@ exit 0
         std::fs::set_permissions(&cli_path, permissions).unwrap();
 
         let state = super::AppState {
+            deployment_mode: super::DeploymentMode::Local,
+            setup_token: super::Arc::new(super::Mutex::new(None)),
+            max_upload_bytes: Some(super::DEFAULT_MAX_UPLOAD_GIB * super::GIBIBYTE_BYTES),
+            max_book_download_bytes: Some(
+                super::DEFAULT_MAX_BOOK_DOWNLOAD_GIB * super::GIBIBYTE_BYTES,
+            ),
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
             progress_file: data_dir.join("progress.json"),
@@ -7005,10 +8073,13 @@ exit 0
             activity_file: data_dir.join("activity.json"),
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
             libation_requests_file: data_dir.join("libation-requests.json"),
+            libation_refreshes_file: data_dir.join("libation-refreshes.json"),
             libation_config: super::LibationConfig {
                 cli_path: Some(cli_path),
                 libation_files_dir: None,
                 library_root,
+                auto_refresh_hours: Some(super::DEFAULT_LIBATION_AUTO_REFRESH_HOURS),
+                reader_refreshes_per_hour: super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
             alignment_config: super::AlignmentConfig { cli_path: None },
             update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000)
@@ -7025,9 +8096,19 @@ exit 0
             libation_requests: super::Arc::new(super::RwLock::new(
                 super::LibationRequestStore::default(),
             )),
+            libation_refreshes: super::Arc::new(super::Mutex::new(
+                super::LibationRefreshStore::default(),
+            )),
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
+            rescan_lock: super::Arc::new(super::Mutex::new(())),
             libation_job_lock: super::Arc::new(super::Mutex::new(())),
             login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
+            password_task_slots: super::Arc::new(super::Semaphore::new(
+                super::PASSWORD_TASK_CONCURRENCY,
+            )),
+            download_task_slots: super::Arc::new(super::Semaphore::new(
+                super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
+            )),
             upload_lock: super::Arc::new(super::Mutex::new(())),
         };
         (state, log_path)
@@ -7098,16 +8179,22 @@ exit 0
         let (state, _) = fake_libation_state(root.path());
         let first = super::setup_admin(
             super::State(state.clone()),
+            super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
+            super::HeaderMap::new(),
             super::Json(super::SetupRequest {
                 username: "first-owner".to_string(),
                 password: "password-one".to_string(),
+                setup_token: None,
             }),
         );
         let second = super::setup_admin(
             super::State(state.clone()),
+            super::ConnectInfo("127.0.0.1:41002".parse().unwrap()),
+            super::HeaderMap::new(),
             super::Json(super::SetupRequest {
                 username: "second-owner".to_string(),
                 password: "password-two".to_string(),
+                setup_token: None,
             }),
         );
 
@@ -7117,6 +8204,62 @@ exit 0
         assert_eq!(users.users.len(), 1);
         assert!(users.users[0].is_owner);
         assert!(users.users[0].is_admin);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_run_setup_rejects_remote_clients() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let mut headers = super::HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        let result = super::setup_admin(
+            super::State(state.clone()),
+            super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
+            headers,
+            super::Json(super::SetupRequest {
+                username: "remote-owner".to_string(),
+                password: "a-secure-password".to_string(),
+                setup_token: None,
+            }),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("remote setup unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error.status, super::StatusCode::FORBIDDEN);
+        assert!(state.users.read().await.users.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remote_first_run_setup_requires_the_bootstrap_token() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut state, _) = fake_libation_state(root.path());
+        state.deployment_mode = super::DeploymentMode::Proxy;
+        *state.setup_token.lock().await = Some(super::SetupToken::new(
+            "one-time-secret",
+            super::unix_now_seconds(),
+        ));
+        let mut headers = super::HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+
+        let result = super::setup_admin(
+            super::State(state.clone()),
+            super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
+            headers,
+            super::Json(super::SetupRequest {
+                username: "remote-owner".to_string(),
+                password: "a-secure-password".to_string(),
+                setup_token: Some("one-time-secret".to_string()),
+            }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert!(state.setup_token.lock().await.is_none());
+        assert!(state.users.read().await.users[0].is_owner);
     }
 
     #[cfg(unix)]
@@ -7249,6 +8392,79 @@ exit 0
         .unwrap()
         .0;
         assert_eq!(declined.status, "rejected");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimited() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+
+        for _ in 0..super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR {
+            let created = super::sync_libation_library(
+                super::State(state.clone()),
+                super::Extension(approval_reader()),
+            )
+            .await
+            .unwrap()
+            .0;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let status = state
+                    .jobs
+                    .read()
+                    .await
+                    .get(&created.job_id)
+                    .map(|job| job.status.clone());
+                if status.as_deref() == Some("completed") {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "reader refresh did not complete"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+
+        let limited = super::sync_libation_library(
+            super::State(state.clone()),
+            super::Extension(approval_reader()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(limited.status, super::StatusCode::TOO_MANY_REQUESTS);
+
+        let admin_first = super::sync_libation_library(
+            super::State(state.clone()),
+            super::Extension(admin_user()),
+        )
+        .await
+        .unwrap()
+        .0;
+        let admin_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let status = state
+                .jobs
+                .read()
+                .await
+                .get(&admin_first.job_id)
+                .map(|job| job.status.clone());
+            if status.as_deref() == Some("completed") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < admin_deadline,
+                "administrator refresh did not complete"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let admin_second =
+            super::sync_libation_library(super::State(state), super::Extension(admin_user()))
+                .await
+                .unwrap()
+                .0;
+        assert_ne!(admin_first.job_id, admin_second.job_id);
     }
 
     #[cfg(unix)]
@@ -7531,6 +8747,93 @@ exit 0
         };
         assert!(!session.is_expired(1_000 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
         assert!(session.is_expired(1_001 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
+    }
+
+    #[test]
+    fn new_sessions_prune_oldest_sessions_for_the_user() {
+        let mut sessions = (0..super::MAX_SESSIONS_PER_USER)
+            .map(|index| {
+                (
+                    format!("token-{index}"),
+                    Session {
+                        user_id: "reader".to_string(),
+                        created_at: 1_000 + index as u64,
+                    },
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        super::prune_sessions_for_new_session(&mut sessions, "reader", 2_000);
+        assert_eq!(sessions.len(), super::MAX_SESSIONS_PER_USER - 1);
+        assert!(!sessions.contains_key("token-0"));
+        assert!(sessions.contains_key(&format!("token-{}", super::MAX_SESSIONS_PER_USER - 1)));
+    }
+
+    #[test]
+    fn password_changes_revoke_other_sessions() {
+        let mut sessions = std::collections::HashMap::from([
+            (
+                "current".to_string(),
+                Session {
+                    user_id: "reader".to_string(),
+                    created_at: 1,
+                },
+            ),
+            (
+                "stolen".to_string(),
+                Session {
+                    user_id: "reader".to_string(),
+                    created_at: 2,
+                },
+            ),
+            (
+                "other-user".to_string(),
+                Session {
+                    user_id: "other".to_string(),
+                    created_at: 3,
+                },
+            ),
+        ]);
+
+        super::revoke_password_change_sessions(&mut sessions, "reader", Some("current"));
+        assert!(sessions.contains_key("current"));
+        assert!(!sessions.contains_key("stolen"));
+        assert!(sessions.contains_key("other-user"));
+
+        super::revoke_password_change_sessions(&mut sessions, "reader", None);
+        assert!(!sessions.contains_key("current"));
+        assert!(sessions.contains_key("other-user"));
+    }
+
+    #[tokio::test]
+    async fn temporary_download_is_removed_after_stream_file_closes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("download.zip");
+        std::fs::write(&path, b"zip bytes").unwrap();
+        let file = super::fs::File::open(&path).await.unwrap();
+        let permit = super::Arc::new(super::Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        drop(super::RemoveOnDropFile::new(file, path.clone(), permit));
+
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn atomic_state_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sessions.json");
+        super::write_json_atomic(&path, &serde_json::json!({ "token": "secret" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
