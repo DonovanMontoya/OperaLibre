@@ -49,6 +49,7 @@ import {
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
 const TOKEN_STORAGE_KEY = "operalibre.authToken";
+const MEDIA_TOKEN_STORAGE_KEY = "operalibre.mediaToken";
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
 const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
@@ -81,10 +82,17 @@ export function defaultServerUrl(serverType: ServerType) {
   const { hostname, protocol } = window.location;
   const host = hostname || "localhost";
   const scheme = protocol === "https:" ? "https:" : "http:";
-  const port = serverType === "jellyfin"
-    ? scheme === "https:" ? 8920 : 8096
-    : 4000;
-  return `${scheme}//${host}:${port}`;
+  if (serverType === "jellyfin") {
+    const port = scheme === "https:" ? 8920 : 8096;
+    return `${scheme}//${host}:${port}`;
+  }
+  // A production bundle is normally served by the Rust server or by the
+  // same-origin TLS proxy. Only Vite development needs to address port 4000
+  // directly; its own /api proxy remains available as a fallback as well.
+  if (window.location.port === "5173") {
+    return `${scheme}//${host}:4000`;
+  }
+  return window.location.origin;
 }
 
 export function isNativeApp(): boolean {
@@ -333,6 +341,7 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
 }
 
 let cachedToken: string | null = null;
+let cachedMediaToken: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
@@ -346,19 +355,52 @@ export function getStoredToken(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
+  if (!isNativeApp()) {
+    // Browser sessions are restored from the Secure, HttpOnly cookie. Remove
+    // tokens left by older builds so a later XSS cannot recover a persistent
+    // full-API credential from localStorage.
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    return null;
+  }
   cachedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
   return cachedToken;
 }
 
 export function setStoredToken(token: string | null) {
   cachedToken = token;
+  if (!token) {
+    setStoredMediaToken(null);
+  }
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (token && isNativeApp()) {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+}
+
+export function getStoredMediaToken(): string | null {
+  if (cachedMediaToken !== null) {
+    return cachedMediaToken;
+  }
+  if (typeof window === "undefined") {
+    return null;
+  }
+  cachedMediaToken = window.localStorage.getItem(MEDIA_TOKEN_STORAGE_KEY);
+  return cachedMediaToken;
+}
+
+export function setStoredMediaToken(token: string | null) {
+  cachedMediaToken = token;
   if (typeof window === "undefined") {
     return;
   }
   if (token) {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    window.localStorage.setItem(MEDIA_TOKEN_STORAGE_KEY, token);
   } else {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    window.localStorage.removeItem(MEDIA_TOKEN_STORAGE_KEY);
   }
 }
 
@@ -421,30 +463,34 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
 }
 
 export async function getAuthStatus() {
-  if (isDemoMode()) return { setupRequired: false, user: DEMO_USER };
+  if (isDemoMode()) return { setupRequired: false, user: DEMO_USER, mediaToken: null };
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
-      return { setupRequired: false, user: null };
+      return { setupRequired: false, user: null, mediaToken: null };
     }
     try {
-      return { setupRequired: false, user: await getJellyfinUser(currentApiBase(), token) };
+      return {
+        setupRequired: false,
+        user: await getJellyfinUser(currentApiBase(), token),
+        mediaToken: token
+      };
     } catch (error) {
       // Only treat an answered request as "not signed in"; when the server is
       // unreachable, let the caller fall back to the cached offline session.
       if (isNetworkError(error)) {
         throw error;
       }
-      return { setupRequired: false, user: null };
+      return { setupRequired: false, user: null, mediaToken: null };
     }
   }
   return request<AuthStatus>("/api/auth/status", undefined, STARTUP_TIMEOUT_MS);
 }
 
-export async function setupAdmin(username: string, password: string) {
+export async function setupAdmin(username: string, password: string, setupToken?: string) {
   return request<LoginResponse>("/api/auth/setup", {
     method: "POST",
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({ username, password, setupToken })
   });
 }
 
@@ -697,7 +743,9 @@ export async function getLibationStatus() {
       libraryRoot: "",
       accounts: [],
       authenticated: false,
-      message: "Libation is available only with an OperaLibre server."
+      message: "Libation is available only with an OperaLibre server.",
+      autoRefreshHours: null,
+      manualRefreshesPerHour: 0
     } satisfies LibationStatus;
   }
   return request<LibationStatus>("/api/libation/status");
@@ -765,8 +813,8 @@ export async function listJobs() {
   return request<JobStatus[]>("/api/jobs");
 }
 
-function appendToken(path: string) {
-  const token = getStoredToken();
+function appendMediaToken(path: string) {
+  const token = getStoredMediaToken();
   if (!token) {
     return path;
   }
@@ -778,8 +826,8 @@ export function mediaUrl(path: string) {
   if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
   return `${currentApiBase()}${
     getServerType() === "jellyfin"
-      ? jellyfinMediaPath(path, getStoredToken())
-      : appendToken(path)
+      ? jellyfinMediaPath(path, getStoredMediaToken())
+      : appendMediaToken(path)
   }`;
 }
 
@@ -788,7 +836,7 @@ export function bookDownloadUrl(bookId: string) {
   if (getServerType() === "jellyfin") {
     return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
   }
-  return `${currentApiBase()}${appendToken(`/api/books/${bookId}/download`)}`;
+  return `${currentApiBase()}${appendMediaToken(`/api/books/${bookId}/download`)}`;
 }
 
 export async function deleteDownloadedBook(bookId: string) {
@@ -799,7 +847,7 @@ export async function deleteDownloadedBook(bookId: string) {
 
 export function readalongUrl(path: string) {
   if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
-  return `${currentApiBase()}${appendToken(path)}`;
+  return `${currentApiBase()}${appendMediaToken(path)}`;
 }
 
 export async function reportPlaybackStarted(itemId: string, positionSeconds: number) {

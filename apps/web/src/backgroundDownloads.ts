@@ -24,7 +24,38 @@ interface BackgroundDownloadsPlugin {
 
 const BackgroundDownloads = registerPlugin<BackgroundDownloadsPlugin>("BackgroundDownloads");
 
-const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException("The download was cancelled.", "AbortError"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(
+      signal.reason ?? new DOMException("The download was cancelled.", "AbortError")
+    );
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function wait(milliseconds: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("The download was cancelled.", "AbortError"));
+      return;
+    }
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, milliseconds);
+    const abort = () => {
+      window.clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("The download was cancelled.", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 export function getBackgroundBookDownloadStatus(jobId: string) {
   return BackgroundDownloads.getStatus({ jobId });
@@ -34,15 +65,20 @@ export async function runBackgroundBookDownload(
   jobId: string,
   title: string,
   files: BackgroundDownloadFile[],
-  onProgress: (fraction: number, state: BackgroundDownloadStatus["state"]) => void
+  onProgress: (fraction: number, state: BackgroundDownloadStatus["state"]) => void,
+  signal?: AbortSignal
 ) {
-  await BackgroundDownloads.enqueueBook({ jobId, title, files });
+  await abortable(BackgroundDownloads.enqueueBook({ jobId, title, files }), signal);
 
+  let pollDelay = 500;
   while (true) {
-    const status = await BackgroundDownloads.getStatus({ jobId });
+    signal?.throwIfAborted();
+    const status = await abortable(BackgroundDownloads.getStatus({ jobId }), signal);
+    signal?.throwIfAborted();
     onProgress(Math.max(0, Math.min(1, status.fraction)), status.state);
     if (status.state === "completed") return;
     if (status.state === "failed") throw new Error(status.error || "The background download failed.");
-    await wait(500);
+    await wait(pollDelay, signal);
+    pollDelay = Math.min(5_000, Math.round(pollDelay * 1.5));
   }
 }

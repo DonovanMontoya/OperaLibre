@@ -2412,6 +2412,10 @@ select:focus {
   right: clamp(14px, 2vw, 28px);
   bottom: clamp(12px, 2vw, 24px);
   z-index: 25;
+  /* Keep embedded readalong frames in a lower compositor layer. Firefox can
+     otherwise paint an iframe over this fixed player even though hit-testing
+     and z-index correctly place the player on top. */
+  transform: translateZ(0);
   display: grid;
   grid-template-columns: auto minmax(180px, 1.15fr) minmax(180px, 1fr) auto;
   align-items: center;
@@ -3550,6 +3554,7 @@ select:focus {
 
 .user-menu-head strong {
   font-size: 0.95rem;
+  color: var(--ink);
 }
 
 .user-menu-head span {
@@ -4353,6 +4358,10 @@ select:focus {
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
   --status-h: env(safe-area-inset-top);
+  /* JavaScript replaces this with visualViewport.height and keeps it current
+     through WKWebView's multi-phase rotation. 100vh remains a safe fallback
+     for the earliest supported iOS 15 releases, before dvh was available. */
+  --native-viewport-height: 100vh;
 }
 
 /* Touch hygiene: no web text-selection, no long-press callout, no
@@ -4384,7 +4393,7 @@ html.native-app .player-pane > * {
 /* --- Shell becomes a stack of full-screen tab panels --- */
 html.native-app .native-shell {
   display: block;
-  min-height: 100dvh;
+  min-height: var(--native-viewport-height);
 }
 
 html.native-app .native-shell > .library-pane,
@@ -4994,7 +5003,7 @@ html.native-app .native-player-view-now .native-now-playing {
   box-sizing: border-box;
   width: 100%;
   max-width: 480px;
-  min-height: calc(100dvh - var(--tabs-h) - var(--status-h) - 58px);
+  min-height: calc(var(--native-viewport-height) - var(--tabs-h) - var(--status-h) - 58px);
   min-width: 0;
   align-content: center;
   gap: clamp(11px, 1.7vh, 17px);
@@ -5280,7 +5289,7 @@ html.native-app .native-now-utility button {
 
 @media (max-height: 740px) {
   html.native-app .native-player-view-now .native-now-playing {
-    min-height: calc(100dvh - var(--tabs-h) - var(--status-h) - 46px);
+    min-height: calc(var(--native-viewport-height) - var(--tabs-h) - var(--status-h) - 46px);
     gap: 9px;
     padding: 13px 15px;
   }
@@ -5309,6 +5318,130 @@ html.native-app .native-now-utility button {
 
   html.native-app .native-now-utility button {
     min-height: 42px;
+  }
+}
+
+/* A phone in landscape has enough width for a compact two-column player but
+   not enough height for the portrait stack. Without this layout the centered
+   grid overflows its fixed card, clipping both the cover and controls. The
+   height cap deliberately stops below the regular-width iPad layout. */
+@media (orientation: landscape) and (max-height: 499px) {
+  html.native-app .native-shell > .player-pane {
+    padding-top: max(8px, var(--status-h));
+    padding-bottom: 8px;
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+
+  html.native-app .native-player-view-now .native-now-playing {
+    width: 100%;
+    height: calc(var(--native-viewport-height) - var(--tabs-h) - var(--status-h) - 16px);
+    min-height: 0;
+    max-width: 760px;
+    grid-template-columns: minmax(112px, 0.72fr) minmax(0, 1.55fr);
+    grid-template-areas:
+      "art copy"
+      "art timeline"
+      "art transport"
+      "art utility";
+    align-content: center;
+    align-items: center;
+    column-gap: clamp(14px, 3vw, 30px);
+    row-gap: 5px;
+    margin: 0 auto;
+    padding: 8px clamp(10px, 2.5vw, 20px);
+    border-radius: 22px;
+  }
+
+  html.native-app .native-now-artwork {
+    grid-area: art;
+    align-self: center;
+    padding-top: 0;
+  }
+
+  html.native-app .native-now-artwork .large-cover {
+    width: min(25vw, 190px);
+    max-width: 100%;
+    max-height: calc(var(--native-viewport-height) - var(--tabs-h) - var(--status-h) - 44px);
+    border-radius: 16px;
+  }
+
+  html.native-app .native-now-copy {
+    grid-area: copy;
+    gap: 1px;
+  }
+
+  html.native-app .native-now-kicker,
+  html.native-app .native-now-copy > span:last-child {
+    font-size: 0.52rem;
+  }
+
+  html.native-app .native-now-copy h2 {
+    max-width: 100%;
+    font-size: clamp(1rem, 3.4vw, 1.3rem);
+    line-height: 1.05;
+  }
+
+  html.native-app .native-now-copy p {
+    font-size: 0.9rem;
+  }
+
+  html.native-app .native-now-timeline {
+    grid-area: timeline;
+    gap: 0;
+  }
+
+  html.native-app .native-now-timeline input[type="range"] {
+    height: 20px;
+  }
+
+  html.native-app .native-now-time-row {
+    font-size: 0.58rem;
+  }
+
+  html.native-app .native-now-transport {
+    grid-area: transport;
+    gap: clamp(4px, 1.5vw, 10px);
+    padding: 0 4px;
+  }
+
+  html.native-app .native-now-play {
+    width: 54px;
+    height: 54px;
+  }
+
+  html.native-app .native-now-transport .native-now-seek {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+    border-radius: 14px;
+  }
+
+  html.native-app .native-now-transport .native-now-chapter {
+    flex-basis: 44px;
+    max-width: 54px;
+  }
+
+  html.native-app .native-now-transport > button:not(.native-now-play) {
+    gap: 1px;
+  }
+
+  html.native-app .native-now-transport > button:not(.native-now-play) span {
+    font-size: 0.48rem;
+  }
+
+  html.native-app .native-now-utility {
+    grid-area: utility;
+    gap: 4px;
+  }
+
+  html.native-app .native-now-utility button {
+    min-height: 34px;
+    flex-direction: row;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 10px;
+    font-size: 0.47rem;
   }
 }
 
@@ -6018,7 +6151,7 @@ html.native-app .modal-scrim {
 
 html.native-app .modal-card {
   width: 100%;
-  max-height: calc(100dvh - var(--status-h) - 12px);
+  max-height: calc(var(--native-viewport-height) - var(--status-h) - 12px);
   border-radius: 22px 22px 0 0;
   border-left: 0;
   border-right: 0;
@@ -6988,38 +7121,42 @@ html.native-app .recent-row {
    iPad — regular-width native layout
 
    The phone shell stacks the library and player panes as
-   full-screen tab pages. On an iPad there is room for both at
-   once, so the shell goes back to the two-column reading desk
-   the browser build already uses: library spine on the left,
-   player on the right, spine tab bar still along the bottom.
+   full-screen tab pages. Keep that distinction on iPad: Shelf is
+   a library-first catalogue and Reading is a dedicated player.
+   Selecting a title from Shelf temporarily opens a two-column
+   master/detail desk without turning the Reading tab into a
+   duplicate of Shelf.
 
    Gated on height as well as width so an iPhone held in
-   landscape (up to 932pt wide, but never 700pt tall) keeps the
-   phone layout. Every iPad clears 768x700 in both orientations.
-   iPad Split View narrower than 768pt falls back to the phone
-   layout too, which is what we want.
+   landscape (up to 932pt wide, but under 500pt tall) keeps the
+   phone layout. The 720pt width includes iPad mini portrait and
+   remains usable in larger Stage Manager windows. Narrow Split
+   View windows fall back to the single-pane navigation.
    ============================================================ */
-@media (min-width: 768px) and (min-height: 700px) {
+@media (min-width: 720px) and (min-height: 500px) {
   html.native-app {
     --ipad-pane-w: clamp(300px, 32vw, 400px);
   }
 
   html.native-app .native-shell {
     display: grid;
-    grid-template-columns: var(--ipad-pane-w) minmax(0, 1fr);
-    min-height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    min-height: var(--native-viewport-height);
   }
 
-  /* Both panes are live columns: always visible, each scrolling on
-     its own, never cross-fading. The tab bar and book selection now
-     only change what the right column shows. */
-  html.native-app .native-shell > .library-pane,
-  html.native-app .native-shell > .player-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open {
+    grid-template-columns: var(--ipad-pane-w) minmax(0, 1fr);
+  }
+
+  /* Shelf and Reading remain separate destinations. The only split view is
+     Shelf's selected-book detail page, where both columns are useful. */
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .player-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .library-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
     position: relative;
     inset: auto;
-    height: 100dvh;
+    height: var(--native-viewport-height);
     opacity: 1;
     visibility: visible;
     transform: none;
@@ -7027,32 +7164,71 @@ html.native-app .recent-row {
     transition: none;
   }
 
-  html.native-app .native-shell > .library-pane {
+  html.native-app .native-shell.tab-shelf:not(.library-book-open) > .library-pane,
+  html.native-app .native-shell.tab-reading > .player-pane {
+    grid-column: 1 / -1;
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+    grid-column: 1;
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+    grid-column: 2;
+  }
+
+  html.native-app .native-shell.tab-shelf > .library-pane {
     border-right: 1px solid #000;
     box-shadow: inset -10px 0 24px rgba(0, 0, 0, 0.55);
   }
 
-  /* The tab bar spans the full width, so both columns clear it.
-     The mini-player only overlaps the right column (below). */
-  html.native-app .native-shell > .library-pane,
-  html.native-app .native-shell.tab-shelf > .library-pane {
-    padding-bottom: calc(var(--tabs-h) + 24px);
-  }
-
-  html.native-app .native-shell > .player-pane {
+  /* Shelf owns the mini-player, so its catalogue clears the transport.
+     In master/detail mode the transport moves to the detail column and the
+     library only needs to clear the tab bar. */
+  html.native-app .native-shell.tab-shelf:not(.library-book-open) > .library-pane {
     padding-bottom: calc(var(--tabs-h) + 108px);
   }
 
-  /* The mini-player belongs to the right column now — docking it
-     full-width would cover the library list it sits beside. */
-  html.native-app .mini-player {
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+    padding-bottom: calc(var(--tabs-h) + 24px);
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+    padding-bottom: calc(var(--tabs-h) + 108px);
+  }
+
+  html.native-app .native-shell.tab-reading > .player-pane {
+    padding-bottom: calc(var(--tabs-h) + 24px);
+  }
+
+  /* The dedicated Reading screen already contains every transport control.
+     Shelf keeps the compact player, full-width in catalogue mode and docked
+     to the detail column when a selected book is open. */
+  html.native-app .native-shell.tab-reading .mini-player {
+    display: none;
+  }
+
+  html.native-app .native-shell.tab-shelf:not(.library-book-open) .mini-player {
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+  }
+
+  html.native-app .native-shell.tab-shelf.library-book-open .mini-player {
     left: calc(var(--ipad-pane-w) + 16px);
     right: 16px;
   }
 
-  /* "Back to Library" is meaningless when the library never left. */
-  html.native-app .native-shell.tab-shelf .native-player-return {
+  /* The library remains visible beside its selected-book detail page. */
+  html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
     display: none;
+  }
+
+  /* Use the newly available catalogue width instead of stretching each
+     list row from edge to edge. */
+  html.native-app .native-shell.tab-shelf:not(.library-book-open) .book-list.is-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
   }
 
   /* The native book heading centres itself in a single column because a
@@ -7118,15 +7294,111 @@ html.native-app .recent-row {
     font-size: 0.6rem;
   }
 
-  /* One veil now spans two differently-coloured columns, so it has to
-     change colour where they meet. Overlay tabs (ledger, settings,
-     admin) cover the whole width and keep their single tint. */
-  html.native-app .native-shell.tab-shelf .ios-status-veil,
-  html.native-app .native-shell.tab-reading .ios-status-veil {
+  /* Only Shelf's book-detail state spans differently coloured columns.
+     The primary Shelf and Reading destinations retain their own tint. */
+  html.native-app .native-shell.tab-shelf.library-book-open .ios-status-veil {
     background: linear-gradient(
       90deg,
       rgba(16, 10, 7, 0.55) 0 var(--ipad-pane-w),
       rgba(241, 231, 208, 0.72) var(--ipad-pane-w)
     );
+  }
+
+  html.native-app .native-shell.tab-shelf:not(.library-book-open) .ios-status-veil {
+    background: rgba(16, 10, 7, 0.55);
+  }
+
+  html.native-app .native-shell.tab-reading .ios-status-veil {
+    background: rgba(241, 231, 208, 0.72);
+  }
+}
+
+/* The Shelf keeps a persistent player above the tab bar. In phone landscape,
+   treat it as a compact transport strip: the portrait two-row card consumes
+   most of the short viewport, and its five controls run beneath the Dynamic
+   Island. Inset the whole surface—not just its contents—inside the safe area. */
+@media (orientation: landscape) and (max-height: 499px) {
+  html.native-app .native-shell.tab-shelf .mini-player {
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+    bottom: calc(var(--tabs-h) + 8px);
+    min-height: 64px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 1fr;
+    gap: 10px;
+    padding: 6px 10px 10px;
+    border-radius: 16px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-cover-button {
+    width: auto;
+    height: 44px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-meta {
+    gap: 1px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-meta::before {
+    font-size: 0.46rem;
+    letter-spacing: 0.22em;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-meta strong {
+    font-size: 0.88rem;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-meta > span {
+    font-size: 0.76rem;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-actions {
+    gap: 5px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-actions button {
+    width: 36px;
+    height: 36px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-actions .mini-play {
+    width: 42px;
+    height: 42px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-actions .mini-chapter {
+    display: none;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-progress {
+    position: absolute;
+    right: 10px;
+    bottom: 1px;
+    left: 10px;
+    display: block;
+    padding: 0;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-progress input[type="range"] {
+    display: block;
+    height: 7px;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-progress input[type="range"]::-webkit-slider-thumb {
+    width: 7px;
+    height: 7px;
+    margin-top: -2.5px;
+    box-shadow: 0 0 0 2px var(--spine), 0 0 0 1px var(--gold-soft);
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-progress input[type="range"]::-moz-range-thumb {
+    width: 7px;
+    height: 7px;
+    border-width: 2px;
+    box-shadow: none;
+  }
+
+  html.native-app .native-shell.tab-shelf .mini-progress > span {
+    display: none;
   }
 }

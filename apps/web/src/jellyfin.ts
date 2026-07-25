@@ -363,7 +363,13 @@ export async function loginToJellyfin(baseUrl: string, username: string, passwor
   if (!result.AccessToken || !result.User) {
     throw new Error("Jellyfin did not return an access token.");
   }
-  return { token: result.AccessToken, user: mapUser(result.User) };
+  return {
+    token: result.AccessToken,
+    // Jellyfin does not issue a narrower media credential, so its access
+    // token remains the credential required by Jellyfin media URLs.
+    mediaToken: result.AccessToken,
+    user: mapUser(result.User)
+  };
 }
 
 export async function getJellyfinUser(baseUrl: string, token: string) {

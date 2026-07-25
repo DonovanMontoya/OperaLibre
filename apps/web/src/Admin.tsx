@@ -180,7 +180,7 @@ export function AdminPanel({
   }
 
   async function handleResetPassword(user: AuthUser) {
-    const password = window.prompt(`Set a new password for ${user.username} (at least 6 characters):`);
+    const password = window.prompt(`Set a new password for ${user.username} (at least 12 characters):`);
     if (!password) return;
     setBusyKey(`password:${user.id}`);
     setError(null);
@@ -604,7 +604,7 @@ export function AdminPanel({
             <span className="section-label"><UserPlus size={13} /> New account</span>
             <h2>Create a user</h2>
             <label><span>Username</span><input value={newUsername} onChange={(event) => setNewUsername(event.currentTarget.value)} required /></label>
-            <label><span>Temporary password</span><input type="password" minLength={6} value={newPassword} onChange={(event) => setNewPassword(event.currentTarget.value)} required /></label>
+            <label><span>Temporary password</span><input type="password" minLength={12} maxLength={1024} value={newPassword} onChange={(event) => setNewPassword(event.currentTarget.value)} required /></label>
             {currentUser.isOwner ? (
               <label><span>Role</span><select value={newRole} onChange={(event) => setNewRole(event.currentTarget.value as AccountRole)}><option value="reader">Reader</option><option value="admin">Administrator</option><option value="owner">Owner</option></select></label>
             ) : <p className="admin-empty">New accounts are created as readers. An owner can promote them later.</p>}

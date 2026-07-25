@@ -145,6 +145,8 @@ export type LibationStatus = {
   accounts: LibationAccount[];
   authenticated: boolean;
   message: string | null;
+  autoRefreshHours: number | null;
+  manualRefreshesPerHour: number;
 };
 
 export type LibationBook = {
@@ -171,6 +173,8 @@ export type LibationAccess = "direct" | "approval";
 export type LibationAccessStatus = {
   enabled: boolean;
   libationAccess: LibationAccess;
+  autoRefreshHours: number | null;
+  manualRefreshesPerHour: number;
 };
 
 export type LibationDownloadRequest = {
@@ -245,11 +249,19 @@ export type ServerType = "operalibre" | "jellyfin";
 
 export type AuthStatus = {
   setupRequired: boolean;
+  /** Newer OperaLibre servers require a one-time console token for remote setup. */
+  setupTokenRequired?: boolean;
+  /** True when this client must complete setup from the server machine instead. */
+  setupLocalOnly?: boolean;
   user: AuthUser | null;
+  /** Absent when connected to a server released before media tokens. */
+  mediaToken?: string | null;
 };
 
 export type LoginResponse = {
   token: string;
+  /** Absent when connected to a server released before media tokens. */
+  mediaToken?: string;
   user: AuthUser;
 };
 

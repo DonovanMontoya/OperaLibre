@@ -23,17 +23,31 @@ type StoredMedia = { key: string; blob: Blob };
 
 const isNative = () => Capacitor.isNativePlatform();
 
+let databasePromise: Promise<IDBDatabase> | null = null;
+
 function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (databasePromise) return databasePromise;
+  databasePromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains("media")) db.createObjectStore("media", { keyPath: "key" });
       if (!db.objectStoreNames.contains("data")) db.createObjectStore("data");
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        databasePromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      databasePromise = null;
+      reject(request.error);
+    };
   });
+  return databasePromise;
 }
 
 async function read<T>(storeName: string, key: string): Promise<T | null> {
@@ -72,6 +86,7 @@ async function readMedia(bookId: string, kind: string) {
   const legacy = await read<StoredMedia>("media", `${bookId}:${kind}`);
   if (legacy) {
     await write("media", { ...legacy, key: mediaKey(bookId, kind) });
+    await removeRecord("media", `${bookId}:${kind}`);
   }
   return legacy;
 }
@@ -191,7 +206,10 @@ export function getOfflineUser(): AuthUser | null {
     const scoped = localStorage.getItem(scopedKey(USER_KEY));
     const legacy = scoped ?? localStorage.getItem(USER_KEY);
     const user = JSON.parse(legacy ?? "null") as AuthUser | null;
-    if (!scoped && user) cacheOfflineUser(user);
+    if (!scoped && user) {
+      cacheOfflineUser(user);
+      localStorage.removeItem(USER_KEY);
+    }
     return user;
   } catch {
     return null;
@@ -206,7 +224,10 @@ export async function getCachedLibrary(userId: string) {
   const scoped = await read<Book[]>("data", libraryKey(userId));
   if (scoped) return scoped;
   const legacy = await read<Book[]>("data", `library:${userId}`);
-  if (legacy) await cacheLibrary(userId, legacy);
+  if (legacy) {
+    await cacheLibrary(userId, legacy);
+    await removeRecord("data", `library:${userId}`);
+  }
   return legacy ?? [];
 }
 
@@ -218,7 +239,10 @@ export function getCachedProgress(userId: string, bookId: string) {
   return read<Progress>("data", progressKey(userId, bookId)).then(async (scoped) => {
     if (scoped) return scoped;
     const legacy = await read<Progress>("data", `progress:${userId}:${bookId}`);
-    if (legacy) await cacheProgress(userId, legacy);
+    if (legacy) {
+      await cacheProgress(userId, legacy);
+      await removeRecord("data", `progress:${userId}:${bookId}`);
+    }
     return legacy;
   });
 }
@@ -248,7 +272,8 @@ export async function downloadBookForOffline(
     totalTracks: number,
     currentTrackPercent?: number,
     state?: BackgroundDownloadStatus["state"]
-  ) => void
+  ) => void,
+  signal?: AbortSignal
 ) {
   const total = book.tracks.length;
   if (isNative()) {
@@ -275,20 +300,20 @@ export async function downloadBookForOffline(
       const trackProgress = fraction * total;
       const completed = Math.min(total, Math.floor(trackProgress));
       onProgress(completed, total, completed < total ? (trackProgress - completed) * 100 : undefined, state);
-    });
+    }, signal);
     return;
   }
 
   let completed = 0;
   for (const track of book.tracks) {
-    const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl));
+    const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
     if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
     await write("media", { key: mediaKey(book.id, `track:${track.id}`), blob: await response.blob() });
     completed += 1;
     onProgress(completed, total);
   }
   if (book.coverArtUrl) {
-    const response = await fetch(resolveUrl(book.coverArtUrl));
+    const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
     if (response.ok) await write("media", { key: mediaKey(book.id, "cover"), blob: await response.blob() });
   }
 }

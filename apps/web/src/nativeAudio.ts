@@ -136,6 +136,7 @@ export async function getNativeAudioRecovery(scopeKey: string): Promise<NativeAu
 export function attachNativeAudioPlayer(
   audio: HTMLAudioElement,
   onError: (message: string) => void,
+  onFallback: () => void,
   recovery: NativeAudioRecoveryIdentity,
   onTrackChanged: (
     trackId: string,
@@ -149,12 +150,20 @@ export function attachNativeAudioPlayer(
   let disposed = false;
   let endedFromNative = false;
   let nativeIsPlaying = false;
+  let fellBack = false;
   const listenerHandles: PluginListenerHandle[] = [];
 
   const failOverToWebAudio = (message: string) => {
-    if (disposed) return;
+    if (disposed || fellBack) return;
+    fellBack = true;
+    const shouldResume = nativeIsPlaying;
     audio.muted = false;
     onError(message);
+    onFallback();
+    void NativeAudio.stop().catch(() => undefined);
+    if (shouldResume) {
+      void audio.play().catch(() => undefined);
+    }
   };
 
   const safely = (operation: Promise<void>) => {
@@ -206,7 +215,7 @@ export function attachNativeAudioPlayer(
   if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) load();
 
   void NativeAudio.addListener("state", (state) => {
-    if (disposed) return;
+    if (disposed || fellBack) return;
     // AVPlayer remains the only running decoder. Reflect its state through
     // synthetic media events so React's existing UI stays current without
     // starting or stopping the muted HTML decoder during app transitions.
@@ -227,7 +236,7 @@ export function attachNativeAudioPlayer(
   });
 
   void NativeAudio.addListener("ended", () => {
-    if (disposed || endedFromNative) return;
+    if (disposed || fellBack || endedFromNative) return;
     endedFromNative = true;
     audio.pause();
     audio.dispatchEvent(new Event("ended"));
@@ -237,7 +246,7 @@ export function attachNativeAudioPlayer(
   });
 
   void NativeAudio.addListener("trackChanged", (event) => {
-    if (disposed || !event.trackId || event.trackId === recovery.trackId) return;
+    if (disposed || fellBack || !event.trackId || event.trackId === recovery.trackId) return;
     onTrackChanged(
       event.trackId,
       event.positionSeconds,
@@ -263,7 +272,7 @@ export function attachNativeAudioPlayer(
     audio.removeEventListener("volumechange", volumeChange);
     audio.removeEventListener("emptied", emptied);
     audio.removeEventListener("operalibre-native-queue-change", load);
-    audio.pause();
+    if (!fellBack) audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();
     void NativeAudio.stop().catch(() => undefined);

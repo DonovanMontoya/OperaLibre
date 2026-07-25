@@ -73,6 +73,7 @@ import {
 } from "./playbackSpeed";
 import { isLibationAdding } from "./libationState";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
+import { buildChapterSegments } from "./chapters";
 import {
   bookDownloadUrl,
   activateServerAlias,
@@ -94,6 +95,7 @@ import {
   getServerIdentityUrl,
   getServerUrl,
   getServerType,
+  getStoredMediaToken,
   getStoredToken,
   hasUserConfiguredServer,
   isNetworkError,
@@ -115,6 +117,7 @@ import {
   rescanLibrary,
   saveProgress,
   setBookCompletion,
+  setStoredMediaToken,
   setStoredToken,
   setUnauthorizedHandler,
   syncLibationLibrary,
@@ -1135,7 +1138,7 @@ function EpubReadalong({
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [focusMode, url]);
+  }, [url]);
 
   useEffect(() => {
     window.localStorage.setItem("operalibre.readerTheme", readerTheme);
@@ -1452,7 +1455,7 @@ function EpubReadalong({
       </div>
     </div>
   );
-  return focusMode ? createPortal(reader, document.body) : reader;
+  return reader;
 }
 
 /**
@@ -1657,7 +1660,7 @@ function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<unknown>) {
 type AuthState =
   | { phase: "loading" }
   | { phase: "server"; returnToLocal?: boolean }
-  | { phase: "setup" }
+  | { phase: "setup"; setupTokenRequired: boolean; setupLocalOnly: boolean }
   | { phase: "login" }
   | { phase: "ready"; user: AuthUser };
 
@@ -1669,7 +1672,13 @@ function initialAuthState(): AuthState {
   // A native launch should not sit behind a network timeout. This is the same
   // cached identity used for offline mode; checkAuth validates it in the
   // background and still returns to login if the server rejects the session.
-  const cachedUser = isNativeApp() && getStoredToken() ? getOfflineUser() : null;
+  // Media elements cannot send the API Authorization header, so the native
+  // shelf must wait for its query-safe media credential before it renders
+  // remote artwork. This matters on the first launch after upgrading from a
+  // build that only persisted the full session token.
+  const cachedUser = isNativeApp() && getStoredToken() && getStoredMediaToken()
+    ? getOfflineUser()
+    : null;
   return cachedUser
     ? { phase: "ready", user: cachedUser }
     : { phase: "loading" };
@@ -1695,10 +1704,17 @@ export default function App() {
       const status = await getAuthStatus();
       if (status.setupRequired) {
         setStoredToken(null);
-        setAuthState({ phase: "setup" });
+        setAuthState({
+          phase: "setup",
+          setupTokenRequired: status.setupTokenRequired ?? false,
+          setupLocalOnly: status.setupLocalOnly ?? false
+        });
         return;
       }
       if (status.user) {
+        // Servers released before the narrower media credential return no
+        // mediaToken and still expect the session token on media URLs.
+        setStoredMediaToken(status.mediaToken ?? getStoredToken());
         cacheOfflineUser(status.user);
         setAuthState({ phase: "ready", user: status.user });
         return;
@@ -1798,10 +1814,13 @@ export default function App() {
     return (
       <AuthGate
         mode={authState.phase}
-        onAuthenticated={(token, user) => {
-          setStoredToken(token);
-          cacheOfflineUser(user);
-          setAuthState({ phase: "ready", user });
+        setupTokenRequired={authState.phase === "setup" ? authState.setupTokenRequired : false}
+        setupLocalOnly={authState.phase === "setup" ? authState.setupLocalOnly : false}
+        onAuthenticated={(response) => {
+          setStoredToken(response.token);
+          setStoredMediaToken(response.mediaToken ?? response.token);
+          cacheOfflineUser(response.user);
+          setAuthState({ phase: "ready", user: response.user });
         }}
         onChangeServer={() => {
           setStoredToken(null);
@@ -2021,8 +2040,11 @@ function MainApp({
   const chaptersListRef = useRef<HTMLDivElement | null>(null);
   const trackListSectionRef = useRef<HTMLElement | null>(null);
   const wantsAutoplayRef = useRef(false);
-  const nativeAudio = usesNativeAudioPlayer();
+  const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
+  const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
+  const libraryRequestGenerationRef = useRef(0);
+  const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
@@ -2156,18 +2178,18 @@ function MainApp({
     if (!playbackBook || !bookDuration || playbackBook.chapters.length === 0) {
       return [];
     }
-
-    return playbackBook.chapters.map((chapter, index) => {
-      const nextChapter = playbackBook.chapters[index + 1];
-      const endSeconds = chapter.endSeconds ?? nextChapter?.startSeconds ?? bookDuration;
-      return {
-        ...chapter,
-        chapterNumber: index + 1,
-        endSeconds: Math.max(chapter.startSeconds, Math.min(endSeconds, bookDuration)),
-        durationSeconds: Math.max(1, Math.min(endSeconds, bookDuration) - chapter.startSeconds)
-      };
-    });
+    return buildChapterSegments(playbackBook.chapters, bookDuration);
   }, [bookDuration, playbackBook]);
+  const selectedChapterSegments = useMemo(
+    () =>
+      selectedBook
+        ? buildChapterSegments(
+            selectedBook.chapters,
+            selectedBook.durationSeconds ?? durationFromTracks(selectedBook)
+          )
+        : [],
+    [selectedBook]
+  );
   const activeChapter =
     chapterSegments.find(
       (chapter) => bookPosition >= chapter.startSeconds && bookPosition < chapter.endSeconds
@@ -2233,10 +2255,13 @@ function MainApp({
   }
 
   const loadBooks = useCallback(async () => {
+    const requestGeneration = ++libraryRequestGenerationRef.current;
+    const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
     setIsLoading(true);
     setError(null);
     const deviceBooks = native ? getDeviceBooks() : [];
     const applyLoadedBooks = (nextBooks: Book[]) => {
+      if (!isCurrentRequest()) return;
       setBooks(nextBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -2251,8 +2276,10 @@ function MainApp({
     };
     if (localMode) {
       applyLoadedBooks(deviceBooks);
-      setIsOffline(false);
-      setIsLoading(false);
+      if (isCurrentRequest()) {
+        setIsOffline(false);
+        setIsLoading(false);
+      }
       return;
     }
 
@@ -2272,6 +2299,7 @@ function MainApp({
         setIsLoading(false);
       }
       hydratedServerBooks = await getCachedLibrary(currentUser.id).catch(() => []);
+      if (!isCurrentRequest()) return;
       const hydratedBooks = mergeDeviceAndServerBooks(hydratedServerBooks, deviceBooks);
       if (hydratedBooks.length) {
         applyLoadedBooks(hydratedBooks);
@@ -2282,6 +2310,7 @@ function MainApp({
 
     try {
       const liveLibrary = await liveLibraryRequest;
+      if (!isCurrentRequest()) return;
       if (!liveLibrary.ok) throw liveLibrary.requestError;
       const serverBooks = liveLibrary.serverBooks;
       const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
@@ -2311,6 +2340,7 @@ function MainApp({
           book.id
         );
         const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+        if (!isCurrentRequest()) return;
         const local = freshestProgress(mappedDevice, checkpoint, cached);
         const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
         if (
@@ -2321,21 +2351,24 @@ function MainApp({
         }
         const location = resolveProgressLocation(book.tracks, local);
         if (!location) return;
+        if (!isCurrentRequest()) return;
         await saveProgress(book.id, {
           ...local,
           trackId: location.trackId,
           positionSeconds: location.positionSeconds
         }, { isPaused: true }).catch(() => undefined);
       })).catch(() => undefined);
+      if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks);
       setIsOffline(false);
-      void cacheLibrary(currentUser.id, serverBooks);
+      if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
         // Audio tags commonly omit the publisher blurb. Libation already has
         // the correct Audible description and returns its matched local book
         // id, so enrich in the background without delaying the shelf.
         void getLibationBooks()
           .then((catalog) => {
+            if (!isCurrentRequest()) return;
             setLibationBooks(catalog);
             setLibationBooksLoaded(true);
           })
@@ -2345,6 +2378,7 @@ function MainApp({
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
         : await getCachedLibrary(currentUser.id);
+      if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
       if (cached.length) {
@@ -2354,7 +2388,7 @@ function MainApp({
         setError("The audiobook server is not reachable.");
       }
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   }, [currentUser.id, isOperaLibre, localMode, native]);
 
@@ -2575,7 +2609,9 @@ function MainApp({
           libraryRoot: "",
           accounts: [],
           authenticated: access.enabled,
-          message: access.enabled ? null : "Libation is not configured on this server."
+          message: access.enabled ? null : "Libation is not configured on this server.",
+          autoRefreshHours: access.autoRefreshHours,
+          manualRefreshesPerHour: access.manualRefreshesPerHour
         });
       }
     } catch {
@@ -2696,12 +2732,18 @@ function MainApp({
       }
       requestInFlight = true;
       const generation = libationJobsGenerationRef.current;
-      void listJobs()
+      const previous = libationJobsRef.current;
+      const jobsRequest = currentUser.isAdmin
+        ? listJobs()
+        : Promise.all(previous.filter(isPendingJob).map((job) => getJob(job.id))).then((updates) => {
+            const updatesById = new Map(updates.map((job) => [job.id, job]));
+            return previous.map((job) => updatesById.get(job.id) ?? job);
+          });
+      void jobsRequest
         .then((jobs) => {
           if (cancelled || generation !== libationJobsGenerationRef.current) {
             return;
           }
-          const previous = libationJobsRef.current;
           const next = reconcileLibationJobs(jobs, previous);
           const nextById = new Map(next.map((job) => [job.id, job]));
           const finishedJobs = previous
@@ -2753,7 +2795,7 @@ function MainApp({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [libationJobs, loadBooks, loadLibationBooks]);
+  }, [currentUser.isAdmin, libationJobs, loadBooks, loadLibationBooks]);
 
   useEffect(() => {
     if (libationJobs.some(isPendingJob)) {
@@ -3013,6 +3055,7 @@ function MainApp({
     return attachNativeAudioPlayer(
       audio,
       (message) => setPlaybackError(message),
+      () => setNativeAudioFailed(true),
       {
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,
@@ -3431,6 +3474,8 @@ function MainApp({
   async function downloadForOffline(book: Book) {
     if (activeDownloadIdsRef.current.has(book.id)) return;
     activeDownloadIdsRef.current.add(book.id);
+    const abortController = new AbortController();
+    downloadAbortControllersRef.current.set(book.id, abortController);
     if (playbackBook?.id === book.id) {
       persistProgress();
     }
@@ -3451,15 +3496,19 @@ function MainApp({
             queuedAt: existing[book.id]?.queuedAt ?? Date.now()
           }
         }));
-      });
+      }, abortController.signal);
       setDownloadedBookIds((existing) => new Set(existing).add(book.id));
       setDownloadStatus({ bookId: book.id, message: `${book.title} is available offline` });
     } catch (downloadError) {
+      if (abortController.signal.aborted) return;
       setDownloadStatus({
         bookId: book.id,
         message: `${book.title}: ${errorMessage(downloadError, "Download failed.")}`
       });
     } finally {
+      if (downloadAbortControllersRef.current.get(book.id) === abortController) {
+        downloadAbortControllersRef.current.delete(book.id);
+      }
       activeDownloadIdsRef.current.delete(book.id);
       setActiveDownloads((existing) => {
         const next = { ...existing };
@@ -3468,6 +3517,11 @@ function MainApp({
       });
     }
   }
+
+  useEffect(() => () => {
+    for (const controller of downloadAbortControllersRef.current.values()) controller.abort();
+    downloadAbortControllersRef.current.clear();
+  }, []);
 
   async function importFromDevice() {
     setDownloadStatus(null);
@@ -3564,8 +3618,12 @@ function MainApp({
     }
     void playNativeAudio().catch((error) => {
       nativePlaybackPlayingRef.current = false;
-      setIsPlaying(false);
+      audio.muted = false;
+      setNativeAudioFailed(true);
       setPlaybackError(errorMessage(error, "Native audio playback failed."));
+      // Let React tear down the failed native attachment first; its cleanup
+      // pauses the control element before web audio becomes authoritative.
+      window.setTimeout(() => safePlay(audioRef.current), 0);
     });
   }
 
@@ -3578,6 +3636,9 @@ function MainApp({
     nativePlaybackPlayingRef.current = false;
     setIsPlaying(false);
     void pauseNativeAudio().catch((error) => {
+      audio.muted = false;
+      audio.pause();
+      setNativeAudioFailed(true);
       setPlaybackError(errorMessage(error, "Native audio playback could not be paused."));
     });
   }
@@ -3586,8 +3647,17 @@ function MainApp({
     const nextPosition = Math.max(0, Math.min(value, audio.duration || value));
     audio.currentTime = nextPosition;
     if (nativeAudio) {
+      const shouldResume = nativePlaybackPlayingRef.current;
       void seekNativeAudio(nextPosition).catch((error) => {
+        nativePlaybackPlayingRef.current = false;
+        audio.muted = false;
+        setNativeAudioFailed(true);
         setPlaybackError(errorMessage(error, "Native audio could not seek."));
+        if (shouldResume) {
+          // Native effect cleanup runs after this state change and may pause
+          // the element, so resume only once that cleanup has completed.
+          window.setTimeout(() => safePlay(audioRef.current), 0);
+        }
       });
     }
     return nextPosition;
@@ -4496,7 +4566,12 @@ function MainApp({
               </button> : null}
             </div>
 
-            <p className="libation-help">{currentUser.libationAccess === "direct" ? "Refresh checks Audible for new purchases. Download adds a title to this OperaLibre library." : "You can browse Audible, but each download requires approval from another authorized administrator or owner."}</p>
+            <p className="libation-help">
+              Refresh checks Audible for new purchases. Administrator refreshes are unrestricted
+              {libationStatus?.autoRefreshHours
+                ? `, and the server also checks automatically every ${libationStatus.autoRefreshHours} hours.`
+                : "."}
+            </p>
 
             {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
@@ -4544,10 +4619,27 @@ function MainApp({
         {!currentUser.isAdmin && librarySource === "audible" ? (
           <section className="libation-panel reader-libation-panel">
             <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
+            <div className="libation-actions">
+              <button
+                type="button"
+                onClick={() => void startLibationSync()}
+                aria-busy={isRefreshingAudible}
+                disabled={!libationStatus?.enabled || libationLoading || isRefreshingAudible}
+              >
+                {isRefreshingAudible
+                  ? <LoaderCircle size={13} className="spin-icon" />
+                  : <RefreshCcw size={13} />}
+                <span>{isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
+              </button>
+            </div>
             <p>
               {currentUser.libationAccess === "direct"
                 ? "Your administrator allows you to add titles directly to the shared library."
                 : "Choose Request on a title. An administrator must approve it before Libation downloads it."}
+              {" "}
+              {libationStatus?.manualRefreshesPerHour
+                ? `You can check for new purchases up to ${libationStatus.manualRefreshesPerHour} times per hour.`
+                : "You can check for new purchases at any time."}
             </p>
           </section>
         ) : null}
@@ -5398,7 +5490,7 @@ function MainApp({
             </div>
             ) : null}
 
-            {selectedBook.chapters.length > 0 ? (
+            {selectedChapterSegments.length > 0 ? (
               <section className="track-list-section" ref={trackListSectionRef}>
                 <button
                   type="button"
@@ -5411,13 +5503,13 @@ function MainApp({
                 >
                   <span className="title-of-contents">Embedded Chapters</span>
                   <span className="section-label">
-                    <ListMusic size={13} /> {selectedBook.chapters.length} Markers
+                    <ListMusic size={13} /> {selectedChapterSegments.length} Markers
                     <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
                   </span>
                 </button>
                 {chaptersOpen ? (
                   <div className="track-list" ref={chaptersListRef}>
-                    {selectedBook.chapters.map((chapter, index) => (
+                    {selectedChapterSegments.map((chapter, index) => (
                       <button
                         key={chapter.id}
                         data-chapter-id={chapter.id}
@@ -5426,7 +5518,7 @@ function MainApp({
                       >
                         <span className="num">{String(index + 1).padStart(2, "0")}</span>
                         <strong>{chapter.title}</strong>
-                        <em>{formatTime(chapter.startSeconds)}</em>
+                        <em>{formatTime(chapter.durationSeconds)}</em>
                       </button>
                     ))}
                   </div>
@@ -5574,7 +5666,7 @@ function MainApp({
             </header>
             <p className="sleep-sheet-hint">{playbackBook.title} · {playbackBook.chapters.length} markers</p>
             <div className="sleep-options chapter-sheet-options">
-              {playbackBook.chapters.map((chapter, index) => (
+              {chapterSegments.map((chapter, index) => (
                 <button
                   type="button"
                   key={chapter.id}
@@ -5585,7 +5677,7 @@ function MainApp({
                     <small>{String(index + 1).padStart(2, "0")}</small>
                     <strong>{chapter.title}</strong>
                   </span>
-                  {activeChapter?.id === chapter.id ? <em>Playing</em> : <span className="chapter-sheet-time">{formatTime(chapter.startSeconds)}</span>}
+                  {activeChapter?.id === chapter.id ? <em>Playing</em> : <span className="chapter-sheet-time">{formatTime(chapter.durationSeconds)}</span>}
                 </button>
               ))}
             </div>

@@ -15,7 +15,7 @@ import {
   setServerConnection,
   setupAdmin
 } from "./api";
-import type { AuthUser, ServerType } from "./types";
+import type { AuthUser, LoginResponse, ServerType } from "./types";
 
 type AuthMode = "setup" | "login";
 
@@ -179,17 +179,22 @@ export function ServerSetup({
 export function AuthGate({
   mode,
   onAuthenticated,
-  onChangeServer
+  onChangeServer,
+  setupTokenRequired = false,
+  setupLocalOnly = false
 }: {
   mode: AuthMode;
-  onAuthenticated: (token: string, user: AuthUser) => void;
+  onAuthenticated: (response: LoginResponse) => void;
   onChangeServer?: () => void;
+  setupTokenRequired?: boolean;
+  setupLocalOnly?: boolean;
 }) {
   const isJellyfin = getServerType() === "jellyfin";
   const nativeApp = isNativeApp();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -201,14 +206,18 @@ export function AuthGate({
       setError("Passwords do not match.");
       return;
     }
+    if (mode === "setup" && setupLocalOnly) {
+      setError("Complete first-run setup from a browser on the server machine.");
+      return;
+    }
 
     setBusy(true);
     try {
       const response =
         mode === "setup"
-          ? await setupAdmin(username, password)
+          ? await setupAdmin(username, password, setupTokenRequired ? setupToken : undefined)
           : await login(username, password);
-      onAuthenticated(response.token, response.user);
+      onAuthenticated(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong.";
       setError(message);
@@ -229,7 +238,9 @@ export function AuthGate({
         <h1>{isSetup ? "Claim this library" : "Welcome back"}</h1>
         <p>
           {isSetup
-            ? "Create the first owner account. You can add administrators and readers later."
+            ? setupLocalOnly
+              ? "This server uses local setup. Open OperaLibre on the server machine to create its first owner."
+              : "Create the first owner account. You can add administrators and readers later."
             : isJellyfin
               ? "Use your Jellyfin account to open its audiobook libraries."
               : "Sign in to track your audiobook progress."}
@@ -254,7 +265,8 @@ export function AuthGate({
             autoComplete={isSetup ? "new-password" : "current-password"}
             onChange={(event) => setPassword(event.currentTarget.value)}
             required
-            minLength={isSetup ? 6 : 1}
+            minLength={isSetup ? 12 : 1}
+            maxLength={1024}
           />
         </label>
 
@@ -267,14 +279,33 @@ export function AuthGate({
               autoComplete="new-password"
               onChange={(event) => setConfirm(event.currentTarget.value)}
               required
-              minLength={6}
+              minLength={12}
+              maxLength={1024}
             />
           </label>
         ) : null}
 
+        {isSetup && setupTokenRequired ? (
+          <>
+            <label>
+              <span>One-time setup token</span>
+              <input
+                value={setupToken}
+                autoComplete="one-time-code"
+                onChange={(event) => setSetupToken(event.currentTarget.value.trim())}
+                required
+                maxLength={256}
+              />
+            </label>
+            <p className="auth-server-meta">
+              Find this 30-minute token in the server console or <code>data/server.log</code>.
+            </p>
+          </>
+        ) : null}
+
         {error ? <p className="auth-error">{error}</p> : null}
 
-        <button type="submit" className="auth-submit" disabled={busy}>
+        <button type="submit" className="auth-submit" disabled={busy || (isSetup && setupLocalOnly)}>
           {busy ? "Working…" : isSetup ? "Create owner" : "Sign in"}
         </button>
 
@@ -355,7 +386,7 @@ export function UserManagementModal({
   }
 
   async function handleResetPassword(user: AuthUser) {
-    const next = window.prompt(`New password for ${user.username} (min 6 chars):`);
+    const next = window.prompt(`New password for ${user.username} (min 12 chars):`);
     if (!next) {
       return;
     }
@@ -437,7 +468,8 @@ export function UserManagementModal({
             <input
               type="password"
               value={newPassword}
-              minLength={6}
+              minLength={12}
+              maxLength={1024}
               onChange={(event) => setNewPassword(event.currentTarget.value)}
               required
             />
