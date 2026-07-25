@@ -75,6 +75,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var recoveryTrackId: String?
     private var recoveryBookOffset: Double = 0
     private var lastCheckpointWrite = 0.0
+    /// How long a play() that arrived before its track was loaded stays
+    /// eligible to start that track. Long enough for a React track swap,
+    /// short enough that it cannot outlive the tap that caused it.
+    private static let playIntentGraceSeconds = 5.0
+    private var playIntentAt = 0.0
     private var queuedTracks: [NativeAudioQueuedTrack] = []
     private var queuedItems: [AVPlayerItem] = []
     private var activeQueueIndex = 0
@@ -168,8 +173,12 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
             // A shelf Resume tap can reach play() while React is still
             // replacing the previous track. Preserve that queued intent
-            // across teardown so the newly loaded item actually starts.
-            let retainedPlayIntent = self.shouldAutoplay
+            // across teardown so the newly loaded item actually starts —
+            // but only briefly, so an intent left over from playback that
+            // stopped long ago cannot silently start an unrelated book.
+            let playIntentAge = Date.timeIntervalSinceReferenceDate - self.playIntentAt
+            let retainedPlayIntent =
+                self.shouldAutoplay && playIntentAge <= Self.playIntentGraceSeconds
             self.tearDownPlayer()
             self.generation += 1
             let loadGeneration = self.generation
@@ -217,10 +226,12 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             guard let player = self.player else {
                 self.shouldAutoplay = true
+                self.playIntentAt = Date.timeIntervalSinceReferenceDate
                 call.resolve()
                 return
             }
             self.shouldAutoplay = true
+            self.playIntentAt = Date.timeIntervalSinceReferenceDate
             if player.currentItem?.status == .readyToPlay {
                 self.activateAudioSession()
                 player.playImmediately(atRate: self.desiredRate)
@@ -839,6 +850,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         player = nil
         shouldAutoplay = false
+        playIntentAt = 0
         wasPlayingBeforeInterruption = false
         interruptionIsActive = false
         recoveryScopeKey = nil

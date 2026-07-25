@@ -244,7 +244,7 @@ impl UpdateManager {
         let (asset, expected_digest) =
             validated_update_asset(&release, &status.latest_version, platform)?;
 
-        let install = managed_install(&self.data_dir, self.web_dist_dir.as_deref())?;
+        let install = managed_install(self.web_dist_dir.as_deref())?;
         let staging_dir = self
             .data_dir
             .join("updates")
@@ -449,7 +449,7 @@ impl UpdateManager {
         let package_available = platform.as_deref().is_some_and(|platform| {
             validated_update_asset(release, &latest_text, platform).is_ok()
         });
-        let capability = managed_install(&self.data_dir, self.web_dist_dir.as_deref());
+        let capability = managed_install(self.web_dist_dir.as_deref());
         let can_auto_update = package_available && capability.is_ok();
         let message = if !package_available {
             Some("No automatic update package is available for this server platform.".to_string())
@@ -488,13 +488,21 @@ impl UpdateManager {
         let latest_text = normalize_version(&release.tag_name);
         let latest = Version::parse(&latest_text).context("Invalid release version")?;
         let package_available = validated_frontend_asset(release, &latest_text).is_ok();
+        // A combined release package ships its own web bundle, and the server
+        // update replaces it wholesale. Installing the frontend on its own
+        // would only let it run ahead of the server it talks to.
+        let combined_install = managed_install(self.web_dist_dir.as_deref())
+            .is_ok_and(|install| install.layout == InstallLayout::Combined);
+        let reported = reported_current_version.map(normalize_version);
         let capability = installed_version.and_then(|installed_version| {
-            if reported_current_version
-                .map(normalize_version)
-                .is_some_and(|reported| reported != installed_version)
-            {
+            if combined_install {
                 bail!(
-                    "This browser frontend is not served by this OperaLibre server and must be updated through its hosting provider."
+                    "This installation's web frontend ships with the server package. Install the server update instead."
+                );
+            }
+            if let Some(reported) = reported.filter(|reported| *reported != installed_version) {
+                bail!(
+                    "This browser is running web frontend {reported}, but this server is serving {installed_version}. Reload the page to pick up the served version; if the mismatch persists, this frontend is hosted separately and must be updated through its hosting provider."
                 );
             }
             Ok(())
@@ -618,7 +626,7 @@ fn installed_frontend_version(web_dist_dir: Option<&Path>) -> anyhow::Result<Str
     Ok(version)
 }
 
-fn managed_install(data_dir: &Path, web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
+fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
     let executable = std::env::current_exe()?;
     let root = executable
         .parent()
@@ -633,12 +641,19 @@ fn managed_install(data_dir: &Path, web_dist_dir: Option<&Path>) -> anyhow::Resu
         bail!("VERSION.txt does not match the running server version.");
     }
     let layout = install_layout(&root, web_dist_dir)?;
-    let pid = std::fs::read_to_string(data_dir.join("operalibre-server.pid"))
-        .context("The server has not recorded its process ID yet")?;
-    if pid.trim() != std::process::id().to_string() {
-        bail!("The recorded server process ID does not match this server.");
-    }
+    // The updater replaces files here after the server exits. Proving the
+    // folder is writable now turns an unrecoverable half-applied update into
+    // an ordinary error message, while the server is still running.
+    ensure_install_root_is_writable(&root)?;
     Ok(ManagedInstall { root, layout })
+}
+
+fn ensure_install_root_is_writable(root: &Path) -> anyhow::Result<()> {
+    let probe = root.join(format!(".operalibre-update-probe-{}", std::process::id()));
+    std::fs::write(&probe, [])
+        .with_context(|| format!("{} is not writable by this server.", root.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
 }
 
 fn install_layout(root: &Path, web_dist_dir: Option<&Path>) -> anyhow::Result<InstallLayout> {

@@ -2373,19 +2373,21 @@ async fn get_reading_file(
             extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
         });
     let mut response = serve_file_response(&file_path, headers, None).await?;
+    // Companion files come from the audiobook library, not the application
+    // bundle, so no readalong type may be re-interpreted as active content —
+    // a .txt sniffed as HTML is exactly what this prevents.
+    response.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     if isolate_html {
-        // Companion files come from the audiobook library, not the
-        // application bundle. Keep them inert even when a listener chooses
-        // "Open" and views the document outside the sandboxed inline frame.
+        // Keep markup inert even when a listener chooses "Open" and views the
+        // document outside the sandboxed inline frame.
         response.headers_mut().insert(
             "content-security-policy",
             HeaderValue::from_static(
                 "sandbox; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:",
             ),
-        );
-        response.headers_mut().insert(
-            "x-content-type-options",
-            HeaderValue::from_static("nosniff"),
         );
     }
     Ok(response)
@@ -2779,19 +2781,22 @@ async fn update_progress(
         // a position some device recorded more recently.
         return Ok(Json(previous.clone()));
     }
+    let incoming_book_position = update
+        .book_position_seconds
+        .unwrap_or_else(|| book_position_seconds(book, track, update.position_seconds))
+        .max(0.0);
     let saved = Progress {
         book_id: book.id.clone(),
         track_id: track.id.clone(),
         position_seconds: update.position_seconds.max(0.0),
-        book_position_seconds: update
-            .book_position_seconds
-            .unwrap_or_else(|| book_position_seconds(book, track, update.position_seconds))
-            .max(0.0),
+        book_position_seconds: incoming_book_position,
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
         updated_at: format!("{}", incoming_seconds.unwrap_or(now_seconds).round() as u64),
-        finished_override: previous
-            .as_ref()
-            .and_then(|progress| progress.finished_override),
+        finished_override: carried_finished_override(
+            previous.as_ref(),
+            incoming_book_position,
+            update.intentional_seek,
+        ),
     };
     if let Some(previous) = &previous {
         if progress_write_is_suspect_reset(
@@ -4593,6 +4598,27 @@ const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
 /// Positions this close to the start of a book are treated as "not started"
 /// when they arrive over substantial stored progress.
 const PROGRESS_NEAR_ZERO_SECONDS: f64 = 60.0;
+
+/// Carries an explicit completion choice onto the next checkpoint, except
+/// when the listener deliberately jumps back to the start of a book they had
+/// marked finished. That is a re-listen, and keeping the override would label
+/// the whole second pass "Finished". Only a deliberate seek clears it, so an
+/// automatic position report can never erase the choice.
+fn carried_finished_override(
+    previous: Option<&Progress>,
+    incoming_book_position: f64,
+    intentional_seek: bool,
+) -> Option<bool> {
+    let previous = previous?;
+    let restarting = intentional_seek
+        && previous.finished_override == Some(true)
+        && incoming_book_position < PROGRESS_NEAR_ZERO_SECONDS;
+    if restarting {
+        None
+    } else {
+        previous.finished_override
+    }
+}
 
 fn plausible_listened_delta(
     previous: Option<&Progress>,
@@ -6739,6 +6765,44 @@ mod tests {
             9.2
         );
         assert_eq!(super::plausible_listened_delta(None, &saved, false), 0.0);
+    }
+
+    #[test]
+    fn restarting_a_finished_book_clears_the_completion_override() {
+        let finished = super::Progress {
+            book_id: "book".to_string(),
+            track_id: "track".to_string(),
+            position_seconds: 3_600.0,
+            book_position_seconds: 3_600.0,
+            duration_seconds: Some(3_600.0),
+            updated_at: "1000".to_string(),
+            finished_override: Some(true),
+        };
+
+        // A deliberate jump back to the opening is a re-listen.
+        assert_eq!(
+            super::carried_finished_override(Some(&finished), 4.0, true),
+            None
+        );
+        // Ordinary playback reports near zero cannot erase the choice, and a
+        // deliberate seek elsewhere in the book keeps it.
+        assert_eq!(
+            super::carried_finished_override(Some(&finished), 4.0, false),
+            Some(true)
+        );
+        assert_eq!(
+            super::carried_finished_override(Some(&finished), 1_800.0, true),
+            Some(true)
+        );
+        // An explicit "unfinished" is never turned back into "no choice".
+        let unfinished = super::Progress {
+            finished_override: Some(false),
+            ..finished
+        };
+        assert_eq!(
+            super::carried_finished_override(Some(&unfinished), 4.0, true),
+            Some(false)
+        );
     }
 
     #[test]
