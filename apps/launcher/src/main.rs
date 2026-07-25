@@ -12,7 +12,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::process::CommandExt;
+use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -80,8 +80,10 @@ fn is_stop_launcher() -> bool {
 fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
-    fs::create_dir_all(root.join("data"))
+    let data_dir = root.join("data");
+    fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
+    secure_directory(&data_dir)?;
 
     let port = configured_port(&root.join("server.config")).unwrap_or(4000);
     if server_is_ready(port) {
@@ -104,9 +106,11 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
     }
 
     let log_path = root.join("data").join("server.log");
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut log_options = OpenOptions::new();
+    log_options.create(true).append(true);
+    #[cfg(unix)]
+    log_options.mode(0o600);
+    let stdout = log_options
         .open(&log_path)
         .map_err(|error| format!("Could not open {}: {error}", log_path.display()))?;
     let stderr = stdout
@@ -128,11 +132,10 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
     let child = command
         .spawn()
         .map_err(|error| format!("Could not launch {}: {error}", server_path.display()))?;
-    fs::write(
-        root.join("data").join("operalibre-server.pid"),
-        child.id().to_string(),
-    )
-    .map_err(|error| format!("Could not save the server process ID: {error}"))?;
+    let pid_path = data_dir.join("operalibre-server.pid");
+    fs::write(&pid_path, child.id().to_string())
+        .map_err(|error| format!("Could not save the server process ID: {error}"))?;
+    secure_file(&pid_path)?;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
@@ -149,6 +152,30 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
         "The server did not become ready. Open {} for details.",
         log_path.display()
     ))
+}
+
+#[cfg(unix)]
+fn secure_directory(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("Could not secure {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn secure_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_file(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Could not secure {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn secure_file(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {

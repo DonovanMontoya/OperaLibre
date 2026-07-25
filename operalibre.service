@@ -1,14 +1,43 @@
 [Unit]
 Description=OperaLibre audiobook server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=donovan
+User=operalibre
+Group=operalibre
 WorkingDirectory=/srv/OperaLibre
+Environment=OPERALIBRE_SERVER_CONFIG=/srv/OperaLibre/server.config
 ExecStart=/srv/OperaLibre/apps/server/target/release/operalibre-server
 Restart=on-failure
 RestartSec=5
+UMask=0077
+
+# Contain a future application or media-parser exploit to the dedicated
+# OperaLibre account and installation tree.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/srv/OperaLibre
+TasksMax=256
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

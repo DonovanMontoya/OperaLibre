@@ -1,0 +1,85 @@
+name: Security audits
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/security.yml"
+      - "apps/server/Cargo.toml"
+      - "apps/server/Cargo.lock"
+      - "apps/launcher/Cargo.toml"
+      - "apps/launcher/Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "apps/web/package.json"
+  pull_request:
+    paths:
+      - ".github/workflows/security.yml"
+      - "apps/server/Cargo.toml"
+      - "apps/server/Cargo.lock"
+      - "apps/launcher/Cargo.toml"
+      - "apps/launcher/Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "apps/web/package.json"
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: RustSec (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            directory: apps/server
+          - component: launcher
+            directory: apps/launcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: ${{ matrix.directory }}
+
+  web:
+    name: Production npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=low
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Reject vulnerable dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: low
+          fail-on-scopes: runtime

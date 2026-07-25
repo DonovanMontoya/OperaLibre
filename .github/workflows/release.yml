@@ -62,6 +62,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test frontend
+        run: npm test -w @operalibre/web
+
       - name: Build frontend
         run: npm run build -w @operalibre/web
         env:
