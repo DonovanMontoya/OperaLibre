@@ -78,12 +78,29 @@ explains how to write the path:
 
   https://donovanmontoya.github.io/OperaLibre/installing-a-release.html
 
+The same config file contains upload/download size and concurrency limits.
+The defaults suit a personal server; the configuration guide explains how to
+raise them safely for a larger library.
+
 OTHER DEVICES
 -------------
 
-On another device connected to the same trusted home network, open:
+For another device on the same trusted home network, stop OperaLibre and edit
+server.config. Change:
+
+  deployment_mode = local
+
+to:
+
+  deployment_mode = lan
+
+Leave host blank, restart OperaLibre, then open:
 
   http://YOUR-COMPUTER-IP:4000
 
 Allow OperaLibre through the computer's firewall if asked. Do not expose this
 plain HTTP address directly to the public internet.
+
+If setup has not been completed yet, the remote setup form also asks for the
+one-time token in data/server.log. The token expires after 30 minutes; restart
+OperaLibre to generate another one.

@@ -42,7 +42,7 @@ When configured, an admin sees Libation-aware controls:
 
 - **Status** — which accounts Libation has, and whether they look authenticated.
 - **Library** — the Audible library Libation knows about; it loads automatically when the Audible tab opens.
-- **Refresh Audible** — ask Libation to check Audible for new purchases.
+- **Refresh Audible** — ask Libation to check Audible for new purchases. The server also refreshes every 24 hours by default. Administrators can refresh at any time; reader accounts get three refreshes per rolling hour by default.
 - **Download** — add a selected Audible title to the OperaLibre library. Progress shows as a background job.
 - **Rescan** — automatic after a successful download; can also be triggered manually.
 
@@ -54,7 +54,7 @@ Under the hood these map to API endpoints:
 | --- | --- |
 | `GET /api/libation/status` | Account/auth state |
 | `GET /api/libation/books` | Libation's known library |
-| `POST /api/libation/sync` | Tell Libation to refresh its library |
+| `POST /api/libation/sync` | Tell Libation to refresh its library; available to authenticated readers, with the configured hourly limit applied to non-administrators |
 | `POST /api/libation/books/{asin}/liberate` | Download one title when the reader has direct permission |
 | `GET /api/libation/access` | Current reader's Libation policy and availability |
 | `GET /api/libation/requests` | Own requests, or all requests for an authorized approver |

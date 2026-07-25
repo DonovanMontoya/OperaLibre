@@ -25,17 +25,25 @@ The API listens at http://localhost:4000 by default.
 CONFIGURE IT
 ------------
 
-Edit server.config before starting if you want to change the port, audiobook
-folder, data folder, allowed frontend origins, Libation, or echogarden.
+Edit server.config before starting if you want to change the deployment mode,
+port, audiobook folder, data folder, allowed frontend origins, Libation, or
+echogarden. Use local for one computer, lan for a trusted LAN/VPN, or proxy
+behind same-machine HTTPS. Leaving host blank selects the profile's safe bind.
 
 The default audiobook folder is audiobooks and the default data folder is
 data, both beside the server executable. Accounts and listening progress are
 stored in data, so back it up.
 
+Upload/download size limits and ZIP download concurrency are also configurable
+in server.config. Keep the defaults unless storage is monitored separately.
+
 When a frontend is hosted at a different address, add its full origin to
 allowed_origins in server.config, for example:
 
   allowed_origins = https://books.example.com
+
+On first-run remote setup in lan mode, or any setup in proxy mode, enter the
+30-minute one-time token printed by the server. Local mode does not require it.
 
 Do not expose the server to the public internet without HTTPS and appropriate
 network security.

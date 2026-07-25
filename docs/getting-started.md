@@ -59,8 +59,12 @@ Copy-Item server.config.example server.config
 Open `server.config` in a text editor and replace `/Users/you/Audiobooks` with the full path to the folder that contains your books. Keep the rest as-is for now. On Windows, use a full path such as `C:\Users\you\Audiobooks`.
 
 ```config
-host = 0.0.0.0
+deployment_mode = local
+host =
 port = 4000
+max_upload_gib = 20
+max_book_download_gib = 25
+max_concurrent_book_downloads = 1
 library_root = /Users/you/Audiobooks
 ```
 
@@ -79,7 +83,7 @@ The Vite web app forwards its requests to the server automatically, so use the *
 
 ### 4. Create the admin account
 
-The first browser that hits the app sees a one-time setup form. Fill it in to create the initial administrator account; subsequent visits show the normal sign-in form. See [Users & Accounts](users.md) for details on adding more readers and resetting passwords.
+Open the app for the one-time setup form. `local` setup needs no extra credential. A remote setup in `lan` mode, and every setup in `proxy` mode, asks for the 30-minute, single-use token printed in the server console. Fill it in to create the initial owner account; subsequent visits show the normal sign-in form. See [Users & Accounts](users.md) for details.
 
 ### 5. Start listening
 
@@ -89,12 +93,12 @@ Pick a book and press play. Progress saves automatically and follows the signed-
 
 To stream to a phone or tablet:
 
-1. Make sure `host = 0.0.0.0` in `server.config` so the server binds to all interfaces.
+1. Set `deployment_mode = lan` and leave `host` blank in `server.config` so the server selects `0.0.0.0` automatically.
 2. Find your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `ip addr` on Linux, `ipconfig` on Windows).
 3. Allow port `4000` (or whatever you set) through your firewall.
 4. On the other device, open `http://<your-lan-ip>:5173` in dev, sign in, and start listening. For a setup that keeps working after you close the development Terminal, use the production setup below.
 
-> **Safety:** a LAN address uses plain HTTP. It is suitable for a trusted home network. Do not port-forward it to the public internet; use HTTPS and the guidance in [Deployment](deployment.md) for access away from home.
+> **Safety:** LAN mode uses plain HTTP and deliberately allows a non-Secure session cookie. It is suitable only for a trusted home network or private VPN. Do not port-forward it to the public internet; use `proxy` mode and the HTTPS guidance in [Deployment](deployment.md) for access away from home.
 
 ## Keep it running (recommended after you have tried it)
 

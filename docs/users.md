@@ -9,7 +9,7 @@ The server requires sign-in before any audiobook data is served. Accounts, sessi
 
 ## First-run setup
 
-The first browser to load the app sees a one-time setup form that creates the initial owner account. After that, the home screen is a standard sign-in form. There is no way to skip auth — even the library list is gated.
+The first browser to load the app sees a one-time setup form that creates the initial owner account. `local` setup needs no extra credential and rejects remote setup. In `lan` mode, another device must enter the random bootstrap token printed in the server console or `data/server.log`; in `proxy` mode every setup request requires it, which remains safe even if forwarded client headers are misconfigured. The token expires after 30 minutes, is consumed after setup, and is never saved to the account store. After that, the home screen is a standard sign-in form. There is no way to skip auth — even the library list is gated.
 
 If you ever delete `users.json`, the server returns to first-run mode on the next request.
 
@@ -42,7 +42,7 @@ From the web app, open **Administration → Users & access**. Owners can:
 
 Administrators can:
 
-- Add a new reader (username + initial password)
+- Add a new reader (username + initial password of at least 12 characters)
 - Remove a reader (their progress is also removed)
 - Reset a reader's password
 - Choose whether a reader can download Libation titles directly or must request approval for each title
@@ -68,6 +68,6 @@ Accounts are plain JSON on disk, so a lost admin password is recoverable:
 2. Open `data/users.json` and delete the offending user object — or delete the whole file to return to first-run setup.
 3. Restart the server.
 
-If you delete just one user, an authorized administrator can create them again with a new password. The server will not allow the final owner to be deleted or demoted. If you delete the file, the next browser to load the app gets the setup form.
+If you delete just one user, an authorized administrator can create them again with a new password. The server will not allow the final owner to be deleted or demoted. If you delete the file, restart the server and complete setup again. Remote setup follows the same one-time-token rule.
 
 > Avoid hand-editing the password hash. Argon2 hashes include parameters and salts; let the server generate them.

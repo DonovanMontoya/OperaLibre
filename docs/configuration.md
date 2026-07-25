@@ -24,8 +24,12 @@ A simple `key = value` format. One key per line. Blank lines and `#` comments ar
 
 ```config
 # This is a comment.
-host = 0.0.0.0
+deployment_mode = local
+host =
 port = 4000
+max_upload_gib = 20
+max_book_download_gib = 25
+max_concurrent_book_downloads = 1
 library_root = /path/to/audiobooks
 ```
 
@@ -34,9 +38,15 @@ Strings are not quoted. Trailing whitespace is trimmed.
 ## Full example
 
 ```config
-# Network binding.
-host = 0.0.0.0
+# Deployment profile and optional advanced bind override.
+deployment_mode = local
+host =
 port = 4000
+
+# Transfer resource limits.
+max_upload_gib = 20
+max_book_download_gib = 25
+max_concurrent_book_downloads = 1
 
 # Folder containing your audiobook files.
 library_root = /Users/you/Audiobooks
@@ -52,6 +62,8 @@ web_dist_dir = apps/web/dist
 # Optional Libation / Audible import.
 libation_cli_path =
 libation_files_dir =
+libation_auto_refresh_hours = 24
+libation_reader_refreshes_per_hour = 3
 
 # Optional EPUB narration alignment.
 alignment_cli_path =
@@ -63,9 +75,20 @@ alignment_cli_path =
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `host` | `0.0.0.0` | Interface to bind to. Use `127.0.0.1` to restrict access to the local machine, or `0.0.0.0` to accept LAN connections. |
+| `deployment_mode` | `local` | `local` binds to loopback with HTTPS-grade cookies; `lan` listens on all interfaces and permits plain-HTTP cookies for a trusted LAN/VPN; `proxy` binds to loopback and expects a same-machine HTTPS reverse proxy. |
+| `host` | chosen by profile | Optional advanced bind override. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
 | `port` | `4000` | TCP port the API listens on. |
-| `allowed_origins` | *(empty)* | Comma-separated list of origins allowed to make cross-origin (CORS) requests, e.g. `https://books.example.com, http://192.168.1.20:5173`. When empty, the server reflects any requesting origin — convenient for development and custom frontends, but set this before exposing the API outside a trusted network. |
+| `allowed_origins` | *(empty)* | Comma-separated list of additional origins allowed to make cross-origin (CORS) requests, e.g. `https://books.example.com, http://192.168.1.20:5173`. Same-origin requests and the official OperaLibre iOS, Android, and macOS app origins are allowed without configuration. |
+
+### Transfer limits
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_upload_gib` | `20` | Maximum total size of one web-uploaded audiobook. Set to `0` only to delegate storage-exhaustion control to another trusted layer. |
+| `max_book_download_gib` | `25` | Maximum source size that may be assembled into a temporary ZIP download. Set to `0` only when disk usage is constrained externally. |
+| `max_concurrent_book_downloads` | `1` | Simultaneous ZIP preparations/downloads. Accepted range: `1`–`32`. Each active archive can consume temporary disk space up to its book size. |
+
+When nginx is used, its `client_max_body_size` is an additional upload ceiling. Increase both that directive and `max_upload_gib` when deliberately supporting larger uploads.
 
 ### Library
 
@@ -99,6 +122,8 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 | --- | --- | --- |
 | `libation_cli_path` | *(empty)* | Absolute path to the Libation CLI binary (`libationcli`, `LibationCli`, or `libationcli.exe`). If blank, the server searches `PATH`. |
 | `libation_files_dir` | *(empty)* | Path to the Libation files directory containing `AccountsSettings.json` and `Settings.json`. Required for the web app to surface account status. |
+| `libation_auto_refresh_hours` | `24` | How often the server asks Libation to scan Audible automatically. The first scan runs at startup when no previous successful scan is recorded. Set to `0` to disable scheduled scans. |
+| `libation_reader_refreshes_per_hour` | `3` | Maximum reader-triggered Audible scans per account in a rolling hour. Administrators are not limited. Set to `0` to remove the reader rate limit. |
 
 ### Optional readalong alignment
 
@@ -113,6 +138,7 @@ Leave this blank to search `PATH` for echogarden. When echogarden is unavailable
 | Variable | Used by | Description |
 | --- | --- | --- |
 | `OPERALIBRE_SERVER_CONFIG` | server | Override the path to `server.config`. |
+| `OPERALIBRE_DEPLOYMENT_MODE` | server | Override the deployment profile with `local`, `lan`, or `proxy`. |
 | `OPERALIBRE_ALIGNMENT_CLI_PATH` | server | Override the path to the echogarden CLI. |
 | `VITE_API_BASE` | web | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
 

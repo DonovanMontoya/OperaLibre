@@ -128,13 +128,13 @@ The app can connect over plain HTTP to local-network and private-overlay address
 
 The server owns library scanning, authentication, metadata extraction, cover art, readalong files, progress sync, downloads, and byte-range audio streaming. Frontends can treat it as a standalone API/media server and implement their own browsing, playback, and device UX.
 
-- Use `POST /api/auth/login` to obtain a session token.
+- Use `POST /api/auth/login` to obtain a session token and scoped media token.
 - Send the token as `Authorization: Bearer ...` for JSON API requests.
-- Add the token as `?token=...` for media URLs used directly by `<audio>`, `<img>`, or download links.
+- Add the media token as `?token=...` for media URLs used directly by `<audio>`, `<img>`, or download links.
 - Stream audio from the `streamUrl` returned by book detail responses; the server supports HTTP range requests for seeking.
 - See [docs/api.md](docs/api.md) for the current endpoint list and response conventions.
 
-For production deployments, the simplest setup is single-origin: build the web app with `npm run build` and set `web_dist_dir = apps/web/dist` in `server.config` so the Rust server serves both the frontend and the API (a reverse proxy works too). If they are served from different origins, set `allowed_origins` in `server.config` to the frontend origins before exposing the server outside a trusted network; when it is unset, the server reflects any requesting origin.
+For production deployments, the simplest setup is single-origin: build the web app with `npm run build` and set `web_dist_dir = apps/web/dist` in `server.config` so the Rust server serves both the frontend and the API (a reverse proxy works too). Cross-origin browser requests are restricted to the official OperaLibre app origins by default. If a custom frontend is served from another origin, add each permitted origin to `allowed_origins` in `server.config`.
 
 ### Development tools
 
@@ -149,18 +149,24 @@ jj git clone https://github.com/DonovanMontoya/OperaLibre.git
 The server reads `server.config` from the repo root by default. It is a plain `key = value` file:
 
 ```config
-host = 0.0.0.0
+deployment_mode = local
+host =
 port = 4000
+max_upload_gib = 20
+max_book_download_gib = 25
+max_concurrent_book_downloads = 1
 library_root = /path/to/your/audiobooks
 data_dir = data
 progress_file = data/progress.json
 
 libation_cli_path =
 libation_files_dir =
+libation_auto_refresh_hours = 24
+libation_reader_refreshes_per_hour = 3
 alignment_cli_path =
 ```
 
-Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server.
+`deployment_mode` accepts `local`, `lan`, or `proxy` and chooses the matching safe bind and cookie behavior. `host` is an optional advanced override. Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server.
 
 ## Library layout
 
@@ -191,9 +197,11 @@ Set these in `server.config` only if you want the integration:
 ```config
 libation_cli_path = /path/to/libationcli
 libation_files_dir = /path/to/LibationFiles
+libation_auto_refresh_hours = 24
+libation_reader_refreshes_per_hour = 3
 ```
 
-If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated.
+If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated. By default the server checks Audible once every 24 hours. Administrators may also refresh at any time, while each reader account may request three refreshes per rolling hour.
 
 ## Android and iOS development
 
@@ -201,13 +209,13 @@ The checked-in Android Studio and Xcode projects live in `apps/web/android` and 
 
 ## Users
 
-The server requires sign-in before any audiobook data is exposed. The first browser to load the app sees a one-time setup form that creates the initial administrator account; from then on the home screen is a sign-in form.
+The server requires sign-in before any audiobook data is exposed. `local` setup creates the first owner without extra steps. A remote browser in `lan` mode, and every setup request in `proxy` mode, must also enter the one-time 30-minute bootstrap token printed in the server console or `data/server.log`; from then on the home screen is a sign-in form.
 
 - Accounts are stored in `data/users.json` (configurable via `users_file`). Passwords are hashed with Argon2.
 - Playback progress is tracked per user, so each reader has their own bookmarks.
 - Administrators can add or remove readers, and reset any password, from the **Manage readers** menu under the avatar in the library pane.
 - Sessions are stored in `data/sessions.json` and survive server restarts. They expire after 30 days, matching the session cookie lifetime.
-- Streaming, cover art, and zip download requests carry the session token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated.
+- Streaming, cover art, and zip download requests carry the scoped media token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated without exposing the full session bearer in URLs.
 
 ## Next build slices
 

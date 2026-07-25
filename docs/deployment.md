@@ -48,10 +48,12 @@ OPERALIBRE_SERVER_CONFIG=/opt/operalibre/server.config \
 In `/opt/operalibre/server.config`, point the server at the copied web bundle:
 
 ```config
+deployment_mode = local
+host =
 web_dist_dir = web
 ```
 
-Then open `http://<server-address>:4000` in a browser. This is the recommended one-address setup: the server supplies both the site and its API.
+Then open `http://localhost:4000` on the server itself. For another device on a trusted LAN or VPN, select `deployment_mode = lan`; for public access, select `deployment_mode = proxy` and use the TLS reverse proxy below. Leaving `host` blank lets the profile choose the correct interface.
 
 ## systemd unit (Linux)
 
@@ -71,16 +73,35 @@ ExecStart=/opt/operalibre/operalibre-server
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=/opt/operalibre
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt/operalibre
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin operalibre
+sudo chown -R operalibre:operalibre /opt/operalibre
+sudo chmod 700 /opt/operalibre/data
+sudo chmod 600 /opt/operalibre/server.config
 sudo systemctl daemon-reload
 sudo systemctl enable --now operalibre.service
 sudo journalctl -u operalibre -f
 ```
+
+The checked-in `operalibre.service` applies the same hardening to the repository's `/srv/OperaLibre` layout. Adjust `WorkingDirectory`, `ExecStart`, `ReadWritePaths`, and the config path together if your installation lives elsewhere. Optional Libation files must be placed somewhere readable by the dedicated account; do not grant the service access to a personal home directory.
 
 ## launchd (macOS)
 
@@ -124,7 +145,30 @@ The server then serves the frontend at `/` and the API at `/api/...` from the sa
 
 ## Reverse proxy with TLS (nginx)
 
+The checked-in `operalibre-nginx.conf` is the production template. It includes HTTP-to-HTTPS redirection, TLS-only public service, login throttling, connection and body limits, query-string-safe access logs, security headers, long media timeouts, and a larger request allowance only for the authenticated uploader. Replace `books.example.com` and its certificate paths, then test the nginx configuration before reloading it.
+
+The template's uploader ceiling is `20g`, matching the default `max_upload_gib = 20`. If you change one, change the other. ZIP download limits and concurrency are enforced by the Rust server through `max_book_download_gib` and `max_concurrent_book_downloads`.
+
+Use this server profile behind the proxy:
+
+```config
+deployment_mode = proxy
+host =
+```
+
 ```nginx
+# Defined in nginx's http context. Do not log $request_uri: media tokens
+# are query parameters.
+limit_req_zone $binary_remote_addr zone=operalibre_login:10m rate=10r/m;
+log_format operalibre '$remote_addr [$time_local] '
+                     '"$request_method $uri $server_protocol" $status $body_bytes_sent';
+
+server {
+  listen 80;
+  server_name books.example.com;
+  return 308 https://$host$request_uri;
+}
+
 server {
   listen 443 ssl http2;
   server_name books.example.com;
@@ -132,16 +176,26 @@ server {
   ssl_certificate     /etc/letsencrypt/live/books.example.com/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/books.example.com/privkey.pem;
 
-  client_max_body_size 0;       # large zip downloads
+  access_log /var/log/nginx/operalibre-access.log operalibre;
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
 
-  location / {
+  location = /api/auth/login {
+    limit_req zone=operalibre_login burst=5 nodelay;
+    client_max_body_size 16k;
     proxy_pass http://127.0.0.1:4000;
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For   $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
+  }
 
-    # Range requests for audio seeking.
+  location /api/ {
+    client_max_body_size 2m;
+    proxy_pass http://127.0.0.1:4000;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Range $http_range;
     proxy_buffering off;
   }
@@ -152,6 +206,8 @@ Two notes when fronting with a proxy:
 
 1. **Keep range requests intact.** The `Range` header and `206 Partial Content` responses are what makes seeking through a multi-hour `.m4b` snappy. Cloudflare and similar services often handle this for you; some proxies need explicit configuration.
 2. **Disable response buffering for streams.** Long audio reads should not be buffered into memory before being sent to the client.
+
+Proxy-mode first-run setup always asks for the single-use token printed in the server console or protected server log; it expires after 30 minutes. Requiring it even for apparently local requests protects the owner account if a proxy omits forwarded client-address headers. Never expose or port-forward port `4000`; only ports `80` and `443` should reach nginx, with port `80` used solely for the HTTPS redirect.
 
 ## Custom frontends
 

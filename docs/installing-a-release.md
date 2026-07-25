@@ -84,6 +84,8 @@ The simplest method is:
 4. Select one M4B or other audio file, or select all audio tracks for a multi-file book.
 5. Wait for the upload and automatic library scan to finish.
 
+Uploads are limited to 20 GiB by default. Administrators can change the upload and generated-download limits in `server.config`; see [Configuration](configuration.md#transfer-limits).
+
 You can also copy audiobooks into the package's `audiobooks` folder, then choose **Rescan library**. See [Library Layout](library-layout.md) if you want covers, chapters, or readalong files to be matched automatically.
 
 ## Use an existing audiobook folder
@@ -111,7 +113,7 @@ Save the file and start OperaLibre again.
 
 ## Listen on a phone or another computer
 
-The server computer must be turned on with OperaLibre running. Connect the other device to the same trusted home network, then open:
+The secure default listens only on the server computer. For a trusted home network or private VPN, set `deployment_mode = lan` and leave `host` blank in `server.config`, restart OperaLibre, and connect the other device to that same trusted network. Then open:
 
 ```text
 http://SERVER-COMPUTER-IP:4000
@@ -134,11 +136,13 @@ If `library_root` points somewhere else, back up that audiobook folder instead.
 
 OperaLibre checks the latest GitHub release when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
 
-Automatic install is available when OperaLibre is running from a combined release package and was started with its included Open action. It preserves `data`, `audiobooks`, and `server.config`. The prior server and web files remain under `data/update-backups` for rollback; if the new server cannot start, the launcher restores and starts the previous version automatically.
+Automatic install is available for managed combined and server-only release packages. It preserves `data`, `audiobooks`, and `server.config`, so deployment profiles and custom paths survive upgrades. Configs from older versions remain compatible: a non-loopback `host` with no profile is inferred as `lan`. Combined updates replace the server, bundled web app, and launchers together; server-only updates replace only the server and leave a separately hosted frontend untouched. The prior managed files remain under `data/update-backups` for rollback; if the new server cannot start, the launcher restores and starts the previous version automatically.
+
+New configuration keys use secure defaults when they are absent, so an existing managed installation does not need a manual config migration after an automatic update. Add the keys from `server.config.example` only when you want to override those defaults.
 
 The browser frontend is tracked separately. When a newer standalone frontend package is available, an owner can choose **Update frontend** to verify and replace only the served web files. The server and playback keep running, the previous frontend is copied to `data/update-backups`, and the Administration page reloads into the new bundle.
 
-Custom deployments, server-only packages, and system services still show the available version and release-notes link, but must be updated manually:
+Custom source deployments and system services still show the available version and release-notes link, but must be updated manually:
 
 1. Stop OperaLibre.
 2. Download and extract the new combined or server package into a new folder.

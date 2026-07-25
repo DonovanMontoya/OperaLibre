@@ -5,22 +5,22 @@ nav_order: 9
 
 # API Reference
 
-All endpoints are served by the Rust backend on `host:port` (default `0.0.0.0:4000`). With the exception of a small public surface, every endpoint requires an authenticated session.
+All endpoints are served by the Rust backend on `host:port` (default `127.0.0.1:4000`). With the exception of a small public surface, every endpoint requires an authenticated session. Public deployments must expose a TLS reverse proxy rather than this raw HTTP listener.
 
 The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
 
 ## Authentication
 
-The web app obtains a session token via `POST /api/auth/login`. The token is sent on subsequent requests; streaming endpoints also accept the token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work.
+The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, stream, and download endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
 
 ### Public endpoints
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. |
-| `GET` | `/api/auth/status` | Reports whether first-run setup is needed. |
-| `POST` | `/api/auth/setup` | One-time owner creation. Only accepted when no users exist. |
-| `POST` | `/api/auth/login` | Exchange username + password for a session token. |
+| `GET` | `/api/auth/status` | Reports whether first-run setup is needed and whether this client needs a bootstrap token or local access. |
+| `POST` | `/api/auth/setup` | One-time owner creation. Remote `lan` clients and every `proxy` client must send the current `setupToken`; `local` mode rejects remote setup. |
+| `POST` | `/api/auth/login` | Exchange username + password for session and scoped media tokens. |
 
 ### Authenticated endpoints
 
@@ -74,13 +74,13 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`), if one is matched or generated. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether an alignment CLI was found: `{ "enabled": bool, "cliPath": string \| null }`. |
-| `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. |
+| `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/completion` | Explicitly mark the book finished or unfinished for the current user without changing playback position. Body: `{ "finished": true }`. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
-| `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. |
+| `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
 
@@ -131,7 +131,7 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 | --- | --- | --- |
 | `GET` | `/api/libation/status` | Configured accounts and their auth state. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
-| `POST` | `/api/libation/sync` | Refresh Libation's library scan. |
+| `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
 | `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
 | `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
@@ -151,4 +151,4 @@ Libation status, refresh, download-all, and jobs require an administrator. Downl
 
 ## CORS
 
-The server is intended for same-origin usage (web UI built into the deployment, or proxied through Vite in dev). It does not emit permissive CORS headers by default. If you serve the web bundle from a different origin than the API, you'll need to put both behind a single reverse proxy.
+Same-origin requests need no CORS configuration. The server allows the official OperaLibre iOS, Android, and macOS app origins by default. For a custom frontend served from a different origin than the API, add its full origin to `allowed_origins` in `server.config` (or put both behind one reverse proxy).
