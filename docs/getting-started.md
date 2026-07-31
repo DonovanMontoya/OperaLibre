@@ -65,6 +65,8 @@ port = 4000
 max_upload_gib = 20
 max_book_download_gib = 25
 max_concurrent_book_downloads = 1
+download_temp_dir = data/download-temp
+min_download_free_gib = 2
 library_root = /Users/you/Audiobooks
 ```
 

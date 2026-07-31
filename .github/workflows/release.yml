@@ -43,18 +43,86 @@ jobs:
             echo "tag_exists=false" >> "${GITHUB_OUTPUT}"
           fi
 
+  verify:
+    name: Verify release source
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Require a commit from main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Release source must be a commit in main history." >&2
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Audit production web dependencies
+        run: npm audit --omit=dev --audit-level=low
+
+      - name: Test and build web app
+        run: |
+          npm test -w @operalibre/web
+          npm run build -w @operalibre/web
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify Rust components
+        run: |
+          cargo fmt --check --manifest-path apps/server/Cargo.toml
+          cargo clippy --locked --all-targets --manifest-path apps/server/Cargo.toml -- -D warnings
+          cargo test --locked --manifest-path apps/server/Cargo.toml
+          cargo fmt --check --manifest-path apps/launcher/Cargo.toml
+          cargo clippy --locked --all-targets --manifest-path apps/launcher/Cargo.toml -- -D warnings
+          cargo test --locked --manifest-path apps/launcher/Cargo.toml
+
+      - name: Audit server dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: apps/server
+
+      - name: Audit launcher dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: apps/launcher
+
   frontend:
     name: Frontend package
-    needs: prepare
+    needs:
+      - prepare
+      - verify
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
@@ -85,14 +153,14 @@ jobs:
           zip -qr "../dist/${package}.zip" "${package}"
 
       - name: Upload built frontend for native packages
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: web-dist
           path: apps/web/dist
           if-no-files-found: error
 
       - name: Upload frontend release package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-frontend
           path: dist/*
@@ -130,26 +198,26 @@ jobs:
             launcher: apps/launcher/target/release/operalibre-launcher.exe
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/server
           shared-key: release-${{ matrix.platform }}
 
       - name: Setup Node for packaging
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
       - name: Download built frontend
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: web-dist
           path: web-dist
@@ -241,7 +309,7 @@ jobs:
           Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
 
       - name: Upload native release packages
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/*
@@ -256,14 +324,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Download release packages
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-*
           path: release-assets
@@ -273,6 +343,11 @@ jobs:
         shell: bash
         working-directory: release-assets
         run: sha256sum * > SHA256SUMS.txt
+
+      - name: Attest release packages
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/*
 
       - name: Create or update release
         shell: bash

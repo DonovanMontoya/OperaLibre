@@ -101,8 +101,8 @@ export function ServerSetup({
             type="text"
             value={url}
             placeholder={serverType === "jellyfin"
-              ? nativeApp ? "http://My-Mac.local:8096" : "http://localhost:8096"
-              : nativeApp ? "http://My-Mac.local:4000" : "http://localhost:4000"}
+              ? nativeApp ? "My-Mac.local:8096 or jellyfin.example.com" : "http://localhost:8096"
+              : nativeApp ? "My-Mac.local:4000 or books.example.com" : "http://localhost:4000"}
             inputMode="url"
             autoComplete="off"
             autoCapitalize="off"
@@ -119,7 +119,7 @@ export function ServerSetup({
           {serverType === "jellyfin" ? (
             <>
               {nativeApp ? (
-                <>Use the server computer&rsquo;s LAN address, usually <code>http://My-Mac.local:8096</code></>
+                <>Private addresses use HTTP automatically; public names use HTTPS.</>
               ) : (
                 <>Default HTTP: <code>localhost:8096</code> HTTPS when enabled: <code>localhost:8920</code></>
               )}
@@ -127,7 +127,7 @@ export function ServerSetup({
           ) : (
             <>
               {nativeApp ? (
-                <>Use the server computer&rsquo;s LAN address, usually <code>http://My-Mac.local:4000</code></>
+                <>Private addresses use HTTP automatically; public names use HTTPS.</>
               ) : (
                 <>Default: <code>localhost:4000</code> Remote: <code>https://books.example.com</code></>
               )}

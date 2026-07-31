@@ -95,16 +95,16 @@ export function AdminPanel({
     }
   }
 
-  async function refreshUpdate(force = false) {
+  async function refreshUpdate() {
     setUpdateChecking(true);
     try {
       const [serverResult, frontendResult] = await Promise.allSettled([
-        getUpdateStatus(30_000, force),
+        getUpdateStatus(30_000),
         isNativeApp()
           ? Promise.resolve(null)
           : getFrontendUpdateStatus(
               30_000,
-              force,
+              false,
               FRONTEND_VERSION === "dev" ? undefined : FRONTEND_VERSION
             )
       ]);
@@ -487,47 +487,24 @@ export function AdminPanel({
               </button>
             </div>
           </section>
-          <section className="admin-card admin-version-card">
-            <div>
-              <span className="section-label"><ArrowUpCircle size={13} /> Server software</span>
-              <h2>{updateStatus ? `OperaLibre ${updateStatus.currentVersion}` : "OperaLibre server"}</h2>
-              <p>{updateChecking ? "Checking for updates…" : updateStatus ? "This server checks GitHub Releases for new versions." : "Update status is temporarily unavailable."}</p>
-            </div>
-            <button
-              type="button"
-              className="quiet-button"
-              disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
-              onClick={() => void refreshUpdate(true)}
-            >
-              {updateChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />} Check for updates
-            </button>
-          </section>
-          <section className="admin-card admin-version-card">
-            <div>
-              <span className="section-label"><ArrowUpCircle size={13} /> Web frontend</span>
-              <h2>
-                {frontendUpdateStatus
-                  ? `OperaLibre web ${frontendUpdateStatus.currentVersion}`
-                  : "OperaLibre web frontend"}
-              </h2>
+          <section className="admin-card admin-software-card">
+            <div className="admin-software-copy">
+              <span className="section-label"><ArrowUpCircle size={13} /> Software versions</span>
+              <h2>OperaLibre software</h2>
               <p>
-                {updateChecking
-                  ? "Checking for updates…"
-                  : frontendUpdateStatus
-                    ? "The browser interface checks the standalone frontend release package."
-                    : "Frontend update status is temporarily unavailable."}
+                Updates are checked automatically. When one is available, its install action appears at the top of this page.
               </p>
             </div>
-            <button
-              type="button"
-              className="quiet-button"
-              disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
-              onClick={() => void refreshUpdate(true)}
-            >
-              {updateChecking
-                ? <LoaderCircle size={14} className="spin-icon" />
-                : <RefreshCcw size={14} />} Check for updates
-            </button>
+            <div className="admin-software-versions">
+              <div>
+                <span>Server</span>
+                <strong>{updateStatus?.currentVersion ?? (updateChecking ? "Checking…" : "Unavailable")}</strong>
+              </div>
+              <div>
+                <span>Web frontend</span>
+                <strong>{frontendUpdateStatus?.currentVersion ?? (FRONTEND_VERSION === "dev" ? "Development" : FRONTEND_VERSION)}</strong>
+              </div>
+            </div>
           </section>
         </div>
       ) : null}

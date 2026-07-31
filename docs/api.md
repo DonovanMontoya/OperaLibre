@@ -7,6 +7,8 @@ nav_order: 9
 
 All endpoints are served by the Rust backend on `host:port` (default `127.0.0.1:4000`). With the exception of a small public surface, every endpoint requires an authenticated session. Public deployments must expose a TLS reverse proxy rather than this raw HTTP listener.
 
+Browser clients that authenticate with the session cookie must send an `Origin` (or `Referer`) matching the API host for `POST`, `PUT`, and `DELETE` requests. Origins explicitly trusted through `allowed_origins` are also accepted. Native and other API clients should send the session with `Authorization: Bearer ...`; bearer-authenticated changes do not require browser CSRF headers.
+
 The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
 
 ## Authentication

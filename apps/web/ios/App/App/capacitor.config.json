@@ -17,6 +17,7 @@
 	"packageClassList": [
 		"FilesystemPlugin",
 		"HapticsPlugin",
+		"ScreenOrientationPlugin",
 		"FilePickerPlugin"
 	]
 }

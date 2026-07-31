@@ -10,7 +10,7 @@ use axum::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{
             ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE,
-            CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, RANGE, SET_COOKIE,
+            CONTENT_TYPE, COOKIE, ETAG, HOST, IF_NONE_MATCH, ORIGIN, RANGE, REFERER, SET_COOKIE,
         },
     },
     middleware::{self, Next},
@@ -75,6 +75,7 @@ const GIBIBYTE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_UPLOAD_GIB: u64 = 20;
 const DEFAULT_MAX_BOOK_DOWNLOAD_GIB: u64 = 25;
 const DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS: usize = 1;
+const DEFAULT_MIN_DOWNLOAD_FREE_GIB: u64 = 2;
 const MAX_CONFIGURED_BOOK_DOWNLOAD_CONCURRENCY: usize = 32;
 const SETUP_TOKEN_LIFETIME_SECONDS: u64 = 30 * 60;
 const OFFICIAL_APP_ORIGINS: &[&str] = &[
@@ -99,9 +100,12 @@ const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 #[derive(Clone)]
 struct AppState {
     deployment_mode: DeploymentMode,
+    csrf_allowed_origins: Arc<HashSet<String>>,
     setup_token: Arc<Mutex<Option<SetupToken>>>,
     max_upload_bytes: Option<u64>,
     max_book_download_bytes: Option<u64>,
+    download_temp_dir: PathBuf,
+    min_download_free_bytes: u64,
     library_root: PathBuf,
     library_identities_file: PathBuf,
     progress_file: PathBuf,
@@ -782,6 +786,8 @@ struct ServerConfig {
     max_upload_bytes: Option<u64>,
     max_book_download_bytes: Option<u64>,
     max_concurrent_book_downloads: usize,
+    download_temp_dir: PathBuf,
+    min_download_free_bytes: u64,
     library_root: PathBuf,
     data_dir: PathBuf,
     progress_file: PathBuf,
@@ -958,6 +964,16 @@ impl ServerConfig {
             1,
             MAX_CONFIGURED_BOOK_DOWNLOAD_CONCURRENCY,
         )?;
+        let download_temp_dir = config_path_value(&values, &config_dir, "download_temp_dir")
+            .or_else(|| env_path_value("OPERALIBRE_DOWNLOAD_TEMP_DIR"))
+            .unwrap_or_else(|| data_dir.join("download-temp"));
+        let min_download_free_gib = config_u64_value(&values, "min_download_free_gib")?
+            .unwrap_or(DEFAULT_MIN_DOWNLOAD_FREE_GIB);
+        let min_download_free_bytes = min_download_free_gib
+            .checked_mul(GIBIBYTE_BYTES)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Invalid server.config `min_download_free_gib` value `{min_download_free_gib}`: size overflows bytes"
+            ))?;
 
         Ok(Self {
             deployment_mode,
@@ -968,6 +984,8 @@ impl ServerConfig {
             max_upload_bytes,
             max_book_download_bytes,
             max_concurrent_book_downloads,
+            download_temp_dir,
+            min_download_free_bytes,
             library_root,
             data_dir,
             progress_file,
@@ -1017,6 +1035,8 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "max_upload_gib",
         "max_book_download_gib",
         "max_concurrent_book_downloads",
+        "download_temp_dir",
+        "min_download_free_gib",
         "library_root",
         "audiobook_library",
         "data_dir",
@@ -1136,6 +1156,12 @@ fn config_bounded_usize(
     Ok(value)
 }
 
+fn download_volume_has_capacity(available: u64, source: u64, reserve: u64) -> bool {
+    source
+        .checked_add(reserve)
+        .is_some_and(|required| available >= required)
+}
+
 fn env_u16_value(key: &str) -> Option<u16> {
     env::var(key)
         .ok()
@@ -1193,6 +1219,8 @@ async fn main() -> anyhow::Result<()> {
         max_upload_gib = config.max_upload_bytes.map(|bytes| bytes / GIBIBYTE_BYTES).unwrap_or(0),
         max_book_download_gib = config.max_book_download_bytes.map(|bytes| bytes / GIBIBYTE_BYTES).unwrap_or(0),
         max_concurrent_book_downloads = config.max_concurrent_book_downloads,
+        download_temp_dir = %config.download_temp_dir.display(),
+        min_download_free_gib = config.min_download_free_bytes / GIBIBYTE_BYTES,
         library_root = %config.library_root.display(),
         data_dir = %config.data_dir.display(),
         "server configuration loaded"
@@ -1207,6 +1235,7 @@ async fn main() -> anyhow::Result<()> {
     // process, so record it even when the release launcher did not start us
     // (server-only packages start via start.sh / start.cmd).
     record_server_pid(&config.data_dir)?;
+    create_private_directory(&config.download_temp_dir)?;
     secure_existing_state_files(&config).await?;
 
     let users_store = load_users_store(&config.users_file).await?;
@@ -1245,9 +1274,18 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         deployment_mode: config.deployment_mode,
+        csrf_allowed_origins: Arc::new(
+            config
+                .allowed_origins
+                .iter()
+                .map(|origin| origin.trim_end_matches('/').to_ascii_lowercase())
+                .collect(),
+        ),
         setup_token: Arc::new(Mutex::new(setup_token)),
         max_upload_bytes: config.max_upload_bytes,
         max_book_download_bytes: config.max_book_download_bytes,
+        download_temp_dir: config.download_temp_dir.clone(),
+        min_download_free_bytes: config.min_download_free_bytes,
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
         progress_file: config.progress_file.clone(),
@@ -1453,18 +1491,23 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(data_dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    create_private_directory(data_dir)?;
     let pid_path = data_dir.join("operalibre-server.pid");
     std::fs::write(&pid_path, std::process::id().to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn create_private_directory(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
@@ -1528,13 +1571,8 @@ async fn security_headers(request: Request, next: Next) -> Response {
     response
 }
 
-async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let library = state.library.read().await;
-    Json(serde_json::json!({
-        "ok": true,
-        "bookCount": library.books.len(),
-        "version": updates::current_version(),
-    }))
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
 }
 
 #[derive(Deserialize)]
@@ -3489,6 +3527,8 @@ async fn download_book(
             )
         })?;
     let max_book_download_bytes = state.max_book_download_bytes;
+    let download_temp_dir = state.download_temp_dir.clone();
+    let min_download_free_bytes = state.min_download_free_bytes;
     let (book_title, tracks) = {
         let library = state.library.read().await;
         let book = library
@@ -3514,25 +3554,48 @@ async fn download_book(
         return Err(ApiError::not_found("No tracks available for download"));
     }
 
+    let (tracks, source_bytes) = tokio::task::spawn_blocking(move || {
+        let source_bytes = tracks.iter().try_fold(0_u64, |total, (_, path)| {
+            total
+                .checked_add(std::fs::metadata(path)?.len())
+                .ok_or_else(|| anyhow::anyhow!("The book is too large to archive."))
+        })?;
+        Ok::<_, anyhow::Error>((tracks, source_bytes))
+    })
+    .await
+    .map_err(|error| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error.to_string(),
+    })??;
+    if let Some(limit) = max_book_download_bytes
+        && source_bytes > limit
+    {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: format!(
+                "Book downloads are limited to {} GiB.",
+                limit / GIBIBYTE_BYTES
+            ),
+        });
+    }
+    let available_bytes = fs2::available_space(&download_temp_dir)?;
+    if !download_volume_has_capacity(available_bytes, source_bytes, min_download_free_bytes) {
+        return Err(ApiError {
+            status: StatusCode::INSUFFICIENT_STORAGE,
+            message: format!(
+                "Not enough archive space: this download needs {} GiB while preserving the configured {} GiB free-space reserve.",
+                source_bytes.div_ceil(GIBIBYTE_BYTES),
+                min_download_free_bytes / GIBIBYTE_BYTES
+            ),
+        });
+    }
+
     let (zip_path, download_permit) =
         tokio::task::spawn_blocking(move || -> anyhow::Result<(PathBuf, OwnedSemaphorePermit)> {
-            let source_bytes = tracks.iter().try_fold(0_u64, |total, (_, path)| {
-                total
-                    .checked_add(std::fs::metadata(path)?.len())
-                    .ok_or_else(|| anyhow::anyhow!("The book is too large to archive."))
-            })?;
-            if let Some(limit) = max_book_download_bytes
-                && source_bytes > limit
-            {
-                anyhow::bail!(
-                    "Book downloads are limited to {} GiB.",
-                    limit / GIBIBYTE_BYTES
-                );
-            }
             let temp = tempfile::Builder::new()
                 .prefix("operalibre-")
                 .suffix(".zip")
-                .tempfile()?;
+                .tempfile_in(download_temp_dir)?;
             let (file, path) = temp.keep()?;
             let mut writer = zip::ZipWriter::new(file);
             let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
@@ -6533,6 +6596,7 @@ async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
+    enforce_cookie_csrf(&state, &req)?;
     let Some(credential) = extract_request_credential(&req) else {
         return Err(ApiError::unauthorized("Missing authentication token."));
     };
@@ -6548,6 +6612,58 @@ async fn auth_middleware(
     req.extensions_mut().insert(user);
     req.extensions_mut().insert(SessionToken(session_token));
     Ok(next.run(req).await)
+}
+
+fn is_safe_http_method(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn request_authority(value: &str) -> Option<String> {
+    value
+        .parse::<axum::http::Uri>()
+        .ok()?
+        .authority()
+        .map(|authority| authority.as_str().to_ascii_lowercase())
+}
+
+fn cookie_request_origin_allowed(allowed_origins: &HashSet<String>, headers: &HeaderMap) -> bool {
+    let Some(source) = headers
+        .get(ORIGIN)
+        .or_else(|| headers.get(REFERER))
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let source_origin = source.trim_end_matches('/').to_ascii_lowercase();
+    if source_origin == "null" {
+        return false;
+    }
+    if allowed_origins.contains(&source_origin) {
+        return true;
+    }
+
+    let Some(source_authority) = request_authority(source) else {
+        return false;
+    };
+    headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|host| source_authority.eq_ignore_ascii_case(host.trim()))
+}
+
+fn enforce_cookie_csrf(state: &AppState, request: &Request) -> Result<(), ApiError> {
+    if is_safe_http_method(request.method())
+        || token_from_authorization(request.headers()).is_some()
+        || token_from_cookies(request.headers()).is_none()
+    {
+        return Ok(());
+    }
+    if cookie_request_origin_allowed(&state.csrf_allowed_origins, request.headers()) {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "Cookie-authenticated changes must come from this server's web app. API clients should use Authorization: Bearer.",
+    ))
 }
 
 async fn auth_status(
@@ -7821,6 +7937,31 @@ mod tests {
     }
 
     #[test]
+    fn cookie_csrf_requires_the_target_or_an_explicit_origin() {
+        let mut headers = super::HeaderMap::new();
+        headers.insert(super::HOST, "books.example.com".parse().unwrap());
+        headers.insert(super::ORIGIN, "https://books.example.com".parse().unwrap());
+        assert!(super::cookie_request_origin_allowed(
+            &std::collections::HashSet::new(),
+            &headers
+        ));
+
+        headers.insert(super::ORIGIN, "https://evil.example.com".parse().unwrap());
+        assert!(!super::cookie_request_origin_allowed(
+            &std::collections::HashSet::new(),
+            &headers
+        ));
+
+        let configured =
+            std::collections::HashSet::from(["https://reader.example.net".to_string()]);
+        headers.insert(super::ORIGIN, "https://reader.example.net".parse().unwrap());
+        assert!(super::cookie_request_origin_allowed(&configured, &headers));
+
+        headers.remove(super::ORIGIN);
+        assert!(!super::cookie_request_origin_allowed(&configured, &headers));
+    }
+
+    #[test]
     fn password_lengths_are_bounded() {
         assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS)).is_ok());
         assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS - 1)).is_err());
@@ -7916,6 +8057,10 @@ mod tests {
             super::config_bounded_usize(&values, "max_concurrent_book_downloads", 1, 1, 32)
                 .is_err()
         );
+
+        assert!(super::download_volume_has_capacity(30, 20, 10));
+        assert!(!super::download_volume_has_capacity(29, 20, 10));
+        assert!(!super::download_volume_has_capacity(u64::MAX, u64::MAX, 1));
     }
 
     #[test]
@@ -8067,11 +8212,14 @@ exit 0
 
         let state = super::AppState {
             deployment_mode: super::DeploymentMode::Local,
+            csrf_allowed_origins: super::Arc::new(std::collections::HashSet::new()),
             setup_token: super::Arc::new(super::Mutex::new(None)),
             max_upload_bytes: Some(super::DEFAULT_MAX_UPLOAD_GIB * super::GIBIBYTE_BYTES),
             max_book_download_bytes: Some(
                 super::DEFAULT_MAX_BOOK_DOWNLOAD_GIB * super::GIBIBYTE_BYTES,
             ),
+            download_temp_dir: data_dir.join("download-temp"),
+            min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
             progress_file: data_dir.join("progress.json"),

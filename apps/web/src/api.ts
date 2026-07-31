@@ -36,6 +36,11 @@ import {
 } from "./jellyfin";
 import { progressTimestamp, serverStorageKey } from "./reliability";
 import {
+  normalizeServerAddress,
+  requireSecurePublicServerAddress,
+  upgradeStoredNativeServerAddress
+} from "./serverAddress";
+import {
   DEMO_USER,
   demoMediaUrl,
   getDemoBooks,
@@ -109,20 +114,7 @@ function isLoopbackServerUrl(value: string): boolean {
 }
 
 function normalizeServerUrl(value: string): string {
-  let trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (!/^https?:\/\//i.test(trimmed)) {
-    trimmed = `http://${trimmed}`;
-  }
-  try {
-    const parsed = new URL(trimmed);
-    const path = parsed.pathname.replace(/\/+$/, "");
-    return `${parsed.protocol}//${parsed.host}${path}`;
-  } catch {
-    return trimmed.replace(/\/+$/, "");
-  }
+  return normalizeServerAddress(value);
 }
 
 export type ServerAlias = {
@@ -152,7 +144,9 @@ function storeServerAliases(aliases: ServerAlias[]) {
 
 export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   const trimmedName = name.trim();
-  const url = normalizeServerUrl(rawUrl);
+  const url = Capacitor.isNativePlatform()
+    ? requireSecurePublicServerAddress(rawUrl)
+    : normalizeServerUrl(rawUrl);
   if (!trimmedName) throw new Error("Alias name is required.");
   if (!url) throw new Error("Alias URL is required.");
   const aliases = getServerAliases();
@@ -228,14 +222,21 @@ function readStoredServerUrl(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
-  storedServerUrl = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
+  const stored = window.localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? "";
+  storedServerUrl = Capacitor.isNativePlatform()
+    ? upgradeStoredNativeServerAddress(stored)
+    : stored;
+  if (storedServerUrl && storedServerUrl !== stored) {
+    window.localStorage.setItem(SERVER_URL_STORAGE_KEY, storedServerUrl);
+  }
   return storedServerUrl || null;
 }
 
 export function getServerUrl(): string {
   if (isLocalMode()) return "This device";
   if (isDemoMode()) return "On-device demo";
-  return readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
+  const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
+  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 export function getServerType(): ServerType {
@@ -266,9 +267,14 @@ export function exitLocalMode() {
 }
 
 export function getServerIdentityUrl(): string {
-  return typeof window === "undefined"
+  const url = typeof window === "undefined"
     ? getServerUrl()
     : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY) ?? getServerUrl();
+  const secured = Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  if (typeof window !== "undefined" && secured !== url) {
+    window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, secured);
+  }
+  return secured;
 }
 
 export function setServerType(serverType: ServerType) {
@@ -282,7 +288,9 @@ export function hasUserConfiguredServer(): boolean {
 }
 
 export function setServerUrl(rawValue: string) {
-  const value = normalizeServerUrl(rawValue);
+  const value = Capacitor.isNativePlatform()
+    ? requireSecurePublicServerAddress(rawValue)
+    : normalizeServerUrl(rawValue);
   storedServerUrl = value;
   if (typeof window === "undefined") {
     return;
@@ -316,7 +324,9 @@ function currentApiBase(): string {
 }
 
 export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
-  const base = normalizeServerUrl(rawValue);
+  const base = Capacitor.isNativePlatform()
+    ? requireSecurePublicServerAddress(rawValue)
+    : normalizeServerUrl(rawValue);
   if (!base) {
     throw new Error("Server URL is required.");
   }

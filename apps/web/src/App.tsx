@@ -34,6 +34,7 @@ import {
   Search,
   ServerOff,
   ShieldCheck,
+  Smartphone,
   Settings,
   SkipBack,
   SkipForward,
@@ -143,6 +144,12 @@ import {
 import { isNativeApp } from "./api";
 import { haptic, selectionHaptic } from "./native";
 import {
+  disableRotationLock,
+  enableRotationLock,
+  isRotationLockAvailable,
+  readStoredRotationLock
+} from "./rotationLock";
+import {
   attachNativeAudioPlayer,
   getNativeAudioRecovery,
   pauseNativeAudio,
@@ -189,7 +196,7 @@ const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
 type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
-type NativePlayerSheet = "speed" | "sleep" | "chapters" | null;
+type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 type DeviceDownloadActivity = {
   bookId: string;
   fraction: number | null;
@@ -229,6 +236,8 @@ function writeStoredSpeed(value: number) {
     // ignore storage failures
   }
 }
+
+const SPEED_WHEEL_SPACING_PX = 48;
 
 function PlaybackSpeedControl({
   value,
@@ -314,7 +323,7 @@ function PlaybackSpeedControl({
                 if (!drag || drag.pointerId !== event.pointerId) return;
                 const dragIndex = Math.min(
                   PLAYBACK_SPEED_VALUES.length - 1,
-                  Math.max(0, drag.startIndex + (drag.startX - event.clientX) / 42)
+                  Math.max(0, drag.startIndex + (drag.startX - event.clientX) / SPEED_WHEEL_SPACING_PX)
                 );
                 setWheelDragIndex(dragIndex);
                 const nextIndex = Math.round(dragIndex);
@@ -354,7 +363,7 @@ function PlaybackSpeedControl({
                     key={option}
                     className={`speed-wheel-value distance-${distance}${index === currentIndex ? " selected" : ""}`}
                     style={{
-                      "--speed-x": `${offset * 42}px`,
+                      "--speed-x": `${offset * SPEED_WHEEL_SPACING_PX}px`,
                       "--speed-turn": `${offset * -32}deg`
                     } as React.CSSProperties}
                     aria-hidden="true"
@@ -1476,6 +1485,10 @@ function ScrubSlider({
 }) {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const pendingRef = useRef<number | null>(null);
+  const displayedValue = dragValue ?? value;
+  const progressPercent = max > 0
+    ? Math.min(100, Math.max(0, (displayedValue / max) * 100))
+    : 0;
   const commit = () => {
     if (pendingRef.current !== null) {
       onCommit(pendingRef.current);
@@ -1490,7 +1503,8 @@ function ScrubSlider({
       min="0"
       max={max}
       step="1"
-      value={dragValue ?? value}
+      value={displayedValue}
+      style={{ "--scrub-progress": `${progressPercent}%` } as React.CSSProperties}
       onChange={(event) => {
         const next = Number(event.currentTarget.value);
         pendingRef.current = next;
@@ -1878,7 +1892,11 @@ function MainApp({
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
   const native = isNativeApp();
+  const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("reading");
+  const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
+  const [rotationLockBusy, setRotationLockBusy] = useState(false);
+  const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
   const [aliasName, setAliasName] = useState("");
   const [aliasUrl, setAliasUrl] = useState("");
@@ -1929,6 +1947,25 @@ function MainApp({
     } catch (error) {
       setAliasError(error instanceof Error ? error.message : "Could not reach that address.");
       setSwitchingAliasId(null);
+    }
+  }
+
+  async function toggleRotationLock() {
+    setRotationLockBusy(true);
+    setRotationLockError(null);
+    try {
+      if (rotationLockEnabled) {
+        await disableRotationLock();
+        setRotationLockEnabled(false);
+      } else {
+        await enableRotationLock();
+        setRotationLockEnabled(true);
+      }
+      haptic("light");
+    } catch (error) {
+      setRotationLockError(error instanceof Error ? error.message : "Could not change the rotation lock.");
+    } finally {
+      setRotationLockBusy(false);
     }
   }
   const [nativePlayerView, setNativePlayerView] = useState<"now" | "details" | "chapters">("now");
@@ -2115,6 +2152,7 @@ function MainApp({
       null,
     [books, playbackBookId, selectedBook]
   );
+  const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
   const nowPlayingBook = playbackBook ?? selectedBook;
 
   const currentTrack = useMemo(() => {
@@ -2220,6 +2258,9 @@ function MainApp({
     : "";
   const hasPreviousChapter = activeChapterIndex > 0 || chapterElapsed > 5;
   const hasNextChapter = activeChapterIndex >= 0 && activeChapterIndex < chapterSegments.length - 1;
+  const upcomingChapters = activeChapterIndex >= 0
+    ? chapterSegments.slice(activeChapterIndex + 1, activeChapterIndex + 4)
+    : chapterSegments.slice(0, 3);
   const isViewingPlayingBook = !!selectedBook && !!playbackBook && selectedBook.id === playbackBook.id;
   const selectedReadalongUrl = selectedBook?.readingFile
     ? readalongUrl(selectedBook.readingFile.url)
@@ -2875,7 +2916,7 @@ function MainApp({
           setLibationFinalizationFailures((current) => new Set([...current, ...failedAsins]));
           const failedTitle = libationBooks.find((book) => book.asin === failedAsins[0])?.title;
           setLibationError(
-            `${failedTitle ?? "The title"} never appeared in the local library. Decryption or import may have failed.`
+            `${failedTitle ?? "The title"} never appeared in your library. Decryption or import may have failed.`
           );
         }
         if (remainingAsins.size === 0 && timer !== null) {
@@ -3803,6 +3844,7 @@ function MainApp({
 
   function selectBook(book: Book) {
     setSelectedBookId(book.id);
+    setNativePlayerView(book.id === playbackBook?.id ? "now" : "details");
     if (native) {
       setChaptersOpen(book.id === playbackBook?.id && book.chapters.length > 0);
       setShowChapterJumpTop(false);
@@ -3814,6 +3856,7 @@ function MainApp({
 
   function openBookDetails(bookId: string) {
     setSelectedBookId(bookId);
+    setNativePlayerView("details");
     if (native) {
       const book = books.find((candidate) => candidate.id === bookId);
       setChaptersOpen(bookId === playbackBook?.id && !!book?.chapters.length);
@@ -3840,9 +3883,9 @@ function MainApp({
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
     markPlaybackTouched(true);
+    setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
-      setNativePlayerView("now");
     }
     if (
       selectedBook?.id === playbackBook?.id &&
@@ -3942,6 +3985,7 @@ function MainApp({
     if (playbackBook) {
       setSelectedBookId(playbackBook.id);
     }
+    setNativePlayerView("now");
     playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -4294,7 +4338,7 @@ function MainApp({
       className={
         native
           ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}`
-          : "shell"
+          : `shell web-shell player-view-${nativePlayerView}`
       }
     >
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
@@ -4490,24 +4534,32 @@ function MainApp({
           </div>
 
           {canBrowseLibation ? (
-            <div className="source-toggle" role="group" aria-label="Library source">
+            <div className="source-toggle" role="group" aria-label="Shelf collection">
               <button
                 type="button"
                 className={librarySource === "local" ? "selected" : ""}
                 onClick={() => setLibrarySource("local")}
                 aria-pressed={librarySource === "local"}
+                aria-label="Your library: books on the server and this device"
               >
                 <Library size={13} />
-                <span>Local</span>
+                <span className="source-toggle-copy">
+                  <strong>Your Library</strong>
+                  <small>Server + device</small>
+                </span>
               </button>
               <button
                 type="button"
                 className={librarySource === "audible" ? "selected" : ""}
                 onClick={() => setLibrarySource("audible")}
                 aria-pressed={librarySource === "audible"}
+                aria-label="Audible account purchases"
               >
                 <Cloud size={13} />
-                <span>Audible</span>
+                <span className="source-toggle-copy">
+                  <strong>Audible</strong>
+                  <small>Account purchases</small>
+                </span>
               </button>
             </div>
           ) : null}
@@ -4665,7 +4717,19 @@ function MainApp({
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
               {visibleBooks.map((book, index) => {
                 const progressPercent = book.progress?.percentComplete ?? 0;
-                const unavailableOffline = isOffline && !downloadedBookIds.has(book.id);
+                const availableOnDevice =
+                  demoMode
+                  || localMode
+                  || book.source === "device"
+                  || !!book.deviceBookId
+                  || downloadedBookIds.has(book.id);
+                const availableOnServer = !demoMode && !localMode && book.source !== "device";
+                const availabilityLabel = availableOnDevice
+                  ? availableOnServer
+                    ? "Available on the server and this device"
+                    : "Available on this device"
+                  : "Available from the server";
+                const unavailableOffline = isOffline && !availableOnDevice;
                 return (
                   <button
                     key={book.id}
@@ -4680,6 +4744,17 @@ function MainApp({
                     ) : (
                       <span className="index">{String(index + 1).padStart(2, "0")}</span>
                     )}
+                    <span
+                      className={`book-availability ${availableOnDevice ? "has-device-copy" : "server-only"} ${
+                        availableOnServer && availableOnDevice ? "server-and-device" : ""
+                      }`}
+                      role="img"
+                      aria-label={availabilityLabel}
+                      title={availabilityLabel}
+                    >
+                      {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                      {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                    </span>
                     <span className="book-text">
                       <strong>{book.title}</strong>
                       <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
@@ -4752,7 +4827,7 @@ function MainApp({
                       <button
                         type="button"
                         className="local-marker"
-                        aria-label={`Open ${book.title} from the local library`}
+                        aria-label={`Open ${book.title} from your library`}
                         onClick={() => {
                           if (!book.localBookId) {
                             return;
@@ -4803,10 +4878,8 @@ function MainApp({
       </aside>
 
       <section
-        className={`player-pane ${
-          native
-            ? `native-player-view-${nativePlayerView} ${selectedBook && currentTrack ? "has-native-player" : ""}`
-            : ""
+        className={`player-pane native-player-view-${nativePlayerView} ${
+          isViewingPlayingBook && currentTrack ? "has-native-player" : ""
         }`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
@@ -4822,7 +4895,7 @@ function MainApp({
         </button>
         {selectedBook && currentTrack ? (
           <>
-            {native && nowPlayingBook ? (
+            {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook ? (
               <section className="native-now-playing" aria-label="Now playing">
                 <div className="native-now-artwork">
                   <CoverArt book={nowPlayingBook} size="large" />
@@ -4932,7 +5005,14 @@ function MainApp({
                   <button type="button" onClick={() => setNativePlayerSheet("sleep")}>
                     <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
                   </button>
-                  <button type="button" onClick={() => openPlaybackView("details")}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (playbackBook) setSelectedBookId(playbackBook.id);
+                      haptic("light");
+                      setNativePlayerSheet("details");
+                    }}
+                  >
                     <Bookmark size={16} /> Details
                   </button>
                   <button
@@ -4945,14 +5025,101 @@ function MainApp({
                     <ListMusic size={16} /> Chapters
                   </button>
                 </div>
+
+                {!native ? (
+                  <div className="web-now-extras">
+                    <section className="web-now-panel web-now-about" aria-labelledby="web-now-about-title">
+                      <header className="web-now-panel-head">
+                        <div>
+                          <span className="web-now-panel-kicker"><ScrollText size={13} /> Edition</span>
+                          <h3 id="web-now-about-title">About this book</h3>
+                        </div>
+                        <button type="button" onClick={() => setNativePlayerSheet("details")}>View details</button>
+                      </header>
+                      <p>
+                        {playbackDescription
+                          ?? `${nowPlayingBook.title}${nowPlayingBook.author ? ` by ${nowPlayingBook.author}` : ""}${nowPlayingBook.narrator ? `, narrated by ${nowPlayingBook.narrator}` : ""}.`}
+                      </p>
+                      <div className="web-now-tags" aria-label="Book metadata">
+                        {nowPlayingBook.publishedDate ? <span>{nowPlayingBook.publishedDate}</span> : null}
+                        {nowPlayingBook.metadata.publisher ? <span>{nowPlayingBook.metadata.publisher}</span> : null}
+                        {nowPlayingBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
+                      </div>
+                    </section>
+
+                    <section className="web-now-panel web-now-session" aria-labelledby="web-now-session-title">
+                      <header className="web-now-panel-head">
+                        <div>
+                          <span className="web-now-panel-kicker"><Headphones size={13} /> Session</span>
+                          <h3 id="web-now-session-title">Listening progress</h3>
+                        </div>
+                        <strong>{bookCompletionPercent ?? 0}%</strong>
+                      </header>
+                      <div className="web-now-progressbar" role="img" aria-label={`${bookCompletionPercent ?? 0}% complete`}>
+                        <span style={{ width: `${bookCompletionPercent ?? 0}%` }} />
+                      </div>
+                      <dl className="web-now-facts">
+                        <div>
+                          <dt>Remaining</dt>
+                          <dd>{displayBookRemainingSeconds !== null ? formatDurationLabel(displayBookRemainingSeconds) ?? formatTime(displayBookRemainingSeconds) : "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>Runtime</dt>
+                          <dd>{formatDurationLabel(bookDuration) ?? formatTime(bookDuration)}</dd>
+                        </div>
+                        <div>
+                          <dt>Chapter</dt>
+                          <dd>{activeChapter ? `${activeChapter.chapterNumber} of ${chapterSegments.length}` : "—"}</dd>
+                        </div>
+                      </dl>
+                      <label className="web-now-volume" htmlFor="web-now-volume">
+                        <span><Volume2 size={13} /> Volume</span>
+                        <input
+                          id="web-now-volume"
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={volume}
+                          onChange={(event) => setVolume(Number(event.currentTarget.value))}
+                        />
+                        <strong>{Math.round(volume * 100)}%</strong>
+                      </label>
+                    </section>
+
+                    <section className="web-now-panel web-now-up-next" aria-labelledby="web-now-up-next-title">
+                      <header className="web-now-panel-head">
+                        <div>
+                          <span className="web-now-panel-kicker"><ListMusic size={13} /> Contents</span>
+                          <h3 id="web-now-up-next-title">Up next</h3>
+                        </div>
+                        <button type="button" onClick={() => setNativePlayerSheet("chapters")}>All chapters</button>
+                      </header>
+                      {upcomingChapters.length > 0 ? (
+                        <div className="web-now-chapter-list">
+                          {upcomingChapters.map((chapter) => (
+                            <button type="button" key={chapter.id} onClick={() => jumpToChapterFromSheet(chapter)}>
+                              <span>{String(chapter.chapterNumber).padStart(2, "0")}</span>
+                              <strong>{chapter.title}</strong>
+                              <em>{formatTime(chapter.durationSeconds)}</em>
+                              <ChevronRight size={15} />
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="web-now-end-copy">You’re in the final chapter of this book.</p>
+                      )}
+                    </section>
+                  </div>
+                ) : null}
               </section>
             ) : null}
-            {native && nativePlayerView !== "now" ? (
+            {nativePlayerView !== "now" && playbackBook ? (
               <button
                 type="button"
                 className="native-player-return"
                 onClick={() => {
-                  if (nativeTab === "shelf") {
+                  if (native && nativeTab === "shelf") {
                     haptic("light");
                     setNativePlayerView("now");
                     return;
@@ -4960,7 +5127,7 @@ function MainApp({
                   openPlaybackView("now");
                 }}
               >
-                {nativeTab === "shelf" ? (
+                {native && nativeTab === "shelf" ? (
                   <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Library</span></>
                 ) : (
                   <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Now Playing</span></>
@@ -5610,7 +5777,110 @@ function MainApp({
         </aside>
       ) : null}
 
-      {native && nativePlayerSheet === "speed" ? (
+      {nativePlayerSheet === "details" && playbackBook ? (
+        <div className="sleep-sheet-layer" role="presentation">
+          <button
+            type="button"
+            className="sleep-sheet-scrim"
+            aria-label="Close book details"
+            onClick={() => setNativePlayerSheet(null)}
+          />
+          <section className="details-sheet" role="dialog" aria-modal="true" aria-labelledby="details-sheet-title">
+            <div className="details-sheet-grabber" aria-hidden="true" />
+            <header className="details-sheet-header">
+              <span className="eyebrow"><Bookmark size={13} /> Listening edition</span>
+              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+                <X size={18} />
+              </button>
+            </header>
+
+            <div className="details-sheet-hero">
+              <CoverArt book={playbackBook} size="small" />
+              <div>
+                <span>{activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}</span>
+                <h2 id="details-sheet-title">{playbackBook.title}</h2>
+                <p>{bookSubtitle(playbackBook) || `${playbackBook.trackCount} audio tracks`}</p>
+              </div>
+            </div>
+
+            {bookCompletionPercent !== null ? (
+              <div className="details-sheet-progress">
+                <div>
+                  <span>Listening progress</span>
+                  <strong>{bookCompletionPercent}%</strong>
+                </div>
+                <div className="details-sheet-progressbar" role="img" aria-label={`${bookCompletionPercent}% complete`}>
+                  <i style={{ width: `${bookCompletionPercent}%` }} />
+                </div>
+                <small>
+                  {displayBookRemainingSeconds !== null && displayBookRemainingSeconds <= 0
+                    ? "Complete"
+                    : displayBookRemainingSeconds !== null
+                    ? `${formatDurationLabel(displayBookRemainingSeconds) ?? formatTime(displayBookRemainingSeconds)} remaining`
+                    : "Progress unavailable"}
+                </small>
+              </div>
+            ) : null}
+
+            <div className="details-sheet-facts">
+              <div>
+                <span>Runtime</span>
+                <strong>{formatDurationLabel(playbackBook.durationSeconds ?? durationFromTracks(playbackBook)) ?? "—"}</strong>
+              </div>
+              <div>
+                <span>Published</span>
+                <strong>{playbackBook.publishedDate ?? "—"}</strong>
+              </div>
+              <div>
+                <span>Tracks</span>
+                <strong>{playbackBook.trackCount}</strong>
+              </div>
+            </div>
+
+            {playbackBook.metadata.publisher || playbackBook.genres.length > 0 ? (
+              <div className="details-sheet-tags" aria-label="Book metadata">
+                {playbackBook.metadata.publisher ? <span>{playbackBook.metadata.publisher}</span> : null}
+                {playbackBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
+              </div>
+            ) : null}
+
+            {playbackDescription ? <p className="details-sheet-description">{playbackDescription}</p> : null}
+
+            <div className="details-sheet-actions">
+              <button
+                type="button"
+                className="details-sheet-completion"
+                disabled={completionPendingBookId === playbackBook.id}
+                aria-pressed={playbackBook.progress?.status === "finished"}
+                onClick={() => {
+                  haptic("light");
+                  void changeBookCompletion(
+                    playbackBook,
+                    playbackBook.progress?.status !== "finished"
+                  );
+                }}
+              >
+                {completionPendingBookId === playbackBook.id
+                  ? <LoaderCircle size={15} className="spin-icon" />
+                  : <CircleCheck size={15} />}
+                {playbackBook.progress?.status === "finished" ? "Mark unfinished" : "Mark finished"}
+              </button>
+              <button
+                type="button"
+                className="details-sheet-full"
+                onClick={() => {
+                  setNativePlayerSheet(null);
+                  openPlaybackView("details");
+                }}
+              >
+                Full book page <ChevronRight size={16} />
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {nativePlayerSheet === "speed" ? (
         <div className="sleep-sheet-layer" role="presentation">
           <button
             type="button"
@@ -5645,7 +5915,7 @@ function MainApp({
         </div>
       ) : null}
 
-      {native && nativePlayerSheet === "chapters" && playbackBook ? (
+      {nativePlayerSheet === "chapters" && playbackBook ? (
         <div className="sleep-sheet-layer" role="presentation">
           <button
             type="button"
@@ -5685,7 +5955,7 @@ function MainApp({
         </div>
       ) : null}
 
-      {native && nativePlayerSheet === "sleep" ? (
+      {nativePlayerSheet === "sleep" ? (
         <div className="sleep-sheet-layer" role="presentation">
           <button
             type="button"
@@ -5987,6 +6257,28 @@ function MainApp({
               <p className="settings-hint">Applies to every book and is remembered on this device.</p>
             </div>
           </section>
+
+          {rotationLockAvailable ? <section className="settings-card">
+            <span className="section-label"><Smartphone size={13} /> Display</span>
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Rotation lock</strong>
+                <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={rotationLockEnabled}
+                aria-label="Rotation lock"
+                disabled={rotationLockBusy}
+                onClick={() => void toggleRotationLock()}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+            {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
+          </section> : null}
 
           <section className="settings-card">
             <span className="section-label"><FolderOpen size={13} /> On this device</span>
