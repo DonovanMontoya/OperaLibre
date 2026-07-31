@@ -2199,15 +2199,16 @@ async fn reserve_manual_libation_refresh(
         .manual_refreshes
         .entry(auth.id.clone())
         .or_default();
-    if refresh_limit > 0 && timestamps.len() >= refresh_limit_count {
-        if let Some(first_refresh) = timestamps.first() {
-            let elapsed = now.saturating_sub(*first_refresh);
-            let remaining_minutes = (LIBATION_READER_REFRESH_WINDOW_SECONDS - elapsed).div_ceil(60);
-            return Err(ApiError::too_many_requests(format!(
-                "You have used all {refresh_limit} Audible refreshes for this hour. Try again in {remaining_minutes} minute{}.",
-                if remaining_minutes == 1 { "" } else { "s" }
-            )));
-        }
+    if refresh_limit > 0
+        && timestamps.len() >= refresh_limit_count
+        && let Some(first_refresh) = timestamps.first()
+    {
+        let elapsed = now.saturating_sub(*first_refresh);
+        let remaining_minutes = (LIBATION_READER_REFRESH_WINDOW_SECONDS - elapsed).div_ceil(60);
+        return Err(ApiError::too_many_requests(format!(
+            "You have used all {refresh_limit} Audible refreshes for this hour. Try again in {remaining_minutes} minute{}.",
+            if remaining_minutes == 1 { "" } else { "s" }
+        )));
     }
 
     let (job_id, created) = create_libation_job(state, "libation-sync", None).await;
@@ -2309,9 +2310,7 @@ fn schedule_automatic_libation_refresh(state: AppState) {
 
     tokio::spawn(async move {
         let interval_seconds = interval_hours.saturating_mul(60 * 60);
-        let poll_seconds = interval_seconds
-            .min(LIBATION_REFRESH_SCHEDULER_POLL_SECONDS)
-            .max(1);
+        let poll_seconds = interval_seconds.clamp(1, LIBATION_REFRESH_SCHEDULER_POLL_SECONDS);
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(poll_seconds));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
