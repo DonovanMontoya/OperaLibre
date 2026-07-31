@@ -81,6 +81,23 @@ button {
   min-height: 100dvh;
 }
 
+/* On the web, the shelf and reading room are two viewport-bound panes. Keep
+   the shelf's book count from increasing the grid row (and therefore the
+   document height); each pane owns its vertical scrolling instead. */
+html:not(.native-app) .web-shell {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html:not(.native-app) .web-shell > .library-pane,
+html:not(.native-app) .web-shell > .player-pane {
+  height: 100%;
+  min-height: 0;
+  overscroll-behavior-y: contain;
+}
+
 /* --------- Library spine --------- */
 .library-pane {
   position: relative;
