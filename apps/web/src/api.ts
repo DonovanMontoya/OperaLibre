@@ -446,7 +446,10 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
     // API JSON represents live playback, job, and library state. WebKit may
     // otherwise reuse an earlier GET while a background operation is settling.
     cache: init?.cache ?? "no-store",
-    credentials: "include"
+    // Native clients authenticate with the persisted bearer token. Omitting
+    // cookies prevents an old WebKit cookie from turning a native mutation
+    // into a cookie-authenticated CSRF request after an app upgrade.
+    credentials: isNativeApp() ? "omit" : "include"
   }, timeoutMs);
 
   if (response.status === 401 && unauthorizedHandler) {

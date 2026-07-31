@@ -7525,6 +7525,15 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   margin: 0;
 }
 
+.admin-software-actions {
+  display: flex;
+  margin-top: 9px;
+}
+
+.admin-software-actions button {
+  min-height: 36px;
+}
+
 .admin-software-versions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

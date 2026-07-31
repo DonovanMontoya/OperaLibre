@@ -19,7 +19,7 @@ This integration is entirely optional. If you don't configure it, the relevant U
 
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
 2. Sign in to OperaLibre as an administrator, open **Audible**, and choose **Add account**.
-3. Enter a friendly label, Audible email, and marketplace. Complete Amazon's sign-in in the external browser, then paste the final browser URL back into OperaLibre. The installed iOS and Android apps use the device's secure browser view; the Audible password is entered only on Amazon's page.
+3. Enter a friendly label, Audible email, and marketplace. Use a short recognizable label such as **Dad** or **UK**; OperaLibre uses it on the account's book badges instead of exposing the full email address. Complete Amazon's sign-in in the external browser, then paste the final browser URL back into OperaLibre. The installed iOS and Android apps use the device's secure browser view; the Audible password is entered only on Amazon's page.
 4. Repeat for every Audible account the server should browse. OperaLibre creates an isolated Libation profile for each account under `data_dir/libation-accounts`, preserving duplicate ownership across accounts.
 
 An existing desktop-managed Libation profile can still be connected with `libation_files_dir`. It is treated as a legacy shared profile; because Libation's shared database stores only one ownership row per book, duplicate ownership is guaranteed only for accounts added as isolated OperaLibre-managed profiles.
@@ -44,7 +44,7 @@ When configured, an admin sees Libation-aware controls:
 
 - **Status** — which accounts Libation has, and whether they look authenticated.
 - **Accounts** — administrators can add or reconnect server-wide Audible accounts; owners can remove managed accounts.
-- **Account browsing** — filter or sort by account. **All accounts** keeps duplicate titles visible as separate, account-badged entries.
+- **Account browsing** — filter or sort by account label. **All accounts** keeps duplicate titles visible as separate entries carrying their friendly account label.
 - **Library** — the Audible library Libation knows about; it loads automatically when the Audible tab opens.
 - **Refresh Audible** — ask Libation to check Audible for new purchases. The server also refreshes every 24 hours by default. Administrators can refresh at any time; reader accounts get three refreshes per rolling hour by default.
 - **Download** — add a selected Audible title to the OperaLibre library. Progress shows as a background job.
@@ -73,6 +73,7 @@ Under the hood these map to API endpoints:
 
 - **"Libation not configured"** — `libation_cli_path` is blank and no Libation CLI is on `PATH`. Set the path explicitly.
 - **Account shows as not authenticated** — administrators can choose **Sign in** or **Reconnect** beside the account. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
+- **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once, then choose **Reconnect**. The server repairs the managed account profile before starting Libation.
 - **Downloads land somewhere the server can't see** — point Libation's output directory at `library_root` (or a subdirectory of it), or move the files there after the download. The server only knows about files inside `library_root`.
 
 ## Security note
