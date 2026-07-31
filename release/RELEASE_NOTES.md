@@ -3,6 +3,7 @@
 - **Most people:** download a `combined` package for your computer. It includes the server and web app, starts in the background, and opens in your browser without leaving a Terminal window open.
 - **Server only:** download a `server` package when the frontend will be hosted separately or you are using another client.
 - **Frontend only:** download the file ending in `frontend.zip` when you already have an OperaLibre or Jellyfin server and want to deploy only the static web app.
+- **Android:** the file ending in `android-unsigned.apk` is an unsigned release build for developers or distributors to sign before installation.
 - **Update packages:** files containing `update` are downloaded and verified automatically by compatible combined and server-only installations; you normally do not need to download them yourself.
 - **Deployment profiles:** new installs start in `local` mode. Choose `lan` for a trusted LAN/VPN or `proxy` behind same-machine HTTPS; remote first-run setup uses a one-time server token.
 - **Transfer limits:** uploads, generated ZIP downloads, and simultaneous ZIP generation now have configurable server-side limits. Existing configs automatically receive safe defaults.
