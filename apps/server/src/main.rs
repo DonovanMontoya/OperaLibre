@@ -1378,9 +1378,12 @@ async fn main() -> anyhow::Result<()> {
         secure_file_permissions(&libation_accounts_file).await?;
     }
     for account in &libation_accounts.accounts {
-        secure_managed_libation_profile(&libation_accounts_root.join(&account.id))
-            .await
-            .map_err(|error| anyhow::anyhow!(error.message))?;
+        initialize_managed_libation_profile(
+            &libation_accounts_root.join(&account.id),
+            &config.library_root,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     }
     if users_store.users.is_empty() {
         match fs::remove_file(&config.progress_file).await {
@@ -1399,13 +1402,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         deployment_mode: config.deployment_mode,
-        csrf_allowed_origins: Arc::new(
-            config
-                .allowed_origins
-                .iter()
-                .map(|origin| origin.trim_end_matches('/').to_ascii_lowercase())
-                .collect(),
-        ),
+        csrf_allowed_origins: Arc::new(build_csrf_allowed_origins(&config.allowed_origins)),
         setup_token: Arc::new(Mutex::new(setup_token)),
         max_upload_bytes: config.max_upload_bytes,
         max_book_download_bytes: config.max_book_download_bytes,
@@ -2044,7 +2041,7 @@ async fn start_libation_account_login(
     };
 
     let profile_dir = state.libation_accounts_root.join(&profile_id);
-    create_private_directory(&profile_dir).map_err(ApiError::from)?;
+    initialize_managed_libation_profile(&profile_dir, &state.library_root).await?;
     let profile_config = state.libation_config.with_files_dir(profile_dir);
     let job_guard = state.libation_job_lock.clone().lock_owned().await;
     let login = start_interactive_libation_login(profile_config, account_id.to_string(), locale)
@@ -2407,6 +2404,56 @@ async fn secure_managed_libation_profile(_path: &FsPath) -> Result<(), ApiError>
     Ok(())
 }
 
+async fn initialize_managed_libation_profile(
+    profile_dir: &FsPath,
+    library_root: &FsPath,
+) -> Result<(), ApiError> {
+    create_private_directory(profile_dir).map_err(ApiError::from)?;
+    let in_progress_dir = profile_dir.join("InProgress");
+    create_private_directory(&in_progress_dir).map_err(ApiError::from)?;
+
+    let settings_path = profile_dir.join("Settings.json");
+    let mut settings = match fs::read_to_string(&settings_path).await {
+        Ok(contents) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+            &contents,
+        )
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "The managed Libation Settings.json is invalid: {error}"
+            ))
+        })?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(error.into()),
+    };
+
+    let books_path = library_root.to_string_lossy().to_string();
+    let in_progress_path = in_progress_dir.to_string_lossy().to_string();
+    let mut changed = false;
+    if !settings
+        .get("Books")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        settings.insert("Books".to_string(), serde_json::Value::String(books_path));
+        changed = true;
+    }
+    if !settings
+        .get("InProgress")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        settings.insert(
+            "InProgress".to_string(),
+            serde_json::Value::String(in_progress_path),
+        );
+        changed = true;
+    }
+    if changed {
+        write_json_atomic(&settings_path, &settings).await?;
+    }
+    secure_managed_libation_profile(profile_dir).await
+}
+
 async fn libation_status(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -2677,10 +2724,26 @@ async fn list_libation_books(
     }
     let profiles = all_libation_profiles(&state).await;
     let mut books = Vec::new();
+    let mut profile_labels = HashMap::<String, String>::new();
     let mut first_error = None;
     {
         let _libation_guard = state.libation_job_lock.lock().await;
         for profile in profiles {
+            if profile.managed {
+                profile_labels.insert(profile.id.clone(), profile.name.clone());
+            } else if let Ok(output) = run_libation(
+                &profile.config,
+                vec!["list-accounts".to_string(), "--bare".to_string()],
+            )
+            .await
+                && output.status.success()
+            {
+                for account in parse_libation_accounts(&String::from_utf8_lossy(&output.stdout)) {
+                    if let Some(label) = account.name {
+                        profile_labels.insert(account.id, label);
+                    }
+                }
+            }
             match export_libation_books(&profile).await {
                 Ok(mut profile_books) => books.append(&mut profile_books),
                 Err(error) => {
@@ -2698,6 +2761,9 @@ async fn list_libation_books(
     }
     let library = state.library.read().await;
     for book in books.iter_mut() {
+        if let Some(label) = profile_labels.get(&book.profile_id) {
+            book.profile_name = label.clone();
+        }
         if !auth.is_admin {
             book.account_id = None;
         }
@@ -7798,6 +7864,15 @@ fn request_authority(value: &str) -> Option<String> {
         .map(|authority| authority.as_str().to_ascii_lowercase())
 }
 
+fn build_csrf_allowed_origins(configured_origins: &[String]) -> HashSet<String> {
+    OFFICIAL_APP_ORIGINS
+        .iter()
+        .copied()
+        .chain(configured_origins.iter().map(String::as_str))
+        .map(|origin| origin.trim_end_matches('/').to_ascii_lowercase())
+        .collect()
+}
+
 fn cookie_request_origin_allowed(allowed_origins: &HashSet<String>, headers: &HeaderMap) -> bool {
     let Some(source) = headers
         .get(ORIGIN)
@@ -9134,6 +9209,15 @@ mod tests {
     }
 
     #[test]
+    fn csrf_origins_always_include_official_apps() {
+        let origins =
+            super::build_csrf_allowed_origins(&["HTTPS://Reader.Example.NET/".to_string()]);
+        assert!(origins.contains("capacitor://localhost"));
+        assert!(origins.contains("http://localhost"));
+        assert!(origins.contains("https://reader.example.net"));
+    }
+
+    #[test]
     fn password_lengths_are_bounded() {
         assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS)).is_ok());
         assert!(super::validate_password(&"x".repeat(super::MIN_PASSWORD_CHARS - 1)).is_err());
@@ -10280,11 +10364,40 @@ exit 0
             "first@example.com\tFamily\tus\tyes\tyes\nsecond@example.com\tTravel\tuk\tyes\tno\n",
         );
         assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].name.as_deref(), Some("Family"));
         assert_ne!(accounts[0].id, accounts[1].id);
         assert!(accounts[0].authenticated);
         assert_eq!(accounts[0].connection_state, "connected");
         assert!(!accounts[1].authenticated);
         assert_eq!(accounts[1].connection_state, "needs_sign_in");
+    }
+
+    #[tokio::test]
+    async fn managed_libation_profiles_bootstrap_required_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("library");
+        let profile = root.path().join("account");
+        std::fs::create_dir(&library).unwrap();
+
+        super::initialize_managed_libation_profile(&profile, &library)
+            .await
+            .unwrap();
+
+        let settings = serde_json::from_str::<serde_json::Value>(
+            &tokio::fs::read_to_string(profile.join("Settings.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["Books"].as_str(),
+            Some(library.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            settings["InProgress"].as_str(),
+            Some(profile.join("InProgress").to_string_lossy().as_ref())
+        );
+        assert!(profile.join("InProgress").is_dir());
     }
 
     #[test]

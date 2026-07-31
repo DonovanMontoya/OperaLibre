@@ -2141,6 +2141,17 @@ function MainApp({
     return sorted;
   }, [books, searchQuery, sortMode]);
 
+  const audibleAccountLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const account of libationStatus?.accounts ?? []) {
+      if (account.name?.trim()) labels.set(account.id, account.name.trim());
+    }
+    for (const book of libationBooks) {
+      if (!labels.has(book.profileId)) labels.set(book.profileId, book.profileName);
+    }
+    return labels;
+  }, [libationBooks, libationStatus?.accounts]);
+
   const visibleLibationBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const accountBooks = audibleAccountFilter === "all"
@@ -2156,7 +2167,9 @@ function MainApp({
 
     return [...filtered].sort((a, b) => {
       if (sortMode === "account") {
-        return a.profileName.localeCompare(b.profileName) || a.title.localeCompare(b.title);
+        const aLabel = audibleAccountLabels.get(a.profileId) ?? a.profileName;
+        const bLabel = audibleAccountLabels.get(b.profileId) ?? b.profileName;
+        return aLabel.localeCompare(bLabel) || a.title.localeCompare(b.title);
       }
       if (sortMode === "author") {
         return (a.authors ?? "").localeCompare(b.authors ?? "") || a.title.localeCompare(b.title);
@@ -2166,12 +2179,14 @@ function MainApp({
       }
       return a.title.localeCompare(b.title);
     });
-  }, [audibleAccountFilter, libationBooks, searchQuery, sortMode]);
+  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode]);
   const audibleProfiles = useMemo(() => {
     const profiles = new Map<string, string>();
-    for (const book of libationBooks) profiles.set(book.profileId, book.profileName);
+    for (const book of libationBooks) {
+      profiles.set(book.profileId, audibleAccountLabels.get(book.profileId) ?? book.profileName);
+    }
     return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [libationBooks]);
+  }, [audibleAccountLabels, libationBooks]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -5073,7 +5088,7 @@ function MainApp({
                     <div className="audible-copy">
                       <strong>{book.title}</strong>
                       <span>{metaParts.join(" · ")}</span>
-                      <small className="audible-account-badge"><KeyRound size={10} /> {book.profileName}{book.locale ? ` · ${book.locale.toUpperCase()}` : ""}</small>
+                      <small className="audible-account-badge"><KeyRound size={10} /> {audibleAccountLabels.get(book.profileId) ?? book.profileName}</small>
                     </div>
                     {isLocal ? (
                       <button

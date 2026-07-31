@@ -95,22 +95,33 @@ export function AdminPanel({
     }
   }
 
-  async function refreshUpdate() {
+  async function refreshUpdate(force = false) {
     setUpdateChecking(true);
+    if (force) {
+      setError(null);
+      setNotice(null);
+    }
     try {
       const [serverResult, frontendResult] = await Promise.allSettled([
-        getUpdateStatus(30_000),
+        getUpdateStatus(30_000, force),
         isNativeApp()
           ? Promise.resolve(null)
           : getFrontendUpdateStatus(
               30_000,
-              false,
+              force,
               FRONTEND_VERSION === "dev" ? undefined : FRONTEND_VERSION
             )
       ]);
       if (serverResult.status === "fulfilled") setUpdateStatus(serverResult.value);
       if (frontendResult.status === "fulfilled" && frontendResult.value) {
         setFrontendUpdateStatus(frontendResult.value);
+      }
+      if (force) {
+        if (serverResult.status === "rejected") {
+          setError(serverResult.reason instanceof Error ? serverResult.reason.message : "Could not check for server updates.");
+        } else if (!serverResult.value.updateAvailable) {
+          setNotice(`The server is up to date at OperaLibre ${serverResult.value.currentVersion}.`);
+        }
       }
     } finally {
       // Update discovery should never prevent administration of the server.
@@ -494,6 +505,17 @@ export function AdminPanel({
               <p>
                 Updates are checked automatically. When one is available, its install action appears at the top of this page.
               </p>
+              <div className="admin-software-actions">
+                <button
+                  type="button"
+                  className="quiet-button"
+                  disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
+                  onClick={() => void refreshUpdate(true)}
+                >
+                  {updateChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />}
+                  {updateChecking ? "Checking…" : "Check for updates"}
+                </button>
+              </div>
             </div>
             <div className="admin-software-versions">
               <div>
