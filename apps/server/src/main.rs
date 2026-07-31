@@ -2912,12 +2912,16 @@ async fn get_sync_map(
     serve_file_response(&file_path, headers, None).await
 }
 
-async fn alignment_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn alignment_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&auth)?;
     let config = &state.alignment_config;
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "enabled": config.enabled(),
         "cliPath": config.cli_path.as_ref().map(|path| path.to_string_lossy().to_string()),
-    }))
+    })))
 }
 
 async fn generate_sync_map(
@@ -5509,10 +5513,14 @@ fn yes_no(value: &str) -> bool {
 }
 
 async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBook>, ApiError> {
-    let export_path = env::temp_dir().join(format!(
-        "operalibre-libation-export-{}.json",
-        now_rfc3339ish()
-    ));
+    // An unpredictable owner-only temp file, so no other local user can
+    // pre-create, read, or symlink the export path in a shared temp dir.
+    let export_file = tempfile::Builder::new()
+        .prefix("operalibre-libation-export-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(ApiError::from)?;
+    let export_path = export_file.path().to_path_buf();
     let output = run_libation(
         config,
         vec![
@@ -5529,7 +5537,7 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
     }
 
     let contents = fs::read_to_string(&export_path).await?;
-    let _ = fs::remove_file(&export_path).await;
+    drop(export_file);
     let records = serde_json::from_str::<Vec<LibationExportRecord>>(&contents)?;
     Ok(records
         .into_iter()
