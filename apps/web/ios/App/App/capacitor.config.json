@@ -15,6 +15,7 @@
 		"allowsLinkPreview": false
 	},
 	"packageClassList": [
+		"CAPBrowserPlugin",
 		"FilesystemPlugin",
 		"HapticsPlugin",
 		"ScreenOrientationPlugin",

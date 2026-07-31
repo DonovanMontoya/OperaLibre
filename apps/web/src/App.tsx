@@ -80,6 +80,9 @@ import {
   activateServerAlias,
   addServerAlias,
   clearServerUrl,
+  completeLibationAccountLogin,
+  cancelLibationAccountLogin,
+  deleteLibationAccount,
   generateSyncMap,
   getAlignmentStatus,
   getAuthStatus,
@@ -122,6 +125,7 @@ import {
   setStoredToken,
   setUnauthorizedHandler,
   syncLibationLibrary,
+  startLibationAccountLogin,
   uploadAudiobook,
   updateBookMetadata
 } from "./api";
@@ -142,7 +146,7 @@ import {
   removeBookDownload
 } from "./offline";
 import { isNativeApp } from "./api";
-import { haptic, selectionHaptic } from "./native";
+import { haptic, openNativeBrowser, selectionHaptic } from "./native";
 import {
   disableRotationLock,
   enableRotationLock,
@@ -181,7 +185,9 @@ import type {
   Chapter,
   JobStatus,
   LibationBook,
+  LibationAccount,
   LibationDownloadRequest,
+  LibationLoginStarted,
   LibationStatus,
   SyncFragment,
   SyncMap,
@@ -443,7 +449,7 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
-type SortMode = "title" | "author" | "duration" | "tracks";
+type SortMode = "title" | "author" | "duration" | "tracks" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type ReaderTheme = "paper" | "sepia" | "night";
@@ -461,6 +467,7 @@ type MetadataEditorState = {
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
   { value: "author", label: "Author" },
+  { value: "account", label: "Account" },
   { value: "duration", label: "Length" },
   { value: "tracks", label: "Tracks" }
 ];
@@ -2048,7 +2055,18 @@ function MainApp({
   const [libationFinalizationFailures, setLibationFinalizationFailures] = useState<Set<string>>(new Set());
   const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
   const [libationRefreshPending, setLibationRefreshPending] = useState(false);
+  const [audibleAccountFilter, setAudibleAccountFilter] = useState("all");
+  const [libationAccountFormOpen, setLibationAccountFormOpen] = useState(false);
+  const [libationAccountLabel, setLibationAccountLabel] = useState("");
+  const [libationAccountId, setLibationAccountId] = useState("");
+  const [libationAccountLocale, setLibationAccountLocale] = useState("us");
+  const [libationReconnectProfileId, setLibationReconnectProfileId] = useState<string | null>(null);
+  const [libationLoginFlow, setLibationLoginFlow] = useState<LibationLoginStarted | null>(null);
+  const [libationLoginResponseUrl, setLibationLoginResponseUrl] = useState("");
+  const [libationLoginBusy, setLibationLoginBusy] = useState(false);
+  const [libationAccountBusyId, setLibationAccountBusyId] = useState<string | null>(null);
   const libationMessage = formatLibationMessage(libationStatus);
+  const brokenLibationAccounts = libationStatus?.accounts.filter((account) => !account.authenticated) ?? [];
   const pendingLibationJobs = libationJobs.filter(isPendingJob);
   const displayedLibationJobs = pendingLibationJobs.length > 0 ? pendingLibationJobs : libationJobs.slice(0, 1);
   const refreshLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-sync");
@@ -2092,6 +2110,10 @@ function MainApp({
   const activeDownloadIdsRef = useRef<Set<string>>(new Set());
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
 
+  useEffect(() => {
+    if (librarySource === "local" && sortMode === "account") setSortMode("title");
+  }, [librarySource, sortMode]);
+
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const filtered = query
@@ -2121,16 +2143,35 @@ function MainApp({
 
   const visibleLibationBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const accountBooks = audibleAccountFilter === "all"
+      ? libationBooks
+      : libationBooks.filter((book) => book.profileId === audibleAccountFilter);
     const filtered = query
-      ? libationBooks.filter((book) =>
+      ? accountBooks.filter((book) =>
           [book.title, book.subtitle, book.authors, book.narrators]
             .filter(Boolean)
             .some((field) => field!.toLowerCase().includes(query))
         )
-      : libationBooks;
+      : accountBooks;
 
-    return [...filtered].sort((a, b) => a.title.localeCompare(b.title));
-  }, [libationBooks, searchQuery]);
+    return [...filtered].sort((a, b) => {
+      if (sortMode === "account") {
+        return a.profileName.localeCompare(b.profileName) || a.title.localeCompare(b.title);
+      }
+      if (sortMode === "author") {
+        return (a.authors ?? "").localeCompare(b.authors ?? "") || a.title.localeCompare(b.title);
+      }
+      if (sortMode === "duration") {
+        return (b.lengthMinutes ?? 0) - (a.lengthMinutes ?? 0);
+      }
+      return a.title.localeCompare(b.title);
+    });
+  }, [audibleAccountFilter, libationBooks, searchQuery, sortMode]);
+  const audibleProfiles = useMemo(() => {
+    const profiles = new Map<string, string>();
+    for (const book of libationBooks) profiles.set(book.profileId, book.profileName);
+    return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [libationBooks]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -2668,7 +2709,7 @@ function MainApp({
     try {
       const nextBooks = await getLibationBooks();
       setLibationBooks(nextBooks);
-      const confirmedAsins = new Set(nextBooks.filter((book) => !!book.localBookId).map((book) => book.asin));
+      const confirmedAsins = new Set(nextBooks.filter((book) => !!book.localBookId).map((book) => book.catalogId));
       setLibationFinalizingAsins((current) => {
         const next = new Set([...current].filter((asin) => !confirmedAsins.has(asin)));
         return next.size === current.size ? current : next;
@@ -2688,6 +2729,14 @@ function MainApp({
       void loadLibationStatus();
     }
   }, [currentUser.isAdmin, loadLibationStatus, native]);
+
+  useEffect(() => {
+    if (!currentUser.isAdmin || !isOperaLibre) {
+      return;
+    }
+    const timer = window.setInterval(() => void loadLibationStatus(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [currentUser.isAdmin, isOperaLibre, loadLibationStatus]);
 
   useEffect(() => {
     if (!currentUser.isAdmin) {
@@ -2737,14 +2786,14 @@ function MainApp({
                     request.status === "completed" &&
                     prior.find((item) => item.id === request.id)?.status !== "completed"
                 )
-                .map((request) => request.asin)
+                .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`))
             : [];
           libationDownloadRequestsRef.current = ownRequests;
           libationRequestsLoadedRef.current = true;
           setLibationDownloadRequests(ownRequests);
           const approvedAsins = ownRequests
             .filter((request) => request.status === "approved" && request.jobId)
-            .map((request) => request.asin);
+            .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`));
           const activeAsins = [...approvedAsins, ...newlyCompletedAsins];
           if (activeAsins.length > 0) {
             setLibationFinalizingAsins((current) => new Set([...current, ...activeAsins]));
@@ -2758,7 +2807,7 @@ function MainApp({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [currentUser.id, currentUser.libationAccess, librarySource]);
+  }, [currentUser.id, currentUser.libationAccess, libationBooks, librarySource]);
 
   useEffect(() => {
     if (!libationJobs.some(isPendingJob)) {
@@ -2805,7 +2854,7 @@ function MainApp({
                 return [job.targetId];
               }
               if (job.kind === "libation-liberate-all") {
-                return libationBooks.filter((book) => !book.localBookId).map((book) => book.asin);
+                return libationBooks.filter((book) => !book.localBookId).map((book) => book.catalogId);
               }
               return [];
             });
@@ -2846,7 +2895,7 @@ function MainApp({
       [...libationFinalizingAsins].filter(
         (asin) =>
           !libationFinalizationFailures.has(asin) &&
-          !libationBooks.some((book) => book.asin === asin && !!book.localBookId)
+          !libationBooks.some((book) => book.catalogId === asin && !!book.localBookId)
       )
     );
     if (remainingAsins.size === 0) {
@@ -2878,7 +2927,7 @@ function MainApp({
         const failedAsins: string[] = [];
         let confirmedDownload = false;
         for (const asin of remainingAsins) {
-          const localBook = nextBooks.find((book) => book.asin === asin && !!book.localBookId);
+          const localBook = nextBooks.find((book) => book.catalogId === asin && !!book.localBookId);
           if (localBook) {
             confirmedDownload = true;
             remainingAsins.delete(asin);
@@ -4123,6 +4172,114 @@ function MainApp({
     setLibationJobs(next);
   }
 
+  function openLibationAccountForm(account?: LibationAccount) {
+    setLibationReconnectProfileId(account?.managed ? account.id : null);
+    setLibationAccountLabel(account?.name || "");
+    setLibationAccountId(account?.accountId || "");
+    setLibationAccountLocale(account?.locale || "us");
+    setLibationLoginFlow(null);
+    setLibationLoginResponseUrl("");
+    setLibationError(null);
+    setLibationAccountFormOpen(true);
+  }
+
+  async function beginLibationAccountLogin(event: React.FormEvent) {
+    event.preventDefault();
+    if (!libationAccountLabel.trim() || !libationAccountId.trim()) {
+      setLibationError("Enter an account label and Audible email.");
+      return;
+    }
+    const loginWindow = isNativeApp() ? null : window.open("about:blank", "_blank");
+    setLibationLoginBusy(true);
+    setLibationError(null);
+    try {
+      const started = await startLibationAccountLogin({
+        ...(libationReconnectProfileId ? { profileId: libationReconnectProfileId } : {}),
+        label: libationAccountLabel.trim(),
+        accountId: libationAccountId.trim(),
+        locale: libationAccountLocale
+      });
+      setLibationLoginFlow(started);
+      if (isNativeApp()) {
+        try {
+          await openNativeBrowser(started.loginUrl);
+        } catch {
+          setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
+        }
+      } else if (loginWindow) {
+        loginWindow.opener = null;
+        loginWindow.location.replace(started.loginUrl);
+      } else {
+        setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
+      }
+    } catch (error) {
+      loginWindow?.close();
+      setLibationError(errorMessage(error, "The Audible sign-in could not be started."));
+    } finally {
+      setLibationLoginBusy(false);
+    }
+  }
+
+  async function finishLibationAccountLogin(event: React.FormEvent) {
+    event.preventDefault();
+    if (!libationLoginFlow || !libationLoginResponseUrl.trim()) {
+      setLibationError("Paste the final URL from the Audible browser window.");
+      return;
+    }
+    setLibationLoginBusy(true);
+    setLibationError(null);
+    try {
+      const status = await completeLibationAccountLogin(
+        libationLoginFlow.sessionId,
+        libationLoginResponseUrl.trim()
+      );
+      setLibationStatus(status);
+      setAudibleAccountFilter(libationLoginFlow.profileId);
+      setLibationAccountFormOpen(false);
+      setLibationLoginFlow(null);
+      setLibationLoginResponseUrl("");
+      setLibationBooksLoaded(false);
+      await loadLibationBooks(false);
+    } catch (error) {
+      setLibationError(errorMessage(error, "Audible could not finish signing in."));
+    } finally {
+      setLibationLoginBusy(false);
+    }
+  }
+
+  async function closeLibationAccountForm() {
+    if (libationLoginFlow) {
+      try {
+        await cancelLibationAccountLogin(libationLoginFlow.sessionId);
+      } catch {
+        // The server also expires abandoned sign-in sessions automatically.
+      }
+    }
+    setLibationAccountFormOpen(false);
+    setLibationLoginFlow(null);
+    setLibationLoginResponseUrl("");
+  }
+
+  async function removeLibationAccount(account: LibationAccount) {
+    if (!account.managed || !window.confirm(`Remove ${account.name || account.accountId} from this server? Its Libation credentials and account-specific catalog will be deleted.`)) {
+      return;
+    }
+    setLibationAccountBusyId(account.id);
+    setLibationError(null);
+    try {
+      await deleteLibationAccount(account.id);
+      if (audibleAccountFilter === account.id) {
+        setAudibleAccountFilter("all");
+      }
+      await loadLibationStatus();
+      await loadLibationBooks(false);
+    } catch (error) {
+      setLibationError(errorMessage(error, `Could not remove ${account.name || "the Audible account"}.`));
+    } finally {
+      setLibationAccountBusyId(null);
+    }
+  }
+
   async function startLibationSync() {
     setLibationError(null);
     setLibationRefreshPending(true);
@@ -4148,18 +4305,18 @@ function MainApp({
 
   async function startLiberation(book: LibationBook) {
     setLibationError(null);
-    libationFinalizationStartedRef.current.delete(book.asin);
+    libationFinalizationStartedRef.current.delete(book.catalogId);
     setLibationFinalizingAsins((current) => {
       const next = new Set(current);
-      next.delete(book.asin);
+      next.delete(book.catalogId);
       return next;
     });
     setLibationFinalizationFailures((current) => {
       const next = new Set(current);
-      next.delete(book.asin);
+      next.delete(book.catalogId);
       return next;
     });
-    setLibationRequests((current) => new Set(current).add(book.asin));
+    setLibationRequests((current) => new Set(current).add(book.catalogId));
     try {
       let actingUser = currentUser;
       if (isOperaLibre && !demoMode && !localMode) {
@@ -4172,7 +4329,7 @@ function MainApp({
         }
       }
       if (actingUser.libationAccess === "approval") {
-        const request = await requestLibationBook(book.asin, book.title);
+        const request = await requestLibationBook(book.asin, book.title, book.profileId);
         setLibationDownloadRequests((current) => {
           const next = [request, ...current.filter((item) => item.id !== request.id)];
           libationDownloadRequestsRef.current = next;
@@ -4181,12 +4338,12 @@ function MainApp({
         });
         return;
       }
-      const created = await liberateLibationBook(book.asin);
+      const created = await liberateLibationBook(book.profileId, book.asin);
       if (actingUser.isAdmin) {
         trackLibationJob({
           id: created.jobId,
           kind: "libation-liberate",
-          targetId: book.asin,
+          targetId: book.catalogId,
           status: "queued",
           startedAt: new Date().toISOString(),
           finishedAt: null,
@@ -4195,15 +4352,15 @@ function MainApp({
           error: null
         });
       } else {
-        libationFinalizationStartedRef.current.set(book.asin, Date.now());
-        setLibationFinalizingAsins((current) => new Set([...current, book.asin]));
+        libationFinalizationStartedRef.current.set(book.catalogId, Date.now());
+        setLibationFinalizingAsins((current) => new Set([...current, book.catalogId]));
       }
     } catch (error) {
       setLibationError(errorMessage(error, `The download could not be started for ${book.title}.`));
     } finally {
       setLibationRequests((current) => {
         const next = new Set(current);
-        next.delete(book.asin);
+        next.delete(book.catalogId);
         return next;
       });
     }
@@ -4317,6 +4474,20 @@ function MainApp({
           }}
         >
           <UserCog size={14} /> Administration
+        </button>
+      ) : null}
+      {isOperaLibre && currentUser.isAdmin && brokenLibationAccounts.length > 0 ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setUserMenuOpen(false);
+            setLibrarySource("audible");
+            setLibraryOpen(true);
+            if (native) openNativeTab("shelf");
+          }}
+        >
+          <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
       <button
@@ -4505,7 +4676,7 @@ function MainApp({
                 onChange={(event) => setSortMode(event.currentTarget.value as SortMode)}
                 aria-label="Sort library by"
               >
-                {SORT_OPTIONS.map((option) => (
+                {SORT_OPTIONS.filter((option) => librarySource === "audible" || option.value !== "account").map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -4538,7 +4709,10 @@ function MainApp({
               <button
                 type="button"
                 className={librarySource === "local" ? "selected" : ""}
-                onClick={() => setLibrarySource("local")}
+                onClick={() => {
+                  setLibrarySource("local");
+                  if (sortMode === "account") setSortMode("title");
+                }}
                 aria-pressed={librarySource === "local"}
                 aria-label="Your library: books on the server and this device"
               >
@@ -4558,8 +4732,13 @@ function MainApp({
                 <Cloud size={13} />
                 <span className="source-toggle-copy">
                   <strong>Audible</strong>
-                  <small>Account purchases</small>
+                  <small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} need attention` : "Account purchases"}</small>
                 </span>
+                {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? (
+                  <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>
+                    {brokenLibationAccounts.length}
+                  </span>
+                ) : null}
               </button>
             </div>
           ) : null}
@@ -4580,14 +4759,77 @@ function MainApp({
 
             {libationMessage ? <p>{libationMessage}</p> : null}
 
+            <div className="libation-account-toolbar">
+              <label>
+                <span>Browsing</span>
+                <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
+                  <option value="all">All accounts</option>
+                  {libationStatus?.accounts.map((account) => (
+                    <option key={account.id} value={account.id}>{account.name || account.accountId}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="quiet-button" onClick={() => openLibationAccountForm()} disabled={!libationStatus?.enabled}>
+                <Plus size={13} /> Add account
+              </button>
+            </div>
+
             {libationStatus?.accounts.length ? (
               <div className="account-list">
                 {libationStatus.accounts.map((account) => (
-                  <span key={`${account.accountId}-${account.locale}`} className={account.authenticated ? "ok" : "warn"}>
-                    <KeyRound size={12} />
-                    {account.name || account.accountId} · {account.locale}
-                  </span>
+                  <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
+                    <span className="account-health-icon">
+                      {account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}
+                    </span>
+                    <span className="account-list-copy">
+                      <strong>{account.name || account.accountId}</strong>
+                      <small>
+                        {account.locale.toUpperCase()}
+                        {account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}
+                      </small>
+                      {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
+                    </span>
+                    {account.managed ? (
+                      <span className="account-list-actions">
+                        <button type="button" onClick={() => openLibationAccountForm(account)} disabled={libationAccountBusyId !== null}>
+                          <KeyRound size={12} /> {account.authenticated ? "Reconnect" : "Sign in"}
+                        </button>
+                        {currentUser.isOwner ? (
+                          <button type="button" className="danger" aria-label={`Remove ${account.name || account.accountId}`} onClick={() => void removeLibationAccount(account)} disabled={libationAccountBusyId !== null}>
+                            {libationAccountBusyId === account.id ? <LoaderCircle size={12} className="spin-icon" /> : <Trash2 size={12} />}
+                          </button>
+                        ) : null}
+                      </span>
+                    ) : null}
+                  </article>
                 ))}
+              </div>
+            ) : null}
+
+            {libationAccountFormOpen ? (
+              <div className="libation-login-card">
+                <div className="libation-login-head">
+                  <div>
+                    <strong>{libationReconnectProfileId ? "Reconnect Audible account" : "Add Audible account"}</strong>
+                    <small>Amazon handles your password and verification in the browser.</small>
+                  </div>
+                  <button type="button" aria-label="Close Audible sign-in" onClick={() => void closeLibationAccountForm()}><X size={14} /></button>
+                </div>
+                {!libationLoginFlow ? (
+                  <form onSubmit={(event) => void beginLibationAccountLogin(event)}>
+                    <label><span>Account label</span><input value={libationAccountLabel} maxLength={80} placeholder="Family account" onChange={(event) => setLibationAccountLabel(event.currentTarget.value)} /></label>
+                    <label><span>Audible email</span><input type="email" value={libationAccountId} maxLength={320} autoCapitalize="none" autoCorrect="off" placeholder="reader@example.com" onChange={(event) => setLibationAccountId(event.currentTarget.value)} /></label>
+                    <label><span>Marketplace</span><select value={libationAccountLocale} onChange={(event) => setLibationAccountLocale(event.currentTarget.value)}>{["us", "uk", "ca", "de", "fr", "au", "jp", "in", "es"].map((locale) => <option key={locale} value={locale}>{locale.toUpperCase()}</option>)}</select></label>
+                    <button type="submit" disabled={libationLoginBusy}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <KeyRound size={13} />} Start secure sign-in</button>
+                  </form>
+                ) : (
+                  <form onSubmit={(event) => void finishLibationAccountLogin(event)}>
+                    <p>Finish signing in with Audible, copy the complete final URL from the browser address bar, then paste it here.</p>
+                    <a className="libation-login-link" href={libationLoginFlow.loginUrl} target="_blank" rel="noreferrer"><Cloud size={13} /> Open Audible sign-in</a>
+                    <label><span>Final browser URL</span><textarea value={libationLoginResponseUrl} rows={3} autoCapitalize="none" autoCorrect="off" placeholder="https://www.amazon.com/ap/maplanding?..." onChange={(event) => setLibationLoginResponseUrl(event.currentTarget.value)} /></label>
+                    <button type="submit" disabled={libationLoginBusy || !libationLoginResponseUrl.trim()}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <CircleCheck size={13} />} Complete sign-in</button>
+                  </form>
+                )}
               </div>
             ) : null}
 
@@ -4627,7 +4869,7 @@ function MainApp({
 
             {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
-                ? libationBooks.find((book) => book.asin === job.targetId)?.title
+                ? libationBooks.find((book) => book.catalogId === job.targetId)?.title
                 : null;
               return (
               <div key={job.id} className={`job-card ${job.status}`}>
@@ -4671,6 +4913,15 @@ function MainApp({
         {!currentUser.isAdmin && librarySource === "audible" ? (
           <section className="libation-panel reader-libation-panel">
             <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
+            {audibleProfiles.length > 1 ? (
+              <label className="reader-account-filter">
+                <span>Browsing</span>
+                <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
+                  <option value="all">All accounts</option>
+                  {audibleProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                </select>
+              </label>
+            ) : null}
             <div className="libation-actions">
               <button
                 type="button"
@@ -4790,24 +5041,24 @@ function MainApp({
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
                 const downloadRequest = libationDownloadRequests.find(
-                  (request) => request.asin === book.asin && request.status !== "rejected"
+                  (request) => (request.catalogId ? request.catalogId === book.catalogId : request.profileId ? `${request.profileId}:${request.asin}` === book.catalogId : request.asin === book.asin) && request.status !== "rejected"
                 );
                 const isAwaitingApproval = downloadRequest?.status === "pending";
                 const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
                 const pendingDownloadJob =
                   pendingLibationJobs.find(
-                    (job) => job.kind === "libation-liberate" && job.targetId === book.asin
+                    (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
                   ) ?? downloadAllLibationJob;
                 const latestBookJob = libationJobs.find(
-                  (job) => job.kind === "libation-liberate" && job.targetId === book.asin
+                  (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
                 );
-                const isStarting = libationAllPending || libationRequests.has(book.asin);
+                const isStarting = libationAllPending || libationRequests.has(book.catalogId);
                 const isQueued = pendingDownloadJob?.status === "queued";
                 const isDownloading = pendingDownloadJob?.status === "running";
-                const finalizationFailed = libationFinalizationFailures.has(book.asin);
+                const finalizationFailed = libationFinalizationFailures.has(book.catalogId);
                 const isFinalizing = isLibationAdding({
                   isLocal,
-                  confirmationPending: libationFinalizingAsins.has(book.asin),
+                  confirmationPending: libationFinalizingAsins.has(book.catalogId),
                   confirmationFailed: finalizationFailed
                 });
                 const didFail = latestBookJob?.status === "failed" || finalizationFailed;
@@ -4817,11 +5068,12 @@ function MainApp({
                   isLocal ? "In library" : book.bookStatus
                 ].filter(Boolean);
                 return (
-                  <div key={book.asin} className={`audible-row ${isLocal ? "is-local" : ""}`}>
+                  <div key={book.catalogId} className={`audible-row ${isLocal ? "is-local" : ""}`}>
                     <LibationCoverArt book={book} />
                     <div className="audible-copy">
                       <strong>{book.title}</strong>
                       <span>{metaParts.join(" · ")}</span>
+                      <small className="audible-account-badge"><KeyRound size={10} /> {book.profileName}{book.locale ? ` · ${book.locale.toUpperCase()}` : ""}</small>
                     </div>
                     {isLocal ? (
                       <button
@@ -6488,6 +6740,7 @@ function MainApp({
           >
             <Library size={20} strokeWidth={1.6} />
             <span>Shelf</span>
+            {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <em className="nav-alert-badge">{brokenLibationAccounts.length}</em> : null}
           </button>
           <button
             type="button"

@@ -13,6 +13,7 @@ import type {
   LibationBook,
   LibationDownloadRequest,
   LibationStatus,
+  LibationLoginStarted,
   LoginResponse,
   ProfileStats,
   Progress,
@@ -773,11 +774,49 @@ export async function listLibationRequests() {
   return request<LibationDownloadRequest[]>("/api/libation/requests");
 }
 
-export async function requestLibationBook(asin: string, title: string) {
+export async function requestLibationBook(asin: string, title: string, profileId: string) {
   return request<LibationDownloadRequest>(
     `/api/libation/requests/${encodeURIComponent(asin)}`,
-    { method: "POST", body: JSON.stringify({ title }) }
+    { method: "POST", body: JSON.stringify({ title, profileId }) }
   );
+}
+
+export async function startLibationAccountLogin(input: {
+  profileId?: string;
+  label: string;
+  accountId: string;
+  locale: string;
+}) {
+  return request<LibationLoginStarted>("/api/libation/accounts/login/start", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function completeLibationAccountLogin(sessionId: string, responseUrl: string) {
+  return request<LibationStatus>(
+    `/api/libation/accounts/login/${encodeURIComponent(sessionId)}/complete`,
+    { method: "POST", body: JSON.stringify({ responseUrl }) }
+  );
+}
+
+export async function cancelLibationAccountLogin(sessionId: string) {
+  return request<void>(`/api/libation/accounts/login/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function updateLibationAccount(profileId: string, label: string) {
+  return request<LibationStatus>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ label })
+  });
+}
+
+export async function deleteLibationAccount(profileId: string) {
+  return request<void>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, {
+    method: "DELETE"
+  });
 }
 
 export async function decideLibationRequest(requestId: string, approved: boolean) {
@@ -791,8 +830,8 @@ export async function syncLibationLibrary() {
   return request<JobCreated>("/api/libation/sync", { method: "POST" });
 }
 
-export async function liberateLibationBook(asin: string) {
-  return request<JobCreated>(`/api/libation/books/${encodeURIComponent(asin)}/liberate`, {
+export async function liberateLibationBook(profileId: string, asin: string) {
+  return request<JobCreated>(`/api/libation/accounts/${encodeURIComponent(profileId)}/books/${encodeURIComponent(asin)}/liberate`, {
     method: "POST"
   });
 }

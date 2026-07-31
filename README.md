@@ -192,7 +192,7 @@ For sentence-level readalong sync, a book with an EPUB companion can also have a
 
 ## Optional Libation / Audible import
 
-The server can use a local Libation CLI installation as an optional acquisition tool. Libation must already be installed and authenticated on the server. The web app can then show Libation's Audible library, run a Libation scan, trigger liberation for a selected ASIN, and rescan the local audiobook folder after the download completes.
+The server can use a local Libation CLI installation as an optional acquisition tool. With a recent CLI, administrators can add and reconnect multiple server-wide Audible accounts from the web or installed app using Libation's external-browser login. OperaLibre keeps each managed account in an isolated Libation profile so the catalog can be filtered or sorted by account and duplicate ownership remains visible. It can then scan purchases, liberate a selected title through its owning account, and rescan the local audiobook folder after the download completes.
 
 Set these in `server.config` only if you want the integration:
 
@@ -203,7 +203,7 @@ libation_auto_refresh_hours = 24
 libation_reader_refreshes_per_hour = 3
 ```
 
-If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` should point at the Libation files directory containing `AccountsSettings.json` and `Settings.json`; the web app reports when configured accounts are no longer authenticated. By default the server checks Audible once every 24 hours. Administrators may also refresh at any time, while each reader account may request three refreshes per rolling hour.
+If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` optionally points at an existing legacy Libation profile; accounts added through OperaLibre are stored under `data_dir/libation-accounts`. The app badges accounts whose authentication or refresh connection has failed. By default the server checks Audible once every 24 hours. Administrators may also refresh at any time, while each reader account may request three refreshes per rolling hour.
 
 ## Android and iOS development
 

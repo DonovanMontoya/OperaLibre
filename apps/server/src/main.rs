@@ -26,6 +26,7 @@ use lofty::{
     read_from_path,
     tag::{ItemKey, ItemValue, Tag},
 };
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -33,15 +34,17 @@ use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, io,
+    io::{Read, Write},
     net::{IpAddr, SocketAddr},
     path::{Path as FsPath, PathBuf},
     sync::{Arc, LazyLock},
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::{
     fs,
     process::Command,
-    sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -91,6 +94,11 @@ const DEFAULT_LIBATION_AUTO_REFRESH_HOURS: u64 = 24;
 const DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR: u64 = 3;
 const LIBATION_READER_REFRESH_WINDOW_SECONDS: u64 = 60 * 60;
 const LIBATION_REFRESH_SCHEDULER_POLL_SECONDS: u64 = 15 * 60;
+const LIBATION_LOGIN_SESSION_SECONDS: u64 = 10 * 60;
+const LIBATION_LOGIN_START_TIMEOUT_SECONDS: u64 = 30;
+const MAX_LIBATION_ACCOUNT_LABEL_CHARS: usize = 80;
+const MAX_LIBATION_ACCOUNT_ID_CHARS: usize = 320;
+const MAX_LIBATION_RESPONSE_URL_CHARS: usize = 16_384;
 // ReaderStream otherwise reads in very small chunks. A larger media chunk
 // keeps browser buffers supplied through brief scheduler or network jitter,
 // which matters more as playback speed increases.
@@ -115,6 +123,8 @@ struct AppState {
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_refreshes_file: PathBuf,
+    libation_accounts_file: PathBuf,
+    libation_accounts_root: PathBuf,
     libation_config: LibationConfig,
     alignment_config: AlignmentConfig,
     update_manager: updates::UpdateManager,
@@ -127,6 +137,8 @@ struct AppState {
     activity: Arc<RwLock<ActivityStore>>,
     libation_requests: Arc<RwLock<LibationRequestStore>>,
     libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
+    libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
+    libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
@@ -303,6 +315,46 @@ struct LibationRefreshStore {
     manual_refreshes: HashMap<String, Vec<u64>>,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedLibationAccountStore {
+    #[serde(default)]
+    accounts: Vec<ManagedLibationAccount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedLibationAccount {
+    id: String,
+    label: String,
+    account_id: String,
+    locale: String,
+    added_by: String,
+    added_at: String,
+    #[serde(default = "default_libation_connection_state")]
+    connection_state: String,
+    #[serde(default)]
+    authenticated: bool,
+    #[serde(default)]
+    last_successful_auth: Option<String>,
+    #[serde(default)]
+    last_successful_refresh: Option<String>,
+    #[serde(default)]
+    last_error: Option<String>,
+}
+
+fn default_libation_connection_state() -> String {
+    "needs_sign_in".to_string()
+}
+
+struct PendingLibationLogin {
+    profile_id: String,
+    expires_at: u64,
+    response_sender: std::sync::mpsc::Sender<String>,
+    completion: tokio::sync::oneshot::Receiver<Result<String, String>>,
+    _job_guard: OwnedMutexGuard<()>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LibationDownloadRequest {
@@ -310,6 +362,12 @@ struct LibationDownloadRequest {
     user_id: String,
     username: String,
     asin: String,
+    #[serde(default)]
+    profile_id: Option<String>,
+    #[serde(default)]
+    profile_name: Option<String>,
+    #[serde(default)]
+    catalog_id: Option<String>,
     title: String,
     status: String,
     requested_at: String,
@@ -339,8 +397,42 @@ struct UpdateLibationApprovalRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateLibationDownloadRequest {
     title: String,
+    #[serde(default)]
+    profile_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartLibationLoginRequest {
+    #[serde(default)]
+    profile_id: Option<String>,
+    label: String,
+    account_id: String,
+    locale: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteLibationLoginRequest {
+    response_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateLibationAccountRequest {
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibationLoginStarted {
+    session_id: String,
+    profile_id: String,
+    login_url: String,
+    expires_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -682,16 +774,28 @@ struct LibationStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LibationAccount {
+    id: String,
     account_id: String,
     name: Option<String>,
     locale: String,
     scan_library: bool,
     authenticated: bool,
+    managed: bool,
+    connection_state: String,
+    last_successful_auth: Option<String>,
+    last_successful_refresh: Option<String>,
+    last_error: Option<String>,
+    added_by: Option<String>,
+    added_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LibationBook {
+    catalog_id: String,
+    profile_id: String,
+    profile_name: String,
+    account_id: Option<String>,
     asin: String,
     title: String,
     subtitle: Option<String>,
@@ -733,6 +837,9 @@ struct JobCreated {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct LibationExportRecord {
+    #[serde(rename = "Account")]
+    #[serde(alias = "AccountId")]
+    account: Option<String>,
     #[serde(rename = "Audible Product Id")]
     #[serde(alias = "AudibleProductId")]
     audible_product_id: Option<String>,
@@ -1257,6 +1364,18 @@ async fn main() -> anyhow::Result<()> {
     let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
     let libation_refreshes =
         load_libation_refreshes(&config.data_dir.join("libation-refreshes.json")).await?;
+    let libation_accounts_file = config.data_dir.join("libation-accounts.json");
+    let libation_accounts = load_managed_libation_accounts(&libation_accounts_file).await?;
+    let libation_accounts_root = config.data_dir.join("libation-accounts");
+    create_private_directory(&libation_accounts_root)?;
+    if fs::try_exists(&libation_accounts_file).await? {
+        secure_file_permissions(&libation_accounts_file).await?;
+    }
+    for account in &libation_accounts.accounts {
+        secure_managed_libation_profile(&libation_accounts_root.join(&account.id))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+    }
     if users_store.users.is_empty() {
         match fs::remove_file(&config.progress_file).await {
             Ok(_) => tracing::info!(
@@ -1295,6 +1414,8 @@ async fn main() -> anyhow::Result<()> {
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
         libation_refreshes_file: config.data_dir.join("libation-refreshes.json"),
+        libation_accounts_file,
+        libation_accounts_root,
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
         update_manager: updates::UpdateManager::new(
@@ -1311,6 +1432,8 @@ async fn main() -> anyhow::Result<()> {
         activity: Arc::new(RwLock::new(activity_store)),
         libation_requests: Arc::new(RwLock::new(libation_requests)),
         libation_refreshes: Arc::new(Mutex::new(libation_refreshes)),
+        libation_accounts: Arc::new(RwLock::new(libation_accounts)),
+        libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         progress_write_lock: Arc::new(Mutex::new(())),
         rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
@@ -1363,6 +1486,22 @@ async fn main() -> anyhow::Result<()> {
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/libation/status", get(libation_status))
+        .route(
+            "/api/libation/accounts/login/start",
+            post(start_libation_account_login),
+        )
+        .route(
+            "/api/libation/accounts/login/{session_id}/complete",
+            post(complete_libation_account_login),
+        )
+        .route(
+            "/api/libation/accounts/login/{session_id}",
+            delete(cancel_libation_account_login),
+        )
+        .route(
+            "/api/libation/accounts/{profile_id}",
+            put(update_libation_account).delete(delete_libation_account),
+        )
         .route("/api/libation/access", get(get_libation_access))
         .route("/api/libation/requests", get(list_libation_requests))
         .route(
@@ -1386,6 +1525,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/libation/books/{asin}/liberate",
             post(liberate_libation_book),
+        )
+        .route(
+            "/api/libation/accounts/{profile_id}/books/{asin}/liberate",
+            post(liberate_profile_libation_book),
         )
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{job_id}", get(get_job))
@@ -1805,6 +1948,460 @@ fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError 
     ApiError::bad_request(format!("The audiobook upload could not be read: {error}"))
 }
 
+async fn start_libation_account_login(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<StartLibationLoginRequest>,
+) -> Result<Json<LibationLoginStarted>, ApiError> {
+    require_admin(&auth)?;
+    if !state.libation_config.enabled() {
+        return Err(ApiError::bad_request(
+            "Libation CLI was not found. Configure libation_cli_path before adding an Audible account.",
+        ));
+    }
+    let label = payload.label.trim();
+    let account_id = payload.account_id.trim();
+    let locale = payload.locale.trim().to_ascii_lowercase();
+    if label.is_empty() || label.chars().count() > MAX_LIBATION_ACCOUNT_LABEL_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "Account label must be between 1 and {MAX_LIBATION_ACCOUNT_LABEL_CHARS} characters."
+        )));
+    }
+    if account_id.is_empty() || account_id.chars().count() > MAX_LIBATION_ACCOUNT_ID_CHARS {
+        return Err(ApiError::bad_request(
+            "Enter a valid Audible account email or login id.",
+        ));
+    }
+    if !valid_libation_locale(&locale) {
+        return Err(ApiError::bad_request(
+            "Choose a supported Audible marketplace: us, uk, ca, de, fr, au, jp, in, or es.",
+        ));
+    }
+
+    prune_expired_libation_login_sessions(&state).await;
+    let profile_id = {
+        let mut store = state.libation_accounts.write().await;
+        if let Some(requested_id) = payload.profile_id.as_deref() {
+            if store.accounts.iter().any(|account| {
+                account.id != requested_id
+                    && account.account_id.eq_ignore_ascii_case(account_id)
+                    && account.locale == locale
+            }) {
+                return Err(ApiError::conflict(
+                    "That Audible account and marketplace are already configured.",
+                ));
+            }
+            let account = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == requested_id)
+                .ok_or(ApiError::not_found("Audible account not found."))?;
+            account.label = label.to_string();
+            account.account_id = account_id.to_string();
+            account.locale = locale.clone();
+            account.authenticated = false;
+            account.connection_state = "signing_in".to_string();
+            account.last_error = None;
+            let id = account.id.clone();
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
+            id
+        } else {
+            if store.accounts.iter().any(|account| {
+                account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
+            }) {
+                return Err(ApiError::conflict(
+                    "That Audible account and marketplace are already configured. Use Reconnect on the existing account.",
+                ));
+            }
+            let id = stable_id(&format!(
+                "libation-account:{}:{}:{}",
+                account_id,
+                locale,
+                generate_session_token()
+            ));
+            store.accounts.push(ManagedLibationAccount {
+                id: id.clone(),
+                label: label.to_string(),
+                account_id: account_id.to_string(),
+                locale: locale.clone(),
+                added_by: auth.username,
+                added_at: now_rfc3339ish(),
+                connection_state: "signing_in".to_string(),
+                authenticated: false,
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
+            id
+        }
+    };
+
+    let profile_dir = state.libation_accounts_root.join(&profile_id);
+    create_private_directory(&profile_dir).map_err(ApiError::from)?;
+    let profile_config = state.libation_config.with_files_dir(profile_dir);
+    let job_guard = state.libation_job_lock.clone().lock_owned().await;
+    let (started, response_sender, completion) =
+        start_interactive_libation_login(profile_config, account_id.to_string(), locale)
+            .map_err(ApiError::from)?;
+    let login_url = match tokio::time::timeout(
+        Duration::from_secs(LIBATION_LOGIN_START_TIMEOUT_SECONDS + 5),
+        started,
+    )
+    .await
+    {
+        Ok(Ok(Ok(url))) => url,
+        Ok(Ok(Err(message))) => {
+            mark_managed_libation_account_error(&state, &profile_id, &message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+        Ok(Err(_)) => {
+            let message = "Libation login stopped before returning a sign-in URL.".to_string();
+            mark_managed_libation_account_error(&state, &profile_id, &message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+        Err(_) => {
+            let message = "Libation did not return a sign-in URL in time.".to_string();
+            mark_managed_libation_account_error(&state, &profile_id, &message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+    };
+    let session_id = generate_session_token();
+    let expires_at = unix_now_seconds().saturating_add(LIBATION_LOGIN_SESSION_SECONDS);
+    state.libation_login_sessions.lock().await.insert(
+        session_id.clone(),
+        PendingLibationLogin {
+            profile_id: profile_id.clone(),
+            expires_at,
+            response_sender,
+            completion,
+            _job_guard: job_guard,
+        },
+    );
+    Ok(Json(LibationLoginStarted {
+        session_id,
+        profile_id,
+        login_url,
+        expires_at,
+    }))
+}
+
+async fn complete_libation_account_login(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(session_id): Path<String>,
+    Json(payload): Json<CompleteLibationLoginRequest>,
+) -> Result<Json<LibationStatus>, ApiError> {
+    require_admin(&auth)?;
+    let response_url = validate_libation_response_url(&payload.response_url)?;
+    let pending = state
+        .libation_login_sessions
+        .lock()
+        .await
+        .remove(&session_id)
+        .ok_or(ApiError::not_found(
+            "Audible sign-in session not found or expired.",
+        ))?;
+    if unix_now_seconds() > pending.expires_at {
+        mark_managed_libation_account_error(
+            &state,
+            &pending.profile_id,
+            "The Audible sign-in session expired.",
+        )
+        .await;
+        return Err(ApiError::bad_request(
+            "The Audible sign-in session expired.",
+        ));
+    }
+    pending
+        .response_sender
+        .send(response_url)
+        .map_err(|_| ApiError::bad_gateway("Libation stopped waiting for the Audible response."))?;
+    let profile_id = pending.profile_id.clone();
+    match tokio::time::timeout(Duration::from_secs(90), pending.completion).await {
+        Ok(Ok(Ok(_))) => {
+            secure_managed_libation_profile(&state.libation_accounts_root.join(&profile_id))
+                .await?;
+            mark_managed_libation_account_authenticated(&state, &profile_id).await?;
+            if let Some(profile) = find_libation_profile(&state, &profile_id).await {
+                match run_libation(&profile.config, vec!["scan".to_string()]).await {
+                    Ok(output) if output.status.success() => {
+                        mark_managed_libation_account_refreshed(&state, &profile_id).await;
+                    }
+                    Ok(output) => {
+                        mark_managed_libation_account_scan_error(
+                            &state,
+                            &profile_id,
+                            &command_output_text(&output),
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        mark_managed_libation_account_scan_error(
+                            &state,
+                            &profile_id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        Ok(Ok(Err(message))) => {
+            mark_managed_libation_account_error(&state, &profile_id, &message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+        Ok(Err(_)) => {
+            let message = "Libation login ended unexpectedly.";
+            mark_managed_libation_account_error(&state, &profile_id, message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+        Err(_) => {
+            let message = "Libation did not finish the Audible sign-in in time.";
+            mark_managed_libation_account_error(&state, &profile_id, message).await;
+            return Err(ApiError::bad_gateway(message));
+        }
+    }
+    drop(pending._job_guard);
+    Ok(Json(read_libation_status(&state).await))
+}
+
+async fn cancel_libation_account_login(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_admin(&auth)?;
+    let pending = state
+        .libation_login_sessions
+        .lock()
+        .await
+        .remove(&session_id);
+    if let Some(pending) = pending {
+        mark_managed_libation_account_error(&state, &pending.profile_id, "Sign-in was cancelled.")
+            .await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_libation_account(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(profile_id): Path<String>,
+    Json(payload): Json<UpdateLibationAccountRequest>,
+) -> Result<Json<LibationStatus>, ApiError> {
+    require_admin(&auth)?;
+    let label = payload.label.trim();
+    if label.is_empty() || label.chars().count() > MAX_LIBATION_ACCOUNT_LABEL_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "Account label must be between 1 and {MAX_LIBATION_ACCOUNT_LABEL_CHARS} characters."
+        )));
+    }
+    let mut store = state.libation_accounts.write().await;
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == profile_id)
+        .ok_or(ApiError::not_found("Audible account not found."))?;
+    account.label = label.to_string();
+    write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
+    drop(store);
+    Ok(Json(read_libation_status(&state).await))
+}
+
+async fn delete_libation_account(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(profile_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_owner(&auth)?;
+    {
+        let sessions = state.libation_login_sessions.lock().await;
+        if sessions
+            .values()
+            .any(|session| session.profile_id == profile_id)
+        {
+            return Err(ApiError::conflict(
+                "Cancel or finish this account's sign-in before removing it.",
+            ));
+        }
+    }
+    if state
+        .libation_requests
+        .read()
+        .await
+        .requests
+        .iter()
+        .any(|request| {
+            request.profile_id.as_deref() == Some(profile_id.as_str())
+                && request.status == "pending"
+        })
+    {
+        return Err(ApiError::conflict(
+            "Resolve pending download requests for this Audible account before removing it.",
+        ));
+    }
+    let _libation_guard = state.libation_job_lock.lock().await;
+    let mut store = state.libation_accounts.write().await;
+    let before = store.accounts.len();
+    store.accounts.retain(|account| account.id != profile_id);
+    if store.accounts.len() == before {
+        return Err(ApiError::not_found("Audible account not found."));
+    }
+    write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
+    drop(store);
+    let profile_dir = state.libation_accounts_root.join(&profile_id);
+    if profile_dir.starts_with(&state.libation_accounts_root) {
+        match fs::remove_dir_all(&profile_dir).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn valid_libation_locale(locale: &str) -> bool {
+    matches!(
+        locale,
+        "us" | "uk" | "ca" | "de" | "fr" | "au" | "jp" | "in" | "es"
+    )
+}
+
+fn validate_libation_response_url(value: &str) -> Result<String, ApiError> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > MAX_LIBATION_RESPONSE_URL_CHARS {
+        return Err(ApiError::bad_request(
+            "Paste the complete final Audible sign-in URL.",
+        ));
+    }
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| ApiError::bad_request("The Audible response must be a valid URL."))?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if parsed.scheme() != "https" || !is_amazon_or_audible_host(&host) {
+        return Err(ApiError::bad_request(
+            "The response URL must be an HTTPS Amazon or Audible address.",
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn is_amazon_or_audible_host(host: &str) -> bool {
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    const MARKETPLACE_SUFFIXES: &[&str] = &[
+        "com", "co.uk", "ca", "de", "fr", "com.au", "co.jp", "in", "es",
+    ];
+    ["amazon", "audible"].iter().any(|brand| {
+        MARKETPLACE_SUFFIXES
+            .iter()
+            .any(|suffix| host == format!("{brand}.{suffix}"))
+    })
+}
+
+async fn prune_expired_libation_login_sessions(state: &AppState) {
+    let now = unix_now_seconds();
+    state
+        .libation_login_sessions
+        .lock()
+        .await
+        .retain(|_, session| session.expires_at >= now);
+}
+
+async fn mark_managed_libation_account_authenticated(
+    state: &AppState,
+    profile_id: &str,
+) -> Result<(), ApiError> {
+    let mut store = state.libation_accounts.write().await;
+    if let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == profile_id)
+    {
+        account.authenticated = true;
+        account.connection_state = "connected".to_string();
+        account.last_successful_auth = Some(now_rfc3339ish());
+        account.last_error = None;
+        write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
+    }
+    Ok(())
+}
+
+async fn mark_managed_libation_account_error(state: &AppState, profile_id: &str, message: &str) {
+    let mut store = state.libation_accounts.write().await;
+    if let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == profile_id)
+    {
+        account.authenticated = false;
+        account.connection_state = "needs_sign_in".to_string();
+        account.last_error = Some(sanitize_libation_login_output(message));
+        if let Err(error) =
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
+        {
+            tracing::warn!(
+                "failed to persist Libation account health: {}",
+                error.message
+            );
+        }
+    }
+}
+
+async fn mark_managed_libation_account_scan_error(
+    state: &AppState,
+    profile_id: &str,
+    message: &str,
+) {
+    let mut store = state.libation_accounts.write().await;
+    if let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == profile_id)
+    {
+        account.connection_state = "error".to_string();
+        account.last_error = Some(sanitize_libation_login_output(message));
+        if let Err(error) =
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
+        {
+            tracing::warn!(
+                "failed to persist Libation account scan error: {}",
+                error.message
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn secure_managed_libation_profile(path: &FsPath) -> Result<(), ApiError> {
+    use std::os::unix::fs::PermissionsExt;
+    if !fs::try_exists(path).await? {
+        return Ok(());
+    }
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> io::Result<()> {
+        for entry in WalkDir::new(path).follow_links(false) {
+            let entry = entry?;
+            let mode = if entry.file_type().is_dir() {
+                0o700
+            } else {
+                0o600
+            };
+            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(mode))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| {
+        ApiError::internal(format!("Could not secure Libation account files: {error}"))
+    })??;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn secure_managed_libation_profile(_path: &FsPath) -> Result<(), ApiError> {
+    Ok(())
+}
+
 async fn libation_status(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -1868,6 +2465,11 @@ async fn create_libation_download_request(
     }
     let asin = normalize_asin(&asin)
         .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    let profile_id = payload.profile_id.as_deref().unwrap_or("legacy");
+    let profile = find_libation_profile(&state, profile_id)
+        .await
+        .ok_or(ApiError::not_found("Audible account not found."))?;
+    let catalog_id = format!("{}:{asin}", profile.id);
     let title = payload.title.trim();
     if title.is_empty() || title.chars().count() > 500 {
         return Err(ApiError::bad_request(
@@ -1877,7 +2479,10 @@ async fn create_libation_download_request(
 
     let mut requests = state.libation_requests.write().await;
     if let Some(existing) = requests.requests.iter().find(|request| {
-        request.user_id == auth.id && request.asin == asin && request.status == "pending"
+        request.user_id == auth.id
+            && request.asin == asin
+            && request.profile_id.as_deref().unwrap_or("legacy") == profile.id
+            && request.status == "pending"
     }) {
         return Ok(Json(existing.clone()));
     }
@@ -1909,14 +2514,18 @@ async fn create_libation_download_request(
     }
     let request = LibationDownloadRequest {
         id: stable_id(&format!(
-            "libation-request:{}:{}:{}",
+            "libation-request:{}:{}:{}:{}",
             auth.id,
+            profile.id,
             asin,
             now_rfc3339ish()
         )),
         user_id: auth.id,
         username: auth.username,
         asin,
+        profile_id: Some(profile.id),
+        profile_name: Some(profile.name),
+        catalog_id: Some(catalog_id),
         title: title.to_string(),
         status: "pending".to_string(),
         requested_at: now_rfc3339ish(),
@@ -1976,26 +2585,30 @@ async fn decide_libation_download_request(
         return Ok(Json(request));
     }
 
-    let created =
-        match start_libation_download(&state, request.asin.clone(), Some(request.user_id.clone()))
-            .await
-        {
-            Ok(created) => created.0,
-            Err(error) => {
-                let mut requests = state.libation_requests.write().await;
-                if let Some(stored) = requests
-                    .requests
-                    .iter_mut()
-                    .find(|item| item.id == request.id)
-                {
-                    stored.status = "pending".to_string();
-                    stored.decided_at = None;
-                    stored.decided_by = None;
-                }
-                let _ = write_libation_requests(&state.libation_requests_file, &requests).await;
-                return Err(error);
+    let created = match start_libation_download(
+        &state,
+        request.profile_id.clone(),
+        request.asin.clone(),
+        Some(request.user_id.clone()),
+    )
+    .await
+    {
+        Ok(created) => created.0,
+        Err(error) => {
+            let mut requests = state.libation_requests.write().await;
+            if let Some(stored) = requests
+                .requests
+                .iter_mut()
+                .find(|item| item.id == request.id)
+            {
+                stored.status = "pending".to_string();
+                stored.decided_at = None;
+                stored.decided_by = None;
             }
-        };
+            let _ = write_libation_requests(&state.libation_requests_file, &requests).await;
+            return Err(error);
+        }
+    };
     let mut requests = state.libation_requests.write().await;
     let stored = requests
         .requests
@@ -2052,18 +2665,37 @@ async fn list_libation_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Vec<LibationBook>>, ApiError> {
-    let config = state.libation_config.clone();
-    if !config.enabled() {
+    if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
-    let mut books = {
+    let profiles = all_libation_profiles(&state).await;
+    let mut books = Vec::new();
+    let mut first_error = None;
+    {
         let _libation_guard = state.libation_job_lock.lock().await;
-        export_libation_books(&config).await?
-    };
+        for profile in profiles {
+            match export_libation_books(&profile).await {
+                Ok(mut profile_books) => books.append(&mut profile_books),
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+    }
+    if books.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
     let library = state.library.read().await;
     for book in books.iter_mut() {
+        if !auth.is_admin {
+            book.account_id = None;
+        }
         book.local_book_id = match_local_book(&library.books, book);
         if !auth.is_admin
             && book
@@ -2113,7 +2745,22 @@ async fn get_libation_cover_art(
         return Err(ApiError::not_found("Libation cover art not found"));
     }
 
-    if let Some(files_dir) = &state.libation_config.libation_files_dir {
+    let mut files_dirs = state
+        .libation_config
+        .libation_files_dir
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    files_dirs.extend(
+        state
+            .libation_accounts
+            .read()
+            .await
+            .accounts
+            .iter()
+            .map(|account| state.libation_accounts_root.join(&account.id)),
+    );
+    for files_dir in files_dirs {
         let images_dir = files_dir.join("Images");
         for suffix in ["Native", "_500x500", "_300x300", "_80x80"] {
             let path = images_dir.join(format!("{picture_id}{suffix}.jpg"));
@@ -2276,7 +2923,6 @@ async fn active_libation_sync_job(state: &AppState) -> Option<String> {
 }
 
 fn spawn_libation_sync_job(state: AppState, job_id: String) {
-    let config = state.libation_config.clone();
     let state_for_job = state.clone();
     let job_id_for_task = job_id;
     tokio::spawn(async move {
@@ -2288,43 +2934,94 @@ fn spawn_libation_sync_job(state: AppState, job_id: String) {
             "Starting Libation library scan.\n",
         )
         .await;
-        let result = run_libation(&config, vec!["scan".to_string()]).await;
-        match result {
-            Ok(output) if output.status.success() => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                record_successful_libation_scan(&state_for_job).await;
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "completed",
-                    output.status.code(),
-                    None,
-                )
-                .await;
-            }
-            Ok(output) => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    output.status.code(),
-                    Some("Libation scan failed.".to_string()),
-                )
-                .await;
-            }
-            Err(error) => {
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    None,
-                    Some(error.to_string()),
-                )
-                .await;
+        let profiles = all_libation_profiles(&state_for_job).await;
+        let mut failures = Vec::new();
+        let mut exit_code = Some(0);
+        for profile in profiles {
+            update_job_output(
+                &state_for_job,
+                &job_id_for_task,
+                &format!("\nChecking {}.\n", profile.name),
+            )
+            .await;
+            match run_libation(&profile.config, vec!["scan".to_string()]).await {
+                Ok(output) if output.status.success() => {
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    if profile.managed {
+                        mark_managed_libation_account_refreshed(&state_for_job, &profile.id).await;
+                    }
+                }
+                Ok(output) => {
+                    exit_code = output.status.code();
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    let message = format!("{} could not be refreshed.", profile.name);
+                    if profile.managed {
+                        mark_managed_libation_account_error(
+                            &state_for_job,
+                            &profile.id,
+                            &command_output_text(&output),
+                        )
+                        .await;
+                    }
+                    failures.push(message);
+                }
+                Err(error) => {
+                    exit_code = None;
+                    if profile.managed {
+                        mark_managed_libation_account_error(
+                            &state_for_job,
+                            &profile.id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    }
+                    failures.push(format!("{}: {error}", profile.name));
+                }
             }
         }
+        if failures.is_empty() {
+            record_successful_libation_scan(&state_for_job).await;
+            update_job_finished(
+                &state_for_job,
+                &job_id_for_task,
+                "completed",
+                exit_code,
+                None,
+            )
+            .await;
+        } else {
+            update_job_finished(
+                &state_for_job,
+                &job_id_for_task,
+                "failed",
+                exit_code,
+                Some(failures.join(" ")),
+            )
+            .await;
+        }
     });
+}
+
+async fn mark_managed_libation_account_refreshed(state: &AppState, profile_id: &str) {
+    let mut store = state.libation_accounts.write().await;
+    if let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == profile_id)
+    {
+        account.authenticated = true;
+        account.connection_state = "connected".to_string();
+        account.last_successful_refresh = Some(now_rfc3339ish());
+        account.last_error = None;
+        if let Err(error) =
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
+        {
+            tracing::warn!(
+                "failed to persist Libation refresh health: {}",
+                error.message
+            );
+        }
+    }
 }
 
 async fn record_successful_libation_scan(state: &AppState) {
@@ -2389,20 +3086,50 @@ async fn liberate_libation_book(
         ));
     }
     let grant_to_user = (!auth.is_admin).then_some(auth.id);
-    start_libation_download(&state, asin, grant_to_user).await
+    start_libation_download(&state, None, asin, grant_to_user).await
+}
+
+async fn liberate_profile_libation_book(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path((profile_id, asin)): Path<(String, String)>,
+) -> Result<Json<JobCreated>, ApiError> {
+    let asin = normalize_asin(&asin)
+        .ok_or_else(|| ApiError::bad_request("Invalid Audible product id."))?;
+    if auth.libation_access != LibationAccess::Direct {
+        return Err(ApiError::forbidden(
+            "This account must request approval for Libation downloads.",
+        ));
+    }
+    let grant_to_user = (!auth.is_admin).then_some(auth.id);
+    start_libation_download(&state, Some(profile_id), asin, grant_to_user).await
 }
 
 async fn start_libation_download(
     state: &AppState,
+    profile_id: Option<String>,
     asin: String,
     grant_to_user: Option<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    let config = state.libation_config.clone();
-    if !config.enabled() {
+    if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
     }
+
+    let profile = if let Some(profile_id) = profile_id.as_deref() {
+        find_libation_profile(state, profile_id)
+            .await
+            .ok_or(ApiError::not_found("Audible account not found."))?
+    } else {
+        all_libation_profiles(state)
+            .await
+            .into_iter()
+            .next()
+            .ok_or(ApiError::bad_request("No Audible accounts are configured."))?
+    };
+    let config = profile.config.clone();
+    let catalog_id = format!("{}:{asin}", profile.id);
 
     if let Some(user_id) = grant_to_user.as_deref() {
         let local_book_id = state
@@ -2419,16 +3146,21 @@ async fn start_libation_download(
             .map(|book| book.id.clone());
         if let Some(book_id) = local_book_id {
             grant_user_book_access(state, user_id, &book_id).await?;
-            let (job_id, _) =
-                create_job_with_state(state, "libation-access-grant", Some(asin), "running", false)
-                    .await;
+            let (job_id, _) = create_job_with_state(
+                state,
+                "libation-access-grant",
+                Some(catalog_id),
+                "running",
+                false,
+            )
+            .await;
             update_job_finished(state, &job_id, "completed", None, None).await;
             return Ok(Json(JobCreated { job_id }));
         }
     }
 
     let (job_id, created) =
-        create_libation_job(state, "libation-liberate", Some(asin.clone())).await;
+        create_libation_job(state, "libation-liberate", Some(catalog_id.clone())).await;
     if let Some(user_id) = grant_to_user {
         schedule_libation_access_grant(state.clone(), job_id.clone(), asin.clone(), user_id);
     }
@@ -2443,7 +3175,10 @@ async fn start_libation_download(
         update_job_output(
             &state_for_job,
             &job_id_for_task,
-            &format!("Starting Libation liberation for {asin}.\n"),
+            &format!(
+                "Starting Libation liberation for {asin} from {}.\n",
+                profile.name
+            ),
         )
         .await;
 
@@ -2496,6 +3231,9 @@ async fn start_libation_download(
                     .await;
                     return;
                 }
+                if profile.managed {
+                    mark_managed_libation_account_refreshed(&state_for_job, &profile.id).await;
+                }
                 update_job_finished(
                     &state_for_job,
                     &job_id_for_task,
@@ -2507,6 +3245,14 @@ async fn start_libation_download(
             }
             Ok(output) => {
                 append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                if profile.managed {
+                    mark_managed_libation_account_scan_error(
+                        &state_for_job,
+                        &profile.id,
+                        &command_output_text(&output),
+                    )
+                    .await;
+                }
                 update_job_finished(
                     &state_for_job,
                     &job_id_for_task,
@@ -2517,6 +3263,14 @@ async fn start_libation_download(
                 .await;
             }
             Err(error) => {
+                if profile.managed {
+                    mark_managed_libation_account_scan_error(
+                        &state_for_job,
+                        &profile.id,
+                        &error.to_string(),
+                    )
+                    .await;
+                }
                 update_job_finished(
                     &state_for_job,
                     &job_id_for_task,
@@ -2605,8 +3359,7 @@ async fn liberate_all_libation_books(
             "This administrator must request approval for Libation downloads.",
         ));
     }
-    let config = state.libation_config.clone();
-    if !config.enabled() {
+    if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Set libation_cli_path in server.config or put libationcli on PATH.",
         ));
@@ -2628,101 +3381,89 @@ async fn liberate_all_libation_books(
         )
         .await;
 
-        let scan_result = run_libation(&config, vec!["scan".to_string()]).await;
-        match scan_result {
-            Ok(output) if output.status.success() => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                record_successful_libation_scan(&state_for_job).await;
+        let profiles = all_libation_profiles(&state_for_job).await;
+        let mut failures = Vec::new();
+        let mut exit_code = Some(0);
+        for profile in profiles {
+            update_job_output(
+                &state_for_job,
+                &job_id_for_task,
+                &format!("\nScanning {}.\n", profile.name),
+            )
+            .await;
+            match run_libation(&profile.config, vec!["scan".to_string()]).await {
+                Ok(output) if output.status.success() => {
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    if profile.managed {
+                        mark_managed_libation_account_refreshed(&state_for_job, &profile.id).await;
+                    }
+                }
+                Ok(output) => {
+                    exit_code = output.status.code();
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    failures.push(format!("{} scan failed", profile.name));
+                    continue;
+                }
+                Err(error) => {
+                    exit_code = None;
+                    failures.push(format!("{} scan failed: {error}", profile.name));
+                    continue;
+                }
             }
-            Ok(output) => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    output.status.code(),
-                    Some("Libation scan failed.".to_string()),
-                )
-                .await;
-                return;
-            }
-            Err(error) => {
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    None,
-                    Some(error.to_string()),
-                )
-                .await;
-                return;
+
+            update_job_output(
+                &state_for_job,
+                &job_id_for_task,
+                &format!("Downloading remaining books from {}.\n", profile.name),
+            )
+            .await;
+            let books_override = format!("Books={}", profile.config.library_root.to_string_lossy());
+            match run_libation(
+                &profile.config,
+                vec![
+                    "liberate".to_string(),
+                    "--override".to_string(),
+                    books_override,
+                ],
+            )
+            .await
+            {
+                Ok(output) if output.status.success() => {
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                }
+                Ok(output) => {
+                    exit_code = output.status.code();
+                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    failures.push(format!("{} download failed", profile.name));
+                }
+                Err(error) => {
+                    exit_code = None;
+                    failures.push(format!("{} download failed: {error}", profile.name));
+                }
             }
         }
-
-        update_job_output(
-            &state_for_job,
-            &job_id_for_task,
-            "\nStarting Libation download for all books.\n",
-        )
-        .await;
-
-        let books_override = format!("Books={}", config.library_root.to_string_lossy());
-        let liberate_result = run_libation(
-            &config,
-            vec![
-                "liberate".to_string(),
-                "--override".to_string(),
-                books_override,
-            ],
-        )
-        .await;
-
-        match liberate_result {
-            Ok(output) if output.status.success() => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                if let Err(error) = rescan_library(&state_for_job).await {
-                    update_job_finished(
-                        &state_for_job,
-                        &job_id_for_task,
-                        "failed",
-                        output.status.code(),
-                        Some(format!(
-                            "Downloads completed, but local rescan failed: {error}"
-                        )),
-                    )
-                    .await;
-                    return;
-                }
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "completed",
-                    output.status.code(),
-                    None,
-                )
-                .await;
-            }
-            Ok(output) => {
-                append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    output.status.code(),
-                    Some("Libation download-all failed.".to_string()),
-                )
-                .await;
-            }
-            Err(error) => {
-                update_job_finished(
-                    &state_for_job,
-                    &job_id_for_task,
-                    "failed",
-                    None,
-                    Some(error.to_string()),
-                )
-                .await;
-            }
+        if let Err(error) = rescan_library(&state_for_job).await {
+            failures.push(format!("Local library rescan failed: {error}"));
+        }
+        if failures.is_empty() {
+            record_successful_libation_scan(&state_for_job).await;
+            update_job_finished(
+                &state_for_job,
+                &job_id_for_task,
+                "completed",
+                exit_code,
+                None,
+            )
+            .await;
+        } else {
+            update_job_finished(
+                &state_for_job,
+                &job_id_for_task,
+                "failed",
+                exit_code,
+                Some(failures.join(". ")),
+            )
+            .await;
         }
     });
 
@@ -5404,6 +6145,16 @@ impl LibationConfig {
         self.cli_path.is_some()
     }
 
+    fn with_files_dir(&self, libation_files_dir: PathBuf) -> Self {
+        Self {
+            cli_path: self.cli_path.clone(),
+            libation_files_dir: Some(libation_files_dir),
+            library_root: self.library_root.clone(),
+            auto_refresh_hours: self.auto_refresh_hours,
+            reader_refreshes_per_hour: self.reader_refreshes_per_hour,
+        }
+    }
+
     fn command_args(&self, args: Vec<String>) -> Vec<String> {
         let mut command_args = args;
         if let Some(libation_files_dir) = &self.libation_files_dir {
@@ -5412,6 +6163,69 @@ impl LibationConfig {
         }
         command_args
     }
+}
+
+#[derive(Debug, Clone)]
+struct LibationProfile {
+    id: String,
+    name: String,
+    account_id: Option<String>,
+    managed: bool,
+    config: LibationConfig,
+}
+
+fn managed_libation_profile(state: &AppState, account: &ManagedLibationAccount) -> LibationProfile {
+    LibationProfile {
+        id: account.id.clone(),
+        name: account.label.clone(),
+        account_id: Some(account.account_id.clone()),
+        managed: true,
+        config: state
+            .libation_config
+            .with_files_dir(state.libation_accounts_root.join(&account.id)),
+    }
+}
+
+async fn all_libation_profiles(state: &AppState) -> Vec<LibationProfile> {
+    let accounts = state.libation_accounts.read().await;
+    let mut profiles = accounts
+        .accounts
+        .iter()
+        .map(|account| managed_libation_profile(state, account))
+        .collect::<Vec<_>>();
+    if state.libation_config.libation_files_dir.is_some() || profiles.is_empty() {
+        profiles.insert(
+            0,
+            LibationProfile {
+                id: "legacy".to_string(),
+                name: "Existing Libation accounts".to_string(),
+                account_id: None,
+                managed: false,
+                config: state.libation_config.clone(),
+            },
+        );
+    }
+    profiles
+}
+
+async fn find_libation_profile(state: &AppState, profile_id: &str) -> Option<LibationProfile> {
+    if profile_id == "legacy" || profile_id.starts_with("legacy-") {
+        return state.libation_config.enabled().then(|| LibationProfile {
+            id: profile_id.to_string(),
+            name: "Existing Libation accounts".to_string(),
+            account_id: None,
+            managed: false,
+            config: state.libation_config.clone(),
+        });
+    }
+    state
+        .libation_accounts
+        .read()
+        .await
+        .accounts
+        .iter()
+        .find(|account| account.id == profile_id)
+        .map(|account| managed_libation_profile(state, account))
 }
 
 #[derive(Debug, Clone)]
@@ -5484,71 +6298,172 @@ async fn read_libation_status(state: &AppState) -> LibationStatus {
         };
     };
 
-    match run_libation(
-        &config,
-        vec!["list-accounts".to_string(), "--bare".to_string()],
-    )
-    .await
-    {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let accounts = parse_libation_accounts(&stdout);
-            let authenticated =
-                !accounts.is_empty() && accounts.iter().all(|account| account.authenticated);
-            let message = if accounts.is_empty() {
-                Some("No Libation accounts are configured.".to_string())
-            } else if !authenticated {
-                Some("One or more Libation accounts need to be authenticated again.".to_string())
-            } else if !stderr.trim().is_empty() {
-                Some(stderr.trim().to_string())
-            } else {
-                None
-            };
-
-            LibationStatus {
-                enabled: true,
-                cli_path: Some(cli_path.to_string_lossy().to_string()),
-                libation_files_dir: config
-                    .libation_files_dir
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().to_string()),
-                library_root: state.library_root.to_string_lossy().to_string(),
-                accounts,
-                authenticated,
-                message,
-                auto_refresh_hours: config.auto_refresh_hours,
-                manual_refreshes_per_hour: config.reader_refreshes_per_hour,
+    let managed_snapshot = state.libation_accounts.read().await.accounts.clone();
+    let mut accounts = Vec::new();
+    let mut changed_health = HashMap::<String, (bool, String, Option<String>)>::new();
+    for managed in &managed_snapshot {
+        let profile = managed_libation_profile(state, managed);
+        let result = run_libation(
+            &profile.config,
+            vec!["list-accounts".to_string(), "--bare".to_string()],
+        )
+        .await;
+        let (authenticated, connection_state, error) = match result {
+            Ok(output) if output.status.success() => {
+                let listed = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
+                let authenticated = listed.iter().any(|account| {
+                    account.account_id.eq_ignore_ascii_case(&managed.account_id)
+                        && account.locale.eq_ignore_ascii_case(&managed.locale)
+                        && account.authenticated
+                });
+                let has_scan_error = authenticated
+                    && managed.connection_state == "error"
+                    && managed.last_error.is_some();
+                (
+                    authenticated && !has_scan_error,
+                    if has_scan_error {
+                        "error"
+                    } else if authenticated {
+                        "connected"
+                    } else {
+                        "needs_sign_in"
+                    }
+                    .to_string(),
+                    if has_scan_error {
+                        managed.last_error.clone()
+                    } else {
+                        (!authenticated).then(|| {
+                            "This Audible account needs to be signed in again.".to_string()
+                        })
+                    },
+                )
+            }
+            Ok(output) => (
+                false,
+                "error".to_string(),
+                Some(command_output_text(&output)),
+            ),
+            Err(error) => (false, "error".to_string(), Some(error.to_string())),
+        };
+        changed_health.insert(
+            managed.id.clone(),
+            (authenticated, connection_state.clone(), error.clone()),
+        );
+        accounts.push(LibationAccount {
+            id: managed.id.clone(),
+            account_id: managed.account_id.clone(),
+            name: Some(managed.label.clone()),
+            locale: managed.locale.clone(),
+            scan_library: true,
+            authenticated,
+            managed: true,
+            connection_state,
+            last_successful_auth: managed.last_successful_auth.clone(),
+            last_successful_refresh: managed.last_successful_refresh.clone(),
+            last_error: error.or_else(|| managed.last_error.clone()),
+            added_by: Some(managed.added_by.clone()),
+            added_at: Some(managed.added_at.clone()),
+        });
+    }
+    if !changed_health.is_empty() {
+        let mut store = state.libation_accounts.write().await;
+        for account in &mut store.accounts {
+            if let Some((authenticated, connection_state, error)) = changed_health.get(&account.id)
+            {
+                account.authenticated = *authenticated;
+                account.connection_state = connection_state.clone();
+                account.last_error = error.clone();
             }
         }
-        Ok(output) => LibationStatus {
-            enabled: true,
-            cli_path: Some(cli_path.to_string_lossy().to_string()),
-            libation_files_dir: config
-                .libation_files_dir
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            library_root: state.library_root.to_string_lossy().to_string(),
-            accounts: Vec::new(),
-            authenticated: false,
-            message: Some(command_output_text(&output)),
-            auto_refresh_hours: config.auto_refresh_hours,
-            manual_refreshes_per_hour: config.reader_refreshes_per_hour,
-        },
-        Err(error) => LibationStatus {
-            enabled: true,
-            cli_path: Some(cli_path.to_string_lossy().to_string()),
-            libation_files_dir: config
-                .libation_files_dir
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            library_root: state.library_root.to_string_lossy().to_string(),
-            accounts: Vec::new(),
-            authenticated: false,
-            message: Some(error.to_string()),
-            auto_refresh_hours: config.auto_refresh_hours,
-            manual_refreshes_per_hour: config.reader_refreshes_per_hour,
-        },
+        if let Err(error) =
+            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
+        {
+            tracing::warn!(
+                "failed to persist Libation account status: {}",
+                error.message
+            );
+        }
+    }
+
+    if config.libation_files_dir.is_some() || managed_snapshot.is_empty() {
+        match run_libation(
+            &config,
+            vec!["list-accounts".to_string(), "--bare".to_string()],
+        )
+        .await
+        {
+            Ok(output) if output.status.success() => {
+                accounts.extend(parse_libation_accounts(&String::from_utf8_lossy(
+                    &output.stdout,
+                )));
+            }
+            Ok(output) if accounts.is_empty() => accounts.push(LibationAccount {
+                id: "legacy".to_string(),
+                account_id: "Existing Libation profile".to_string(),
+                name: Some("Existing Libation profile".to_string()),
+                locale: String::new(),
+                scan_library: true,
+                authenticated: false,
+                managed: false,
+                connection_state: "error".to_string(),
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: Some(command_output_text(&output)),
+                added_by: None,
+                added_at: None,
+            }),
+            Err(error) if accounts.is_empty() => accounts.push(LibationAccount {
+                id: "legacy".to_string(),
+                account_id: "Existing Libation profile".to_string(),
+                name: Some("Existing Libation profile".to_string()),
+                locale: String::new(),
+                scan_library: true,
+                authenticated: false,
+                managed: false,
+                connection_state: "error".to_string(),
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: Some(error.to_string()),
+                added_by: None,
+                added_at: None,
+            }),
+            _ => {}
+        }
+    }
+
+    let authenticated =
+        !accounts.is_empty() && accounts.iter().all(|account| account.authenticated);
+    let broken_count = accounts
+        .iter()
+        .filter(|account| !account.authenticated)
+        .count();
+    let message = if accounts.is_empty() {
+        Some(
+            "No Libation accounts are configured. Administrators can add an Audible account here."
+                .to_string(),
+        )
+    } else if broken_count > 0 {
+        Some(format!(
+            "{broken_count} Audible account{} need{} attention.",
+            if broken_count == 1 { "" } else { "s" },
+            if broken_count == 1 { "s" } else { "" }
+        ))
+    } else {
+        None
+    };
+    LibationStatus {
+        enabled: true,
+        cli_path: Some(cli_path.to_string_lossy().to_string()),
+        libation_files_dir: config
+            .libation_files_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        library_root: state.library_root.to_string_lossy().to_string(),
+        accounts,
+        authenticated,
+        message,
+        auto_refresh_hours: config.auto_refresh_hours,
+        manual_refreshes_per_hour: config.reader_refreshes_per_hour,
     }
 }
 
@@ -5561,11 +6476,26 @@ fn parse_libation_accounts(output: &str) -> Vec<LibationAccount> {
                 return None;
             }
             Some(LibationAccount {
+                id: format!(
+                    "legacy-{}",
+                    stable_id(&format!("{}:{}", columns[0].trim(), columns[2].trim()))
+                ),
                 account_id: columns[0].trim().to_string(),
                 name: non_empty_string(columns[1]),
                 locale: columns[2].trim().to_string(),
                 scan_library: yes_no(columns[3]),
                 authenticated: yes_no(columns[4]),
+                managed: false,
+                connection_state: if yes_no(columns[4]) {
+                    "connected".to_string()
+                } else {
+                    "needs_sign_in".to_string()
+                },
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: None,
+                added_by: None,
+                added_at: None,
             })
         })
         .collect()
@@ -5575,7 +6505,7 @@ fn yes_no(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("yes") || value.trim().eq_ignore_ascii_case("true")
 }
 
-async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBook>, ApiError> {
+async fn export_libation_books(profile: &LibationProfile) -> Result<Vec<LibationBook>, ApiError> {
     // An unpredictable owner-only temp file, so no other local user can
     // pre-create, read, or symlink the export path in a shared temp dir.
     let export_file = tempfile::Builder::new()
@@ -5585,7 +6515,7 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
         .map_err(ApiError::from)?;
     let export_path = export_file.path().to_path_buf();
     let output = run_libation(
-        config,
+        &profile.config,
         vec![
             "export".to_string(),
             "--path".to_string(),
@@ -5606,11 +6536,37 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
         .into_iter()
         .filter_map(|record| {
             let asin = non_empty_string(record.audible_product_id?)?;
+            let locale = non_empty_string(record.locale.unwrap_or_default());
+            let record_account = record.account.as_deref().and_then(non_empty_string);
+            let account_id = profile.account_id.clone().or(record_account);
+            let profile_id = if profile.managed {
+                profile.id.clone()
+            } else if let Some(account_id) = account_id.as_deref() {
+                format!(
+                    "legacy-{}",
+                    stable_id(&format!(
+                        "{}:{}",
+                        account_id,
+                        locale.as_deref().unwrap_or_default()
+                    ))
+                )
+            } else {
+                profile.id.clone()
+            };
+            let profile_name = if profile.managed {
+                profile.name.clone()
+            } else {
+                account_id.clone().unwrap_or_else(|| profile.name.clone())
+            };
             let cover_art_url = libation_cover_art_url_from_ids(
                 record.picture_large.as_deref(),
                 record.picture_id.as_deref(),
             );
             Some(LibationBook {
+                catalog_id: format!("{profile_id}:{asin}"),
+                profile_id,
+                profile_name,
+                account_id,
                 asin,
                 title: record.title.unwrap_or_else(|| "Untitled".to_string()),
                 subtitle: non_empty_string(record.subtitle.unwrap_or_default()),
@@ -5622,7 +6578,7 @@ async fn export_libation_books(config: &LibationConfig) -> Result<Vec<LibationBo
                 book_status: non_empty_string(record.book_status.unwrap_or_default()),
                 pdf_status: non_empty_string(record.pdf_status.unwrap_or_default()),
                 content_type: non_empty_string(record.content_type.unwrap_or_default()),
-                locale: non_empty_string(record.locale.unwrap_or_default()),
+                locale,
                 last_downloaded: non_empty_string(record.last_downloaded.unwrap_or_default()),
                 is_audible_plus: record.is_audible_plus.unwrap_or(false),
                 cover_art_url,
@@ -5653,6 +6609,198 @@ async fn run_libation(
         .args(config.command_args(args))
         .output()
         .await?)
+}
+
+fn start_interactive_libation_login(
+    config: LibationConfig,
+    account_id: String,
+    locale: String,
+) -> anyhow::Result<(
+    tokio::sync::oneshot::Receiver<Result<String, String>>,
+    std::sync::mpsc::Sender<String>,
+    tokio::sync::oneshot::Receiver<Result<String, String>>,
+)> {
+    let cli_path = config
+        .cli_path
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Libation CLI is not configured"))?;
+    let args = config.command_args(vec![
+        "login-external".to_string(),
+        "--account".to_string(),
+        account_id,
+        "--locale".to_string(),
+        locale,
+    ]);
+    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+    let (response_sender, response_receiver) = std::sync::mpsc::channel();
+    let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+
+    std::thread::Builder::new()
+        .name("libation-login".to_string())
+        .spawn(move || {
+            let result =
+                run_interactive_libation_login(&cli_path, &args, started_sender, response_receiver);
+            let _ = completion_sender.send(result);
+        })?;
+
+    Ok((started_receiver, response_sender, completion_receiver))
+}
+
+fn run_interactive_libation_login(
+    cli_path: &FsPath,
+    args: &[String],
+    started_sender: tokio::sync::oneshot::Sender<Result<String, String>>,
+    response_receiver: std::sync::mpsc::Receiver<String>,
+) -> Result<String, String> {
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 160,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pair) => pair,
+        Err(error) => {
+            let message = format!("Could not open a terminal for Libation login: {error}");
+            let _ = started_sender.send(Err(message.clone()));
+            return Err(message);
+        }
+    };
+    let mut command = CommandBuilder::new(cli_path);
+    command.args(args);
+    let mut child = match pair.slave.spawn_command(command) {
+        Ok(child) => child,
+        Err(error) => {
+            let message = format!("Could not start Libation login: {error}");
+            let _ = started_sender.send(Err(message.clone()));
+            return Err(message);
+        }
+    };
+    drop(pair.slave);
+
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("Could not read Libation login output: {error}"))?;
+    let mut writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| format!("Could not write to Libation login: {error}"))?;
+    let (output_sender, output_receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+    let reader_thread = std::thread::spawn(move || {
+        let mut buffer = [0u8; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    if output_sender.send(buffer[..count].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs(LIBATION_LOGIN_START_TIMEOUT_SECONDS);
+    let mut output = String::new();
+    let login_url = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let message = "Libation did not provide an Audible sign-in URL in time.".to_string();
+            let _ = started_sender.send(Err(message.clone()));
+            return Err(message);
+        }
+        match output_receiver.recv_timeout(remaining.min(Duration::from_secs(1))) {
+            Ok(chunk) => {
+                output.push_str(&String::from_utf8_lossy(&chunk));
+                if output.len() > 128 * 1024 {
+                    output = text_tail(&output, 128 * 1024);
+                }
+                if let Some(url) = extract_libation_login_url(&output) {
+                    break url;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child.wait().ok();
+                let message = format!(
+                    "Libation exited before providing a sign-in URL{}: {}",
+                    status
+                        .map(|value| format!(" ({value})"))
+                        .unwrap_or_default(),
+                    sanitize_libation_login_output(&output)
+                );
+                let _ = started_sender.send(Err(message.clone()));
+                return Err(message);
+            }
+        }
+    };
+    if started_sender.send(Ok(login_url)).is_err() {
+        let _ = child.kill();
+        return Err("The Libation login request was cancelled.".to_string());
+    }
+
+    let response_url =
+        match response_receiver.recv_timeout(Duration::from_secs(LIBATION_LOGIN_SESSION_SECONDS)) {
+            Ok(response_url) => response_url,
+            Err(_) => {
+                let _ = child.kill();
+                return Err("The Libation login session expired or was cancelled.".to_string());
+            }
+        };
+    writer
+        .write_all(response_url.as_bytes())
+        .and_then(|_| writer.write_all(b"\r\n"))
+        .and_then(|_| writer.flush())
+        .map_err(|error| format!("Could not submit the Audible response to Libation: {error}"))?;
+    drop(writer);
+
+    let status = child
+        .wait()
+        .map_err(|error| format!("Could not wait for Libation login: {error}"))?;
+    let _ = reader_thread.join();
+    while let Ok(chunk) = output_receiver.try_recv() {
+        output.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    let safe_output = sanitize_libation_login_output(&output);
+    if status.success() {
+        Ok(safe_output)
+    } else if safe_output.is_empty() {
+        Err(format!("Libation login exited with status {status}."))
+    } else {
+        Err(safe_output)
+    }
+}
+
+fn extract_libation_login_url(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                matches!(character, '\'' | '"' | '(' | ')' | '<' | '>' | ',')
+            })
+        })
+        .find(|token| {
+            reqwest::Url::parse(token).is_ok_and(|url| {
+                url.scheme() == "https"
+                    && url
+                        .host_str()
+                        .is_some_and(|host| is_amazon_or_audible_host(&host.to_ascii_lowercase()))
+            })
+        })
+        .map(ToString::to_string)
+}
+
+fn sanitize_libation_login_output(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| !line.contains("https://") && !line.starts_with("Paste URL:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn command_output_text(output: &std::process::Output) -> String {
@@ -6300,6 +7448,25 @@ async fn load_libation_refreshes(path: &FsPath) -> anyhow::Result<LibationRefres
 async fn write_libation_refreshes(
     path: &FsPath,
     store: &LibationRefreshStore,
+) -> Result<(), ApiError> {
+    write_json_atomic(path, store).await
+}
+
+async fn load_managed_libation_accounts(
+    path: &FsPath,
+) -> anyhow::Result<ManagedLibationAccountStore> {
+    match fs::read_to_string(path).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(ManagedLibationAccountStore::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_managed_libation_accounts(
+    path: &FsPath,
+    store: &ManagedLibationAccountStore,
 ) -> Result<(), ApiError> {
     write_json_atomic(path, store).await
 }
@@ -8229,6 +9396,8 @@ exit 0
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
             libation_requests_file: data_dir.join("libation-requests.json"),
             libation_refreshes_file: data_dir.join("libation-refreshes.json"),
+            libation_accounts_file: data_dir.join("libation-accounts.json"),
+            libation_accounts_root: data_dir.join("libation-accounts"),
             libation_config: super::LibationConfig {
                 cli_path: Some(cli_path),
                 libation_files_dir: None,
@@ -8253,6 +9422,12 @@ exit 0
             )),
             libation_refreshes: super::Arc::new(super::Mutex::new(
                 super::LibationRefreshStore::default(),
+            )),
+            libation_accounts: super::Arc::new(super::RwLock::new(
+                super::ManagedLibationAccountStore::default(),
+            )),
+            libation_login_sessions: super::Arc::new(super::Mutex::new(
+                std::collections::HashMap::new(),
             )),
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
             rescan_lock: super::Arc::new(super::Mutex::new(())),
@@ -8529,6 +9704,7 @@ exit 0
                 super::Path(asin.clone()),
                 super::Json(super::CreateLibationDownloadRequest {
                     title: "Requested title".to_string(),
+                    profile_id: None,
                 }),
             )
         };
@@ -8697,7 +9873,11 @@ exit 0
         for asin in asins {
             let job = jobs
                 .values()
-                .find(|job| job.target_id.as_deref() == Some(asin))
+                .find(|job| {
+                    job.target_id.as_deref().is_some_and(|target| {
+                        target == asin || target.ends_with(&format!(":{asin}"))
+                    })
+                })
                 .unwrap();
             assert_eq!(
                 job.status, "completed",
@@ -9087,5 +10267,50 @@ exit 0
         let (repeated, _) =
             super::fingerprint_tracks(root.path(), files, std::collections::BTreeMap::new());
         assert_eq!(repeated[&missing], fingerprint);
+    }
+
+    #[test]
+    fn libation_account_rows_keep_distinct_server_identities() {
+        let accounts = super::parse_libation_accounts(
+            "first@example.com\tFamily\tus\tyes\tyes\nsecond@example.com\tTravel\tuk\tyes\tno\n",
+        );
+        assert_eq!(accounts.len(), 2);
+        assert_ne!(accounts[0].id, accounts[1].id);
+        assert!(accounts[0].authenticated);
+        assert_eq!(accounts[0].connection_state, "connected");
+        assert!(!accounts[1].authenticated);
+        assert_eq!(accounts[1].connection_state, "needs_sign_in");
+    }
+
+    #[test]
+    fn audible_login_urls_accept_marketplaces_but_reject_lookalike_hosts() {
+        assert!(
+            super::validate_libation_response_url(
+                "https://www.amazon.com/ap/maplanding?openid=example"
+            )
+            .is_ok()
+        );
+        assert!(
+            super::validate_libation_response_url(
+                "https://www.amazon.co.uk/ap/maplanding?openid=example"
+            )
+            .is_ok()
+        );
+        assert!(
+            super::validate_libation_response_url(
+                "https://www.amazon.com.attacker.example/ap/maplanding"
+            )
+            .is_err()
+        );
+        assert!(super::validate_libation_response_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn libation_login_output_redacts_urls() {
+        let output = "Open this URL:\nhttps://www.amazon.com/ap/signin?secret=value\nPaste URL:";
+        assert_eq!(
+            super::sanitize_libation_login_output(output),
+            "Open this URL:"
+        );
     }
 }

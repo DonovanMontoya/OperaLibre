@@ -77,9 +77,9 @@ Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside
 
 ## Import Audible books with Libation (optional)
 
-This is only for the server owner. Install and sign in to [Libation](https://github.com/rmcrackan/Libation) on the same computer as OperaLibre, then set its download folder to your OperaLibre library folder (or a folder inside it).
+Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. An owner or administrator can then open **Audible → Add account** in the browser or installed app, complete Audible sign-in in the external browser (a secure Safari view on iOS), and add additional server-wide accounts the same way. The Audible catalog can be filtered or sorted by account, and duplicate titles remain visible in **All accounts**.
 
-Add the Libation CLI and files-folder paths to `server.config`, restart OperaLibre, and use the **Libation** area in the library to refresh your Audible list and choose **Download** for a book. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+Add the Libation CLI path to `server.config`, restart OperaLibre, and use the **Audible** area in the library to manage accounts, refresh purchases, and choose **Download** for a book. `libation_files_dir` is needed only when retaining an existing desktop-managed profile. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
 
 ## Connect to Jellyfin instead
 
