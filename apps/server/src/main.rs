@@ -355,6 +355,12 @@ struct PendingLibationLogin {
     _job_guard: OwnedMutexGuard<()>,
 }
 
+struct InteractiveLibationLogin {
+    started: tokio::sync::oneshot::Receiver<Result<String, String>>,
+    response_sender: std::sync::mpsc::Sender<String>,
+    completion: tokio::sync::oneshot::Receiver<Result<String, String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LibationDownloadRequest {
@@ -2041,12 +2047,11 @@ async fn start_libation_account_login(
     create_private_directory(&profile_dir).map_err(ApiError::from)?;
     let profile_config = state.libation_config.with_files_dir(profile_dir);
     let job_guard = state.libation_job_lock.clone().lock_owned().await;
-    let (started, response_sender, completion) =
-        start_interactive_libation_login(profile_config, account_id.to_string(), locale)
-            .map_err(ApiError::from)?;
+    let login = start_interactive_libation_login(profile_config, account_id.to_string(), locale)
+        .map_err(ApiError::from)?;
     let login_url = match tokio::time::timeout(
         Duration::from_secs(LIBATION_LOGIN_START_TIMEOUT_SECONDS + 5),
-        started,
+        login.started,
     )
     .await
     {
@@ -2073,8 +2078,8 @@ async fn start_libation_account_login(
         PendingLibationLogin {
             profile_id: profile_id.clone(),
             expires_at,
-            response_sender,
-            completion,
+            response_sender: login.response_sender,
+            completion: login.completion,
             _job_guard: job_guard,
         },
     );
@@ -6615,11 +6620,7 @@ fn start_interactive_libation_login(
     config: LibationConfig,
     account_id: String,
     locale: String,
-) -> anyhow::Result<(
-    tokio::sync::oneshot::Receiver<Result<String, String>>,
-    std::sync::mpsc::Sender<String>,
-    tokio::sync::oneshot::Receiver<Result<String, String>>,
-)> {
+) -> anyhow::Result<InteractiveLibationLogin> {
     let cli_path = config
         .cli_path
         .clone()
@@ -6643,7 +6644,11 @@ fn start_interactive_libation_login(
             let _ = completion_sender.send(result);
         })?;
 
-    Ok((started_receiver, response_sender, completion_receiver))
+    Ok(InteractiveLibationLogin {
+        started: started_receiver,
+        response_sender,
+        completion: completion_receiver,
+    })
 }
 
 fn run_interactive_libation_login(
