@@ -166,6 +166,68 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  android:
+    name: Android APK (unsigned)
+    needs:
+      - prepare
+      - frontend
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install Android SDK packages
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download built frontend
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: web-dist
+          path: apps/web/dist
+
+      - name: Sync Android project
+        run: npx cap sync android
+        working-directory: apps/web
+
+      - name: Build unsigned release APK
+        run: ./gradlew assembleRelease
+        working-directory: apps/web/android
+
+      - name: Stage Android release package
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          cp apps/web/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "dist/operalibre-${version}-android-unsigned.apk"
+
+      - name: Upload Android release package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-android
+          path: dist/*
+          if-no-files-found: error
+
   native:
     name: ${{ matrix.platform }} packages
     needs:
@@ -320,6 +382,7 @@ jobs:
     needs:
       - prepare
       - frontend
+      - android
       - native
     runs-on: ubuntu-24.04
     permissions:
