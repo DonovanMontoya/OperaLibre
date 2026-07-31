@@ -39,8 +39,9 @@ users_file = data/users.json
 # Leave blank if a reverse proxy or the Vite dev server hosts the frontend.
 web_dist_dir =
 
-# Optional Libation / Audible import.
-# Leave these blank unless you use Libation.
+# Optional Libation / Audible import. Set the CLI path to let administrators
+# add isolated Audible accounts from the app. The files directory is only for
+# an existing legacy Libation profile and can otherwise remain blank.
 libation_cli_path =
 libation_files_dir =
 # Set the automatic interval to 0 to disable scheduled refreshes.

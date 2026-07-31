@@ -127,7 +127,7 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 | Key | Default | Description |
 | --- | --- | --- |
 | `libation_cli_path` | *(empty)* | Absolute path to the Libation CLI binary (`libationcli`, `LibationCli`, or `libationcli.exe`). If blank, the server searches `PATH`. |
-| `libation_files_dir` | *(empty)* | Path to the Libation files directory containing `AccountsSettings.json` and `Settings.json`. Required for the web app to surface account status. |
+| `libation_files_dir` | *(empty)* | Optional legacy Libation files directory containing `AccountsSettings.json` and `Settings.json`. Accounts added by an administrator in OperaLibre are stored as isolated profiles under `data_dir/libation-accounts`. |
 | `libation_auto_refresh_hours` | `24` | How often the server asks Libation to scan Audible automatically. The first scan runs at startup when no previous successful scan is recorded. Set to `0` to disable scheduled scans. |
 | `libation_reader_refreshes_per_hour` | `3` | Maximum reader-triggered Audible scans per account in a rolling hour. Administrators are not limited. Set to `0` to remove the reader rate limit. |
 

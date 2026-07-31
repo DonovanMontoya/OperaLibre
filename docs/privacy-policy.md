@@ -32,6 +32,8 @@ When you connect to an OperaLibre or Jellyfin server, the App handles:
 
 Your sign-in information is sent directly to the server you select. The App stores the server address and authentication token on your device so that you can remain signed in. The App does not retain your password after the sign-in request is completed.
 
+When an administrator adds an Audible account through the optional Libation integration, the Audible password and multi-factor authentication are entered on Amazon's website rather than in OperaLibre. The final browser response URL is sent once to the selected OperaLibre server so its local Libation installation can finish authentication. OperaLibre does not persist that URL; Libation stores the resulting account tokens in the server's private data directory.
+
 ### Audiobook and listening information
 
 The App may receive or create:

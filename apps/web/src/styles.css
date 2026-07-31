@@ -326,6 +326,39 @@ button {
   background: var(--gold-soft);
 }
 
+.source-health-badge {
+  margin-left: auto;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.58rem;
+  letter-spacing: 0;
+  color: #2a1612;
+  border-radius: 999px;
+  background: #e8a99a;
+}
+
+.nav-alert-badge {
+  position: absolute;
+  top: 4px;
+  right: calc(50% - 20px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font: 600 0.56rem/1 "JetBrains Mono", monospace;
+  font-style: normal;
+  color: #2a1612;
+  border-radius: 999px;
+  background: #e8a99a;
+}
+
 .libation-panel {
   display: grid;
   gap: 12px;
@@ -362,22 +395,196 @@ button {
   gap: 6px;
 }
 
-.account-list span {
+.account-list article {
   min-width: 0;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(217, 181, 116, 0.14);
+  background: rgba(13, 16, 15, 0.24);
+}
+
+.account-health-icon {
+  display: inline-flex;
+  color: var(--gold-soft);
+}
+
+.account-list-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.64rem;
   letter-spacing: 0.05em;
   color: rgba(241, 231, 208, 0.56);
+}
+
+.account-list-copy strong,
+.account-list-copy small,
+.account-list-copy em {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.account-list span.warn {
+.account-list-copy strong {
+  color: rgba(241, 231, 208, 0.82);
+}
+
+.account-list-copy em {
+  font-family: "Fraunces", serif;
+  font-size: 0.72rem;
+  font-style: italic;
+}
+
+.account-list article.warn,
+.account-list article.warn .account-health-icon,
+.account-list article.warn .account-list-copy small,
+.account-list article.warn .account-list-copy em {
   color: #e8a99a;
+}
+
+.account-list-actions {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.account-list-actions button,
+.libation-account-toolbar button,
+.libation-login-card button,
+.libation-login-link {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper);
+  border: 1px solid rgba(217, 181, 116, 0.22);
+  background: transparent;
+}
+
+.account-list-actions button.danger {
+  color: #e8a99a;
+}
+
+.libation-account-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.libation-account-toolbar label,
+.reader-account-filter,
+.libation-login-card label {
+  display: grid;
+  gap: 5px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(241, 231, 208, 0.54);
+}
+
+.libation-account-toolbar select,
+.reader-account-filter select,
+.libation-login-card input,
+.libation-login-card select,
+.libation-login-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 9px;
+  color: var(--paper);
+  border: 1px solid rgba(217, 181, 116, 0.2);
+  background: rgba(8, 11, 10, 0.72);
+}
+
+.libation-login-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(217, 181, 116, 0.28);
+  background: rgba(8, 11, 10, 0.78);
+}
+
+.libation-login-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.libation-login-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.libation-login-head strong {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-soft);
+}
+
+.libation-login-head small {
+  color: rgba(241, 231, 208, 0.58);
+}
+
+.libation-login-card form {
+  display: grid;
+  gap: 9px;
+}
+
+.libation-login-card textarea {
+  resize: vertical;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.libation-login-link {
+  text-decoration: none;
+}
+
+.audible-account-badge {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold-soft);
+  border: 1px solid rgba(217, 181, 116, 0.18);
+}
+
+@media (max-width: 620px) {
+  .libation-account-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .libation-account-toolbar button {
+    width: 100%;
+  }
+
+  .account-list article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .account-list-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
 }
 
 .libation-actions {

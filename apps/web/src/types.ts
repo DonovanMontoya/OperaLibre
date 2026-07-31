@@ -130,11 +130,19 @@ export type Progress = {
 };
 
 export type LibationAccount = {
+  id: string;
   accountId: string;
   name: string | null;
   locale: string;
   scanLibrary: boolean;
   authenticated: boolean;
+  managed: boolean;
+  connectionState: "connected" | "needs_sign_in" | "signing_in" | "error" | string;
+  lastSuccessfulAuth: string | null;
+  lastSuccessfulRefresh: string | null;
+  lastError: string | null;
+  addedBy: string | null;
+  addedAt: string | null;
 };
 
 export type LibationStatus = {
@@ -150,6 +158,10 @@ export type LibationStatus = {
 };
 
 export type LibationBook = {
+  catalogId: string;
+  profileId: string;
+  profileName: string;
+  accountId: string | null;
   asin: string;
   title: string;
   subtitle: string | null;
@@ -182,12 +194,22 @@ export type LibationDownloadRequest = {
   userId: string;
   username: string;
   asin: string;
+  profileId: string | null;
+  profileName: string | null;
+  catalogId: string | null;
   title: string;
   status: "pending" | "approved" | "rejected" | string;
   requestedAt: string;
   decidedAt: string | null;
   decidedBy: string | null;
   jobId: string | null;
+};
+
+export type LibationLoginStarted = {
+  sessionId: string;
+  profileId: string;
+  loginUrl: string;
+  expiresAt: number;
 };
 
 export type JobStatus = {

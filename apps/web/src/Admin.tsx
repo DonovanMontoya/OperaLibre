@@ -597,7 +597,7 @@ export function AdminPanel({
             <div className="admin-request-list">
               {libationRequests.map((request) => (
                 <article className={`admin-request ${request.status}`} key={request.id}>
-                  <div><strong>{request.title}</strong><span>{request.username} · {request.asin}</span></div>
+                  <div><strong>{request.title}</strong><span>{request.username} · {request.profileName ? `${request.profileName} · ` : ""}{request.asin}</span></div>
                   <span className="admin-request-state">{request.status}</span>
                   {request.status === "pending" && request.userId !== currentUser.id ? (
                     <div className="admin-row-actions">

@@ -132,9 +132,15 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/libation/status` | Configured accounts and their auth state. |
+| `POST` | `/api/libation/accounts/login/start` | Start an external-browser Audible sign-in for a new or existing managed account. Admin only. |
+| `POST` | `/api/libation/accounts/login/{session_id}/complete` | Submit the final Amazon/Audible response URL and finish sign-in. Admin only. |
+| `DELETE` | `/api/libation/accounts/login/{session_id}` | Cancel a pending account sign-in. Admin only. |
+| `PUT` | `/api/libation/accounts/{profile_id}` | Rename a managed Audible account. Admin only. |
+| `DELETE` | `/api/libation/accounts/{profile_id}` | Remove a managed account and its isolated Libation profile. Owner only. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
 | `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
+| `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader. |
 | `POST` | `/api/libation/liberate-all` | Download all eligible titles. Admin only. |
 | `GET` | `/api/libation/access` | Libation availability and the signed-in reader's direct/approval policy. |
 | `GET` | `/api/libation/requests` | The account's own requests; authorized approvers receive all requests. |
@@ -143,7 +149,7 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 | `GET` | `/api/jobs` | List background jobs, newest first (the server keeps the most recent 50). |
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
-Libation status, refresh, download-all, and jobs require an administrator. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
+Libation status, managed-account changes, refresh, download-all, and jobs require an administrator. Account removal requires an owner. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. Account-aware requests include `profileId` so duplicate ASINs owned by multiple Audible accounts remain distinct. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
 
 ## Conventions
 
