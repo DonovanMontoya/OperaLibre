@@ -6482,7 +6482,7 @@ html:not(.native-app) .native-player-return-icon {
 
   html.native-app .native-now-transport {
     grid-area: transport;
-    justify-content: flex-start;
+    justify-content: center;
     gap: clamp(14px, 2.2vw, 30px);
   }
 
