@@ -114,6 +114,26 @@ export function resolveBookId(
 }
 
 /**
+ * Restore only a real, unfinished playback session. Library selection and
+ * playback ownership are intentionally separate: a finished or removed book
+ * may remain selected on the shelf without occupying the Reading tab.
+ */
+export function resolveActivePlaybackBookId(
+  books: Array<{
+    id: string;
+    tracks: Array<unknown>;
+    progress?: { status: string } | null;
+  }>,
+  preferredId: string | null
+): string | null {
+  if (!preferredId) return null;
+  const book = books.find((candidate) => candidate.id === preferredId);
+  return book && book.tracks.length > 0 && book.progress?.status !== "finished"
+    ? book.id
+    : null;
+}
+
+/**
  * The library listing embeds each book's server-side progress summary. It has
  * no track id, but resolveProgressLocation can map the whole-book offset, so
  * it works as a resume point when `/progress` itself cannot be fetched — the

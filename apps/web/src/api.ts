@@ -674,20 +674,24 @@ export async function updateBookMetadata(bookId: string, metadata: BookMetadataU
   });
 }
 
-export async function setBookCompletion(book: Book, finished: boolean): Promise<BookProgress> {
+export async function setBookCompletion(
+  book: Book,
+  finished: boolean,
+  finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+): Promise<BookProgress> {
   if (isDemoMode()) {
-    return setDemoBookCompletion(book, finished);
+    return setDemoBookCompletion(book, finished, finalProgress);
   }
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
       throw new ApiError("Not signed in.", 401);
     }
-    return setJellyfinBookCompletion(currentApiBase(), token, book, finished);
+    return setJellyfinBookCompletion(currentApiBase(), token, book, finished, finalProgress);
   }
   return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
     method: "PUT",
-    body: JSON.stringify({ finished })
+    body: JSON.stringify({ finished, ...finalProgress })
   });
 }
 

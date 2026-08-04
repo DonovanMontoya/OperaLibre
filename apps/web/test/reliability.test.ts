@@ -7,6 +7,7 @@ import {
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
+  resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
   serverStorageKey,
@@ -77,6 +78,20 @@ test("the shelf reopens on the newest listen, not the first book in the library"
   assert.equal(resolveBookId([], "deleted-book"), null);
   // With nothing listened to yet, the shelf's first book is the right answer.
   assert.equal(resolveBookId([{ id: "dune", progress: null }], null), "dune");
+});
+
+test("only an unfinished playable book restores an active playback session", () => {
+  const shelf = [
+    { id: "finished", tracks: [{}], progress: { status: "finished" } },
+    { id: "paused", tracks: [{}], progress: { status: "inProgress" } },
+    { id: "empty", tracks: [], progress: { status: "inProgress" } }
+  ];
+
+  assert.equal(resolveActivePlaybackBookId(shelf, "paused"), "paused");
+  assert.equal(resolveActivePlaybackBookId(shelf, "finished"), null);
+  assert.equal(resolveActivePlaybackBookId(shelf, "empty"), null);
+  assert.equal(resolveActivePlaybackBookId(shelf, "missing"), null);
+  assert.equal(resolveActivePlaybackBookId(shelf, null), null);
 });
 
 test("device books reconcile only with equivalent server books", () => {

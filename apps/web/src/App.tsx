@@ -56,6 +56,7 @@ import {
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
+  resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
   summarizeBookProgress,
@@ -1900,7 +1901,7 @@ function MainApp({
   const localMode = isLocalMode();
   const native = isNativeApp();
   const rotationLockAvailable = isRotationLockAvailable();
-  const [nativeTab, setNativeTab] = useState<NativeTab>("reading");
+  const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
@@ -1995,7 +1996,9 @@ function MainApp({
   // intentional without permanently disabling reset protection afterward.
   const intentionalSeekGenerationRef = useRef<Map<string, number>>(new Map());
   const acknowledgedSeekGenerationRef = useRef<Map<string, number>>(new Map());
+  const explicitSessionStartBookIdRef = useRef<string | null>(null);
   const initialLibraryHydrated = useRef(false);
+  const startupNavigationResolved = useRef(false);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -2201,15 +2204,11 @@ function MainApp({
   );
 
   const playbackBook = useMemo(
-    () =>
-      books.find((book) => book.id === playbackBookId) ??
-      selectedBook ??
-      books[0] ??
-      null,
-    [books, playbackBookId, selectedBook]
+    () => books.find((book) => book.id === playbackBookId) ?? null,
+    [books, playbackBookId]
   );
   const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
-  const nowPlayingBook = playbackBook ?? selectedBook;
+  const nowPlayingBook = playbackBook;
 
   const currentTrack = useMemo(() => {
     if (!playbackBook) {
@@ -2357,22 +2356,28 @@ function MainApp({
     setIsLoading(true);
     setError(null);
     const deviceBooks = native ? getDeviceBooks() : [];
-    const applyLoadedBooks = (nextBooks: Book[]) => {
+    const applyLoadedBooks = (nextBooks: Book[], definitive = false) => {
       if (!isCurrentRequest()) return;
       setBooks(nextBooks);
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
-      setPlaybackBookId((existing) =>
-        resolveBookId(
-          nextBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          readStoredBookId(currentUser.id, "selectedBookId")
-        )
-      );
+      setPlaybackBookId((existing) => {
+        const preferred = existing ?? readStoredBookId(currentUser.id, "playbackBookId");
+        const next = resolveActivePlaybackBookId(nextBooks, preferred);
+        const preferredIsPresent = !!preferred && nextBooks.some((book) => book.id === preferred);
+        // A device-only first paint may not contain the stored server book.
+        // Wait for the cached/live shelf before deciding that session vanished.
+        if (!next && preferred && !preferredIsPresent && !definitive) return existing;
+        if (!startupNavigationResolved.current && (next || preferredIsPresent || definitive)) {
+          startupNavigationResolved.current = true;
+          if (native) setNativeTab(next ? "reading" : "shelf");
+        }
+        return next;
+      });
     };
     if (localMode) {
-      applyLoadedBooks(deviceBooks);
+      applyLoadedBooks(deviceBooks, true);
       if (isCurrentRequest()) {
         setIsOffline(false);
         setIsLoading(false);
@@ -2456,7 +2461,7 @@ function MainApp({
         }, { isPaused: true }).catch(() => undefined);
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
-      applyLoadedBooks(nextBooks);
+      applyLoadedBooks(nextBooks, true);
       setIsOffline(false);
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
@@ -2479,7 +2484,7 @@ function MainApp({
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
       if (cached.length) {
-        applyLoadedBooks(cached);
+        applyLoadedBooks(cached, true);
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
         setError("The audiobook server is not reachable.");
@@ -3012,6 +3017,16 @@ function MainApp({
 
     let cancelled = false;
     restoredProgressBookId.current = null;
+    if (explicitSessionStartBookIdRef.current === playbackBook.id) {
+      // A shelf play/restart chose this pending position deliberately. It is
+      // the beginning of a new session, not a request to restore the previous
+      // session (especially important for "Read it again" on a finished book).
+      explicitSessionStartBookIdRef.current = null;
+      restoredProgressBookId.current = playbackBook.id;
+      return () => {
+        cancelled = true;
+      };
+    }
     playbackTouchedRef.current = false;
     const restoreVersion = progressMutationVersion.current;
     const applyProgress = (progress: Progress | null) => {
@@ -3526,14 +3541,45 @@ function MainApp({
     );
   }
 
-  async function changeBookCompletion(book: Book, finished: boolean) {
+  function clearPlaybackSession() {
+    // Completion owns the durable final position. Prevent pause/teardown
+    // events from following it with a stale media-element clock.
+    playbackTouchedRef.current = false;
+    nativePlaybackPlayingRef.current = false;
+    playWhenTrackLoads.current = false;
+    wantsAutoplayRef.current = false;
+    pausePlayback(audioRef.current);
+    setPlaybackBookId(null);
+    setCurrentTrackId(null);
+    setPendingSeek(null);
+    setPosition(0);
+    setDuration(0);
+    setIsPlaying(false);
+    setNativePlayerSheet(null);
+    setNativePlayerView("now");
+    if (native) setNativeTab("shelf");
+  }
+
+  async function changeBookCompletion(
+    book: Book,
+    finished: boolean,
+    finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+  ) {
     if (completionPendingBookId === book.id) return;
     setCompletionPendingBookId(book.id);
     setCompletionError(null);
     try {
+      const completedProgress: Progress | null = finalProgress
+        ? {
+            bookId: book.id,
+            ...finalProgress,
+            updatedAt: new Date().toISOString(),
+            finishedOverride: finished
+          }
+        : null;
       let summary: NonNullable<Book["progress"]>;
       if (book.source === "device") {
-        const result = setDeviceBookCompletion(book, finished);
+        const result = setDeviceBookCompletion(book, finished, finalProgress);
         summary = result.summary;
         writeProgressCheckpoint(
           window.localStorage,
@@ -3543,13 +3589,35 @@ function MainApp({
         );
         void cacheProgress(currentUser.id, result.progress).catch(() => undefined);
       } else {
-        summary = await setBookCompletion(book, finished);
+        summary = await setBookCompletion(book, finished, finalProgress);
         if (book.deviceBookId) {
           const deviceBook = getDeviceBooks().find(
             (candidate) => candidate.id === book.deviceBookId
           );
-          if (deviceBook) setDeviceBookCompletion(deviceBook, finished);
+          if (deviceBook) {
+            const trackIndex = finalProgress
+              ? book.tracks.findIndex((track) => track.id === finalProgress.trackId)
+              : -1;
+            const deviceTrack = trackIndex >= 0 ? deviceBook.tracks[trackIndex] : null;
+            setDeviceBookCompletion(
+              deviceBook,
+              finished,
+              finalProgress && deviceTrack
+                ? { ...finalProgress, trackId: deviceTrack.id }
+                : undefined
+            );
+          }
         }
+      }
+      if (completedProgress) {
+        progressMutationVersion.current += 1;
+        writeProgressCheckpoint(
+          window.localStorage,
+          getServerStorageKey(),
+          currentUser.id,
+          completedProgress
+        );
+        void cacheProgress(currentUser.id, completedProgress).catch(() => undefined);
       }
 
       setBooks((existing) => {
@@ -3564,6 +3632,7 @@ function MainApp({
         }
         return next;
       });
+      if (finished && playbackBookId === book.id) clearPlaybackSession();
     } catch (completionFailure) {
       setCompletionError({
         bookId: book.id,
@@ -3651,11 +3720,14 @@ function MainApp({
   async function deleteDeviceBook(book: Book) {
     const deviceBookId = book.deviceBookId ?? book.id;
     if (!window.confirm(`Remove ${book.title} from this device? Your listening progress will be kept.`)) return;
-    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) {
+    const removingActiveBook =
+      playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId;
+    if (removingActiveBook) {
       persistProgress();
     }
-    if (playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId) pausePlayback(audioRef.current);
+    if (removingActiveBook) pausePlayback(audioRef.current);
     await removeDeviceBook(deviceBookId);
+    if (removingActiveBook && book.source === "device") clearPlaybackSession();
     await loadBooks();
     setDownloadStatus({ message: "Device copy removed" });
   }
@@ -3827,6 +3899,7 @@ function MainApp({
 
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
     markPlaybackTouched(true);
+    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
     let offset = 0;
@@ -3947,6 +4020,9 @@ function MainApp({
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
     markPlaybackTouched(true);
+    if (selectedBook && playbackBook?.id !== selectedBook.id) {
+      explicitSessionStartBookIdRef.current = selectedBook.id;
+    }
     setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
@@ -4023,15 +4099,27 @@ function MainApp({
   }
 
   function playNextTrack() {
-    void persistProgress();
     if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
       playWhenTrackLoads.current = false;
       setIsPlaying(false);
-      if (playbackBook) {
-        void changeBookCompletion(playbackBook, true);
+      if (playbackBook && currentTrack) {
+        const mediaDuration = audioRef.current?.duration;
+        const finalTrackPosition = Math.max(
+          0,
+          currentTrack.durationSeconds
+            ?? (Number.isFinite(mediaDuration) ? mediaDuration! : position)
+        );
+        void changeBookCompletion(playbackBook, true, {
+          trackId: currentTrack.id,
+          positionSeconds: finalTrackPosition,
+          bookPositionSeconds:
+            trackOffsetSeconds(playbackBook, activeTrackIndex) + finalTrackPosition,
+          durationSeconds: currentTrack.durationSeconds ?? (Number.isFinite(mediaDuration) ? mediaDuration! : null)
+        });
       }
       return;
     }
+    void persistProgress();
     playWhenTrackLoads.current = true;
     wantsAutoplayRef.current = true;
     setCurrentTrackId(playbackBook.tracks[activeTrackIndex + 1].id);
@@ -4102,10 +4190,9 @@ function MainApp({
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
       setPlaybackBookId((existing) =>
-        resolveBookId(
+        resolveActivePlaybackBookId(
           visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          readStoredBookId(currentUser.id, "selectedBookId")
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId")
         )
       );
       setError(null);
@@ -4123,17 +4210,17 @@ function MainApp({
     const visibleBooks = native
       ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
       : nextBooks;
-    const availableIds = new Set(visibleBooks.map((book) => book.id));
     setBooks(visibleBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
     setPlaybackBookId((existing) => {
-      if (existing && !availableIds.has(existing)) {
+      const next = resolveActivePlaybackBookId(visibleBooks, existing);
+      if (existing && !next) {
         pausePlayback(audioRef.current);
         setCurrentTrackId(null);
         setPosition(0);
-        return resolveBookId(visibleBooks, null);
+        if (native) setNativeTab("shelf");
       }
-      return existing;
+      return next;
     });
     if (libationBooksLoaded) void loadLibationBooks();
   }
@@ -5969,8 +6056,17 @@ function MainApp({
         ) : (
           <div className="empty-player">
             <Headphones size={48} strokeWidth={1.25} />
-            <h2>An empty <em>shelf</em></h2>
-            <p>Start the server with OPERALIBRE_LIBRARY pointed at your files.</p>
+            {books.length > 0 ? (
+              <>
+                <h2>Nothing <em>playing</em></h2>
+                <p>Choose a book from your shelf to begin listening.</p>
+              </>
+            ) : (
+              <>
+                <h2>An empty <em>shelf</em></h2>
+                <p>Start the server with OPERALIBRE_LIBRARY pointed at your files.</p>
+              </>
+            )}
           </div>
         )}
       </section>

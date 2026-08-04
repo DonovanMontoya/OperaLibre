@@ -181,18 +181,22 @@ export function saveDemoProgress(
   return saved;
 }
 
-export function setDemoBookCompletion(book: Book, finished: boolean) {
+export function setDemoBookCompletion(
+  book: Book,
+  finished: boolean,
+  finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+) {
   const existing = getDemoProgress(book.id);
   const firstTrack = book.tracks[0];
   if (!firstTrack) {
     throw new Error("This book has no playable tracks.");
   }
   const progress = saveDemoProgress(book.id, {
-    trackId: existing?.trackId ?? firstTrack.id,
-    positionSeconds: existing?.positionSeconds ?? 0,
-    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
-    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
-    updatedAt: existing?.updatedAt,
+    trackId: finalProgress?.trackId ?? existing?.trackId ?? firstTrack.id,
+    positionSeconds: finalProgress?.positionSeconds ?? existing?.positionSeconds ?? 0,
+    bookPositionSeconds: finalProgress?.bookPositionSeconds ?? existing?.bookPositionSeconds ?? 0,
+    durationSeconds: finalProgress?.durationSeconds ?? existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: finalProgress ? new Date().toISOString() : existing?.updatedAt,
     finishedOverride: finished
   });
   return summarizeBookProgress(book, progress)!;

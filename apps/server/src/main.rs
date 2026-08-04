@@ -726,8 +726,13 @@ struct ProgressUpdate {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CompletionUpdate {
     finished: bool,
+    track_id: Option<String>,
+    position_seconds: Option<f64>,
+    book_position_seconds: Option<f64>,
+    duration_seconds: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4201,6 +4206,22 @@ async fn update_book_completion(
         .tracks
         .first()
         .ok_or(ApiError::bad_request("This book has no playable tracks."))?;
+    let final_position = match (&update.track_id, update.position_seconds) {
+        (None, None) => None,
+        (Some(track_id), Some(position_seconds)) => {
+            let track = book
+                .tracks
+                .iter()
+                .find(|candidate| candidate.id == *track_id)
+                .ok_or(ApiError::not_found("Track not found"))?;
+            Some((track, position_seconds.max(0.0)))
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "Completion position requires both trackId and positionSeconds.",
+            ));
+        }
+    };
 
     let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
@@ -4214,6 +4235,16 @@ async fn update_book_completion(
         updated_at: unix_now_seconds().to_string(),
         finished_override: None,
     });
+    if let Some((track, position_seconds)) = final_position {
+        saved.track_id = track.id.clone();
+        saved.position_seconds = position_seconds;
+        saved.book_position_seconds = update
+            .book_position_seconds
+            .unwrap_or_else(|| book_position_seconds(&book, track, position_seconds))
+            .max(0.0);
+        saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
+        saved.updated_at = unix_now_seconds().to_string();
+    }
     saved.finished_override = Some(update.finished);
     let saved = saved.clone();
     write_progress(&state.progress_file, &progress).await?;
