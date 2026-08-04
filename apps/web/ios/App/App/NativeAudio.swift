@@ -61,6 +61,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var shouldAutoplay = false
     private var wasPlayingBeforeInterruption = false
     private var interruptionIsActive = false
+    private var pendingRemoteIntentionalSeek = false
     private var generation = 0
     private var remoteCommandTargets: [Any] = []
     private var nowPlayingTitle = "OperaLibre"
@@ -625,9 +626,14 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             let requestedPosition = max(0, positionEvent.positionTime + chapterStart)
             let position = itemDuration > 0 ? min(itemDuration, requestedPosition) : requestedPosition
             self.pendingPosition = position
+            self.pendingRemoteIntentionalSeek = true
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                self?.persistCheckpoint(force: true)
-                self?.updateNowPlayingInfo()
+                guard let self else { return }
+                self.persistCheckpoint(force: true)
+                self.updateNowPlayingInfo()
+                if UIApplication.shared.applicationState == .active {
+                    self.emitRemoteIntentionalSeek()
+                }
             }
             return .success
         })
@@ -639,10 +645,23 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let position = finiteSeconds(player.currentTime())
         let target = max(0, duration > 0 ? min(duration, position + offset) : position + offset)
         pendingPosition = target
+        pendingRemoteIntentionalSeek = true
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            self?.persistCheckpoint(force: true)
-            self?.updateNowPlayingInfo()
+            guard let self else { return }
+            self.persistCheckpoint(force: true)
+            self.updateNowPlayingInfo()
+            if UIApplication.shared.applicationState == .active {
+                self.emitRemoteIntentionalSeek()
+            }
         }
+    }
+
+    private func emitRemoteIntentionalSeek() {
+        guard pendingRemoteIntentionalSeek, let player else { return }
+        pendingRemoteIntentionalSeek = false
+        notifyListeners("intentionalSeek", data: [
+            "positionSeconds": finiteSeconds(player.currentTime())
+        ])
     }
 
     private func installSessionObserversIfNeeded() {
@@ -668,6 +687,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            self.emitRemoteIntentionalSeek()
             // Some short notification interruptions do not deliver their end
             // callback until the app is active again. Resume the exact native
             // clock if playback was running before that interruption.

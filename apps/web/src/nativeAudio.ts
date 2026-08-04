@@ -78,6 +78,10 @@ interface NativeAudioPlugin {
       isPlaying: boolean;
     }) => void
   ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "intentionalSeek",
+    listener: (event: { positionSeconds: number }) => void
+  ): Promise<PluginListenerHandle>;
   addListener(eventName: "error", listener: (event: { message: string }) => void): Promise<PluginListenerHandle>;
 }
 
@@ -143,7 +147,8 @@ export function attachNativeAudioPlayer(
     positionSeconds: number,
     bookPositionSeconds: number,
     isPlaying: boolean
-  ) => void
+  ) => void,
+  onIntentionalSeek: () => void
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -261,6 +266,16 @@ export function attachNativeAudioPlayer(
       event.bookPositionSeconds,
       event.isPlaying
     );
+  }).then((handle) => {
+    if (disposed) void handle.remove();
+    else listenerHandles.push(handle);
+  });
+
+  void NativeAudio.addListener("intentionalSeek", (event) => {
+    if (disposed || fellBack || !Number.isFinite(event.positionSeconds)) return;
+    audio.currentTime = Math.max(0, event.positionSeconds);
+    onIntentionalSeek();
+    audio.dispatchEvent(new Event("timeupdate"));
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);

@@ -4,6 +4,7 @@ import {
   deviceBookMatchesServer,
   freshestProgress,
   isSuspectProgressReset,
+  progressAfterSave,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -26,6 +27,16 @@ function progress(overrides: Partial<Progress> = {}): Progress {
     durationSeconds: 60,
     updatedAt: "2025-07-11T01:00:00.000Z",
     ...overrides
+  };
+}
+
+/** Deterministic PRNG so a fuzz failure is always reproducible. */
+function seededRandom(seed: number) {
+  let state = seed;
+  return () => {
+    state = Math.imul(state ^ (state >>> 15), 1 | state);
+    state ^= state + Math.imul(state ^ (state >>> 7), 61 | state);
+    return ((state ^ (state >>> 14)) >>> 0) / 4_294_967_296;
   };
 }
 
@@ -211,6 +222,157 @@ test("a native background checkpoint wins when the WebView was suspended", () =>
   const web = progress({ updatedAt: "2025-07-11T01:00:00.000Z", bookPositionSeconds: 12 });
   const native = progress({ updatedAt: "1752195605000", bookPositionSeconds: 95 });
   assert.equal(freshestProgress(web, native)?.bookPositionSeconds, 95);
+});
+
+test("an authoritative rejection replaces the attempted local checkpoint", () => {
+  const attempted = progress({
+    updatedAt: "2099-01-01T00:00:00.000Z",
+    bookPositionSeconds: 120,
+    positionSeconds: 120
+  });
+  const server = progress({
+    updatedAt: "2026-08-04T12:00:00.000Z",
+    bookPositionSeconds: 7200,
+    positionSeconds: 7200
+  });
+
+  assert.equal(progressAfterSave(attempted, attempted, server), server);
+});
+
+test("a checkpoint made while a save is in flight still outranks its response", () => {
+  const attempted = progress({ updatedAt: "2026-08-04T12:00:00.000Z", bookPositionSeconds: 120 });
+  const newer = progress({ updatedAt: "2026-08-04T12:00:02.000Z", bookPositionSeconds: 124 });
+  const server = progress({ updatedAt: "2026-08-04T12:00:01.000Z", bookPositionSeconds: 120 });
+
+  assert.equal(progressAfterSave(newer, attempted, server), newer);
+});
+
+test("fuzzed save responses never replace a genuinely newer in-flight checkpoint", () => {
+  const random = seededRandom(0x6d2b79f5);
+
+  for (let index = 0; index < 50_000; index += 1) {
+    const base = Date.UTC(2026, 7, 4) + Math.floor(random() * 86_400_000);
+    const attempted = progress({
+      updatedAt: new Date(base).toISOString(),
+      bookPositionSeconds: random() * 100_000
+    });
+    const newer = progress({
+      updatedAt: new Date(base + 1 + Math.floor(random() * 60_000)).toISOString(),
+      bookPositionSeconds: random() * 100_000
+    });
+    const response = progress({
+      updatedAt: new Date(base).toISOString(),
+      bookPositionSeconds: random() * 100_000
+    });
+
+    assert.equal(progressAfterSave(newer, attempted, response), newer);
+    assert.equal(progressAfterSave(attempted, attempted, response), response);
+  }
+});
+
+test("a book whose duration could not be measured keeps its stored position", () => {
+  // Tag readers report a zero-length book when they cannot measure the media.
+  // Treating that as a known duration clamps a real position to 0 and reports
+  // the book as not started — and this summary is the resume point a
+  // reinstalled client falls back to when /progress is unavailable.
+  const book = {
+    durationSeconds: 0,
+    tracks: [{ durationSeconds: 0 }, { durationSeconds: 0 }]
+  };
+  const summary = summarizeBookProgress(book, progress({ bookPositionSeconds: 7200 }));
+
+  assert.equal(summary?.bookPositionSeconds, 7200);
+  assert.equal(summary?.durationSeconds, null);
+  assert.equal(summary?.status, "inProgress");
+});
+
+test("fuzzed book summaries never zero out a real listening position", () => {
+  const random = seededRandom(0x51ed2701);
+
+  for (let index = 0; index < 50_000; index += 1) {
+    const tracks = Array.from({ length: 1 + Math.floor(random() * 6) }, () => ({
+      durationSeconds: random() < 0.3 ? (random() < 0.5 ? null : 0) : random() * 3600
+    }));
+    const total = tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
+    const book = { durationSeconds: random() < 0.5 ? total : null, tracks };
+    const bookPositionSeconds = random() * (total || 3600) * 1.2;
+    const summary = summarizeBookProgress(book, progress({ bookPositionSeconds }));
+
+    assert.ok(summary);
+    assert.ok(summary.bookPositionSeconds >= 0);
+    // A position past the near-zero threshold is real listening; no
+    // combination of unknown durations may report it as untouched.
+    if (bookPositionSeconds > 60) {
+      assert.notEqual(summary.status, "notStarted");
+    }
+  }
+});
+
+test("progress copies that tie on a timestamp are ranked by position, not argument order", () => {
+  // Server stamps have one-second granularity, so ties are routine. Left to
+  // argument order the winner depends on the call site — which is how a
+  // failed restore's near-zero copy can outrank hours of listening.
+  const stalled = progress({ updatedAt: "1785801600", bookPositionSeconds: 26 });
+  const real = progress({ updatedAt: "1785801600", bookPositionSeconds: 6051 });
+
+  assert.equal(freshestProgress(stalled, real)?.bookPositionSeconds, 6051);
+  assert.equal(freshestProgress(real, stalled)?.bookPositionSeconds, 6051);
+});
+
+test("fuzzed track positions survive a save and restore round trip", () => {
+  const random = seededRandom(0x12345678);
+
+  for (let index = 0; index < 50_000; index += 1) {
+    const tracks = Array.from({ length: 1 + Math.floor(random() * 12) }, (_, position) => ({
+      id: `t${position}`,
+      durationSeconds: random() < 0.2 ? null : Math.round(random() * 36_000) / 10
+    }));
+    const trackIndex = Math.floor(random() * tracks.length);
+    const track = tracks[trackIndex];
+    const positionSeconds = random() * (track.durationSeconds ?? 3600);
+    const offset = tracks
+      .slice(0, trackIndex)
+      .reduce((sum, candidate) => sum + (candidate.durationSeconds ?? 0), 0);
+
+    const restored = resolveProgressLocation(
+      tracks,
+      progress({
+        trackId: track.id,
+        positionSeconds,
+        bookPositionSeconds: offset + positionSeconds,
+        durationSeconds: track.durationSeconds
+      })
+    );
+
+    assert.equal(restored?.trackId, track.id);
+    assert.ok(Math.abs((restored?.positionSeconds ?? -1) - positionSeconds) < 0.01);
+  }
+});
+
+test("fuzzed whole-book offsets survive a rescan that changes every track id", () => {
+  const random = seededRandom(0x77c0ffee);
+
+  for (let index = 0; index < 50_000; index += 1) {
+    const tracks = Array.from({ length: 1 + Math.floor(random() * 12) }, (_, position) => ({
+      id: `t${position}`,
+      durationSeconds: Math.round(random() * 36_000) / 10
+    }));
+    const total = tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
+    const bookPositionSeconds = random() * total;
+
+    const restored = resolveProgressLocation(
+      tracks,
+      progress({ trackId: "renamed-by-rescan", positionSeconds: 0, bookPositionSeconds })
+    );
+    assert.ok(restored);
+
+    const restoredIndex = tracks.findIndex((track) => track.id === restored.trackId);
+    const offset = tracks
+      .slice(0, restoredIndex)
+      .reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
+    // Only the whole-book offset survived; it must land back in the same place.
+    assert.ok(Math.abs(offset + restored.positionSeconds - bookPositionSeconds) < 1);
+  }
 });
 
 test("a near-zero local copy over substantial server progress is a suspect reset", () => {

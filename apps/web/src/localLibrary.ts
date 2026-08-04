@@ -80,13 +80,19 @@ export function getDeviceProgress(bookId: string) {
 }
 
 export function saveDeviceProgress(bookId: string, progress: Progress) {
-  const all = storedProgress();
-  all[bookId] = {
-    ...progress,
-    bookId,
-    finishedOverride: progress.finishedOverride ?? all[bookId]?.finishedOverride ?? null
-  };
-  writeJson(PROGRESS_KEY, all);
+  try {
+    const all = storedProgress();
+    all[bookId] = {
+      ...progress,
+      bookId,
+      finishedOverride: progress.finishedOverride ?? all[bookId]?.finishedOverride ?? null
+    };
+    writeJson(PROGRESS_KEY, all);
+  } catch {
+    // Progress also has a synchronous per-book checkpoint and an IndexedDB
+    // copy. A full/unavailable localStorage must not abort the server save
+    // that follows this best-effort device mirror.
+  }
 }
 
 export function getDeviceBooks(): Book[] {

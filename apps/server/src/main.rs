@@ -4135,17 +4135,28 @@ async fn update_progress(
         // a position some device recorded more recently.
         return Ok(Json(previous.clone()));
     }
-    let incoming_book_position = update
-        .book_position_seconds
-        .unwrap_or_else(|| book_position_seconds(book, track, update.position_seconds))
-        .max(0.0);
+    let incoming_track_position =
+        clamped_track_position(update.position_seconds, track.duration_seconds);
+    let incoming_book_position = validated_book_position_seconds(
+        book,
+        track,
+        incoming_track_position,
+        update.book_position_seconds,
+    );
     let saved = Progress {
         book_id: book.id.clone(),
         track_id: track.id.clone(),
-        position_seconds: update.position_seconds.max(0.0),
+        position_seconds: incoming_track_position,
         book_position_seconds: incoming_book_position,
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
-        updated_at: format!("{}", incoming_seconds.unwrap_or(now_seconds).round() as u64),
+        // Truncate rather than round. Rounding can stamp the stored copy up
+        // to 500ms *after* the instant the client recorded it, and that echo
+        // then outranks a newer local checkpoint queued behind a slow save —
+        // the client heals its own fresher position away with an older one.
+        updated_at: format!(
+            "{}",
+            incoming_seconds.unwrap_or(now_seconds).max(0.0).floor() as u64
+        ),
         finished_override: carried_finished_override(
             previous.as_ref(),
             incoming_book_position,
@@ -4153,6 +4164,13 @@ async fn update_progress(
         ),
     };
     if let Some(previous) = &previous {
+        if progress_write_is_unintentional_regression(
+            previous.book_position_seconds,
+            saved.book_position_seconds,
+            update.intentional_seek || update.intentional_regression,
+        ) {
+            return Ok(Json(previous.clone()));
+        }
         if progress_write_is_suspect_reset(
             previous.book_position_seconds,
             saved.book_position_seconds,
@@ -4214,7 +4232,10 @@ async fn update_book_completion(
                 .iter()
                 .find(|candidate| candidate.id == *track_id)
                 .ok_or(ApiError::not_found("Track not found"))?;
-            Some((track, position_seconds.max(0.0)))
+            Some((
+                track,
+                clamped_track_position(position_seconds, track.duration_seconds),
+            ))
         }
         _ => {
             return Err(ApiError::bad_request(
@@ -4238,10 +4259,12 @@ async fn update_book_completion(
     if let Some((track, position_seconds)) = final_position {
         saved.track_id = track.id.clone();
         saved.position_seconds = position_seconds;
-        saved.book_position_seconds = update
-            .book_position_seconds
-            .unwrap_or_else(|| book_position_seconds(&book, track, position_seconds))
-            .max(0.0);
+        saved.book_position_seconds = validated_book_position_seconds(
+            &book,
+            track,
+            position_seconds,
+            update.book_position_seconds,
+        );
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
         saved.updated_at = unix_now_seconds().to_string();
     }
@@ -5438,7 +5461,14 @@ fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
         narrator: tag
             .and_then(extract_narrator)
             .or_else(|| tag.and_then(extract_vendor_narrator)),
-        duration_seconds: Some(tagged_file.properties().duration().as_secs_f64()),
+        // lofty reports Duration::ZERO when it cannot determine a length.
+        // A zero-length track is indistinguishable from an unknown one, and
+        // recording it as known collapses every track onto the same
+        // whole-book offset — which strands progress on the wrong track and
+        // makes advancing look like a regression. Unknown is the honest and
+        // safe answer.
+        duration_seconds: Some(tagged_file.properties().duration().as_secs_f64())
+            .filter(|duration| *duration > 0.0),
         asin: tag
             .and_then(extract_asin)
             .or_else(|| extract_asin_from_path(file_path)),
@@ -5965,10 +5995,17 @@ async fn book_with_progress(
 
 fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
     let enriched = enrich_progress(book, progress);
-    let duration = book.duration_seconds.or_else(|| {
-        let total = duration_from_tracks(book);
-        (total > 0.0).then_some(total)
-    });
+    // A non-positive duration means "unknown", never "this book is zero
+    // seconds long". Treating it as known clamps the stored position to 0 and
+    // reports the book as not started — and the library summary is the resume
+    // point a reinstalled client falls back to when /progress is unavailable.
+    let duration = book
+        .duration_seconds
+        .filter(|duration| *duration > 0.0)
+        .or_else(|| {
+            let total = duration_from_tracks(book);
+            (total > 0.0).then_some(total)
+        });
     let position = duration
         .map(|duration| enriched.book_position_seconds.clamp(0.0, duration))
         .unwrap_or_else(|| enriched.book_position_seconds.max(0.0));
@@ -6027,6 +6064,37 @@ fn book_position_seconds(book: &Book, track: &Track, position_seconds: f64) -> f
         .map(|candidate| candidate.duration_seconds.unwrap_or(0.0))
         .sum::<f64>();
     track_offset + position_seconds.max(0.0)
+}
+
+fn clamped_track_position(position_seconds: f64, duration_seconds: Option<f64>) -> f64 {
+    let position = position_seconds.max(0.0);
+    duration_seconds
+        .filter(|duration| *duration > 0.0)
+        .map(|duration| position.min(duration))
+        .unwrap_or(position)
+}
+
+/// The track id and server-side ordering are authoritative. Trust a reported
+/// whole-book offset only when an earlier track has no known duration and the
+/// server therefore cannot derive the offset itself.
+fn validated_book_position_seconds(
+    book: &Book,
+    track: &Track,
+    position_seconds: f64,
+    reported: Option<f64>,
+) -> f64 {
+    let prefix_is_known = book
+        .tracks
+        .iter()
+        .take_while(|candidate| candidate.id != track.id)
+        .all(|candidate| candidate.duration_seconds.is_some());
+    if prefix_is_known {
+        book_position_seconds(book, track, position_seconds)
+    } else {
+        reported
+            .unwrap_or_else(|| book_position_seconds(book, track, position_seconds))
+            .max(0.0)
+    }
 }
 
 /// Serialize to a temporary file in the destination directory and rename it
@@ -6097,6 +6165,11 @@ const PROGRESS_STALE_WRITE_SLACK_SECONDS: f64 = 300.0;
 /// How far backwards an accepted write must jump before the replaced copy is
 /// preserved on disk.
 const PROGRESS_BACKUP_REGRESSION_SECONDS: f64 = 300.0;
+
+/// AVPlayer and HTMLMediaElement clocks can differ by a fraction of a second
+/// around pause and route-change events. Anything beyond this is a real
+/// backwards move and must have been initiated by the listener.
+const PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS: f64 = 2.0;
 
 const PROGRESS_BACKUPS_PER_BOOK: usize = 20;
 
@@ -6171,6 +6244,20 @@ fn progress_write_is_suspect_reset(
     !intentional
         && incoming_book_position < PROGRESS_NEAR_ZERO_SECONDS
         && previous_book_position - incoming_book_position > PROGRESS_BACKUP_REGRESSION_SECONDS
+}
+
+/// Periodic, pause, background, and completion-adjacent checkpoints are
+/// monotonic. A late request must never roll back a newer position, regardless
+/// of clock skew or network ordering. Explicit seeks and restarts are the sole
+/// paths allowed to move backward.
+fn progress_write_is_unintentional_regression(
+    previous_book_position: f64,
+    incoming_book_position: f64,
+    intentional_seek: bool,
+) -> bool {
+    !intentional_seek
+        && incoming_book_position + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
+            < previous_book_position
 }
 
 /// Large backwards jumps are occasionally legitimate (restarting a book), but
@@ -8765,10 +8852,10 @@ impl From<axum::http::Error> for ApiError {
 mod tests {
     use super::{
         AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
-        can_access_book, clean_imported_title, if_none_match_matches, is_supported_audio_file,
-        libation_cover_art_url, normalize_asin, parse_origin_list, parse_range,
-        progress_write_is_stale, progress_write_is_suspect_reset, sanitize_filename,
-        walk_audio_files,
+        can_access_book, clamped_track_position, clean_imported_title, if_none_match_matches,
+        is_supported_audio_file, libation_cover_art_url, normalize_asin, parse_origin_list,
+        parse_range, progress_write_is_stale, progress_write_is_suspect_reset,
+        progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files,
     };
 
     #[test]
@@ -8782,6 +8869,172 @@ mod tests {
         assert!(!progress_write_is_suspect_reset(7200.0, 3600.0, false));
         // A book that has barely started cannot lose substantial progress.
         assert!(!progress_write_is_suspect_reset(90.0, 0.0, false));
+    }
+
+    #[test]
+    fn late_automatic_checkpoints_cannot_rollback_completion() {
+        assert!(progress_write_is_unintentional_regression(
+            36_000.0, 35_990.0, false
+        ));
+        assert!(!progress_write_is_unintentional_regression(
+            36_000.0, 35_990.0, true
+        ));
+        // Sub-second decoder jitter around a pause is harmless.
+        assert!(!progress_write_is_unintentional_regression(
+            36_000.0, 35_999.25, false
+        ));
+    }
+
+    #[test]
+    fn fuzz_automatic_progress_never_moves_materially_backward() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..100_000 {
+            // Deterministic property-style stress without another test-only
+            // dependency. Cover positions across very short and very long
+            // audiobooks plus arbitrary request reordering gaps.
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let previous = (state % 2_000_000) as f64 / 10.0;
+            state = state.rotate_left(17) ^ 0xa076_1d64_78bd_642f;
+            let regression = 2.01 + (state % 500_000) as f64 / 100.0;
+            let incoming = (previous - regression).max(0.0);
+            if previous - incoming > 2.0 {
+                assert!(progress_write_is_unintentional_regression(
+                    previous, incoming, false
+                ));
+                assert!(!progress_write_is_unintentional_regression(
+                    previous, incoming, true
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_track_positions_stay_inside_known_media() {
+        let mut state = 0xd1b5_4a32_d192_ed03_u64;
+        for _ in 0..100_000 {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let duration = 0.01 + (state % 1_000_000) as f64 / 10.0;
+            state = state.wrapping_mul(2_685_821_657_736_338_717);
+            let reported = (state % 4_000_000) as f64 / 10.0 - 100_000.0;
+            let clamped = clamped_track_position(reported, Some(duration));
+            assert!(clamped >= 0.0);
+            assert!(clamped <= duration);
+        }
+    }
+
+    fn track_with_duration(id: &str, index: usize, duration_seconds: Option<f64>) -> super::Track {
+        super::Track {
+            id: id.to_string(),
+            title: id.to_string(),
+            file_name: format!("{id}.mp3"),
+            index,
+            duration_seconds,
+            stream_url: String::new(),
+            chapters: Vec::new(),
+            metadata: Default::default(),
+        }
+    }
+
+    fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) -> super::Book {
+        super::Book {
+            id: "book".to_string(),
+            title: "Book".to_string(),
+            author: None,
+            narrator: None,
+            duration_seconds,
+            track_count: tracks.len(),
+            cover_art_url: None,
+            description: None,
+            genres: Vec::new(),
+            published_date: None,
+            asin: None,
+            reading_file: None,
+            sync_file: None,
+            chapters: Vec::new(),
+            metadata: Default::default(),
+            tracks,
+            progress: None,
+        }
+    }
+
+    /// lofty reports Duration::ZERO for media it cannot measure. Treating that
+    /// as a known zero-length book clamps the stored position to 0 and reports
+    /// the book as not started — and the library summary is what a reinstalled
+    /// client resumes from when /progress is unavailable.
+    #[test]
+    fn an_unmeasurable_book_does_not_report_its_position_as_zero() {
+        let book = book_with_tracks(
+            Some(0.0),
+            vec![
+                track_with_duration("t1", 0, Some(0.0)),
+                track_with_duration("t2", 1, Some(0.0)),
+            ],
+        );
+        let stored = super::Progress {
+            book_id: String::new(),
+            track_id: "t2".to_string(),
+            position_seconds: 1_800.0,
+            book_position_seconds: 7_200.0,
+            duration_seconds: None,
+            updated_at: "1785801600".to_string(),
+            finished_override: None,
+        };
+
+        let summary = super::summarize_book_progress(&book, &stored);
+        assert_eq!(summary.book_position_seconds, 7_200.0);
+        assert_eq!(summary.duration_seconds, None);
+        assert!(matches!(
+            summary.status,
+            super::BookProgressStatus::InProgress
+        ));
+    }
+
+    /// With every duration unknown the server cannot derive an offset, so the
+    /// client's reported whole-book position must be trusted — otherwise every
+    /// track collapses onto the same offset and advancing looks like a
+    /// regression the write guard then rejects.
+    #[test]
+    fn unknown_durations_keep_each_track_at_a_distinct_whole_book_offset() {
+        let book = book_with_tracks(
+            None,
+            vec![
+                track_with_duration("t1", 0, None),
+                track_with_duration("t2", 1, None),
+                track_with_duration("t3", 2, None),
+            ],
+        );
+        let third = &book.tracks[2];
+
+        let derived = super::validated_book_position_seconds(&book, third, 30.0, Some(7_230.0));
+        assert_eq!(derived, 7_230.0);
+        // And that position must not then read as a regression from track one.
+        assert!(!super::progress_write_is_unintentional_regression(
+            3_600.0, derived, false
+        ));
+    }
+
+    /// Rounding can stamp a stored copy up to 500ms after the instant the
+    /// client recorded it, letting an older save's echo outrank a newer local
+    /// checkpoint. Truncation cannot.
+    #[test]
+    fn fuzz_stored_stamp_never_precedes_the_client_instant_it_came_from() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        for _ in 0..200_000 {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let client_seconds = 1_785_801_600.0 + (state % 100_000_000) as f64 / 1000.0;
+            let stored = client_seconds.max(0.0).floor() as u64;
+            assert!(
+                stored as f64 <= client_seconds,
+                "stored {stored} claims to be newer than client instant {client_seconds}"
+            );
+            assert!(client_seconds - (stored as f64) < 1.0);
+        }
     }
 
     #[test]
