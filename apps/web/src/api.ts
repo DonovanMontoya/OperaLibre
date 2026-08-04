@@ -35,7 +35,7 @@ import {
   saveJellyfinProgress,
   setJellyfinBookCompletion
 } from "./jellyfin";
-import { progressTimestamp, serverStorageKey } from "./reliability";
+import { progressTimestamp, serverStorageKey, tzOffsetMinutes } from "./reliability";
 import {
   normalizeServerAddress,
   requireSecurePublicServerAddress,
@@ -544,7 +544,9 @@ export async function getMe() {
 
 export async function getProfileStats() {
   if (isDemoMode()) return getDemoProfileStats();
-  return request<ProfileStats>("/api/profile/stats");
+  // Streaks and the calendar are drawn against the reader's own days, so the
+  // server needs to know which day "today" is here rather than in UTC.
+  return request<ProfileStats>(`/api/profile/stats?tzOffsetMinutes=${tzOffsetMinutes()}`);
 }
 
 export async function getUpdateStatus(timeoutMs = 30_000, refresh = false) {
@@ -747,7 +749,11 @@ export async function saveProgress(
       ...fields,
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
       ...(options?.intentionalRegression ? { intentionalRegression: true } : {}),
-      ...(options?.intentionalSeek ? { intentionalSeek: true } : {})
+      ...(options?.intentionalSeek ? { intentionalSeek: true } : {}),
+      // Listening is filed under the reader's calendar day. Without this an
+      // evening session west of UTC counts towards tomorrow and splits a
+      // streak that was never actually broken.
+      tzOffsetMinutes: tzOffsetMinutes()
     })
   });
 }

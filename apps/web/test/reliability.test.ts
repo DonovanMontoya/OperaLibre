@@ -14,6 +14,7 @@ import {
   serverStorageKey,
   splitRoundedHours,
   summarizeBookProgress,
+  tzOffsetMinutes,
   writeProgressCheckpoint
 } from "../src/reliability.ts";
 import type { Progress } from "../src/types.ts";
@@ -168,6 +169,17 @@ test("same-title editions do not match when their track identity differs", () =>
   );
 });
 
+test("the timezone offset sent to the server is east positive", () => {
+  // JavaScript reports minutes to add to local time to reach UTC, which is the
+  // opposite sign from every other convention. Sending it unflipped would file
+  // listening a day off in the wrong direction.
+  const losAngeles = { getTimezoneOffset: () => 420 } as Date;
+  const berlin = { getTimezoneOffset: () => -120 } as Date;
+  assert.equal(tzOffsetMinutes(losAngeles), -420);
+  assert.equal(tzOffsetMinutes(berlin), 120);
+  assert.equal(tzOffsetMinutes({ getTimezoneOffset: () => NaN } as Date), 0);
+});
+
 test("rounded hours carry sixty minutes into the hour", () => {
   assert.deepEqual(splitRoundedHours(1.999), { whole: "2", minutes: 0 });
   assert.deepEqual(splitRoundedHours(1.5), { whole: "1", minutes: 30 });
@@ -242,7 +254,9 @@ test("an authoritative rejection replaces the attempted local checkpoint", () =>
 test("a checkpoint made while a save is in flight still outranks its response", () => {
   const attempted = progress({ updatedAt: "2026-08-04T12:00:00.000Z", bookPositionSeconds: 120 });
   const newer = progress({ updatedAt: "2026-08-04T12:00:02.000Z", bookPositionSeconds: 124 });
-  const server = progress({ updatedAt: "2026-08-04T12:00:01.000Z", bookPositionSeconds: 120 });
+  // The server responds later and therefore issues a later revision, but the
+  // response still belongs to the older attempted position.
+  const server = progress({ updatedAt: "2026-08-04T12:00:03.000Z", bookPositionSeconds: 120 });
 
   assert.equal(progressAfterSave(newer, attempted, server), newer);
 });
@@ -308,15 +322,23 @@ test("fuzzed book summaries never zero out a real listening position", () => {
   }
 });
 
-test("progress copies that tie on a timestamp are ranked by position, not argument order", () => {
-  // Server stamps have one-second granularity, so ties are routine. Left to
-  // argument order the winner depends on the call site — which is how a
-  // failed restore's near-zero copy can outrank hours of listening.
-  const stalled = progress({ updatedAt: "1785801600", bookPositionSeconds: 26 });
-  const real = progress({ updatedAt: "1785801600", bookPositionSeconds: 6051 });
+test("a timestamp tie does not undo a deliberate rewind", () => {
+  const restarted = progress({ updatedAt: "1785801600", bookPositionSeconds: 26 });
+  const stale = progress({ updatedAt: "1785801600", bookPositionSeconds: 6051 });
 
-  assert.equal(freshestProgress(stalled, real)?.bookPositionSeconds, 6051);
-  assert.equal(freshestProgress(real, stalled)?.bookPositionSeconds, 6051);
+  assert.equal(freshestProgress(restarted, stale), restarted);
+});
+
+test("a partial track-duration sum cannot falsely finish a book", () => {
+  const book = {
+    durationSeconds: null,
+    tracks: [{ durationSeconds: 3600 }, { durationSeconds: null }]
+  };
+  const summary = summarizeBookProgress(book, progress({ bookPositionSeconds: 4200 }));
+
+  assert.equal(summary?.bookPositionSeconds, 4200);
+  assert.equal(summary?.durationSeconds, null);
+  assert.equal(summary?.status, "inProgress");
 });
 
 test("fuzzed track positions survive a save and restore round trip", () => {

@@ -311,15 +311,21 @@ export function demoMediaUrl(path: string): string {
 
 export function getDemoProfileStats(): ProfileStats {
   const books = getDemoBooks();
-  const listenedSeconds = books.reduce((total, book) => total + (book.progress?.bookPositionSeconds ?? 0), 0);
   const today = new Date();
+  // Eight whole weeks ending with the current one, starting on a Monday, to
+  // match the real endpoint's grid and the client's weekday label column.
+  const mondayOffset = (today.getDay() + 6) % 7;
   const streakCalendar = Array.from({ length: 56 }, (_, index) => {
     const date = new Date(today);
-    date.setDate(today.getDate() - (55 - index));
+    date.setDate(today.getDate() - mondayOffset - 49 + index);
     return { date: date.toISOString().slice(0, 10), minutes: index > 48 && index % 2 === 0 ? 12 : 0 };
   });
+  // Measured listening, matching the real endpoint: the sum of the calendar,
+  // not how far into each book the demo reader has got.
+  const measuredMinutes = streakCalendar.reduce((total, day) => total + day.minutes, 0);
+  const firstMeasuredDay = streakCalendar.find((day) => day.minutes > 0)?.date ?? null;
   return {
-    totalHoursRead: listenedSeconds / 3600,
+    totalHoursRead: measuredMinutes / 60,
     booksFinished: books.filter((book) => book.progress?.status === "finished").length,
     totalTracksCompleted: 0,
     currentStreakDays: 1,
@@ -330,6 +336,7 @@ export function getDemoProfileStats(): ProfileStats {
     favoriteGenre: "Fiction",
     daysActive: 4,
     memberSince: DEMO_USER.createdAt,
+    measuringSince: firstMeasuredDay,
     streakCalendar,
     recentBooks: books.map((book) => ({
       id: book.id,

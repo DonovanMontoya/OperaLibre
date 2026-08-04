@@ -1,7 +1,7 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, mediaUrl } from "./api";
-import { splitRoundedHours } from "./reliability";
+import { progressTimestamp, splitRoundedHours } from "./reliability";
 import type { AuthUser, ProfileRecentBook, ProfileStats, StreakDay } from "./types";
 
 type ProfilePageProps = {
@@ -12,8 +12,12 @@ type ProfilePageProps = {
 
 function relativeTime(value: string | null) {
   if (!value) return null;
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  // Progress revisions are epoch milliseconds on newer rows and epoch seconds
+  // on older ones. Reading a millisecond revision as seconds puts every book
+  // tens of thousands of years in the future, which clamps to "just now".
+  const millis = progressTimestamp(value);
+  if (!Number.isFinite(millis) || millis <= 0) return null;
+  const seconds = Math.floor(millis / 1000);
   const now = Math.floor(Date.now() / 1000);
   const delta = Math.max(0, now - seconds);
   if (delta < 60) return "just now";
@@ -32,6 +36,16 @@ function joinDate(value: string) {
     month: "short",
     year: "numeric"
   });
+}
+
+// The listening total counts only what the server measured, so it covers the
+// window since measuring began rather than the whole account. Naming that date
+// is the difference between a modest number and a number that looks broken.
+function measuringSinceLabel(value: string | null) {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
 export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
@@ -75,6 +89,7 @@ export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
   const joined = joinDate(user.createdAt);
   const lastSeen = stats ? relativeTime(stats.lastListenedAt) : null;
   const hours = stats ? splitRoundedHours(stats.totalHoursRead) : { whole: "0", minutes: 0 };
+  const measuringSince = stats ? measuringSinceLabel(stats.measuringSince) : null;
 
   return (
     <main className="profile-shell" onClick={onClose}>
@@ -117,7 +132,9 @@ export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
                   h{hours.minutes > 0 ? ` ${hours.minutes}m` : ""}
                 </span>
               </span>
-              <span className="headline-label">Listened, all time</span>
+              <span className="headline-label">
+                {measuringSince ? `Listened since ${measuringSince}` : "Listened, all time"}
+              </span>
             </div>
             <dl className="headline-secondary">
               <div>
@@ -220,13 +237,16 @@ export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
 }
 
 function RecentRow({ book, onOpen }: { book: ProfileRecentBook; onOpen: () => void }) {
+  // hoursRead is the furthest point reached in the book, not time at the
+  // headphones — a scrub forward moves it without any listening. Word it as a
+  // position so it cannot be read as a second, contradictory listening total.
   const hours = book.hoursRead;
   const tail =
     hours < 0.05
       ? "Just started"
       : hours < 1
-        ? `${Math.round(hours * 60)} min listened`
-        : `${hours.toFixed(1)} hrs listened`;
+        ? `${Math.round(hours * 60)} min in`
+        : `${hours.toFixed(1)} hrs in`;
   return (
     <li>
       <button type="button" className="recent-row" onClick={onOpen}>

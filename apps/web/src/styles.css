@@ -3438,6 +3438,26 @@ select:focus {
   padding: 2rem 1rem;
 }
 
+/* Match the native iOS launch screen while IndexedDB restores the saved book,
+   first tab, track, and position. This prevents incomplete startup state from
+   appearing for a frame before a Reading session is reopened. */
+.native-launch-placeholder {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #f1e7d0;
+  color: #1a1410;
+}
+
+.native-launch-placeholder span {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 29px;
+  font-weight: 600;
+  line-height: 35px;
+}
+
 /* Startup interstitial: three volumes settle onto a shelf while a glint
    travels across their spines. It is entirely CSS so it appears immediately. */
 .startup-shell {
@@ -5460,7 +5480,11 @@ html.native-app .native-now-kicker {
 
 html.native-app .native-now-copy h2 {
   max-width: 24ch;
-  margin: 0 auto;
+  /* Fraunces' descenders extend just below WebKit's clamped line box. Keep
+     the clamp for long chapter names, but give letters such as g and y room
+     to render without making the surrounding player visibly taller. */
+  margin: 0 auto -0.08em;
+  padding-bottom: 0.08em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
