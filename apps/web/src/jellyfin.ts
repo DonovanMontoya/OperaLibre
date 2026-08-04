@@ -459,7 +459,8 @@ export async function setJellyfinBookCompletion(
   baseUrl: string,
   token: string,
   book: Book,
-  finished: boolean
+  finished: boolean,
+  finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
 ) {
   if (!book.tracks.length) {
     throw new Error("This book has no playable tracks.");
@@ -476,11 +477,11 @@ export async function setJellyfinBookCompletion(
   const firstTrack = book.tracks[0];
   const progress: Progress = {
     bookId: book.id,
-    trackId: existing?.trackId ?? firstTrack.id,
-    positionSeconds: existing?.positionSeconds ?? 0,
-    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
-    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
-    updatedAt: existing?.updatedAt ?? new Date().toISOString(),
+    trackId: finalProgress?.trackId ?? existing?.trackId ?? firstTrack.id,
+    positionSeconds: finalProgress?.positionSeconds ?? existing?.positionSeconds ?? 0,
+    bookPositionSeconds: finalProgress?.bookPositionSeconds ?? existing?.bookPositionSeconds ?? 0,
+    durationSeconds: finalProgress?.durationSeconds ?? existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: finalProgress ? new Date().toISOString() : existing?.updatedAt ?? new Date().toISOString(),
     finishedOverride: finished
   };
   progressByBook.set(book.id, progress);

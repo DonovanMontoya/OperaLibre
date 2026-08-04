@@ -85,6 +85,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var queuedItems: [AVPlayerItem] = []
     private var activeQueueIndex = 0
     private var finishedWhileInactive = false
+    private var finishedPositionSeconds: Double?
+    private var finishedDurationSeconds: Double?
 
     deinit {
         tearDownPlayer()
@@ -198,6 +200,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.queuedTracks = requestedQueue
             self.activeQueueIndex = 0
             self.finishedWhileInactive = false
+            self.finishedPositionSeconds = nil
+            self.finishedDurationSeconds = nil
             self.installSessionObserversIfNeeded()
 
             let items = requestedQueue.map { track in
@@ -492,11 +496,28 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 let endedIndex = self.queuedItems.firstIndex(where: { $0 === endedItem })
             else { return }
             if endedIndex >= self.queuedItems.count - 1 {
+                let endedDuration = self.finiteSeconds(endedItem.duration)
+                let endedPosition = endedDuration > 0
+                    ? endedDuration
+                    : self.finiteSeconds(endedItem.currentTime())
                 self.shouldAutoplay = false
+                self.pendingPosition = endedPosition
+                self.finishedPositionSeconds = endedPosition
+                self.finishedDurationSeconds = endedDuration > 0 ? endedDuration : nil
+                self.persistCheckpoint(
+                    force: true,
+                    positionSeconds: endedPosition,
+                    durationSeconds: endedDuration > 0 ? endedDuration : nil
+                )
                 self.updateNowPlayingInfo()
+                let finalState: JSObject = [
+                    "positionSeconds": endedPosition,
+                    "durationSeconds": endedDuration,
+                    "isPlaying": false
+                ]
                 if UIApplication.shared.applicationState == .active {
-                    self.emitState()
-                    self.notifyListeners("ended", data: [:])
+                    self.notifyListeners("state", data: finalState)
+                    self.notifyListeners("ended", data: finalState)
                 } else {
                     self.finishedWhileInactive = true
                 }
@@ -654,12 +675,22 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.interruptionIsActive = false
                 self.resumeAfterInterruption()
             }
-            self.persistCheckpoint(force: true)
             if self.finishedWhileInactive {
+                self.persistCheckpoint(
+                    force: true,
+                    positionSeconds: self.finishedPositionSeconds,
+                    durationSeconds: self.finishedDurationSeconds
+                )
                 self.finishedWhileInactive = false
-                self.emitState()
-                self.notifyListeners("ended", data: [:])
+                let finalState: JSObject = [
+                    "positionSeconds": self.finishedPositionSeconds ?? 0,
+                    "durationSeconds": self.finishedDurationSeconds ?? 0,
+                    "isPlaying": false
+                ]
+                self.notifyListeners("state", data: finalState)
+                self.notifyListeners("ended", data: finalState)
             } else {
+                self.persistCheckpoint(force: true)
                 self.emitTrackChanged()
                 self.emitState()
             }
@@ -750,7 +781,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    private func persistCheckpoint(force: Bool) {
+    private func persistCheckpoint(
+        force: Bool,
+        positionSeconds: Double? = nil,
+        durationSeconds: Double? = nil
+    ) {
         guard
             let player,
             let scopeKey = recoveryScopeKey,
@@ -758,8 +793,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         else { return }
         let now = Date().timeIntervalSince1970 * 1000
         if !force && now - lastCheckpointWrite < 2_000 { return }
-        let position = finiteSeconds(player.currentTime())
-        let duration = finiteSeconds(player.currentItem?.duration ?? .invalid)
+        let position = positionSeconds ?? finiteSeconds(player.currentTime())
+        let duration = durationSeconds ?? finiteSeconds(player.currentItem?.duration ?? .invalid)
         let checkpoint = NativeAudioCheckpoint(
             scopeKey: scopeKey,
             trackId: trackId,
@@ -856,7 +891,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func tearDownPlayer() {
-        persistCheckpoint(force: true)
+        persistCheckpoint(
+            force: true,
+            positionSeconds: finishedPositionSeconds,
+            durationSeconds: finishedDurationSeconds
+        )
         statusObservation?.invalidate()
         statusObservation = nil
         for observation in failureObservations {
@@ -898,6 +937,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         queuedItems = []
         activeQueueIndex = 0
         finishedWhileInactive = false
+        finishedPositionSeconds = nil
+        finishedDurationSeconds = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 

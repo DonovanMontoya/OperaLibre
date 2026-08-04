@@ -99,7 +99,11 @@ export function getDeviceBooks(): Book[] {
   }));
 }
 
-export function setDeviceBookCompletion(book: Book, finished: boolean) {
+export function setDeviceBookCompletion(
+  book: Book,
+  finished: boolean,
+  finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+) {
   const existing = getDeviceProgress(book.id);
   const firstTrack = book.tracks[0];
   if (!firstTrack) {
@@ -107,11 +111,11 @@ export function setDeviceBookCompletion(book: Book, finished: boolean) {
   }
   const progress: Progress = {
     bookId: book.id,
-    trackId: existing?.trackId ?? firstTrack.id,
-    positionSeconds: existing?.positionSeconds ?? 0,
-    bookPositionSeconds: existing?.bookPositionSeconds ?? 0,
-    durationSeconds: existing?.durationSeconds ?? firstTrack.durationSeconds,
-    updatedAt: existing?.updatedAt ?? new Date().toISOString(),
+    trackId: finalProgress?.trackId ?? existing?.trackId ?? firstTrack.id,
+    positionSeconds: finalProgress?.positionSeconds ?? existing?.positionSeconds ?? 0,
+    bookPositionSeconds: finalProgress?.bookPositionSeconds ?? existing?.bookPositionSeconds ?? 0,
+    durationSeconds: finalProgress?.durationSeconds ?? existing?.durationSeconds ?? firstTrack.durationSeconds,
+    updatedAt: finalProgress ? new Date().toISOString() : existing?.updatedAt ?? new Date().toISOString(),
     finishedOverride: finished
   };
   saveDeviceProgress(book.id, progress);

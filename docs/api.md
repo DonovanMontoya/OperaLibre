@@ -80,7 +80,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
-| `PUT` | `/api/books/{book_id}/completion` | Explicitly mark the book finished or unfinished for the current user without changing playback position. Body: `{ "finished": true }`. |
+| `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }` and preserve position; natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position and status are stored atomically. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 

@@ -68,7 +68,7 @@ interface NativeAudioPlugin {
   getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
   stop(): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
-  addListener(eventName: "ended", listener: () => void): Promise<PluginListenerHandle>;
+  addListener(eventName: "ended", listener: (state: Partial<NativeAudioState>) => void): Promise<PluginListenerHandle>;
   addListener(
     eventName: "trackChanged",
     listener: (event: {
@@ -235,9 +235,17 @@ export function attachNativeAudioPlayer(
     else listenerHandles.push(handle);
   });
 
-  void NativeAudio.addListener("ended", () => {
+  void NativeAudio.addListener("ended", (state) => {
     if (disposed || fellBack || endedFromNative) return;
     endedFromNative = true;
+    nativeIsPlaying = false;
+    if (Number.isFinite(state.positionSeconds)) {
+      const finalPosition = Number.isFinite(audio.duration)
+        ? Math.min(audio.duration, Math.max(0, state.positionSeconds!))
+        : Math.max(0, state.positionSeconds!);
+      audio.currentTime = finalPosition;
+      audio.dispatchEvent(new Event("timeupdate"));
+    }
     audio.pause();
     audio.dispatchEvent(new Event("ended"));
   }).then((handle) => {

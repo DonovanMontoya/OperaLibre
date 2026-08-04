@@ -26,3 +26,23 @@ test("demo books can be marked finished and unfinished without seeking", () => {
   assert.equal(unfinished.status, "notStarted");
   assert.equal(unfinished.bookPositionSeconds, 0);
 });
+
+test("natural completion stores the final position with the finished status", () => {
+  const book = getDemoBooks()[1];
+  const finalTrack = book?.tracks[book.tracks.length - 1];
+  assert.ok(book);
+  assert.ok(finalTrack);
+  const finalTrackPosition = finalTrack.durationSeconds ?? 0;
+  const finalBookPosition = book.durationSeconds ?? finalTrackPosition;
+
+  const finished = setDemoBookCompletion(book, true, {
+    trackId: finalTrack.id,
+    positionSeconds: finalTrackPosition,
+    bookPositionSeconds: finalBookPosition,
+    durationSeconds: finalTrack.durationSeconds
+  });
+
+  assert.equal(finished.status, "finished");
+  assert.equal(finished.bookPositionSeconds, finalBookPosition);
+  assert.equal(finished.remainingSeconds, 0);
+});
