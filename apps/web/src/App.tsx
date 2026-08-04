@@ -53,6 +53,7 @@ import { createPortal } from "react-dom";
 import {
   freshestProgress,
   isSuspectProgressReset,
+  progressAfterSave,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -2454,11 +2455,26 @@ function MainApp({
         const location = resolveProgressLocation(book.tracks, local);
         if (!location) return;
         if (!isCurrentRequest()) return;
-        await saveProgress(book.id, {
+        const attempted: Progress = {
           ...local,
           trackId: location.trackId,
           positionSeconds: location.positionSeconds
-        }, { isPaused: true }).catch(() => undefined);
+        };
+        const saved = await saveProgress(
+          book.id,
+          attempted,
+          { isPaused: true }
+        ).catch(() => null);
+        if (!saved || !isCurrentRequest()) return;
+        const currentCheckpoint = readProgressCheckpoint(
+          window.localStorage,
+          getServerStorageKey(),
+          currentUser.id,
+          book.id
+        );
+        if (progressAfterSave(currentCheckpoint, attempted, saved) === saved) {
+          storeCanonicalServerProgress(book, saved);
+        }
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);
@@ -3133,19 +3149,40 @@ function MainApp({
         !!freshestLocal &&
         !suspectLocalReset &&
         (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
+      let target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
+      let serverCorrectedLocal = false;
       if (localIsNewer) {
         updateBookProgress(playbackBook.id, freshestLocal);
         if (serverReachable) {
-          void saveProgress(playbackBook.id, freshestLocal, { isPaused: true }).catch(() => undefined);
+          const saved = await saveProgress(
+            playbackBook.id,
+            freshestLocal,
+            { isPaused: true }
+          ).catch(() => null);
+          if (cancelled || playbackTouchedRef.current) return;
+          if (saved) {
+            const currentCheckpoint = readProgressCheckpoint(
+              window.localStorage,
+              getServerStorageKey(),
+              currentUser.id,
+              playbackBook.id
+            );
+            if (progressAfterSave(currentCheckpoint, freshestLocal, saved) === saved) {
+              serverCorrectedLocal = saved.trackId !== freshestLocal.trackId
+                || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
+              storeCanonicalServerProgress(playbackBook, saved);
+              target = saved;
+            }
+          }
         }
       }
-      const target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
       // Re-seek only when the reconciled copy is genuinely fresher than what
       // was already applied (or the applied copy was a distrusted reset);
       // re-applying an equal copy would yank playback.
       if (
         !optimistic ||
         suspectLocalReset ||
+        serverCorrectedLocal ||
         (target && progressTimestamp(target.updatedAt) > progressTimestamp(optimistic.updatedAt))
       ) {
         applyProgress(target);
@@ -3191,6 +3228,10 @@ function MainApp({
         setCurrentTrackId(trackId);
         setPendingSeek({ trackId, positionSeconds });
         setPosition(positionSeconds);
+      },
+      () => {
+        markPlaybackTouched(true);
+        void persistProgress();
       }
     );
   }, [currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -3511,8 +3552,13 @@ function MainApp({
             currentUser.id,
             entry.bookId
           );
-          if (!local || progressTimestamp(saved.updatedAt) >= progressTimestamp(local.updatedAt)) {
-            updateBookProgress(entry.bookId, saved);
+          const reconciled = progressAfterSave(local, entry.progress, saved);
+          if (reconciled === saved) {
+            // Heal future-skewed and rejected local checkpoints with the
+            // server's canonical response. Without this, the same stale copy
+            // wins every restart and is retried indefinitely.
+            const book = books.find((candidate) => candidate.id === entry.bookId);
+            if (book) storeCanonicalServerProgress(book, saved);
           }
         } catch {
           // The synchronous checkpoint and IndexedDB copy already contain the
@@ -3539,6 +3585,29 @@ function MainApp({
         };
       })
     );
+  }
+
+  function storeCanonicalServerProgress(book: Book, saved: Progress) {
+    writeProgressCheckpoint(
+      window.localStorage,
+      getServerStorageKey(),
+      currentUser.id,
+      saved
+    );
+    void cacheProgress(currentUser.id, saved).catch(() => undefined);
+    if (book.deviceBookId) {
+      const deviceBook = getDeviceBooks().find((candidate) => candidate.id === book.deviceBookId);
+      const serverTrackIndex = book.tracks.findIndex((track) => track.id === saved.trackId);
+      const deviceTrack = serverTrackIndex >= 0 ? deviceBook?.tracks[serverTrackIndex] : null;
+      if (deviceBook && deviceTrack) {
+        saveDeviceProgress(deviceBook.id, {
+          ...saved,
+          bookId: deviceBook.id,
+          trackId: deviceTrack.id
+        });
+      }
+    }
+    updateBookProgress(book.id, saved);
   }
 
   function clearPlaybackSession() {
@@ -5247,9 +5316,15 @@ function MainApp({
           <Library size={16} />
           <span>Library</span>
         </button>
-        {selectedBook && currentTrack ? (
+        {/* The details view stands on its own: every block that needs a live
+            track is already gated on `isViewingPlayingBook`, so a book opened
+            from the shelf with nothing playing renders its preview + "Begin
+            this reading" instead of falling through to the empty player. The
+            empty player stays for the "now" view, which has nothing to show
+            until playback starts. */}
+        {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
           <>
-            {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook ? (
+            {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
               <section className="native-now-playing" aria-label="Now playing">
                 <div className="native-now-artwork">
                   <CoverArt book={nowPlayingBook} size="large" />
@@ -5468,7 +5543,10 @@ function MainApp({
                 ) : null}
               </section>
             ) : null}
-            {nativePlayerView !== "now" && playbackBook ? (
+            {/* On the shelf tab the details page is a child page of the library
+                list, so it always needs its own way back — even with nothing
+                playing. "Back to Now Playing" still requires a playing book. */}
+            {nativePlayerView !== "now" && (playbackBook || (native && nativeTab === "shelf")) ? (
               <button
                 type="button"
                 className="native-player-return"

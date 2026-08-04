@@ -5658,6 +5658,25 @@ html.native-app .native-now-utility button {
   }
 }
 
+/* Reading is one fixed screen — it must not scroll. Sizing the card by hand
+   (viewport minus tab bar, status bar, and a magic constant for the pane's
+   own padding and the card's margins) drifted out of sync with those paddings
+   and left the screen a couple of dozen pixels too tall to sit still. Let flex
+   measure the pane's content box instead, so the card fills it exactly whatever
+   the safe-area insets work out to. `min-height: min-content` keeps the escape
+   hatch: on a screen too short for the controls the card still grows and the
+   pane scrolls rather than clipping the transport. */
+html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now {
+  display: flex;
+  flex-direction: column;
+}
+
+html.native-app .has-native-player.native-player-view-now .native-now-playing {
+  flex: 1 1 auto;
+  min-height: min-content;
+  margin: 0 auto;
+}
+
 /* A phone in landscape has enough width for a compact two-column player but
    not enough height for the portrait stack. Without this layout the centered
    grid overflows its fixed card, clipping both the cover and controls. The

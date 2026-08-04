@@ -157,18 +157,54 @@ export function progressFromBookSummary(
   };
 }
 
+/**
+ * Server stamps have one-second granularity, so copies from different sources
+ * tie routinely. A tie is resolved by whole-book position rather than by
+ * argument order: at the same instant the further-along copy is the one
+ * carrying the listening, and a deliberate restart syncs everywhere anyway.
+ * Without this the winner depends on call-site ordering, which is exactly how
+ * a failed restore's near-zero copy can erase hours.
+ */
 export function freshestProgress(
   ...candidates: Array<Progress | null | undefined>
 ): Progress | null {
   return candidates
     .filter((value): value is Progress => !!value)
-    .sort((a, b) => progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt))[0] ?? null;
+    .sort((a, b) => {
+      const byTime = progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt);
+      return byTime !== 0 ? byTime : b.bookPositionSeconds - a.bookPositionSeconds;
+    })[0] ?? null;
 }
 
 /** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
 export const NEAR_ZERO_PROGRESS_SECONDS = 60;
 /** Mirrors the server's PROGRESS_BACKUP_REGRESSION_SECONDS. */
 export const PROGRESS_RESET_GUARD_SECONDS = 300;
+
+function isSameProgressRevision(left: Progress, right: Progress): boolean {
+  return left.updatedAt === right.updatedAt
+    && left.trackId === right.trackId
+    && left.positionSeconds === right.positionSeconds
+    && left.bookPositionSeconds === right.bookPositionSeconds;
+}
+
+/**
+ * Reconcile an asynchronous save response with the synchronous checkpoint.
+ * If the checkpoint still matches the request, the response is authoritative
+ * even when its timestamp is older: the server may have rejected a stale or
+ * regressive write, or capped a future-skewed device clock. A genuinely newer
+ * local checkpoint still wins while the request is in flight.
+ */
+export function progressAfterSave(
+  local: Progress | null,
+  attempted: Progress,
+  saved: Progress
+): Progress {
+  if (!local || isSameProgressRevision(local, attempted)) return saved;
+  return progressTimestamp(saved.updatedAt) >= progressTimestamp(local.updatedAt)
+    ? saved
+    : local;
+}
 
 /**
  * A local copy at the very start of the book that outranks substantial server
@@ -236,7 +272,11 @@ export function summarizeBookProgress(
     (total, track) => total + Math.max(0, track.durationSeconds ?? 0),
     0
   );
-  const duration = book.durationSeconds ?? (trackDuration > 0 ? trackDuration : null);
+  // Mirrors the server: a non-positive duration is unknown, not zero-length.
+  // `??` would accept 0 here and clamp a real position down to 0.
+  const duration = book.durationSeconds !== null && book.durationSeconds > 0
+    ? book.durationSeconds
+    : trackDuration > 0 ? trackDuration : null;
   const position = duration !== null
     ? Math.min(duration, Math.max(0, progress.bookPositionSeconds))
     : Math.max(0, progress.bookPositionSeconds);
