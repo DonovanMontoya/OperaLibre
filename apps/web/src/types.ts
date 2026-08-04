@@ -301,6 +301,8 @@ export type ProfileStats = {
   memberSince: string;
   streakCalendar: StreakDay[];
   recentBooks: ProfileRecentBook[];
+  /** First day the server measured listening, as YYYY-MM-DD. */
+  measuringSince: string | null;
 };
 
 export type StreakDay = {

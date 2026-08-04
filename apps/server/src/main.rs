@@ -723,6 +723,11 @@ struct ProgressUpdate {
     /// movement from this checkpoint must not be counted as listening time.
     #[serde(default)]
     intentional_seek: bool,
+    /// The listener's offset from UTC in minutes, east positive (the negation
+    /// of JavaScript's `getTimezoneOffset`). Activity is bucketed by the
+    /// listener's own calendar day, so an evening session west of UTC is not
+    /// filed under tomorrow and does not split a streak. Absent means UTC.
+    tz_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4092,38 +4097,10 @@ async fn update_progress(
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let previous = progress.get(&key).cloned();
-    // Seeding the activity baseline walks the whole library and every stored
-    // checkpoint, but it only ever happens once per user. Clients checkpoint
-    // every few seconds, so skip the walk entirely once the baseline exists.
-    let needs_activity_baseline = !state
-        .activity
-        .read()
-        .await
-        .by_user
-        .get(&auth.id)
-        .is_some_and(|entries| entries.contains_key(ACTIVITY_BASELINE_KEY));
-    let historical_position_seconds = if needs_activity_baseline {
-        let progress_key_prefix = format!("user:{}:book:", auth.id);
-        let accessible_book_ids = library
-            .books
-            .iter()
-            .filter(|book| can_access_book(&auth, &book.id))
-            .map(|book| book.id.as_str())
-            .collect::<HashSet<_>>();
-        progress
-            .iter()
-            .filter(|(key, value)| {
-                key.starts_with(&progress_key_prefix)
-                    && accessible_book_ids.contains(value.book_id.as_str())
-            })
-            .map(|(_, value)| value.book_position_seconds.max(0.0))
-            .sum::<f64>()
-    } else {
-        0.0
-    };
     // Cap client timestamps at the server clock so one device with a
     // future-skewed clock cannot lock every other device out of this book.
-    let now_seconds = unix_now_seconds() as f64;
+    let now_millis = unix_now_millis();
+    let now_seconds = now_millis as f64 / 1000.0;
     let incoming_seconds = update
         .updated_at_ms
         .map(|ms| (ms as f64 / 1000.0).min(now_seconds));
@@ -4149,14 +4126,7 @@ async fn update_progress(
         position_seconds: incoming_track_position,
         book_position_seconds: incoming_book_position,
         duration_seconds: update.duration_seconds.or(track.duration_seconds),
-        // Truncate rather than round. Rounding can stamp the stored copy up
-        // to 500ms *after* the instant the client recorded it, and that echo
-        // then outranks a newer local checkpoint queued behind a slow save —
-        // the client heals its own fresher position away with an older one.
-        updated_at: format!(
-            "{}",
-            incoming_seconds.unwrap_or(now_seconds).max(0.0).floor() as u64
-        ),
+        updated_at: next_progress_timestamp(previous.as_ref(), now_millis),
         finished_override: carried_finished_override(
             previous.as_ref(),
             incoming_book_position,
@@ -4196,7 +4166,7 @@ async fn update_progress(
             &state,
             &auth.id,
             listened_delta,
-            historical_position_seconds,
+            sanitized_tz_offset_minutes(update.tz_offset_minutes),
         )
         .await;
     }
@@ -4247,13 +4217,14 @@ async fn update_book_completion(
     let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
+    let next_timestamp = next_progress_timestamp(progress.get(&key), unix_now_millis());
     let saved = progress.entry(key).or_insert_with(|| Progress {
         book_id: book.id.clone(),
         track_id: first_track.id.clone(),
         position_seconds: 0.0,
         book_position_seconds: 0.0,
         duration_seconds: first_track.duration_seconds,
-        updated_at: unix_now_seconds().to_string(),
+        updated_at: next_timestamp.clone(),
         finished_override: None,
     });
     if let Some((track, position_seconds)) = final_position {
@@ -4266,7 +4237,7 @@ async fn update_book_completion(
             update.book_position_seconds,
         );
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
-        saved.updated_at = unix_now_seconds().to_string();
+        saved.updated_at = next_timestamp;
     }
     saved.finished_override = Some(update.finished);
     let saved = saved.clone();
@@ -6002,10 +5973,7 @@ fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
     let duration = book
         .duration_seconds
         .filter(|duration| *duration > 0.0)
-        .or_else(|| {
-            let total = duration_from_tracks(book);
-            (total > 0.0).then_some(total)
-        });
+        .or_else(|| known_duration_from_tracks(book));
     let position = duration
         .map(|duration| enriched.book_position_seconds.clamp(0.0, duration))
         .unwrap_or_else(|| enriched.book_position_seconds.max(0.0));
@@ -6024,6 +5992,20 @@ fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
         percent_complete,
         updated_at: enriched.updated_at,
     }
+}
+
+/// The furthest point a stored checkpoint reached, clamped to the book's real
+/// duration. A raw `book_position_seconds` is only as trustworthy as the client
+/// that reported it — when a book's track durations are unknown the server has
+/// to take the client's word for it, and an over-reported position would
+/// otherwise outrank every real one.
+///
+/// This is ground covered, not time spent: scrubbing forward moves it without
+/// any listening. Never sum it into a listening total.
+fn reached_position_seconds(book: &Book, progress: &Progress) -> f64 {
+    summarize_book_progress(book, progress)
+        .book_position_seconds
+        .max(0.0)
 }
 
 fn book_progress_status(
@@ -6049,11 +6031,16 @@ fn book_progress_status(
     }
 }
 
-fn duration_from_tracks(book: &Book) -> f64 {
-    book.tracks
-        .iter()
-        .map(|track| track.duration_seconds.unwrap_or(0.0))
-        .sum()
+fn known_duration_from_tracks(book: &Book) -> Option<f64> {
+    if book.tracks.is_empty() {
+        return None;
+    }
+    book.tracks.iter().try_fold(0.0, |total, track| {
+        track
+            .duration_seconds
+            .filter(|duration| *duration > 0.0)
+            .map(|duration| total + duration)
+    })
 }
 
 fn book_position_seconds(book: &Book, track: &Track, position_seconds: f64) -> f64 {
@@ -6215,8 +6202,8 @@ fn plausible_listened_delta(
     if position_delta <= 0.0 {
         return 0.0;
     }
-    let previous_timestamp = previous.updated_at.parse::<f64>().unwrap_or(0.0);
-    let saved_timestamp = saved.updated_at.parse::<f64>().unwrap_or(0.0);
+    let previous_timestamp = progress_timestamp_seconds(&previous.updated_at);
+    let saved_timestamp = progress_timestamp_seconds(&saved.updated_at);
     let elapsed = (saved_timestamp - previous_timestamp).max(0.0);
     // OperaLibre tops out at 2x. A small grace window covers rounded
     // timestamps and progress-save scheduling jitter without allowing a
@@ -6224,10 +6211,40 @@ fn plausible_listened_delta(
     position_delta.min(elapsed * 2.1 + 5.0)
 }
 
+fn progress_timestamp_seconds(value: &str) -> f64 {
+    let numeric = value.parse::<f64>().unwrap_or(0.0);
+    if numeric >= 1_000_000_000_000.0 {
+        numeric / 1000.0
+    } else {
+        numeric
+    }
+}
+
+fn progress_timestamp_millis(value: &str) -> u64 {
+    let numeric = value.parse::<f64>().unwrap_or(0.0).max(0.0);
+    if numeric >= 1_000_000_000_000.0 {
+        numeric.floor() as u64
+    } else {
+        (numeric * 1000.0).floor() as u64
+    }
+}
+
+/// Accepted writes receive a server-issued monotonic millisecond revision.
+/// This distinguishes a rapid rewind from the older high position it replaces
+/// without allowing a future-skewed client clock to control ordering.
+fn next_progress_timestamp(previous: Option<&Progress>, now_millis: u64) -> String {
+    let previous_millis = previous
+        .map(|progress| progress_timestamp_millis(&progress.updated_at))
+        .unwrap_or(0);
+    now_millis
+        .max(previous_millis.saturating_add(1))
+        .to_string()
+}
+
 fn progress_write_is_stale(stored_updated_at: &str, incoming_seconds: f64) -> bool {
-    // Stored stamps are epoch seconds; anything unparsable never blocks a
-    // write.
-    let stored = stored_updated_at.parse::<f64>().unwrap_or(0.0);
+    // Progress revisions may be legacy epoch seconds or monotonic epoch
+    // milliseconds. Anything unparsable never blocks a write.
+    let stored = progress_timestamp_seconds(stored_updated_at);
     incoming_seconds + PROGRESS_STALE_WRITE_SLACK_SECONDS < stored
 }
 
@@ -7204,6 +7221,14 @@ fn now_rfc3339ish() -> String {
     unix_now_seconds().to_string()
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileStatsQuery {
+    /// The reader's offset from UTC in minutes, east positive. Streaks and the
+    /// calendar are drawn against the reader's own days, not the server's.
+    tz_offset_minutes: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProfileStats {
@@ -7218,6 +7243,9 @@ struct ProfileStats {
     favorite_genre: Option<String>,
     days_active: u32,
     member_since: String,
+    /// The first day the activity log recorded anything, so the client can say
+    /// what window the listening total covers instead of implying all time.
+    measuring_since: Option<String>,
     streak_calendar: Vec<StreakDay>,
     recent_books: Vec<RecentBook>,
 }
@@ -7242,7 +7270,17 @@ struct RecentBook {
 
 async fn load_activity_store(activity_file: &FsPath) -> anyhow::Result<ActivityStore> {
     match fs::read_to_string(activity_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Ok(contents) => {
+            let mut store: ActivityStore = serde_json::from_str(&contents)?;
+            // Older stores opened with a synthetic "everything before tracking
+            // started" bucket, estimated from how far into each book the reader
+            // had got. That conflated ground covered with time spent listening
+            // and could only ever overstate it, so it is dropped on sight.
+            for entries in store.by_user.values_mut() {
+                entries.remove(ACTIVITY_BASELINE_KEY);
+            }
+            Ok(store)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ActivityStore::default()),
         Err(error) => Err(error.into()),
     }
@@ -7255,14 +7293,22 @@ async fn write_activity_store(
     write_json_atomic(activity_file, store).await
 }
 
-fn today_ymd_utc() -> String {
-    // Year-month-day in UTC, no extra deps. Uses civil-date conversion from
-    // days-since-epoch (1970-01-01) via Howard Hinnant's algorithm.
+/// Real UTC offsets span UTC-12 to UTC+14. Anything outside that is a broken
+/// or hostile client and is treated as UTC rather than shifting the calendar.
+fn sanitized_tz_offset_minutes(offset_minutes: Option<i32>) -> i64 {
+    offset_minutes
+        .filter(|minutes| (-12 * 60..=14 * 60).contains(minutes))
+        .unwrap_or(0) as i64
+}
+
+fn today_ymd(tz_offset_minutes: i64) -> String {
+    // Year-month-day in the listener's zone, no extra deps. Uses civil-date
+    // conversion from days-since-epoch (1970-01-01) via Hinnant's algorithm.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    days_to_ymd((now / 86_400) as i64)
+        .unwrap_or(0) as i64;
+    days_to_ymd((now + tz_offset_minutes * 60).div_euclid(86_400))
 }
 
 fn days_to_ymd(days_since_epoch: i64) -> String {
@@ -7296,36 +7342,17 @@ fn ymd_to_days(ymd: &str) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
-fn ensure_activity_baseline(
-    user_activity: &mut BTreeMap<String, f64>,
-    historical_position_seconds: f64,
-) {
-    if user_activity.contains_key(ACTIVITY_BASELINE_KEY) {
-        return;
-    }
-    let recorded_seconds = user_activity
-        .iter()
-        .filter(|(date, _)| date.as_str() != ACTIVITY_BASELINE_KEY)
-        .map(|(_, seconds)| seconds.max(0.0))
-        .sum::<f64>();
-    user_activity.insert(
-        ACTIVITY_BASELINE_KEY.to_string(),
-        (historical_position_seconds - recorded_seconds).max(0.0),
-    );
-}
-
 async fn record_activity(
     state: &AppState,
     user_id: &str,
     delta_seconds: f64,
-    historical_position_seconds: f64,
+    tz_offset_minutes: i64,
 ) {
-    let today = today_ymd_utc();
+    let today = today_ymd(tz_offset_minutes);
     // Keep mutation and persistence under one lock. Otherwise two snapshots can
     // be written in reverse order and an older activity total can win on disk.
     let mut activity = state.activity.write().await;
     let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
-    ensure_activity_baseline(user_activity, historical_position_seconds);
     let entry = user_activity.entry(today).or_insert(0.0);
     *entry += delta_seconds;
     if let Err(error) = write_activity_store(&state.activity_file, &activity).await {
@@ -7336,7 +7363,10 @@ async fn record_activity(
 async fn profile_stats(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Query(query): Query<ProfileStatsQuery>,
 ) -> Result<Json<ProfileStats>, ApiError> {
+    let tz_offset_minutes = sanitized_tz_offset_minutes(query.tz_offset_minutes);
+    let today = ymd_to_days(&today_ymd(tz_offset_minutes)).unwrap_or(0);
     let library = state.library.read().await;
     let progress_map = read_progress(&state.progress_file).await?;
     let key_prefix = format!("user:{}:book:", auth.id);
@@ -7348,7 +7378,6 @@ async fn profile_stats(
     // Headline numbers.
     let mut books_finished = 0u32;
     let mut total_tracks_completed = 0u32;
-    let mut hours_from_positions = 0.0;
     let mut narrator_hours: HashMap<String, f64> = HashMap::new();
     let mut genre_hours: HashMap<String, f64> = HashMap::new();
     let mut last_updated: Option<String> = None;
@@ -7364,8 +7393,11 @@ async fn profile_stats(
     for (_, progress) in user_progress.iter() {
         if let Some(book) = book_lookup.get(progress.book_id.as_str()) {
             let summary = summarize_book_progress(book, progress);
-            let hours = summary.book_position_seconds / 3600.0;
-            hours_from_positions += summary.book_position_seconds;
+            // How far into the book the reader has reached — the only per-book
+            // signal there is, since the activity log records days and not
+            // books. Good enough to rank narrators and genres and to caption a
+            // shelf row; deliberately not added into the listening total.
+            let hours = reached_position_seconds(book, progress) / 3600.0;
             let finished = matches!(summary.status, BookProgressStatus::Finished);
             if finished {
                 books_finished += 1;
@@ -7392,50 +7424,66 @@ async fn profile_stats(
                 finished,
                 updated_at: progress.updated_at.clone(),
             });
+            // Revisions are numeric, but legacy rows hold epoch seconds and
+            // newer ones epoch milliseconds. Comparing the strings would order
+            // a ten-digit revision against a thirteen-digit one by its leading
+            // characters, so parse both to a common unit first.
             match &last_updated {
-                Some(prev) if prev >= &progress.updated_at => {}
+                Some(prev)
+                    if progress_timestamp_seconds(prev)
+                        >= progress_timestamp_seconds(&progress.updated_at) => {}
                 _ => last_updated = Some(progress.updated_at.clone()),
             }
         }
     }
 
-    recent.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    recent.sort_by(|a, b| {
+        progress_timestamp_seconds(&b.updated_at)
+            .partial_cmp(&progress_timestamp_seconds(&a.updated_at))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     recent.truncate(6);
 
     // Activity-based numbers.
     let activity = state.activity.read().await;
     let user_activity = activity.by_user.get(&auth.id).cloned().unwrap_or_default();
 
-    let activity_baseline = user_activity
-        .get(ACTIVITY_BASELINE_KEY)
-        .copied()
-        .unwrap_or(0.0)
-        .max(0.0);
+    // Only ground actually covered while playing, summed from the per-day log.
+    // Every second here came from a forward position move that the server could
+    // match against elapsed wall-clock time, with deliberate seeks excluded —
+    // so this is time spent listening, not how far into books the reader has
+    // reached. Nothing estimates the era before the log existed; that history
+    // is unmeasured, and `measuring_since` says so rather than guessing.
     let total_seconds_activity: f64 = user_activity
-        .iter()
-        .filter(|(date, _)| date.as_str() != ACTIVITY_BASELINE_KEY)
-        .map(|(_, seconds)| seconds.max(0.0))
+        .values()
+        .map(|seconds| seconds.max(0.0))
         .sum();
-    let tracked_total_seconds = activity_baseline + total_seconds_activity;
-    let total_hours_read = if tracked_total_seconds > 0.0 {
-        tracked_total_seconds / 3600.0
-    } else {
-        hours_from_positions / 3600.0
-    };
-
-    let days_active = user_activity
+    let total_hours_read = total_seconds_activity / 3600.0;
+    let measuring_since = user_activity
         .iter()
-        .filter(|(date, seconds)| date.as_str() != ACTIVITY_BASELINE_KEY && **seconds > 30.0)
+        .find(|(_, seconds)| **seconds > 0.0)
+        .map(|(date, _)| date.clone());
+
+    // "Per active day" must divide the same seconds it counts days for,
+    // otherwise a scattering of sub-minute days inflates every other day's
+    // average.
+    let active_day_seconds: f64 = user_activity
+        .values()
+        .filter(|seconds| **seconds > 30.0)
+        .sum();
+    let days_active = user_activity
+        .values()
+        .filter(|seconds| **seconds > 30.0)
         .count() as u32;
 
     let avg_daily_minutes = if days_active > 0 {
-        (total_seconds_activity / 60.0) / days_active as f64
+        (active_day_seconds / 60.0) / days_active as f64
     } else {
         0.0
     };
 
-    let (current_streak_days, longest_streak_days) = compute_streaks(&user_activity);
-    let streak_calendar = build_streak_calendar(&user_activity, 56);
+    let (current_streak_days, longest_streak_days) = compute_streaks(&user_activity, today);
+    let streak_calendar = build_streak_calendar(&user_activity, 8, today);
 
     let favorite_narrator = narrator_hours
         .into_iter()
@@ -7470,12 +7518,13 @@ async fn profile_stats(
         favorite_genre,
         days_active,
         member_since,
+        measuring_since,
         streak_calendar,
         recent_books: recent,
     }))
 }
 
-fn compute_streaks(activity: &BTreeMap<String, f64>) -> (u32, u32) {
+fn compute_streaks(activity: &BTreeMap<String, f64>, today: i64) -> (u32, u32) {
     let mut active_days: Vec<i64> = activity
         .iter()
         .filter_map(|(date, seconds)| {
@@ -7506,7 +7555,6 @@ fn compute_streaks(activity: &BTreeMap<String, f64>) -> (u32, u32) {
         }
     }
 
-    let today = ymd_to_days(&today_ymd_utc()).unwrap_or(0);
     let last = *active_days.last().unwrap();
     let current = if today - last <= 1 {
         let mut run = 1u32;
@@ -7525,13 +7573,20 @@ fn compute_streaks(activity: &BTreeMap<String, f64>) -> (u32, u32) {
     (current, longest)
 }
 
-fn build_streak_calendar(activity: &BTreeMap<String, f64>, days: i64) -> Vec<StreakDay> {
-    let today = ymd_to_days(&today_ymd_utc()).unwrap_or(0);
-    let start = today - (days - 1);
-    (0..days)
+/// Monday-based weekday index for a day count since 1970-01-01, which was a
+/// Thursday.
+fn weekday_from_monday(days_since_epoch: i64) -> i64 {
+    (days_since_epoch + 3).rem_euclid(7)
+}
+
+/// Whole calendar weeks ending with the week that contains today, so the grid
+/// the client draws lines up under a fixed Monday-to-Sunday label column. The
+/// tail of the current week is still in the future and simply reads as zero.
+fn build_streak_calendar(activity: &BTreeMap<String, f64>, weeks: i64, today: i64) -> Vec<StreakDay> {
+    let start = today - weekday_from_monday(today) - (weeks - 1) * 7;
+    (0..weeks * 7)
         .map(|offset| {
-            let day = start + offset;
-            let date = days_to_ymd(day);
+            let date = days_to_ymd(start + offset);
             let seconds = activity.get(&date).copied().unwrap_or(0.0);
             StreakDay {
                 date,
@@ -8993,6 +9048,34 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_partial_duration_cannot_falsely_finish_a_book() {
+        let book = book_with_tracks(
+            None,
+            vec![
+                track_with_duration("t1", 0, Some(3_600.0)),
+                track_with_duration("t2", 1, None),
+            ],
+        );
+        let stored = super::Progress {
+            book_id: String::new(),
+            track_id: "t2".to_string(),
+            position_seconds: 600.0,
+            book_position_seconds: 4_200.0,
+            duration_seconds: None,
+            updated_at: "1785801600000".to_string(),
+            finished_override: None,
+        };
+
+        let summary = super::summarize_book_progress(&book, &stored);
+        assert_eq!(summary.book_position_seconds, 4_200.0);
+        assert_eq!(summary.duration_seconds, None);
+        assert!(matches!(
+            summary.status,
+            super::BookProgressStatus::InProgress
+        ));
+    }
+
     /// With every duration unknown the server cannot derive an offset, so the
     /// client's reported whole-book position must be trusted — otherwise every
     /// track collapses onto the same offset and advancing looks like a
@@ -9017,23 +9100,29 @@ mod tests {
         ));
     }
 
-    /// Rounding can stamp a stored copy up to 500ms after the instant the
-    /// client recorded it, letting an older save's echo outrank a newer local
-    /// checkpoint. Truncation cannot.
     #[test]
-    fn fuzz_stored_stamp_never_precedes_the_client_instant_it_came_from() {
+    fn fuzz_accepted_progress_revisions_are_strictly_monotonic() {
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut previous = super::Progress {
+            book_id: String::new(),
+            track_id: String::new(),
+            position_seconds: 0.0,
+            book_position_seconds: 0.0,
+            duration_seconds: None,
+            updated_at: "1785801600".to_string(),
+            finished_override: None,
+        };
         for _ in 0..200_000 {
             state ^= state >> 12;
             state ^= state << 25;
             state ^= state >> 27;
-            let client_seconds = 1_785_801_600.0 + (state % 100_000_000) as f64 / 1000.0;
-            let stored = client_seconds.max(0.0).floor() as u64;
+            let now = 1_785_801_600_000 + state % 10_000;
+            let next = super::next_progress_timestamp(Some(&previous), now);
             assert!(
-                stored as f64 <= client_seconds,
-                "stored {stored} claims to be newer than client instant {client_seconds}"
+                super::progress_timestamp_millis(&next)
+                    > super::progress_timestamp_millis(&previous.updated_at)
             );
-            assert!(client_seconds - (stored as f64) < 1.0);
+            previous.updated_at = next;
         }
     }
 
@@ -9372,13 +9461,108 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn the_legacy_position_estimate_is_dropped_from_stored_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "reader": {
+                    "2026-07-23": 600.0,
+                    // An estimate of pre-tracking history from how far into
+                    // books the reader had reached: fifty hours the reader
+                    // never demonstrably spent listening.
+                    super::ACTIVITY_BASELINE_KEY: 180_000.0,
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let store = super::load_activity_store(&path).await.unwrap();
+        let reader = &store.by_user["reader"];
+        assert_eq!(reader.len(), 1);
+        assert_eq!(reader["2026-07-23"], 600.0);
+        assert!(!reader.contains_key(super::ACTIVITY_BASELINE_KEY));
+    }
+
     #[test]
-    fn activity_baseline_preserves_history_without_double_counting() {
-        let mut activity = std::collections::BTreeMap::from([("2026-07-23".to_string(), 600.0)]);
-        super::ensure_activity_baseline(&mut activity, 3_600.0);
-        assert_eq!(activity[super::ACTIVITY_BASELINE_KEY], 3_000.0);
-        super::ensure_activity_baseline(&mut activity, 7_200.0);
-        assert_eq!(activity[super::ACTIVITY_BASELINE_KEY], 3_000.0);
+    fn reached_position_never_exceeds_the_books_real_length() {
+        let book = book_with_tracks(
+            Some(3_600.0),
+            vec![track_with_duration("track", 0, Some(3_600.0))],
+        );
+        let progress = super::Progress {
+            book_id: book.id.clone(),
+            track_id: "track".to_string(),
+            position_seconds: 3_600.0,
+            // A client that reported a whole-book position for a book whose
+            // track durations it could not read. Left unclamped this alone
+            // would add ten hours to the all-time total, permanently.
+            book_position_seconds: 36_000.0,
+            duration_seconds: Some(3_600.0),
+            updated_at: "1000".to_string(),
+            finished_override: None,
+        };
+        assert_eq!(super::reached_position_seconds(&book, &progress), 3_600.0);
+
+        let negative = super::Progress {
+            position_seconds: 0.0,
+            book_position_seconds: -50.0,
+            ..progress
+        };
+        assert_eq!(super::reached_position_seconds(&book, &negative), 0.0);
+    }
+
+    #[test]
+    fn activity_days_follow_the_listeners_clock_not_the_servers() {
+        // 2026-08-04T02:30:00Z is still the evening of the 3rd in Los Angeles.
+        let utc_evening = 1_785_810_600i64;
+        let day_utc = utc_evening.div_euclid(86_400);
+        let day_pacific = (utc_evening + -7 * 60 * 60).div_euclid(86_400);
+        assert_eq!(super::days_to_ymd(day_utc), "2026-08-04");
+        assert_eq!(super::days_to_ymd(day_pacific), "2026-08-03");
+
+        assert_eq!(super::sanitized_tz_offset_minutes(Some(-420)), -420);
+        assert_eq!(super::sanitized_tz_offset_minutes(None), 0);
+        // Outside the real range of UTC offsets, so the calendar is not moved.
+        assert_eq!(super::sanitized_tz_offset_minutes(Some(-100_000)), 0);
+        assert_eq!(super::sanitized_tz_offset_minutes(Some(1_440)), 0);
+    }
+
+    #[test]
+    fn streak_calendar_starts_on_a_monday_and_covers_today() {
+        // 2026-08-04 is a Tuesday.
+        let today = super::ymd_to_days("2026-08-04").unwrap();
+        let calendar = super::build_streak_calendar(&std::collections::BTreeMap::new(), 8, today);
+
+        assert_eq!(calendar.len(), 56);
+        // The label column is a fixed Monday-to-Sunday, so every seventh cell
+        // starting at zero has to actually be a Monday.
+        assert_eq!(calendar[0].date, "2026-06-15");
+        for index in (0..56).step_by(7) {
+            let day = super::ymd_to_days(&calendar[index].date).unwrap();
+            assert_eq!(super::weekday_from_monday(day), 0, "{}", calendar[index].date);
+        }
+        assert!(calendar.iter().any(|day| day.date == "2026-08-04"));
+    }
+
+    #[test]
+    fn streaks_are_measured_against_the_listeners_today() {
+        let today = super::ymd_to_days("2026-08-04").unwrap();
+        let activity = std::collections::BTreeMap::from([
+            ("2026-08-02".to_string(), 600.0),
+            ("2026-08-03".to_string(), 600.0),
+            ("2026-08-04".to_string(), 600.0),
+            // Below the 30 second floor, so it neither counts nor bridges.
+            ("2026-07-20".to_string(), 10.0),
+            ("2026-07-18".to_string(), 600.0),
+        ]);
+        assert_eq!(super::compute_streaks(&activity, today), (3, 3));
+
+        // A week later the run is over and nothing is current.
+        assert_eq!(super::compute_streaks(&activity, today + 7).0, 0);
     }
 
     #[test]

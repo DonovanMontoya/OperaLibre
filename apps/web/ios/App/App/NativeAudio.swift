@@ -58,6 +58,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
     private var pendingPosition: Double = 0
+    // AVPlayer can briefly report an invalid or reset clock while iOS swaps
+    // audio routes. Keep the last clock delivered by its periodic observer so
+    // an AirPods transition cannot replace a live checkpoint with 0:00.
+    private var lastKnownPosition: Double = 0
     private var shouldAutoplay = false
     private var wasPlayingBeforeInterruption = false
     private var interruptionIsActive = false
@@ -193,6 +197,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             let loadGeneration = self.generation
             self.desiredRate = rate
             self.pendingPosition = position
+            self.lastKnownPosition = position
             self.shouldAutoplay = autoplay || retainedPlayIntent
             self.recoveryScopeKey = scopeKey
             self.recoveryTrackId = trackId
@@ -223,6 +228,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             // Queue activation resets later tracks to their natural beginning,
             // but the first track must honor the restored resume position.
             self.pendingPosition = position
+            self.lastKnownPosition = position
             self.configureRemoteCommandsIfNeeded()
             self.installObservers(player: player, item: items[0], generation: loadGeneration)
             call.resolve()
@@ -468,8 +474,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] time in
             guard let self, generation == self.generation else { return }
+            if let position = self.validSeconds(time) {
+                self.lastKnownPosition = position
+            }
             self.persistCheckpoint(force: false)
             let chapterIndex = self.nowPlayingChapterIndex(
                 at: self.finiteSeconds(player.currentTime())
@@ -542,6 +551,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let track = queuedTracks[index]
         activeQueueIndex = index
         pendingPosition = 0
+        lastKnownPosition = 0
         recoveryTrackId = track.trackId
         recoveryBookOffset = track.bookOffsetSeconds
         lastCheckpointWrite = 0
@@ -626,6 +636,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             let requestedPosition = max(0, positionEvent.positionTime + chapterStart)
             let position = itemDuration > 0 ? min(itemDuration, requestedPosition) : requestedPosition
             self.pendingPosition = position
+            self.lastKnownPosition = position
             self.pendingRemoteIntentionalSeek = true
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 guard let self else { return }
@@ -645,6 +656,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let position = finiteSeconds(player.currentTime())
         let target = max(0, duration > 0 ? min(duration, position + offset) : position + offset)
         pendingPosition = target
+        lastKnownPosition = target
         pendingRemoteIntentionalSeek = true
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             guard let self else { return }
@@ -737,7 +749,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             // notification is delivered. The retained play intent is the
             // reliable signal that playback should continue afterward.
             wasPlayingBeforeInterruption = shouldAutoplay
-            pendingPosition = finiteSeconds(player?.currentTime() ?? .invalid)
+            pendingPosition = stablePlayerPosition()
+            lastKnownPosition = pendingPosition
             player?.pause()
             persistCheckpoint(force: true)
             updateNowPlayingInfo()
@@ -763,22 +776,42 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         guard
             let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
             let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
-            reason == .oldDeviceUnavailable,
             let player
         else { return }
 
-        // Removing wired headphones or disconnecting AirPods is not reliably
-        // delivered as an audio interruption. Treat the route loss as an
-        // explicit pause so playback never spills onto the speaker, and record
-        // AVPlayer's clock before a suspended WebView can lose the position.
-        shouldAutoplay = false
-        wasPlayingBeforeInterruption = false
-        interruptionIsActive = false
-        pendingPosition = finiteSeconds(player.currentTime())
-        player.pause()
-        persistCheckpoint(force: true)
-        updateNowPlayingInfo()
-        if UIApplication.shared.applicationState == .active { emitState() }
+        switch reason {
+        case .oldDeviceUnavailable:
+            // Removing wired headphones or disconnecting AirPods is not
+            // reliably delivered as an audio interruption. Treat the route
+            // loss as an explicit pause so playback never spills onto the
+            // speaker, and record AVPlayer's clock before a suspended WebView
+            // can lose the position.
+            shouldAutoplay = false
+            wasPlayingBeforeInterruption = false
+            interruptionIsActive = false
+            pendingPosition = stablePlayerPosition()
+            lastKnownPosition = pendingPosition
+            player.pause()
+            persistCheckpoint(force: true, positionSeconds: pendingPosition)
+            updateNowPlayingInfo()
+            if UIApplication.shared.applicationState == .active { emitState() }
+        case .newDeviceAvailable:
+            // Putting in AirPods can play a connection chime that begins an
+            // interruption without a useful matching `.ended` notification.
+            // The retained play intent is authoritative: reclaim the session
+            // and Now Playing ownership once the new output route is ready.
+            interruptionIsActive = false
+            if shouldAutoplay {
+                resumeAfterInterruption()
+            } else {
+                wasPlayingBeforeInterruption = false
+                persistCheckpoint(force: true)
+                updateNowPlayingInfo()
+                if UIApplication.shared.applicationState == .active { emitState() }
+            }
+        default:
+            break
+        }
     }
 
     private func resumeAfterInterruption() {
@@ -813,7 +846,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         else { return }
         let now = Date().timeIntervalSince1970 * 1000
         if !force && now - lastCheckpointWrite < 2_000 { return }
-        let position = positionSeconds ?? finiteSeconds(player.currentTime())
+        let position = positionSeconds ?? stablePlayerPosition()
+        lastKnownPosition = position
         let duration = durationSeconds ?? finiteSeconds(player.currentItem?.duration ?? .invalid)
         let checkpoint = NativeAudioCheckpoint(
             scopeKey: scopeKey,
@@ -950,6 +984,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         recoveryScopeKey = nil
         recoveryTrackId = nil
         recoveryBookOffset = 0
+        lastKnownPosition = 0
         nowPlayingChapters = []
         suppliedNowPlayingChapter = nil
         activeNowPlayingChapterIndex = nil
@@ -967,8 +1002,26 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func finiteSeconds(_ time: CMTime) -> Double {
+        validSeconds(time) ?? 0
+    }
+
+    private func validSeconds(_ time: CMTime) -> Double? {
         let value = CMTimeGetSeconds(time)
-        return value.isFinite && value >= 0 ? value : 0
+        return value.isFinite && value >= 0 ? value : nil
+    }
+
+    private func stablePlayerPosition() -> Double {
+        guard let current = validSeconds(player?.currentTime() ?? .invalid) else {
+            return lastKnownPosition
+        }
+        // A route swap can expose the replacement renderer's initial 0:00
+        // before it has adopted the existing item clock. Explicit seeks and
+        // queue changes update lastKnownPosition first, so preserving it here
+        // does not block a real rewind to the beginning.
+        if current < 0.01 && lastKnownPosition >= 1 {
+            return lastKnownPosition
+        }
+        return current
     }
 
     private func clampedRate(_ value: Double) -> Float {

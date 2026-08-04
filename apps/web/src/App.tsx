@@ -166,6 +166,7 @@ import {
   type NativeAudioQueueTrack
 } from "./nativeAudio";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
+import { NATIVE_STARTUP_SETTLE_MS, shouldAcceptNativeTrackChange } from "./startup";
 import {
   DEVICE_USER,
   getDeviceBooks,
@@ -1707,6 +1708,14 @@ function initialAuthState(): AuthState {
     : { phase: "loading" };
 }
 
+function NativeLaunchPlaceholder() {
+  return (
+    <div className="native-launch-placeholder" role="status" aria-label="Opening OperaLibre">
+      <span>OperaLibre</span>
+    </div>
+  );
+}
+
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
@@ -1791,6 +1800,7 @@ export default function App() {
   }, []);
 
   if (authState.phase === "loading") {
+    if (isNativeApp()) return <NativeLaunchPlaceholder />;
     return (
       <main className="auth-shell startup-shell">
         <div className="startup-loader" role="status" aria-live="polite" aria-label="Opening OperaLibre">
@@ -2000,6 +2010,34 @@ function MainApp({
   const explicitSessionStartBookIdRef = useRef<string | null>(null);
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
+  // Authentication can be restored synchronously, but the native destination
+  // and playback position depend on cached state. Keep the launch surface
+  // visible until both are coherent so neither the default Shelf nor the
+  // first track at 0:00 flashes on the way to a restored session.
+  const [startupViewReady, setStartupViewReady] = useState(!native);
+  const startupViewReadyRef = useRef(!native);
+  const startupProgressAppliedRef = useRef(false);
+  const startupRevealTimerRef = useRef<number | null>(null);
+  const scheduleStartupReveal = useCallback(() => {
+    if (!native || startupViewReadyRef.current) return;
+    if (startupRevealTimerRef.current !== null) {
+      window.clearTimeout(startupRevealTimerRef.current);
+    }
+    // Progress can arrive from the library summary, IndexedDB, AVPlayer, and
+    // the server within a few frames. Reveal only after that burst goes quiet.
+    startupRevealTimerRef.current = window.setTimeout(() => {
+      startupRevealTimerRef.current = null;
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        startupViewReadyRef.current = true;
+        setStartupViewReady(true);
+      }));
+    }, NATIVE_STARTUP_SETTLE_MS);
+  }, [native]);
+  useEffect(() => () => {
+    if (startupRevealTimerRef.current !== null) {
+      window.clearTimeout(startupRevealTimerRef.current);
+    }
+  }, []);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -2372,7 +2410,16 @@ function MainApp({
         if (!next && preferred && !preferredIsPresent && !definitive) return existing;
         if (!startupNavigationResolved.current && (next || preferredIsPresent || definitive)) {
           startupNavigationResolved.current = true;
-          if (native) setNativeTab(next ? "reading" : "shelf");
+          if (native) {
+            setNativeTab(next ? "reading" : "shelf");
+            // A restored Reading tab still needs its saved track and position.
+            // Revealing it here paints the first track at 0:00 before the
+            // progress effect below resolves the real checkpoint.
+            if (!next) {
+              startupViewReadyRef.current = true;
+              setStartupViewReady(true);
+            }
+          }
         }
         return next;
       });
@@ -2499,8 +2546,8 @@ function MainApp({
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
+      applyLoadedBooks(cached, true);
       if (cached.length) {
-        applyLoadedBooks(cached, true);
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
         setError("The audiobook server is not reachable.");
@@ -3033,6 +3080,7 @@ function MainApp({
 
     let cancelled = false;
     restoredProgressBookId.current = null;
+    if (!startupViewReadyRef.current) startupProgressAppliedRef.current = false;
     if (explicitSessionStartBookIdRef.current === playbackBook.id) {
       // A shelf play/restart chose this pending position deliberately. It is
       // the beginning of a new session, not a request to restore the previous
@@ -3055,7 +3103,15 @@ function MainApp({
       // Show the restored time immediately; the media element seeks to it
       // once metadata loads.
       setPosition(location?.positionSeconds ?? 0);
+      const restoredTrack = location
+        ? playbackBook.tracks.find((track) => track.id === location.trackId)
+        : playbackBook.tracks[0];
+      setDuration(restoredTrack?.durationSeconds ?? 0);
       restoredProgressBookId.current = playbackBook.id;
+      startupProgressAppliedRef.current = true;
+      // These updates are batched. The short quiet window also absorbs a
+      // fresher server reply or native metadata before the overlay leaves.
+      scheduleStartupReveal();
     };
 
     void (async () => {
@@ -3113,9 +3169,7 @@ function MainApp({
       const optimistic = isSuspectProgressReset(freshestLocal, listed)
         ? listed
         : freshestProgress(freshestLocal, listed);
-      if (optimistic) {
-        applyProgress(optimistic);
-      }
+      applyProgress(optimistic);
       let server: Progress | null = null;
       let serverReachable = true;
       // One failed fetch must not strand this device on a stale or empty
@@ -3221,6 +3275,11 @@ function MainApp({
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
+        // getNativeAudioRecovery already participated in startup
+        // reconciliation. A paused trackChanged event emitted while AVPlayer
+        // rebuilds its queue is not a listener action and must not overwrite
+        // the restored checkpoint or make the player oscillate.
+        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return;
         markPlaybackTouched();
         nativePlaybackPlayingRef.current = nativeIsPlaying;
         playWhenTrackLoads.current = nativeIsPlaying;
@@ -3228,6 +3287,8 @@ function MainApp({
         setCurrentTrackId(trackId);
         setPendingSeek({ trackId, positionSeconds });
         setPosition(positionSeconds);
+        setDuration(playbackBook.tracks.find((track) => track.id === trackId)?.durationSeconds ?? 0);
+        scheduleStartupReveal();
       },
       () => {
         markPlaybackTouched(true);
@@ -3832,6 +3893,14 @@ function MainApp({
     if (!audio) {
       return;
     }
+    // AVPlayer can emit its initial 0:00 clock before the pending restored
+    // seek reaches the media element. Keep the coherent checkpoint visible.
+    const restoring = pendingSeekRef.current;
+    if (restoring && restoring.trackId === currentTrackKey) {
+      setPosition(restoring.positionSeconds);
+      setDuration(Number.isFinite(audio.duration) ? audio.duration : duration);
+      return;
+    }
     setPosition(audio.currentTime);
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
 
@@ -3845,12 +3914,18 @@ function MainApp({
   // Marks that the listener moved playback in this session (and optionally
   // that the move was a deliberate seek). persistProgress writes nothing
   // until one of these has happened.
-  function markPlaybackTouched(deliberateSeek = false) {
+  //
+  // A seek into a book that is not the one currently playing has to name that
+  // book: playbackBook still points at the previous book (or nothing) until
+  // the state update lands, and marking the wrong book leaves the jump
+  // unflagged — the server would then bill the skipped hours as listening.
+  function markPlaybackTouched(deliberateSeek = false, seekBookId?: string) {
     playbackTouchedRef.current = true;
-    if (deliberateSeek && playbackBook) {
+    const bookId = seekBookId ?? playbackBook?.id;
+    if (deliberateSeek && bookId) {
       intentionalSeekGenerationRef.current.set(
-        playbackBook.id,
-        (intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0) + 1
+        bookId,
+        (intentionalSeekGenerationRef.current.get(bookId) ?? 0) + 1
       );
     }
   }
@@ -3942,6 +4017,7 @@ function MainApp({
       playWhenTrackLoads.current = false;
       startPlayback(audio);
     }
+    if (startupProgressAppliedRef.current) scheduleStartupReveal();
   }
 
   function seekBy(delta: number) {
@@ -3967,7 +4043,7 @@ function MainApp({
   }
 
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
-    markPlaybackTouched(true);
+    markPlaybackTouched(true, book.id);
     if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
@@ -4088,7 +4164,7 @@ function MainApp({
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
-    markPlaybackTouched(true);
+    markPlaybackTouched(true, selectedBook?.id ?? playbackBook?.id);
     if (selectedBook && playbackBook?.id !== selectedBook.id) {
       explicitSessionStartBookIdRef.current = selectedBook.id;
     }
@@ -4683,6 +4759,7 @@ function MainApp({
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
+      {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
       <audio
         key={currentTrackKey ?? "no-track"}
