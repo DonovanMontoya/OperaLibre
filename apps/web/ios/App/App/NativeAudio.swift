@@ -53,6 +53,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var endObserver: NSObjectProtocol?
     private var stalledObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
+    private var routeChangeObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
@@ -87,7 +88,12 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     deinit {
         tearDownPlayer()
-        for observer in [interruptionObserver, becameActiveObserver, enteredBackgroundObserver] {
+        for observer in [
+            interruptionObserver,
+            routeChangeObserver,
+            becameActiveObserver,
+            enteredBackgroundObserver
+        ] {
             if let observer { NotificationCenter.default.removeObserver(observer) }
         }
         let commandCenter = MPRemoteCommandCenter.shared()
@@ -628,6 +634,13 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         ) { [weak self] notification in
             self?.handleAudioInterruption(notification)
         }
+        routeChangeObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleAudioRouteChange(notification)
+        }
         becameActiveObserver = center.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
@@ -693,6 +706,28 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         @unknown default:
             break
         }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard
+            let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
+            reason == .oldDeviceUnavailable,
+            let player
+        else { return }
+
+        // Removing wired headphones or disconnecting AirPods is not reliably
+        // delivered as an audio interruption. Treat the route loss as an
+        // explicit pause so playback never spills onto the speaker, and record
+        // AVPlayer's clock before a suspended WebView can lose the position.
+        shouldAutoplay = false
+        wasPlayingBeforeInterruption = false
+        interruptionIsActive = false
+        pendingPosition = finiteSeconds(player.currentTime())
+        player.pause()
+        persistCheckpoint(force: true)
+        updateNowPlayingInfo()
+        if UIApplication.shared.applicationState == .active { emitState() }
     }
 
     private func resumeAfterInterruption() {
