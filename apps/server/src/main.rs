@@ -7454,10 +7454,7 @@ async fn profile_stats(
     // so this is time spent listening, not how far into books the reader has
     // reached. Nothing estimates the era before the log existed; that history
     // is unmeasured, and `measuring_since` says so rather than guessing.
-    let total_seconds_activity: f64 = user_activity
-        .values()
-        .map(|seconds| seconds.max(0.0))
-        .sum();
+    let total_seconds_activity: f64 = user_activity.values().map(|seconds| seconds.max(0.0)).sum();
     let total_hours_read = total_seconds_activity / 3600.0;
     let measuring_since = user_activity
         .iter()
@@ -7582,7 +7579,11 @@ fn weekday_from_monday(days_since_epoch: i64) -> i64 {
 /// Whole calendar weeks ending with the week that contains today, so the grid
 /// the client draws lines up under a fixed Monday-to-Sunday label column. The
 /// tail of the current week is still in the future and simply reads as zero.
-fn build_streak_calendar(activity: &BTreeMap<String, f64>, weeks: i64, today: i64) -> Vec<StreakDay> {
+fn build_streak_calendar(
+    activity: &BTreeMap<String, f64>,
+    weeks: i64,
+    today: i64,
+) -> Vec<StreakDay> {
     let start = today - weekday_from_monday(today) - (weeks - 1) * 7;
     (0..weeks * 7)
         .map(|offset| {
@@ -9543,7 +9544,12 @@ mod tests {
         assert_eq!(calendar[0].date, "2026-06-15");
         for index in (0..56).step_by(7) {
             let day = super::ymd_to_days(&calendar[index].date).unwrap();
-            assert_eq!(super::weekday_from_monday(day), 0, "{}", calendar[index].date);
+            assert_eq!(
+                super::weekday_from_monday(day),
+                0,
+                "{}",
+                calendar[index].date
+            );
         }
         assert!(calendar.iter().any(|day| day.date == "2026-08-04"));
     }
