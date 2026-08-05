@@ -1,4 +1,6 @@
-## Which file should I download?
+## Downloads
+
+### Which file should I download?
 
 - **Most people:** download a `combined` package for your computer. It includes the server and web app, starts in the background, and opens in your browser without leaving a Terminal window open.
 - **Server only:** download a `server` package when the frontend will be hosted separately or you are using another client.

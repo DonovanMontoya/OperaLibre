@@ -394,6 +394,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
 
       - name: Download release packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -412,6 +413,24 @@ jobs:
         with:
           subject-path: release-assets/*
 
+      - name: Build release notes
+        shell: bash
+        run: |
+          previous_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          {
+            echo "## What's changed"
+            echo
+            if [[ -n "${previous_tag}" ]]; then
+              git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_tag}..HEAD"
+              echo
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${RELEASE_TAG}"
+            else
+              git log --reverse --no-merges --pretty='- %s (`%h`)' HEAD
+            fi
+            echo
+            cat release/RELEASE_NOTES.md
+          } > release/RELEASE_BODY.md
+
       - name: Create or update release
         shell: bash
         env:
@@ -426,10 +445,10 @@ jobs:
             gh release upload "${RELEASE_TAG}" release-assets/* --clobber
             gh release edit "${RELEASE_TAG}" \
               --title "${title}" \
-              --notes-file release/RELEASE_NOTES.md
+              --notes-file release/RELEASE_BODY.md
           else
             gh release create "${RELEASE_TAG}" release-assets/* \
               --verify-tag \
               --title "${title}" \
-              --notes-file release/RELEASE_NOTES.md
+              --notes-file release/RELEASE_BODY.md
           fi
