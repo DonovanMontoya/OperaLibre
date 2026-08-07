@@ -18,7 +18,7 @@
     "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && cargo check --manifest-path apps/launcher/Cargo.toml && npm run typecheck -w @operalibre/web"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "@xmldom/xmldom": "^0.9.10"
