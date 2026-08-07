@@ -8,25 +8,25 @@ license-file = "../../LICENSE.md"
 anyhow = "1.0"
 argon2 = "0.5"
 axum = { version = "0.8", features = ["multipart"] }
-base64 = "0.22"
+base64 = "0.23"
 fs2 = "0.4"
-rand = "0.8"
+rand = "0.10"
 id3 = "1.16"
-lofty = "0.22"
+lofty = "0.24"
 mime_guess = "2.0"
 mp4ameta = "0.13"
 portable-pty = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 tempfile = "3"
 tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"
