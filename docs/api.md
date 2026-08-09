@@ -65,6 +65,12 @@ Frontend installation is available when the server directly serves a versioned w
 | `PUT` | `/api/users/{user_id}/libation-access` | Set direct or approval-required Libation access. Admin targets require an owner. |
 | `PUT` | `/api/users/{user_id}/libation-approval` | Grant or revoke an administrator's request-approval permission. Owner only. |
 
+#### Account settings
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `PUT` | `/api/me/progress-sharing` | Turn shared reading activity on or off for the current user with `{ "shareProgress": bool }`. Returns the updated account. |
+
 #### Library
 
 | Method | Path | Description |
@@ -85,6 +91,8 @@ Frontend installation is available when the server directly serves a versioned w
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
+
+Book responses carry a `sharedProgress` array describing what the *other* accounts on the server have done with the book — `userId`, `username`, `status` (`inProgress` or `finished`), `percentComplete`, and `updatedAt`. Sharing is reciprocal and controlled by each account's `shareProgress` flag, which defaults to on: an account that has turned sharing off is omitted from everyone else's `sharedProgress` and receives an empty array itself. Books nobody else has started omit the field entirely.
 
 Books that have a sync map expose a `syncFile` object (`fileName`, `source` of `sidecar` or `generated`, and `url`). The sync map itself is JSON:
 

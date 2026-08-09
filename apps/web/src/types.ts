@@ -31,9 +31,23 @@ export type Book = {
   metadata: MetadataSummary;
   tracks: Track[];
   progress: BookProgress | null;
+  /**
+   * What the other listeners on this server have done with the book. Omitted
+   * by Jellyfin, by device-only books, and whenever the viewer has turned
+   * progress sharing off.
+   */
+  sharedProgress?: SharedProgress[];
   /** Device books need no server; matched server books may retain a device copy. */
   source?: "server" | "device";
   deviceBookId?: string;
+};
+
+export type SharedProgress = {
+  userId: string;
+  username: string;
+  status: "notStarted" | "inProgress" | "finished";
+  percentComplete: number | null;
+  updatedAt: string;
 };
 
 export type BookMetadataUpdate = {
@@ -264,6 +278,8 @@ export type AuthUser = {
   canApproveLibationRequests: boolean;
   allowedBookIds: string[] | null;
   libationAccess: LibationAccess;
+  /** Absent on servers released before progress sharing; treated as sharing. */
+  shareProgress?: boolean;
   createdAt: string;
 };
 

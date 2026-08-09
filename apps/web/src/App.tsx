@@ -44,6 +44,7 @@ import {
   Upload,
   ScrollText,
   UserCog,
+  Users,
   Volume2,
   X
 } from "lucide-react";
@@ -60,6 +61,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
+  shouldResumeSavedPosition,
   summarizeBookProgress,
   writeProgressCheckpoint
 } from "./reliability";
@@ -76,7 +78,7 @@ import {
 } from "./playbackSpeed";
 import { isLibationAdding } from "./libationState";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
-import { buildChapterSegments } from "./chapters";
+import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   bookDownloadUrl,
   activateServerAlias,
@@ -180,6 +182,8 @@ import {
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
 import { ProfilePage } from "./Profile";
+import { ProgressSharingCard } from "./ProgressSharing";
+import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
   AuthUser,
@@ -1911,6 +1915,9 @@ function MainApp({
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
   const native = isNativeApp();
+  // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
+  // data, and demo/local libraries have no other listeners to compare against.
+  const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
@@ -1995,6 +2002,11 @@ function MainApp({
   const progressSaveInFlight = useRef(false);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
+  // Unlike playbackTouchedRef, this advances only for an actual listener
+  // action. Shelf Resume starts playback optimistically while reconciliation
+  // is still running, and that automatic start must not make a fresher server
+  // reply look stale.
+  const playbackActionVersionRef = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
   // Whether the listener moved playback (play, seek, track change) since the
   // current book was restored. Until then no progress is persisted anywhere:
@@ -2008,6 +2020,12 @@ function MainApp({
   const intentionalSeekGenerationRef = useRef<Map<string, number>>(new Map());
   const acknowledgedSeekGenerationRef = useRef<Map<string, number>>(new Map());
   const explicitSessionStartBookIdRef = useRef<string | null>(null);
+  // A shelf Resume is a request to play the *restored* position. Autoplay is
+  // therefore armed by the restore effect rather than by the click, so it can
+  // never start the placeholder first track while the real one resolves.
+  const resumeAutoplayBookIdRef = useRef<string | null>(null);
+  const resumeAutoplayPendingRef = useRef(false);
+  const resumeReconciliationBookIdRef = useRef<string | null>(null);
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
   // Authentication can be restored synchronously, but the native destination
@@ -2235,6 +2253,9 @@ function MainApp({
     [books, selectedBookId]
   );
   const selectedDescription = selectedBook ? displayBookDescription(selectedBook) : null;
+  const selectedSharedReaders = (selectedBook?.sharedProgress ?? []).filter(
+    (reader) => reader.status !== "notStarted"
+  );
   const descriptionCanExpand = (selectedDescription?.length ?? 0) > 260;
   const selectedDownload = selectedBook ? activeDownloads[selectedBook.id] : undefined;
   const deviceDownloadQueue = useMemo(
@@ -2322,10 +2343,7 @@ function MainApp({
         : [],
     [selectedBook]
   );
-  const activeChapter =
-    chapterSegments.find(
-      (chapter) => bookPosition >= chapter.startSeconds && bookPosition < chapter.endSeconds
-    ) ?? chapterSegments[chapterSegments.length - 1] ?? null;
+  const activeChapter = chapterAtBookPosition(chapterSegments, bookPosition);
   const chapterElapsed = activeChapter
     ? Math.max(0, bookPosition - activeChapter.startSeconds)
     : position;
@@ -3092,9 +3110,17 @@ function MainApp({
       };
     }
     playbackTouchedRef.current = false;
+    const armResumeAutoplay = resumeAutoplayBookIdRef.current === playbackBook.id;
+    resumeAutoplayBookIdRef.current = null;
     const restoreVersion = progressMutationVersion.current;
+    const restoreActionVersion = playbackActionVersionRef.current;
+    if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null) => {
-      if (cancelled || progressMutationVersion.current !== restoreVersion) {
+      if (
+        cancelled ||
+        progressMutationVersion.current !== restoreVersion ||
+        playbackActionVersionRef.current !== restoreActionVersion
+      ) {
         return;
       }
       const location = resolveProgressLocation(playbackBook.tracks, progress);
@@ -3109,6 +3135,13 @@ function MainApp({
       setDuration(restoredTrack?.durationSeconds ?? 0);
       restoredProgressBookId.current = playbackBook.id;
       startupProgressAppliedRef.current = true;
+      // The restored track and position are now known, so a queued shelf
+      // Resume can safely play: both places that consume this flag apply the
+      // pending seek before starting.
+      if (armResumeAutoplay) {
+        playWhenTrackLoads.current = true;
+        resumeAutoplayPendingRef.current = true;
+      }
       // These updates are batched. The short quiet window also absorbs a
       // fresher server reply or native metadata before the overlay leaves.
       scheduleStartupReveal();
@@ -3191,7 +3224,7 @@ function MainApp({
       if (cancelled) {
         return;
       }
-      if (playbackTouchedRef.current) {
+      if (playbackActionVersionRef.current !== restoreActionVersion) {
         // The listener already moved playback in this session; their live
         // position and its queued saves outrank whatever this late fetch
         // returned, and re-applying it would yank playback.
@@ -3213,7 +3246,7 @@ function MainApp({
             freshestLocal,
             { isPaused: true }
           ).catch(() => null);
-          if (cancelled || playbackTouchedRef.current) return;
+          if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
           if (saved) {
             const currentCheckpoint = readProgressCheckpoint(
               window.localStorage,
@@ -3241,10 +3274,22 @@ function MainApp({
       ) {
         applyProgress(target);
       }
-    })();
+    })().finally(() => {
+      // Let React commit a final reconciled seek before timeupdate is allowed
+      // to persist again; otherwise the optimistic media clock can win the
+      // narrow gap between setPendingSeek and its render.
+      window.setTimeout(() => {
+        if (resumeReconciliationBookIdRef.current === playbackBook.id) {
+          resumeReconciliationBookIdRef.current = null;
+        }
+      }, 0);
+    });
 
     return () => {
       cancelled = true;
+      if (resumeReconciliationBookIdRef.current === playbackBook.id) {
+        resumeReconciliationBookIdRef.current = null;
+      }
     };
     // Keyed on the book id: this must run only when playback moves to a
     // different book. Re-running on object identity meant every successful
@@ -3317,6 +3362,14 @@ function MainApp({
     setPlaybackPosition(audio, restoredPosition);
     setPosition(restoredPosition);
     setPendingSeek(null);
+    // Mirrors onLoadedMetadata. A queued autoplay whose element had already
+    // loaded this exact source gets no second metadata event, so without this
+    // a shelf Resume onto the track that was already staged never starts.
+    if (playWhenTrackLoads.current) {
+      playWhenTrackLoads.current = false;
+      startPlayback(audio, !resumeAutoplayPendingRef.current);
+      resumeAutoplayPendingRef.current = false;
+    }
   }, [currentTrackKey, pendingSeek, streamUrl]);
 
   useEffect(() => {
@@ -3503,7 +3556,8 @@ function MainApp({
       !playbackBook ||
       restoredProgressBookId.current !== playbackBook.id ||
       !currentTrack ||
-      !audioRef.current
+      !audioRef.current ||
+      resumeReconciliationBookIdRef.current === playbackBook.id
     ) {
       return;
     }
@@ -3678,6 +3732,9 @@ function MainApp({
     nativePlaybackPlayingRef.current = false;
     playWhenTrackLoads.current = false;
     wantsAutoplayRef.current = false;
+    resumeAutoplayBookIdRef.current = null;
+    resumeAutoplayPendingRef.current = false;
+    resumeReconciliationBookIdRef.current = null;
     pausePlayback(audioRef.current);
     setPlaybackBookId(null);
     setCurrentTrackId(null);
@@ -3919,8 +3976,19 @@ function MainApp({
   // book: playbackBook still points at the previous book (or nothing) until
   // the state update lands, and marking the wrong book leaves the jump
   // unflagged — the server would then bill the skipped hours as listening.
-  function markPlaybackTouched(deliberateSeek = false, seekBookId?: string) {
+  function markPlaybackTouched(
+    deliberateSeek = false,
+    seekBookId?: string,
+    interruptRestore = true
+  ) {
     playbackTouchedRef.current = true;
+    if (interruptRestore) {
+      playbackActionVersionRef.current += 1;
+      resumeAutoplayPendingRef.current = false;
+      if (resumeReconciliationBookIdRef.current === playbackBook?.id) {
+        resumeReconciliationBookIdRef.current = null;
+      }
+    }
     const bookId = seekBookId ?? playbackBook?.id;
     if (deliberateSeek && bookId) {
       intentionalSeekGenerationRef.current.set(
@@ -3930,9 +3998,12 @@ function MainApp({
     }
   }
 
-  function startPlayback(audio: HTMLAudioElement | null | undefined) {
+  function startPlayback(
+    audio: HTMLAudioElement | null | undefined,
+    interruptRestore = true
+  ) {
     if (!audio) return;
-    markPlaybackTouched();
+    markPlaybackTouched(false, undefined, interruptRestore);
     if (!nativeAudio) {
       safePlay(audio);
       return;
@@ -4015,7 +4086,8 @@ function MainApp({
     }
     if (playWhenTrackLoads.current) {
       playWhenTrackLoads.current = false;
-      startPlayback(audio);
+      startPlayback(audio, !resumeAutoplayPendingRef.current);
+      resumeAutoplayPendingRef.current = false;
     }
     if (startupProgressAppliedRef.current) scheduleStartupReveal();
   }
@@ -4192,6 +4264,38 @@ function MainApp({
     setPosition(0);
     playWhenTrackLoads.current = autoPlay;
     wantsAutoplayRef.current = autoPlay;
+  }
+
+  /**
+   * The shelf's primary action. Its label already promises the right thing —
+   * "Resume · 6h 32m left" — and the handler has to agree. Starting the first
+   * track marks a deliberate session start, which suppresses the restore
+   * effect, so every in-progress book reopened at the opening credits. A
+   * resume instead hands the book to that effect, which reconciles the native,
+   * checkpoint, cached, listed and server copies before seeking.
+   */
+  function playSelectedBook(book: Book) {
+    if (!shouldResumeSavedPosition(book.progress)) {
+      // "Read it again" on a finished book, or one never opened: track one.
+      if (book.tracks[0]) selectTrack(book.tracks[0]);
+      return;
+    }
+    setNativePlayerView("now");
+    if (native) {
+      setNativeTab("reading");
+    }
+    if (playbackBook?.id === book.id) {
+      // Already restored in this session — its live position is authoritative.
+      playWhenReady();
+      return;
+    }
+    void persistProgress();
+    // Deliberately no explicit session start, no pending seek, and no autoplay
+    // flag yet: the restore effect owns all three. Arming autoplay here would
+    // start the first track — `currentTrack` falls back to track one while the
+    // restored id is still resolving — which is the very thing being fixed.
+    resumeAutoplayBookIdRef.current = book.id;
+    setPlaybackBookId(book.id);
   }
 
   function jumpToChapter(chapter: Chapter) {
@@ -5229,6 +5333,7 @@ function MainApp({
                     : "Available on this device"
                   : "Available from the server";
                 const unavailableOffline = isOffline && !availableOnDevice;
+                const shared = summarizeSharedProgress(book.sharedProgress);
                 return (
                   <button
                     key={book.id}
@@ -5269,6 +5374,16 @@ function MainApp({
                           <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
                         ) : null}
                       </span>
+                      {shared ? (
+                        <span
+                          className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
+                          title={shared.detail}
+                          aria-label={shared.detail}
+                        >
+                          <Users size={11} strokeWidth={1.6} aria-hidden="true" />
+                          {shared.label}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 );
@@ -5810,6 +5925,20 @@ function MainApp({
               {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
             </div>
 
+            {selectedSharedReaders.length > 0 ? (
+              <section className="shared-readers" aria-label="Other listeners">
+                <span className="section-label"><Users size={13} /> Also read by</span>
+                <ul>
+                  {selectedSharedReaders.map((reader) => (
+                    <li key={reader.userId} className={reader.status}>
+                      <span className="shared-reader-name">{reader.username}</span>
+                      <span className="shared-reader-status">{readerStatusLabel(reader)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
             {selectedDescription ? (
               <div className="book-description-wrap">
                 <p
@@ -6073,7 +6202,7 @@ function MainApp({
                     type="button"
                     className="preview-primary"
                     aria-label={`Play ${selectedBook.title}`}
-                    onClick={() => selectedBook.tracks[0] && selectTrack(selectedBook.tracks[0])}
+                    onClick={() => playSelectedBook(selectedBook)}
                   >
                     <span className="preview-primary-icon"><Play size={19} fill="currentColor" /></span>
                     <span>
@@ -6094,7 +6223,7 @@ function MainApp({
                       type="button"
                       className="round-button primary"
                       aria-label={`Play ${selectedBook.title}`}
-                      onClick={() => selectedBook.tracks[0] && selectTrack(selectedBook.tracks[0])}
+                      onClick={() => playSelectedBook(selectedBook)}
                     >
                       <Play size={30} fill="currentColor" />
                     </button>
@@ -6656,6 +6785,9 @@ function MainApp({
             setProfileOpen(false);
             setLibraryOpen(false);
           }}
+          onUserChanged={onCurrentUserChanged}
+          onSharingChanged={() => void loadBooks()}
+          sharingAvailable={sharedProgressAvailable && !native}
         />
       ) : null}
 
@@ -6757,6 +6889,9 @@ function MainApp({
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
           }}
+          onUserChanged={onCurrentUserChanged}
+          onSharingChanged={() => void loadBooks()}
+          sharingAvailable={sharedProgressAvailable && !native}
         />
       ) : null}
 
@@ -6797,6 +6932,14 @@ function MainApp({
             </div>
             {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
           </section> : null}
+
+          {sharedProgressAvailable ? (
+            <ProgressSharingCard
+              user={currentUser}
+              onUserChanged={onCurrentUserChanged}
+              onSharingChanged={() => void loadBooks()}
+            />
+          ) : null}
 
           <section className="settings-card">
             <span className="section-label"><FolderOpen size={13} /> On this device</span>

@@ -631,6 +631,18 @@ export async function updateUserBookAccess(userId: string, allowedBookIds: strin
   });
 }
 
+/**
+ * Sharing is reciprocal on the server: turning it off both hides this account
+ * from other listeners and hides theirs from this one, so the library must be
+ * refetched after a change.
+ */
+export async function updateProgressSharing(shareProgress: boolean) {
+  return request<AuthUser>("/api/me/progress-sharing", {
+    method: "PUT",
+    body: JSON.stringify({ shareProgress })
+  });
+}
+
 export async function updateUserLibationAccess(userId: string, libationAccess: LibationAccess) {
   return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/libation-access`, {
     method: "PUT",
