@@ -1234,6 +1234,39 @@ img.cover-mark {
   opacity: 0.7;
 }
 
+.book-shared-readers {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem !important;
+  letter-spacing: 0.1em;
+  color: rgba(241, 231, 208, 0.48) !important;
+  /* The surrounding row uppercases its metadata labels. These are people's
+     names, so keep the casing they chose instead of shouting it. `.book-text
+     span` is more specific, hence the override. */
+  text-transform: none !important;
+}
+
+.book-shared-readers svg {
+  flex: none;
+  opacity: 0.65;
+}
+
+/* Someone finishing a book is the stronger signal, so it earns the accent the
+   plain "still reading" list does not. */
+.book-shared-readers.has-finishers {
+  color: rgba(122, 159, 132, 0.85) !important;
+}
+
+.book-shared-readers.has-finishers svg {
+  opacity: 0.85;
+}
+
 /* --------- Player / Reading page --------- */
 .player-pane {
   position: relative;
@@ -1508,6 +1541,52 @@ img.large-cover {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-faded);
+}
+
+.shared-readers {
+  display: grid;
+  gap: 10px;
+  max-width: 760px;
+}
+
+.shared-readers ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shared-readers li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid rgba(26, 20, 16, 0.16);
+  background: rgba(26, 20, 16, 0.03);
+}
+
+.shared-reader-name {
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.shared-reader-status {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+}
+
+.shared-readers li.finished {
+  border-color: rgba(122, 159, 132, 0.5);
+  background: rgba(122, 159, 132, 0.14);
+}
+
+.shared-readers li.finished .shared-reader-status {
+  color: rgba(64, 104, 76, 0.9);
 }
 
 .book-description-wrap {

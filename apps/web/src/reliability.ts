@@ -167,6 +167,18 @@ export function progressFromBookSummary(
   };
 }
 
+/**
+ * Whether the shelf's primary action is a resume rather than a fresh start.
+ * The button already labels itself "Resume · 6h 32m left" from this same
+ * summary, so the handler has to read it the same way — otherwise the promise
+ * on the button and the position it opens disagree.
+ */
+export function shouldResumeSavedPosition(
+  summary: { status: string; bookPositionSeconds: number } | null | undefined
+): boolean {
+  return !!summary && summary.status === "inProgress" && summary.bookPositionSeconds > 0;
+}
+
 export function freshestProgress(
   ...candidates: Array<Progress | null | undefined>
 ): Progress | null {

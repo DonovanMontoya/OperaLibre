@@ -213,7 +213,16 @@ struct User {
     allowed_book_ids: Option<Vec<String>>,
     #[serde(default)]
     libation_access: LibationAccess,
+    /// Whether this listener's reading status is visible to the other users on
+    /// the server. Accounts created before the setting existed are treated as
+    /// sharing, matching the default for new accounts.
+    #[serde(default = "default_share_progress")]
+    share_progress: bool,
     created_at: String,
+}
+
+fn default_share_progress() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +235,7 @@ struct UserPublic {
     can_approve_libation_requests: bool,
     allowed_book_ids: Option<Vec<String>>,
     libation_access: LibationAccess,
+    share_progress: bool,
     created_at: String,
 }
 
@@ -244,6 +254,7 @@ impl From<&User> for UserPublic {
             } else {
                 user.libation_access
             },
+            share_progress: user.share_progress,
             created_at: user.created_at.clone(),
         }
     }
@@ -287,6 +298,7 @@ struct AuthUser {
     can_approve_libation_requests: bool,
     allowed_book_ids: Option<Vec<String>>,
     libation_access: LibationAccess,
+    share_progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -400,6 +412,12 @@ struct UpdateUserRoleRequest {
 #[serde(rename_all = "camelCase")]
 struct UpdateLibationApprovalRequest {
     can_approve_libation_requests: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgressSharingRequest {
+    share_progress: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -606,6 +624,11 @@ struct Book {
     metadata: MetadataSummary,
     tracks: Vec<Track>,
     progress: Option<BookProgress>,
+    /// What the *other* listeners on this server have done with the book.
+    /// Only populated for viewers who share their own progress, and only with
+    /// users who share theirs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    shared_progress: Vec<SharedProgress>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -641,7 +664,20 @@ struct BookProgress {
     updated_at: String,
 }
 
+/// One other listener's position in a book, as shown to a viewer who also
+/// shares. Deliberately narrower than `BookProgress`: a percentage and a
+/// status, never a resume point someone else could act on.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedProgress {
+    user_id: String,
+    username: String,
+    status: BookProgressStatus,
+    percent_complete: Option<f64>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum BookProgressStatus {
     NotStarted,
@@ -1492,6 +1528,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/users/{user_id}/libation-approval",
             put(update_libation_approval),
         )
+        .route("/api/me/progress-sharing", put(update_progress_sharing))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
         .route(
@@ -3600,14 +3637,16 @@ async fn get_book(
     Path(book_id): Path<String>,
 ) -> Result<Json<Book>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let library = state.library.read().await;
-    let book = library
-        .books
-        .iter()
-        .find(|candidate| candidate.id == book_id)
-        .cloned()
-        .ok_or(ApiError::not_found("Book not found"))?;
-    Ok(Json(book))
+    let book = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Book not found"))?
+    };
+    Ok(Json(book_with_progress(&state, &auth, book).await?))
 }
 
 async fn update_book_metadata(
@@ -3649,9 +3688,7 @@ async fn update_book_metadata(
         book.clone()
     };
 
-    Ok(Json(
-        book_with_progress(&state, &auth.id, updated_book).await?,
-    ))
+    Ok(Json(book_with_progress(&state, &auth, updated_book).await?))
 }
 
 const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
@@ -5117,6 +5154,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             metadata: metadata_summary,
             tracks,
             progress: None,
+            shared_progress: Vec::new(),
         };
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
@@ -5939,6 +5977,7 @@ fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
 
 async fn books_with_progress(state: &AppState, auth: &AuthUser) -> Result<Vec<Book>, ApiError> {
     let saved_progress = read_progress(&state.progress_file).await?;
+    let sharers = progress_sharers(state, auth).await;
     let books = state.library.read().await.books.clone();
     Ok(books
         .into_iter()
@@ -5947,6 +5986,7 @@ async fn books_with_progress(state: &AppState, auth: &AuthUser) -> Result<Vec<Bo
             book.progress = saved_progress
                 .get(&progress_key(&auth.id, &book.id))
                 .map(|progress| summarize_book_progress(&book, progress));
+            book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
             book
         })
         .collect())
@@ -5954,14 +5994,78 @@ async fn books_with_progress(state: &AppState, auth: &AuthUser) -> Result<Vec<Bo
 
 async fn book_with_progress(
     state: &AppState,
-    user_id: &str,
+    auth: &AuthUser,
     mut book: Book,
 ) -> Result<Book, ApiError> {
     let saved_progress = read_progress(&state.progress_file).await?;
     book.progress = saved_progress
-        .get(&progress_key(user_id, &book.id))
+        .get(&progress_key(&auth.id, &book.id))
         .map(|progress| summarize_book_progress(&book, progress));
+    let sharers = progress_sharers(state, auth).await;
+    book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
     Ok(book)
+}
+
+/// The other listeners whose progress `auth` is allowed to see, as
+/// `(user_id, username)`. Sharing is reciprocal: a viewer who has switched
+/// their own sharing off sees nobody, so opting out is a symmetric trade
+/// rather than a way to watch without being watched.
+async fn progress_sharers(state: &AppState, auth: &AuthUser) -> Vec<(String, String)> {
+    let users = state.users.read().await;
+    visible_sharers(&users.users, auth)
+}
+
+fn visible_sharers(users: &[User], auth: &AuthUser) -> Vec<(String, String)> {
+    if !auth.share_progress {
+        return Vec::new();
+    }
+    users
+        .iter()
+        .filter(|user| user.share_progress && user.id != auth.id)
+        .map(|user| (user.id.clone(), user.username.clone()))
+        .collect()
+}
+
+fn collect_shared_progress(
+    book: &Book,
+    saved_progress: &HashMap<String, Progress>,
+    sharers: &[(String, String)],
+) -> Vec<SharedProgress> {
+    let mut entries: Vec<SharedProgress> = sharers
+        .iter()
+        .filter_map(|(user_id, username)| {
+            let progress = saved_progress.get(&progress_key(user_id, book.id.as_str()))?;
+            let summary = summarize_book_progress(book, progress);
+            // A row exists as soon as a book is opened, so untouched books
+            // would otherwise report every user on the server as a reader.
+            if summary.status == BookProgressStatus::NotStarted {
+                return None;
+            }
+            Some(SharedProgress {
+                user_id: user_id.clone(),
+                username: username.clone(),
+                status: summary.status,
+                percent_complete: summary.percent_complete,
+                updated_at: summary.updated_at,
+            })
+        })
+        .collect();
+    // Finished readers first, then the furthest along, so the truncated list
+    // shown on a library row leads with the most useful names.
+    entries.sort_by(|a, b| {
+        let rank = |entry: &SharedProgress| match entry.status {
+            BookProgressStatus::Finished => 0,
+            BookProgressStatus::InProgress => 1,
+            BookProgressStatus::NotStarted => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
+            b.percent_complete
+                .unwrap_or(0.0)
+                .partial_cmp(&a.percent_complete.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    entries
 }
 
 fn summarize_book_progress(book: &Book, progress: &Progress) -> BookProgress {
@@ -7987,6 +8091,7 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
             } else {
                 user.libation_access
             },
+            share_progress: user.share_progress,
         })
 }
 
@@ -8105,6 +8210,7 @@ async fn auth_status(
                     can_approve_libation_requests: auth.can_approve_libation_requests,
                     allowed_book_ids: auth.allowed_book_ids,
                     libation_access: auth.libation_access,
+                    share_progress: auth.share_progress,
                     created_at: String::new(),
                 }),
                 Some(media_token_for_session(&token)),
@@ -8178,6 +8284,7 @@ async fn setup_admin(
         can_approve_libation_requests: true,
         allowed_book_ids: None,
         libation_access: LibationAccess::Direct,
+        share_progress: true,
         created_at: now_rfc3339ish(),
     };
 
@@ -8427,8 +8534,26 @@ async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
         can_approve_libation_requests: auth.can_approve_libation_requests,
         allowed_book_ids: auth.allowed_book_ids,
         libation_access: auth.libation_access,
+        share_progress: auth.share_progress,
         created_at: String::new(),
     })
+}
+
+async fn update_progress_sharing(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<UpdateProgressSharingRequest>,
+) -> Result<Json<UserPublic>, ApiError> {
+    let mut users = state.users.write().await;
+    let user = users
+        .users
+        .iter_mut()
+        .find(|user| user.id == auth.id)
+        .ok_or(ApiError::not_found("User not found."))?;
+    user.share_progress = payload.share_progress;
+    let public = UserPublic::from(&*user);
+    write_users_store(&state.users_file, &users).await?;
+    Ok(Json(public))
 }
 
 fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
@@ -8532,6 +8657,7 @@ async fn create_user(
                 LibationAccess::Approval
             })
         },
+        share_progress: true,
         created_at: now_rfc3339ish(),
     };
     users.users.push(new_user.clone());
@@ -9014,6 +9140,7 @@ mod tests {
             metadata: Default::default(),
             tracks,
             progress: None,
+            shared_progress: Vec::new(),
         }
     }
 
@@ -9149,6 +9276,7 @@ mod tests {
             can_approve_libation_requests: false,
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
+            share_progress: true,
         };
         assert!(can_access_book(&unrestricted, "book-a"));
 
@@ -9179,6 +9307,96 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(user.libation_access, super::LibationAccess::Approval);
+        // Accounts that predate the setting share by default, matching new ones.
+        assert!(user.share_progress);
+    }
+
+    #[cfg(test)]
+    fn sharing_user(id: &str, share_progress: bool) -> super::User {
+        super::User {
+            id: id.to_string(),
+            username: id.to_string(),
+            password_hash: "unused".to_string(),
+            is_admin: false,
+            is_owner: false,
+            can_approve_libation_requests: false,
+            allowed_book_ids: None,
+            libation_access: super::LibationAccess::Approval,
+            share_progress,
+            created_at: "0".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn viewer(id: &str, share_progress: bool) -> AuthUser {
+        AuthUser {
+            id: id.to_string(),
+            username: id.to_string(),
+            is_admin: false,
+            is_owner: false,
+            can_approve_libation_requests: false,
+            allowed_book_ids: None,
+            libation_access: super::LibationAccess::Approval,
+            share_progress,
+        }
+    }
+
+    #[test]
+    fn progress_sharing_is_reciprocal_and_excludes_the_viewer() {
+        let users = vec![
+            sharing_user("me", true),
+            sharing_user("sharer", true),
+            sharing_user("private", false),
+        ];
+
+        let visible = super::visible_sharers(&users, &viewer("me", true));
+        assert_eq!(
+            visible,
+            vec![("sharer".to_string(), "sharer".to_string())],
+            "a sharing viewer sees other sharers, never themselves or opted-out users"
+        );
+
+        assert!(
+            super::visible_sharers(&users, &viewer("private", false)).is_empty(),
+            "opting out of sharing also hides everyone else"
+        );
+    }
+
+    #[test]
+    fn shared_progress_skips_untouched_books_and_leads_with_finishers() {
+        let book = book_with_tracks(
+            Some(1000.0),
+            vec![track_with_duration("track", 0, Some(1000.0))],
+        );
+
+        let stored = |position: f64| super::Progress {
+            book_id: "book".to_string(),
+            track_id: "track".to_string(),
+            position_seconds: position,
+            book_position_seconds: position,
+            duration_seconds: Some(1000.0),
+            updated_at: "1".to_string(),
+            finished_override: None,
+        };
+
+        let mut saved = std::collections::HashMap::new();
+        saved.insert(super::progress_key("halfway", "book"), stored(500.0));
+        saved.insert(super::progress_key("done", "book"), stored(1000.0));
+        // A row exists as soon as a book is opened; it must not read as reading.
+        saved.insert(super::progress_key("opened", "book"), stored(0.0));
+
+        let sharers = vec![
+            ("halfway".to_string(), "Halfway".to_string()),
+            ("opened".to_string(), "Opened".to_string()),
+            ("done".to_string(), "Done".to_string()),
+        ];
+        let shared = super::collect_shared_progress(&book, &saved, &sharers);
+
+        let names: Vec<&str> = shared.iter().map(|entry| entry.username.as_str()).collect();
+        assert_eq!(names, vec!["Done", "Halfway"]);
+        assert_eq!(shared[0].status, super::BookProgressStatus::Finished);
+        assert_eq!(shared[1].status, super::BookProgressStatus::InProgress);
+        assert_eq!(shared[1].percent_complete, Some(50.0));
     }
 
     #[test]
@@ -10017,6 +10235,7 @@ exit 0
             can_approve_libation_requests: true,
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Direct,
+            share_progress: true,
         }
     }
 
@@ -10030,6 +10249,7 @@ exit 0
             can_approve_libation_requests: true,
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Direct,
+            share_progress: true,
         }
     }
 
@@ -10048,6 +10268,7 @@ exit 0
             } else {
                 super::LibationAccess::Approval
             },
+            share_progress: true,
             created_at: "0".to_string(),
         }
     }
@@ -10062,6 +10283,7 @@ exit 0
             can_approve_libation_requests: false,
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
+            share_progress: true,
         }
     }
 

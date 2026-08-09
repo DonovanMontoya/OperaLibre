@@ -1,6 +1,7 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getProfileStats, mediaUrl } from "./api";
+import { ProgressSharingCard } from "./ProgressSharing";
 import { progressTimestamp, splitRoundedHours } from "./reliability";
 import type { AuthUser, ProfileRecentBook, ProfileStats, StreakDay } from "./types";
 
@@ -8,6 +9,10 @@ type ProfilePageProps = {
   user: AuthUser;
   onClose: () => void;
   onOpenBook: (bookId: string) => void;
+  onUserChanged: (user: AuthUser) => void;
+  onSharingChanged: () => void;
+  /** Jellyfin has no shared-progress concept, so the control is hidden there. */
+  sharingAvailable: boolean;
 };
 
 function relativeTime(value: string | null) {
@@ -48,7 +53,14 @@ function measuringSinceLabel(value: string | null) {
   return parsed.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
-export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
+export function ProfilePage({
+  user,
+  onClose,
+  onOpenBook,
+  onUserChanged,
+  onSharingChanged,
+  sharingAvailable
+}: ProfilePageProps) {
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -228,6 +240,14 @@ export function ProfilePage({ user, onClose, onOpenBook }: ProfilePageProps) {
                 ))}
               </ul>
             </section>
+          ) : null}
+
+          {sharingAvailable ? (
+            <ProgressSharingCard
+              user={user}
+              onUserChanged={onUserChanged}
+              onSharingChanged={onSharingChanged}
+            />
           ) : null}
         </>
       ) : null}

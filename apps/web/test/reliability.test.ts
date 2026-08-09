@@ -12,6 +12,7 @@ import {
   resolveBookId,
   resolveProgressLocation,
   serverStorageKey,
+  shouldResumeSavedPosition,
   splitRoundedHours,
   summarizeBookProgress,
   tzOffsetMinutes,
@@ -455,5 +456,29 @@ test("the library listing's progress summary works as a resume point", () => {
   assert.equal(
     progressFromBookSummary("book-1", { ...summary, status: "notStarted" }),
     null
+  );
+});
+
+test("the shelf's play button resumes exactly when it says Resume", () => {
+  // The same summary drives the label and the handler: a book the shelf shows
+  // as 9% read must not reopen at the opening credits.
+  const partway = summarizeBookProgress(
+    { durationSeconds: 25_560, tracks: [{ durationSeconds: 25_560 }] },
+    progress({ positionSeconds: 2_040, bookPositionSeconds: 2_040, durationSeconds: 25_560 })
+  );
+  assert.equal(partway?.status, "inProgress");
+  assert.equal(shouldResumeSavedPosition(partway), true);
+
+  // "Read it again" and "Begin this reading" are deliberate starts at zero.
+  const finished = summarizeBookProgress(
+    { durationSeconds: 25_560, tracks: [{ durationSeconds: 25_560 }] },
+    progress({ positionSeconds: 25_560, bookPositionSeconds: 25_560, durationSeconds: 25_560 })
+  );
+  assert.equal(finished?.status, "finished");
+  assert.equal(shouldResumeSavedPosition(finished), false);
+  assert.equal(shouldResumeSavedPosition(null), false);
+  assert.equal(
+    shouldResumeSavedPosition({ status: "inProgress", bookPositionSeconds: 0 }),
+    false
   );
 });
