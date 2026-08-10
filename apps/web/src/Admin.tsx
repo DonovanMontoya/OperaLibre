@@ -119,7 +119,13 @@ export function AdminPanel({
       if (force) {
         if (serverResult.status === "rejected") {
           setError(serverResult.reason instanceof Error ? serverResult.reason.message : "Could not check for server updates.");
-        } else if (!serverResult.value.updateAvailable) {
+        } else if (
+          !serverResult.value.updateAvailable
+          && (
+            frontendResult.status !== "fulfilled"
+            || !frontendResult.value?.updateAvailable
+          )
+        ) {
           setNotice(`The server is up to date at OperaLibre ${serverResult.value.currentVersion}.`);
         }
       }
@@ -394,79 +400,6 @@ export function AdminPanel({
         ))}
       </nav>
 
-      {updateStatus?.updateAvailable ? (
-        <section className="admin-update-banner" aria-live="polite">
-          <div className="admin-update-icon"><ArrowUpCircle size={22} /></div>
-          <div className="admin-update-copy">
-            <span>Server update available</span>
-            <strong>OperaLibre {updateStatus.latestVersion}</strong>
-            <p>
-              This server is running {updateStatus.currentVersion}.
-              {updateStatus.canAutoUpdate
-                ? currentUser.isOwner
-                  ? " Install the verified package and restart from here."
-                  : " An owner can install the update from this page."
-                : ` ${updateStatus.message ?? "This installation must be updated manually."}`}
-            </p>
-          </div>
-          <div className="admin-update-actions">
-            {currentUser.isOwner && updateStatus.canAutoUpdate ? (
-              <button
-                type="button"
-                disabled={updateInstalling || frontendUpdateInstalling}
-                onClick={() => void handleInstallUpdate()}
-              >
-                {updateInstalling ? <LoaderCircle size={15} className="spin-icon" /> : <ArrowUpCircle size={15} />}
-                {updateInstalling ? "Updating…" : "Update server"}
-              </button>
-            ) : null}
-            <a className="quiet-button" href={updateStatus.releaseUrl} target="_blank" rel="noreferrer">
-              <ExternalLink size={14} /> Release notes
-            </a>
-          </div>
-        </section>
-      ) : null}
-
-      {frontendUpdateStatus?.updateAvailable ? (
-        <section className="admin-update-banner frontend-update-banner" aria-live="polite">
-          <div className="admin-update-icon"><ArrowUpCircle size={22} /></div>
-          <div className="admin-update-copy">
-            <span>Web frontend update available</span>
-            <strong>OperaLibre web {frontendUpdateStatus.latestVersion}</strong>
-            <p>
-              This browser frontend is version {frontendUpdateStatus.currentVersion}.
-              {frontendUpdateStatus.canAutoUpdate
-                ? currentUser.isOwner
-                  ? " Install the verified frontend package without restarting the server."
-                  : " An owner can install the frontend update from this page."
-                : ` ${frontendUpdateStatus.message ?? "This frontend must be updated manually."}`}
-            </p>
-          </div>
-          <div className="admin-update-actions">
-            {currentUser.isOwner && frontendUpdateStatus.canAutoUpdate ? (
-              <button
-                type="button"
-                disabled={frontendUpdateInstalling || updateInstalling}
-                onClick={() => void handleInstallFrontendUpdate()}
-              >
-                {frontendUpdateInstalling
-                  ? <LoaderCircle size={15} className="spin-icon" />
-                  : <ArrowUpCircle size={15} />}
-                {frontendUpdateInstalling ? "Updating…" : "Update frontend"}
-              </button>
-            ) : null}
-            <a
-              className="quiet-button"
-              href={frontendUpdateStatus.releaseUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <ExternalLink size={14} /> Release notes
-            </a>
-          </div>
-        </section>
-      ) : null}
-
       {error ? <p className="admin-message error">{error}</p> : null}
       {notice ? <p className="admin-message success"><Check size={14} /> {notice}</p> : null}
 
@@ -499,12 +432,12 @@ export function AdminPanel({
             </div>
           </section>
           <section className="admin-card admin-software-card">
-            <div className="admin-software-copy">
-              <span className="section-label"><ArrowUpCircle size={13} /> Software versions</span>
-              <h2>OperaLibre software</h2>
-              <p>
-                Updates are checked automatically. When one is available, its install action appears at the top of this page.
-              </p>
+            <div className="admin-software-head">
+              <div className="admin-software-copy">
+                <span className="section-label"><ArrowUpCircle size={13} /> Software versions</span>
+                <h2>OperaLibre software</h2>
+                <p>Review installed versions and manage available updates in one place.</p>
+              </div>
               <div className="admin-software-actions">
                 <button
                   type="button"
@@ -517,15 +450,92 @@ export function AdminPanel({
                 </button>
               </div>
             </div>
-            <div className="admin-software-versions">
-              <div>
-                <span>Server</span>
-                <strong>{updateStatus?.currentVersion ?? (updateChecking ? "Checking…" : "Unavailable")}</strong>
-              </div>
-              <div>
-                <span>Web frontend</span>
-                <strong>{frontendUpdateStatus?.currentVersion ?? (FRONTEND_VERSION === "dev" ? "Development" : FRONTEND_VERSION)}</strong>
-              </div>
+            <div className="admin-software-versions" aria-live="polite">
+              <article className={updateStatus?.updateAvailable ? "update-available" : ""}>
+                <div className="admin-software-version-head">
+                  <div>
+                    <span>Server</span>
+                    <strong>{updateStatus?.currentVersion ?? (updateChecking ? "Checking…" : "Unavailable")}</strong>
+                  </div>
+                  {updateStatus?.updateAvailable ? (
+                    <span className="admin-update-badge"><ArrowUpCircle size={12} /> {updateStatus.latestVersion} available</span>
+                  ) : updateStatus && !updateChecking ? (
+                    <span className="admin-current-badge"><Check size={12} /> Up to date</span>
+                  ) : null}
+                </div>
+                {updateStatus?.updateAvailable ? (
+                  <div className="admin-software-update">
+                    <p>
+                      {updateStatus.canAutoUpdate
+                        ? currentUser.isOwner
+                          ? "Install the verified package and restart the server from here."
+                          : "An owner can install this update."
+                        : updateStatus.message ?? "This installation must be updated manually."}
+                    </p>
+                    <div className="admin-update-actions">
+                      {currentUser.isOwner && updateStatus.canAutoUpdate ? (
+                        <button
+                          type="button"
+                          disabled={updateInstalling || frontendUpdateInstalling}
+                          onClick={() => void handleInstallUpdate()}
+                        >
+                          {updateInstalling ? <LoaderCircle size={15} className="spin-icon" /> : <ArrowUpCircle size={15} />}
+                          {updateInstalling ? "Updating…" : "Update server"}
+                        </button>
+                      ) : null}
+                      <a className="quiet-button" href={updateStatus.releaseUrl} target="_blank" rel="noreferrer">
+                        <ExternalLink size={14} /> Release notes
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+              <article className={frontendUpdateStatus?.updateAvailable ? "update-available" : ""}>
+                <div className="admin-software-version-head">
+                  <div>
+                    <span>Web frontend</span>
+                    <strong>{frontendUpdateStatus?.currentVersion ?? (FRONTEND_VERSION === "dev" ? "Development" : FRONTEND_VERSION)}</strong>
+                  </div>
+                  {frontendUpdateStatus?.updateAvailable ? (
+                    <span className="admin-update-badge"><ArrowUpCircle size={12} /> {frontendUpdateStatus.latestVersion} available</span>
+                  ) : frontendUpdateStatus && !updateChecking ? (
+                    <span className="admin-current-badge"><Check size={12} /> Up to date</span>
+                  ) : null}
+                </div>
+                {frontendUpdateStatus?.updateAvailable ? (
+                  <div className="admin-software-update">
+                    <p>
+                      {frontendUpdateStatus.canAutoUpdate
+                        ? currentUser.isOwner
+                          ? "Install the verified frontend package without restarting the server."
+                          : "An owner can install this update."
+                        : frontendUpdateStatus.message ?? "This frontend must be updated manually."}
+                    </p>
+                    <div className="admin-update-actions">
+                      {currentUser.isOwner && frontendUpdateStatus.canAutoUpdate ? (
+                        <button
+                          type="button"
+                          disabled={frontendUpdateInstalling || updateInstalling}
+                          onClick={() => void handleInstallFrontendUpdate()}
+                        >
+                          {frontendUpdateInstalling
+                            ? <LoaderCircle size={15} className="spin-icon" />
+                            : <ArrowUpCircle size={15} />}
+                          {frontendUpdateInstalling ? "Updating…" : "Update frontend"}
+                        </button>
+                      ) : null}
+                      <a
+                        className="quiet-button"
+                        href={frontendUpdateStatus.releaseUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink size={14} /> Release notes
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
             </div>
           </section>
         </div>
