@@ -7,36 +7,62 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Version tag to create or rebuild, for example v0.1.0
-        required: true
+        description: Version tag to create or rebuild; leave blank to increment the latest release patch
+        required: false
+        default: ""
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'next-patch') || github.ref_name }}
   cancel-in-progress: false
-
-env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   prepare:
     name: Resolve release version
     runs-on: ubuntu-24.04
     outputs:
+      tag: ${{ steps.release-ref.outputs.tag }}
       ref: ${{ steps.release-ref.outputs.ref }}
       tag_exists: ${{ steps.release-ref.outputs.tag_exists }}
     steps:
-      - name: Resolve tag or current commit
+      - name: Resolve release tag and source
         id: release-ref
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "ref=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "${REQUESTED_TAG}")"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${release_tag}" ]]; then
+            latest_tag="$({
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'
+            } | sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -n 1)"
+
+            if [[ -z "${latest_tag}" ]]; then
+              release_tag="0.1.0"
+            else
+              IFS=. read -r major minor patch <<< "${latest_tag}"
+              release_tag="${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+
+          if [[ ! "${release_tag}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must be a semantic version such as 0.2.4 or v0.2.4." >&2
+            exit 1
+          fi
+
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" >/dev/null 2>&1; then
+            echo "ref=${release_tag}" >> "${GITHUB_OUTPUT}"
             echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
           else
             echo "ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
@@ -115,6 +141,8 @@ jobs:
       - prepare
       - verify
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -172,6 +200,8 @@ jobs:
       - prepare
       - frontend
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -234,6 +264,8 @@ jobs:
       - prepare
       - frontend
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -385,6 +417,8 @@ jobs:
       - android
       - native
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     permissions:
       contents: write
       id-token: write
