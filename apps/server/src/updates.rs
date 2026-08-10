@@ -417,7 +417,7 @@ impl UpdateManager {
         if downloaded != asset.size {
             bail!("The downloaded update package size did not match the release metadata.");
         }
-        let actual_digest = format!("{:x}", digest.finalize());
+        let actual_digest = crate::hex_digest(digest.finalize());
         if !actual_digest.eq_ignore_ascii_case(expected_digest) {
             bail!("The downloaded update package failed SHA-256 verification.");
         }
