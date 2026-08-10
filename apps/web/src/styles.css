@@ -4788,6 +4788,7 @@ select:focus {
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
   --status-h: env(safe-area-inset-top);
+  --mini-player-height: 128px;
   /* JavaScript replaces this with visualViewport.height and keeps it current
      through WKWebView's multi-phase rotation. 100vh remains a safe fallback
      for the earliest supported iOS 15 releases, before dvh was available. */
@@ -6778,9 +6779,10 @@ html.native-app .spine-tab span {
   letter-spacing: 0.16em;
 }
 
-/* Keep the floating mini-player clear of the last shelf rows. */
+/* Keep the final shelf row scrollable above the floating player. Its height is
+   measured because the transport gains a second row at narrower widths. */
 html.native-app .native-shell.tab-shelf > .library-pane {
-  padding-bottom: 128px;
+  padding-bottom: calc(var(--mini-player-height) + 24px);
 }
 
 /* --- Pull-to-refresh indicator (Shelf) --- */
@@ -7538,34 +7540,6 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-message.error { color: #7b2018; background: rgba(160, 49, 34, 0.1); }
 .admin-message.success { color: #315b3c; background: rgba(55, 112, 71, 0.1); }
 
-.admin-update-banner {
-  width: min(1180px, 100%);
-  margin: 0 auto 14px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid rgba(156, 104, 21, 0.3);
-  border-radius: 12px;
-  background: linear-gradient(120deg, rgba(184, 137, 58, 0.17), rgba(255, 252, 244, 0.82));
-  box-shadow: 0 16px 36px -30px rgba(26, 20, 16, 0.55);
-}
-
-.admin-update-icon {
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  color: var(--paper);
-  background: var(--oxblood);
-}
-
-.admin-update-copy { display: grid; gap: 2px; }
-.admin-update-copy > span { color: var(--oxblood); font: 600 0.62rem "JetBrains Mono", monospace; letter-spacing: 0.09em; text-transform: uppercase; }
-.admin-update-copy > strong { font: 400 1.35rem "Instrument Serif", serif; }
-.admin-update-copy p { margin: 0; color: var(--ink-faded); font-size: 0.82rem; line-height: 1.45; }
 .admin-update-actions { display: flex; gap: 8px; }
 .admin-update-actions button,
 .admin-update-actions a {
@@ -7632,8 +7606,13 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-software-card {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
-  align-items: center;
+  gap: 16px;
+}
+
+.admin-software-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
   gap: 18px;
 }
 
@@ -7649,7 +7628,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-software-actions {
   display: flex;
-  margin-top: 9px;
+  flex: 0 0 auto;
 }
 
 .admin-software-actions button {
@@ -7659,24 +7638,39 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-software-versions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  overflow: hidden;
+  gap: 10px;
+}
+
+.admin-software-versions > article {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
   border: 1px solid rgba(26, 20, 16, 0.1);
   border-radius: 10px;
   background: rgba(112, 37, 24, 0.025);
 }
 
-.admin-software-versions > div {
+.admin-software-versions > article.update-available {
+  border-color: rgba(156, 104, 21, 0.3);
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+}
+
+.admin-software-version-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-software-version-head > div {
   display: grid;
   gap: 3px;
   min-width: 0;
-  padding: 12px 13px;
 }
 
-.admin-software-versions > div + div {
-  border-left: 1px solid rgba(26, 20, 16, 0.1);
-}
-
-.admin-software-versions span {
+.admin-software-version-head > div > span {
   color: var(--ink-faded);
   font: 0.58rem "JetBrains Mono", monospace;
   letter-spacing: 0.08em;
@@ -7688,6 +7682,40 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   font: 400 1.18rem "Instrument Serif", serif;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-update-badge,
+.admin-current-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: var(--oxblood);
+  background: rgba(156, 104, 21, 0.14);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-current-badge {
+  color: #315b3c;
+  background: rgba(55, 112, 71, 0.1);
+}
+
+.admin-software-update {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(156, 104, 21, 0.22);
+}
+
+.admin-software-update p {
+  margin: 0;
+  color: var(--ink-faded);
+  font-size: 0.8rem;
+  line-height: 1.45;
 }
 .admin-quick-actions > div:last-child,
 .admin-section-head > button,
@@ -7799,10 +7827,11 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-user-layout { grid-template-columns: 1fr; }
   .admin-create-user { position: static; order: -1; }
   .admin-quick-actions, .admin-section-head { align-items: flex-start; flex-direction: column; }
-  .admin-update-banner { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
-  .admin-update-actions { grid-column: 1 / -1; width: 100%; }
+  .admin-update-actions { width: 100%; }
   .admin-update-actions button, .admin-update-actions a { flex: 1; }
-  .admin-software-card { grid-template-columns: 1fr; }
+  .admin-software-head { align-items: stretch; flex-direction: column; }
+  .admin-software-actions button { width: 100%; }
+  .admin-software-versions { grid-template-columns: 1fr; }
   .admin-user-head { align-items: flex-start; flex-wrap: wrap; }
   .admin-row-actions { width: 100%; padding-left: 47px; }
   .admin-libation-access { align-items: stretch; flex-direction: column; }
@@ -8676,7 +8705,7 @@ html.native-app .recent-row {
      In master/detail mode the transport moves to the detail column and the
      library only needs to clear the tab bar. */
   html.native-app .native-shell.tab-shelf:not(.library-book-open) > .library-pane {
-    padding-bottom: calc(var(--tabs-h) + 108px);
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
@@ -8684,7 +8713,7 @@ html.native-app .recent-row {
   }
 
   html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
-    padding-bottom: calc(var(--tabs-h) + 108px);
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   html.native-app .native-shell.tab-reading > .player-pane {

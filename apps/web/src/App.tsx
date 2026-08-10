@@ -1996,6 +1996,8 @@ function MainApp({
   }
   const [nativePlayerView, setNativePlayerView] = useState<"now" | "details" | "chapters">("now");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const miniPlayerRef = useRef<HTMLElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
@@ -4784,6 +4786,30 @@ function MainApp({
     }
   }, [librarySource, loadBooks, loadLibationBooks]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
+  const hasMiniPlayer = Boolean(playbackBook && currentTrack);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const player = miniPlayerRef.current;
+    if (!native || !shell || !player) {
+      shell?.style.removeProperty("--mini-player-height");
+      return;
+    }
+
+    const updatePlayerHeight = () => {
+      const height = Math.ceil(player.getBoundingClientRect().height);
+      // Reading hides the mini-player. Retain the last non-zero measurement so
+      // Shelf has the right clearance on the first frame after switching back.
+      if (height > 0) shell.style.setProperty("--mini-player-height", `${height}px`);
+    };
+    updatePlayerHeight();
+    const observer = new ResizeObserver(updatePlayerHeight);
+    observer.observe(player);
+    return () => {
+      observer.disconnect();
+      shell.style.removeProperty("--mini-player-height");
+    };
+  }, [hasMiniPlayer, native]);
 
   const userMenu = (
     <div className="user-menu" role="menu">
@@ -4857,6 +4883,7 @@ function MainApp({
 
   return (
     <main
+      ref={shellRef}
       className={
         native
           ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}`
@@ -6356,7 +6383,7 @@ function MainApp({
       </section>
 
       {playbackBook && currentTrack ? (
-        <aside className="mini-player" aria-label="Mini player">
+        <aside ref={miniPlayerRef} className="mini-player" aria-label="Mini player">
           <button className="mini-cover-button" type="button" onClick={scrollToPlayer} aria-label="Open current book">
             <CoverArt book={playbackBook} size="small" />
           </button>
