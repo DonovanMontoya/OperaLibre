@@ -1,7 +1,4 @@
-use argon2::{
-    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
-    password_hash::{SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -27,7 +24,8 @@ use lofty::{
     tag::{ItemKey, ItemValue, Tag},
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use rand::RngCore;
+use rand::RngExt;
+use rand_core::OsRng as PasswordOsRng;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -4791,7 +4789,7 @@ fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
         hasher.update(&sample[..last_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_digest(hasher.finalize()))
 }
 
 /// A file that cannot be read keeps a stable identity derived from its path
@@ -4871,7 +4869,7 @@ fn book_identity_fingerprint(track_fingerprints: &[String]) -> String {
         hasher.update((fingerprint.len() as u64).to_le_bytes());
         hasher.update(fingerprint.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex_digest(hasher.finalize())
 }
 
 struct LibraryIdentityCandidate<'a> {
@@ -5564,13 +5562,13 @@ fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
 
 fn first_tag_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
     keys.iter()
-        .find_map(|key| tag.get_string(key))
+        .find_map(|key| tag.get_string(*key))
         .map(clean_metadata_text)
         .filter(|value| !value.is_empty())
 }
 
 fn collect_genres(tag: &Tag) -> Vec<String> {
-    tag.get_strings(&ItemKey::Genre)
+    tag.get_strings(ItemKey::Genre)
         .flat_map(|value| value.split([';', ',']))
         .map(clean_metadata_text)
         .filter(|value| !value.is_empty())
@@ -5601,11 +5599,8 @@ fn collect_raw_fields(tag: &Tag) -> Vec<MetadataField> {
         .collect()
 }
 
-fn item_key_label(key: &ItemKey) -> String {
-    match key {
-        ItemKey::Unknown(value) => value.clone(),
-        known => format!("{known:?}"),
-    }
+fn item_key_label(key: ItemKey) -> String {
+    format!("{key:?}")
 }
 
 fn clean_metadata_text(value: impl AsRef<str>) -> String {
@@ -5748,7 +5743,7 @@ fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
 fn bytes_etag(data: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(data);
-    format!("\"{:x}\"", hasher.finalize())
+    format!("\"{}\"", hex_digest(hasher.finalize()))
 }
 
 fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
@@ -6195,7 +6190,7 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
         fs::create_dir_all(parent).await?;
     }
     let mut suffix = [0u8; 8];
-    OsRng.fill_bytes(&mut suffix);
+    rand::rng().fill(&mut suffix);
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -7146,7 +7141,7 @@ async fn create_job_with_state(
     deduplicate_pending: bool,
 ) -> (String, bool) {
     let mut bytes = [0u8; 8];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     let id = format!("{:016x}", u64::from_le_bytes(bytes));
     let mut jobs = state.jobs.write().await;
 
@@ -7269,7 +7264,19 @@ async fn update_job_finished(
 fn stable_id(input: &str) -> String {
     let mut hasher = Sha1::new();
     hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex_digest(hasher.finalize())[..16].to_string()
+}
+
+fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    bytes
+        .as_ref()
+        .iter()
+        .fold(String::new(), |mut output, byte| {
+            write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+            output
+        })
 }
 
 fn progress_key(user_id: &str, book_id: &str) -> String {
@@ -7844,7 +7851,7 @@ static DUMMY_PASSWORD_HASH: LazyLock<String> =
     LazyLock::new(|| hash_password("operalibre-timing-equalizer").unwrap_or_default());
 
 fn hash_password(password: &str) -> Result<String, ApiError> {
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = SaltString::generate(&mut PasswordOsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
@@ -7899,7 +7906,7 @@ async fn verify_dummy_password_async(state: &AppState, password: String) -> Resu
 
 fn generate_session_token() -> String {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
