@@ -48,6 +48,8 @@ type JellyfinItem = {
   Id?: string;
   Name?: string | null;
   Path?: string | null;
+  Container?: string | null;
+  MediaSources?: Array<{ Container?: string | null }> | null;
   Album?: string | null;
   AlbumId?: string | null;
   AlbumArtist?: string | null;
@@ -163,9 +165,24 @@ function mapUser(user: JellyfinUser): AuthUser {
   };
 }
 
+/**
+ * Offline downloads take their stored file extension from this name, so it has
+ * to carry a real one. `Path` is hidden from non-admin Jellyfin users, and
+ * neither `Name` nor the final fallback has an extension — without `Container`
+ * an MPEG-4 audiobook would be stored as `.mp3` and fail to decode.
+ */
 function fileName(item: JellyfinItem) {
   const path = item.Path?.replace(/\\/g, "/");
-  return path?.split("/").pop() || item.Name || "Audiobook";
+  const named = path?.split("/").pop();
+  if (named && /\.[A-Za-z0-9]{1,8}$/.test(named)) return named;
+  const container = (item.Container || item.MediaSources?.[0]?.Container || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const base = named || item.Name || "Audiobook";
+  // Only strip something that already looks like an extension, so a title with
+  // a dot in it ("Vol. 1") keeps its text.
+  return container ? `${base.replace(/\.[A-Za-z0-9]{1,8}$/, "")}.${container}` : base;
 }
 
 function narrator(item: JellyfinItem) {
@@ -235,6 +252,8 @@ function mapBook(items: JellyfinItem[]): Book | null {
         publishedDate: item.PremiereDate ?? (item.ProductionYear ? String(item.ProductionYear) : null),
         description: item.Overview ?? null,
         language: null,
+        series: null,
+        seriesPosition: null,
         genres: item.Genres ?? [],
         rawFields: []
       }
@@ -325,6 +344,8 @@ function mapBook(items: JellyfinItem[]): Book | null {
       publishedDate,
       description: first.Overview ?? null,
       language: null,
+      series: null,
+      seriesPosition: null,
       genres: first.Genres ?? [],
       rawFields: []
     },

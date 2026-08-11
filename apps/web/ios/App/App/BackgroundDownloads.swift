@@ -1,6 +1,22 @@
 import Foundation
 import Capacitor
 
+private enum DownloadError: LocalizedError {
+    case invalidFiles
+    case invalidSource
+    case invalidDestination
+    case jobNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFiles: return "At least one file is required."
+        case .invalidSource: return "A download source is not permitted."
+        case .invalidDestination: return "A download destination is invalid."
+        case .jobNotFound: return "The background download was not found."
+        }
+    }
+}
+
 fileprivate struct BackgroundDownloadFile {
     let source: URL
     let destination: URL
@@ -11,9 +27,18 @@ fileprivate struct BackgroundDownloadFile {
 private struct StoredBackgroundTask: Codable {
     let jobId: String
     let source: String?
+    let allowedOrigin: String?
+    // Absent in jobs persisted before proxied subpaths were supported; those
+    // servers had no base path, so an empty prefix reproduces their rules.
+    let allowedBasePath: String?
     let destination: String
     let label: String
     let required: Bool
+
+    var allowlist: BackgroundDownloadAllowlist? {
+        guard let allowedOrigin else { return nil }
+        return BackgroundDownloadAllowlist(origin: allowedOrigin, basePath: allowedBasePath ?? "")
+    }
 }
 
 private struct StoredBackgroundJob: Codable {
@@ -59,19 +84,33 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         recoverAndStartNextJob()
     }
 
-    fileprivate func enqueue(jobId: String, title: String, files: [BackgroundDownloadFile]) throws {
+    fileprivate func enqueue(
+        jobId: String,
+        title: String,
+        allowlist: BackgroundDownloadAllowlist,
+        files: [BackgroundDownloadFile]
+    ) throws {
         guard !files.isEmpty else { throw DownloadError.invalidFiles }
+        for file in files {
+            _ = try validatedBackgroundMediaSource(file.source, allowedBy: allowlist)
+            _ = try validatedBackgroundMediaDestination(file.destination)
+        }
         let descriptions = files.map { file in
             StoredBackgroundTask(
                 jobId: jobId,
                 source: file.source.absoluteString,
+                allowedOrigin: allowlist.origin,
+                allowedBasePath: allowlist.basePath,
                 destination: file.destination.absoluteString,
                 label: file.label,
                 required: file.required
             )
         }
         let existingDestinations = Set(descriptions.compactMap { info -> String? in
-            guard let destination = URL(string: info.destination), destination.isFileURL else { return nil }
+            guard
+                let value = URL(string: info.destination),
+                let destination = try? validatedBackgroundMediaDestination(value)
+            else { return nil }
             return FileManager.default.fileExists(atPath: destination.path) ? info.destination : nil
         })
         let requiredTotal = descriptions.filter(\.required).count
@@ -109,8 +148,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
 
         for (file, description) in zip(files, descriptions) {
             if existingDestinations.contains(description.destination) { continue }
+            let destination = try validatedBackgroundMediaDestination(file.destination)
             try FileManager.default.createDirectory(
-                at: file.destination.deletingLastPathComponent(),
+                at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
             let task = session.downloadTask(with: file.source)
@@ -177,6 +217,29 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
     }
 
+    func cancel(jobId: String, completion: @escaping () -> Void) {
+        session.getAllTasks { tasks in
+            let jobTasks = tasks.filter { self.taskInfo($0)?.jobId == jobId }
+            let files = self.mutateJobs { jobs -> [StoredBackgroundTask] in
+                let files = jobs[jobId]?.files ?? jobTasks.compactMap(self.taskInfo)
+                jobs.removeValue(forKey: jobId)
+                return files
+            }
+            for task in jobTasks { task.cancel() }
+            for file in files {
+                guard
+                    let value = URL(string: file.destination),
+                    let destination = try? validatedBackgroundMediaDestination(value)
+                else { continue }
+                try? FileManager.default.removeItem(at: destination)
+            }
+            // Cancelling the queue head leaves the next book's tasks suspended,
+            // so promote it here rather than waiting for a relaunch.
+            self.recoverAndStartNextJob()
+            completion()
+        }
+    }
+
     func handleEvents(identifier: String, completionHandler: @escaping () -> Void) {
         guard identifier == Self.sessionIdentifier else {
             completionHandler()
@@ -197,9 +260,10 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             return
         }
         do {
-            guard let destination = URL(string: info.destination), destination.isFileURL else {
+            guard let destinationValue = URL(string: info.destination) else {
                 throw DownloadError.invalidDestination
             }
+            let destination = try validatedBackgroundMediaDestination(destinationValue)
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -217,6 +281,40 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let info = taskInfo(task), error != nil else { return }
         record(task, info: info, succeeded: false)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard
+            let info = taskInfo(task),
+            let originalValue = info.source,
+            let original = URL(string: originalValue),
+            let redirected = request.url,
+            let allowlist = info.allowlist,
+            (try? validatedBackgroundMediaSource(original, allowedBy: allowlist)) != nil,
+            (try? validatedBackgroundMediaSource(redirected, allowedBy: allowlist)) != nil
+        else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        if totalBytesWritten > maximumBackgroundDownloadBytes {
+            downloadTask.cancel()
+        }
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
@@ -260,7 +358,10 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func reconcileFiles(in job: inout StoredBackgroundJob) {
         guard let files = job.files, !files.isEmpty else { return }
         let existing = files.filter { info in
-            guard let destination = URL(string: info.destination), destination.isFileURL else { return false }
+            guard
+                let value = URL(string: info.destination),
+                let destination = try? validatedBackgroundMediaDestination(value)
+            else { return false }
             return FileManager.default.fileExists(atPath: destination.path)
         }
         job.completed = max(job.completed, existing.count)
@@ -275,7 +376,18 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         session.getAllTasks { tasks in
             var tasksByJob: [String: [URLSessionTask]] = [:]
             for task in tasks {
-                guard let info = self.taskInfo(task) else { continue }
+                guard
+                    let info = self.taskInfo(task),
+                    let sourceValue = info.source,
+                    let source = URL(string: sourceValue),
+                    let allowlist = info.allowlist,
+                    (try? validatedBackgroundMediaSource(source, allowedBy: allowlist)) != nil,
+                    let destination = URL(string: info.destination),
+                    (try? validatedBackgroundMediaDestination(destination)) != nil
+                else {
+                    task.cancel()
+                    continue
+                }
                 tasksByJob[info.jobId, default: []].append(task)
             }
             var tasksToCancel: [URLSessionTask] = []
@@ -323,14 +435,25 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 var queuedTasks = tasksByJob[jobId] ?? []
                 if queuedTasks.isEmpty, let files = job.files {
                     let existingFiles = files.filter { info in
-                        guard let destination = URL(string: info.destination), destination.isFileURL else { return false }
+                        guard
+                            let value = URL(string: info.destination),
+                            let destination = try? validatedBackgroundMediaDestination(value)
+                        else { return false }
                         return FileManager.default.fileExists(atPath: destination.path)
                     }
                     job.completed = existingFiles.count
                     job.completedRequired = existingFiles.filter(\.required).count
                     job.handledTaskIds = []
                     for info in files where !existingFiles.contains(where: { $0.destination == info.destination }) {
-                        guard let sourceValue = info.source, let source = URL(string: sourceValue) else {
+                        guard
+                            let sourceValue = info.source,
+                            let sourceValue = URL(string: sourceValue),
+                            let allowlist = info.allowlist,
+                            let source = try? validatedBackgroundMediaSource(
+                                sourceValue,
+                                allowedBy: allowlist
+                            )
+                        else {
                             if info.required { job.errors.append("Could not restart \(info.label).") }
                             continue
                         }
@@ -371,19 +494,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         return result
     }
 
-    private enum DownloadError: LocalizedError {
-        case invalidFiles
-        case invalidDestination
-        case jobNotFound
-
-        var errorDescription: String? {
-            switch self {
-            case .invalidFiles: return "At least one file is required."
-            case .invalidDestination: return "A download destination is invalid."
-            case .jobNotFound: return "The background download was not found."
-            }
-        }
-    }
 }
 
 @objc(BackgroundDownloadsPlugin)
@@ -392,13 +502,17 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "BackgroundDownloads"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "enqueueBook", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getStatus", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "cancelBook", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func enqueueBook(_ call: CAPPluginCall) {
         guard
             let jobId = call.getString("jobId"),
             let title = call.getString("title"),
+            let serverOriginValue = call.getString("serverOrigin"),
+            let serverOriginUrl = URL(string: serverOriginValue),
+            let allowlist = BackgroundDownloadAllowlist(serverAddress: serverOriginUrl),
             let values = call.getArray("files", JSObject.self),
             !values.isEmpty
         else {
@@ -410,10 +524,11 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
             let files = try values.map { value -> BackgroundDownloadFile in
                 guard
                     let sourceValue = value["url"] as? String,
-                    let source = URL(string: sourceValue),
+                    let sourceValue = URL(string: sourceValue),
+                    let source = try? validatedBackgroundMediaSource(sourceValue, allowedBy: allowlist),
                     let destinationValue = value["path"] as? String,
-                    let destination = URL(string: destinationValue),
-                    destination.isFileURL
+                    let destinationValue = URL(string: destinationValue),
+                    let destination = try? validatedBackgroundMediaDestination(destinationValue)
                 else { throw PluginError.invalidFile }
                 return BackgroundDownloadFile(
                     source: source,
@@ -422,7 +537,12 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
                     required: value["required"] as? Bool ?? true
                 )
             }
-            try BackgroundDownloadManager.shared.enqueue(jobId: jobId, title: title, files: files)
+            try BackgroundDownloadManager.shared.enqueue(
+                jobId: jobId,
+                title: title,
+                allowlist: allowlist,
+                files: files
+            )
             call.resolve()
         } catch {
             call.reject(error.localizedDescription)
@@ -443,6 +563,16 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
             case .failure(let error):
                 call.reject(error.localizedDescription)
             }
+        }
+    }
+
+    @objc func cancelBook(_ call: CAPPluginCall) {
+        guard let jobId = call.getString("jobId") else {
+            call.reject("A job ID is required.")
+            return
+        }
+        BackgroundDownloadManager.shared.cancel(jobId: jobId) {
+            call.resolve()
         }
     }
 

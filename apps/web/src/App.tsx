@@ -138,6 +138,7 @@ import {
   cacheLibrary,
   cacheOfflineUser,
   cacheProgress,
+  cancelBookOfflineDownload,
   downloadBookForOffline,
   getBookBackgroundDownloadStatus,
   getCachedLibrary,
@@ -175,6 +176,7 @@ import {
   getDeviceProgress,
   importAudiobookFromDevice,
   mergeDeviceAndServerBooks,
+  migrateDeviceLibraryFileExtensions,
   removeDeviceBook,
   saveDeviceProgress,
   setDeviceBookCompletion
@@ -212,6 +214,9 @@ type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 type DeviceDownloadActivity = {
   bookId: string;
+  // Kept alongside the id so the queue row survives the book leaving `books`
+  // (a library refresh, a filter, a server switch) with Cancel still reachable.
+  title: string;
   fraction: number | null;
   state: "queued" | "running";
   queuedAt: number;
@@ -456,7 +461,7 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
-type SortMode = "title" | "author" | "duration" | "tracks" | "account";
+type SortMode = "title" | "author" | "series" | "genre" | "duration" | "tracks" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type ReaderTheme = "paper" | "sepia" | "night";
@@ -465,6 +470,8 @@ type MetadataEditorState = {
   author: string;
   narrator: string;
   publisher: string;
+  series: string;
+  seriesPosition: string;
   publishedDate: string;
   genres: string;
   asin: string;
@@ -474,6 +481,8 @@ type MetadataEditorState = {
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
   { value: "author", label: "Author" },
+  { value: "series", label: "Series" },
+  { value: "genre", label: "Genre" },
   { value: "account", label: "Account" },
   { value: "duration", label: "Length" },
   { value: "tracks", label: "Tracks" }
@@ -520,6 +529,8 @@ function metadataEditorFromBook(book: Book): MetadataEditorState {
     author: book.author ?? "",
     narrator: book.narrator ?? "",
     publisher: book.metadata.publisher ?? "",
+    series: book.metadata.series ?? "",
+    seriesPosition: book.metadata.seriesPosition ?? "",
     publishedDate: book.publishedDate ?? "",
     genres: book.genres.join(", "),
     asin: book.asin ?? "",
@@ -540,6 +551,8 @@ function metadataUpdateFromEditor(form: MetadataEditorState): BookMetadataUpdate
     author: form.author.trim(),
     narrator: form.narrator.trim(),
     publisher: form.publisher.trim(),
+    series: form.series.trim(),
+    seriesPosition: form.seriesPosition.trim(),
     publishedDate: form.publishedDate.trim(),
     genres: parseGenreInput(form.genres),
     asin: form.asin.trim(),
@@ -2180,7 +2193,7 @@ function MainApp({
     const query = searchQuery.trim().toLowerCase();
     const filtered = query
       ? books.filter((book) =>
-          [book.title, book.author, book.narrator]
+          [book.title, book.author, book.narrator, book.metadata.series, ...book.genres]
             .filter(Boolean)
             .some((field) => field!.toLowerCase().includes(query))
         )
@@ -2191,6 +2204,12 @@ function MainApp({
       switch (sortMode) {
         case "author":
           return (a.author ?? "").localeCompare(b.author ?? "") || a.title.localeCompare(b.title);
+        case "series":
+          return (a.metadata.series ?? "").localeCompare(b.metadata.series ?? "")
+            || (a.metadata.seriesPosition ?? "").localeCompare(b.metadata.seriesPosition ?? "", undefined, { numeric: true })
+            || a.title.localeCompare(b.title);
+        case "genre":
+          return (a.genres[0] ?? "").localeCompare(b.genres[0] ?? "") || a.title.localeCompare(b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
         case "tracks":
@@ -2414,6 +2433,7 @@ function MainApp({
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
     setIsLoading(true);
     setError(null);
+    if (native) await migrateDeviceLibraryFileExtensions();
     const deviceBooks = native ? getDeviceBooks() : [];
     const applyLoadedBooks = (nextBooks: Book[], definitive = false) => {
       if (!isCurrentRequest()) return;
@@ -3845,7 +3865,7 @@ function MainApp({
     setDownloadStatus(null);
     setActiveDownloads((existing) => ({
       ...existing,
-      [book.id]: { bookId: book.id, fraction: null, state: "queued", queuedAt: Date.now() }
+      [book.id]: { bookId: book.id, title: book.title, fraction: null, state: "queued", queuedAt: Date.now() }
     }));
     try {
       await downloadBookForOffline(book, mediaUrl, (done, total, percent, state) => {
@@ -3854,6 +3874,7 @@ function MainApp({
           ...existing,
           [book.id]: {
             bookId: book.id,
+            title: book.title,
             fraction,
             state: state === "queued" ? "queued" : "running",
             queuedAt: existing[book.id]?.queuedAt ?? Date.now()
@@ -3877,6 +3898,21 @@ function MainApp({
         const next = { ...existing };
         delete next[book.id];
         return next;
+      });
+    }
+  }
+
+  async function cancelOfflineDownload(book: Pick<Book, "id" | "title">) {
+    const abortController = downloadAbortControllersRef.current.get(book.id);
+    if (!abortController) return;
+    abortController.abort();
+    setDownloadStatus({ bookId: book.id, message: `${book.title} download cancelled` });
+    try {
+      await cancelBookOfflineDownload(book);
+    } catch (error) {
+      setDownloadStatus({
+        bookId: book.id,
+        message: `${book.title}: ${errorMessage(error, "Could not cancel the download.")}`
       });
     }
   }
@@ -5869,14 +5905,17 @@ function MainApp({
                         }`}
                         type="button"
                         onClick={() =>
-                          void (downloadedBookIds.has(selectedBook.id)
-                            ? removeOfflineDownload(selectedBook)
-                            : downloadForOffline(selectedBook))
+                          void (selectedDownload
+                            ? cancelOfflineDownload(selectedBook)
+                            : downloadedBookIds.has(selectedBook.id)
+                              ? removeOfflineDownload(selectedBook)
+                              : downloadForOffline(selectedBook))
                         }
-                        disabled={!!selectedDownload}
                         aria-label={
-                          downloadedBookIds.has(selectedBook.id)
-                            ? `Remove downloaded copy of ${selectedBook.title}`
+                          selectedDownload
+                            ? `Cancel download of ${selectedBook.title}`
+                            : downloadedBookIds.has(selectedBook.id)
+                              ? `Remove downloaded copy of ${selectedBook.title}`
                             : `Download ${selectedBook.title} for offline playback`
                         }
                       >
@@ -5887,11 +5926,7 @@ function MainApp({
                         )}
                         <span>
                           {selectedDownload
-                            ? selectedDownload.state === "queued"
-                              ? "Queued"
-                              : selectedDownload.fraction !== null
-                                ? `${Math.round(selectedDownload.fraction * 100)}%`
-                                : "Preparing…"
+                            ? "Cancel"
                             : downloadedBookIds.has(selectedBook.id)
                               ? "Downloaded"
                               : "Download"}
@@ -5947,6 +5982,9 @@ function MainApp({
             </div>
 
             <div className="metadata-strip">
+              {selectedBook.metadata.series ? (
+                <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
+              ) : null}
               {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
               {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
@@ -6741,6 +6779,27 @@ function MainApp({
                 />
               </label>
               <label>
+                <span>Series</span>
+                <input
+                  type="text"
+                  value={metadataForm.series}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, series: event.currentTarget.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Series number</span>
+                <input
+                  type="text"
+                  value={metadataForm.seriesPosition}
+                  onChange={(event) =>
+                    setMetadataForm({ ...metadataForm, seriesPosition: event.currentTarget.value })
+                  }
+                  placeholder="1"
+                />
+              </label>
+              <label>
                 <span>Published date</span>
                 <input
                   type="text"
@@ -6998,10 +7057,10 @@ function MainApp({
                 {deviceDownloadQueue.length > 0 ? (
                   <div className="settings-downloads" aria-label="Download queue">
                     {deviceDownloadQueue.map((activity, index) => {
-                      const book = books.find((candidate) => candidate.id === activity.bookId);
+                      const title = activity.title || "Audiobook";
                       return (
                         <div key={activity.bookId} className="settings-download-row">
-                          <strong>{book?.title ?? "Audiobook"}</strong>
+                          <strong>{title}</strong>
                           <span className="download-status">
                             {activity.state === "queued"
                               ? `Queued${index > 0 ? ` · ${index + 1}` : ""}`
@@ -7009,6 +7068,15 @@ function MainApp({
                                 ? "Starting…"
                                 : `${Math.round(activity.fraction * 100)}%`}
                           </span>
+                          <button
+                            type="button"
+                            className="download-btn"
+                            onClick={() => void cancelOfflineDownload({ id: activity.bookId, title })}
+                            aria-label={`Cancel download of ${title}`}
+                          >
+                            <X size={13} />
+                            <span>Cancel</span>
+                          </button>
                         </div>
                       );
                     })}

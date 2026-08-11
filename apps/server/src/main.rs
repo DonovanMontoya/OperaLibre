@@ -60,6 +60,8 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
+const LIBATION_METADATA_SIDECAR_SUFFIX: &str = ".metadata.json";
+const MAX_LIBATION_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 const SESSION_COOKIE_NAME: &str = "operalibre_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 const LOGIN_MAX_FAILURES: u32 = 5;
@@ -193,6 +195,8 @@ struct BookMetadataOverride {
     genres: Option<Vec<String>>,
     published_date: Option<String>,
     publisher: Option<String>,
+    series: Option<String>,
+    series_position: Option<String>,
     asin: Option<String>,
 }
 
@@ -704,6 +708,8 @@ struct MetadataSummary {
     published_date: Option<String>,
     description: Option<String>,
     language: Option<String>,
+    series: Option<String>,
+    series_position: Option<String>,
     genres: Vec<String>,
     raw_fields: Vec<MetadataField>,
 }
@@ -784,6 +790,8 @@ struct BookMetadataUpdate {
     genres: Vec<String>,
     published_date: Option<String>,
     publisher: Option<String>,
+    series: Option<String>,
+    series_position: Option<String>,
     asin: Option<String>,
 }
 
@@ -796,6 +804,19 @@ struct TrackMetadata {
     asin: Option<String>,
     chapters: Vec<ParsedChapter>,
     cover_art: Option<EmbeddedImage>,
+    summary: MetadataSummary,
+}
+
+/// The raw sidecar Libation can save beside a liberated audiobook. Its schema
+/// mirrors Audible responses and has changed over time, so we extract the
+/// stable, user-facing fields rather than deserializing one rigid version.
+#[derive(Default)]
+struct LibationSidecarMetadata {
+    title: Option<String>,
+    subtitle: Option<String>,
+    author: Option<String>,
+    narrator: Option<String>,
+    asin: Option<String>,
     summary: MetadataSummary,
 }
 
@@ -3762,7 +3783,8 @@ async fn get_reading_file(
         .is_some_and(|extension| {
             extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
         });
-    let mut response = serve_file_response(&file_path, headers, None).await?;
+    let mut response =
+        serve_file_response(&file_path, &[&state.library_root], headers, None).await?;
     // Companion files come from the audiobook library, not the application
     // bundle, so no readalong type may be re-interpreted as active content —
     // a .txt sniffed as HTML is exactly what this prevents.
@@ -3804,7 +3826,13 @@ async fn get_sync_map(
             .ok_or(ApiError::not_found("Sync map not found"))?
     };
 
-    serve_file_response(&file_path, headers, None).await
+    serve_file_response(
+        &file_path,
+        &[&state.library_root, &state.sync_dir],
+        headers,
+        None,
+    )
+    .await
 }
 
 async fn alignment_status(
@@ -4306,19 +4334,49 @@ async fn stream_track(
             .ok_or(ApiError::not_found("Track path not found"))?
     };
 
-    serve_file_response(&file_path, headers, None).await
+    serve_file_response(&file_path, &[&state.library_root], headers, None).await
+}
+
+/// `mime_guess` types the MPEG-4 audio extensions in ways no client acts on:
+/// `.m4b` and `.m4a` map to the unregistered `audio/m4b` and `audio/m4a`, and
+/// `.mp4` maps to `video/mp4`. The track stream route carries no file extension
+/// either, so a player that trusts `Content-Type` — iOS AVFoundation most of
+/// all — is left with no usable hint about what it is being handed. Serve the
+/// registered container type for all three and let every other extension keep
+/// the guess, which is already correct for `mp3`, `flac`, `ogg`, and the rest.
+fn media_content_type(file_path: &FsPath) -> String {
+    let extension = file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    match extension.as_str() {
+        "m4a" | "m4b" | "mp4" => "audio/mp4".to_string(),
+        _ => mime_guess::from_path(file_path)
+            .first_or_octet_stream()
+            .to_string(),
+    }
 }
 
 async fn serve_file_response(
     file_path: &FsPath,
+    allowed_roots: &[&FsPath],
     headers: HeaderMap,
     content_disposition: Option<String>,
 ) -> Result<Response, ApiError> {
-    let metadata = fs::metadata(file_path).await?;
+    let file_path = file_path.to_path_buf();
+    let path_for_open = file_path.clone();
+    let allowed_roots = allowed_roots
+        .iter()
+        .map(|root| root.to_path_buf())
+        .collect::<Vec<_>>();
+    let (file, metadata) =
+        tokio::task::spawn_blocking(move || open_contained_file(&path_for_open, &allowed_roots))
+            .await
+            .map_err(|error| ApiError::internal(format!("Could not open media file: {error}")))?
+            .map_err(|_| ApiError::not_found("Media file not found"))?;
     let file_size = metadata.len();
-    let content_type = mime_guess::from_path(file_path)
-        .first_or_octet_stream()
-        .to_string();
+    let content_type = media_content_type(&file_path);
     if file_size == 0 {
         if headers.contains_key(RANGE) {
             return range_not_satisfiable_response(file_size);
@@ -4353,7 +4411,7 @@ async fn serve_file_response(
         None => (StatusCode::OK, 0, file_size - 1),
     };
 
-    let mut file = fs::File::open(file_path).await?;
+    let mut file = fs::File::from_std(file);
     file.seek(SeekFrom::Start(start)).await?;
     let stream =
         ReaderStream::with_capacity(file.take(end - start + 1), MEDIA_STREAM_BUFFER_CAPACITY);
@@ -4373,6 +4431,55 @@ async fn serve_file_response(
     }
 
     Ok(response.body(body)?)
+}
+
+fn open_contained_file(
+    file_path: &FsPath,
+    allowed_roots: &[PathBuf],
+) -> anyhow::Result<(std::fs::File, std::fs::Metadata)> {
+    if std::fs::symlink_metadata(file_path)?
+        .file_type()
+        .is_symlink()
+    {
+        anyhow::bail!("symbolic links are not valid media files");
+    }
+
+    let canonical_path = std::fs::canonicalize(file_path)?;
+    let canonical_roots = allowed_roots
+        .iter()
+        .map(std::fs::canonicalize)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !canonical_roots
+        .iter()
+        .any(|root| canonical_path != *root && canonical_path.starts_with(root))
+    {
+        anyhow::bail!("media file is outside an approved root");
+    }
+
+    let file = std::fs::File::open(&canonical_path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        anyhow::bail!("media path is not a regular file");
+    }
+
+    // Re-resolve and compare an independently opened handle after opening the
+    // file. This rejects a pathname that was exchanged between validation and
+    // use, while callers continue streaming from the already validated handle.
+    let resolved_after_open = std::fs::canonicalize(file_path)?;
+    if resolved_after_open != canonical_path
+        || !canonical_roots
+            .iter()
+            .any(|root| resolved_after_open != *root && resolved_after_open.starts_with(root))
+    {
+        anyhow::bail!("media path changed during validation");
+    }
+    let opened_handle = same_file::Handle::from_file(file.try_clone()?)?;
+    let current_handle = same_file::Handle::from_path(&resolved_after_open)?;
+    if opened_handle != current_handle {
+        anyhow::bail!("media file changed during validation");
+    }
+
+    Ok((file, metadata))
 }
 
 fn range_not_satisfiable_response(file_size: u64) -> Result<Response, ApiError> {
@@ -4426,12 +4533,19 @@ async fn download_book(
         return Err(ApiError::not_found("No tracks available for download"));
     }
 
+    let library_root = state.library_root.clone();
+    let sizing_root = library_root.clone();
     let (tracks, source_bytes) = tokio::task::spawn_blocking(move || {
-        let source_bytes = tracks.iter().try_fold(0_u64, |total, (_, path)| {
-            total
-                .checked_add(std::fs::metadata(path)?.len())
-                .ok_or_else(|| anyhow::anyhow!("The book is too large to archive."))
-        })?;
+        let mut source_bytes = 0_u64;
+        for (_, path) in &tracks {
+            // Size the archive without keeping a handle per track: a book with
+            // hundreds of chapter files would otherwise exhaust the process
+            // descriptor limit before the ZIP is written.
+            let (_, metadata) = open_contained_file(path, std::slice::from_ref(&sizing_root))?;
+            source_bytes = source_bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| anyhow::anyhow!("The book is too large to archive."))?;
+        }
         Ok::<_, anyhow::Error>((tracks, source_bytes))
     })
     .await
@@ -4473,9 +4587,12 @@ async fn download_book(
             let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored)
                 .large_file(true);
-            for (file_name, source_path) in tracks {
+            for (file_name, path) in tracks {
+                // Re-open per entry so only one track handle is live at a time;
+                // the containment check runs again against the same roots.
+                let (mut source, _) =
+                    open_contained_file(&path, std::slice::from_ref(&library_root))?;
                 writer.start_file(sanitize_zip_entry(&file_name), options)?;
-                let mut source = std::fs::File::open(&source_path)?;
                 std::io::copy(&mut source, &mut writer)?;
             }
             writer.finish()?;
@@ -4684,6 +4801,10 @@ fn metadata_override_from_update(
             .published_date
             .map(|value| clean_metadata_text(&value)),
         publisher: update.publisher.map(|value| clean_metadata_text(&value)),
+        series: update.series.map(|value| clean_metadata_text(&value)),
+        series_position: update
+            .series_position
+            .map(|value| clean_metadata_text(&value)),
         asin,
     })
 }
@@ -4736,6 +4857,12 @@ fn apply_book_metadata_override(book: &mut Book, metadata_override: &BookMetadat
     }
     if let Some(publisher) = metadata_override.publisher.as_deref() {
         book.metadata.publisher = optional_override_value(publisher);
+    }
+    if let Some(series) = metadata_override.series.as_deref() {
+        book.metadata.series = optional_override_value(series);
+    }
+    if let Some(series_position) = metadata_override.series_position.as_deref() {
+        book.metadata.series_position = optional_override_value(series_position);
     }
     if let Some(asin) = metadata_override.asin.as_deref() {
         book.asin = optional_override_value(asin);
@@ -4959,6 +5086,235 @@ fn resolve_library_identity(
     (identity.book_id.clone(), track_ids)
 }
 
+fn libation_sidecar_for_group(
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+) -> Option<LibationSidecarMetadata> {
+    let directory = grouped_files.first()?.parent()?;
+    let mut candidates = std::fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.to_ascii_lowercase()
+                        .ends_with(LIBATION_METADATA_SIDECAR_SUFFIX)
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    let known_asins = grouped_files
+        .iter()
+        .filter_map(|path| extract_asin_from_path(path))
+        .collect::<HashSet<_>>();
+    let audio_stems = grouped_files
+        .iter()
+        .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
+        .map(normalize_match_key)
+        .collect::<Vec<_>>();
+    let group_stem = group_key
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(normalize_match_key);
+
+    let mut parsed = candidates
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = std::fs::metadata(&path).ok()?;
+            if metadata.len() > MAX_LIBATION_METADATA_BYTES {
+                return None;
+            }
+            let contents = std::fs::read_to_string(&path).ok()?;
+            Some((path, parse_libation_sidecar(&contents)?))
+        })
+        .collect::<Vec<_>>();
+
+    let owns_sidecar = |path: &FsPath, sidecar: &LibationSidecarMetadata| {
+        if sidecar
+            .asin
+            .as_ref()
+            .is_some_and(|asin| known_asins.contains(asin))
+        {
+            return true;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let stem_key =
+            normalize_match_key(&name[..name.len() - LIBATION_METADATA_SIDECAR_SUFFIX.len()]);
+        Some(&stem_key) == group_stem.as_ref() || audio_stems.iter().any(|stem| stem == &stem_key)
+    };
+
+    // Only a book that owns its folder may claim a sidecar that names neither
+    // its ASIN nor its files. Loose files in `library_root` share a directory
+    // with every other loose book, so an unrelated record must not win there.
+    let selected = parsed
+        .iter()
+        .position(|(path, sidecar)| owns_sidecar(path, sidecar))
+        .or_else(|| {
+            (group_key.is_dir() && known_asins.is_empty() && !parsed.is_empty()).then_some(0)
+        })?;
+    Some(parsed.swap_remove(selected).1)
+}
+
+fn parse_libation_sidecar(contents: &str) -> Option<LibationSidecarMetadata> {
+    let value: serde_json::Value = serde_json::from_str(contents).ok()?;
+    let title = sidecar_string(&value, &["title", "title_name"]);
+    let asin = sidecar_string(&value, &["asin", "audible_product_id", "product_id"])
+        .and_then(|value| normalize_asin(&value));
+    let series = sidecar_series(&value);
+    let genres = sidecar_strings(
+        &value,
+        &["genres", "genre", "category_ladders", "categories"],
+    );
+    let metadata = MetadataSummary {
+        album: title.clone(),
+        subtitle: sidecar_string(&value, &["subtitle"]),
+        publisher: sidecar_string(&value, &["publisher_name", "publisher"]),
+        published_date: sidecar_string(
+            &value,
+            &["publication_date", "release_date", "published_date"],
+        ),
+        description: sidecar_string(&value, &["publisher_summary", "summary", "description"]),
+        language: sidecar_string(&value, &["language"]),
+        series: series.as_ref().map(|(name, _)| name.clone()),
+        series_position: series.and_then(|(_, position)| position),
+        genres: unique_strings(genres),
+        raw_fields: Vec::new(),
+    };
+    let result = LibationSidecarMetadata {
+        title,
+        subtitle: metadata.subtitle.clone(),
+        author: sidecar_people(&value, &["authors", "author"]),
+        narrator: sidecar_people(&value, &["narrators", "narrator"]),
+        asin,
+        summary: metadata,
+    };
+    (result.title.is_some() || result.asin.is_some() || result.summary.series.is_some())
+        .then_some(result)
+}
+
+fn normalized_json_key(key: &str) -> String {
+    key.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn sidecar_values<'a>(
+    value: &'a serde_json::Value,
+    names: &[&str],
+    output: &mut Vec<&'a serde_json::Value>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, nested) in object {
+                if names
+                    .iter()
+                    .any(|name| normalized_json_key(key) == normalized_json_key(name))
+                {
+                    output.push(nested);
+                }
+                sidecar_values(nested, names, output);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                sidecar_values(nested, names, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sidecar_string(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    // Prefer fields on the current record before descending. Otherwise a
+    // nested series title can win over the audiobook title merely because
+    // JSON object keys are stored in sorted order.
+    if let serde_json::Value::Object(object) = value
+        && let Some(value) = object.iter().find_map(|(key, value)| {
+            names
+                .iter()
+                .any(|name| normalized_json_key(key) == normalized_json_key(name))
+                .then_some(value)
+        })
+        && let Some(value) = value
+            .as_str()
+            .map(clean_metadata_text)
+            .filter(|value| !value.is_empty())
+    {
+        return Some(value);
+    }
+    match value {
+        serde_json::Value::Object(object) => object
+            .values()
+            .find_map(|nested| sidecar_string(nested, names)),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|nested| sidecar_string(nested, names)),
+        _ => None,
+    }
+}
+
+fn sidecar_strings(value: &serde_json::Value, names: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    sidecar_values(value, names, &mut values);
+    values
+        .into_iter()
+        .flat_map(|value| match value {
+            serde_json::Value::String(value) => vec![clean_metadata_text(value)],
+            serde_json::Value::Array(values) => values
+                .iter()
+                .flat_map(|entry| {
+                    entry
+                        .as_str()
+                        .map(clean_metadata_text)
+                        .or_else(|| sidecar_string(entry, &["name", "title"]))
+                })
+                .collect(),
+            serde_json::Value::Object(_) => sidecar_string(value, &["name", "title"])
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn sidecar_people(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    let people = sidecar_strings(value, names);
+    (!people.is_empty()).then(|| unique_strings(people).join(", "))
+}
+
+fn sidecar_series(value: &serde_json::Value) -> Option<(String, Option<String>)> {
+    let mut series = Vec::new();
+    sidecar_values(value, &["series"], &mut series);
+    series
+        .into_iter()
+        .find_map(|value| match value {
+            serde_json::Value::String(name) => Some((clean_metadata_text(name), None)),
+            serde_json::Value::Array(entries) => entries.iter().find_map(|entry| {
+                let name = sidecar_string(entry, &["title", "name", "series_title"])?;
+                Some((
+                    name,
+                    sidecar_string(entry, &["sequence", "position", "series_sequence"]),
+                ))
+            }),
+            serde_json::Value::Object(_) => {
+                let name = sidecar_string(value, &["title", "name", "series_title"])?;
+                Some((
+                    name,
+                    sidecar_string(value, &["sequence", "position", "series_sequence"]),
+                ))
+            }
+            _ => None,
+        })
+        .filter(|(name, _)| !name.is_empty())
+}
+
 async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
     let scan_root = state.library_root.clone();
@@ -5029,7 +5385,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             },
         );
         book_paths.insert(book_id.clone(), group_key.clone());
-        let metadata = grouped_files
+        let mut metadata = grouped_files
             .iter()
             .map(|file_path| metadata_by_path.remove(file_path).unwrap_or_default())
             .collect::<Vec<_>>();
@@ -5105,7 +5461,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
                 .unwrap_or("Untitled book")
                 .to_string()
         };
-        let title = clean_imported_title(&raw_title);
+        let mut title = clean_imported_title(&raw_title);
 
         let cover_art_url = metadata
             .iter()
@@ -5114,7 +5470,28 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
                 cover_art.insert(book_id.clone(), image);
                 format!("/api/books/{book_id}/cover")
             });
-        let metadata_summary = merge_metadata_summary(&metadata);
+        let mut metadata_summary = merge_metadata_summary(&metadata);
+        if let Some(sidecar) = libation_sidecar_for_group(&group_key, &grouped_files) {
+            // A Libation sidecar is a direct Audible record for this download,
+            // so it intentionally wins over lossy container tags. User edits
+            // are applied below and remain the final authority.
+            if let Some(sidecar_title) = sidecar.title {
+                title = clean_imported_title(&sidecar_title);
+            }
+            metadata_summary = merge_two_summaries(sidecar.summary, metadata_summary);
+            if let Some(subtitle) = sidecar.subtitle {
+                metadata_summary.subtitle = Some(subtitle);
+            }
+            if let Some(author) = sidecar.author {
+                metadata[0].author = Some(author);
+            }
+            if let Some(narrator) = sidecar.narrator {
+                metadata[0].narrator = Some(narrator);
+            }
+            if let Some(asin) = sidecar.asin {
+                metadata[0].asin = Some(asin);
+            }
+        }
         let mut book_chapters = build_book_chapters(&tracks);
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
@@ -5555,6 +5932,8 @@ fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
             ],
         ),
         language: first_tag_text(tag, &[ItemKey::Language]),
+        series: None,
+        series_position: None,
         genres: collect_genres(tag),
         raw_fields: collect_raw_fields(tag),
     }
@@ -5663,6 +6042,8 @@ fn extract_vendor_json_summary(tag: &Tag) -> Option<MetadataSummary> {
         published_date: json_string(&value, &["release_date", "purchase_date"]),
         description: json_string(&value, &["summary", "description"]),
         language: json_string(&value, &["language"]),
+        series: json_string(&value, &["series", "series_name"]),
+        series_position: json_string(&value, &["series_position", "series_sequence"]),
         genres: json_string(&value, &["genre"]).into_iter().collect(),
         raw_fields: Vec::new(),
     })
@@ -5864,6 +6245,12 @@ fn merge_metadata_summary(metadata: &[TrackMetadata]) -> MetadataSummary {
         language: metadata
             .iter()
             .find_map(|track| track.summary.language.clone()),
+        series: metadata
+            .iter()
+            .find_map(|track| track.summary.series.clone()),
+        series_position: metadata
+            .iter()
+            .find_map(|track| track.summary.series_position.clone()),
         genres: unique_strings(
             metadata
                 .iter()
@@ -5882,6 +6269,8 @@ fn merge_two_summaries(primary: MetadataSummary, fallback: MetadataSummary) -> M
         published_date: primary.published_date.or(fallback.published_date),
         description: primary.description.or(fallback.description),
         language: primary.language.or(fallback.language),
+        series: primary.series.or(fallback.series),
+        series_position: primary.series_position.or(fallback.series_position),
         genres: unique_strings([primary.genres, fallback.genres].concat()),
         raw_fields: unique_metadata_fields([primary.raw_fields, fallback.raw_fields].concat()),
     }
@@ -9042,8 +9431,8 @@ mod tests {
     use super::{
         AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
         can_access_book, clamped_track_position, clean_imported_title, if_none_match_matches,
-        is_supported_audio_file, libation_cover_art_url, normalize_asin, parse_origin_list,
-        parse_range, progress_write_is_stale, progress_write_is_suspect_reset,
+        is_supported_audio_file, libation_cover_art_url, media_content_type, normalize_asin,
+        parse_origin_list, parse_range, progress_write_is_stale, progress_write_is_suspect_reset,
         progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files,
     };
 
@@ -9549,6 +9938,114 @@ mod tests {
     }
 
     #[test]
+    fn libation_sidecar_supplies_series_and_catalog_metadata() {
+        let sidecar = super::parse_libation_sidecar(
+            r#"{
+                "product": {
+                    "title": "The Way of Kings",
+                    "asin": "B003ZWFO7E",
+                    "authors": [{ "name": "Brandon Sanderson" }],
+                    "narrators": [{ "name": "Michael Kramer" }, { "name": "Kate Reading" }],
+                    "publisher_summary": "A storm is coming.",
+                    "publisher_name": "Macmillan Audio",
+                    "category_ladders": [{ "ladder": [{ "name": "Fantasy" }]}],
+                    "series": [{ "title": "The Stormlight Archive", "sequence": "1" }]
+                }
+            }"#,
+        )
+        .expect("valid Libation sidecar");
+
+        assert_eq!(sidecar.title.as_deref(), Some("The Way of Kings"));
+        assert_eq!(sidecar.asin.as_deref(), Some("B003ZWFO7E"));
+        assert_eq!(sidecar.author.as_deref(), Some("Brandon Sanderson"));
+        assert_eq!(
+            sidecar.narrator.as_deref(),
+            Some("Michael Kramer, Kate Reading")
+        );
+        assert_eq!(
+            sidecar.summary.series.as_deref(),
+            Some("The Stormlight Archive")
+        );
+        assert_eq!(sidecar.summary.series_position.as_deref(), Some("1"));
+        assert_eq!(sidecar.summary.genres, vec!["Fantasy"]);
+    }
+
+    #[test]
+    fn libation_sidecar_is_only_claimed_by_the_book_it_names() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let sidecar = |asin: &str| {
+            format!(r#"{{ "product": {{ "title": "Sidecar {asin}", "asin": "{asin}" }} }}"#)
+        };
+
+        // Two loose single-file books sharing `library_root` with one sidecar.
+        std::fs::write(root.path().join("Other [B003ZWFO7E].m4b"), b"").unwrap();
+        std::fs::write(
+            root.path().join("Other [B003ZWFO7E].metadata.json"),
+            sidecar("B003ZWFO7E"),
+        )
+        .unwrap();
+        let unrelated = root.path().join("Unrelated.m4b");
+        std::fs::write(&unrelated, b"").unwrap();
+
+        assert!(
+            super::libation_sidecar_for_group(&unrelated, std::slice::from_ref(&unrelated))
+                .is_none(),
+            "a loose book must not adopt a neighbour's Libation record"
+        );
+
+        let named = root.path().join("Other [B003ZWFO7E].m4b");
+        assert_eq!(
+            super::libation_sidecar_for_group(&named, std::slice::from_ref(&named))
+                .and_then(|found| found.asin),
+            Some("B003ZWFO7E".to_string())
+        );
+
+        // A folder book still adopts the single sidecar beside its tracks even
+        // when neither name carries an ASIN.
+        let folder = root.path().join("Renamed Book");
+        std::fs::create_dir(&folder).unwrap();
+        let track = folder.join("part 1.m4b");
+        std::fs::write(&track, b"").unwrap();
+        std::fs::write(folder.join("audible.metadata.json"), sidecar("B002V1OF70")).unwrap();
+        assert_eq!(
+            super::libation_sidecar_for_group(&folder, std::slice::from_ref(&track))
+                .and_then(|found| found.asin),
+            Some("B002V1OF70".to_string())
+        );
+    }
+
+    #[test]
+    fn mpeg4_audio_is_served_as_the_registered_container_type() {
+        for name in ["book.m4b", "book.m4a", "book.mp4", "BOOK.M4B"] {
+            assert_eq!(
+                media_content_type(super::FsPath::new(name)),
+                "audio/mp4",
+                "{name} should not be served as an unregistered or video type"
+            );
+        }
+    }
+
+    #[test]
+    fn other_media_extensions_keep_the_guessed_type() {
+        assert_eq!(
+            media_content_type(super::FsPath::new("book.mp3")),
+            "audio/mpeg"
+        );
+        assert_eq!(
+            media_content_type(super::FsPath::new("book.flac")),
+            "audio/flac"
+        );
+        assert_eq!(
+            media_content_type(super::FsPath::new("book.epub")),
+            "application/epub+zip"
+        );
+        assert_eq!(
+            media_content_type(super::FsPath::new("book.unknown")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
     fn parse_range_handles_common_forms() {
         assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
         assert_eq!(parse_range("bytes=500-", 1000), Some((500, 999)));
@@ -9576,7 +10073,7 @@ mod tests {
             HeaderValue::from_static("bytes=1000-"),
         );
 
-        let response = super::serve_file_response(&path, headers, None)
+        let response = super::serve_file_response(&path, &[root.path()], headers, None)
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
@@ -9592,7 +10089,7 @@ mod tests {
         let path = root.path().join("empty.txt");
         std::fs::write(&path, []).unwrap();
 
-        let response = super::serve_file_response(&path, HeaderMap::new(), None)
+        let response = super::serve_file_response(&path, &[root.path()], HeaderMap::new(), None)
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -9602,6 +10099,40 @@ mod tests {
     #[test]
     fn suffix_range_longer_than_file_starts_at_zero() {
         assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn contained_file_open_accepts_regular_files_and_rejects_outside_files() {
+        let approved = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let inside_path = approved.path().join("track.mp3");
+        let outside_path = outside.path().join("secret.txt");
+        std::fs::write(&inside_path, b"audio").unwrap();
+        std::fs::write(&outside_path, b"secret").unwrap();
+
+        let roots = [approved.path().to_path_buf()];
+        let (_, metadata) = super::open_contained_file(&inside_path, &roots).unwrap();
+        assert_eq!(metadata.len(), 5);
+        assert!(super::open_contained_file(&outside_path, &roots).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_file_open_rejects_post_scan_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+
+        let approved = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let cached_path = approved.path().join("track.mp3");
+        let secret_path = outside.path().join("secret.txt");
+        std::fs::write(&cached_path, b"audio").unwrap();
+        std::fs::write(&secret_path, b"secret").unwrap();
+
+        std::fs::remove_file(&cached_path).unwrap();
+        symlink(&secret_path, &cached_path).unwrap();
+
+        let roots = [approved.path().to_path_buf()];
+        assert!(super::open_contained_file(&cached_path, &roots).is_err());
     }
 
     #[test]

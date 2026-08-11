@@ -58,6 +58,8 @@ export type BookMetadataUpdate = {
   genres: string[];
   publishedDate: string;
   publisher: string;
+  series: string;
+  seriesPosition: string;
   asin: string;
 };
 
@@ -122,6 +124,8 @@ export type MetadataSummary = {
   publishedDate: string | null;
   description: string | null;
   language: string | null;
+  series: string | null;
+  seriesPosition: string | null;
   genres: string[];
   rawFields: MetadataField[];
 };

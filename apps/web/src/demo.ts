@@ -28,6 +28,8 @@ const metadata = (
   publishedDate: "2026",
   description,
   language: "en",
+  series: null,
+  seriesPosition: null,
   genres,
   rawFields: []
 });

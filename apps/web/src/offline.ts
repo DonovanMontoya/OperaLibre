@@ -1,12 +1,14 @@
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
-import { getServerStorageKey } from "./api";
+import { getServerStorageKey, getServerUrl } from "./api";
 import {
+  cancelBackgroundBookDownload,
   getBackgroundBookDownloadStatus,
   runBackgroundBookDownload,
   type BackgroundDownloadFile,
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
+import { fileExtension, storedMediaExtension } from "./mediaFiles";
 import type { AuthUser, Book, Progress, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -100,19 +102,19 @@ function sanitizeSegment(value: string) {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-// WKWebView's capacitor:// file server picks the Content-Type from the file
-// extension, so stored files must keep the real audio extension.
-function fileExtension(name: string | null | undefined, fallback: string) {
-  const base = (name ?? "").split(/[?#]/)[0];
-  const match = /\.([A-Za-z0-9]{1,8})$/.exec(base);
-  return (match ? match[1] : fallback).toLowerCase();
-}
-
 const bookDirectory = (bookId: string) =>
   `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}/${sanitizeSegment(bookId)}`;
 const legacyBookDirectory = (bookId: string) => `${MEDIA_ROOT}/${sanitizeSegment(bookId)}`;
+
+// WKWebView's capacitor:// file server picks the Content-Type from the file
+// extension, so stored files must carry an extension the platform can type.
+const trackFileName = (track: Track, extension: string) =>
+  `track-${sanitizeSegment(track.id)}.${extension}`;
 const trackFilePath = (book: Book, track: Track) =>
-  `${bookDirectory(book.id)}/track-${sanitizeSegment(track.id)}.${fileExtension(track.fileName, "mp3")}`;
+  `${bookDirectory(book.id)}/${trackFileName(track, storedMediaExtension(fileExtension(track.fileName, "mp3")))}`;
+// Where a download made before the stored-extension rule landed still sits.
+const legacyTrackFilePath = (book: Book, track: Track) =>
+  `${bookDirectory(book.id)}/${trackFileName(track, fileExtension(track.fileName, "mp3"))}`;
 function coverExtension(book: Book) {
   switch (book.coverArtContentType?.toLowerCase()) {
     case "image/png": return "png";
@@ -124,11 +126,17 @@ function coverExtension(book: Book) {
 
 const coverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
 
-export const backgroundDownloadJobId = (book: Book) =>
+export const backgroundDownloadJobId = (book: Pick<Book, "id">) =>
   `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}`;
 
-export function getBookBackgroundDownloadStatus(book: Book) {
+export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">) {
   return getBackgroundBookDownloadStatus(backgroundDownloadJobId(book));
+}
+
+export async function cancelBookOfflineDownload(book: Pick<Book, "id">) {
+  if (isNative()) {
+    await cancelBackgroundBookDownload(backgroundDownloadJobId(book));
+  }
 }
 
 const migratedLegacyBooks = new Set<string>();
@@ -169,6 +177,30 @@ async function fileExists(path: string) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The on-disk path of a downloaded track, renaming a download that predates the
+ * stored-extension rule so an existing copy is reused instead of silently
+ * re-downloading. Callers must have run `migrateLegacyBookDirectory` first.
+ */
+async function resolveTrackFilePath(book: Book, track: Track) {
+  const path = trackFilePath(book, track);
+  const legacy = legacyTrackFilePath(book, track);
+  if (legacy === path || (await fileExists(path))) return path;
+  if (!(await fileExists(legacy))) return path;
+  try {
+    await Filesystem.rename({
+      from: legacy,
+      to: path,
+      directory: MEDIA_DIRECTORY,
+      toDirectory: MEDIA_DIRECTORY
+    });
+    return path;
+  } catch {
+    // Keep playing the file that is already there if it could not be renamed.
+    return legacy;
   }
 }
 
@@ -255,7 +287,8 @@ export async function isBookDownloaded(book: Book) {
     }
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
-    const checks = await Promise.all(book.tracks.map((track) => fileExists(trackFilePath(book, track))));
+    const paths = await Promise.all(book.tracks.map((track) => resolveTrackFilePath(book, track)));
+    const checks = await Promise.all(paths.map((path) => fileExists(path)));
     return checks.every(Boolean);
   }
   const records = await Promise.all(
@@ -296,7 +329,7 @@ export async function downloadBookForOffline(
     // Stable IDs let a relaunched app reattach to work the OS is already
     // running instead of scheduling a duplicate copy of the same book.
     const jobId = backgroundDownloadJobId(book);
-    await runBackgroundBookDownload(jobId, book.title, files, (fraction, state) => {
+    await runBackgroundBookDownload(jobId, book.title, getServerUrl(), files, (fraction, state) => {
       const trackProgress = fraction * total;
       const completed = Math.min(total, Math.floor(trackProgress));
       onProgress(completed, total, completed < total ? (trackProgress - completed) * 100 : undefined, state);
@@ -343,7 +376,7 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
   if (isNative()) {
     if (track.localFilePath) return nativeFileUrl(track.localFilePath);
     await migrateLegacyBookDirectory(book);
-    return nativeFileUrl(trackFilePath(book, track));
+    return nativeFileUrl(await resolveTrackFilePath(book, track));
   }
   const record = await readMedia(book.id, `track:${track.id}`);
   return record ? URL.createObjectURL(record.blob) : null;

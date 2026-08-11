@@ -18,6 +18,7 @@
 		A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00102E32000100B6D001 /* BackgroundDownloads.swift */; };
 		A17B00132E32000100B6D001 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00122E32000100B6D001 /* ViewController.swift */; };
 		A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00142E32000100B6D001 /* NativeAudio.swift */; };
+		A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		A17B00102E32000100B6D001 /* BackgroundDownloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloads.swift; sourceTree = "<group>"; };
 		A17B00122E32000100B6D001 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		A17B00142E32000100B6D001 /* NativeAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudio.swift; sourceTree = "<group>"; };
+		A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +73,7 @@
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				A17B00102E32000100B6D001 /* BackgroundDownloads.swift */,
+				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
 				A17B00122E32000100B6D001 /* ViewController.swift */,
 				A17B00142E32000100B6D001 /* NativeAudio.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -166,6 +169,7 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */,
+				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
 				A17B00132E32000100B6D001 /* ViewController.swift in Sources */,
 				A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */,
 			);
@@ -308,7 +312,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = WS7DWR8G56;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -316,7 +320,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.2.6;
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre;
 				PRODUCT_NAME = OperaLibre;
@@ -331,7 +335,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = WS7DWR8G56;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -339,7 +343,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.2.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.donovanmontoya.operalibre;
 				PRODUCT_NAME = OperaLibre;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";

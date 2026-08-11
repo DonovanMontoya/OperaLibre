@@ -1,6 +1,7 @@
 import { FilePicker, type PickedFile } from "@capawesome/capacitor-file-picker";
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
+import { storedMediaExtension } from "./mediaFiles";
 import type { AuthUser, Book, MetadataSummary, Progress, Track } from "./types";
 import {
   deviceBookMatchesServer,
@@ -31,6 +32,8 @@ const EMPTY_METADATA: MetadataSummary = {
   publishedDate: null,
   description: null,
   language: null,
+  series: null,
+  seriesPosition: null,
   genres: [],
   rawFields: []
 };
@@ -151,6 +154,60 @@ async function mediaDuration(path: string): Promise<number | null> {
   });
 }
 
+async function fileExists(path: string) {
+  try {
+    await Filesystem.stat({ path, directory: Directory.Data });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let deviceExtensionsMigrated = false;
+/**
+ * Imports made before the stored-extension rule kept the source file's `.m4b`
+ * name, which iOS refuses to type. Rename them and repoint the stored library
+ * so an existing import keeps playing after an app update. Cheap and idempotent
+ * after the first pass, so callers can run it on every library load.
+ *
+ * Best effort: this sits in front of the library load, so a failure here must
+ * leave the existing import alone rather than stop the shelf from appearing.
+ */
+export async function migrateDeviceLibraryFileExtensions() {
+  if (!Capacitor.isNativePlatform() || deviceExtensionsMigrated) return;
+  deviceExtensionsMigrated = true;
+  try {
+    const books = storedBooks();
+    let changed = false;
+    for (const book of books) {
+      for (const track of book.tracks) {
+        const path = track.localFilePath;
+        if (!path) continue;
+        const ext = extension(path);
+        const stored = storedMediaExtension(ext);
+        if (stored === ext) continue;
+        const next = `${path.slice(0, path.length - ext.length)}${stored}`;
+        try {
+          await Filesystem.rename({
+            from: path,
+            to: next,
+            directory: Directory.Data,
+            toDirectory: Directory.Data
+          });
+        } catch {
+          // A previous pass may have renamed the file without recording it.
+          if (!(await fileExists(next))) continue;
+        }
+        track.localFilePath = next;
+        changed = true;
+      }
+    }
+    if (changed) writeJson(LIBRARY_KEY, books);
+  } catch {
+    // Retried on the next launch.
+  }
+}
+
 export async function importAudiobookFromDevice(
   onProgress?: (completed: number, total: number) => void
 ): Promise<Book> {
@@ -168,7 +225,7 @@ export async function importAudiobookFromDevice(
   const tracks: Track[] = [];
   try {
     for (const [index, file] of files.entries()) {
-      const ext = extension(file.name) || "m4b";
+      const ext = storedMediaExtension(extension(file.name) || "m4a");
       const path = `${directory}/track-${String(index + 1).padStart(4, "0")}.${sanitizeSegment(ext)}`;
       const destination = await Filesystem.getUri({ path, directory: Directory.Data });
       // Each import gets a unique directory, so overwriting cannot replace an

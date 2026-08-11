@@ -20,3 +20,4 @@ AGENTS.md
 CLAUDE.md
 .claude/
 .codex/
+.playwright-cli/
