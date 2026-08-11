@@ -11,6 +11,11 @@ on:
         required: false
         default: ""
         type: string
+      release_notes:
+        description: Optional Markdown summary to include at the top of the GitHub Release notes
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -419,6 +424,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_DESCRIPTION: ${{ inputs.release_notes }}
     permissions:
       contents: write
       id-token: write
@@ -454,6 +460,9 @@ jobs:
           {
             echo "## What's changed"
             echo
+            if [[ -n "${RELEASE_DESCRIPTION//[[:space:]]/}" ]]; then
+              printf '%s\n\n' "${RELEASE_DESCRIPTION}"
+            fi
             if [[ -n "${previous_tag}" ]]; then
               git log --reverse --no-merges --pretty='- %s (`%h`)' "${previous_tag}..HEAD"
               echo

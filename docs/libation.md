@@ -76,6 +76,18 @@ Under the hood these map to API endpoints:
 - **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once, then choose **Reconnect**. The server repairs the managed account profile before starting Libation.
 - **Downloads land somewhere the server can't see** — point Libation's output directory at `library_root` (or a subdirectory of it), or move the files there after the download. The server only knows about files inside `library_root`.
 
+## Rich local metadata
+
+When Libation saves its raw Audible metadata beside an audiobook as a
+`.metadata.json` sidecar, OperaLibre reads it during each library rescan. This
+fills in richer catalog information — including series and series number,
+genres, contributors, description, publisher, language, dates, and ASIN — even
+when the audio container has incomplete tags. Manual metadata edits made in
+OperaLibre always take precedence over the sidecar.
+
+Series and genre are searchable in the local library and can be selected as
+library sort orders.
+
 ## Security note
 
 The integration runs a local executable. Administrators can add accounts and trigger acquisition, so grant that role only to trusted people. Audible passwords are never sent to OperaLibre, but the final authentication response URL passes through the server once and Libation stores long-lived identity tokens inside the account's private profile directory. Use HTTPS outside a trusted LAN/VPN, never log request bodies, and protect the server's `data_dir` as credential-bearing storage.

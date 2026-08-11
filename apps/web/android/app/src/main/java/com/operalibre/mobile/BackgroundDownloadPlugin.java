@@ -38,6 +38,9 @@ public class BackgroundDownloadPlugin extends Plugin {
             if (existing != null) {
                 String state = existing.optString("state", "");
                 if ("queued".equals(state) || "running".equals(state)) {
+                    // The queue worker may have been killed with the process, so
+                    // make sure one is scheduled before reporting the job live.
+                    ensureQueueWorker();
                     call.resolve();
                     return;
                 }
@@ -53,23 +56,11 @@ public class BackgroundDownloadPlugin extends Plugin {
                 .put("completedFiles", 0)
                 .put("completedRequired", 0)
                 .put("requiredTotal", requiredTotal)
+                .put("attempts", 0)
+                .put("queuedAt", System.currentTimeMillis())
                 .put("fraction", 0.0);
             BackgroundDownloadStore.save(getContext(), jobId, job);
-
-            Constraints constraints = new Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build();
-            OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(OfflineDownloadWorker.class)
-                .setInputData(OfflineDownloadWorker.inputFor(jobId))
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
-                .addTag(OfflineDownloadWorker.tagFor(jobId))
-                .build();
-            WorkManager.getInstance(getContext()).enqueueUniqueWork(
-                DOWNLOAD_QUEUE,
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
-                request
-            );
+            ensureQueueWorker();
             call.resolve();
         } catch (JSONException error) {
             call.reject("The background download could not be prepared.", error);
@@ -97,5 +88,50 @@ public class BackgroundDownloadPlugin extends Plugin {
         } catch (JSONException error) {
             call.reject("The background download status could not be read.", error);
         }
+    }
+
+    @PluginMethod
+    public void cancelBook(PluginCall call) {
+        String jobId = call.getString("jobId");
+        if (jobId == null) {
+            call.reject("A job ID is required.");
+            return;
+        }
+        JSONObject job = null;
+        try {
+            job = BackgroundDownloadStore.load(getContext(), jobId);
+        } catch (Exception ignored) {
+            // Removing the entry below still stops the transfer.
+        }
+        // Removing the record is the cancel signal: the queue worker checks for
+        // it as it writes progress and abandons the book within a tick. Work is
+        // never cancelled by tag because every book shares one queue worker.
+        BackgroundDownloadStore.remove(getContext(), jobId);
+        if (job != null) {
+            try {
+                OfflineDownloadWorker.deleteDownloadFiles(getContext(), job);
+            } catch (Exception ignored) {
+                // The worker deletes whatever it was mid-way through writing.
+            }
+        }
+        call.resolve();
+    }
+
+    private void ensureQueueWorker() {
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(OfflineDownloadWorker.class)
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .build();
+        // KEEP joins the worker already draining the queue instead of chaining a
+        // new request behind it; a chain would cancel every book queued after
+        // one that is cancelled or fails.
+        WorkManager.getInstance(getContext()).enqueueUniqueWork(
+            DOWNLOAD_QUEUE,
+            ExistingWorkPolicy.KEEP,
+            request
+        );
     }
 }

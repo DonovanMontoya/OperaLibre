@@ -17,9 +17,11 @@ interface BackgroundDownloadsPlugin {
   enqueueBook(options: {
     jobId: string;
     title: string;
+    serverOrigin: string;
     files: BackgroundDownloadFile[];
   }): Promise<void>;
   getStatus(options: { jobId: string }): Promise<BackgroundDownloadStatus>;
+  cancelBook(options: { jobId: string }): Promise<void>;
 }
 
 const BackgroundDownloads = registerPlugin<BackgroundDownloadsPlugin>("BackgroundDownloads");
@@ -61,14 +63,19 @@ export function getBackgroundBookDownloadStatus(jobId: string) {
   return BackgroundDownloads.getStatus({ jobId });
 }
 
+export function cancelBackgroundBookDownload(jobId: string) {
+  return BackgroundDownloads.cancelBook({ jobId });
+}
+
 export async function runBackgroundBookDownload(
   jobId: string,
   title: string,
+  serverOrigin: string,
   files: BackgroundDownloadFile[],
   onProgress: (fraction: number, state: BackgroundDownloadStatus["state"]) => void,
   signal?: AbortSignal
 ) {
-  await abortable(BackgroundDownloads.enqueueBook({ jobId, title, files }), signal);
+  await abortable(BackgroundDownloads.enqueueBook({ jobId, title, serverOrigin, files }), signal);
 
   let pollDelay = 500;
   while (true) {

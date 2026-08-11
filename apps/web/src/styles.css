@@ -6076,6 +6076,14 @@ html:not(.native-app) .native-now-transport > button:not(.native-now-play) {
   justify-items: center;
   gap: 4px;
   color: var(--ink-soft);
+  border: 1px solid transparent;
+  border-radius: 18px;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
 }
 
 html:not(.native-app) .native-now-transport .native-now-chapter {
@@ -6087,8 +6095,21 @@ html:not(.native-app) .native-now-transport .native-now-seek {
   width: 52px;
   height: 56px;
   flex: 0 0 52px;
-  border-radius: 18px;
   background: rgba(26, 20, 16, 0.055);
+}
+
+html:not(.native-app) .native-now-transport > button:not(.native-now-play):not(:disabled):hover {
+  color: var(--oxblood);
+  border-color: rgba(139, 46, 31, 0.28);
+  background: rgba(139, 46, 31, 0.1);
+  box-shadow: 0 10px 20px -14px rgba(94, 30, 19, 0.72);
+  transform: translateY(-2px);
+}
+
+html:not(.native-app) .native-now-transport > button:not(.native-now-play):not(:disabled):active {
+  background: rgba(139, 46, 31, 0.17);
+  box-shadow: none;
+  transform: translateY(0) scale(0.94);
 }
 
 html:not(.native-app) .native-now-transport > button:not(.native-now-play) span {
@@ -6109,12 +6130,25 @@ html:not(.native-app) .native-now-play {
   color: var(--paper);
   background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
   box-shadow: 0 20px 36px -13px rgba(112, 37, 24, 0.62);
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 
 html:not(.native-app) .native-now-play:hover {
   transform: translateY(-2px);
   box-shadow: 0 24px 40px -13px rgba(112, 37, 24, 0.7);
+  filter: brightness(1.08);
+}
+
+html:not(.native-app) .native-now-play:active {
+  transform: translateY(0) scale(0.95);
+  box-shadow: 0 12px 24px -13px rgba(112, 37, 24, 0.68);
+  filter: brightness(0.96);
+}
+
+html:not(.native-app) .native-now-transport button:focus-visible,
+html:not(.native-app) .native-now-utility button:focus-visible {
+  outline: 3px solid rgba(139, 46, 31, 0.34);
+  outline-offset: 3px;
 }
 
 html:not(.native-app) .native-now-transport button:disabled {
@@ -6150,6 +6184,12 @@ html:not(.native-app) .native-now-utility button:hover {
   transform: translateY(-1px);
   border-color: rgba(139, 46, 31, 0.24);
   background: rgba(255, 253, 247, 0.78);
+}
+
+html:not(.native-app) .native-now-utility button:active {
+  border-color: rgba(139, 46, 31, 0.34);
+  background: rgba(139, 46, 31, 0.1);
+  transform: translateY(0) scale(0.97);
 }
 
 html:not(.native-app) .web-now-extras {

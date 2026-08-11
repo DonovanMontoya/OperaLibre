@@ -107,6 +107,10 @@ Whatever your tags expose — pulled best-effort from each container:
 - Series, series part
 - Plus the raw tag dump for debugging
 
+For Libation downloads, an adjacent `.metadata.json` file is also read during
+a rescan. Its Audible catalog values take precedence over embedded audio tags;
+metadata saved through OperaLibre still wins over both.
+
 Cleaner tags = cleaner library. [MP3Tag](https://www.mp3tag.de/en/), [Kid3](https://kid3.kde.org/), and the Audible CLI exporters all produce tags this server understands.
 
 ## Rescanning
