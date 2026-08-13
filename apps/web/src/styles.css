@@ -918,6 +918,39 @@ html:not(.native-app) .web-shell > .player-pane {
   padding: 4px 0;
 }
 
+.book-sort-group {
+  min-width: 0;
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: baseline;
+  gap: 9px;
+  margin: 18px 0 5px;
+  padding: 0 4px 8px;
+  border-bottom: 1px solid rgba(217, 181, 116, 0.2);
+  text-align: left;
+}
+
+.book-sort-group:first-child {
+  margin-top: 2px;
+}
+
+.book-sort-group > span {
+  flex: none;
+  color: rgba(241, 231, 208, 0.42);
+  font: 0.55rem "JetBrains Mono", monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.book-sort-group > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--gold-soft);
+  font: italic 1rem "Instrument Serif", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .book-list.is-grid .book-row {
   display: grid;
   grid-template-columns: 1fr;
@@ -1141,6 +1174,12 @@ img.cover-mark {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.book-text .book-sort-context {
+  color: var(--gold-soft);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
 }
 
 .book-text .book-progress {
@@ -4037,6 +4076,103 @@ select:focus {
   gap: 1rem;
 }
 
+.unplayed-confirm-scrim {
+  z-index: 140;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.unplayed-confirm-card {
+  width: min(440px, 100%);
+}
+
+.unplayed-confirm-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.unplayed-confirm-copy strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.unplayed-confirm-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(139, 46, 31, 0.14);
+  border-radius: 10px;
+  background: rgba(139, 46, 31, 0.035);
+}
+
+.unplayed-confirm-summary span,
+.unplayed-confirm-summary strong {
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid rgba(139, 46, 31, 0.1);
+  font: 0.68rem "JetBrains Mono", monospace;
+}
+
+.unplayed-confirm-summary span {
+  color: var(--ink-soft);
+}
+
+.unplayed-confirm-summary strong {
+  color: var(--oxblood-deep);
+  text-align: right;
+}
+
+.unplayed-confirm-summary > :nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.unplayed-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+.unplayed-confirm-actions button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  font: 600 0.68rem "JetBrains Mono", monospace;
+  cursor: pointer;
+}
+
+.unplayed-confirm-cancel {
+  color: var(--ink);
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  background: rgba(255, 253, 247, 0.72);
+}
+
+.unplayed-confirm-submit {
+  color: var(--paper);
+  border: 1px solid var(--oxblood);
+  background: var(--oxblood);
+}
+
+.unplayed-confirm-actions button:hover:not(:disabled),
+.unplayed-confirm-actions button:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(82, 28, 20, 0.15);
+}
+
+.unplayed-confirm-actions button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.unplayed-confirm-actions button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -4793,6 +4929,9 @@ html.native-app {
      through WKWebView's multi-phase rotation. 100vh remains a safe fallback
      for the earliest supported iOS 15 releases, before dvh was available. */
   --native-viewport-height: 100vh;
+  /* Unlike the visual viewport, this does not collapse behind the software
+     keyboard. It is reserved for full-height, internally scrolling sheets. */
+  --native-layout-height: 100vh;
 }
 
 /* Touch hygiene: no web text-selection, no long-press callout, no
@@ -5914,6 +6053,8 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
    ============================================================ */
 html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
   align-content: start;
+  grid-template-rows: minmax(0, 1fr);
+  overflow-y: hidden;
   padding-bottom: clamp(28px, 4vw, 56px);
 }
 
@@ -5928,8 +6069,9 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
 
 html:not(.native-app) .native-now-playing {
   width: min(100%, 1240px);
+  height: 100%;
   min-width: 0;
-  min-height: min(900px, calc(100dvh - 96px));
+  min-height: 0;
   display: grid;
   align-content: center;
   gap: clamp(14px, 2vw, 22px);
@@ -5944,6 +6086,16 @@ html:not(.native-app) .native-now-playing {
   box-shadow:
     0 30px 70px -48px rgba(39, 24, 14, 0.88),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+/* The library trigger belongs to the browser chrome, not the playback card's
+   layout. Keeping it out of the grid gives Now Playing the full remaining
+   viewport instead of forcing the card into a second, scrollable row. */
+html:not(.native-app) .web-shell.player-view-now .library-open-btn {
+  position: absolute;
+  z-index: 2;
+  top: 22px;
+  left: 22px;
 }
 
 html:not(.native-app) .native-now-artwork {
@@ -6447,7 +6599,7 @@ html:not(.native-app) .native-player-return-icon {
   background: linear-gradient(155deg, var(--oxblood), var(--oxblood-deep));
 }
 
-@media (min-width: 1180px) {
+@media (min-width: 1500px) {
   html:not(.native-app) .native-now-playing {
     grid-template-columns: minmax(220px, 0.88fr) minmax(340px, 1.12fr);
     grid-template-areas:
@@ -6503,6 +6655,121 @@ html:not(.native-app) .native-player-return-icon {
   }
 }
 
+/* A browser window around tablet width has plenty of horizontal room, but
+   not enough vertical room for the phone-style stack plus the supporting
+   cards. Pair the cover with the controls and keep the supporting information
+   in one compact row so the playback surface remains a single screen. */
+@media (min-width: 621px) and (max-width: 1499px) {
+  html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
+    padding-top: 76px;
+  }
+
+  html:not(.native-app) .native-now-playing {
+    grid-template-columns: minmax(170px, 0.72fr) minmax(0, 1.28fr);
+    grid-template-areas:
+      "art copy"
+      "art timeline"
+      "art transport"
+      "art utility"
+      "extras extras";
+    align-content: center;
+    align-items: center;
+    column-gap: clamp(20px, 3vw, 32px);
+    row-gap: clamp(8px, 1.4vh, 13px);
+    padding: clamp(18px, 2.8vw, 28px);
+  }
+
+  html:not(.native-app) .native-now-artwork {
+    grid-area: art;
+  }
+
+  html:not(.native-app) .native-now-artwork .large-cover {
+    width: min(25vw, 220px);
+    max-height: min(28vh, 220px);
+  }
+
+  html:not(.native-app) .native-now-copy {
+    grid-area: copy;
+  }
+
+  html:not(.native-app) .native-now-copy h2 {
+    font-size: clamp(1.35rem, 3vw, 1.8rem);
+  }
+
+  html:not(.native-app) .native-now-timeline {
+    grid-area: timeline;
+  }
+
+  html:not(.native-app) .native-now-transport {
+    grid-area: transport;
+  }
+
+  html:not(.native-app) .native-now-utility {
+    grid-area: utility;
+  }
+
+  html:not(.native-app) .web-now-extras {
+    grid-area: extras;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 9px;
+    margin-top: 0;
+    padding-top: 14px;
+  }
+
+  html:not(.native-app) .web-now-panel {
+    gap: 8px;
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  html:not(.native-app) .web-now-about {
+    grid-column: auto;
+  }
+
+  html:not(.native-app) .web-now-panel-head {
+    gap: 8px;
+  }
+
+  html:not(.native-app) .web-now-panel h3 {
+    font-size: 1.05rem;
+  }
+
+  html:not(.native-app) .web-now-panel-head > button {
+    min-height: 26px;
+    padding: 4px 7px;
+    font-size: 0.46rem;
+  }
+
+  html:not(.native-app) .web-now-about > p {
+    -webkit-line-clamp: 2;
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+
+  html:not(.native-app) .web-now-tags {
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  html:not(.native-app) .web-now-tags span {
+    padding: 3px 5px;
+    font-size: 0.46rem;
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .web-now-facts > div {
+    padding: 6px;
+  }
+
+  html:not(.native-app) .web-now-volume {
+    gap: 6px;
+  }
+
+  html:not(.native-app) .web-now-chapter-list button {
+    min-height: 34px;
+  }
+}
+
 @media (min-width: 1600px) and (min-height: 850px) {
   html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player {
     align-content: center;
@@ -6541,7 +6808,7 @@ html:not(.native-app) .native-player-return-icon {
   }
 
   html:not(.native-app) .native-now-playing {
-    min-height: calc(100dvh - 100px);
+    min-height: 0;
     gap: 12px;
     padding: 18px 14px;
     border-radius: 24px;
@@ -6585,6 +6852,50 @@ html:not(.native-app) .native-player-return-icon {
   html:not(.native-app) .native-now-utility button {
     min-height: 46px;
     font-size: 0.49rem;
+  }
+}
+
+@media (max-width: 620px) and (max-height: 740px) {
+  html:not(.native-app) .native-now-playing {
+    gap: 8px;
+    padding: 12px;
+  }
+
+  html:not(.native-app) .native-now-artwork .large-cover {
+    width: min(46vw, 170px);
+    max-height: 26vh;
+  }
+
+  html:not(.native-app) .native-now-copy {
+    gap: 3px;
+  }
+
+  html:not(.native-app) .native-now-copy h2 {
+    font-size: clamp(1.1rem, 5.4vw, 1.35rem);
+  }
+
+  html:not(.native-app) .native-now-copy p {
+    font-size: 1rem;
+  }
+
+  html:not(.native-app) .native-now-timeline input[type="range"] {
+    height: 22px;
+  }
+
+  html:not(.native-app) .native-now-play {
+    width: 62px;
+    height: 62px;
+    flex-basis: 62px;
+  }
+
+  html:not(.native-app) .native-now-transport .native-now-seek {
+    width: 40px;
+    height: 42px;
+    flex-basis: 40px;
+  }
+
+  html:not(.native-app) .native-now-utility button {
+    min-height: 40px;
   }
 }
 
@@ -7313,6 +7624,31 @@ html.native-app .modal-card {
   border-bottom: 0;
   padding: 12px 18px calc(env(safe-area-inset-bottom) + 20px);
   animation: sheet-up 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Editing metadata is a long form, not a short confirmation sheet. On iOS
+   `visualViewport.height` contracts as the keyboard opens; using it here made
+   the whole form shrink and jump down the screen for every focused field.
+   Keep this one sheet screen-anchored and let its own scroll container move
+   the active field above the keyboard. */
+html.native-app .metadata-editor-card {
+  height: calc(var(--native-layout-height) - var(--status-h) - 12px);
+  max-height: calc(var(--native-layout-height) - var(--status-h) - 12px);
+  scroll-padding: 5rem 0 20rem;
+}
+
+html.native-app .metadata-editor-card .modal-head {
+  position: sticky;
+  top: -12px;
+  z-index: 1;
+  margin: 0 -18px;
+  padding: 12px 18px;
+  background: rgba(255, 250, 235, 0.98);
+  box-shadow: 0 8px 14px rgba(26, 20, 16, 0.05);
+}
+
+html.native-app .metadata-editor-card :is(input, textarea) {
+  scroll-margin-block: 5rem 20rem;
 }
 
 /* Sheet grabber */
@@ -8490,6 +8826,12 @@ html.native-app .recent-row {
 .details-sheet-actions .details-sheet-completion {
   color: var(--oxblood-deep);
   background: rgba(255, 253, 247, 0.7);
+}
+
+.details-sheet-actions .details-sheet-reset {
+  grid-column: 1 / -1;
+  color: var(--oxblood-deep);
+  background: rgba(255, 253, 247, 0.52);
 }
 
 .details-sheet-actions .details-sheet-full {

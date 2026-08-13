@@ -71,6 +71,20 @@ export function normalizeServerAddress(rawValue: string): string {
   }
 }
 
+export function browserApiBase(serverUrl: string, browserOrigin: string): string {
+  try {
+    const server = new URL(normalizeServerAddress(serverUrl));
+    const browser = new URL(browserOrigin);
+    const usesViteDevelopmentProxy = browser.port === "5173"
+      && server.protocol === browser.protocol
+      && server.hostname === browser.hostname
+      && server.port === "4000";
+    return usesViteDevelopmentProxy ? browser.origin : serverUrl;
+  } catch {
+    return serverUrl;
+  }
+}
+
 export function requireSecurePublicServerAddress(rawValue: string): string {
   const normalized = normalizeServerAddress(rawValue);
   if (!normalized) return normalized;

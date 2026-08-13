@@ -37,6 +37,7 @@ import {
 } from "./jellyfin";
 import { progressTimestamp, serverStorageKey, tzOffsetMinutes } from "./reliability";
 import {
+  browserApiBase,
   normalizeServerAddress,
   requireSecurePublicServerAddress,
   upgradeStoredNativeServerAddress
@@ -321,7 +322,15 @@ export function clearServerUrl() {
 }
 
 function currentApiBase(): string {
-  return getServerUrl();
+  const serverUrl = getServerUrl();
+  if (
+    typeof window !== "undefined"
+    && !Capacitor.isNativePlatform()
+    && getServerType() === "operalibre"
+  ) {
+    return browserApiBase(serverUrl, window.location.origin);
+  }
+  return serverUrl;
 }
 
 export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
@@ -341,7 +350,10 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
     await pingJellyfin(base);
     return true;
   }
-  const response = await fetchWithTimeout(`${base}/api/health`, {
+  const requestBase = serverType === "operalibre" && typeof window !== "undefined"
+    ? browserApiBase(base, window.location.origin)
+    : base;
+  const response = await fetchWithTimeout(`${requestBase}/api/health`, {
     method: "GET",
     credentials: "include"
   });
@@ -739,7 +751,12 @@ export async function saveProgress(
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
     & Partial<Pick<Progress, "updatedAt">>,
-  options?: { isPaused?: boolean; intentionalRegression?: boolean; intentionalSeek?: boolean }
+  options?: {
+    isPaused?: boolean;
+    intentionalRegression?: boolean;
+    intentionalSeek?: boolean;
+    signal?: AbortSignal;
+  }
 ) {
   if (isDemoMode()) return saveDemoProgress(bookId, progress);
   if (getServerType() === "jellyfin") {
@@ -757,6 +774,7 @@ export async function saveProgress(
   const { updatedAt, ...fields } = progress;
   return request<Progress>(`/api/books/${bookId}/progress`, {
     method: "PUT",
+    signal: options?.signal,
     body: JSON.stringify({
       ...fields,
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),

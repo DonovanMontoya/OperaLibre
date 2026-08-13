@@ -27,8 +27,14 @@ function installNativeViewportSync(root: HTMLElement): void {
 
   const sync = () => {
     animationFrame = null;
-    const height = Math.max(1, Math.round(viewport?.height ?? window.innerHeight));
-    root.style.setProperty("--native-viewport-height", `${height}px`);
+    const visibleHeight = Math.max(1, Math.round(viewport?.height ?? window.innerHeight));
+    // `visualViewport.height` deliberately shrinks when the iOS keyboard is
+    // open. Keep the layout viewport separately so long, scrollable sheets
+    // can remain anchored to the screen instead of being resized into the
+    // small area above the keyboard.
+    const layoutHeight = Math.max(1, Math.round(window.innerHeight));
+    root.style.setProperty("--native-viewport-height", `${visibleHeight}px`);
+    root.style.setProperty("--native-layout-height", `${layoutHeight}px`);
   };
 
   const scheduleSync = () => {
