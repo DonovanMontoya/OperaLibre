@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   demoContentIsSelfContained,
   getDemoBooks,
+  saveDemoProgress,
   setDemoBookCompletion
 } from "../src/demo.ts";
 
@@ -45,4 +46,29 @@ test("natural completion stores the final position with the finished status", ()
   assert.equal(finished.status, "finished");
   assert.equal(finished.bookPositionSeconds, finalBookPosition);
   assert.equal(finished.remainingSeconds, 0);
+});
+
+test("marking a started book unplayed resets it to the opening", () => {
+  const book = getDemoBooks()[0];
+  const firstTrack = book?.tracks[0];
+  assert.ok(book);
+  assert.ok(firstTrack);
+
+  saveDemoProgress(book.id, {
+    trackId: firstTrack.id,
+    positionSeconds: 9,
+    bookPositionSeconds: 9,
+    durationSeconds: firstTrack.durationSeconds
+  });
+
+  const unplayed = setDemoBookCompletion(book, false, {
+    trackId: firstTrack.id,
+    positionSeconds: 0,
+    bookPositionSeconds: 0,
+    durationSeconds: firstTrack.durationSeconds
+  });
+
+  assert.equal(unplayed.status, "notStarted");
+  assert.equal(unplayed.bookPositionSeconds, 0);
+  assert.equal(unplayed.percentComplete, 0);
 });

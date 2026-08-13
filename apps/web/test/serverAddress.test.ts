@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  browserApiBase,
   isPrivateServerHostname,
   normalizeServerAddress,
   requireSecurePublicServerAddress,
   upgradeStoredNativeServerAddress
 } from "../src/serverAddress.ts";
+
+test("Vite development uses its same-origin API proxy for the default local server", () => {
+  assert.equal(
+    browserApiBase("http://localhost:4000", "http://localhost:5173"),
+    "http://localhost:5173"
+  );
+  assert.equal(
+    browserApiBase("http://localhost:4111", "http://localhost:5173"),
+    "http://localhost:4111"
+  );
+  assert.equal(
+    browserApiBase("http://192.168.1.20:4000", "http://localhost:5173"),
+    "http://192.168.1.20:4000"
+  );
+});
 
 test("recognizes local, LAN, and private overlay addresses", () => {
   for (const hostname of [

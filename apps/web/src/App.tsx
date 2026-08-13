@@ -49,7 +49,7 @@ import {
   X
 } from "lucide-react";
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   freshestProgress,
@@ -152,6 +152,7 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { haptic, openNativeBrowser, selectionHaptic } from "./native";
+import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
   disableRotationLock,
   enableRotationLock,
@@ -461,7 +462,7 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
-type SortMode = "title" | "author" | "series" | "genre" | "duration" | "tracks" | "account";
+type SortMode = "title" | "author" | "series" | "genre" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type ReaderTheme = "paper" | "sepia" | "night";
@@ -484,9 +485,22 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "series", label: "Series" },
   { value: "genre", label: "Genre" },
   { value: "account", label: "Account" },
-  { value: "duration", label: "Length" },
-  { value: "tracks", label: "Tracks" }
+  { value: "duration", label: "Length" }
 ];
+
+function compareShelfLabels(left: string | null | undefined, right: string | null | undefined) {
+  const a = left?.trim() ?? "";
+  const b = right?.trim() ?? "";
+  if (!a) return b ? 1 : 0;
+  if (!b) return -1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function bookSortGroupLabel(book: Book, sortMode: SortMode) {
+  if (sortMode === "series") return book.metadata.series?.trim() || "Standalone";
+  if (sortMode === "genre") return book.genres[0]?.trim() || "Uncategorized";
+  return null;
+}
 
 function formatTime(value: number | null | undefined) {
   if (!Number.isFinite(value ?? NaN)) {
@@ -695,7 +709,7 @@ function formatDurationLabel(seconds: number | null | undefined) {
 }
 
 function bookProgressLabel(book: Book) {
-  if (!book.progress) {
+  if (!book.progress || book.progress.status === "notStarted") {
     return "Not started";
   }
   if (book.progress.status === "finished") {
@@ -2012,9 +2026,11 @@ function MainApp({
   const shellRef = useRef<HTMLElement | null>(null);
   const miniPlayerRef = useRef<HTMLElement | null>(null);
   const playerPaneRef = useRef<HTMLElement | null>(null);
+  const bookDetailsSwipeStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
   const progressSaveInFlight = useRef(false);
+  const progressSaveAbortController = useRef<AbortController | null>(null);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
   // Unlike playbackTouchedRef, this advances only for an actual listener
@@ -2179,6 +2195,7 @@ function MainApp({
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<DeviceNotice | null>(null);
+  const [unplayedConfirmationBookId, setUnplayedConfirmationBookId] = useState<string | null>(null);
   // Native jobs are persisted and serialized by iOS; this map only mirrors
   // their current queue/progress for the UI.
   const [activeDownloads, setActiveDownloads] = useState<Record<string, DeviceDownloadActivity>>({});
@@ -2186,7 +2203,10 @@ function MainApp({
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
 
   useEffect(() => {
-    if (librarySource === "local" && sortMode === "account") setSortMode("title");
+    const unsupportedSort = librarySource === "local"
+      ? sortMode === "account"
+      : sortMode === "series" || sortMode === "genre";
+    if (unsupportedSort) setSortMode("title");
   }, [librarySource, sortMode]);
 
   const visibleBooks = useMemo(() => {
@@ -2205,15 +2225,13 @@ function MainApp({
         case "author":
           return (a.author ?? "").localeCompare(b.author ?? "") || a.title.localeCompare(b.title);
         case "series":
-          return (a.metadata.series ?? "").localeCompare(b.metadata.series ?? "")
-            || (a.metadata.seriesPosition ?? "").localeCompare(b.metadata.seriesPosition ?? "", undefined, { numeric: true })
+          return compareShelfLabels(a.metadata.series, b.metadata.series)
+            || compareShelfLabels(a.metadata.seriesPosition, b.metadata.seriesPosition)
             || a.title.localeCompare(b.title);
         case "genre":
-          return (a.genres[0] ?? "").localeCompare(b.genres[0] ?? "") || a.title.localeCompare(b.title);
+          return compareShelfLabels(a.genres[0], b.genres[0]) || a.title.localeCompare(b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
-        case "tracks":
-          return b.trackCount - a.trackCount;
         case "title":
         default:
           return a.title.localeCompare(b.title);
@@ -2290,6 +2308,9 @@ function MainApp({
   );
   const playbackDescription = playbackBook ? displayBookDescription(playbackBook) : null;
   const nowPlayingBook = playbackBook;
+  const unplayedConfirmationBook = unplayedConfirmationBookId
+    ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
+    : null;
 
   const currentTrack = useMemo(() => {
     if (!playbackBook) {
@@ -3656,6 +3677,8 @@ function MainApp({
       while (queuedProgressSaves.current.size > 0) {
         const entry = queuedProgressSaves.current.values().next().value as QueuedProgressSave;
         queuedProgressSaves.current.delete(entry.bookId);
+        const abortController = new AbortController();
+        progressSaveAbortController.current = abortController;
         try {
           const saved = await saveProgress(
             entry.bookId,
@@ -3673,7 +3696,8 @@ function MainApp({
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               intentionalSeek:
                 entry.intentionalSeekGeneration
-                > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0)
+                > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
+              signal: abortController.signal
             }
           );
           acknowledgedSeekGenerationRef.current.set(
@@ -3700,6 +3724,10 @@ function MainApp({
         } catch {
           // The synchronous checkpoint and IndexedDB copy already contain the
           // position. A later playback tick or reconnect will retry the server.
+        } finally {
+          if (progressSaveAbortController.current === abortController) {
+            progressSaveAbortController.current = null;
+          }
         }
       }
     } finally {
@@ -3772,12 +3800,26 @@ function MainApp({
   async function changeBookCompletion(
     book: Book,
     finished: boolean,
-    finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
+    finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">,
+    resetToUnplayed = false
   ) {
-    if (completionPendingBookId === book.id) return;
+    if (completionPendingBookId === book.id) return false;
     setCompletionPendingBookId(book.id);
     setCompletionError(null);
     try {
+      if (resetToUnplayed) {
+        // Stop this session from immediately writing its old media clock over
+        // the deliberate reset. If a checkpoint is already in flight, let it
+        // settle before the reset becomes the server's newest revision.
+        playbackTouchedRef.current = false;
+        queuedProgressSaves.current.delete(book.id);
+        if (playbackBookId === book.id) pausePlayback(audioRef.current);
+        progressSaveAbortController.current?.abort();
+        while (progressSaveInFlight.current) {
+          await new Promise((resolve) => window.setTimeout(resolve, 25));
+        }
+        queuedProgressSaves.current.delete(book.id);
+      }
       const completedProgress: Progress | null = finalProgress
         ? {
             bookId: book.id,
@@ -3841,17 +3883,48 @@ function MainApp({
         }
         return next;
       });
-      if (finished && playbackBookId === book.id) clearPlaybackSession();
+      if (playbackBookId === book.id && (finished || resetToUnplayed)) {
+        clearPlaybackSession();
+      }
+      return true;
     } catch (completionFailure) {
       setCompletionError({
         bookId: book.id,
         message: completionFailure instanceof Error
           ? completionFailure.message
-          : `Could not mark ${book.title} ${finished ? "finished" : "unfinished"}.`
+          : resetToUnplayed
+            ? `Could not mark ${book.title} unplayed.`
+            : `Could not mark ${book.title} ${finished ? "finished" : "unfinished"}.`
       });
+      return false;
     } finally {
       setCompletionPendingBookId(null);
     }
+  }
+
+  function markBookUnplayed(book: Book) {
+    const firstTrack = book.tracks[0];
+    if (!firstTrack || completionPendingBookId === book.id) return;
+    setCompletionError(null);
+    setUnplayedConfirmationBookId(book.id);
+  }
+
+  async function confirmBookUnplayed(book: Book) {
+    const firstTrack = book.tracks[0];
+    if (!firstTrack || completionPendingBookId === book.id) return;
+    haptic("light");
+    const changed = await changeBookCompletion(
+      book,
+      false,
+      {
+        trackId: firstTrack.id,
+        positionSeconds: 0,
+        bookPositionSeconds: 0,
+        durationSeconds: firstTrack.durationSeconds
+      },
+      true
+    );
+    if (changed) setUnplayedConfirmationBookId(null);
   }
 
   async function downloadForOffline(book: Book) {
@@ -4260,6 +4333,37 @@ function MainApp({
     }
   }
 
+  function returnToLibrary() {
+    haptic("light");
+    setNativePlayerView("now");
+  }
+
+  function beginBookDetailsBackSwipe(event: React.TouchEvent<HTMLElement>) {
+    if (!native || nativeTab !== "shelf" || nativePlayerView !== "details") {
+      return;
+    }
+    const touch = event.touches[0];
+    bookDetailsSwipeStartRef.current = touch
+      ? { clientX: touch.clientX, clientY: touch.clientY }
+      : null;
+  }
+
+  function finishBookDetailsBackSwipe(event: React.TouchEvent<HTMLElement>) {
+    const start = bookDetailsSwipeStartRef.current;
+    bookDetailsSwipeStartRef.current = null;
+    const touch = event.changedTouches[0];
+    if (
+      native
+      && nativeTab === "shelf"
+      && nativePlayerView === "details"
+      && start
+      && touch
+      && isLeftEdgeBackSwipe(start, touch)
+    ) {
+      returnToLibrary();
+    }
+  }
+
   function openPlaybackView(view: "now" | "details" | "chapters") {
     if (playbackBook) {
       setSelectedBookId(playbackBook.id);
@@ -4452,8 +4556,18 @@ function MainApp({
     writeStoredSpeed(normalized);
   }
 
+  function showYourLibrary() {
+    setLibrarySource("local");
+    if (sortMode === "account") setSortMode("title");
+  }
+
   function openNativeTab(tab: NativeTab) {
     haptic("light");
+    // Re-tapping the active Shelf tab is an escape hatch from the Audible
+    // catalogue back to the listener's own library.
+    if (tab === "shelf" && nativeTab === "shelf" && librarySource === "audible") {
+      showYourLibrary();
+    }
     setNativeTab(tab);
     if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
   }
@@ -5091,7 +5205,10 @@ function MainApp({
                 onChange={(event) => setSortMode(event.currentTarget.value as SortMode)}
                 aria-label="Sort library by"
               >
-                {SORT_OPTIONS.filter((option) => librarySource === "audible" || option.value !== "account").map((option) => (
+                {SORT_OPTIONS.filter((option) => librarySource === "local"
+                  ? option.value !== "account"
+                  : option.value !== "series" && option.value !== "genre"
+                ).map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -5124,10 +5241,7 @@ function MainApp({
               <button
                 type="button"
                 className={librarySource === "local" ? "selected" : ""}
-                onClick={() => {
-                  setLibrarySource("local");
-                  if (sortMode === "account") setSortMode("title");
-                }}
+                onClick={showYourLibrary}
                 aria-pressed={librarySource === "local"}
                 aria-label="Your library: books on the server and this device"
               >
@@ -5397,58 +5511,72 @@ function MainApp({
                   : "Available from the server";
                 const unavailableOffline = isOffline && !availableOnDevice;
                 const shared = summarizeSharedProgress(book.sharedProgress);
+                const sortGroup = bookSortGroupLabel(book, sortMode);
+                const previousSortGroup = index > 0
+                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode)
+                  : null;
                 return (
-                  <button
-                    key={book.id}
-                    className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
-                    onClick={() => {
-                      selectBook(book);
-                      setLibraryOpen(false);
-                    }}
-                  >
-                    {native || viewMode === "grid" || book.coverArtUrl ? (
-                      <CoverArt book={book} size="small" />
-                    ) : (
-                      <span className="index">{String(index + 1).padStart(2, "0")}</span>
-                    )}
-                    <span
-                      className={`book-availability ${availableOnDevice ? "has-device-copy" : "server-only"} ${
-                        availableOnServer && availableOnDevice ? "server-and-device" : ""
-                      }`}
-                      role="img"
-                      aria-label={availabilityLabel}
-                      title={availabilityLabel}
+                  <Fragment key={book.id}>
+                    {sortGroup && compareShelfLabels(sortGroup, previousSortGroup) !== 0 ? (
+                      <div className="book-sort-group" role="heading" aria-level={2}>
+                        <span>{sortMode === "series" ? "Series" : "Genre"}</span>
+                        <strong>{sortGroup}</strong>
+                      </div>
+                    ) : null}
+                    <button
+                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
+                      onClick={() => {
+                        selectBook(book);
+                        setLibraryOpen(false);
+                      }}
                     >
-                      {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
-                      {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
-                    </span>
-                    <span className="book-text">
-                      <strong>{book.title}</strong>
-                      <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                      {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
-                        <span className="book-runtime-tag">
-                          <Timer size={11} strokeWidth={1.5} />
-                          {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
+                      {native || viewMode === "grid" || book.coverArtUrl ? (
+                        <CoverArt book={book} size="small" />
+                      ) : (
+                        <span className="index">{String(index + 1).padStart(2, "0")}</span>
+                      )}
+                      <span
+                        className={`book-availability ${availableOnDevice ? "has-device-copy" : "server-only"} ${
+                          availableOnServer && availableOnDevice ? "server-and-device" : ""
+                        }`}
+                        role="img"
+                        aria-label={availabilityLabel}
+                        title={availabilityLabel}
+                      >
+                        {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                        {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                      </span>
+                      <span className="book-text">
+                        <strong>{book.title}</strong>
+                        <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                        {sortMode === "series" && book.metadata.seriesPosition ? (
+                          <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
+                        ) : null}
+                        {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
+                          <span className="book-runtime-tag">
+                            <Timer size={11} strokeWidth={1.5} />
+                            {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
+                          </span>
+                        ) : null}
+                        <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
+                          <em>{bookProgressLabel(book)}</em>
+                          {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
+                            <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+                          ) : null}
                         </span>
-                      ) : null}
-                      <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
-                        <em>{bookProgressLabel(book)}</em>
-                        {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
-                          <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+                        {shared ? (
+                          <span
+                            className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
+                            title={shared.detail}
+                            aria-label={shared.detail}
+                          >
+                            <Users size={11} strokeWidth={1.6} aria-hidden="true" />
+                            {shared.label}
+                          </span>
                         ) : null}
                       </span>
-                      {shared ? (
-                        <span
-                          className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
-                          title={shared.detail}
-                          aria-label={shared.detail}
-                        >
-                          <Users size={11} strokeWidth={1.6} aria-hidden="true" />
-                          {shared.label}
-                        </span>
-                      ) : null}
-                    </span>
-                  </button>
+                    </button>
+                  </Fragment>
                 );
               })}
             </div>
@@ -5561,6 +5689,9 @@ function MainApp({
         }`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
+        onTouchStart={beginBookDetailsBackSwipe}
+        onTouchEnd={finishBookDetailsBackSwipe}
+        onTouchCancel={() => { bookDetailsSwipeStartRef.current = null; }}
       >
         <button
           type="button"
@@ -5807,8 +5938,7 @@ function MainApp({
                 className="native-player-return"
                 onClick={() => {
                   if (native && nativeTab === "shelf") {
-                    haptic("light");
-                    setNativePlayerView("now");
+                    returnToLibrary();
                     return;
                   }
                   openPlaybackView("now");
@@ -5876,6 +6006,22 @@ function MainApp({
                           : "Mark Finished"}
                       </span>
                     </button>
+                    {selectedBook.progress && selectedBook.progress.status !== "notStarted" ? (
+                      <button
+                        className="download-btn"
+                        type="button"
+                        onClick={() => markBookUnplayed(selectedBook)}
+                        disabled={completionPendingBookId === selectedBook.id}
+                        aria-label={`Mark ${selectedBook.title} as unplayed and reset listening progress`}
+                      >
+                        {completionPendingBookId === selectedBook.id ? (
+                          <LoaderCircle size={13} className="spin-icon" />
+                        ) : (
+                          <RotateCcw size={13} />
+                        )}
+                        <span>Mark Unplayed</span>
+                      </button>
+                    ) : null}
                     {selectedBook.readingFile ? (
                       <button
                         className={`download-btn ${readalongOpen ? "active" : ""}`}
@@ -6489,6 +6635,82 @@ function MainApp({
         </aside>
       ) : null}
 
+      {unplayedConfirmationBook ? (
+        <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
+          <section
+            className="modal-card unplayed-confirm-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unplayed-confirm-title"
+            aria-describedby="unplayed-confirm-description"
+            aria-busy={completionPendingBookId === unplayedConfirmationBook.id}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && completionPendingBookId !== unplayedConfirmationBook.id) {
+                setUnplayedConfirmationBookId(null);
+                setCompletionError(null);
+              }
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow"><RotateCcw size={13} /> Listening progress</span>
+                <h2 id="unplayed-confirm-title">Mark as unplayed?</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Cancel marking book unplayed"
+                disabled={completionPendingBookId === unplayedConfirmationBook.id}
+                onClick={() => {
+                  setUnplayedConfirmationBookId(null);
+                  setCompletionError(null);
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p id="unplayed-confirm-description" className="unplayed-confirm-copy">
+              <strong>{unplayedConfirmationBook.title}</strong> will return to the beginning. This
+              stops playback and removes it from Now Playing.
+            </p>
+            <div className="unplayed-confirm-summary" aria-label="Changes made by marking the book unplayed">
+              <span>Listening position</span><strong>Beginning</strong>
+              <span>Now Playing</span><strong>Cleared</strong>
+              <span>Library status</span><strong>Not started</strong>
+            </div>
+            {completionError?.bookId === unplayedConfirmationBook.id ? (
+              <p className="auth-error" role="alert">{completionError.message}</p>
+            ) : null}
+            <div className="unplayed-confirm-actions">
+              <button
+                type="button"
+                className="unplayed-confirm-cancel"
+                autoFocus
+                disabled={completionPendingBookId === unplayedConfirmationBook.id}
+                onClick={() => {
+                  setUnplayedConfirmationBookId(null);
+                  setCompletionError(null);
+                }}
+              >
+                Keep listening
+              </button>
+              <button
+                type="button"
+                className="unplayed-confirm-submit"
+                disabled={completionPendingBookId === unplayedConfirmationBook.id}
+                onClick={() => void confirmBookUnplayed(unplayedConfirmationBook)}
+              >
+                {completionPendingBookId === unplayedConfirmationBook.id ? (
+                  <><LoaderCircle size={15} className="spin-icon" /> Resetting…</>
+                ) : (
+                  <><RotateCcw size={15} /> Mark unplayed</>
+                )}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {nativePlayerSheet === "details" && playbackBook ? (
         <div className="sleep-sheet-layer" role="presentation">
           <button
@@ -6559,6 +6781,19 @@ function MainApp({
             {playbackDescription ? <p className="details-sheet-description">{playbackDescription}</p> : null}
 
             <div className="details-sheet-actions">
+              {playbackBook.progress && playbackBook.progress.status !== "notStarted" ? (
+                <button
+                  type="button"
+                  className="details-sheet-reset"
+                  disabled={completionPendingBookId === playbackBook.id}
+                  onClick={() => markBookUnplayed(playbackBook)}
+                >
+                  {completionPendingBookId === playbackBook.id
+                    ? <LoaderCircle size={15} className="spin-icon" />
+                    : <RotateCcw size={15} />}
+                  Mark unplayed
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="details-sheet-completion"
