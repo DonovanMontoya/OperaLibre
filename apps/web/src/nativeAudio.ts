@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { NativeAudioStateSynchronizer } from "./nativeAudioState";
 
 type NativeAudioState = {
   positionSeconds: number;
@@ -157,10 +158,12 @@ export function attachNativeAudioPlayer(
   let nativeIsPlaying = false;
   let fellBack = false;
   const listenerHandles: PluginListenerHandle[] = [];
+  const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio);
 
   const failOverToWebAudio = (message: string) => {
     if (disposed || fellBack) return;
     fellBack = true;
+    nativeStateSynchronizer.clear();
     const shouldResume = nativeIsPlaying;
     audio.muted = false;
     onError(message);
@@ -181,6 +184,7 @@ export function attachNativeAudioPlayer(
   const load = () => {
     const url = audio.currentSrc;
     if (!url) return;
+    nativeStateSynchronizer.clear();
     endedFromNative = false;
     const configuredQueue = recovery.queue();
     const queue = configuredQueue.length > 0
@@ -208,13 +212,20 @@ export function attachNativeAudioPlayer(
   };
   const rateChange = () => safely(NativeAudio.setRate({ rate: audio.playbackRate }));
   const volumeChange = () => safely(NativeAudio.setVolume({ volume: audio.volume }));
-  const emptied = () => safely(NativeAudio.stop());
+  const emptied = () => {
+    nativeStateSynchronizer.clear();
+    safely(NativeAudio.stop());
+  };
+  const seeked = () => {
+    nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
+  };
 
   audio.muted = true;
   audio.addEventListener("loadedmetadata", load);
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
   audio.addEventListener("emptied", emptied);
+  audio.addEventListener("seeked", seeked);
   audio.addEventListener("operalibre-native-queue-change", load);
 
   if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) load();
@@ -224,17 +235,9 @@ export function attachNativeAudioPlayer(
     // AVPlayer remains the only running decoder. Reflect its state through
     // synthetic media events so React's existing UI stays current without
     // starting or stopping the muted HTML decoder during app transitions.
-    if (nativeIsPlaying !== state.isPlaying) {
-      nativeIsPlaying = state.isPlaying;
-      audio.dispatchEvent(new Event(state.isPlaying ? "play" : "pause"));
-    }
-    if (audio.seeking || !Number.isFinite(state.positionSeconds)) return;
-    // AVPlayer is authoritative. Correct meaningful drift without continually
-    // seeking either decoder for harmless sub-second clock differences.
-    if (Math.abs(audio.currentTime - state.positionSeconds) > 0.75) {
-      audio.currentTime = state.positionSeconds;
-    }
-    audio.dispatchEvent(new Event("timeupdate"));
+    // AVPlayer is authoritative. Apply its clock before a synthetic pause can
+    // make React persist the stale pre-background HTML position.
+    nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
@@ -243,6 +246,7 @@ export function attachNativeAudioPlayer(
   void NativeAudio.addListener("ended", (state) => {
     if (disposed || fellBack || endedFromNative) return;
     endedFromNative = true;
+    nativeStateSynchronizer.clear();
     nativeIsPlaying = false;
     if (Number.isFinite(state.positionSeconds)) {
       const finalPosition = Number.isFinite(audio.duration)
@@ -294,7 +298,9 @@ export function attachNativeAudioPlayer(
     audio.removeEventListener("ratechange", rateChange);
     audio.removeEventListener("volumechange", volumeChange);
     audio.removeEventListener("emptied", emptied);
+    audio.removeEventListener("seeked", seeked);
     audio.removeEventListener("operalibre-native-queue-change", load);
+    nativeStateSynchronizer.clear();
     if (!fellBack) audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();

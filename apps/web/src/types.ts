@@ -40,6 +40,8 @@ export type Book = {
   /** Device books need no server; matched server books may retain a device copy. */
   source?: "server" | "device";
   deviceBookId?: string;
+  /** Cover art extracted from an imported file's tags, stored in app storage. */
+  localCoverPath?: string;
 };
 
 export type SharedProgress = {
@@ -94,6 +96,30 @@ export type SyncMap = {
 export type AlignmentStatus = {
   enabled: boolean;
   cliPath: string | null;
+};
+
+export type FaststartBookSummary = {
+  bookId: string;
+  title: string;
+  pendingFiles: number;
+  pendingBytes: number;
+  /** Somebody's position moved recently, so the book is left for a later run. */
+  inUse: boolean;
+};
+
+export type FaststartStatus = {
+  enabled: boolean;
+  ffmpegPath: string | null;
+  ffprobePath: string | null;
+  /** Without ffprobe a conversion is only checked by container layout and size. */
+  verificationLimited: boolean;
+  mp4Files: number;
+  optimizedFiles: number;
+  pendingFiles: number;
+  unreadableFiles: number;
+  pendingBytes: number;
+  books: FaststartBookSummary[];
+  activeJobId: string | null;
 };
 
 export type BookProgress = {

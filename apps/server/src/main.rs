@@ -53,6 +53,7 @@ use tower_http::{
 use walkdir::WalkDir;
 
 mod alignment;
+mod faststart;
 mod updates;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
@@ -127,6 +128,9 @@ struct AppState {
     libation_accounts_root: PathBuf,
     libation_config: LibationConfig,
     alignment_config: AlignmentConfig,
+    /// ffmpeg/ffprobe, when they were found. `None` disables faststart
+    /// conversion entirely.
+    faststart_tools: Option<faststart::Tools>,
     update_manager: updates::UpdateManager,
     sync_dir: PathBuf,
     library: Arc<RwLock<LibraryState>>,
@@ -150,6 +154,9 @@ struct AppState {
     /// a time so a second title has a real queue state instead of racing the
     /// first download.
     libation_job_lock: Arc<Mutex<()>>,
+    /// Faststart conversion rewrites library files. One job at a time, so two
+    /// admins cannot remux the same book from opposite ends.
+    faststart_lock: Arc<Mutex<()>>,
     login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     password_task_slots: Arc<Semaphore>,
     download_task_slots: Arc<Semaphore>,
@@ -979,6 +986,8 @@ struct ServerConfig {
     libation_auto_refresh_hours: u64,
     libation_reader_refreshes_per_hour: u64,
     alignment_cli_path: Option<PathBuf>,
+    ffmpeg_path: Option<PathBuf>,
+    ffprobe_path: Option<PathBuf>,
     allowed_origins: Vec<String>,
     web_dist_dir: Option<PathBuf>,
 }
@@ -1180,6 +1189,10 @@ impl ServerConfig {
             libation_reader_refreshes_per_hour,
             alignment_cli_path: config_path_value(&values, &config_dir, "alignment_cli_path")
                 .or_else(|| env_path_value("OPERALIBRE_ALIGNMENT_CLI_PATH")),
+            ffmpeg_path: config_path_value(&values, &config_dir, "ffmpeg_path")
+                .or_else(|| env_path_value("OPERALIBRE_FFMPEG_PATH")),
+            ffprobe_path: config_path_value(&values, &config_dir, "ffprobe_path")
+                .or_else(|| env_path_value("OPERALIBRE_FFPROBE_PATH")),
             allowed_origins: config_string_value(&values, "allowed_origins")
                 .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
                 .map(parse_origin_list)
@@ -1227,6 +1240,8 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "libation_auto_refresh_hours",
         "libation_reader_refreshes_per_hour",
         "alignment_cli_path",
+        "ffmpeg_path",
+        "ffprobe_path",
         "allowed_origins",
         "web_dist_dir",
     ];
@@ -1486,6 +1501,10 @@ async fn main() -> anyhow::Result<()> {
         libation_accounts_root,
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
+        faststart_tools: faststart::discover_tools(
+            config.ffmpeg_path.clone(),
+            config.ffprobe_path.clone(),
+        ),
         update_manager: updates::UpdateManager::new(
             config.data_dir.clone(),
             config.web_dist_dir.clone(),
@@ -1505,6 +1524,7 @@ async fn main() -> anyhow::Result<()> {
         progress_write_lock: Arc::new(Mutex::new(())),
         rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
+        faststart_lock: Arc::new(Mutex::new(())),
         login_attempts: Arc::new(Mutex::new(HashMap::new())),
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
@@ -1553,6 +1573,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/library/faststart",
+            get(faststart_status).post(start_faststart_conversion),
         )
         .route("/api/libation/status", get(libation_status))
         .route(
@@ -1867,6 +1891,448 @@ async fn rescan(
     require_admin(&auth)?;
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth).await?))
+}
+
+// ---------------------------------------------------------------------------
+// Faststart conversion
+// ---------------------------------------------------------------------------
+
+const FASTSTART_JOB_KIND: &str = "library-faststart";
+
+/// A saved position that moved this recently means somebody is very likely
+/// mid-chapter. Their player is fetching byte ranges that would land somewhere
+/// else in a rewritten container, so that book waits for the next run.
+const FASTSTART_ACTIVE_LISTENER_SECONDS: u64 = 15 * 60;
+
+fn human_bytes(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= 1024 * MIB {
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * MIB as f64))
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else {
+        format!("{} KiB", bytes.div_ceil(1024))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FaststartCandidate {
+    book_id: String,
+    path: PathBuf,
+    bytes: u64,
+}
+
+#[derive(Debug, Default)]
+struct FaststartSurvey {
+    mp4_files: usize,
+    optimized_files: usize,
+    unreadable_files: usize,
+    pending: Vec<FaststartCandidate>,
+    /// Book id to display title, for every book that has pending files.
+    titles: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FaststartBookSummary {
+    book_id: String,
+    title: String,
+    pending_files: usize,
+    pending_bytes: u64,
+    /// Somebody's position moved recently, so this book is skipped unless the
+    /// administrator asks for it anyway.
+    in_use: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FaststartStatusResponse {
+    enabled: bool,
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
+    /// Without ffprobe a conversion can only be checked by container layout
+    /// and size, never by duration, streams, or chapters.
+    verification_limited: bool,
+    mp4_files: usize,
+    optimized_files: usize,
+    pending_files: usize,
+    unreadable_files: usize,
+    pending_bytes: u64,
+    books: Vec<FaststartBookSummary>,
+    active_job_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FaststartRequest {
+    /// Convert one book instead of the whole library.
+    #[serde(default)]
+    book_id: Option<String>,
+    /// Convert books that look like somebody is listening to them right now.
+    #[serde(default)]
+    include_active: bool,
+}
+
+async fn faststart_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<FaststartStatusResponse>, ApiError> {
+    require_admin(&auth)?;
+    let survey = survey_faststart(&state, None).await?;
+    let active_books = recently_active_book_ids(&state).await?;
+
+    let mut books: HashMap<String, FaststartBookSummary> = HashMap::new();
+    for candidate in &survey.pending {
+        let entry =
+            books
+                .entry(candidate.book_id.clone())
+                .or_insert_with(|| FaststartBookSummary {
+                    book_id: candidate.book_id.clone(),
+                    title: survey
+                        .titles
+                        .get(&candidate.book_id)
+                        .cloned()
+                        .unwrap_or_else(|| candidate.book_id.clone()),
+                    pending_files: 0,
+                    pending_bytes: 0,
+                    in_use: active_books.contains(&candidate.book_id),
+                });
+        entry.pending_files += 1;
+        entry.pending_bytes += candidate.bytes;
+    }
+    let mut books = books.into_values().collect::<Vec<_>>();
+    books.sort_by(|a, b| a.title.cmp(&b.title));
+
+    let active_job_id = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.kind == FASTSTART_JOB_KIND && is_active_job(job))
+        .max_by_key(|job| job_started_timestamp(job))
+        .map(|job| job.id.clone());
+
+    Ok(Json(FaststartStatusResponse {
+        enabled: state.faststart_tools.is_some(),
+        ffmpeg_path: state
+            .faststart_tools
+            .as_ref()
+            .map(|tools| tools.ffmpeg.to_string_lossy().to_string()),
+        ffprobe_path: state
+            .faststart_tools
+            .as_ref()
+            .and_then(|tools| tools.ffprobe.as_ref())
+            .map(|path| path.to_string_lossy().to_string()),
+        verification_limited: state
+            .faststart_tools
+            .as_ref()
+            .is_some_and(|tools| tools.ffprobe.is_none()),
+        mp4_files: survey.mp4_files,
+        optimized_files: survey.optimized_files,
+        unreadable_files: survey.unreadable_files,
+        pending_files: survey.pending.len(),
+        pending_bytes: survey.pending.iter().map(|entry| entry.bytes).sum(),
+        books,
+        active_job_id,
+    }))
+}
+
+async fn start_faststart_conversion(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<FaststartRequest>,
+) -> Result<Json<JobCreated>, ApiError> {
+    require_admin(&auth)?;
+    if state.faststart_tools.is_none() {
+        return Err(ApiError::bad_request(
+            "ffmpeg was not found. Set ffmpeg_path in server.config or put ffmpeg on PATH.",
+        ));
+    }
+    if let Some(book_id) = payload.book_id.as_deref() {
+        let library = state.library.read().await;
+        if !library.books.iter().any(|book| book.id == book_id) {
+            return Err(ApiError::not_found("Book not found"));
+        }
+    }
+
+    let (job_id, created) = create_job_with_state(
+        &state,
+        FASTSTART_JOB_KIND,
+        payload.book_id.clone(),
+        "queued",
+        true,
+    )
+    .await;
+    if created {
+        spawn_faststart_job(state, job_id.clone(), payload);
+    }
+    Ok(Json(JobCreated { job_id }))
+}
+
+/// Reads the head of every MP4-family file in the library (or one book) to see
+/// which ones still carry a trailing `moov`.
+async fn survey_faststart(
+    state: &AppState,
+    book_id: Option<&str>,
+) -> Result<FaststartSurvey, ApiError> {
+    let (files, titles) = {
+        let library = state.library.read().await;
+        let mut files = Vec::new();
+        let mut titles = HashMap::new();
+        for book in &library.books {
+            if book_id.is_some_and(|wanted| wanted != book.id) {
+                continue;
+            }
+            titles.insert(book.id.clone(), book.title.clone());
+            for track in &book.tracks {
+                if let Some(path) = library.track_paths.get(&track.id)
+                    && faststart::is_mp4_file(path)
+                {
+                    files.push((book.id.clone(), path.clone()));
+                }
+            }
+        }
+        (files, titles)
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let mut survey = FaststartSurvey {
+            titles,
+            ..FaststartSurvey::default()
+        };
+        for (book_id, path) in files {
+            survey.mp4_files += 1;
+            let bytes = std::fs::metadata(&path).map(|entry| entry.len()).ok();
+            match (faststart::inspect(&path), bytes) {
+                (Ok(faststart::Layout::Trailing), Some(bytes)) => {
+                    survey.pending.push(FaststartCandidate {
+                        book_id,
+                        path,
+                        bytes,
+                    });
+                }
+                (Ok(faststart::Layout::Faststart), _) => survey.optimized_files += 1,
+                _ => survey.unreadable_files += 1,
+            }
+        }
+        survey.pending.sort_by(|a, b| a.path.cmp(&b.path));
+        survey
+    })
+    .await
+    .map_err(|error| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error.to_string(),
+    })
+}
+
+/// Books whose saved position moved inside the active-listener window.
+async fn recently_active_book_ids(state: &AppState) -> Result<HashSet<String>, ApiError> {
+    let progress = read_progress(&state.progress_file).await?;
+    let now_ms = unix_now_millis();
+    let window_ms = FASTSTART_ACTIVE_LISTENER_SECONDS.saturating_mul(1_000);
+    Ok(progress
+        .values()
+        .filter(|entry| {
+            now_ms.saturating_sub(progress_timestamp_millis(&entry.updated_at)) <= window_ms
+        })
+        .map(|entry| entry.book_id.clone())
+        .collect())
+}
+
+fn spawn_faststart_job(state: AppState, job_id: String, request: FaststartRequest) {
+    tokio::spawn(async move {
+        // One conversion at a time: these rewrite files under the library
+        // root, and a queued second job should wait rather than interleave.
+        let _guard = state.faststart_lock.lock().await;
+        update_job_running(&state, &job_id).await;
+        match run_faststart_job(&state, &job_id, &request).await {
+            Ok(report) => {
+                let status = if report.failed > 0 {
+                    "failed"
+                } else {
+                    "completed"
+                };
+                let error = (report.failed > 0).then(|| {
+                    format!(
+                        "{} file{} could not be converted and were left untouched.",
+                        report.failed,
+                        if report.failed == 1 { "" } else { "s" }
+                    )
+                });
+                update_job_finished(&state, &job_id, status, Some(0), error).await;
+            }
+            Err(error) => {
+                update_job_output(&state, &job_id, &format!("{error}\n")).await;
+                update_job_finished(&state, &job_id, "failed", None, Some(error.to_string())).await;
+            }
+        }
+    });
+}
+
+#[derive(Debug, Default)]
+struct FaststartReport {
+    converted: usize,
+    skipped: usize,
+    failed: usize,
+}
+
+async fn run_faststart_job(
+    state: &AppState,
+    job_id: &str,
+    request: &FaststartRequest,
+) -> anyhow::Result<FaststartReport> {
+    let tools = state
+        .faststart_tools
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("ffmpeg was not found."))?;
+    if tools.ffprobe.is_none() {
+        update_job_output(
+            state,
+            job_id,
+            "ffprobe was not found: conversions are verified by container layout and size only.\n",
+        )
+        .await;
+    }
+
+    let survey = survey_faststart(state, request.book_id.as_deref())
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let mut report = FaststartReport::default();
+    if survey.pending.is_empty() {
+        update_job_output(state, job_id, "Every MP4 file already starts fast.\n").await;
+        return Ok(report);
+    }
+
+    let active_books = if request.include_active {
+        HashSet::new()
+    } else {
+        recently_active_book_ids(state)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?
+    };
+
+    // Clear anything a crashed earlier run left beside the books it touched.
+    let directories = survey
+        .pending
+        .iter()
+        .filter_map(|candidate| candidate.path.parent().map(FsPath::to_path_buf))
+        .collect::<HashSet<_>>();
+    let swept = tokio::task::spawn_blocking(move || {
+        directories
+            .iter()
+            .map(|directory| faststart::sweep_work_files(directory))
+            .sum::<usize>()
+    })
+    .await
+    .unwrap_or(0);
+    if swept > 0 {
+        update_job_output(
+            state,
+            job_id,
+            &format!("Removed {swept} leftover work file(s) from an interrupted run.\n"),
+        )
+        .await;
+    }
+
+    let total = survey.pending.len();
+    update_job_output(
+        state,
+        job_id,
+        &format!(
+            "Converting {total} file(s) to faststart ({}).\n",
+            human_bytes(survey.pending.iter().map(|entry| entry.bytes).sum())
+        ),
+    )
+    .await;
+
+    let reserve_bytes = state
+        .min_download_free_bytes
+        .max(faststart::MIN_FREE_HEADROOM_BYTES);
+
+    for (index, candidate) in survey.pending.iter().enumerate() {
+        let label = library_identity_path(&state.library_root, &candidate.path);
+        let position = index + 1;
+
+        if active_books.contains(&candidate.book_id) {
+            report.skipped += 1;
+            update_job_output(
+                state,
+                job_id,
+                &format!("[{position}/{total}] skipped {label}: somebody is listening to it.\n"),
+            )
+            .await;
+            continue;
+        }
+
+        let path = candidate.path.clone();
+        let tools = tools.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            // The survey may be minutes old by now; only convert what is
+            // still both present and trailing.
+            match faststart::inspect(&path) {
+                Ok(faststart::Layout::Trailing) => {}
+                Ok(_) => return Ok(None),
+                Err(error) => return Err(faststart::ConversionError::Io(error)),
+            }
+            faststart::convert_in_place(&tools, &path, reserve_bytes).map(Some)
+        })
+        .await;
+
+        let line = match outcome {
+            Ok(Ok(Some(converted))) => {
+                report.converted += 1;
+                let unverified = if converted.duration_verified {
+                    ""
+                } else {
+                    " (layout and size verified only)"
+                };
+                format!(
+                    "[{position}/{total}] converted {label}: {} -> {}{unverified}\n",
+                    human_bytes(converted.before_bytes),
+                    human_bytes(converted.after_bytes)
+                )
+            }
+            Ok(Ok(None)) => {
+                report.skipped += 1;
+                format!("[{position}/{total}] skipped {label}: no longer needs converting.\n")
+            }
+            Ok(Err(error)) => {
+                report.failed += 1;
+                tracing::warn!("faststart conversion failed for {label}: {error}");
+                format!("[{position}/{total}] failed {label}: {error}\n")
+            }
+            Err(error) => {
+                report.failed += 1;
+                format!("[{position}/{total}] failed {label}: {error}\n")
+            }
+        };
+        update_job_output(state, job_id, &line).await;
+    }
+
+    if report.converted > 0 {
+        // Durations, tags, and fingerprints all come from the files that just
+        // changed. Book and track ids are keyed on library paths, which the
+        // in-place swap preserved, so saved progress survives the rescan.
+        if let Err(error) = rescan_library(state).await {
+            update_job_output(
+                state,
+                job_id,
+                &format!("The library rescan after conversion failed: {error}\n"),
+            )
+            .await;
+        }
+    }
+
+    update_job_output(
+        state,
+        job_id,
+        &format!(
+            "Done: {} converted, {} skipped, {} failed.\n",
+            report.converted, report.skipped, report.failed
+        ),
+    )
+    .await;
+    Ok(report)
 }
 
 async fn upload_audiobook(
@@ -5772,6 +6238,9 @@ fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
+        // A conversion in flight writes a temporary remux beside the book. It
+        // carries the book's extension, so it has to be excluded by name.
+        .filter(|path| !faststart::is_work_file(path))
         .filter(|path| {
             path.extension()
                 .and_then(|extension| extension.to_str())
@@ -5825,26 +6294,29 @@ fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
     }
     let chapters = read_embedded_chapters(file_path);
 
+    let author = tag
+        .and_then(|tag| {
+            first_tag_text(
+                tag,
+                &[
+                    ItemKey::TrackArtist,
+                    ItemKey::AlbumArtist,
+                    ItemKey::Writer,
+                    ItemKey::Composer,
+                ],
+            )
+        })
+        .or_else(|| tag.and_then(|tag| tag.artist().map(|value| value.to_string())));
+
     TrackMetadata {
         title: tag
             .and_then(|tag| tag.title().map(|value| value.to_string()))
             .or_else(|| summary.album.clone()),
-        author: tag
-            .and_then(|tag| {
-                first_tag_text(
-                    tag,
-                    &[
-                        ItemKey::TrackArtist,
-                        ItemKey::AlbumArtist,
-                        ItemKey::Writer,
-                        ItemKey::Composer,
-                    ],
-                )
-            })
-            .or_else(|| tag.and_then(|tag| tag.artist().map(|value| value.to_string()))),
         narrator: tag
             .and_then(extract_narrator)
-            .or_else(|| tag.and_then(extract_vendor_narrator)),
+            .or_else(|| tag.and_then(extract_vendor_narrator))
+            .or_else(|| tag.and_then(|tag| composer_narrator(tag, author.as_deref()))),
+        author,
         // lofty reports Duration::ZERO when it cannot determine a length.
         // A zero-length track is indistinguishable from an unknown one, and
         // recording it as known collapses every track onto the same
@@ -6021,6 +6493,16 @@ fn truncate_metadata_value(value: &str) -> String {
 fn extract_narrator(tag: &Tag) -> Option<String> {
     first_tag_text(tag, &[ItemKey::Performer, ItemKey::Conductor])
         .or_else(|| find_raw_text_by_name(tag, &["narrator", "narrated by", "reader", "read by"]))
+}
+
+/// Converted audiobooks conventionally carry the narrator in the composer
+/// field — that is what AAX rips and Libation write — so read it as one, but
+/// only once another tag has named the author, since a file whose only credit
+/// is a composer means it as the author.
+fn composer_narrator(tag: &Tag, author: Option<&str>) -> Option<String> {
+    let composer = first_tag_text(tag, &[ItemKey::Composer])?;
+    let author = author?;
+    (!composer.eq_ignore_ascii_case(author)).then_some(composer)
 }
 
 fn extract_vendor_narrator(tag: &Tag) -> Option<String> {
@@ -9430,11 +9912,33 @@ impl From<axum::http::Error> for ApiError {
 mod tests {
     use super::{
         AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
-        can_access_book, clamped_track_position, clean_imported_title, if_none_match_matches,
-        is_supported_audio_file, libation_cover_art_url, media_content_type, normalize_asin,
-        parse_origin_list, parse_range, progress_write_is_stale, progress_write_is_suspect_reset,
-        progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files,
+        can_access_book, clamped_track_position, clean_imported_title, composer_narrator,
+        if_none_match_matches, is_supported_audio_file, libation_cover_art_url, media_content_type,
+        normalize_asin, parse_origin_list, parse_range, progress_write_is_stale,
+        progress_write_is_suspect_reset, progress_write_is_unintentional_regression,
+        sanitize_filename, walk_audio_files,
     };
+
+    #[test]
+    fn a_composer_names_the_narrator_only_when_another_tag_names_the_author() {
+        use lofty::tag::{ItemKey, Tag, TagType};
+
+        let mut tag = Tag::new(TagType::Mp4Ilst);
+        tag.insert_text(ItemKey::Composer, "Rob Inglis".to_string());
+
+        assert_eq!(
+            composer_narrator(&tag, Some("J. R. R. Tolkien")),
+            Some("Rob Inglis".to_string())
+        );
+        // With no other credit the composer is the author, so it is not a
+        // narrator as well.
+        assert_eq!(composer_narrator(&tag, None), None);
+        assert_eq!(composer_narrator(&tag, Some("Rob Inglis")), None);
+        assert_eq!(
+            composer_narrator(&Tag::new(TagType::Mp4Ilst), Some("Anyone")),
+            None
+        );
+    }
 
     #[test]
     fn near_zero_writes_over_real_progress_are_suspect_resets() {
@@ -9919,6 +10423,29 @@ mod tests {
 
         let files = walk_audio_files(root.path());
         assert_eq!(files, vec![complete.join("book.m4b")]);
+    }
+
+    #[test]
+    fn library_scan_ignores_faststart_work_files() {
+        let root = tempfile::tempdir().unwrap();
+        let book = root.path().join("Book");
+        std::fs::create_dir_all(&book).unwrap();
+        std::fs::write(book.join("book.m4b"), b"real").unwrap();
+        // A conversion in flight writes these beside the book, and the
+        // temporary remux deliberately carries the book's own extension.
+        std::fs::write(
+            book.join(format!("{}abcd1234.m4b", super::faststart::TEMP_PREFIX)),
+            b"half written",
+        )
+        .unwrap();
+        std::fs::write(
+            book.join(format!("{}backup-abcd1234", super::faststart::TEMP_PREFIX)),
+            b"backup link",
+        )
+        .unwrap();
+
+        let files = walk_audio_files(root.path());
+        assert_eq!(files, vec![book.join("book.m4b")]);
     }
 
     #[test]
@@ -10725,6 +11252,7 @@ exit 0
                 reader_refreshes_per_hour: super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
             },
             alignment_config: super::AlignmentConfig { cli_path: None },
+            faststart_tools: None,
             update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000)
                 .unwrap(),
             sync_dir: data_dir.join("sync"),
@@ -10751,6 +11279,7 @@ exit 0
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
             rescan_lock: super::Arc::new(super::Mutex::new(())),
             libation_job_lock: super::Arc::new(super::Mutex::new(())),
+            faststart_lock: super::Arc::new(super::Mutex::new(())),
             login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
             password_task_slots: super::Arc::new(super::Semaphore::new(
                 super::PASSWORD_TASK_CONCURRENCY,
@@ -11544,6 +12073,46 @@ exit 0
         assert_eq!(second_track_ids, first_track_ids);
     }
 
+    /// Faststart conversion rewrites a track's bytes at the same path, so the
+    /// fingerprint changes while the path does not. Saved progress is keyed on
+    /// the book and track ids, so those must not move.
+    #[test]
+    fn library_identity_survives_a_rewritten_track_at_the_same_path() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Book");
+        std::fs::create_dir_all(&folder).unwrap();
+        let track = folder.join("01.m4b");
+        std::fs::write(&track, b"trailing moov layout").unwrap();
+
+        let resolve = |identities: &mut super::LibraryIdentityStore| {
+            let fingerprint = super::file_identity_fingerprint(&track).unwrap();
+            let book_fingerprint =
+                super::book_identity_fingerprint(std::slice::from_ref(&fingerprint));
+            let mut used = std::collections::HashSet::new();
+            super::resolve_library_identity(
+                identities,
+                &mut used,
+                super::LibraryIdentityCandidate {
+                    book_fingerprint: &book_fingerprint,
+                    group_alias: "Book",
+                    group_key: &folder,
+                    library_root: root.path(),
+                    grouped_files: std::slice::from_ref(&track),
+                    track_fingerprints: std::slice::from_ref(&fingerprint),
+                },
+            )
+        };
+
+        let mut identities = super::LibraryIdentityStore::default();
+        let (book_id, track_ids) = resolve(&mut identities);
+
+        std::fs::write(&track, b"faststart layout, different bytes and length").unwrap();
+        let (converted_book_id, converted_track_ids) = resolve(&mut identities);
+
+        assert_eq!(converted_book_id, book_id);
+        assert_eq!(converted_track_ids, track_ids);
+    }
+
     #[test]
     fn unchanged_tracks_reuse_cached_fingerprints_and_removed_ones_are_pruned() {
         let root = tempfile::tempdir().unwrap();
@@ -11663,6 +12232,157 @@ exit 0
         assert_eq!(
             super::sanitize_libation_login_output(output),
             "Open this URL:"
+        );
+    }
+
+    /// Builds a library holding one real, trailing-`moov` M4B. Returns `None`
+    /// where ffmpeg is not installed, which is also where the feature is off.
+    #[cfg(unix)]
+    async fn faststart_library(
+        root: &std::path::Path,
+    ) -> Option<(super::AppState, std::path::PathBuf, String, String)> {
+        let tools = super::faststart::discover_tools(None, None)?;
+        let (mut state, _) = fake_libation_state(root);
+        let ffmpeg = tools.ffmpeg.clone();
+        state.faststart_tools = Some(tools);
+
+        let book_dir = state.library_root.join("Trailing Book");
+        std::fs::create_dir_all(&book_dir).unwrap();
+        let track = book_dir.join("01.m4b");
+        let created = std::process::Command::new(ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=3",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&track)
+            .status()
+            .expect("ffmpeg should run");
+        assert!(created.success());
+        assert_eq!(
+            super::faststart::inspect(&track).unwrap(),
+            super::faststart::Layout::Trailing
+        );
+
+        super::rescan_library(&state).await.unwrap();
+        let (book_id, track_id) = {
+            let library = state.library.read().await;
+            let book = library.books.first().expect("the book should be scanned");
+            (book.id.clone(), book.tracks[0].id.clone())
+        };
+        Some((state, track, book_id, track_id))
+    }
+
+    #[cfg(unix)]
+    fn saved_position(book_id: &str, track_id: &str, age_ms: u64) -> super::Progress {
+        super::Progress {
+            book_id: book_id.to_string(),
+            track_id: track_id.to_string(),
+            position_seconds: 1.5,
+            book_position_seconds: 1.5,
+            duration_seconds: Some(3.0),
+            updated_at: super::unix_now_millis().saturating_sub(age_ms).to_string(),
+            finished_override: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn faststart_conversion_keeps_book_identity_and_saved_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let Some((state, track, book_id, track_id)) = faststart_library(root.path()).await else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+
+        let key = super::progress_key("admin", &book_id);
+        let mut progress = std::collections::HashMap::new();
+        progress.insert(
+            key.clone(),
+            saved_position(&book_id, &track_id, 60 * 60 * 1_000),
+        );
+        super::write_progress(&state.progress_file, &progress)
+            .await
+            .unwrap();
+
+        let job_id = super::create_job(&state, super::FASTSTART_JOB_KIND).await;
+        let report = super::run_faststart_job(&state, &job_id, &super::FaststartRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(report.converted, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(
+            super::faststart::inspect(&track).unwrap(),
+            super::faststart::Layout::Faststart
+        );
+
+        // The rescan after conversion must not mint new ids: the saved
+        // position is keyed on the book, and its resume point on the track.
+        let library = state.library.read().await;
+        assert_eq!(library.books.len(), 1);
+        assert_eq!(library.books[0].id, book_id);
+        assert_eq!(library.books[0].tracks[0].id, track_id);
+        drop(library);
+
+        let saved = super::read_progress(&state.progress_file).await.unwrap();
+        let entry = saved.get(&key).expect("progress should survive conversion");
+        assert_eq!(entry.track_id, track_id);
+        assert!((entry.position_seconds - 1.5).abs() < 1e-9);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn faststart_conversion_leaves_a_book_somebody_is_listening_to() {
+        let root = tempfile::tempdir().unwrap();
+        let Some((state, track, book_id, track_id)) = faststart_library(root.path()).await else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+
+        let mut progress = std::collections::HashMap::new();
+        progress.insert(
+            super::progress_key("admin", &book_id),
+            saved_position(&book_id, &track_id, 5_000),
+        );
+        super::write_progress(&state.progress_file, &progress)
+            .await
+            .unwrap();
+
+        let job_id = super::create_job(&state, super::FASTSTART_JOB_KIND).await;
+        let report = super::run_faststart_job(&state, &job_id, &super::FaststartRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(report.converted, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            super::faststart::inspect(&track).unwrap(),
+            super::faststart::Layout::Trailing
+        );
+
+        // The same run asked for explicitly converts it.
+        let job_id = super::create_job(&state, super::FASTSTART_JOB_KIND).await;
+        let report = super::run_faststart_job(
+            &state,
+            &job_id,
+            &super::FaststartRequest {
+                book_id: Some(book_id),
+                include_active: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.converted, 1);
+        assert_eq!(
+            super::faststart::inspect(&track).unwrap(),
+            super::faststart::Layout::Faststart
         );
     }
 }

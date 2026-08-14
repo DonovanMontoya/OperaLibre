@@ -89,6 +89,23 @@ Frontend installation is available when the server directly serves a versioned w
 | `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }` and preserve position; natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position and status are stored atomically. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
+| `GET` | `/api/library/faststart` | Report which MP4/M4B files still keep their `moov` index behind the audio. Admin only. |
+| `POST` | `/api/library/faststart` | Start a faststart conversion job. Admin only; body `{ "bookId": string \| null, "includeActive": bool }`. Returns `{ "jobId": ... }` to poll on `/api/jobs/{job_id}`. |
+
+#### Faststart conversion
+
+MP4-family files (`.m4a`, `.m4b`, `.mp4`) written without `-movflags +faststart` store their `moov` index after the media data, so a player must fetch the end of the file before it can start. The status response reports `enabled` (whether ffmpeg was found), `ffmpegPath`, `ffprobePath`, `verificationLimited` (ffprobe missing), the `mp4Files`/`optimizedFiles`/`pendingFiles`/`unreadableFiles` counts, `pendingBytes`, an `activeJobId`, and a `books` array of `{ bookId, title, pendingFiles, pendingBytes, inUse }`.
+
+Conversion is deliberately conservative and never edits a file in place:
+
+- Only files whose top-level boxes parse cleanly and put `mdat` ahead of `moov` are candidates. Anything unreadable, truncated, or already faststart is left alone.
+- Each file is remuxed with `-c copy` to a temporary file beside the original. Audio and cover art are copied verbatim and tags and chapters are carried across. The QuickTime `bin_data` chapter *text track* that Audible-derived M4Bs carry is deliberately not copied — the mp4/ipod muxer cannot write it back — and is regenerated from the chapter list instead.
+- The result must parse as faststart, keep at least half the original's size, and — when ffprobe is available — match the original's duration and audio stream count and keep at least as many chapters and cover-art streams. A failed check discards the copy and leaves the original in place.
+- The verified copy replaces the original with a single atomic rename, with a hard link held until the rename lands so an interrupted conversion cannot lose a book. Book and track identity is keyed on library paths, so listening progress survives.
+- Books whose saved position moved within the last 15 minutes are skipped, since somebody is likely listening; `includeActive: true` converts them anyway.
+- Only one conversion job runs at a time, and free space is checked before each file. The library is rescanned when the job finishes.
+
+Requires ffmpeg on `PATH` or `ffmpeg_path` in `server.config`; the control reports itself as unavailable otherwise.
 
 Audio tracks are streamed with HTTP range requests for seeking. The exact track URL is included in the book detail response.
 

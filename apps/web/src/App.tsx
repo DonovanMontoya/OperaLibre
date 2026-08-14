@@ -151,6 +151,7 @@ import {
   removeBookDownload
 } from "./offline";
 import { isNativeApp } from "./api";
+import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, openNativeBrowser, selectionHaptic } from "./native";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
@@ -172,6 +173,7 @@ import {
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import { NATIVE_STARTUP_SETTLE_MS, shouldAcceptNativeTrackChange } from "./startup";
 import {
+  backfillDeviceLibraryMetadata,
   DEVICE_USER,
   getDeviceBooks,
   getDeviceProgress,
@@ -1610,11 +1612,13 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
       releaseOfflineMediaUrl(resolvedUrl);
     };
   }, [book]);
-  if (book.coverArtUrl && !loadFailed) {
+  // A device import has no server URL at all: its only cover is the local one.
+  const coverSrc = offlineCoverUrl ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
+  if (coverSrc && !loadFailed) {
     return (
       <img
         className={className}
-        src={offlineCoverUrl ?? mediaUrl(book.coverArtUrl)}
+        src={coverSrc}
         alt=""
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
@@ -1926,6 +1930,21 @@ export default function App() {
     />
   );
 }
+
+/**
+ * Desktop browsers narrow the file dialog from this list. iOS is left
+ * unfiltered instead: it resolves `accept` to UTIs and types `.m4b` as
+ * `com.apple.protected-mpeg-4-audio-b`, which answers to no audio MIME type at
+ * all, so filtering there greys out the audiobooks the picker exists to find.
+ * Either way the chosen names are checked before anything is uploaded.
+ */
+const UPLOAD_FILE_ACCEPT = [
+  ...SUPPORTED_AUDIO_EXTENSIONS.map((extension) => `.${extension}`),
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/x-m4b",
+  "audio/*"
+].join(",");
 
 function MainApp({
   currentUser,
@@ -2454,7 +2473,10 @@ function MainApp({
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
     setIsLoading(true);
     setError(null);
-    if (native) await migrateDeviceLibraryFileExtensions();
+    if (native) {
+      await migrateDeviceLibraryFileExtensions();
+      await backfillDeviceLibraryMetadata();
+    }
     const deviceBooks = native ? getDeviceBooks() : [];
     const applyLoadedBooks = (nextBooks: Book[], definitive = false) => {
       if (!isCurrentRequest()) return;
@@ -3424,22 +3446,23 @@ function MainApp({
 
   useEffect(() => {
     let active = true;
-    if (!playbackBook?.coverArtUrl) {
+    const book = playbackBook;
+    if (!book || (!book.coverArtUrl && !book.localCoverPath)) {
       setMediaArtworkUrl(null);
       return;
     }
-    const networkArtwork = mediaUrl(playbackBook.coverArtUrl);
+    const networkArtwork = book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null;
     if (!native) {
       setMediaArtworkUrl(networkArtwork);
       return;
     }
-    void getOfflineCoverUrl(playbackBook).then((localArtwork) => {
+    void getOfflineCoverUrl(book).then((localArtwork) => {
       if (active) setMediaArtworkUrl(localArtwork ?? networkArtwork);
     });
     return () => {
       active = false;
     };
-  }, [native, playbackBookKey, playbackBook?.coverArtUrl]);
+  }, [native, playbackBookKey, playbackBook?.coverArtUrl, playbackBook?.localCoverPath]);
 
   useEffect(() => {
     if (!playbackBook || !currentTrack) {
@@ -4627,9 +4650,15 @@ function MainApp({
   }
 
   function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.currentTarget.files ?? []);
+    const chosen = Array.from(event.currentTarget.files ?? []);
+    const files = chosen.filter((file) => isSupportedAudioFileName(file.name));
+    const skipped = chosen.filter((file) => !isSupportedAudioFileName(file.name));
     setUploadFiles(files);
-    setUploadError(null);
+    setUploadError(
+      skipped.length
+        ? `Left out ${skipped.map((file) => file.name).join(", ")}: the library takes ${SUPPORTED_AUDIO_EXTENSIONS.join(", ")} files.`
+        : null
+    );
     if (!uploadBookName.trim() && files.length > 0) {
       setUploadBookName(files[0].name.replace(/\.[^.]+$/, ""));
     }
@@ -7179,7 +7208,7 @@ function MainApp({
               <span>AAC, AIFF, FLAC, M4A, M4B, MP3, MP4, OGG, Opus, or WAV</span>
               <input
                 type="file"
-                accept=".aac,.aiff,.flac,.m4a,.m4b,.mp3,.mp4,.ogg,.opus,.wav,audio/*"
+                accept={native ? undefined : UPLOAD_FILE_ACCEPT}
                 multiple
                 required
                 disabled={uploadBusy}
