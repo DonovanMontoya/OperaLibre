@@ -7862,6 +7862,26 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   line-height: 1.5;
 }
 
+/* The shared icon button is drawn for the dark player surface, where faint
+   gold on transparent reads fine. On the admin panel's paper background it
+   nearly disappears, so the close control gets real contrast of its own. */
+.admin-close {
+  flex: 0 0 auto;
+  border-color: rgba(112, 37, 24, 0.34);
+  color: var(--oxblood);
+  background: rgba(255, 252, 244, 0.95);
+  box-shadow: 0 10px 24px -16px rgba(26, 20, 16, 0.7);
+  cursor: pointer;
+}
+
+.admin-close:hover,
+.admin-close:focus-visible {
+  color: var(--paper);
+  border-color: var(--oxblood);
+  background: var(--oxblood);
+  transform: none;
+}
+
 .admin-nav {
   width: min(1180px, 100%);
   margin: 28px auto 20px;
@@ -8093,6 +8113,162 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   font-size: 0.8rem;
   line-height: 1.45;
 }
+
+.admin-faststart-card {
+  margin-top: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.admin-faststart-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  margin: 0;
+}
+
+.admin-faststart-stats > div {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-faststart-stats dt {
+  color: var(--ink-faded);
+  font: 0.58rem "JetBrains Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-faststart-stats dd {
+  margin: 0;
+  font: 400 1.35rem "Instrument Serif", serif;
+}
+
+.admin-faststart-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink-faded);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.admin-faststart-note code {
+  font: 0.74rem "JetBrains Mono", monospace;
+}
+
+.admin-faststart-books {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-faststart-books li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(112, 37, 24, 0.03);
+  font-size: 0.84rem;
+}
+
+.admin-faststart-books li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-faststart-books li > em,
+.admin-faststart-more {
+  flex: 0 0 auto;
+  color: var(--ink-faded);
+  font: 0.6rem "JetBrains Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-style: normal;
+}
+
+.admin-faststart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.admin-faststart-actions > span {
+  flex: 1 1 260px;
+  color: var(--ink-faded);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.admin-faststart-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(156, 104, 21, 0.3);
+  border-radius: 10px;
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+}
+
+.admin-faststart-confirm strong {
+  font: 400 1.15rem "Instrument Serif", serif;
+}
+
+.admin-faststart-confirm p {
+  margin: 0;
+  max-width: 620px;
+  color: var(--ink-faded);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.admin-faststart-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.admin-faststart-job {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(26, 20, 16, 0.1);
+}
+
+.admin-faststart-job-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-faded);
+  font: 600 0.6rem "JetBrains Mono", monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.admin-faststart-job-state.failed { color: var(--oxblood); }
+.admin-faststart-job-state.completed { color: #315b3c; }
+
+.admin-faststart-log {
+  max-height: 200px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid rgba(26, 20, 16, 0.12);
+  border-radius: 8px;
+  background: rgba(26, 20, 16, 0.035);
+  font: 0.68rem/1.5 "JetBrains Mono", monospace;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .admin-quick-actions > div:last-child,
 .admin-section-head > button,
 .admin-row-actions { display: flex; gap: 8px; }

@@ -6,6 +6,7 @@ import type {
   Book,
   BookMetadataUpdate,
   BookProgress,
+  FaststartStatus,
   JobCreated,
   JobStatus,
   LibationAccess,
@@ -895,6 +896,23 @@ export async function generateSyncMap(bookId: string) {
 
 export async function getAlignmentStatus() {
   return request<AlignmentStatus>("/api/alignment/status");
+}
+
+export async function getFaststartStatus() {
+  return request<FaststartStatus>("/api/library/faststart");
+}
+
+export async function startFaststartConversion(options?: {
+  bookId?: string;
+  includeActive?: boolean;
+}) {
+  return request<JobCreated>("/api/library/faststart", {
+    method: "POST",
+    body: JSON.stringify({
+      bookId: options?.bookId ?? null,
+      includeActive: options?.includeActive ?? false
+    })
+  });
 }
 
 export async function getJob(jobId: string) {

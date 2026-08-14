@@ -49,9 +49,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var statusObservation: NSKeyValueObservation?
     private var failureObservations: [NSKeyValueObservation] = []
     private var currentItemObservation: NSKeyValueObservation?
+    private var timeControlStatusObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var stalledObserver: NSObjectProtocol?
+    private var rateChangeObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
@@ -400,6 +402,35 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func installObservers(player: AVPlayer, item: AVPlayerItem, generation: Int) {
+        timeControlStatusObservation = player.observe(
+            \.timeControlStatus,
+            options: [.initial, .new]
+        ) { [weak self, weak player] _, _ in
+            DispatchQueue.main.async {
+                guard
+                    let self,
+                    let player,
+                    player === self.player,
+                    generation == self.generation
+                else { return }
+                self.updateNowPlayingInfo()
+            }
+        }
+
+        rateChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayer.rateDidChangeNotification,
+            object: player,
+            queue: .main
+        ) { [weak self, weak player] _ in
+            guard
+                let self,
+                let player,
+                player === self.player,
+                generation == self.generation
+            else { return }
+            self.updateNowPlayingInfo()
+        }
+
         statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self, weak item] _, _ in
             DispatchQueue.main.async {
                 guard let self, let item, generation == self.generation else { return }
@@ -881,12 +912,13 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             min($0.durationSeconds, max(0, itemPosition - $0.startSeconds))
         } ?? itemPosition
         let isPlaying = player.timeControlStatus == .playing
+        let playbackRate = effectivePlaybackRate(for: player)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: chapter?.title ?? nowPlayingTitle,
             MPMediaItemPropertyArtist: nowPlayingArtist,
             MPMediaItemPropertyAlbumTitle: nowPlayingAlbum,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(desiredRate) : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: playbackRate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(desiredRate),
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
             MPNowPlayingInfoPropertyIsLiveStream: false
@@ -899,6 +931,21 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+    }
+
+    /// Now Playing extrapolates its clock from elapsed time and playback rate.
+    /// AVPlayer's spoken-audio processing can quantize the requested rate, so
+    /// use the current item's timebase rather than the UI's requested value.
+    /// Waiting and paused players must publish zero or the lock-screen clock
+    /// continues moving while the media clock is stopped.
+    private func effectivePlaybackRate(for player: AVPlayer) -> Double {
+        guard player.timeControlStatus == .playing else { return 0 }
+        if let timebase = player.currentItem?.timebase {
+            let rate = CMTimebaseGetRate(timebase)
+            if rate.isFinite, rate > 0 { return rate }
+        }
+        let rate = Double(player.rate)
+        return rate.isFinite && rate > 0 ? rate : Double(desiredRate)
     }
 
     private func nowPlayingChapterIndex(at position: Double) -> Int? {
@@ -958,6 +1005,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         failureObservations = []
         currentItemObservation?.invalidate()
         currentItemObservation = nil
+        timeControlStatusObservation?.invalidate()
+        timeControlStatusObservation = nil
         if let timeObserver, let player {
             player.removeTimeObserver(timeObserver)
         }
@@ -970,6 +1019,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             NotificationCenter.default.removeObserver(stalledObserver)
         }
         stalledObserver = nil
+        if let rateChangeObserver {
+            NotificationCenter.default.removeObserver(rateChangeObserver)
+        }
+        rateChangeObserver = nil
         player?.pause()
         if let queuePlayer = player as? AVQueuePlayer {
             queuePlayer.removeAllItems()

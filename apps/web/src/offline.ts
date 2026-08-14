@@ -384,6 +384,9 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
 
 export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
   if (isNative()) {
+    // A book imported from the device picker keeps the cover its own tags
+    // carried; there is no server copy to fall back to.
+    if (book.localCoverPath) return nativeFileUrl(book.localCoverPath);
     await migrateLegacyBookDirectory(book);
     return nativeFileUrl(coverFilePath(book));
   }

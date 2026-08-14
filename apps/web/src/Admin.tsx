@@ -5,6 +5,7 @@ import {
   CloudDownload,
   Database,
   ExternalLink,
+  Gauge,
   KeyRound,
   LoaderCircle,
   RefreshCcw,
@@ -15,14 +16,16 @@ import {
   Users,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   changePassword,
   createUser,
   deleteDownloadedBook,
   deleteUser,
   decideLibationRequest,
+  getFaststartStatus,
   getFrontendUpdateStatus,
+  getJob,
   getUpdateStatus,
   installFrontendUpdate,
   installServerUpdate,
@@ -30,6 +33,7 @@ import {
   listLibationRequests,
   listUsers,
   mediaUrl,
+  startFaststartConversion,
   updateUserBookAccess,
   updateUserLibationApproval,
   updateUserLibationAccess,
@@ -38,7 +42,9 @@ import {
 import type {
   AuthUser,
   Book,
+  FaststartStatus,
   FrontendUpdateStatus,
+  JobStatus,
   LibationAccess,
   LibationDownloadRequest,
   UpdateStatus
@@ -47,6 +53,16 @@ import { FRONTEND_VERSION } from "./version";
 
 type AdminSection = "overview" | "users" | "requests" | "books";
 type AccountRole = "owner" | "admin" | "reader";
+
+function isRunningJob(job: JobStatus | null) {
+  return !!job && (job.status === "queued" || job.status === "running");
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MiB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+}
 
 export function AdminPanel({
   currentUser,
@@ -80,6 +96,13 @@ export function AdminPanel({
   const [updateChecking, setUpdateChecking] = useState(true);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [frontendUpdateInstalling, setFrontendUpdateInstalling] = useState(false);
+  const [faststart, setFaststart] = useState<FaststartStatus | null>(null);
+  const [faststartChecking, setFaststartChecking] = useState(false);
+  const faststartSurveyed = useRef(false);
+  const [faststartStarting, setFaststartStarting] = useState(false);
+  const [faststartConfirming, setFaststartConfirming] = useState(false);
+  const [faststartJob, setFaststartJob] = useState<JobStatus | null>(null);
+  const [faststartError, setFaststartError] = useState<string | null>(null);
 
   async function refreshUsers() {
     setLoading(true);
@@ -135,10 +158,63 @@ export function AdminPanel({
     }
   }
 
+  async function refreshFaststart() {
+    setFaststartChecking(true);
+    try {
+      const status = await getFaststartStatus();
+      setFaststart(status);
+      setFaststartError(null);
+      if (status.activeJobId) {
+        const job = await getJob(status.activeJobId).catch(() => null);
+        if (job) setFaststartJob(job);
+      }
+    } catch (err) {
+      setFaststartError(
+        err instanceof Error ? err.message : "Could not check the library for faststart files."
+      );
+    } finally {
+      setFaststartChecking(false);
+    }
+  }
+
   useEffect(() => {
     void refreshUsers();
     void refreshUpdate();
   }, []);
+
+  // Surveying the library reads the head of every MP4 file, so it waits until
+  // the tab that shows the result is actually open.
+  useEffect(() => {
+    if (section !== "books" || faststartSurveyed.current) return;
+    faststartSurveyed.current = true;
+    void refreshFaststart();
+  }, [section]);
+
+  // A conversion runs on the server as a job; follow it until it settles, then
+  // pick up the library it rewrote.
+  useEffect(() => {
+    if (!faststartJob || !isRunningJob(faststartJob)) return;
+    const jobId = faststartJob.id;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getJob(jobId)
+        .then((next) => {
+          if (cancelled) return;
+          setFaststartJob(next);
+          if (!isRunningJob(next)) {
+            void refreshFaststart();
+            void onRescan().catch(() => {});
+          }
+        })
+        .catch(() => {
+          // A dropped poll is not a failed conversion; try again next tick.
+        });
+    }, 2_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [faststartJob?.id, faststartJob?.status]);
 
   const readers = users.filter((user) => !user.isAdmin);
   const pendingRequests = libationRequests.filter((request) => request.status === "pending");
@@ -152,6 +228,17 @@ export function AdminPanel({
     () => [...books].sort((a, b) => a.title.localeCompare(b.title)),
     [books]
   );
+  // What a conversion started right now would actually touch: books somebody
+  // is listening to are left out by the server.
+  const faststartPlan = useMemo(() => {
+    const convertible = (faststart?.books ?? []).filter((book) => !book.inUse);
+    return {
+      books: convertible.length,
+      files: convertible.reduce((sum, book) => sum + book.pendingFiles, 0),
+      bytes: convertible.reduce((sum, book) => sum + book.pendingBytes, 0),
+      inUse: (faststart?.books.length ?? 0) - convertible.length
+    };
+  }, [faststart]);
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -312,6 +399,46 @@ export function AdminPanel({
     void saveAccess(user, next);
   }
 
+  function askToConvertFaststart() {
+    if (!faststart || faststart.pendingFiles === 0) return;
+    if (faststartPlan.files === 0) {
+      setFaststartError(
+        "Every remaining book is being listened to right now. Try again once those sessions end."
+      );
+      return;
+    }
+    setFaststartError(null);
+    setFaststartConfirming(true);
+  }
+
+  async function handleConvertFaststart() {
+    setFaststartConfirming(false);
+    setFaststartStarting(true);
+    setFaststartError(null);
+    setNotice(null);
+    try {
+      const { jobId } = await startFaststartConversion();
+      const started = await getJob(jobId).catch(() => null);
+      setFaststartJob(
+        started ?? {
+          id: jobId,
+          kind: "library-faststart",
+          targetId: null,
+          status: "queued",
+          startedAt: String(Date.now()),
+          finishedAt: null,
+          exitCode: null,
+          output: "",
+          error: null
+        }
+      );
+    } catch (err) {
+      setFaststartError(err instanceof Error ? err.message : "Could not start the conversion.");
+    } finally {
+      setFaststartStarting(false);
+    }
+  }
+
   async function handleInstallUpdate() {
     if (!updateStatus?.updateAvailable || !updateStatus.canAutoUpdate || !currentUser.isOwner) return;
     if (!window.confirm(
@@ -380,7 +507,7 @@ export function AdminPanel({
           <p>Manage accounts, permissions, and the books available from this server.</p>
         </div>
         {onClose ? (
-          <button type="button" className="icon-button" aria-label="Close administration" onClick={onClose}>
+          <button type="button" className="icon-button admin-close" aria-label="Close administration" onClick={onClose}>
             <X size={18} />
           </button>
         ) : null}
@@ -431,6 +558,7 @@ export function AdminPanel({
               </button>
             </div>
           </section>
+
           <section className="admin-card admin-software-card">
             <div className="admin-software-head">
               <div className="admin-software-copy">
@@ -656,6 +784,180 @@ export function AdminPanel({
               })}
               {books.length === 0 ? <p className="admin-empty">No downloaded books were found. Upload one or rescan the library.</p> : null}
             </div>
+          </section>
+
+          <section className="admin-card admin-faststart-card">
+            <div className="admin-software-head">
+              <div className="admin-software-copy">
+                <span className="section-label"><Gauge size={13} /> Streaming optimization</span>
+                <h2>Faststart conversion</h2>
+                <p>
+                  An MP4 or M4B written without faststart keeps its index at the end of the file, so
+                  players fetch the tail before the first second can play. Converting rewrites the
+                  container only — audio, chapters, and tags are copied across untouched, the result
+                  is verified against the original, and listening progress is unaffected.
+                </p>
+              </div>
+              <div className="admin-software-actions">
+                <button
+                  type="button"
+                  className="quiet-button"
+                  disabled={faststartChecking || isRunningJob(faststartJob)}
+                  onClick={() => void refreshFaststart()}
+                >
+                  {faststartChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />}
+                  {faststartChecking ? "Checking…" : "Check files"}
+                </button>
+              </div>
+            </div>
+
+            {faststartError ? <p className="admin-message error">{faststartError}</p> : null}
+
+            {!faststart && !faststartError ? (
+              <p className="admin-faststart-note">
+                {faststartChecking
+                  ? "Reading the head of every MP4 file in the library…"
+                  : "The library has not been checked yet."}
+              </p>
+            ) : null}
+
+            {faststart && !faststart.enabled ? (
+              <p className="admin-faststart-note">
+                ffmpeg was not found on this server, so conversion is unavailable. Install ffmpeg and
+                restart OperaLibre, or set <code>ffmpeg_path</code> in <code>server.config</code>.
+              </p>
+            ) : null}
+
+            {faststart?.enabled ? (
+              <>
+                <dl className="admin-faststart-stats">
+                  <div>
+                    <dt>Need converting</dt>
+                    <dd>{faststart.pendingFiles}</dd>
+                  </div>
+                  <div>
+                    <dt>Already fast</dt>
+                    <dd>{faststart.optimizedFiles}</dd>
+                  </div>
+                  <div>
+                    <dt>MP4 files</dt>
+                    <dd>{faststart.mp4Files}</dd>
+                  </div>
+                  <div>
+                    <dt>To rewrite</dt>
+                    <dd>{formatFileSize(faststart.pendingBytes)}</dd>
+                  </div>
+                </dl>
+
+                {faststart.unreadableFiles > 0 ? (
+                  <p className="admin-faststart-note">
+                    {faststart.unreadableFiles} file{faststart.unreadableFiles === 1 ? "" : "s"} could
+                    not be read as MP4 containers and will be left alone.
+                  </p>
+                ) : null}
+                {faststart.verificationLimited ? (
+                  <p className="admin-faststart-note">
+                    ffprobe was not found beside ffmpeg. Conversions can only be verified by container
+                    layout and size, not by duration, streams, or chapters.
+                  </p>
+                ) : null}
+
+                {faststart.books.length > 0 ? (
+                  <ul className="admin-faststart-books">
+                    {faststart.books.slice(0, 8).map((book) => (
+                      <li key={book.bookId}>
+                        <span>{book.title}</span>
+                        <em>
+                          {book.pendingFiles} file{book.pendingFiles === 1 ? "" : "s"} ·{" "}
+                          {formatFileSize(book.pendingBytes)}
+                          {book.inUse ? " · in use" : ""}
+                        </em>
+                      </li>
+                    ))}
+                    {faststart.books.length > 8 ? (
+                      <li className="admin-faststart-more">
+                        and {faststart.books.length - 8} more
+                      </li>
+                    ) : null}
+                  </ul>
+                ) : (
+                  <p className="admin-faststart-note">
+                    <Check size={13} /> Every MP4 file in the library already starts fast.
+                  </p>
+                )}
+
+                {faststart.pendingFiles > 0 && faststartConfirming && faststartPlan.files > 0 ? (
+                  <div className="admin-faststart-confirm" role="group" aria-label="Confirm conversion">
+                    <strong>
+                      Convert {faststartPlan.files} file{faststartPlan.files === 1 ? "" : "s"} across{" "}
+                      {faststartPlan.books} book{faststartPlan.books === 1 ? "" : "s"}?
+                    </strong>
+                    <p>
+                      {formatFileSize(faststartPlan.bytes)} will be rewritten. Each file is remuxed
+                      with its audio, cover, chapters, and tags copied unchanged, checked against the
+                      original, and only then swapped in — a file that fails the check is left exactly
+                      as it is. Listening progress is not affected.
+                    </p>
+                    {faststartPlan.inUse > 0 ? (
+                      <p>
+                        {faststartPlan.inUse} book{faststartPlan.inUse === 1 ? " is" : "s are"} being
+                        listened to right now and will be left for a later run.
+                      </p>
+                    ) : null}
+                    <p>Playback already streaming one of these files may stutter once as it is replaced.</p>
+                    <div className="admin-faststart-confirm-actions">
+                      <button type="button" onClick={() => void handleConvertFaststart()}>
+                        <Gauge size={15} /> Convert {faststartPlan.files} file
+                        {faststartPlan.files === 1 ? "" : "s"}
+                      </button>
+                      <button
+                        type="button"
+                        className="quiet-button"
+                        onClick={() => setFaststartConfirming(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : faststart.pendingFiles > 0 ? (
+                  <div className="admin-faststart-actions">
+                    <button
+                      type="button"
+                      disabled={faststartStarting || isRunningJob(faststartJob)}
+                      onClick={askToConvertFaststart}
+                    >
+                      {faststartStarting || isRunningJob(faststartJob)
+                        ? <LoaderCircle size={15} className="spin-icon" />
+                        : <Gauge size={15} />}
+                      {isRunningJob(faststartJob)
+                        ? "Converting…"
+                        : `Convert ${faststart.pendingFiles} file${faststart.pendingFiles === 1 ? "" : "s"}`}
+                    </button>
+                    <span>
+                      Books somebody is listening to right now are skipped, and every original is only
+                      replaced after its converted copy passes verification.
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
+            {faststartJob ? (
+              <div className="admin-faststart-job">
+                <span className={`admin-faststart-job-state ${faststartJob.status}`}>
+                  {isRunningJob(faststartJob)
+                    ? <LoaderCircle size={13} className="spin-icon" />
+                    : faststartJob.status === "failed" ? <X size={13} /> : <Check size={13} />}
+                  {isRunningJob(faststartJob)
+                    ? "Conversion running"
+                    : faststartJob.status === "failed" ? "Conversion finished with failures" : "Conversion complete"}
+                </span>
+                {faststartJob.output ? (
+                  <pre className="admin-faststart-log">{faststartJob.output.trimEnd()}</pre>
+                ) : null}
+                {faststartJob.error ? <p className="admin-message error">{faststartJob.error}</p> : null}
+              </div>
+            ) : null}
           </section>
         </div>
       ) : null}
