@@ -490,6 +490,13 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "duration", label: "Length" }
 ];
 
+const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
+
+function readStoredSortMode(): SortMode {
+  const stored = window.localStorage.getItem(SORT_MODE_STORAGE_KEY);
+  return SORT_OPTIONS.some((option) => option.value === stored) ? (stored as SortMode) : "title";
+}
+
 function compareShelfLabels(left: string | null | undefined, right: string | null | undefined) {
   const a = left?.trim() ?? "";
   const b = right?.trim() ?? "";
@@ -2138,7 +2145,7 @@ function MainApp({
   // without a local download can't actually play in this state.
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [sortMode, setSortMode] = useState<SortMode>("title");
+  const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
@@ -2227,6 +2234,11 @@ function MainApp({
       : sortMode === "series" || sortMode === "genre";
     if (unsupportedSort) setSortMode("title");
   }, [librarySource, sortMode]);
+
+  function selectSortMode(mode: SortMode) {
+    setSortMode(mode);
+    window.localStorage.setItem(SORT_MODE_STORAGE_KEY, mode);
+  }
 
   const visibleBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -5231,7 +5243,7 @@ function MainApp({
               <span className="sr-only">Sort by</span>
               <select
                 value={sortMode}
-                onChange={(event) => setSortMode(event.currentTarget.value as SortMode)}
+                onChange={(event) => selectSortMode(event.currentTarget.value as SortMode)}
                 aria-label="Sort library by"
               >
                 {SORT_OPTIONS.filter((option) => librarySource === "local"
