@@ -107,6 +107,21 @@ export function isNativeApp(): boolean {
   return Capacitor.isNativePlatform();
 }
 
+// The macOS shell is a plain, desktop-sized WKWebView, not a Capacitor
+// runtime — it should keep the regular desktop layout, so it must NOT be
+// folded into isNativeApp() (that also switches the app into the mobile
+// single-pane / bottom-tab-bar UI built for phone-sized Capacitor builds).
+// It does need the same credential handling as Capacitor apps though: the
+// shell serves the SPA from a local origin (127.0.0.1) that's different from
+// the configured server's origin, so a session cookie can never be set/sent
+// across that boundary. It identifies itself with an injected flag instead
+// (see apps/macos/Sources/OperaLibre/main.swift). Without this, the token
+// storage functions below delete any persisted auth token on every launch.
+function usesNativeCredentialStorage(): boolean {
+  const isMacShell = typeof window !== "undefined" && window.__OPERALIBRE_NATIVE_SHELL__ === true;
+  return isNativeApp() || isMacShell;
+}
+
 function isLoopbackServerUrl(value: string): boolean {
   try {
     const hostname = new URL(normalizeServerUrl(value)).hostname.toLowerCase();
@@ -379,7 +394,7 @@ export function getStoredToken(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
-  if (!isNativeApp()) {
+  if (!usesNativeCredentialStorage()) {
     // Browser sessions are restored from the Secure, HttpOnly cookie. Remove
     // tokens left by older builds so a later XSS cannot recover a persistent
     // full-API credential from localStorage.
@@ -398,7 +413,7 @@ export function setStoredToken(token: string | null) {
   if (typeof window === "undefined") {
     return;
   }
-  if (token && isNativeApp()) {
+  if (token && usesNativeCredentialStorage()) {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
   } else {
     window.localStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -462,7 +477,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
     // Native clients authenticate with the persisted bearer token. Omitting
     // cookies prevents an old WebKit cookie from turning a native mutation
     // into a cookie-authenticated CSRF request after an app upgrade.
-    credentials: isNativeApp() ? "omit" : "include"
+    credentials: usesNativeCredentialStorage() ? "omit" : "include"
   }, timeoutMs);
 
   if (response.status === 401 && unauthorizedHandler) {
