@@ -5215,7 +5215,7 @@ fn clean_imported_title(value: &str) -> String {
         return trimmed.to_string();
     };
     let candidate = trimmed[open + 1..close].trim();
-    if normalize_asin(candidate).is_none() {
+    if normalize_guessed_asin(candidate).is_none() {
         return trimmed.to_string();
     }
     let cleaned = trimmed[..open].trim_end_matches([' ', '-', '_']).trim();
@@ -6363,13 +6363,19 @@ fn extract_asin(tag: &Tag) -> Option<String> {
 fn extract_asin_from_path(path: &FsPath) -> Option<String> {
     let name = path.file_name().and_then(|name| name.to_str())?;
     name.split(|character: char| !character.is_ascii_alphanumeric())
-        .find_map(normalize_asin)
+        .find_map(normalize_guessed_asin)
 }
 
+/// Validates an id that was handed to us as an ASIN — a route parameter, a
+/// Libation export field, a metadata sidecar, an `ASIN` tag. Audible ids are
+/// ten alphanumerics, and a good number of them are ISBN-10s rather than
+/// `B`-prefixed ASINs (`125077795X` is *The Invisible Life of Addie LaRue*),
+/// so requiring the `B` would reject titles the account actually owns. The
+/// shape check still guarantees the id is safe to put in a path or CLI
+/// argument.
 fn normalize_asin(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches(char::from(0));
     if trimmed.len() == 10
-        && trimmed.starts_with('B')
         && trimmed
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
@@ -6378,6 +6384,14 @@ fn normalize_asin(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Picks an ASIN out of text that merely *might* contain one, such as a file
+/// name or a trailing `[B00F3F2J6K]` title suffix. This keeps the `B` prefix
+/// that [`normalize_asin`] drops: any ten-letter word would otherwise qualify,
+/// and "Unabridged" is exactly ten letters.
+fn normalize_guessed_asin(value: &str) -> Option<String> {
+    normalize_asin(value).filter(|asin| asin.starts_with('B'))
 }
 
 fn extract_metadata_summary(tag: &Tag) -> MetadataSummary {
@@ -9914,9 +9928,9 @@ mod tests {
         AuthUser, HeaderMap, HeaderValue, LoginThrottle, Session, StatusCode, bytes_etag,
         can_access_book, clamped_track_position, clean_imported_title, composer_narrator,
         if_none_match_matches, is_supported_audio_file, libation_cover_art_url, media_content_type,
-        normalize_asin, parse_origin_list, parse_range, progress_write_is_stale,
-        progress_write_is_suspect_reset, progress_write_is_unintentional_regression,
-        sanitize_filename, walk_audio_files,
+        normalize_asin, normalize_guessed_asin, parse_origin_list, parse_range,
+        progress_write_is_stale, progress_write_is_suspect_reset,
+        progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files,
     };
 
     #[test]
@@ -10860,9 +10874,25 @@ mod tests {
             normalize_asin(" B002v1of70 "),
             Some("B002V1OF70".to_string())
         );
+        // Audible sells plenty of titles under an ISBN-10 rather than a
+        // B-prefixed ASIN; these are ordinary owned books, not bad input.
+        assert_eq!(normalize_asin("125077795x"), Some("125077795X".to_string()));
+        assert_eq!(normalize_asin("1705009050"), Some("1705009050".to_string()));
         assert_eq!(normalize_asin("B002V1OF7"), None);
-        assert_eq!(normalize_asin("1234567890"), None);
+        assert_eq!(normalize_asin("B002V1OF701"), None);
         assert_eq!(normalize_asin("B002V1OF7!"), None);
+        assert_eq!(normalize_asin("../../etc/pw"), None);
+    }
+
+    #[test]
+    fn normalize_guessed_asin_still_requires_the_b_prefix() {
+        assert_eq!(
+            normalize_guessed_asin("B002V1OF70"),
+            Some("B002V1OF70".to_string())
+        );
+        // Ten letters, and a very common file-name suffix.
+        assert_eq!(normalize_guessed_asin("Unabridged"), None);
+        assert_eq!(normalize_guessed_asin("125077795X"), None);
     }
 
     #[test]
