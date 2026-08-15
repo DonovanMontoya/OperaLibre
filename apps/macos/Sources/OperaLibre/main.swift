@@ -98,6 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webServer: BundledWebServer?
+    private var frontendUpdater: FrontendUpdater?
+    private var isCheckingForUpdates = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -107,6 +109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.websiteDataStore = .default()
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.userContentController.add(self, name: "frontendError")
+        configuration.userContentController.addUserScript(WKUserScript(
+            // The web app has no other way to tell it's inside this shell rather than a
+            // same-origin browser tab; without this it deletes the persisted auth token
+            // and expects a cross-origin cookie that WebKit will not carry between origins.
+            source: "window.__OPERALIBRE_NATIVE_SHELL__ = true;",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         configuration.userContentController.addUserScript(WKUserScript(
             source: """
             window.addEventListener('error', event => {
@@ -166,12 +176,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             return
         }
 
-        let webRoot = resources.appendingPathComponent("Web", isDirectory: true)
-        let index = webRoot.appendingPathComponent("index.html")
-        guard FileManager.default.fileExists(atPath: index.path) else {
+        let bundledWebRoot = resources.appendingPathComponent("Web", isDirectory: true)
+        let bundledIndex = bundledWebRoot.appendingPathComponent("index.html")
+        guard FileManager.default.fileExists(atPath: bundledIndex.path) else {
             showStartupError("The bundled web frontend is missing. Rebuild with script/build_and_run.sh.")
             return
         }
+
+        let managedWebRoot = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OperaLibre/Web", isDirectory: true)
+        let updater = FrontendUpdater(bundledWebRoot: bundledWebRoot, managedWebRoot: managedWebRoot)
+        frontendUpdater = updater
+        let webRoot = updater.resolveServingRoot()
 
         let server = BundledWebServer(root: webRoot)
         webServer = server
@@ -179,9 +196,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             switch result {
             case .success(let url):
                 webView?.load(URLRequest(url: url))
+                self?.checkForUpdatesOnLaunchIfAppropriate()
             case .failure(let error):
                 self?.showStartupError("The local frontend server could not start.\n\n\(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Only prompts automatically for a real, versioned build; local `script/build_and_run.sh`
+    /// builds are always "dev" and are left alone unless the user explicitly checks for updates.
+    private func checkForUpdatesOnLaunchIfAppropriate() {
+        guard let updater = frontendUpdater, parseSemver(updater.currentVersion) != nil else { return }
+        checkForUpdates(interactive: false)
+    }
+
+    @objc private func checkForUpdatesFromMenu() {
+        checkForUpdates(interactive: true)
+    }
+
+    private func checkForUpdates(interactive: Bool) {
+        guard let updater = frontendUpdater, !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isCheckingForUpdates = false }
+
+            do {
+                let status = try await updater.checkForUpdate()
+                guard status.updateAvailable else {
+                    if interactive {
+                        await self.presentInfoAlert(
+                            title: "You're up to date",
+                            message: "OperaLibre is on the latest web frontend (\(status.currentVersion))."
+                        )
+                    }
+                    return
+                }
+
+                let install = await self.presentConfirmAlert(
+                    title: "Update available",
+                    message: "OperaLibre \(status.latestVersion) is available (currently running \(status.currentVersion)). Install it now?"
+                )
+                guard install else { return }
+
+                try await updater.install(status)
+                _ = await MainActor.run {
+                    self.webView?.reload()
+                }
+                await self.presentInfoAlert(
+                    title: "Update installed",
+                    message: "OperaLibre was updated to \(status.latestVersion)."
+                )
+            } catch {
+                if interactive {
+                    await self.presentInfoAlert(
+                        title: "Update check failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func presentInfoAlert(title: String, message: String) async {
+        await MainActor.run {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
+    private func presentConfirmAlert(title: String, message: String) async -> Bool {
+        await MainActor.run {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: "Install")
+            alert.addButton(withTitle: "Not Now")
+            return alert.runModal() == .alertFirstButtonReturn
         }
     }
 
@@ -211,6 +306,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
+        applicationMenu.addItem(.separator())
+        let checkForUpdatesItem = applicationMenu.addItem(
+            withTitle: "Check for Updates…",
+            action: #selector(checkForUpdatesFromMenu),
+            keyEquivalent: ""
+        )
+        checkForUpdatesItem.target = self
         applicationMenu.addItem(.separator())
         applicationMenu.addItem(
             withTitle: "Quit OperaLibre",
