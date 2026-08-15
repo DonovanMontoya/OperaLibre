@@ -104,17 +104,28 @@ final class FrontendUpdater {
         }
 
         if shouldResetFromBundle {
-            try? fileManager.removeItem(at: managedWebRoot)
+            // Copy into a staging directory first and only swap it into place once it's
+            // fully written and validated. A copy that fails partway (disk full,
+            // interrupted, ...) must never leave a half-written tree at managedWebRoot:
+            // its VERSION.txt could already be present and match, so the next launch
+            // would treat the broken tree as complete and reuse it indefinitely.
+            let stagingRoot = managedWebRoot.deletingLastPathComponent()
+                .appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
             do {
                 try fileManager.createDirectory(
                     at: managedWebRoot.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try fileManager.copyItem(at: bundledWebRoot, to: managedWebRoot)
+                try fileManager.copyItem(at: bundledWebRoot, to: stagingRoot)
+                guard fileManager.fileExists(atPath: stagingRoot.appendingPathComponent("index.html").path) else {
+                    throw FrontendUpdateError.invalidPackage("the bundled web root is missing index.html")
+                }
+                try? fileManager.removeItem(at: managedWebRoot)
+                try fileManager.moveItem(at: stagingRoot, to: managedWebRoot)
             } catch {
-                // Copy failed (disk full, permissions, interrupted) and the managed root
-                // was just removed above — serve the read-only bundle directly rather than
-                // a missing/partial managed root with no diagnostic.
+                try? fileManager.removeItem(at: stagingRoot)
+                // The managed root, if any, was left untouched above — serve the
+                // read-only bundle directly rather than a missing/partial managed root.
                 return bundledWebRoot
             }
         }

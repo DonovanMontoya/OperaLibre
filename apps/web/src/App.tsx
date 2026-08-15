@@ -492,9 +492,23 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
 
-function readStoredSortMode(): SortMode {
-  const stored = window.localStorage.getItem(SORT_MODE_STORAGE_KEY);
-  return SORT_OPTIONS.some((option) => option.value === stored) ? (stored as SortMode) : "title";
+// "account" only makes sense for the Audible shelf; "series"/"genre" only for the
+// local library. Sort mode is persisted per source so switching shelves — including
+// across restarts, since librarySource itself always starts back at "local" — restores
+// what was last chosen there instead of permanently collapsing to "title".
+function isSortModeSupported(source: LibrarySource, mode: SortMode) {
+  return source === "local" ? mode !== "account" : mode !== "series" && mode !== "genre";
+}
+
+function sortModeStorageKey(source: LibrarySource) {
+  return `${SORT_MODE_STORAGE_KEY}.${source}`;
+}
+
+function readStoredSortMode(source: LibrarySource): SortMode {
+  const stored = window.localStorage.getItem(sortModeStorageKey(source));
+  const isValid = SORT_OPTIONS.some((option) => option.value === stored)
+    && isSortModeSupported(source, stored as SortMode);
+  return isValid ? (stored as SortMode) : "title";
 }
 
 function compareShelfLabels(left: string | null | undefined, right: string | null | undefined) {
@@ -2145,7 +2159,7 @@ function MainApp({
   // without a local download can't actually play in this state.
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
+  const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
@@ -2228,16 +2242,15 @@ function MainApp({
   const activeDownloadIdsRef = useRef<Set<string>>(new Set());
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
 
+  // Restores whatever sort was last chosen for this shelf rather than collapsing to
+  // "title": each source keeps its own persisted sort (see readStoredSortMode).
   useEffect(() => {
-    const unsupportedSort = librarySource === "local"
-      ? sortMode === "account"
-      : sortMode === "series" || sortMode === "genre";
-    if (unsupportedSort) setSortMode("title");
-  }, [librarySource, sortMode]);
+    setSortMode(readStoredSortMode(librarySource));
+  }, [librarySource]);
 
   function selectSortMode(mode: SortMode) {
     setSortMode(mode);
-    window.localStorage.setItem(SORT_MODE_STORAGE_KEY, mode);
+    window.localStorage.setItem(sortModeStorageKey(librarySource), mode);
   }
 
   const visibleBooks = useMemo(() => {
@@ -4593,7 +4606,6 @@ function MainApp({
 
   function showYourLibrary() {
     setLibrarySource("local");
-    if (sortMode === "account") setSortMode("title");
   }
 
   function openNativeTab(tab: NativeTab) {
