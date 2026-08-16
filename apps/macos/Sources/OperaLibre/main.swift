@@ -215,12 +215,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func checkForUpdates(interactive: Bool) {
+        // `isCheckingForUpdates` is main-thread-confined. The Task below runs on the global
+        // executor, so it must hand the flag back through the main queue; clearing it inline
+        // let a second caller read a stale `false` and start a concurrent install() racing
+        // the first over managedWebRoot.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.checkForUpdates(interactive: interactive) }
+            return
+        }
         guard let updater = frontendUpdater, !isCheckingForUpdates else { return }
         isCheckingForUpdates = true
 
         Task { [weak self] in
             guard let self else { return }
-            defer { self.isCheckingForUpdates = false }
+            defer { DispatchQueue.main.async { self.isCheckingForUpdates = false } }
 
             do {
                 let status = try await updater.checkForUpdate()
@@ -241,12 +249,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 guard install else { return }
 
                 try await updater.install(status)
-                _ = await MainActor.run {
-                    self.webView?.reload()
+                let reloadPicksItUp = updater.isServingManagedRoot
+                if reloadPicksItUp {
+                    _ = await MainActor.run {
+                        self.webView?.reload()
+                    }
                 }
                 await self.presentInfoAlert(
                     title: "Update installed",
-                    message: "OperaLibre was updated to \(status.latestVersion)."
+                    message: reloadPicksItUp
+                        ? "OperaLibre was updated to \(status.latestVersion)."
+                        : "OperaLibre was updated to \(status.latestVersion). Restart the app to load it."
                 )
             } catch {
                 if interactive {
