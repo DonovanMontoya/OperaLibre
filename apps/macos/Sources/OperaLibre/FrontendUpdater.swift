@@ -285,18 +285,7 @@ final class FrontendUpdater {
         defer { try? fileManager.removeItem(at: workDir) }
 
         let archivePath = workDir.appendingPathComponent("frontend.zip")
-        let (downloadedURL, downloadResponse) = try await URLSession.shared.download(from: downloadURL)
-        // Take ownership of the session's temp file before any check can throw, otherwise a
-        // rejected download is orphaned in the system temp directory rather than swept by the
-        // `workDir` cleanup above.
-        try fileManager.moveItem(at: downloadedURL, to: archivePath)
-        // `asset.size` is only GitHub's claim about the file; enforce the cap against what
-        // actually landed on disk, and reject an error page before it is checksummed.
-        try checkStatus(downloadResponse, context: "The frontend package download")
-        let downloadedBytes = (try? fileManager.attributesOfItem(atPath: archivePath.path)[.size] as? Int) ?? nil
-        guard let downloadedBytes, downloadedBytes > 0, downloadedBytes <= maxFrontendPackageBytes else {
-            throw FrontendUpdateError.invalidPackage("unexpected package size")
-        }
+        try await downloadArchive(from: downloadURL, to: archivePath)
 
         let downloadedData = try Data(contentsOf: archivePath, options: .mappedIfSafe)
         let actualDigest = SHA256.hash(data: downloadedData).map { String(format: "%02x", $0) }.joined()
@@ -340,6 +329,40 @@ final class FrontendUpdater {
             throw error
         }
         installedVersion = status.latestVersion
+    }
+
+    /// Streams an update into our scoped workspace instead of asking URLSession to create an
+    /// unbounded temporary file. The byte limit is checked before each write, so an oversized
+    /// response never consumes more than the configured package allowance on disk.
+    private func downloadArchive(from url: URL, to destination: URL) async throws {
+        let request = URLRequest(url: url)
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        try checkStatus(response, context: "The frontend package download")
+
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        let archive = try FileHandle(forWritingTo: destination)
+        defer { try? archive.close() }
+
+        var downloadedBytes = 0
+        var buffer = Data()
+        buffer.reserveCapacity(64 * 1024)
+        for try await byte in bytes {
+            guard downloadedBytes < maxFrontendPackageBytes else {
+                throw FrontendUpdateError.invalidPackage("unexpected package size")
+            }
+            downloadedBytes += 1
+            buffer.append(byte)
+            if buffer.count == 64 * 1024 {
+                try archive.write(contentsOf: buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        guard downloadedBytes > 0 else {
+            throw FrontendUpdateError.invalidPackage("unexpected package size")
+        }
+        if !buffer.isEmpty {
+            try archive.write(contentsOf: buffer)
+        }
     }
 
     private func checkStatus(_ response: URLResponse, context: String) throws {
