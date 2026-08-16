@@ -491,6 +491,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
+const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible"];
 
 // "account" only makes sense for the Audible shelf; "series"/"genre" only for the
 // local library. Sort mode is persisted per source so switching shelves — including
@@ -504,7 +505,35 @@ function sortModeStorageKey(source: LibrarySource) {
   return `${SORT_MODE_STORAGE_KEY}.${source}`;
 }
 
+// Sort mode used to live in a single shared key. Seed each per-source key from it once so
+// an existing choice survives the upgrade instead of silently resetting to "title".
+let legacySortModeMigrated = false;
+
+function migrateLegacySortMode() {
+  // Runs from a useState initializer, so a storage failure here would throw during render
+  // and blank the app. A lost sort preference is not worth that; swallow and move on. The
+  // legacy key is only dropped once the per-source keys are actually written.
+  try {
+    const legacy = window.localStorage.getItem(SORT_MODE_STORAGE_KEY);
+    if (legacy === null) return;
+    if (SORT_OPTIONS.some((option) => option.value === legacy)) {
+      for (const source of LIBRARY_SOURCES) {
+        if (window.localStorage.getItem(sortModeStorageKey(source)) !== null) continue;
+        if (!isSortModeSupported(source, legacy as SortMode)) continue;
+        window.localStorage.setItem(sortModeStorageKey(source), legacy);
+      }
+    }
+    window.localStorage.removeItem(SORT_MODE_STORAGE_KEY);
+  } catch {
+    // Storage unavailable or full — the shelf just opens on the default sort.
+  }
+}
+
 function readStoredSortMode(source: LibrarySource): SortMode {
+  if (!legacySortModeMigrated) {
+    legacySortModeMigrated = true;
+    migrateLegacySortMode();
+  }
   const stored = window.localStorage.getItem(sortModeStorageKey(source));
   const isValid = SORT_OPTIONS.some((option) => option.value === stored)
     && isSortModeSupported(source, stored as SortMode);
@@ -5258,10 +5287,7 @@ function MainApp({
                 onChange={(event) => selectSortMode(event.currentTarget.value as SortMode)}
                 aria-label="Sort library by"
               >
-                {SORT_OPTIONS.filter((option) => librarySource === "local"
-                  ? option.value !== "account"
-                  : option.value !== "series" && option.value !== "genre"
-                ).map((option) => (
+                {SORT_OPTIONS.filter((option) => isSortModeSupported(librarySource, option.value)).map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
