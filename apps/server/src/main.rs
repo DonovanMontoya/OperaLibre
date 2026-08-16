@@ -6367,29 +6367,48 @@ fn extract_asin_from_path(path: &FsPath) -> Option<String> {
 }
 
 /// Validates an id that was handed to us as an ASIN — a route parameter, a
-/// Libation export field, a metadata sidecar, an `ASIN` tag. Audible ids are
-/// ten alphanumerics, and a good number of them are ISBN-10s rather than
-/// `B`-prefixed ASINs (`125077795X` is *The Invisible Life of Addie LaRue*),
-/// so requiring the `B` would reject titles the account actually owns. The
-/// shape check still guarantees the id is safe to put in a path or CLI
-/// argument.
+/// Libation export field, a metadata sidecar, an `ASIN` tag. Audible ids come
+/// in two shapes: the familiar `B`-prefixed ASIN, and an ISBN-10 for titles
+/// listed under their print id (`125077795X` is *The Invisible Life of Addie
+/// LaRue*). Accepting only the former rejects titles the account owns, and
+/// accepting any ten alphanumerics lets junk through to the Libation CLI and
+/// into saved metadata, so each shape is checked on its own terms.
 fn normalize_asin(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches(char::from(0));
-    if trimmed.len() == 10
-        && trimmed
+    if trimmed.len() != 10
+        || !trimmed
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
     {
-        Some(trimmed.to_ascii_uppercase())
-    } else {
-        None
+        return None;
     }
+    let normalized = trimmed.to_ascii_uppercase();
+    (normalized.starts_with('B') || is_isbn10(&normalized)).then_some(normalized)
+}
+
+/// Ten characters, the last of which may be the check character `X`, weighted
+/// 10 down to 1 and summing to a multiple of 11.
+fn is_isbn10(value: &str) -> bool {
+    if value.len() != 10 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (index, character) in value.char_indices() {
+        let digit = match character.to_digit(10) {
+            Some(digit) => digit,
+            None if character == 'X' && index == 9 => 10,
+            None => return false,
+        };
+        sum += (10 - index as u32) * digit;
+    }
+    sum % 11 == 0
 }
 
 /// Picks an ASIN out of text that merely *might* contain one, such as a file
-/// name or a trailing `[B00F3F2J6K]` title suffix. This keeps the `B` prefix
-/// that [`normalize_asin`] drops: any ten-letter word would otherwise qualify,
-/// and "Unabridged" is exactly ten letters.
+/// name or a trailing `[B00F3F2J6K]` title suffix. Only the `B`-prefixed shape
+/// counts here: a bare ten-digit run in a file name is far more likely to be a
+/// date, a phone number, or a track id than an ISBN-10 the book is listed
+/// under.
 fn normalize_guessed_asin(value: &str) -> Option<String> {
     normalize_asin(value).filter(|asin| asin.starts_with('B'))
 }
@@ -10878,6 +10897,8 @@ mod tests {
         // B-prefixed ASIN; these are ordinary owned books, not bad input.
         assert_eq!(normalize_asin("125077795x"), Some("125077795X".to_string()));
         assert_eq!(normalize_asin("1705009050"), Some("1705009050".to_string()));
+        assert_eq!(normalize_asin("1234567891"), None);
+        assert_eq!(normalize_asin("Unabridged"), None);
         assert_eq!(normalize_asin("B002V1OF7"), None);
         assert_eq!(normalize_asin("B002V1OF701"), None);
         assert_eq!(normalize_asin("B002V1OF7!"), None);
