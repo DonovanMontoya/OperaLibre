@@ -10481,6 +10481,59 @@ mod tests {
         assert_eq!(files, vec![book.join("book.m4b")]);
     }
 
+    /// An M4B keeps its artwork in the `covr` atom, which has no `ItemKey` of
+    /// its own. lofty 0.25.0 dropped every unmapped atom while flattening the
+    /// iTunes tag, so covers silently disappeared from the whole library on a
+    /// rescan while titles and durations still read fine — the only visible
+    /// artwork left was whatever a device had already downloaded.
+    #[test]
+    fn m4b_cover_art_survives_the_tag_read() {
+        let Some(tools) = super::faststart::discover_tools(None, None) else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let book = root.path().join("book.m4b");
+        let created = std::process::Command::new(&tools.ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=3",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:d=1",
+                "-map",
+                "0:a",
+                "-map",
+                "1:v",
+                "-c:a",
+                "aac",
+                "-c:v",
+                "mjpeg",
+                "-frames:v",
+                "1",
+                "-disposition:v",
+                "attached_pic",
+            ])
+            .arg(&book)
+            .status()
+            .expect("ffmpeg should run");
+        assert!(created.success());
+
+        let cover = super::read_track_metadata(&book)
+            .cover_art
+            .expect("the embedded cover should be read back");
+        assert_eq!(cover.mime_type, "image/jpeg");
+        assert!(!cover.data.is_empty());
+    }
+
     #[test]
     fn clean_imported_title_strips_trailing_audible_asin() {
         assert_eq!(clean_imported_title("Dune [B002V1OF70]"), "Dune");
