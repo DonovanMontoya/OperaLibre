@@ -6401,7 +6401,7 @@ fn is_isbn10(value: &str) -> bool {
         };
         sum += (10 - index as u32) * digit;
     }
-    sum % 11 == 0
+    sum.is_multiple_of(11)
 }
 
 /// Picks an ASIN out of text that merely *might* contain one, such as a file
