@@ -42,6 +42,12 @@ export type Book = {
   deviceBookId?: string;
   /** Cover art extracted from an imported file's tags, stored in app storage. */
   localCoverPath?: string;
+  /**
+   * The viewer's own playback gain for this book, as a linear multiplier of the
+   * file's level. Absent on Jellyfin, on device-only books, and on OperaLibre
+   * servers released before per-book volume; all of those mean unity.
+   */
+  volumeGain?: number;
 };
 
 export type SharedProgress = {

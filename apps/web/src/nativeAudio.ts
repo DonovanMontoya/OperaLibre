@@ -42,6 +42,7 @@ interface NativeAudioPlugin {
     positionSeconds: number;
     rate: number;
     volume: number;
+    gain: number;
     autoplay: boolean;
     recoveryScopeKey: string;
     recoveryTrackId: string;
@@ -53,6 +54,7 @@ interface NativeAudioPlugin {
   seek(options: { positionSeconds: number }): Promise<void>;
   setRate(options: { rate: number }): Promise<void>;
   setVolume(options: { volume: number }): Promise<void>;
+  setGain(options: { gain: number }): Promise<void>;
   setNowPlaying(options: {
     title: string;
     artist: string;
@@ -87,6 +89,20 @@ interface NativeAudioPlugin {
 }
 
 const NativeAudio = registerPlugin<NativeAudioPlugin>("NativeAudio");
+
+/**
+ * The per-book boost, kept here rather than threaded through every caller: the
+ * plugin is a singleton and `load` has to restate the gain on every track, so
+ * one module-level value is the whole story. `volume` stays the device level;
+ * this is the multiplier AVPlayer applies on top of it.
+ */
+let boostGain = 1;
+
+export function setNativeAudioGain(gain: number) {
+  boostGain = gain;
+  if (!usesNativeAudioPlayer()) return Promise.resolve();
+  return NativeAudio.setGain({ gain });
+}
 
 export function usesNativeAudioPlayer() {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
@@ -203,6 +219,7 @@ export function attachNativeAudioPlayer(
       positionSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
       rate: audio.playbackRate,
       volume: audio.volume,
+      gain: boostGain,
       autoplay: nativeIsPlaying,
       recoveryScopeKey: recovery.scopeKey,
       recoveryTrackId: recovery.trackId,

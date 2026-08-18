@@ -19,6 +19,7 @@ If you ever delete `users.json`, the server returns to first-run mode on the nex
 | --- | --- | --- |
 | Accounts | `data/users.json` (configurable via `users_file`) | JSON, passwords hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2) |
 | Progress | `data/progress.json` (configurable via `progress_file`) | JSON, keyed per user and per book |
+| Per-book settings | `data/book-settings.json` | JSON, keyed per user and per book; currently the per-book volume gain |
 | Sessions | `data/sessions.json` | JSON, random opaque tokens |
 
 Sessions are persisted to disk, so restarting the server does not sign anyone out. Each session expires 30 days after sign-in.
