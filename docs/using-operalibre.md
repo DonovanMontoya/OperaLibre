@@ -15,6 +15,12 @@ This is the everyday guide for listeners and the person who looks after the libr
 
 OperaLibre remembers a reader’s position automatically. Each reader has separate progress, so two people can listen to the same book independently.
 
+### Fix a book that is too quiet
+
+Audiobooks are mastered at very different levels, so a device volume that suits one book leaves the next one hard to hear. **Book Volume**, in the player’s playback sheet (the speed pill) and on the book’s own page, trims or lifts that single book by up to 24 dB without touching anything else. It is saved per reader on the server, so a book you turned up on your phone is already turned up on every other device you sign in from.
+
+The setting is a boost, not a re-recording: past the point where a book’s loudest passages reach full scale a limiter holds them there, so very large boosts trade some dynamic range for audibility. A frontend hosted separately from the OperaLibre server can only turn a book down, not up — the browser will not let it read the audio closely enough to amplify it.
+
 ## Add books to the library
 
 You can add books in either of these ways:
