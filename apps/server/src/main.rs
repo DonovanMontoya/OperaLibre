@@ -777,7 +777,16 @@ fn clamp_book_volume_gain(value: f64) -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BookSettings {
+    /// Defaulted rather than required: this file is read on the way to serving
+    /// the whole library, so a row that is truncated, hand-edited, or written
+    /// by a future build with another shape must cost one book its gain — not
+    /// hide every book from every listener behind a 500.
+    #[serde(default = "default_book_volume_gain")]
     volume_gain: f64,
+}
+
+fn default_book_volume_gain() -> f64 {
+    BOOK_VOLUME_GAIN_DEFAULT
 }
 
 #[derive(Debug, Deserialize)]
@@ -10212,6 +10221,20 @@ mod tests {
             super::clamp_book_volume_gain(f64::NAN),
             super::BOOK_VOLUME_GAIN_DEFAULT
         );
+    }
+
+    /// A settings file is read on the path that serves the whole library, so a
+    /// row missing its gain must degrade to unity instead of failing the read.
+    #[test]
+    fn a_settings_row_without_a_gain_still_parses() {
+        let parsed: std::collections::HashMap<String, super::BookSettings> =
+            serde_json::from_str(r#"{"user:a:book:b":{},"user:a:book:c":{"volumeGain":2.0}}"#)
+                .expect("a row missing its gain must not fail the whole file");
+        assert_eq!(
+            super::stored_volume_gain(&parsed, "user:a:book:b"),
+            super::BOOK_VOLUME_GAIN_DEFAULT
+        );
+        assert_eq!(super::stored_volume_gain(&parsed, "user:a:book:c"), 2.0);
     }
 
     /// Books nobody has tuned must read back as unity rather than as silence,

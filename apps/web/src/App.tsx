@@ -77,6 +77,7 @@ import {
   writePlaybackSpeed
 } from "./playbackSpeed";
 import {
+  bookVolumeStorageKey,
   BOOK_GAIN_DB_MAX,
   BOOK_GAIN_DB_MIN,
   BOOK_GAIN_DB_PRESETS,
@@ -274,17 +275,17 @@ function writeStoredSpeed(value: number) {
   }
 }
 
-function readStoredBookGains() {
+function readStoredBookGains(userId: string) {
   try {
-    return readBookGains(window.localStorage);
+    return readBookGains(window.localStorage, bookVolumeStorageKey(getServerStorageKey(), userId));
   } catch {
     return {};
   }
 }
 
-function writeStoredBookGains(gains: Record<string, number>) {
+function writeStoredBookGains(userId: string, gains: Record<string, number>) {
   try {
-    writeBookGains(window.localStorage, gains);
+    writeBookGains(window.localStorage, bookVolumeStorageKey(getServerStorageKey(), userId), gains);
   } catch {
     // ignore storage failures
   }
@@ -331,7 +332,7 @@ function BookVolumeControl({
       max={maximum}
       step={BOOK_GAIN_DB_STEP}
       value={position}
-      aria-valuetext={formatBookGainDb(db)}
+      aria-valuetext={formatBookGainDb(position)}
       onChange={(event) => onChange(Number(event.currentTarget.value))}
     />
   );
@@ -377,7 +378,7 @@ function BookVolumeControl({
             <button
               key={preset}
               type="button"
-              className={preset === db ? "selected" : ""}
+              className={preset === position ? "selected" : ""}
               aria-label={preset === 0 ? "Original level" : `Plus ${preset} decibels`}
               onClick={() => onChange(preset)}
             >
@@ -2312,7 +2313,16 @@ function MainApp({
   // Per-book gain, keyed by book id. The server holds the copy that follows the
   // listener between devices; this is the local mirror that survives an offline
   // launch and covers backends that have no place to store it.
-  const [bookGains, setBookGains] = useState<Record<string, number>>(readStoredBookGains);
+  const [bookGains, setBookGains] = useState<Record<string, number>>(() =>
+    readStoredBookGains(currentUser.id)
+  );
+  // Books whose gain this device has changed but the server has not confirmed.
+  // A getBooks() issued before the write lands still carries the old value, and
+  // without this the merge below would quietly undo the listener's adjustment.
+  const unconfirmedGainsRef = useRef<Set<string>>(new Set());
+  // Read by the native player at load time, which happens before the effect
+  // that pushes the gain across.
+  const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
   const gainChainRef = useRef<PlaybackGainChain | null>(null);
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
@@ -2629,9 +2639,20 @@ function MainApp({
   const selectedGain = selectedBook ? bookGains[selectedBook.id] ?? BOOK_GAIN_DEFAULT : BOOK_GAIN_DEFAULT;
   // Above unity the boost needs an engine that can supply it: AVPlayer's mixer
   // on iOS, or a Web Audio chain everywhere else — and that chain can only tap
-  // a stream this page is allowed to read. A separately hosted frontend loads
-  // media opaquely, so there it can only cut.
-  const canBoostAboveOriginal = nativeAudio || streamCanBeBoosted(mediaUrl("/api/books"));
+  // a stream this page is allowed to read. That is a property of the book's own
+  // source rather than of the server: a downloaded or device-imported book
+  // plays from the app's own origin and is boostable even when the remote
+  // stream it came from would not be.
+  function bookCanBoost(book: Book | null) {
+    if (nativeAudio) return true;
+    if (!book) return false;
+    if (book.source === "device" || downloadedBookIds.has(book.id)) return true;
+    const [firstTrack] = book.tracks;
+    return !!firstTrack && streamCanBeBoosted(mediaUrl(firstTrack.streamUrl));
+  }
+
+  const selectedCanBoost = bookCanBoost(selectedBook);
+  const playbackCanBoost = bookCanBoost(playbackBook);
   const selectedReadalongUrl = selectedBook?.readingFile
     ? readalongUrl(selectedBook.readingFile.url)
     : null;
@@ -3578,7 +3599,8 @@ function MainApp({
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
-        queue: () => nativeAudioQueueRef.current
+        queue: () => nativeAudioQueueRef.current,
+        gain: () => playbackGainRef.current
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
@@ -3644,6 +3666,8 @@ function MainApp({
     if (nativeAudio) void setNativeAudioGain(playbackGain).catch(() => undefined);
   }, [volume, playbackGain, nativeAudio]);
 
+  playbackGainRef.current = playbackGain;
+
   // The server's copy is what follows the listener between devices, so a boost
   // set on the phone is already applied the first time the book opens here.
   // Backends with nowhere to store it omit the field entirely and leave the
@@ -3654,6 +3678,7 @@ function MainApp({
       const merged = { ...existing };
       for (const book of books) {
         if (typeof book.volumeGain !== "number") continue;
+        if (unconfirmedGainsRef.current.has(book.id)) continue;
         const gain = normalizeBookGain(book.volumeGain);
         if (gain === BOOK_GAIN_DEFAULT) {
           if (!(book.id in merged)) continue;
@@ -3665,7 +3690,7 @@ function MainApp({
         changed = true;
       }
       if (!changed) return existing;
-      writeStoredBookGains(merged);
+      writeStoredBookGains(currentUser.id, merged);
       return merged;
     });
   }, [books]);
@@ -4851,7 +4876,7 @@ function MainApp({
       const next = { ...existing };
       if (gain === BOOK_GAIN_DEFAULT) delete next[book.id];
       else next[book.id] = gain;
-      writeStoredBookGains(next);
+      writeStoredBookGains(currentUser.id, next);
       return next;
     });
     if (book.id === playbackBookId) {
@@ -4865,7 +4890,12 @@ function MainApp({
     // Everything else keeps the local change even if the sync fails; the gain
     // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
-      void setBookVolume(book.id, gain).catch(() => undefined);
+      unconfirmedGainsRef.current.add(book.id);
+      void setBookVolume(book.id, gain)
+        .catch(() => undefined)
+        .finally(() => {
+          unconfirmedGainsRef.current.delete(book.id);
+        });
     }
   }
 
@@ -6834,7 +6864,7 @@ function MainApp({
                   compact
                   inputId="book-volume"
                   value={selectedGain}
-                  canBoost={canBoostAboveOriginal}
+                  canBoost={selectedCanBoost}
                   onChange={(db) => updateBookGain(selectedBook, db)}
                 />
               </section>
@@ -7198,7 +7228,7 @@ function MainApp({
                 <BookVolumeControl
                   inputId="speed-sheet-book-volume"
                   value={playbackGain}
-                  canBoost={canBoostAboveOriginal}
+                  canBoost={playbackCanBoost}
                   onChange={(db) => updateBookGain(playbackBook, db)}
                 />
               </div>

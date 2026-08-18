@@ -4,7 +4,7 @@ import {
   BOOK_GAIN_DEFAULT,
   BOOK_GAIN_MAX,
   BOOK_GAIN_MIN,
-  BOOK_VOLUME_STORAGE_KEY,
+  bookVolumeStorageKey,
   bookGainFromDb,
   bookGainToDb,
   formatBookGainDb,
@@ -14,9 +14,11 @@ import {
   writeBookGains
 } from "../src/bookVolume.ts";
 
+const KEY = bookVolumeStorageKey("books.local", "reader");
+
 function memoryStorage(initialValue: string | null = null) {
   const values = new Map<string, string>();
-  if (initialValue !== null) values.set(BOOK_VOLUME_STORAGE_KEY, initialValue);
+  if (initialValue !== null) values.set(KEY, initialValue);
   return {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { values.set(key, value); }
@@ -60,18 +62,35 @@ test("the original level is named rather than shown as a signed zero", () => {
 
 test("stored gains survive a round-trip and drop books left at the original level", () => {
   const storage = memoryStorage();
-  writeBookGains(storage, { quiet: 2, loud: 0.5, untouched: 1 });
+  writeBookGains(storage, KEY, { quiet: 2, loud: 0.5, untouched: 1 });
 
-  const restored = readBookGains(storage);
-  assert.deepEqual(restored, { quiet: 2, loud: 0.5 });
+  assert.deepEqual(readBookGains(storage, KEY), { quiet: 2, loud: 0.5 });
 });
 
 test("a corrupt or hand-edited record never leaks a bad gain into playback", () => {
-  assert.deepEqual(readBookGains(memoryStorage("not json")), {});
-  assert.deepEqual(readBookGains(memoryStorage("[1,2,3]")), {});
-  assert.deepEqual(readBookGains(memoryStorage(null)), {});
+  assert.deepEqual(readBookGains(memoryStorage("not json"), KEY), {});
+  assert.deepEqual(readBookGains(memoryStorage("[1,2,3]"), KEY), {});
+  assert.deepEqual(readBookGains(memoryStorage(null), KEY), {});
   assert.deepEqual(
-    readBookGains(memoryStorage('{"a":900,"b":"loud","c":1,"d":2}')),
+    readBookGains(memoryStorage('{"a":900,"b":"loud","c":1,"d":2}'), KEY),
     { a: BOOK_GAIN_MAX, d: 2 }
   );
+});
+
+/**
+ * The local record is the only copy on backends that never send volumeGain, so
+ * a shared browser must not hand the next listener the previous one's boosts.
+ */
+test("gains are scoped to both the server and the listener", () => {
+  const storage = memoryStorage();
+  const otherReader = bookVolumeStorageKey("books.local", "other");
+  const otherServer = bookVolumeStorageKey("elsewhere.local", "reader");
+
+  writeBookGains(storage, KEY, { quiet: 2 });
+
+  assert.notEqual(KEY, otherReader);
+  assert.notEqual(KEY, otherServer);
+  assert.deepEqual(readBookGains(storage, otherReader), {});
+  assert.deepEqual(readBookGains(storage, otherServer), {});
+  assert.deepEqual(readBookGains(storage, KEY), { quiet: 2 });
 });
