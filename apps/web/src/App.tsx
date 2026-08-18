@@ -76,6 +76,21 @@ import {
   readPlaybackSpeed,
   writePlaybackSpeed
 } from "./playbackSpeed";
+import {
+  bookVolumeStorageKey,
+  BOOK_GAIN_DB_MAX,
+  BOOK_GAIN_DB_MIN,
+  BOOK_GAIN_DB_PRESETS,
+  BOOK_GAIN_DB_STEP,
+  BOOK_GAIN_DEFAULT,
+  bookGainFromDb,
+  bookGainToDb,
+  formatBookGainDb,
+  normalizeBookGain,
+  readBookGains,
+  writeBookGains
+} from "./bookVolume";
+import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
 import { isLibationAdding } from "./libationState";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
@@ -125,6 +140,7 @@ import {
   rescanLibrary,
   saveProgress,
   setBookCompletion,
+  setBookVolume,
   setStoredMediaToken,
   setStoredToken,
   setUnauthorizedHandler,
@@ -166,6 +182,7 @@ import {
   pauseNativeAudio,
   playNativeAudio,
   seekNativeAudio,
+  setNativeAudioGain,
   updateNativeAudioNowPlaying,
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
@@ -258,7 +275,122 @@ function writeStoredSpeed(value: number) {
   }
 }
 
+function readStoredBookGains(userId: string) {
+  try {
+    return readBookGains(window.localStorage, bookVolumeStorageKey(getServerStorageKey(), userId));
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredBookGains(userId: string, gains: Record<string, number>) {
+  try {
+    writeBookGains(window.localStorage, bookVolumeStorageKey(getServerStorageKey(), userId), gains);
+  } catch {
+    // ignore storage failures
+  }
+}
+
 const SPEED_WHEEL_SPACING_PX = 48;
+
+/**
+ * A book's own loudness trim. Audiobooks are mastered at wildly different
+ * levels, and the device volume is the wrong knob for that: turning it up for
+ * one quiet narrator leaves it far too loud for the next book.
+ *
+ * The scale is decibels because that is the unit loudness moves in — equal
+ * steps sound equally large, which a linear multiplier does not.
+ */
+function BookVolumeControl({
+  value,
+  onChange,
+  canBoost,
+  inputId,
+  compact = false
+}: {
+  value: number;
+  onChange: (db: number) => void;
+  canBoost: boolean;
+  inputId: string;
+  /**
+   * The desktop card sits in a row of restrained controls — a bare slider, a
+   * select — so it stays a bare slider with a value under it. The full form,
+   * with its heading and tap-sized presets, is for the phone sheet.
+   */
+  compact?: boolean;
+}) {
+  const db = bookGainToDb(value);
+  const maximum = canBoost ? BOOK_GAIN_DB_MAX : 0;
+  const position = Math.min(db, maximum);
+  const presetOptions = BOOK_GAIN_DB_PRESETS.filter((preset) => preset <= maximum);
+
+  const slider = (
+    <input
+      id={inputId}
+      type="range"
+      min={BOOK_GAIN_DB_MIN}
+      max={maximum}
+      step={BOOK_GAIN_DB_STEP}
+      value={position}
+      aria-valuetext={formatBookGainDb(position)}
+      onChange={(event) => onChange(Number(event.currentTarget.value))}
+    />
+  );
+
+  const hint = canBoost ? null : (
+    <span className="book-volume-hint">
+      This page can only quiet a book. Lifting one needs the phone or desktop app, or a frontend
+      served by OperaLibre itself.
+    </span>
+  );
+
+  if (compact) {
+    // Label, control, one line of state — the shape the Nightfall card beside
+    // it already uses.
+    return (
+      <div className="book-volume book-volume-compact">
+        {slider}
+        <span className="book-volume-value">{formatBookGainDb(db)}</span>
+        {hint}
+      </div>
+    );
+  }
+
+  // Laid out like the cadence control it sits beside: the value reads above the
+  // track, the ends of the range label themselves, and the presets close the
+  // card.
+  return (
+    <div className="book-volume book-volume-full">
+      <div className="book-volume-heading">
+        <output aria-live="polite">{formatBookGainDb(db)}</output>
+        <span>{BOOK_GAIN_DB_STEP} dB steps</span>
+      </div>
+      {slider}
+      <div className="book-volume-range-labels" aria-hidden="true">
+        <span>{formatBookGainDb(BOOK_GAIN_DB_MIN)}</span>
+        <span>{maximum === 0 ? "Original" : `+${maximum} dB`}</span>
+      </div>
+      {/* A lone "back to normal" pill is not a choice, so the row only earns
+          its space where there is something to choose between. */}
+      {presetOptions.length > 1 ? (
+        <div className="book-volume-presets">
+          {presetOptions.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              className={preset === position ? "selected" : ""}
+              aria-label={preset === 0 ? "Original level" : `Plus ${preset} decibels`}
+              onClick={() => onChange(preset)}
+            >
+              {preset === 0 ? "0" : `+${preset}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {hint}
+    </div>
+  );
+}
 
 function PlaybackSpeedControl({
   value,
@@ -2178,6 +2310,20 @@ function MainApp({
   const nativePlaybackPlayingRef = useRef(false);
   const [speed, setSpeed] = useState(readStoredSpeed);
   const [volume, setVolume] = useState(0.9);
+  // Per-book gain, keyed by book id. The server holds the copy that follows the
+  // listener between devices; this is the local mirror that survives an offline
+  // launch and covers backends that have no place to store it.
+  const [bookGains, setBookGains] = useState<Record<string, number>>(() =>
+    readStoredBookGains(currentUser.id)
+  );
+  // Books whose gain this device has changed but the server has not confirmed.
+  // A getBooks() issued before the write lands still carries the old value, and
+  // without this the merge below would quietly undo the listener's adjustment.
+  const unconfirmedGainsRef = useRef<Set<string>>(new Set());
+  // Read by the native player at load time, which happens before the effect
+  // that pushes the gain across.
+  const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
+  const gainChainRef = useRef<PlaybackGainChain | null>(null);
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const sleepDeadlineRef = useRef<number | null>(null);
@@ -2489,6 +2635,24 @@ function MainApp({
     ? chapterSegments.slice(activeChapterIndex + 1, activeChapterIndex + 4)
     : chapterSegments.slice(0, 3);
   const isViewingPlayingBook = !!selectedBook && !!playbackBook && selectedBook.id === playbackBook.id;
+  const playbackGain = playbackBook ? bookGains[playbackBook.id] ?? BOOK_GAIN_DEFAULT : BOOK_GAIN_DEFAULT;
+  const selectedGain = selectedBook ? bookGains[selectedBook.id] ?? BOOK_GAIN_DEFAULT : BOOK_GAIN_DEFAULT;
+  // Above unity the boost needs an engine that can supply it: AVPlayer's mixer
+  // on iOS, or a Web Audio chain everywhere else — and that chain can only tap
+  // a stream this page is allowed to read. That is a property of the book's own
+  // source rather than of the server: a downloaded or device-imported book
+  // plays from the app's own origin and is boostable even when the remote
+  // stream it came from would not be.
+  function bookCanBoost(book: Book | null) {
+    if (nativeAudio) return true;
+    if (!book) return false;
+    if (book.source === "device" || downloadedBookIds.has(book.id)) return true;
+    const [firstTrack] = book.tracks;
+    return !!firstTrack && streamCanBeBoosted(mediaUrl(firstTrack.streamUrl));
+  }
+
+  const selectedCanBoost = bookCanBoost(selectedBook);
+  const playbackCanBoost = bookCanBoost(playbackBook);
   const selectedReadalongUrl = selectedBook?.readingFile
     ? readalongUrl(selectedBook.readingFile.url)
     : null;
@@ -3435,7 +3599,8 @@ function MainApp({
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
-        queue: () => nativeAudioQueueRef.current
+        queue: () => nativeAudioQueueRef.current,
+        gain: () => playbackGainRef.current
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
@@ -3492,11 +3657,43 @@ function MainApp({
   }, [currentTrackKey, pendingSeek, streamUrl]);
 
   useEffect(() => {
-    if (!audioRef.current) {
+    const audio = audioRef.current;
+    if (!audio) {
       return;
     }
-    audioRef.current.volume = volume;
-  }, [volume]);
+    applyPlaybackVolume(audio);
+    if (gainChain().isAttachedTo(audio)) gainChain().setGain(playbackGain);
+    if (nativeAudio) void setNativeAudioGain(playbackGain).catch(() => undefined);
+  }, [volume, playbackGain, nativeAudio]);
+
+  playbackGainRef.current = playbackGain;
+
+  // The server's copy is what follows the listener between devices, so a boost
+  // set on the phone is already applied the first time the book opens here.
+  // Backends with nowhere to store it omit the field entirely and leave the
+  // local mirror alone.
+  useEffect(() => {
+    setBookGains((existing) => {
+      let changed = false;
+      const merged = { ...existing };
+      for (const book of books) {
+        if (typeof book.volumeGain !== "number") continue;
+        if (unconfirmedGainsRef.current.has(book.id)) continue;
+        const gain = normalizeBookGain(book.volumeGain);
+        if (gain === BOOK_GAIN_DEFAULT) {
+          if (!(book.id in merged)) continue;
+          delete merged[book.id];
+        } else {
+          if (merged[book.id] === gain) continue;
+          merged[book.id] = gain;
+        }
+        changed = true;
+      }
+      if (!changed) return existing;
+      writeStoredBookGains(currentUser.id, merged);
+      return merged;
+    });
+  }, [books]);
 
   useEffect(() => {
     let active = true;
@@ -4186,12 +4383,49 @@ function MainApp({
     }
   }
 
+  function gainChain() {
+    return (gainChainRef.current ??= new PlaybackGainChain());
+  }
+
+  /**
+   * Route the element through the boost chain, once, when this book actually
+   * asks for more than its own level. Unboosted books never touch Web Audio at
+   * all, which keeps the ordinary playback path exactly as it was.
+   *
+   * Called from user gestures wherever possible: an AudioContext first created
+   * outside one starts suspended, and a suspended context makes a routed
+   * element silent rather than loud.
+   */
+  function engageGainChain(audio: HTMLAudioElement | null | undefined, gain = playbackGain) {
+    if (!audio || nativeAudio) return;
+    if (!gainChain().isAttachedTo(audio)) {
+      if (gain <= BOOK_GAIN_DEFAULT) return;
+      if (!streamCanBeBoosted(audio.currentSrc || streamUrl)) return;
+      if (!gainChain().attach(audio)) return;
+    }
+    gainChain().resume();
+    gainChain().setGain(gain);
+    audio.volume = volume;
+  }
+
+  /**
+   * The device volume, and the book's gain when nothing else can carry it. The
+   * element's own volume cannot exceed unity, so this path can only ever cut a
+   * loud book down, never lift a quiet one.
+   */
+  function applyPlaybackVolume(audio: HTMLAudioElement) {
+    audio.volume = nativeAudio || gainChain().isAttachedTo(audio)
+      ? volume
+      : Math.min(1, volume * playbackGain);
+  }
+
   function startPlayback(
     audio: HTMLAudioElement | null | undefined,
     interruptRestore = true
   ) {
     if (!audio) return;
     markPlaybackTouched(false, undefined, interruptRestore);
+    engageGainChain(audio);
     if (!nativeAudio) {
       safePlay(audio);
       return;
@@ -4250,7 +4484,10 @@ function MainApp({
     }
     setPlaybackError(null);
     audio.playbackRate = speed;
-    audio.volume = volume;
+    // A boosted book is routed before it plays, so the lift is there from the
+    // first word rather than arriving a beat after playback starts.
+    engageGainChain(audio);
+    applyPlaybackVolume(audio);
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
 
     if (
@@ -4631,6 +4868,35 @@ function MainApp({
     const normalized = normalizePlaybackSpeed(value);
     setSpeed(normalized);
     writeStoredSpeed(normalized);
+  }
+
+  function updateBookGain(book: Book, db: number) {
+    const gain = bookGainFromDb(db);
+    setBookGains((existing) => {
+      const next = { ...existing };
+      if (gain === BOOK_GAIN_DEFAULT) delete next[book.id];
+      else next[book.id] = gain;
+      writeStoredBookGains(currentUser.id, next);
+      return next;
+    });
+    if (book.id === playbackBookId) {
+      // This runs inside the slider's own gesture, which is the moment an
+      // AudioContext is allowed to start. The new gain has to be passed in:
+      // the state update behind it has not been applied to this closure yet,
+      // so the very first boost would otherwise decline to build the chain.
+      engageGainChain(audioRef.current, gain);
+    }
+    // Device books exist only on this phone, so there is no server row to sync.
+    // Everything else keeps the local change even if the sync fails; the gain
+    // is already audible and a retry lands with the next adjustment.
+    if (book.source !== "device") {
+      unconfirmedGainsRef.current.add(book.id);
+      void setBookVolume(book.id, gain)
+        .catch(() => undefined)
+        .finally(() => {
+          unconfirmedGainsRef.current.delete(book.id);
+        });
+    }
   }
 
   function showYourLibrary() {
@@ -5149,6 +5415,7 @@ function MainApp({
           // going through startPlayback; real listening must always count as
           // touched or its progress would never be persisted.
           markPlaybackTouched();
+          engageGainChain(audioRef.current);
           if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
           setIsPlaying(true);
@@ -6542,48 +6809,66 @@ function MainApp({
               </div>
             )}
 
-            {isViewingPlayingBook ? (
-            <div className="controls-grid">
-              <section className="control-section">
-                <div className="section-label"><Gauge size={13} /> Cadence</div>
-                <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
-              </section>
+            <div className={`controls-grid controls-grid-${isViewingPlayingBook ? (native ? 3 : 4) : 1}`}>
+              {isViewingPlayingBook ? (
+                <>
+                  <section className="control-section">
+                    <div className="section-label"><Gauge size={13} /> Cadence</div>
+                    <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
+                  </section>
 
-              {/* Phones have hardware volume buttons; a second software
-                  volume just adds a card. */}
-              {!native ? (
-                <section className="control-section">
-                  <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
-                  <input
-                    id="volume"
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={volume}
-                    onChange={(event) => setVolume(Number(event.currentTarget.value))}
-                  />
-                </section>
+                  {/* Phones have hardware volume buttons; a second software
+                      volume just adds a card. */}
+                  {!native ? (
+                    <section className="control-section">
+                      <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
+                      <input
+                        id="volume"
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={volume}
+                        onChange={(event) => setVolume(Number(event.currentTarget.value))}
+                      />
+                    </section>
+                  ) : null}
+
+                  <section className="control-section">
+                    <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
+                    <select
+                      id="sleep"
+                      value={sleepMinutes}
+                      onChange={(event) => configureSleepTimer(Number(event.currentTarget.value))}
+                    >
+                      <option value={0}>—</option>
+                      {SLEEP_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {`${option} minutes`}
+                        </option>
+                      ))}
+                    </select>
+                    {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
+                  </section>
+                </>
               ) : null}
 
+              {/* Unlike the device volume this one belongs to the book, so it
+                  is offered on the book's own page whether or not it is the
+                  thing currently playing. */}
               <section className="control-section">
-                <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
-                <select
-                  id="sleep"
-                  value={sleepMinutes}
-                  onChange={(event) => configureSleepTimer(Number(event.currentTarget.value))}
-                >
-                  <option value={0}>—</option>
-                  {SLEEP_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {`${option} minutes`}
-                    </option>
-                  ))}
-                </select>
-                {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
+                <label className="section-label" htmlFor="book-volume">
+                  <Volume2 size={13} /> Book Volume
+                </label>
+                <BookVolumeControl
+                  compact
+                  inputId="book-volume"
+                  value={selectedGain}
+                  canBoost={selectedCanBoost}
+                  onChange={(db) => updateBookGain(selectedBook, db)}
+                />
               </section>
             </div>
-            ) : null}
 
             {selectedChapterSegments.length > 0 ? (
               <section className="track-list-section" ref={trackListSectionRef}>
@@ -6911,7 +7196,7 @@ function MainApp({
           <button
             type="button"
             className="sleep-sheet-scrim"
-            aria-label="Close playback speed"
+            aria-label="Close playback settings"
             onClick={() => setNativePlayerSheet(null)}
           />
           <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
@@ -6919,7 +7204,7 @@ function MainApp({
             <header>
               <div>
                 <span className="eyebrow"><Gauge size={13} /> Cadence</span>
-                <h2 id="speed-sheet-title">Playback Speed</h2>
+                <h2 id="speed-sheet-title">Playback</h2>
               </div>
               <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
                 <X size={18} />
@@ -6927,6 +7212,27 @@ function MainApp({
             </header>
             <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
             <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+            {/* Noticing a book is too quiet happens mid-chapter, so the fix
+                lives with the other thing a listener reaches for while the
+                book is playing rather than on the book's own page. */}
+            {playbackBook ? (
+              <div className="speed-sheet-volume">
+                {/* The sheet labels its sections with gold eyebrows, not the
+                    grey card labels used on the book page. */}
+                <label className="eyebrow" htmlFor="speed-sheet-book-volume">
+                  <Volume2 size={13} /> Book Volume
+                </label>
+                <p className="sleep-sheet-hint">
+                  Lifts this book alone, for a title mastered quieter than the rest of the shelf.
+                </p>
+                <BookVolumeControl
+                  inputId="speed-sheet-book-volume"
+                  value={playbackGain}
+                  canBoost={playbackCanBoost}
+                  onChange={(db) => updateBookGain(playbackBook, db)}
+                />
+              </div>
+            ) : null}
             <button
               type="button"
               className="speed-sheet-done"

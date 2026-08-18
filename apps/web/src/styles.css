@@ -2364,6 +2364,18 @@ input[type="range"]::-moz-range-thumb {
   border-bottom: 1px solid rgba(26, 20, 16, 0.18);
 }
 
+/* The card count is not fixed: book volume belongs to the book rather than to
+   playback, so it is there for any book, while the other three only appear for
+   the one currently playing. Kept at this specificity so the narrow-screen
+   rules below still win. */
+.controls-grid-4 {
+  grid-template-columns: 1.5fr 1fr 1fr 1fr;
+}
+
+.controls-grid-1 {
+  grid-template-columns: minmax(0, 460px);
+}
+
 .control-section {
   display: grid;
   gap: 14px;
@@ -2654,6 +2666,126 @@ select:focus {
   font-variant-numeric: tabular-nums;
   color: var(--oxblood);
   letter-spacing: 0.06em;
+}
+
+/* --------- Per-book volume --------- */
+
+.book-volume {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.book-volume input[type="range"] {
+  width: 100%;
+  accent-color: var(--oxblood);
+}
+
+/* Mirrors .speed-slider-heading / .speed-range-labels: the same control shape
+   in the same card deserves the same typography, not a second dialect. */
+.book-volume-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.book-volume-heading output {
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.book-volume-heading span {
+  color: var(--ink-faded);
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+}
+
+.book-volume-full > input[type="range"] {
+  height: 20px;
+}
+
+/* The desktop card states its value the way the Nightfall card beside it
+   states its remaining time: one quiet monospace line under the control. */
+.book-volume-value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--oxblood);
+  letter-spacing: 0.06em;
+}
+
+.book-volume-range-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-faded);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.book-volume-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.book-volume-presets button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-volume-presets button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 3px;
+  color: var(--ink-soft);
+  border: 1px solid rgba(26, 20, 16, 0.13);
+  border-radius: 5px;
+  background: transparent;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.book-volume-presets button:hover {
+  border-color: var(--ink-soft);
+}
+
+.book-volume-presets button.selected {
+  color: var(--paper);
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.book-volume-hint {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  color: var(--ink-faded);
+}
+
+.speed-sheet-volume {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(26, 20, 16, 0.12);
+}
+
+.speed-sheet-volume .sleep-sheet-hint {
+  margin: 0;
 }
 
 /* --------- Track list --------- */
@@ -9125,6 +9257,65 @@ html.native-app .recent-row {
   color: var(--ink);
   border-color: var(--gold-soft);
   background: var(--gold-soft);
+}
+
+/* Kept as two rules: a vendor pseudo-element one engine does not know
+   invalidates the whole selector list, taking the other engine's down too.
+   The rail is flat — the value is stated above the track, and the app's other
+   non-scrubber sliders do not fill either. */
+.sleep-sheet .book-volume input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(241, 231, 208, 0.16);
+}
+
+.sleep-sheet .book-volume input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(241, 231, 208, 0.16);
+}
+
+.sleep-sheet .book-volume input[type="range"]::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
+  background: var(--gold-soft);
+  box-shadow: 0 2px 8px -1px rgba(0, 0, 0, 0.8);
+}
+
+.sleep-sheet .book-volume input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: var(--gold-soft);
+}
+
+.sleep-sheet .book-volume-heading output {
+  color: var(--paper);
+}
+
+.sleep-sheet .book-volume-heading span,
+.sleep-sheet .book-volume-range-labels {
+  color: rgba(255, 250, 237, 0.55);
+}
+
+.sleep-sheet .book-volume-presets button {
+  color: rgba(255, 250, 237, 0.75);
+  border-color: rgba(241, 231, 208, 0.14);
+}
+
+.sleep-sheet .book-volume-presets button:hover {
+  border-color: rgba(217, 181, 116, 0.55);
+}
+
+.sleep-sheet .book-volume-presets button.selected {
+  color: var(--ink);
+  border-color: var(--gold-soft);
+  background: var(--gold-soft);
+}
+
+.sleep-sheet .book-volume-hint {
+  color: rgba(255, 250, 237, 0.55);
 }
 
 .speed-sheet-done {

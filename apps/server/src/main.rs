@@ -118,6 +118,7 @@ struct AppState {
     library_root: PathBuf,
     library_identities_file: PathBuf,
     progress_file: PathBuf,
+    book_settings_file: PathBuf,
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
@@ -146,6 +147,8 @@ struct AppState {
     /// Serializes read-modify-write cycles on the progress file so concurrent
     /// updates cannot overwrite each other.
     progress_write_lock: Arc<Mutex<()>>,
+    /// Same guarantee for the per-book settings file.
+    book_settings_write_lock: Arc<Mutex<()>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot
     /// publish stale state over a newer scan.
@@ -638,6 +641,10 @@ struct Book {
     /// users who share theirs.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     shared_progress: Vec<SharedProgress>,
+    /// The viewer's own playback gain for this book, as a linear multiplier of
+    /// the file's level. Books are mastered at wildly different loudnesses, so
+    /// this is per book rather than a single device volume.
+    volume_gain: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -748,6 +755,44 @@ struct Progress {
     updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     finished_override: Option<bool>,
+}
+
+/// A book's playback gain as a linear multiplier. The floor tames a book
+/// mastered hot; the ceiling is +24 dB, far enough to rescue a badly quiet
+/// transfer, and past the point where the limiter starts doing much of the
+/// work — which is the listener's trade to make.
+const BOOK_VOLUME_GAIN_MIN: f64 = 0.5;
+const BOOK_VOLUME_GAIN_MAX: f64 = 16.0;
+const BOOK_VOLUME_GAIN_DEFAULT: f64 = 1.0;
+
+fn clamp_book_volume_gain(value: f64) -> f64 {
+    if !value.is_finite() {
+        return BOOK_VOLUME_GAIN_DEFAULT;
+    }
+    value.clamp(BOOK_VOLUME_GAIN_MIN, BOOK_VOLUME_GAIN_MAX)
+}
+
+/// Per-listener, per-book playback preferences, keyed like progress so one
+/// listener's tuning never leaks into another's library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookSettings {
+    /// Defaulted rather than required: this file is read on the way to serving
+    /// the whole library, so a row that is truncated, hand-edited, or written
+    /// by a future build with another shape must cost one book its gain — not
+    /// hide every book from every listener behind a 500.
+    #[serde(default = "default_book_volume_gain")]
+    volume_gain: f64,
+}
+
+fn default_book_volume_gain() -> f64 {
+    BOOK_VOLUME_GAIN_DEFAULT
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookVolumeUpdate {
+    volume_gain: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1491,6 +1536,7 @@ async fn main() -> anyhow::Result<()> {
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
         progress_file: config.progress_file.clone(),
+        book_settings_file: config.data_dir.join("book-settings.json"),
         users_file: config.users_file.clone(),
         sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
@@ -1522,6 +1568,7 @@ async fn main() -> anyhow::Result<()> {
         libation_accounts: Arc::new(RwLock::new(libation_accounts)),
         libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         progress_write_lock: Arc::new(Mutex::new(())),
+        book_settings_write_lock: Arc::new(Mutex::new(())),
         rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
         faststart_lock: Arc::new(Mutex::new(())),
@@ -1643,6 +1690,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/books/{book_id}/completion",
             put(update_book_completion),
         )
+        .route("/api/books/{book_id}/volume", put(update_book_volume))
         .route(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
@@ -1764,6 +1812,7 @@ async fn secure_existing_state_files(config: &ServerConfig) -> io::Result<()> {
     for path in [
         config.data_dir.join("library-identities.json"),
         config.data_dir.join("libation-refreshes.json"),
+        config.data_dir.join("book-settings.json"),
     ] {
         if fs::try_exists(&path).await? {
             secure_file_permissions(&path).await?;
@@ -4176,6 +4225,45 @@ async fn update_book_metadata(
     Ok(Json(book_with_progress(&state, &auth, updated_book).await?))
 }
 
+/// Per-listener playback gain for one book. Unlike the metadata override this
+/// is not an admin edit: it only changes how loud the book is for the caller,
+/// so any listener with access to the book may set it.
+async fn update_book_volume(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+    Json(payload): Json<BookVolumeUpdate>,
+) -> Result<Json<Book>, ApiError> {
+    require_book_access(&auth, &book_id)?;
+
+    let book = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Book not found"))?
+    };
+
+    let gain = clamp_book_volume_gain(payload.volume_gain);
+    {
+        let _guard = state.book_settings_write_lock.lock().await;
+        let mut settings = read_book_settings(&state.book_settings_file).await?;
+        let key = progress_key(&auth.id, &book_id);
+        if gain == BOOK_VOLUME_GAIN_DEFAULT {
+            // Unity gain is the absence of a setting rather than a stored one,
+            // so resetting a book leaves nothing behind in the file.
+            settings.remove(&key);
+        } else {
+            settings.insert(key, BookSettings { volume_gain: gain });
+        }
+        write_book_settings(&state.book_settings_file, &settings).await?;
+    }
+
+    Ok(Json(book_with_progress(&state, &auth, book).await?))
+}
+
 const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
 
 async fn get_cover_art(
@@ -5996,6 +6084,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             tracks,
             progress: None,
             shared_progress: Vec::new(),
+            volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
         };
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
@@ -6876,16 +6965,19 @@ fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
 
 async fn books_with_progress(state: &AppState, auth: &AuthUser) -> Result<Vec<Book>, ApiError> {
     let saved_progress = read_progress(&state.progress_file).await?;
+    let saved_settings = read_book_settings(&state.book_settings_file).await?;
     let sharers = progress_sharers(state, auth).await;
     let books = state.library.read().await.books.clone();
     Ok(books
         .into_iter()
         .filter(|book| can_access_book(auth, &book.id))
         .map(|mut book| {
+            let key = progress_key(&auth.id, &book.id);
             book.progress = saved_progress
-                .get(&progress_key(&auth.id, &book.id))
+                .get(&key)
                 .map(|progress| summarize_book_progress(&book, progress));
             book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
+            book.volume_gain = stored_volume_gain(&saved_settings, &key);
             book
         })
         .collect())
@@ -6897,11 +6989,14 @@ async fn book_with_progress(
     mut book: Book,
 ) -> Result<Book, ApiError> {
     let saved_progress = read_progress(&state.progress_file).await?;
+    let key = progress_key(&auth.id, &book.id);
     book.progress = saved_progress
-        .get(&progress_key(&auth.id, &book.id))
+        .get(&key)
         .map(|progress| summarize_book_progress(&book, progress));
     let sharers = progress_sharers(state, auth).await;
     book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
+    book.volume_gain =
+        stored_volume_gain(&read_book_settings(&state.book_settings_file).await?, &key);
     Ok(book)
 }
 
@@ -7146,6 +7241,30 @@ async fn write_progress(
     progress: &HashMap<String, Progress>,
 ) -> Result<(), ApiError> {
     write_json_atomic(progress_file, progress).await
+}
+
+async fn read_book_settings(
+    book_settings_file: &FsPath,
+) -> Result<HashMap<String, BookSettings>, ApiError> {
+    match fs::read_to_string(book_settings_file).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_book_settings(
+    book_settings_file: &FsPath,
+    settings: &HashMap<String, BookSettings>,
+) -> Result<(), ApiError> {
+    write_json_atomic(book_settings_file, settings).await
+}
+
+fn stored_volume_gain(settings: &HashMap<String, BookSettings>, key: &str) -> f64 {
+    settings
+        .get(key)
+        .map(|entry| clamp_book_volume_gain(entry.volume_gain))
+        .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT)
 }
 
 /// Slack absorbs realistic clock skew between devices; a genuinely stale
@@ -9616,6 +9735,12 @@ async fn delete_user(
     let prefix = format!("user:{user_id}:");
     progress.retain(|key, _| !key.starts_with(&prefix));
     write_progress(&state.progress_file, &progress).await?;
+    drop(_progress_guard);
+
+    let _settings_guard = state.book_settings_write_lock.lock().await;
+    let mut book_settings = read_book_settings(&state.book_settings_file).await?;
+    book_settings.retain(|key, _| !key.starts_with(&prefix));
+    write_book_settings(&state.book_settings_file, &book_settings).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -10074,7 +10199,70 @@ mod tests {
             tracks,
             progress: None,
             shared_progress: Vec::new(),
+            volume_gain: super::BOOK_VOLUME_GAIN_DEFAULT,
         }
+    }
+
+    /// A gain arrives from whatever client the listener is holding, so the
+    /// server is the only place that can keep a hand-edited or buggy value from
+    /// becoming an eardrum-splitting multiplier on every other device.
+    #[test]
+    fn a_book_volume_gain_is_clamped_to_the_supported_range() {
+        assert_eq!(super::clamp_book_volume_gain(2.5), 2.5);
+        assert_eq!(
+            super::clamp_book_volume_gain(50.0),
+            super::BOOK_VOLUME_GAIN_MAX
+        );
+        assert_eq!(
+            super::clamp_book_volume_gain(-3.0),
+            super::BOOK_VOLUME_GAIN_MIN
+        );
+        assert_eq!(
+            super::clamp_book_volume_gain(f64::NAN),
+            super::BOOK_VOLUME_GAIN_DEFAULT
+        );
+    }
+
+    /// A settings file is read on the path that serves the whole library, so a
+    /// row missing its gain must degrade to unity instead of failing the read.
+    #[test]
+    fn a_settings_row_without_a_gain_still_parses() {
+        let parsed: std::collections::HashMap<String, super::BookSettings> =
+            serde_json::from_str(r#"{"user:a:book:b":{},"user:a:book:c":{"volumeGain":2.0}}"#)
+                .expect("a row missing its gain must not fail the whole file");
+        assert_eq!(
+            super::stored_volume_gain(&parsed, "user:a:book:b"),
+            super::BOOK_VOLUME_GAIN_DEFAULT
+        );
+        assert_eq!(super::stored_volume_gain(&parsed, "user:a:book:c"), 2.0);
+    }
+
+    /// Books nobody has tuned must read back as unity rather than as silence,
+    /// and a stored value that predates a narrowed range must still be safe.
+    #[test]
+    fn an_untuned_book_reads_back_at_unity_gain() {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert(
+            "user:reader:book:loud".to_string(),
+            super::BookSettings { volume_gain: 99.0 },
+        );
+        settings.insert(
+            "user:reader:book:quiet".to_string(),
+            super::BookSettings { volume_gain: 2.0 },
+        );
+
+        assert_eq!(
+            super::stored_volume_gain(&settings, "user:reader:book:untouched"),
+            super::BOOK_VOLUME_GAIN_DEFAULT
+        );
+        assert_eq!(
+            super::stored_volume_gain(&settings, "user:reader:book:quiet"),
+            2.0
+        );
+        assert_eq!(
+            super::stored_volume_gain(&settings, "user:reader:book:loud"),
+            super::BOOK_VOLUME_GAIN_MAX
+        );
     }
 
     /// lofty reports Duration::ZERO for media it cannot measure. Treating that
@@ -11340,6 +11528,7 @@ exit 0
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
             progress_file: data_dir.join("progress.json"),
+            book_settings_file: data_dir.join("book-settings.json"),
             users_file: data_dir.join("users.json"),
             sessions_file: data_dir.join("sessions.json"),
             activity_file: data_dir.join("activity.json"),
@@ -11381,6 +11570,7 @@ exit 0
                 std::collections::HashMap::new(),
             )),
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
+            book_settings_write_lock: super::Arc::new(super::Mutex::new(())),
             rescan_lock: super::Arc::new(super::Mutex::new(())),
             libation_job_lock: super::Arc::new(super::Mutex::new(())),
             faststart_lock: super::Arc::new(super::Mutex::new(())),
