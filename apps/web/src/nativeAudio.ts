@@ -34,6 +34,12 @@ type NativeAudioRecoveryIdentity = {
   trackId: string;
   bookOffsetSeconds: number;
   queue: () => NativeAudioQueueTrack[];
+  /**
+   * Read at load time rather than captured: the attachment effect runs before
+   * the effect that syncs the gain, so a value captured at attach would be the
+   * previous book's and the first seconds would play at the wrong level.
+   */
+  gain: () => number;
 };
 
 interface NativeAudioPlugin {
@@ -42,6 +48,7 @@ interface NativeAudioPlugin {
     positionSeconds: number;
     rate: number;
     volume: number;
+    gain: number;
     autoplay: boolean;
     recoveryScopeKey: string;
     recoveryTrackId: string;
@@ -53,6 +60,7 @@ interface NativeAudioPlugin {
   seek(options: { positionSeconds: number }): Promise<void>;
   setRate(options: { rate: number }): Promise<void>;
   setVolume(options: { volume: number }): Promise<void>;
+  setGain(options: { gain: number }): Promise<void>;
   setNowPlaying(options: {
     title: string;
     artist: string;
@@ -87,6 +95,15 @@ interface NativeAudioPlugin {
 }
 
 const NativeAudio = registerPlugin<NativeAudioPlugin>("NativeAudio");
+
+/**
+ * `volume` stays the device level; this is the multiplier AVPlayer applies on
+ * top of it, for the book currently loaded.
+ */
+export function setNativeAudioGain(gain: number) {
+  if (!usesNativeAudioPlayer()) return Promise.resolve();
+  return NativeAudio.setGain({ gain });
+}
 
 export function usesNativeAudioPlayer() {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
@@ -203,6 +220,7 @@ export function attachNativeAudioPlayer(
       positionSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
       rate: audio.playbackRate,
       volume: audio.volume,
+      gain: recovery.gain(),
       autoplay: nativeIsPlaying,
       recoveryScopeKey: recovery.scopeKey,
       recoveryTrackId: recovery.trackId,

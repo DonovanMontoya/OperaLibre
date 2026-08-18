@@ -737,6 +737,30 @@ export async function setBookCompletion(
   });
 }
 
+/**
+ * Persist the listener's gain for one book so every device they sign in from
+ * plays it at the corrected level. Backends without the endpoint — Jellyfin,
+ * demo mode, device-only books, older OperaLibre servers — keep the setting in
+ * the caller's local mirror instead of failing the adjustment.
+ */
+export async function setBookVolume(bookId: string, volumeGain: number): Promise<boolean> {
+  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+    return false;
+  }
+  try {
+    await request<Book>(`/api/books/${encodeURIComponent(bookId)}/volume`, {
+      method: "PUT",
+      body: JSON.stringify({ volumeGain })
+    });
+    return true;
+  } catch (error) {
+    // A server that predates per-book volume answers 404. The local mirror has
+    // already applied the change, so this is not worth surfacing as an error.
+    if (error instanceof ApiError && error.status === 404) return false;
+    throw error;
+  }
+}
+
 export async function rescanLibrary() {
   if (getServerType() === "jellyfin") {
     return getBooks();

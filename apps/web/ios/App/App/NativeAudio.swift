@@ -40,6 +40,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "seek", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setGain", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getRecoveryState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise)
@@ -59,6 +60,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var becameActiveObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
+    /// The listener's per-book boost, separate from `player.volume` because
+    /// that one cannot exceed unity and this one has to.
+    private var boostGain: Float = 1
     private var pendingPosition: Double = 0
     // AVPlayer can briefly report an invalid or reset clock while iOS swaps
     // audio routes. Keep the last clock delivered by its periodic observer so
@@ -125,6 +129,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let position = max(0, call.getDouble("positionSeconds") ?? 0)
         let rate = clampedRate(call.getDouble("rate") ?? 1)
         let volume = clampedVolume(call.getDouble("volume") ?? 1)
+        let gain = clampedGain(call.getDouble("gain") ?? 1)
         let autoplay = call.getBool("autoplay") ?? false
         let scopeKey = call.getString("recoveryScopeKey")
         let trackId = call.getString("recoveryTrackId")
@@ -198,6 +203,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.generation += 1
             let loadGeneration = self.generation
             self.desiredRate = rate
+            self.boostGain = gain
             self.pendingPosition = position
             self.lastKnownPosition = position
             self.shouldAutoplay = autoplay || retainedPlayIntent
@@ -220,6 +226,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 return item
             }
             self.queuedItems = items
+            for item in items {
+                self.applyBoost(to: item, gain: gain)
+            }
             let player = AVQueuePlayer(items: items)
             player.actionAtItemEnd = .advance
             player.automaticallyWaitsToMinimizeStalling = true
@@ -372,6 +381,58 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async { [weak self] in
             self?.player?.volume = volume
             call.resolve()
+        }
+    }
+
+    @objc public func setGain(_ call: CAPPluginCall) {
+        let gain = clampedGain(call.getDouble("gain") ?? 1)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                call.resolve()
+                return
+            }
+            self.boostGain = gain
+            for item in self.queuedItems {
+                self.applyBoost(to: item, gain: gain)
+            }
+            call.resolve()
+        }
+    }
+
+    /// `AVPlayer.volume` is capped at unity, so a book mastered quiet is lifted
+    /// by the mixer instead: audio mix input parameters take a linear gain that
+    /// may run above 1. The asset's tracks are needed to address that gain, and
+    /// for a streamed item they are not loaded yet, so the mix is attached once
+    /// they arrive — playback that has already started picks it up in place.
+    private func applyBoost(to item: AVPlayerItem, gain: Float) {
+        guard gain != 1 else {
+            item.audioMix = nil
+            return
+        }
+        let asset = item.asset
+        let loadGeneration = generation
+        asset.loadValuesAsynchronously(forKeys: ["tracks"]) { [weak self, weak item] in
+            var trackError: NSError?
+            guard asset.statusOfValue(forKey: "tracks", error: &trackError) == .loaded else { return }
+            let audioTracks = asset.tracks(withMediaType: .audio)
+            guard !audioTracks.isEmpty else { return }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = audioTracks.map { track in
+                let parameters = AVMutableAudioMixInputParameters(track: track)
+                parameters.setVolume(gain, at: .zero)
+                return parameters
+            }
+            DispatchQueue.main.async {
+                // The book may have been swapped, or the gain changed again,
+                // while the tracks were loading.
+                guard
+                    let self,
+                    let item,
+                    self.generation == loadGeneration,
+                    self.boostGain == gain
+                else { return }
+                item.audioMix = mix
+            }
         }
     }
 
@@ -1083,6 +1144,13 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func clampedVolume(_ value: Double) -> Float {
         Float(min(1, max(0, value)))
+    }
+
+    /// Matches the server's clamp. A hand-edited or buggy value must not turn
+    /// into an eardrum-splitting multiplier on a pair of headphones.
+    private func clampedGain(_ value: Double) -> Float {
+        guard value.isFinite else { return 1 }
+        return Float(min(16, max(0.5, value)))
     }
 }
 
