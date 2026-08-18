@@ -19,7 +19,16 @@ export const BOOK_GAIN_MIN = 0.5;
 export const BOOK_GAIN_MAX = 16;
 export const BOOK_GAIN_DEFAULT = 1;
 
-export const BOOK_VOLUME_STORAGE_KEY = "operalibre.bookVolume";
+/**
+ * Gains are scoped to the server and the listener, the same way playback
+ * checkpoints are. On backends that never send `volumeGain` — Jellyfin, device
+ * books, servers older than this feature — the local record is the only copy
+ * there is, so a shared browser would otherwise hand the next person to sign in
+ * the previous listener's boosts.
+ */
+export function bookVolumeStorageKey(serverKey: string, userId: string) {
+  return `operalibre.bookVolume.${serverKey}.${userId}`;
+}
 
 type VolumeStorage = {
   getItem(key: string): string | null;
@@ -93,12 +102,16 @@ function parseGainMap(raw: string | null): Record<string, number> {
  * servers, and an offline launch read, and what keeps the boost applied on the
  * very first frame instead of after the library round-trip.
  */
-export function readBookGains(storage: Pick<VolumeStorage, "getItem">): Record<string, number> {
-  return parseGainMap(storage.getItem(BOOK_VOLUME_STORAGE_KEY));
+export function readBookGains(
+  storage: Pick<VolumeStorage, "getItem">,
+  key: string
+): Record<string, number> {
+  return parseGainMap(storage.getItem(key));
 }
 
 export function writeBookGains(
   storage: VolumeStorage,
+  key: string,
   gains: Record<string, number>
 ) {
   const stored: Record<string, number> = {};
@@ -108,5 +121,5 @@ export function writeBookGains(
     // than growing it with a no-op entry for every book ever opened.
     if (gain !== BOOK_GAIN_DEFAULT) stored[bookId] = gain;
   }
-  storage.setItem(BOOK_VOLUME_STORAGE_KEY, JSON.stringify(stored));
+  storage.setItem(key, JSON.stringify(stored));
 }

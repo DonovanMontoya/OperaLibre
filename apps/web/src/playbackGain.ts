@@ -17,6 +17,8 @@ type Chain = {
   context: AudioContext;
   source: MediaElementAudioSourceNode;
   gain: GainNode;
+  limiter: DynamicsCompressorNode;
+  limiting: boolean;
   element: HTMLAudioElement;
 };
 
@@ -106,17 +108,19 @@ export class PlaybackGainChain {
       limiter.release.value = 0.25;
 
       source.connect(gain);
-      gain.connect(limiter);
       limiter.connect(context.destination);
 
       this.chain?.source.disconnect();
-      this.chain = { context, source, gain, element };
+      this.chain = { context, source, gain, limiter, limiting: false, element };
+      this.route();
       this.resume();
       return true;
-    } catch {
-      // A browser that refuses the source node (already tapped, unsupported)
-      // is never going to accept it, so stop asking on every track.
-      this.unavailable = true;
+    } catch (error) {
+      // Only a missing engine is permanent. One element refusing to be tapped —
+      // it was already routed, a StrictMode remount handed us the same node —
+      // must not disable boosting for every later track in the session.
+      if (!this.context) this.unavailable = true;
+      void error;
       return false;
     }
   }
@@ -127,6 +131,28 @@ export class PlaybackGainChain {
     const { context, gain: node } = this.chain;
     // Ramp rather than jump: a step change on a live signal is an audible click.
     node.gain.setTargetAtTime(gain, context.currentTime, 0.05);
+    this.route();
+  }
+
+  /**
+   * The limiter only earns its place while the book is actually boosted. A
+   * listener who tries +12 dB, dislikes it and returns to Original must get the
+   * untouched signal back, not a book quietly compressed for the rest of the
+   * track because the chain cannot be torn down once attached.
+   */
+  private route() {
+    const chain = this.chain;
+    if (!chain) return;
+    const shouldLimit = this.gain > 1;
+    if (shouldLimit === chain.limiting) return;
+
+    chain.gain.disconnect();
+    if (shouldLimit) {
+      chain.gain.connect(chain.limiter);
+    } else {
+      chain.gain.connect(chain.context.destination);
+    }
+    chain.limiting = shouldLimit;
   }
 
   /**

@@ -9260,25 +9260,19 @@ html.native-app .recent-row {
 }
 
 /* Kept as two rules: a vendor pseudo-element one engine does not know
-   invalidates the whole selector list, taking the other engine's down too. */
+   invalidates the whole selector list, taking the other engine's down too.
+   The rail is flat — the value is stated above the track, and the app's other
+   non-scrubber sliders do not fill either. */
 .sleep-sheet .book-volume input[type="range"]::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background:
-    linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 6px
-      no-repeat,
-    linear-gradient(rgba(241, 231, 208, 0.16), rgba(241, 231, 208, 0.16)) left center / 100% 6px
-      no-repeat;
+  background: rgba(241, 231, 208, 0.16);
 }
 
 .sleep-sheet .book-volume input[type="range"]::-moz-range-track {
   height: 6px;
   border-radius: 999px;
-  background:
-    linear-gradient(var(--gold-soft), var(--gold-soft)) left center / var(--scrub-progress, 0%) 6px
-      no-repeat,
-    linear-gradient(rgba(241, 231, 208, 0.16), rgba(241, 231, 208, 0.16)) left center / 100% 6px
-      no-repeat;
+  background: rgba(241, 231, 208, 0.16);
 }
 
 .sleep-sheet .book-volume input[type="range"]::-webkit-slider-thumb {
