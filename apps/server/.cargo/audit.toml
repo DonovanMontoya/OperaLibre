@@ -1,0 +1,26 @@
+# cargo-audit configuration for the OperaLibre server.
+#
+# CI runs `rustsec/audit-check` with this directory as its working directory,
+# so this is the file that decides which advisories open an issue.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0436 — `paste` is unmaintained.
+    #
+    # Not a vulnerability: the advisory records that the author archived the
+    # crate, and no exploit or CVE is attached to it.
+    #
+    # Nothing to update to. `paste` reaches us only through `lofty`, which
+    # reads the audio tags the library scanner depends on, and `lofty` is
+    # already pinned to its newest release (0.25.1) — no published version
+    # drops the dependency. The alternatives the advisory suggests (`pastey`,
+    # `with_builtin_macros`) would have to be adopted by `lofty` upstream; we
+    # cannot substitute them from here.
+    #
+    # Bounded blast radius: `paste` is a proc-macro crate, so it runs at
+    # compile time and contributes no code to the shipped binary.
+    #
+    # Remove this entry once `lofty` publishes a release without `paste`;
+    # `cargo tree -i paste` returning nothing means it is safe to drop.
+    "RUSTSEC-2024-0436",
+]
