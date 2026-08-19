@@ -86,7 +86,7 @@ import {
   bookGainFromDb,
   bookGainToDb,
   formatBookGainDb,
-  normalizeBookGain,
+  mergeServerBookGains,
   readBookGains,
   writeBookGains
 } from "./bookVolume";
@@ -282,6 +282,17 @@ function readStoredBookGains(userId: string) {
   } catch {
     return {};
   }
+}
+
+/**
+ * The cached shelf is a snapshot of the server's answer at some earlier launch,
+ * so its gains can predate an adjustment made since — and a launch served from
+ * the cache is exactly when the listener has no way to set them again. Drop the
+ * field so the cache is treated like a backend that never stored one and the
+ * local mirror stays in charge.
+ */
+function withoutCachedBookGains(books: Book[]): Book[] {
+  return books.map(({ volumeGain: _volumeGain, ...book }) => book);
 }
 
 function writeStoredBookGains(userId: string, gains: Record<string, number>) {
@@ -2333,10 +2344,11 @@ function MainApp({
   const [bookGains, setBookGains] = useState<Record<string, number>>(() =>
     readStoredBookGains(currentUser.id)
   );
-  // Books whose gain this device has changed but the server has not confirmed.
-  // A getBooks() issued before the write lands still carries the old value, and
-  // without this the merge below would quietly undo the listener's adjustment.
-  const unconfirmedGainsRef = useRef<Set<string>>(new Set());
+  // What this device last wrote for a book, until the server echoes it back.
+  // A library payload can be older than the adjustment that raced it — a
+  // getBooks() already in flight, or a cached shelf served during a network
+  // blip — and the merge below would otherwise undo the listener's change.
+  const localGainWritesRef = useRef<Map<string, number>>(new Map());
   // Read by the native player at load time, which happens before the effect
   // that pushes the gain across.
   const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
@@ -2768,7 +2780,9 @@ function MainApp({
         applyLoadedBooks(deviceBooks);
         setIsLoading(false);
       }
-      hydratedServerBooks = await getCachedLibrary(currentUser.id).catch(() => []);
+      hydratedServerBooks = withoutCachedBookGains(
+        await getCachedLibrary(currentUser.id).catch(() => [])
+      );
       if (!isCurrentRequest()) return;
       const hydratedBooks = mergeDeviceAndServerBooks(hydratedServerBooks, deviceBooks);
       if (hydratedBooks.length) {
@@ -2862,7 +2876,7 @@ function MainApp({
     } catch {
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
-        : await getCachedLibrary(currentUser.id);
+        : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
       setIsOffline(true);
@@ -3693,22 +3707,8 @@ function MainApp({
   // local mirror alone.
   useEffect(() => {
     setBookGains((existing) => {
-      let changed = false;
-      const merged = { ...existing };
-      for (const book of books) {
-        if (typeof book.volumeGain !== "number") continue;
-        if (unconfirmedGainsRef.current.has(book.id)) continue;
-        const gain = normalizeBookGain(book.volumeGain);
-        if (gain === BOOK_GAIN_DEFAULT) {
-          if (!(book.id in merged)) continue;
-          delete merged[book.id];
-        } else {
-          if (merged[book.id] === gain) continue;
-          merged[book.id] = gain;
-        }
-        changed = true;
-      }
-      if (!changed) return existing;
+      const merged = mergeServerBookGains(existing, books, localGainWritesRef.current);
+      if (!merged) return existing;
       writeStoredBookGains(currentUser.id, merged);
       return merged;
     });
@@ -4909,12 +4909,20 @@ function MainApp({
     // Everything else keeps the local change even if the sync fails; the gain
     // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
-      unconfirmedGainsRef.current.add(book.id);
+      // Held until a library payload actually carries this value back. Clearing
+      // it when the PUT settles is too early: a getBooks() issued before the
+      // write can still answer after it, carrying the old gain.
+      localGainWritesRef.current.set(book.id, gain);
       void setBookVolume(book.id, gain)
-        .catch(() => undefined)
-        .finally(() => {
-          unconfirmedGainsRef.current.delete(book.id);
-        });
+        .then((stored) => {
+          // A backend with nowhere to store gains (Jellyfin, demo, a server
+          // that predates the endpoint) omits the field entirely, so no payload
+          // will ever confirm the write and the local mirror is the only copy.
+          if (!stored && localGainWritesRef.current.get(book.id) === gain) {
+            localGainWritesRef.current.delete(book.id);
+          }
+        })
+        .catch(() => undefined);
     }
   }
 
