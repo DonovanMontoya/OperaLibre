@@ -8,6 +8,7 @@ import {
   bookGainFromDb,
   bookGainToDb,
   formatBookGainDb,
+  mergeServerBookGains,
   normalizeBookGain,
   normalizeBookGainDb,
   readBookGains,
@@ -93,4 +94,75 @@ test("gains are scoped to both the server and the listener", () => {
   assert.deepEqual(readBookGains(storage, otherReader), {});
   assert.deepEqual(readBookGains(storage, otherServer), {});
   assert.deepEqual(readBookGains(storage, KEY), { quiet: 2 });
+});
+
+/**
+ * The revert this guards against: a library request already in flight when the
+ * slider moves answers with the level the book had before, and the merge would
+ * hand that stale value straight back to the listener.
+ */
+test("a library payload older than this device's write does not undo it", () => {
+  const pending = new Map([["book-1", bookGainFromDb(12)]]);
+  const local = { "book-1": bookGainFromDb(12) };
+
+  assert.equal(
+    mergeServerBookGains(local, [{ id: "book-1", volumeGain: 1 }], pending),
+    null
+  );
+  assert.equal(pending.size, 1);
+});
+
+test("a payload carrying this device's write hands the book back to the server", () => {
+  const written = bookGainFromDb(12);
+  const pending = new Map([["book-1", written]]);
+  const local = { "book-1": written };
+
+  assert.equal(
+    mergeServerBookGains(local, [{ id: "book-1", volumeGain: written }], pending),
+    null
+  );
+  assert.equal(pending.size, 0);
+
+  // With the write confirmed, a later change from another device applies.
+  assert.deepEqual(
+    mergeServerBookGains(local, [{ id: "book-1", volumeGain: 2 }], pending),
+    { "book-1": 2 }
+  );
+});
+
+/** f64 through JSON can come back a hair off; that is still our own value. */
+test("a confirming payload is matched with tolerance", () => {
+  const written = bookGainFromDb(6);
+  const pending = new Map([["book-1", written]]);
+  mergeServerBookGains({ "book-1": written }, [
+    { id: "book-1", volumeGain: written * (1 + 1e-12) }
+  ], pending);
+  assert.equal(pending.size, 0);
+});
+
+test("a reset to original is held until the server repeats it back", () => {
+  const pending = new Map([["book-1", BOOK_GAIN_DEFAULT]]);
+
+  assert.equal(
+    mergeServerBookGains({}, [{ id: "book-1", volumeGain: 4 }], pending),
+    null
+  );
+
+  assert.equal(
+    mergeServerBookGains({}, [{ id: "book-1", volumeGain: 1 }], pending),
+    null
+  );
+  assert.equal(pending.size, 0);
+});
+
+test("the server's copy leads for books this device has not touched", () => {
+  const pending = new Map<string, number>();
+  assert.deepEqual(
+    mergeServerBookGains({ "book-2": 4 }, [
+      { id: "book-1", volumeGain: 2 },
+      { id: "book-2", volumeGain: 1 },
+      { id: "book-3" }
+    ], pending),
+    { "book-1": 2 }
+  );
 });

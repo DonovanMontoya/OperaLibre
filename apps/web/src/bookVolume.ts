@@ -123,3 +123,56 @@ export function writeBookGains(
   }
   storage.setItem(key, JSON.stringify(stored));
 }
+
+/**
+ * Gains cross the wire as f64 and come back through JSON, so the copy the
+ * server echoes is compared with a tolerance rather than for identity — a
+ * hair of drift must not read as "someone else changed this book".
+ */
+export function gainsMatch(a: number, b: number) {
+  return Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b));
+}
+
+type BookGainSource = { id: string; volumeGain?: number };
+
+/**
+ * Fold the server's copy of the gains into the local mirror.
+ *
+ * `pending` holds what this device last wrote for a book and has not yet seen
+ * the server repeat back. Those books are left alone: a library payload can be
+ * older than the adjustment that raced it — a `getBooks()` already in flight
+ * when the slider moved, a cached shelf served during a network blip — and
+ * accepting it would snap the book back to its previous level mid-chapter. A
+ * book drops out of `pending` (and follows the server again) as soon as a
+ * payload does carry the value this device wrote, which is the only proof that
+ * the write actually landed.
+ *
+ * Returns null when nothing changed, so the caller can keep the current state
+ * object rather than re-rendering for a no-op.
+ */
+export function mergeServerBookGains(
+  local: Record<string, number>,
+  books: readonly BookGainSource[],
+  pending: Map<string, number>
+): Record<string, number> | null {
+  let changed = false;
+  const merged = { ...local };
+  for (const book of books) {
+    if (typeof book.volumeGain !== "number") continue;
+    const gain = normalizeBookGain(book.volumeGain);
+    const written = pending.get(book.id);
+    if (written !== undefined) {
+      if (!gainsMatch(written, gain)) continue;
+      pending.delete(book.id);
+    }
+    if (gain === BOOK_GAIN_DEFAULT) {
+      if (!(book.id in merged)) continue;
+      delete merged[book.id];
+    } else {
+      if (merged[book.id] === gain) continue;
+      merged[book.id] = gain;
+    }
+    changed = true;
+  }
+  return changed ? merged : null;
+}
