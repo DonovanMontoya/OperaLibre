@@ -7,6 +7,7 @@ import {
   bookVolumeStorageKey,
   bookGainFromDb,
   bookGainToDb,
+  createBookGainSync,
   formatBookGainDb,
   mergeServerBookGains,
   normalizeBookGain,
@@ -163,6 +164,124 @@ test("the server's copy leads for books this device has not touched", () => {
       { id: "book-2", volumeGain: 1 },
       { id: "book-3" }
     ], pending),
+    { "book-1": 2 }
+  );
+});
+
+/**
+ * A deferred `setBookVolume` stand-in: every call is recorded and left open so
+ * the test decides the order and outcome of the responses.
+ */
+function deferredWriter() {
+  const calls: { bookId: string; gain: number; settle: (stored: boolean) => void; fail: () => void }[] = [];
+  const write = (bookId: string, gain: number) =>
+    new Promise<boolean>((resolve, reject) => {
+      calls.push({ bookId, gain, settle: resolve, fail: () => reject(new Error("offline")) });
+    });
+  return { calls, write };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a drag's writes are sent one at a time, ending on the value released at", async () => {
+  // Concurrent writes can land out of order, leaving the server on whichever
+  // step it processed last rather than where the listener let go.
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 1.5);
+  sync.write("book-1", 2);
+  sync.write("book-1", 3);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].gain, 1.5);
+
+  calls[0].settle(true);
+  await flush();
+
+  // The intermediate step collapsed; only the value released at follows.
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].gain, 3);
+  assert.equal(pending.get("book-1"), 3);
+
+  calls[1].settle(true);
+  await flush();
+  assert.equal(calls.length, 2);
+  // Accepted by the server, so the book stays guarded until a payload echoes it.
+  assert.equal(pending.get("book-1"), 3);
+});
+
+test("writes to different books still run concurrently", async () => {
+  const { calls, write } = deferredWriter();
+  const sync = createBookGainSync(write, new Map());
+
+  sync.write("book-1", 2);
+  sync.write("book-2", 4);
+  assert.deepEqual(calls.map((call) => call.bookId), ["book-1", "book-2"]);
+});
+
+/**
+ * The guard exists to stop a stale payload undoing a write. A write that never
+ * reached the server has nothing to protect, and holding the guard anyway would
+ * shut the book out of reconciliation for the rest of the session.
+ */
+test("a failed write releases the guard so the server leads again", async () => {
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 2);
+  assert.equal(pending.get("book-1"), 2);
+  calls[0].fail();
+  await flush();
+  assert.equal(pending.has("book-1"), false);
+});
+
+test("a backend with nowhere to store gains releases the guard", async () => {
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 2);
+  calls[0].settle(false);
+  await flush();
+  assert.equal(pending.has("book-1"), false);
+});
+
+test("only the last write of a drag decides whether the guard is held", async () => {
+  // An early step failing says nothing about the value the listener settled on.
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 1.5);
+  sync.write("book-1", 3);
+  calls[0].fail();
+  await flush();
+
+  // The queued write took over, so the guard is still the newer value's to hold.
+  assert.equal(pending.get("book-1"), 3);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].gain, 3);
+
+  calls[1].settle(true);
+  await flush();
+  assert.equal(pending.get("book-1"), 3);
+});
+
+test("a guard released by a failure lets the next payload correct the mirror", async () => {
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 4);
+  calls[0].fail();
+  await flush();
+
+  // With the guard gone the merge accepts the server's copy, which is what the
+  // failed write means the server still holds.
+  assert.deepEqual(
+    mergeServerBookGains({ "book-1": 4 }, [{ id: "book-1", volumeGain: 2 }], pending),
     { "book-1": 2 }
   );
 });

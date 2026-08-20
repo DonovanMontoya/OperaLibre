@@ -86,6 +86,7 @@ import {
   bookGainFromDb,
   bookGainToDb,
   formatBookGainDb,
+  createBookGainSync,
   mergeServerBookGains,
   readBookGains,
   writeBookGains
@@ -2349,6 +2350,12 @@ function MainApp({
   // getBooks() already in flight, or a cached shelf served during a network
   // blip — and the merge below would otherwise undo the listener's change.
   const localGainWritesRef = useRef<Map<string, number>>(new Map());
+  // Serializes and coalesces the writes behind the gain slider, which reports
+  // every step of a drag, and owns the release of the guard above.
+  const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
+  if (!gainSyncRef.current) {
+    gainSyncRef.current = createBookGainSync(setBookVolume, localGainWritesRef.current);
+  }
   // Read by the native player at load time, which happens before the effect
   // that pushes the gain across.
   const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
@@ -4909,20 +4916,12 @@ function MainApp({
     // Everything else keeps the local change even if the sync fails; the gain
     // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
-      // Held until a library payload actually carries this value back. Clearing
-      // it when the PUT settles is too early: a getBooks() issued before the
-      // write can still answer after it, carrying the old gain.
-      localGainWritesRef.current.set(book.id, gain);
-      void setBookVolume(book.id, gain)
-        .then((stored) => {
-          // A backend with nowhere to store gains (Jellyfin, demo, a server
-          // that predates the endpoint) omits the field entirely, so no payload
-          // will ever confirm the write and the local mirror is the only copy.
-          if (!stored && localGainWritesRef.current.get(book.id) === gain) {
-            localGainWritesRef.current.delete(book.id);
-          }
-        })
-        .catch(() => undefined);
+      // Guards the book against a library payload older than this adjustment,
+      // and holds it until the server echoes the value back. Clearing the guard
+      // when the PUT settles would be too early: a getBooks() issued before the
+      // write can still answer after it, carrying the old gain. A write that
+      // never landed releases it instead — see createBookGainSync.
+      gainSyncRef.current?.write(book.id, gain);
     }
   }
 
