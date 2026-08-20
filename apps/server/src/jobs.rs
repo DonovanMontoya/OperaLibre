@@ -24,9 +24,8 @@ pub(crate) struct JobCreated {
 
 pub(crate) async fn list_jobs(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
 ) -> Result<Json<Vec<JobStatus>>, ApiError> {
-    require_admin(&auth)?;
     let jobs = state.jobs.read().await;
     let mut list: Vec<JobStatus> = jobs.values().map(job_for_list).collect();
     list.sort_by_key(|job| std::cmp::Reverse(job_started_timestamp(job)));

@@ -156,7 +156,11 @@ pub(crate) struct AuthUser {
 pub(crate) struct SessionToken(pub(crate) String);
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Permission payloads reject unknown fields. These types all model an
+// absent field as a permissive default -- a missing `allowedBookIds`
+// means "no restrictions" -- so a client that misspells a key would
+// otherwise silently widen a user's access and still get a 200.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateUserRoleRequest {
     pub(crate) is_admin: bool,
     #[serde(default)]
@@ -186,7 +190,11 @@ pub(crate) struct SetupRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Permission payloads reject unknown fields. These types all model an
+// absent field as a permissive default -- a missing `allowedBookIds`
+// means "no restrictions" -- so a client that misspells a key would
+// otherwise silently widen a user's access and still get a 200.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateUserRequest {
     pub(crate) username: String,
     pub(crate) password: String,
@@ -203,7 +211,11 @@ pub(crate) struct CreateUserRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Permission payloads reject unknown fields. These types all model an
+// absent field as a permissive default -- a missing `allowedBookIds`
+// means "no restrictions" -- so a client that misspells a key would
+// otherwise silently widen a user's access and still get a 200.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateBookAccessRequest {
     pub(crate) allowed_book_ids: Option<Vec<String>>,
 }
@@ -975,6 +987,74 @@ pub(crate) async fn update_progress_sharing(
     Ok(Json(public))
 }
 
+/// An authenticated administrator.
+///
+/// Handlers that take this instead of `Extension<AuthUser>` cannot be reached
+/// without the check: forgetting the guard becomes a compile error rather than
+/// a review miss. The `auth_middleware` has already resolved the session and
+/// inserted the `AuthUser` by the time this runs.
+#[derive(Debug, Clone)]
+pub(crate) struct AdminUser(pub(crate) AuthUser);
+
+/// An authenticated owner. Strictly narrower than [`AdminUser`].
+///
+/// Carries no payload: no owner-only handler currently needs the acting user,
+/// only the guarantee that the caller is the owner. Give it an `AuthUser` field
+/// like the others if one ever does.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnerUser;
+
+/// A user permitted to approve Libation download requests.
+#[derive(Debug, Clone)]
+pub(crate) struct LibationApprover(pub(crate) AuthUser);
+
+/// Pull the middleware-resolved user out of the request extensions.
+fn authenticated_user(parts: &axum::http::request::Parts) -> Result<AuthUser, ApiError> {
+    parts
+        .extensions
+        .get::<AuthUser>()
+        .cloned()
+        .ok_or_else(|| ApiError::unauthorized("Session is invalid or expired."))
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for AdminUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = authenticated_user(parts)?;
+        require_admin(&auth)?;
+        Ok(Self(auth))
+    }
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OwnerUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        require_owner(&authenticated_user(parts)?)?;
+        Ok(Self)
+    }
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for LibationApprover {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = authenticated_user(parts)?;
+        require_libation_approver(&auth)?;
+        Ok(Self(auth))
+    }
+}
+
 pub(crate) fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
     if auth.is_admin {
         Ok(())
@@ -1021,19 +1101,17 @@ pub(crate) fn require_book_access(auth: &AuthUser, book_id: &str) -> Result<(), 
 
 pub(crate) async fn list_users(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
 ) -> Result<Json<Vec<UserPublic>>, ApiError> {
-    require_admin(&auth)?;
     let users = state.users.read().await;
     Ok(Json(users.users.iter().map(UserPublic::from).collect()))
 }
 
 pub(crate) async fn create_user(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    require_admin(&auth)?;
     let is_owner = payload.is_owner;
     let is_admin = payload.is_admin || is_owner;
     if is_admin && !auth.is_owner {
@@ -1086,10 +1164,9 @@ pub(crate) async fn create_user(
 
 pub(crate) async fn delete_user(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&auth)?;
     if user_id == auth.id {
         return Err(ApiError::bad_request(
             "You cannot delete your own account while signed in.",
@@ -1187,12 +1264,10 @@ pub(crate) async fn change_password(
 
 pub(crate) async fn update_book_access(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateBookAccessRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    require_admin(&auth)?;
-
     let allowed_book_ids = if let Some(book_ids) = payload.allowed_book_ids {
         let available_ids: HashSet<String> = state
             .library
@@ -1237,11 +1312,10 @@ pub(crate) async fn update_book_access(
 
 pub(crate) async fn update_user_role(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: OwnerUser,
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateUserRoleRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    require_owner(&auth)?;
     let mut users = state.users.write().await;
     let target_index = users
         .users
