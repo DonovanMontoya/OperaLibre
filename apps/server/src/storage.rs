@@ -359,8 +359,15 @@ impl ProgressStore {
         Ok(read_progress(&self.file)
             .await?
             .into_iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(_, progress)| (progress.book_id.clone(), progress))
+            // Keyed by the book id in the storage key, not the one in the
+            // stored row. Callers look these up by the book they are rendering,
+            // which is what the composite key encodes; trusting the field
+            // instead would resolve differently for any row whose two copies
+            // ever disagreed.
+            .filter_map(|(key, progress)| {
+                key.strip_prefix(&prefix)
+                    .map(|book_id| (book_id.to_string(), progress))
+            })
             .collect())
     }
 
