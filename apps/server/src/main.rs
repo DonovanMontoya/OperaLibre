@@ -8567,18 +8567,20 @@ async fn record_finish_event(
         book_title: book.title.clone(),
         finished_at: now_rfc3339ish(),
     };
-    let snapshot = {
-        let mut store = state.finish_events.write().await;
-        store.events.push(event);
-        // Oldest first, so trimming from the front keeps the recent tail the
-        // feed actually shows.
-        if store.events.len() > FINISH_EVENT_LIMIT {
-            let excess = store.events.len() - FINISH_EVENT_LIMIT;
-            store.events.drain(0..excess);
-        }
-        store.clone()
-    };
-    if let Err(error) = write_finish_events(&state.finish_events_file, &snapshot).await {
+    // The guard is deliberately held across the file write rather than dropped
+    // after the mutation. Two listeners finishing at once would otherwise each
+    // take their own snapshot and race to persist it, and if the one holding
+    // the older copy wrote last it would erase the other's event from disk —
+    // memory would still look right until the next restart.
+    let mut store = state.finish_events.write().await;
+    store.events.push(event);
+    // Oldest first, so trimming from the front keeps the recent tail the feed
+    // actually shows.
+    if store.events.len() > FINISH_EVENT_LIMIT {
+        let excess = store.events.len() - FINISH_EVENT_LIMIT;
+        store.events.drain(0..excess);
+    }
+    if let Err(error) = write_finish_events(&state.finish_events_file, &store).await {
         // The listener's own progress is already saved and is what matters;
         // a lost feed entry is not worth failing their request over.
         tracing::warn!("failed to persist finish event: {}", error.message);
@@ -9888,6 +9890,9 @@ async fn mark_finish_feed_seen(
     Json(payload): Json<MarkFinishFeedSeenRequest>,
 ) -> Result<Json<FinishFeedResponse>, ApiError> {
     {
+        // Held across the write for the same reason as record_finish_event:
+        // a concurrent mark from another listener must not be able to persist
+        // a snapshot that predates this one.
         let mut store = state.finish_events.write().await;
         // Only ever moves forward. A stale request from a client that had an
         // older page in hand must not re-raise a badge the viewer cleared.
@@ -9906,9 +9911,7 @@ async fn mark_finish_feed_seen(
             }
             (None, _) => {}
         }
-        let snapshot = store.clone();
-        drop(store);
-        write_finish_events(&state.finish_events_file, &snapshot).await?;
+        write_finish_events(&state.finish_events_file, &store).await?;
     }
     finish_feed(State(state), Extension(auth)).await
 }
@@ -12081,6 +12084,58 @@ exit 0
         assert_eq!(users.users.len(), 1);
         assert!(users.users[0].is_owner);
         assert!(users.users[0].is_admin);
+    }
+
+    fn announcing_viewer(id: &str) -> AuthUser {
+        let mut viewer = viewer(id, true);
+        viewer.announce_finishes = true;
+        viewer
+    }
+
+    fn finished_book(id: &str, title: &str) -> super::Book {
+        let mut book = book_with_tracks(Some(3600.0), Vec::new());
+        book.id = id.to_string();
+        book.title = title.to_string();
+        book
+    }
+
+    /// Real threads, because the interleaving is the whole point: on a
+    /// single-threaded runtime `join!` polls in a fixed order, so the newest
+    /// snapshot always happens to write last and the race cannot appear.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_finishes_all_survive_a_restart() {
+        use super::BookProgressStatus::*;
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+
+        // Enough writers that a snapshot-then-persist implementation loses at
+        // least one to an older copy landing last.
+        const WRITERS: usize = 24;
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|index| {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    super::record_finish_event(
+                        &state,
+                        &announcing_viewer(&format!("reader-{index}")),
+                        &finished_book(&format!("book-{index}"), "The Lantern Atlas"),
+                        Some(&finish_summary(InProgress)),
+                        &finish_summary(Finished),
+                    )
+                    .await;
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Memory would pass either way, so assert against the file the next
+        // boot actually reads.
+        let reloaded = super::load_finish_events(&state.finish_events_file)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.events.len(), WRITERS);
     }
 
     #[cfg(unix)]

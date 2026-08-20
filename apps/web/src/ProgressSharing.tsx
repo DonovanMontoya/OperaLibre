@@ -1,7 +1,20 @@
 import { Users } from "lucide-react";
 import { useState } from "react";
 import { updateProgressSharing } from "./api";
+import {
+  isAnnouncingFinishes,
+  isNotifiedOfFinishes,
+  isSharingProgress,
+  supportsFinishFeed
+} from "./sharingSettings";
 import type { AuthUser } from "./types";
+
+export {
+  isAnnouncingFinishes,
+  isNotifiedOfFinishes,
+  isSharingProgress,
+  supportsFinishFeed
+} from "./sharingSettings";
 
 type ProgressSharingCardProps = {
   user: AuthUser;
@@ -9,25 +22,6 @@ type ProgressSharingCardProps = {
   /** Sharing is reciprocal, so the library must be refetched after a change. */
   onSharingChanged: () => void;
 };
-
-export function isSharingProgress(user: AuthUser): boolean {
-  // Servers released before progress sharing omit the field; they share by
-  // default, which is what the toggle should show rather than a false "off".
-  return user.shareProgress !== false;
-}
-
-/**
- * Both finish settings default to on for the same reason sharing does: a
- * server that predates them omits the fields, and someone already sharing
- * would not expect to have been opted out of a feature they never saw.
- */
-export function isAnnouncingFinishes(user: AuthUser): boolean {
-  return isSharingProgress(user) && user.announceFinishes !== false;
-}
-
-export function isNotifiedOfFinishes(user: AuthUser): boolean {
-  return isSharingProgress(user) && user.notifyFinishes !== false;
-}
 
 export function ProgressSharingCard({
   user,
@@ -87,8 +81,9 @@ export function ProgressSharingCard({
       </div>
 
       {/* Both of these live inside sharing, so they are offered only once it is
-          on rather than sitting there disabled with nothing to explain them. */}
-      {enabled ? (
+          on rather than sitting there disabled with nothing to explain them —
+          and only when the server can actually honour them. */}
+      {enabled && supportsFinishFeed(user) ? (
         <>
           <div className="settings-toggle-row settings-toggle-nested">
             <span>
