@@ -17,8 +17,6 @@ pub(crate) struct AppState {
     pub(crate) progress: Arc<ProgressStore>,
     /// Per-listener, per-book playback settings.
     pub(crate) book_settings: Arc<BookSettingsStore>,
-    pub(crate) users_file: PathBuf,
-    pub(crate) sessions_file: PathBuf,
     pub(crate) activity_file: PathBuf,
     pub(crate) metadata_overrides_file: PathBuf,
     pub(crate) libation_requests_file: PathBuf,
@@ -35,8 +33,10 @@ pub(crate) struct AppState {
     pub(crate) library: Arc<RwLock<LibraryState>>,
     pub(crate) metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
     pub(crate) jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
-    pub(crate) users: Arc<RwLock<UsersStore>>,
-    pub(crate) sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// Accounts, cached in memory and mirrored to disk.
+    pub(crate) users: Arc<UserStore>,
+    /// Live sessions, cached in memory and mirrored to disk.
+    pub(crate) sessions: Arc<SessionStore>,
     pub(crate) activity: Arc<RwLock<ActivityStore>>,
     pub(crate) libation_requests: Arc<RwLock<LibationRequestStore>>,
     pub(crate) libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
