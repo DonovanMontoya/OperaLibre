@@ -27,7 +27,7 @@
 //! A title-and-author agreement whose durations disagree is exactly the case
 //! worth a human glance, so it is suggested and not merged.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path as FsPath;
 
@@ -378,6 +378,21 @@ impl WorkStore {
         self.works
             .iter()
             .find(|work| work.book_ids.iter().any(|id| id == book_id))
+    }
+
+    /// Book id to work id, as the index currently stands.
+    ///
+    /// Read paths resolve through this rather than trusting the work id frozen
+    /// onto an old log row, so an administrator linking two editions merges the
+    /// history those editions already accumulated.
+    pub fn book_to_work(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for work in self.works.iter() {
+            for book_id in work.book_ids.iter() {
+                map.insert(book_id.clone(), work.id.clone());
+            }
+        }
+        map
     }
 
     /// Drops works that no longer mean anything: no edition on the server, no

@@ -110,9 +110,16 @@ const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 /// Bounds on the configurable log ceilings, enforced at startup. A value
 /// outside them is refused rather than adjusted: the floor keeps a typo from
 /// reducing the history to nothing, and the ceiling keeps one from committing
-/// the server to gigabytes.
+/// the server to more history than it can load.
+///
+/// The upper bound is set by the reader, not by the disk. Reading a log parses
+/// the whole file into memory, so a ceiling has to be a size the smallest
+/// supported machine can hold — these builds run on Raspberry Pi class ARM64
+/// hardware. Half a million session rows is roughly 170 MB of text and about
+/// as much again once parsed, which is the most that is safe to promise. At
+/// the measured cost of a heavy reader, it is still some fifteen centuries.
 const MIN_READING_LOG_ROWS: usize = 1_000;
-const MAX_READING_LOG_ROWS: usize = 5_000_000;
+const MAX_READING_LOG_ROWS: usize = 500_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -4882,28 +4889,11 @@ async fn update_progress(
     let tz_offset_minutes = sanitized_tz_offset_minutes(update.tz_offset_minutes);
     let listened_delta =
         plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
-    if listened_delta > 0.0 {
-        record_activity(&state, &auth.id, listened_delta, tz_offset_minutes).await;
-        record_reading_session(
-            &state,
-            reading_log::Checkpoint {
-                user_id: auth.id.clone(),
-                book_id: book.id.clone(),
-                work_id: work_id_for_book(&state, &book.id).await,
-                at_ms: progress_timestamp_millis(&saved.updated_at),
-                listened_seconds: listened_delta,
-                position_seconds: saved.book_position_seconds,
-                speed: sanitized_speed(update.speed),
-                client: sanitized_client_label(update.client),
-                tz_offset_minutes,
-                today: today_ymd(tz_offset_minutes),
-            },
-        )
-        .await;
-    }
 
     // Reaching the end is a completion in its own right. It is derived from the
-    // same summary the library serves, so the log and the shelf agree.
+    // same summary the library serves, so the log and the shelf agree. Both
+    // this and the snapshot are computed while the library is still borrowed,
+    // because the writes below must not be.
     let was_finished = previous
         .as_ref()
         .map(|previous| {
@@ -4917,16 +4907,45 @@ async fn update_progress(
         summarize_book_progress(book, &saved).status,
         BookProgressStatus::Finished
     );
-    record_completion_if_crossed(
-        &state,
-        &auth.id,
-        book,
-        was_finished,
-        is_finished,
-        reading_log::CompletionSource::Reached,
-        tz_offset_minutes,
-    )
-    .await;
+    let completion = crossed_into_finished(book, was_finished, is_finished);
+    let book_id = book.id.clone();
+    // Everything past here writes to the reading log, which a maintenance pass
+    // can hold for the length of a whole-file rewrite. Waiting on that while
+    // still holding the library open would queue a rescan's write behind this
+    // request, and every other library reader behind the rescan.
+    drop(library);
+
+    if listened_delta > 0.0 {
+        record_activity(&state, &auth.id, listened_delta, tz_offset_minutes).await;
+        record_reading_session(
+            &state,
+            reading_log::Checkpoint {
+                user_id: auth.id.clone(),
+                book_id: book_id.clone(),
+                work_id: work_id_for_book(&state, &book_id).await,
+                at_ms: progress_timestamp_millis(&saved.updated_at),
+                listened_seconds: listened_delta,
+                position_seconds: saved.book_position_seconds,
+                speed: sanitized_speed(update.speed),
+                client: sanitized_client_label(update.client),
+                tz_offset_minutes,
+                today: today_ymd(tz_offset_minutes),
+            },
+        )
+        .await;
+    }
+
+    if let Some(snapshot) = completion {
+        record_completion(
+            &state,
+            &auth.id,
+            &book_id,
+            snapshot,
+            reading_log::CompletionSource::Reached,
+            tz_offset_minutes,
+        )
+        .await;
+    }
 
     Ok(Json(saved))
 }
@@ -9133,20 +9152,50 @@ async fn record_completion_if_crossed(
     source: reading_log::CompletionSource,
     tz_offset_minutes: i64,
 ) {
-    if was_finished || !is_finished {
+    let Some(snapshot) = crossed_into_finished(book, was_finished, is_finished) else {
         return;
-    }
+    };
+    record_completion(
+        state,
+        user_id,
+        &book.id,
+        snapshot,
+        source,
+        tz_offset_minutes,
+    )
+    .await;
+}
+
+/// The snapshot to record, when this write is the moment a book became
+/// finished. Separated from the append so a caller holding the library lock can
+/// take the snapshot, release the lock, and only then touch the disk.
+fn crossed_into_finished(
+    book: &Book,
+    was_finished: bool,
+    is_finished: bool,
+) -> Option<reading_log::EditionSnapshot> {
+    (!was_finished && is_finished).then(|| edition_snapshot(book))
+}
+
+async fn record_completion(
+    state: &AppState,
+    user_id: &str,
+    book_id: &str,
+    snapshot: reading_log::EditionSnapshot,
+    source: reading_log::CompletionSource,
+    tz_offset_minutes: i64,
+) {
     let now_ms = unix_now_millis();
     let event = reading_log::CompletionEvent {
-        id: stable_id(&format!("completion:{user_id}:{}:{now_ms}", book.id)),
+        id: stable_id(&format!("completion:{user_id}:{book_id}:{now_ms}")),
         user_id: user_id.to_string(),
-        book_id: book.id.clone(),
-        work_id: work_id_for_book(state, &book.id).await,
+        book_id: book_id.to_string(),
+        work_id: work_id_for_book(state, book_id).await,
         finished_at_ms: now_ms,
         source,
         tz_offset_minutes,
         finished_on: today_ymd(tz_offset_minutes),
-        snapshot: edition_snapshot(book),
+        snapshot,
     };
     let _guard = state.reading_log_write_lock.lock().await;
     if let Err(error) = reading_log::append_completion(&state.completions_file, &event).await {
@@ -9276,7 +9325,6 @@ fn summarize_habits(sessions: &[reading_log::ReadingSession]) -> ReadingHabits {
 fn book_times(
     sessions: &[reading_log::ReadingSession],
     book_lookup: &HashMap<&str, &Book>,
-    today: i64,
 ) -> Vec<BookTime> {
     struct Accumulator {
         seconds: f64,
@@ -9302,7 +9350,6 @@ fn book_times(
         if session.started_on > entry.last {
             entry.last = session.started_on.clone();
         }
-        let _ = today;
     }
 
     let mut rows = totals
@@ -9338,16 +9385,22 @@ fn book_times(
 fn summarize_completions(
     completions: &[reading_log::CompletionEvent],
     book_lookup: &HashMap<&str, &Book>,
+    current_work: &HashMap<String, String>,
 ) -> Vec<FinishedBook> {
     let mut order: Vec<String> = Vec::new();
     let mut grouped: HashMap<String, FinishedBook> = HashMap::new();
 
     for event in completions {
         // A work id is the durable key: it is what survives the edition being
-        // replaced. Editions predating the work index fall back to their own id.
-        let key = event
-            .work_id
-            .clone()
+        // replaced. The *current* index wins over the id frozen onto the event,
+        // so an administrator linking two editions merges the history that
+        // prompted them to link it — the whole point of the action. Editions
+        // the index no longer knows fall back to what they recorded, and then
+        // to their own id.
+        let key = current_work
+            .get(&event.book_id)
+            .cloned()
+            .or_else(|| event.work_id.clone())
             .unwrap_or_else(|| event.book_id.clone());
         let live = book_lookup.get(event.book_id.as_str());
         match grouped.get_mut(&key) {
@@ -9635,14 +9688,15 @@ async fn profile_stats(
         .unwrap_or_default();
 
     let habits = summarize_habits(&sessions);
-    let finished_books = summarize_completions(&completions, &book_lookup);
+    let current_work = state.works.read().await.book_to_work();
+    let finished_books = summarize_completions(&completions, &book_lookup, &current_work);
     let works_finished = finished_books.len() as u32;
     let total_completions = finished_books
         .iter()
         .map(|book| book.times_finished)
         .sum::<u32>();
     let abandoned = abandoned_books(&sessions, &user_progress, &book_lookup, today);
-    let mut most_read = book_times(&sessions, &book_lookup, today);
+    let mut most_read = book_times(&sessions, &book_lookup);
     most_read.truncate(10);
 
     Ok(Json(ProfileStats {
@@ -12128,6 +12182,7 @@ mod tests {
                 "The Odyssey",
             )],
             &book_lookup,
+            &std::collections::HashMap::new(),
         );
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].title, "The Odyssey");
@@ -12161,6 +12216,7 @@ mod tests {
                 ),
             ],
             &book_lookup,
+            &std::collections::HashMap::new(),
         );
         assert_eq!(finished.len(), 1, "one work, not two books");
         assert_eq!(finished[0].times_finished, 2);
@@ -12224,7 +12280,6 @@ mod tests {
                 session("s2", "book", 90_000_000, 600.0, "2026-08-20", 0),
             ],
             &book_lookup,
-            super::ymd_to_days("2026-08-21").unwrap(),
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].session_count, 2);
@@ -12768,6 +12823,49 @@ mod tests {
             policy("reading_log_max_rows = 1000").session_max_rows,
             super::MIN_READING_LOG_ROWS
         );
+    }
+
+    /// Linking two editions must merge the history that prompted the link, not
+    /// just the index going forward.
+    #[test]
+    fn a_manual_work_link_merges_history_already_recorded() {
+        let book_lookup = std::collections::HashMap::new();
+        let events = [
+            completion(
+                "c1",
+                "book-1",
+                Some("work-1"),
+                "2026-03-14",
+                1_000,
+                "The Odyssey",
+            ),
+            completion(
+                "c2",
+                "book-2",
+                Some("work-2"),
+                "2026-07-02",
+                2_000,
+                "The Odyssey",
+            ),
+        ];
+
+        // Before the admin acts, the index still has them apart.
+        let split =
+            super::summarize_completions(&events, &book_lookup, &std::collections::HashMap::new());
+        assert_eq!(split.len(), 2);
+
+        // The admin links book-2 into work-1. The events on disk still carry
+        // the work ids they were written with.
+        let linked = std::collections::HashMap::from([
+            ("book-1".to_string(), "work-1".to_string()),
+            ("book-2".to_string(), "work-1".to_string()),
+        ]);
+        let merged = super::summarize_completions(&events, &book_lookup, &linked);
+        assert_eq!(merged.len(), 1, "one book, finished twice");
+        assert_eq!(merged[0].id, "work-1");
+        assert_eq!(merged[0].times_finished, 2);
+        assert_eq!(merged[0].first_finished_on, "2026-03-14");
+        assert_eq!(merged[0].last_finished_on, "2026-07-02");
     }
 
     #[test]

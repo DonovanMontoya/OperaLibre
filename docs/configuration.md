@@ -113,8 +113,8 @@ The server keeps a small amount of state on disk: user accounts, listening progr
 | `users_file` | `data/users.json` | JSON file storing accounts and Argon2 password hashes. |
 | `activity_file` | `data/activity.json` | Per-reader daily listening totals, used for streaks. Kept for ever; about thirty bytes per reader per day. |
 | `reading_log_retention_days` | `1095` | How long to keep full listening sessions. `0` keeps them for ever. Completions are never aged out. |
-| `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. Roughly 66 MB. |
-| `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Roughly 25 MB. |
+| `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. Roughly 66 MB. Accepts 1,000 to 500,000. |
+| `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Roughly 25 MB. Accepts 1,000 to 500,000. |
 
 `data_dir` also holds files the server names itself, including `reading-log.jsonl` (per-reader listening sessions), `completions.jsonl` (an immutable record of every book finished, with a snapshot of the book as it was at the time), and `works.json` (the index linking different editions of the same book). All three are created on demand and, on Unix, kept readable only by the account running the server.
 
