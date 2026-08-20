@@ -196,8 +196,6 @@ async fn main() -> anyhow::Result<()> {
         book_settings: Arc::new(BookSettingsStore::new(
             config.data_dir.join("book-settings.json"),
         )),
-        users_file: config.users_file.clone(),
-        sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
@@ -219,8 +217,11 @@ async fn main() -> anyhow::Result<()> {
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(RwLock::new(metadata_overrides)),
         jobs: Arc::new(RwLock::new(HashMap::new())),
-        users: Arc::new(RwLock::new(users_store)),
-        sessions: Arc::new(RwLock::new(sessions_store)),
+        users: Arc::new(UserStore::new(config.users_file.clone(), users_store)),
+        sessions: Arc::new(SessionStore::new(
+            config.sessions_file.clone(),
+            sessions_store,
+        )),
         activity: Arc::new(RwLock::new(activity_store)),
         libation_requests: Arc::new(RwLock::new(libation_requests)),
         libation_refreshes: Arc::new(Mutex::new(libation_refreshes)),

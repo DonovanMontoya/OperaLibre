@@ -525,3 +525,84 @@ impl BookSettingsStore {
         write_book_settings(&self.file, &settings).await
     }
 }
+
+// ---------------------------------------------------------------------------
+// Accounts and sessions
+// ---------------------------------------------------------------------------
+//
+// Unlike progress, these are held in memory and mirrored to disk, so reads are
+// already cheap. The seam these need is around *writing*: every mutation used
+// to be "take the lock, edit, remember to call the write helper", repeated at
+// twenty-one call sites.
+
+/// Every account, cached in memory and mirrored to a file.
+#[derive(Debug)]
+pub(crate) struct UserStore {
+    file: PathBuf,
+    users: RwLock<UsersStore>,
+}
+
+impl UserStore {
+    pub(crate) fn new(file: PathBuf, users: UsersStore) -> Self {
+        Self {
+            file,
+            users: RwLock::new(users),
+        }
+    }
+
+    pub(crate) async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, UsersStore> {
+        self.users.read().await
+    }
+
+    /// Apply a change under the write lock and persist it.
+    ///
+    /// The change runs against a copy, which is adopted only once it succeeds
+    /// and the write lands. A validation failure therefore leaves neither the
+    /// cache nor the file touched — previously a handler that rejected a
+    /// request after editing the cache left the two disagreeing until restart.
+    pub(crate) async fn mutate<T, F>(&self, change: F) -> Result<T, ApiError>
+    where
+        F: FnOnce(&mut UsersStore) -> Result<T, ApiError>,
+    {
+        let mut users = self.users.write().await;
+        let mut draft = users.clone();
+        let outcome = change(&mut draft)?;
+        write_users_store(&self.file, &draft).await?;
+        *users = draft;
+        Ok(outcome)
+    }
+}
+
+/// Live sessions, cached in memory and mirrored to a file.
+#[derive(Debug)]
+pub(crate) struct SessionStore {
+    file: PathBuf,
+    sessions: RwLock<HashMap<String, Session>>,
+}
+
+impl SessionStore {
+    pub(crate) fn new(file: PathBuf, sessions: HashMap<String, Session>) -> Self {
+        Self {
+            file,
+            sessions: RwLock::new(sessions),
+        }
+    }
+
+    pub(crate) async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<String, Session>> {
+        self.sessions.read().await
+    }
+
+    /// Apply a change under the write lock and persist it, with the same
+    /// all-or-nothing guarantee as [`UserStore::mutate`].
+    pub(crate) async fn mutate<T, F>(&self, change: F) -> Result<T, ApiError>
+    where
+        F: FnOnce(&mut HashMap<String, Session>) -> Result<T, ApiError>,
+    {
+        let mut sessions = self.sessions.write().await;
+        let mut draft = sessions.clone();
+        let outcome = change(&mut draft)?;
+        write_sessions_store(&self.file, &draft).await?;
+        *sessions = draft;
+        Ok(outcome)
+    }
+}

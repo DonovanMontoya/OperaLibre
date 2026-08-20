@@ -1453,8 +1453,6 @@ exit 0
         book_settings: super::Arc::new(super::BookSettingsStore::new(
             data_dir.join("book-settings.json"),
         )),
-        users_file: data_dir.join("users.json"),
-        sessions_file: data_dir.join("sessions.json"),
         activity_file: data_dir.join("activity.json"),
         metadata_overrides_file: data_dir.join("metadata-overrides.json"),
         libation_requests_file: data_dir.join("libation-requests.json"),
@@ -1477,8 +1475,14 @@ exit 0
             super::MetadataOverrideStore::default(),
         )),
         jobs: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
-        users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
-        sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
+        users: super::Arc::new(super::UserStore::new(
+            data_dir.join("users.json"),
+            super::UsersStore::default(),
+        )),
+        sessions: super::Arc::new(super::SessionStore::new(
+            data_dir.join("sessions.json"),
+            std::collections::HashMap::new(),
+        )),
         activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
         libation_requests: super::Arc::new(super::RwLock::new(
             super::LibationRequestStore::default(),
@@ -1651,14 +1655,18 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
 async fn only_owners_can_manage_admin_roles_and_permissions() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
-    {
-        let mut users = state.users.write().await;
-        users.users = vec![
-            stored_user("owner", true, true),
-            stored_user("admin", true, false),
-            stored_user("reader", false, false),
-        ];
-    }
+    state
+        .users
+        .mutate(|users| {
+            users.users = vec![
+                stored_user("owner", true, true),
+                stored_user("admin", true, false),
+                stored_user("reader", false, false),
+            ];
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let promoted = super::update_user_role(
         super::State(state.clone()),
@@ -2758,4 +2766,41 @@ fn a_future_skewed_clock_does_not_lock_out_a_healthy_device() {
         decided_position(Some(&previous), &decision_update(250.0)),
         Some(250.0)
     );
+}
+
+/// A handler that rejects a request after editing the account list used to
+/// leave the in-memory copy changed and the file untouched, and the two
+/// disagreed until the next restart. `mutate` works on a draft and adopts it
+/// only once the change succeeds and the write lands.
+#[tokio::test]
+async fn a_rejected_account_change_touches_neither_the_cache_nor_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("users.json");
+    let store = super::UserStore::new(file.clone(), super::UsersStore::default());
+
+    store
+        .mutate(|users| {
+            users.users = vec![stored_user("owner", true, true)];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let rejected = store
+        .mutate(|users| {
+            // Edit first, then refuse -- the order that used to leave a mess.
+            users.users.push(stored_user("intruder", true, true));
+            Err::<(), _>(super::ApiError::conflict("nope"))
+        })
+        .await;
+    assert!(rejected.is_err());
+
+    assert_eq!(
+        store.read().await.users.len(),
+        1,
+        "a rejected change was left in the cache"
+    );
+    let on_disk: super::UsersStore =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(on_disk.users.len(), 1, "a rejected change reached the file");
 }

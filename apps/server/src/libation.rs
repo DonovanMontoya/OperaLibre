@@ -1772,23 +1772,27 @@ pub(crate) async fn grant_user_book_access(
     user_id: &str,
     book_id: &str,
 ) -> Result<(), ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    let Some(allowed_book_ids) = user.allowed_book_ids.as_mut() else {
-        return Ok(());
-    };
-    if allowed_book_ids
-        .iter()
-        .any(|candidate| candidate == book_id)
-    {
-        return Ok(());
-    }
-    allowed_book_ids.push(book_id.to_string());
-    write_users_store(&state.users_file, &users).await
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            let Some(allowed_book_ids) = user.allowed_book_ids.as_mut() else {
+                return Ok(());
+            };
+            if allowed_book_ids
+                .iter()
+                .any(|candidate| candidate == book_id)
+            {
+                return Ok(());
+            }
+            allowed_book_ids.push(book_id.to_string());
+            Ok(())
+        })
+        .await
 }
 
 pub(crate) async fn liberate_all_libation_books(
@@ -2838,25 +2842,28 @@ pub(crate) async fn update_libation_access(
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationAccessRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    if user.is_owner {
-        return Err(ApiError::bad_request(
-            "Owners always have direct Libation access.",
-        ));
-    }
-    if user.is_admin && !auth.is_owner {
-        return Err(ApiError::forbidden(
-            "Only an owner can change an administrator's Libation access.",
-        ));
-    }
-    user.libation_access = payload.libation_access;
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if user.is_owner {
+                return Err(ApiError::bad_request(
+                    "Owners always have direct Libation access.",
+                ));
+            }
+            if user.is_admin && !auth.is_owner {
+                return Err(ApiError::forbidden(
+                    "Only an owner can change an administrator's Libation access.",
+                ));
+            }
+            user.libation_access = payload.libation_access;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
 
@@ -2866,24 +2873,27 @@ pub(crate) async fn update_libation_approval(
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationApprovalRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    if !user.is_admin && !user.is_owner {
-        return Err(ApiError::bad_request(
-            "Only administrators can approve Libation requests.",
-        ));
-    }
-    if user.is_owner && !payload.can_approve_libation_requests {
-        return Err(ApiError::bad_request(
-            "Owners always have permission to approve Libation requests.",
-        ));
-    }
-    user.can_approve_libation_requests = payload.can_approve_libation_requests;
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if !user.is_admin && !user.is_owner {
+                return Err(ApiError::bad_request(
+                    "Only administrators can approve Libation requests.",
+                ));
+            }
+            if user.is_owner && !payload.can_approve_libation_requests {
+                return Err(ApiError::bad_request(
+                    "Owners always have permission to approve Libation requests.",
+                ));
+            }
+            user.can_approve_libation_requests = payload.can_approve_libation_requests;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
