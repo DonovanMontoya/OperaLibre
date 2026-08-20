@@ -14185,9 +14185,10 @@ exit 0
             .map(str::to_string)
             .collect::<Vec<_>>();
         assert_eq!(lines.len(), asins.len() * 2 + 2);
-        for pair in lines.chunks_exact(2) {
-            assert!(pair[0].starts_with("start "));
-            assert_eq!(pair[1], pair[0].replacen("start ", "end ", 1));
+        for index in (0..lines.len().saturating_sub(1)).step_by(2) {
+            let (start, end) = (&lines[index], &lines[index + 1]);
+            assert!(start.starts_with("start "));
+            assert_eq!(*end, start.replacen("start ", "end ", 1));
         }
         assert_eq!(lines[lines.len() - 2], "start export");
 
