@@ -35,19 +35,31 @@ use tokio::io::AsyncWriteExt;
 /// up after dinner", which should read as two sessions.
 pub const SESSION_GAP_SECONDS: u64 = 10 * 60;
 
-/// How often an open session is written through to disk. A crash loses at most
-/// this much of the session in progress; every earlier session is already
-/// durable. Sixty seconds keeps a long book to about one line a minute before
-/// compaction, which then collapses them to one.
+/// How soon an open session is first written through to disk.
+///
+/// Every flush appends a superseded revision, so a fixed interval makes write
+/// volume grow with the length of the sitting: an hourly flush cadence over a
+/// three-hour book is a hundred and eighty rows to store and then compact away.
+/// The interval instead backs off from here to [`SESSION_FLUSH_MAX_SECONDS`],
+/// which turns that same sitting into a handful of rows.
 pub const SESSION_FLUSH_SECONDS: u64 = 60;
+
+/// The ceiling the flush interval backs off to.
+///
+/// This bounds what a hard crash costs: the detail of the sitting in progress,
+/// back to its last revision. It never costs the reader their place — playback
+/// progress is written on its own two-second cadence and is untouched by this —
+/// so trading a quarter hour of session detail for a twentyfold cut in write
+/// volume is the right way round.
+pub const SESSION_FLUSH_MAX_SECONDS: u64 = 15 * 60;
 
 /// Sessions shorter than this are not worth a row. A listener who opens a book,
 /// hears three seconds, and closes it has not had a reading session.
 pub const MIN_SESSION_SECONDS: f64 = 5.0;
 
-/// Compaction rewrites the log without superseded revisions. It runs at startup
-/// and whenever the line count passes this, so the file tracks the number of
-/// real sessions rather than the number of flushes.
+/// Below this many lines, a compaction pass is not worth the rewrite. Above it,
+/// maintenance collapses revisions so the file tracks the number of real
+/// sessions rather than the number of flushes.
 pub const COMPACTION_LINE_THRESHOLD: usize = 4_096;
 
 /// One continuous stretch of listening by one reader in one book.
@@ -178,6 +190,10 @@ struct OpenSession {
     /// When this session was last written through to disk, so the debounce can
     /// tell an unsaved change from a saved one.
     flushed_at_ms: u64,
+    /// How long to wait before the next write-through. Doubles after each one,
+    /// so a long sitting costs a logarithmic number of revisions instead of a
+    /// linear one.
+    flush_interval_ms: u64,
     dirty: bool,
 }
 
@@ -250,10 +266,14 @@ impl OpenSessions {
                     open.session.client = checkpoint.client;
                 }
                 open.dirty = true;
-                let due = checkpoint.at_ms.saturating_sub(open.flushed_at_ms)
-                    >= SESSION_FLUSH_SECONDS.saturating_mul(1_000);
+                let due =
+                    checkpoint.at_ms.saturating_sub(open.flushed_at_ms) >= open.flush_interval_ms;
                 if due && open.session.is_substantive() {
                     open.flushed_at_ms = checkpoint.at_ms;
+                    open.flush_interval_ms = open
+                        .flush_interval_ms
+                        .saturating_mul(2)
+                        .min(SESSION_FLUSH_MAX_SECONDS.saturating_mul(1_000));
                     rows.push(open.session.clone());
                 }
             }
@@ -282,6 +302,7 @@ impl OpenSessions {
                     OpenSession {
                         session,
                         flushed_at_ms: checkpoint.at_ms,
+                        flush_interval_ms: SESSION_FLUSH_SECONDS.saturating_mul(1_000),
                         dirty: true,
                     },
                 );
@@ -452,6 +473,156 @@ fn dedupe_completions(rows: Vec<CompletionEvent>) -> Vec<CompletionEvent> {
         .collect()
 }
 
+/// How much history to keep, and how much disk to let it cost.
+///
+/// Sessions age out; completions do not. That asymmetry is deliberate. The
+/// daily activity totals are a separate, permanent, and very cheap archive —
+/// about thirty bytes per reader per day — and every lifetime headline number
+/// is computed from those, not from this log. So dropping old session rows
+/// costs the *texture* of an old year (its hour-of-day pattern, its session
+/// lengths, its per-book time) and none of its totals. A completion, by
+/// contrast, is the only record that a book was ever read at all, and is small
+/// enough that keeping it forever is free.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    /// Drop sessions older than this many days. `None` keeps them for ever.
+    pub session_days: Option<u32>,
+    /// Hard ceiling on session rows, oldest dropped first. A backstop for a
+    /// server whose clock or timezone data makes the age check useless.
+    pub session_max_rows: usize,
+    /// Hard ceiling on completion rows, oldest dropped first. Set high enough
+    /// that reaching it means something has gone wrong rather than that
+    /// somebody reads a lot.
+    pub completion_max_rows: usize,
+}
+
+/// Roughly three years of full-fidelity sessions, and ceilings that work out to
+/// about seventy megabytes of sessions and twenty-five of completions — a bound
+/// a reader would have to spend decades approaching.
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            session_days: Some(1_095),
+            session_max_rows: 200_000,
+            completion_max_rows: 50_000,
+        }
+    }
+}
+
+/// What one maintenance pass did, for the log and for the storage report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceReport {
+    /// Superseded revisions of still-current sessions, collapsed away.
+    pub sessions_compacted: usize,
+    /// Sessions dropped for being older than the retention window.
+    pub sessions_expired: usize,
+    /// Sessions dropped to stay under the row ceiling.
+    pub sessions_trimmed: usize,
+    pub completions_trimmed: usize,
+    /// Whether anything was actually rewritten. A pass that changes nothing
+    /// touches no files.
+    pub rewrote_sessions: bool,
+    pub rewrote_completions: bool,
+}
+
+impl MaintenanceReport {
+    pub fn did_work(&self) -> bool {
+        self.rewrote_sessions || self.rewrote_completions
+    }
+}
+
+/// Compacts and prunes both logs in one pass.
+///
+/// `today_days` is the reader-independent day count the age check measures
+/// against; sessions carry the calendar day they started on, so this compares
+/// like with like without needing anybody's timezone.
+///
+/// Nothing is rewritten unless something actually changed, so running this on a
+/// timer against a settled log costs one read and no writes.
+pub async fn maintain(
+    sessions_path: &FsPath,
+    completions_path: &FsPath,
+    policy: RetentionPolicy,
+    today_days: i64,
+    day_number: impl Fn(&str) -> Option<i64>,
+) -> io::Result<MaintenanceReport> {
+    let mut report = MaintenanceReport::default();
+
+    let raw: Vec<ReadingSession> = read_lines(sessions_path).await?;
+    let raw_len = raw.len();
+    let mut sessions = compact_sessions(raw);
+    report.sessions_compacted = raw_len - sessions.len();
+
+    if let Some(days) = policy.session_days {
+        let cutoff = today_days - i64::from(days);
+        let before = sessions.len();
+        sessions.retain(|session| {
+            // A row whose day cannot be parsed is kept rather than destroyed:
+            // an unreadable date is a reason to leave history alone.
+            day_number(&session.started_on).is_none_or(|day| day >= cutoff)
+        });
+        report.sessions_expired = before - sessions.len();
+    }
+
+    if sessions.len() > policy.session_max_rows {
+        // Rows are in first-appearance order, which is chronological, so the
+        // excess to drop is at the front.
+        report.sessions_trimmed = sessions.len() - policy.session_max_rows;
+        sessions.drain(0..report.sessions_trimmed);
+    }
+
+    if report.sessions_compacted > 0 || report.sessions_expired > 0 || report.sessions_trimmed > 0 {
+        // Collapsing a handful of revisions is not worth rewriting a large
+        // file; expiring or trimming always is, because that is disk coming
+        // back.
+        let worth_it = report.sessions_expired > 0
+            || report.sessions_trimmed > 0
+            || raw_len >= COMPACTION_LINE_THRESHOLD;
+        if worth_it {
+            rewrite(sessions_path, &sessions).await?;
+            report.rewrote_sessions = true;
+        } else {
+            report.sessions_compacted = 0;
+        }
+    }
+
+    let raw: Vec<CompletionEvent> = read_lines(completions_path).await?;
+    let raw_len = raw.len();
+    let mut completions = dedupe_completions(raw);
+    let deduped = raw_len - completions.len();
+    if completions.len() > policy.completion_max_rows {
+        report.completions_trimmed = completions.len() - policy.completion_max_rows;
+        completions.drain(0..report.completions_trimmed);
+    }
+    if report.completions_trimmed > 0 || deduped > 0 {
+        rewrite(completions_path, &completions).await?;
+        report.rewrote_completions = true;
+    }
+
+    Ok(report)
+}
+
+/// Bytes and rows one log currently occupies, for the storage report.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogFootprint {
+    pub bytes: u64,
+    pub rows: usize,
+}
+
+pub async fn footprint(path: &FsPath) -> LogFootprint {
+    let bytes = fs::metadata(path).await.map(|meta| meta.len()).unwrap_or(0);
+    let rows = match fs::read_to_string(path).await {
+        Ok(contents) => contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+        Err(_) => 0,
+    };
+    LogFootprint { bytes, rows }
+}
+
 /// Removes one reader from both logs, for account deletion.
 ///
 /// Rewrites rather than appends a tombstone: a deleted account's history has to
@@ -494,20 +665,6 @@ async fn rewrite<T: Serialize>(path: &FsPath, rows: &[T]) -> io::Result<()> {
     let temporary = path.with_extension("jsonl.tmp");
     fs::write(&temporary, buffer.as_bytes()).await?;
     fs::rename(&temporary, path).await
-}
-
-/// Rewrites the session log without superseded revisions, when it has grown
-/// enough to be worth the pass.
-///
-/// Writes a sibling temporary file and renames it into place, so an interrupted
-/// compaction leaves the original log untouched rather than a half-written one.
-pub async fn compact_session_log(path: &FsPath) -> io::Result<bool> {
-    let raw: Vec<ReadingSession> = read_lines(path).await?;
-    if raw.len() < COMPACTION_LINE_THRESHOLD {
-        return Ok(false);
-    }
-    rewrite(path, &compact_sessions(raw)).await?;
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -597,6 +754,385 @@ mod tests {
         let mut next_id = ids();
         open.record(checkpoint(1_000_000, 2.0, 2.0), &mut next_id);
         assert!(open.drain().is_empty());
+    }
+
+    fn ymd_days(ymd: &str) -> Option<i64> {
+        let mut parts = ymd.split('-');
+        let y: i64 = parts.next()?.parse().ok()?;
+        let m: i64 = parts.next()?.parse().ok()?;
+        let d: i64 = parts.next()?.parse().ok()?;
+        let y_adj = if m <= 2 { y - 1 } else { y };
+        let era = y_adj.div_euclid(400);
+        let yoe = y_adj.rem_euclid(400);
+        let m_adj = if m > 2 { m - 3 } else { m + 9 };
+        let doy = (153 * m_adj + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        Some(era * 146_097 + doe - 719_468)
+    }
+
+    fn dated_session(id: &str, started_on: &str) -> ReadingSession {
+        ReadingSession {
+            id: id.to_string(),
+            user_id: "reader".to_string(),
+            book_id: "book".to_string(),
+            work_id: None,
+            started_at_ms: 1_000,
+            ended_at_ms: 2_000,
+            listened_seconds: 600.0,
+            start_position_seconds: 0.0,
+            end_position_seconds: 600.0,
+            speed: None,
+            client: None,
+            tz_offset_minutes: 0,
+            started_on: started_on.to_string(),
+        }
+    }
+
+    async fn write_log<T: Serialize>(path: &FsPath, rows: &[T]) {
+        append_lines(path, rows).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_long_sitting_costs_a_handful_of_revisions_not_hundreds() {
+        let mut open = OpenSessions::default();
+        let mut next_id = ids();
+        let start = 1_000_000u64;
+        let mut flushes = 0;
+        // Three hours of listening, checkpointed every two seconds as a real
+        // client does.
+        for step in 1..=5_400u64 {
+            let at = start + step * 2_000;
+            if let SessionOutcome::Append(rows) =
+                open.record(checkpoint(at, 2.0, 2.0 * step as f64), &mut next_id)
+            {
+                flushes += rows.len();
+            }
+        }
+        // A fixed sixty-second cadence would have written 180 revisions here.
+        // The backoff settles at one every fifteen minutes, so three hours
+        // costs about fifteen rows — roughly five kilobytes before compaction.
+        assert!(
+            flushes <= 20,
+            "a three-hour sitting should back off to a few revisions, got {flushes}"
+        );
+        assert!(
+            flushes >= 5,
+            "revisions must still be written, got {flushes}"
+        );
+        // And the whole sitting is still one session.
+        assert_eq!(open.drain().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn maintenance_collapses_revisions_into_one_row_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+
+        // One session written through many times, as the debounce does.
+        let mut rows = Vec::new();
+        for revision in 0..COMPACTION_LINE_THRESHOLD + 10 {
+            let mut row = dated_session("only", "2026-08-19");
+            row.ended_at_ms = 2_000 + revision as u64;
+            row.listened_seconds = revision as f64;
+            rows.push(row);
+        }
+        write_log(&sessions_path, &rows).await;
+
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-20").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert!(report.rewrote_sessions);
+        assert_eq!(report.sessions_compacted, COMPACTION_LINE_THRESHOLD + 9);
+
+        let kept = read_sessions(&sessions_path).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].listened_seconds,
+            (COMPACTION_LINE_THRESHOLD + 9) as f64,
+            "the newest revision must be the one that survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_age_out_and_completions_never_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+
+        write_log(
+            &sessions_path,
+            &[
+                dated_session("ancient", "2019-01-01"),
+                dated_session("recent", "2026-08-01"),
+            ],
+        )
+        .await;
+        write_log(
+            &completions_path,
+            &[CompletionEvent {
+                id: "c1".to_string(),
+                user_id: "reader".to_string(),
+                book_id: "book".to_string(),
+                work_id: None,
+                finished_at_ms: 1_000,
+                source: CompletionSource::Reached,
+                tz_offset_minutes: 0,
+                finished_on: "2019-01-02".to_string(),
+                snapshot: EditionSnapshot {
+                    title: "The Odyssey".to_string(),
+                    ..Default::default()
+                },
+            }],
+        )
+        .await;
+
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.sessions_expired, 1);
+        assert!(!report.rewrote_completions);
+
+        let kept = read_sessions(&sessions_path).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "recent");
+
+        let completions = read_completions(&completions_path).await.unwrap();
+        assert_eq!(
+            completions.len(),
+            1,
+            "a completion from 2019 is still the only record that the book was read"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeping_for_ever_expires_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+        write_log(&sessions_path, &[dated_session("ancient", "1999-01-01")]).await;
+
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy {
+                session_days: None,
+                ..RetentionPolicy::default()
+            },
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.sessions_expired, 0);
+        assert_eq!(read_sessions(&sessions_path).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_row_with_an_unreadable_date_is_kept_rather_than_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+        write_log(
+            &sessions_path,
+            &[
+                dated_session("broken", "not-a-date"),
+                dated_session("ancient", "2019-01-01"),
+            ],
+        )
+        .await;
+
+        maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+
+        let kept = read_sessions(&sessions_path).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "broken");
+    }
+
+    #[tokio::test]
+    async fn the_row_ceiling_drops_the_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+        let rows = (0..50)
+            .map(|index| dated_session(&format!("s{index}"), "2026-08-19"))
+            .collect::<Vec<_>>();
+        write_log(&sessions_path, &rows).await;
+
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy {
+                session_days: None,
+                session_max_rows: 10,
+                completion_max_rows: 10,
+            },
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.sessions_trimmed, 40);
+
+        let kept = read_sessions(&sessions_path).await.unwrap();
+        assert_eq!(kept.len(), 10);
+        assert_eq!(kept[0].id, "s40", "the newest rows are the ones kept");
+        assert_eq!(kept[9].id, "s49");
+    }
+
+    #[tokio::test]
+    async fn a_settled_log_is_never_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+        write_log(&sessions_path, &[dated_session("recent", "2026-08-01")]).await;
+
+        let before = fs::metadata(&sessions_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert!(!report.did_work());
+        let after = fs::metadata(&sessions_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "a pass that changes nothing must touch nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_on_missing_logs_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = maintain(
+            &dir.path().join("nothing.jsonl"),
+            &dir.path().join("also-nothing.jsonl"),
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert!(!report.did_work());
+        assert!(!dir.path().join("nothing.jsonl").exists());
+    }
+
+    /// A year of daily reading, end to end, measured rather than estimated.
+    ///
+    /// This is the guard on the whole design: if a change makes sessions cost
+    /// meaningfully more per year, this is where it shows up.
+    #[tokio::test]
+    async fn a_year_of_daily_reading_stays_small_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+
+        let mut open = OpenSessions::default();
+        let mut counter = 0u64;
+        let mut next_id = || {
+            counter += 1;
+            format!("session-{counter}")
+        };
+        let day_ms = 86_400_000u64;
+        let mut pending = Vec::new();
+
+        // Three one-hour sittings a day for a year, checkpointed a minute apart.
+        for day in 0..365u64 {
+            for sitting in 0..3u64 {
+                let base = day * day_ms + sitting * 4 * 3_600_000 + 1_000_000_000;
+                for minute in 1..=60u64 {
+                    let at = base + minute * 60_000;
+                    if let SessionOutcome::Append(rows) = open.record(
+                        Checkpoint {
+                            user_id: "reader".to_string(),
+                            book_id: format!("book-{}", day / 14),
+                            work_id: Some(format!("work-{}", day / 14)),
+                            at_ms: at,
+                            listened_seconds: 60.0,
+                            position_seconds: minute as f64 * 60.0,
+                            speed: Some(1.0),
+                            client: Some("web".to_string()),
+                            tz_offset_minutes: 0,
+                            today: "2026-08-19".to_string(),
+                        },
+                        &mut next_id,
+                    ) {
+                        pending.extend(rows);
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                append_sessions(&sessions_path, &pending).await.unwrap();
+                pending.clear();
+            }
+        }
+        let remaining = open.drain();
+        append_sessions(&sessions_path, &remaining).await.unwrap();
+
+        let before = fs::metadata(&sessions_path).await.unwrap().len();
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+        assert!(report.rewrote_sessions);
+        let after = fs::metadata(&sessions_path).await.unwrap().len();
+        let sessions = read_sessions(&sessions_path).await.unwrap();
+
+        assert_eq!(
+            sessions.len(),
+            365 * 3,
+            "one row per sitting once compacted"
+        );
+        // Roughly a third of a megabyte a year for a reader who reads three
+        // hours every single day. Generous headroom over the measured figure so
+        // this fails on a regression, not on a rounding change.
+        assert!(
+            after < 600_000,
+            "a year of daily reading should compact to well under a megabyte, got {after} bytes \
+             (was {before} before compaction)"
+        );
+        eprintln!(
+            "a year of three-hours-a-day reading: {before} bytes raw, {after} bytes compacted, \
+             {} sessions",
+            sessions.len()
+        );
     }
 
     #[test]

@@ -380,6 +380,48 @@ impl WorkStore {
             .find(|work| work.book_ids.iter().any(|id| id == book_id))
     }
 
+    /// Drops works that no longer mean anything: no edition on the server, no
+    /// listening session, and no completion.
+    ///
+    /// A work exists to hold a history together across editions, so a work that
+    /// holds a history is never touched however long its books have been gone —
+    /// that is precisely the case the index was built for. What this removes is
+    /// the residue of churn: a book scanned in, resolved to a work, and deleted
+    /// before anybody played it.
+    ///
+    /// Returns how many were removed.
+    pub fn prune_unused(
+        &mut self,
+        present_book_ids: &HashSet<String>,
+        book_ids_with_history: &HashSet<String>,
+        work_ids_with_history: &HashSet<String>,
+    ) -> usize {
+        let before = self.works.len();
+        self.works.retain(|work| {
+            if work_ids_with_history.contains(&work.id) {
+                return true;
+            }
+            // A manual decision is a person's work and is never discarded.
+            if !work.manual_book_ids.is_empty() || !work.excluded_book_ids.is_empty() {
+                return true;
+            }
+            work.book_ids.iter().any(|book_id| {
+                present_book_ids.contains(book_id) || book_ids_with_history.contains(book_id)
+            })
+        });
+        let removed = before - self.works.len();
+        if removed > 0 {
+            let surviving = self
+                .works
+                .iter()
+                .map(|work| work.id.clone())
+                .collect::<HashSet<_>>();
+            self.suggestions
+                .retain(|suggestion| surviving.contains(&suggestion.work_id));
+        }
+        removed
+    }
+
     /// Drops suggestions naming books that are no longer in the library, so the
     /// admin queue reflects what is actually on disk.
     pub fn prune_suggestions(&mut self, present_book_ids: &HashSet<String>) {
@@ -574,6 +616,91 @@ mod tests {
         assert!(
             store.suggestions.is_empty(),
             "a rejected pairing must not come back"
+        );
+    }
+
+    #[test]
+    fn pruning_drops_churn_and_keeps_anything_with_a_history() {
+        let mut store = WorkStore::default();
+        let mut next_id = ids();
+        let (read, _) = store.resolve(
+            &edition("read-book", "The Odyssey", "Homer", Some(46_920.0)),
+            0,
+            &mut next_id,
+        );
+        let (deleted_but_finished, _) = store.resolve(
+            &edition("gone-book", "Moby Dick", "Melville", Some(90_000.0)),
+            0,
+            &mut next_id,
+        );
+        let (never_touched, _) = store.resolve(
+            &edition("churn-book", "Some Import", "Nobody", Some(1_000.0)),
+            0,
+            &mut next_id,
+        );
+
+        // Only the first book is still on the server. The second is gone but was
+        // finished. The third was scanned in and deleted before anybody played it.
+        let present = HashSet::from(["read-book".to_string()]);
+        let books_with_history = HashSet::from(["read-book".to_string()]);
+        let works_with_history = HashSet::from([deleted_but_finished.clone()]);
+
+        let removed = store.prune_unused(&present, &books_with_history, &works_with_history);
+        assert_eq!(removed, 1);
+        assert!(store.works.iter().any(|work| work.id == read));
+        assert!(
+            store
+                .works
+                .iter()
+                .any(|work| work.id == deleted_but_finished),
+            "a work holding a completion must survive its book being deleted"
+        );
+        assert!(!store.works.iter().any(|work| work.id == never_touched));
+    }
+
+    #[test]
+    fn pruning_never_discards_an_administrators_decision() {
+        let mut store = WorkStore::default();
+        let mut next_id = ids();
+        let (full, _) = store.resolve(
+            &edition("book-1", "The Odyssey", "Homer", Some(46_920.0)),
+            0,
+            &mut next_id,
+        );
+        store.resolve(
+            &edition("book-2", "The Odyssey", "Homer", Some(21_600.0)),
+            0,
+            &mut next_id,
+        );
+        store.link_manually("book-2", &full);
+
+        // Neither book is on the server any more and nothing was ever played.
+        let removed = store.prune_unused(&HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert_eq!(removed, 1, "only the work holding no decision is dropped");
+        assert!(store.works.iter().any(|work| work.id == full));
+    }
+
+    #[test]
+    fn pruning_clears_suggestions_pointing_at_removed_works() {
+        let mut store = WorkStore::default();
+        let mut next_id = ids();
+        store.resolve(
+            &edition("book-1", "The Odyssey", "Homer", Some(46_920.0)),
+            0,
+            &mut next_id,
+        );
+        store.resolve(
+            &edition("book-2", "The Odyssey", "Homer", Some(21_600.0)),
+            0,
+            &mut next_id,
+        );
+        assert_eq!(store.suggestions.len(), 1);
+
+        store.prune_unused(&HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert!(store.works.is_empty());
+        assert!(
+            store.suggestions.is_empty(),
+            "a suggestion cannot outlive the work it names"
         );
     }
 
