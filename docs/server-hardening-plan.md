@@ -294,6 +294,32 @@ first-party clients.
 
 ---
 
+---
+
+## Open concerns register
+
+Anything noticed while doing the work that is not resolved by the commit that
+found it. Fixed rows stay here with their commit: the record of what worried us
+is part of the review history, and a reviewer arriving at one of these PRs
+should not have to rediscover it.
+
+Each row is mirrored into the body of the PR it belongs to.
+
+| Id | Concern | Status | Raised in |
+|---|---|---|---|
+| C1 | The crate root is a de facto prelude. Every module pulls the shared dependency imports in with `use crate::*`, which hides which module needs which dependency and stops clippy reporting an unused import through the glob. | Open | Phase 1 |
+| C2 | `pub(crate)` is wider than necessary. Every moved item and struct field was made crate-visible so the split would compile; much can be private again now that module boundaries exist. | Open | Phase 1 |
+| C3 | Permission payloads accepted unknown fields, so a misspelled `allowedBookIds` cleared every restriction on a user and still returned 200. | Fixed — `30c59c1` | Phase 2 |
+| C4 | `ProgressStore::list_for_user` keyed results by the stored `book_id` field while the code it replaced looked up by the composite storage key. The two resolve differently for any row whose copies disagree. | Fixed — `bb58f7f` | Phase 3 |
+| C5 | `UserStore`, `SessionStore`, `ActivityStore`, `MetadataOverrideStore`, and the Libation stores still read and rewrite whole files from their handlers. Phase 3 is not complete until they move behind the seam. | Open | Phase 3 |
+| C6 | The converted call sites in `activity.rs`, `faststart_jobs.rs`, and `auth.rs` were not differential-tested the way the progress rules were. They are simpler transpositions, but that is a judgement rather than a proof. | Open | Phase 3 |
+| C7 | `ProgressStore::set` is `#[cfg(test)]` because only tests need it today. The SQLite migration wants the same primitive and should drop the gate rather than duplicating it. | Open | Phase 3 |
+| C8 | `OwnerUser` carries no payload because no owner-only handler needs the acting user. A handler that does need it must add the `AuthUser` field back rather than reaching for `AuthUser` separately. | Open | Phase 2 |
+| C9 | `http_tests.rs` lives in the crate rather than `tests/` because the server is a binary-only target. It should move unchanged once there is a library target. | Open | Phase 0 |
+| C10 | `sync_parent_directory` is a no-op on Windows. The rename is still atomic there, but the durability guarantee is weaker than on Unix and nothing warns about it. | Open | Phase 0 |
+| C11 | `resolve_media_session` scans every session and hashes each one on the hottest route in the server, and compares with a non-constant-time `==` even though `constant_time_eq` already exists in the crate. | Open | Review |
+| C12 | Media tokens ride in query strings by design. The server drops them from its own tracing spans, but `operalibre-nginx.conf` will log them by default. | Open | Review |
+
 ## Sequencing summary
 
 | Phase | Theme | Risk | Unblocks |
