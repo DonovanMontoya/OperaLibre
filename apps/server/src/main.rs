@@ -107,6 +107,12 @@ const MAX_LIBATION_RESPONSE_URL_CHARS: usize = 16_384;
 // which matters more as playback speed increases.
 const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
+/// Bounds on the configurable log ceilings, enforced at startup. A value
+/// outside them is refused rather than adjusted: the floor keeps a typo from
+/// reducing the history to nothing, and the ceiling keeps one from committing
+/// the server to gigabytes.
+const MIN_READING_LOG_ROWS: usize = 1_000;
+const MAX_READING_LOG_ROWS: usize = 5_000_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -127,6 +133,8 @@ struct AppState {
     reading_log_file: PathBuf,
     completions_file: PathBuf,
     works_file: PathBuf,
+    /// How much reading history to keep, and how much disk to let it cost.
+    retention_policy: reading_log::RetentionPolicy,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_refreshes_file: PathBuf,
@@ -1053,6 +1061,7 @@ struct ServerConfig {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    retention_policy: reading_log::RetentionPolicy,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
@@ -1195,6 +1204,7 @@ impl ServerConfig {
         let activity_file = config_path_value(&values, &config_dir, "activity_file")
             .or_else(|| env_path_value("OPERALIBRE_ACTIVITY_FILE"))
             .unwrap_or_else(|| data_dir.join("activity.json"));
+        let retention_policy = resolve_retention_policy(&values)?;
         let metadata_overrides_file =
             config_path_value(&values, &config_dir, "metadata_overrides_file")
                 .or_else(|| env_path_value("OPERALIBRE_METADATA_OVERRIDES_FILE"))
@@ -1253,6 +1263,7 @@ impl ServerConfig {
             users_file,
             sessions_file,
             activity_file,
+            retention_policy,
             metadata_overrides_file,
             libation_requests_file,
             libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
@@ -1275,6 +1286,39 @@ impl ServerConfig {
                 .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
     }
+}
+
+/// Builds the reading-history retention policy from configured values.
+///
+/// Zero days means "keep for ever" rather than "keep nothing". Retention is the
+/// one setting where a misread value must fail safe towards keeping history: a
+/// server that keeps too much wastes disk, and one that keeps too little has
+/// destroyed something nobody can get back.
+fn resolve_retention_policy(
+    values: &HashMap<String, String>,
+) -> anyhow::Result<reading_log::RetentionPolicy> {
+    let defaults = reading_log::RetentionPolicy::default();
+    Ok(reading_log::RetentionPolicy {
+        session_days: match config_u64_value(values, "reading_log_retention_days")? {
+            Some(0) => None,
+            Some(days) => Some(u32::try_from(days).unwrap_or(u32::MAX)),
+            None => defaults.session_days,
+        },
+        session_max_rows: config_bounded_usize(
+            values,
+            "reading_log_max_rows",
+            defaults.session_max_rows,
+            MIN_READING_LOG_ROWS,
+            MAX_READING_LOG_ROWS,
+        )?,
+        completion_max_rows: config_bounded_usize(
+            values,
+            "completion_log_max_rows",
+            defaults.completion_max_rows,
+            MIN_READING_LOG_ROWS,
+            MAX_READING_LOG_ROWS,
+        )?,
+    })
 }
 
 fn read_server_config_file(
@@ -1308,6 +1352,9 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "progress_file",
         "users_file",
         "activity_file",
+        "reading_log_retention_days",
+        "reading_log_max_rows",
+        "completion_log_max_rows",
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
@@ -1521,13 +1568,6 @@ async fn main() -> anyhow::Result<()> {
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
     let work_store = works::load_works(&config.data_dir.join("works.json")).await?;
-    // Superseded session revisions accumulate while the server runs. Startup is
-    // the natural moment to collapse them, with nothing else touching the file.
-    if let Err(error) =
-        reading_log::compact_session_log(&config.data_dir.join("reading-log.jsonl")).await
-    {
-        tracing::warn!("could not compact the reading log: {error}");
-    }
     let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
     let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
     let libation_refreshes =
@@ -1582,6 +1622,7 @@ async fn main() -> anyhow::Result<()> {
         reading_log_file: config.data_dir.join("reading-log.jsonl"),
         completions_file: config.data_dir.join("completions.jsonl"),
         works_file: config.data_dir.join("works.json"),
+        retention_policy: config.retention_policy,
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
         libation_refreshes_file: config.data_dir.join("libation-refreshes.json"),
@@ -1626,6 +1667,11 @@ async fn main() -> anyhow::Result<()> {
     rescan_library(&state).await?;
     schedule_reading_session_sweeper(state.clone());
     schedule_reading_session_shutdown_flush(state.clone());
+    // Startup is the natural moment for the first pass: nothing else is
+    // touching the logs, and a server that was killed mid-sitting has revisions
+    // waiting to be collapsed.
+    run_log_maintenance(&state).await;
+    schedule_log_maintenance(state.clone());
     schedule_automatic_libation_refresh(state.clone());
 
     let public_routes = Router::new()
@@ -1644,6 +1690,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/profile/sessions", get(reading_log_sessions))
         .route("/api/profile/completions", get(reading_log_completions))
         .route("/api/works", get(list_works))
+        .route("/api/storage", get(storage_report))
+        .route("/api/storage/maintenance", post(run_storage_maintenance))
         .route("/api/works/link", post(link_work_edition))
         .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
@@ -8939,6 +8987,116 @@ fn schedule_reading_session_shutdown_flush(state: AppState) {
     });
 }
 
+/// Runs the retention pass over both logs and the work index.
+///
+/// Everything here is bounded work over files the server already owns, and it
+/// writes only when something actually changed, so a settled server pays one
+/// read per pass and nothing else.
+async fn run_log_maintenance(state: &AppState) {
+    let today = ymd_to_days(&today_ymd(0)).unwrap_or(0);
+    // Maintenance reads each log and renames a rewritten copy over it. An
+    // append landing in between would be erased by that rename, so it takes the
+    // same lock every writer does.
+    let report = {
+        let _guard = state.reading_log_write_lock.lock().await;
+        match reading_log::maintain(
+            &state.reading_log_file,
+            &state.completions_file,
+            state.retention_policy,
+            today,
+            ymd_to_days,
+        )
+        .await
+        {
+            Ok(report) => report,
+            Err(error) => {
+                tracing::warn!("reading-log maintenance failed: {error}");
+                return;
+            }
+        }
+    };
+    if report.did_work() {
+        tracing::info!(
+            compacted = report.sessions_compacted,
+            expired = report.sessions_expired,
+            trimmed = report.sessions_trimmed,
+            completions_trimmed = report.completions_trimmed,
+            "tidied the reading logs"
+        );
+    }
+
+    prune_unused_works(state).await;
+}
+
+/// Removes work records that hold no history and name no book on the server.
+async fn prune_unused_works(state: &AppState) {
+    let present = state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .map(|book| book.id.clone())
+        .collect::<HashSet<_>>();
+
+    let mut books_with_history = HashSet::new();
+    let mut works_with_history = HashSet::new();
+    if let Ok(sessions) = reading_log::read_sessions(&state.reading_log_file).await {
+        for session in sessions {
+            books_with_history.insert(session.book_id);
+            if let Some(work_id) = session.work_id {
+                works_with_history.insert(work_id);
+            }
+        }
+    }
+    if let Ok(completions) = reading_log::read_completions(&state.completions_file).await {
+        for event in completions {
+            books_with_history.insert(event.book_id);
+            if let Some(work_id) = event.work_id {
+                works_with_history.insert(work_id);
+            }
+        }
+    }
+    // A book with saved progress has been opened, which is history enough to
+    // keep its work: the reader can still see where they are in it.
+    if let Ok(progress) = read_progress(&state.progress_file).await {
+        for stored in progress.values() {
+            books_with_history.insert(stored.book_id.clone());
+        }
+    }
+    // Sittings that have not been flushed yet are history too.
+    for session in state.open_sessions.lock().await.iter() {
+        books_with_history.insert(session.book_id.clone());
+    }
+
+    let mut store = state.works.write().await;
+    let removed = store.prune_unused(&present, &books_with_history, &works_with_history);
+    if removed > 0 {
+        tracing::info!(removed, "dropped work records that held no reading history");
+        if let Err(error) = write_json_atomic(&state.works_file, &*store).await {
+            tracing::warn!("failed to persist the pruned work index: {}", error.message);
+        }
+    }
+}
+
+/// Tidies the logs at startup and every few hours after.
+///
+/// The flush backoff already keeps revision volume low between passes, so this
+/// runs rarely by design — often enough that a long-running server never drifts,
+/// rarely enough that it is never the reason a disk is busy.
+fn schedule_log_maintenance(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+        // The first tick fires immediately; skip it, because startup has
+        // already run a pass.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            run_log_maintenance(&state).await;
+        }
+    });
+}
+
 /// Freezes what a book was, for a completion that has to outlive it.
 fn edition_snapshot(book: &Book) -> reading_log::EditionSnapshot {
     reading_log::EditionSnapshot {
@@ -10614,6 +10772,138 @@ async fn reject_work_suggestion(
         write_json_atomic(&state.works_file, &*store).await?;
     }
     list_works(State(state), Extension(auth)).await
+}
+
+/// What the reading history currently costs on disk, and what it is allowed to
+/// grow to. The point of the endpoint is that an operator should never have to
+/// guess whether the logs are the reason a disk is filling.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageReport {
+    files: Vec<StorageFile>,
+    total_bytes: u64,
+    retention: RetentionSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageFile {
+    name: String,
+    bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rows: Option<usize>,
+    description: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetentionSummary {
+    /// `null` means sessions are kept for ever.
+    session_days: Option<u32>,
+    session_max_rows: usize,
+    completion_max_rows: usize,
+    /// Roughly what the ceilings work out to, so the numbers above mean
+    /// something without the reader doing arithmetic.
+    session_cap_bytes: u64,
+    completion_cap_bytes: u64,
+}
+
+/// Average serialized row sizes, measured rather than guessed. Used only to
+/// turn a row ceiling into a number of bytes for the report.
+const APPROXIMATE_SESSION_ROW_BYTES: u64 = 332;
+const APPROXIMATE_COMPLETION_ROW_BYTES: u64 = 490;
+
+async fn file_bytes(path: &FsPath) -> u64 {
+    fs::metadata(path).await.map(|meta| meta.len()).unwrap_or(0)
+}
+
+async fn storage_report(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<StorageReport>, ApiError> {
+    require_admin(&auth)?;
+
+    let sessions = reading_log::footprint(&state.reading_log_file).await;
+    let completions = reading_log::footprint(&state.completions_file).await;
+    let mut files = vec![
+        StorageFile {
+            name: "reading-log.jsonl".to_string(),
+            bytes: sessions.bytes,
+            rows: Some(sessions.rows),
+            description: "Listening sessions. Compacted and aged out on a schedule.".to_string(),
+        },
+        StorageFile {
+            name: "completions.jsonl".to_string(),
+            bytes: completions.bytes,
+            rows: Some(completions.rows),
+            description:
+                "Books finished. Kept indefinitely; this is the record that outlives the audio."
+                    .to_string(),
+        },
+    ];
+    for (path, name, description) in [
+        (
+            &state.works_file,
+            "works.json",
+            "Links editions of the same book. Records holding no reading history are pruned.",
+        ),
+        (
+            &state.progress_file,
+            "progress.json",
+            "Current playback position per reader and book. One row each, never grows with time.",
+        ),
+        (
+            &state.activity_file,
+            "activity.json",
+            "Daily listening totals. About thirty bytes per reader per day, kept for ever.",
+        ),
+        (
+            &state.library_identities_file,
+            "library-identities.json",
+            "Book and track identity, so progress survives files moving or being replaced.",
+        ),
+    ] {
+        files.push(StorageFile {
+            name: name.to_string(),
+            bytes: file_bytes(path).await,
+            rows: None,
+            description: description.to_string(),
+        });
+    }
+    let backups = state.progress_file.with_extension("backups.json");
+    files.push(StorageFile {
+        name: "progress.backups.json".to_string(),
+        bytes: file_bytes(&backups).await,
+        rows: None,
+        description: format!(
+            "Replaced positions after a large backwards jump. Capped at {PROGRESS_BACKUPS_PER_BOOK} per reader and book."
+        ),
+    });
+
+    let total_bytes = files.iter().map(|file| file.bytes).sum();
+    let policy = state.retention_policy;
+    Ok(Json(StorageReport {
+        files,
+        total_bytes,
+        retention: RetentionSummary {
+            session_days: policy.session_days,
+            session_max_rows: policy.session_max_rows,
+            completion_max_rows: policy.completion_max_rows,
+            session_cap_bytes: policy.session_max_rows as u64 * APPROXIMATE_SESSION_ROW_BYTES,
+            completion_cap_bytes: policy.completion_max_rows as u64
+                * APPROXIMATE_COMPLETION_ROW_BYTES,
+        },
+    }))
+}
+
+/// Runs the retention pass now rather than waiting for the timer.
+async fn run_storage_maintenance(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<StorageReport>, ApiError> {
+    require_admin(&auth)?;
+    run_log_maintenance(&state).await;
+    storage_report(State(state), Extension(auth)).await
 }
 
 fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
@@ -12426,6 +12716,60 @@ mod tests {
         );
     }
 
+    /// The shipped example config must parse, because an unknown setting is a
+    /// hard startup error: a key documented there but missing from the allow
+    /// list would stop every server that copied the file.
+    #[test]
+    fn the_example_config_parses() {
+        let example = include_str!("../../../server.config.example");
+        let values = super::parse_server_config(example).expect("the example config must parse");
+        assert_eq!(
+            values.get("reading_log_retention_days").map(String::as_str),
+            Some("1095")
+        );
+    }
+
+    #[test]
+    fn retention_settings_are_bounded_and_zero_means_for_ever() {
+        let policy = |body: &str| {
+            let values = super::parse_server_config(body).expect("config should parse");
+            super::resolve_retention_policy(&values).expect("policy should resolve")
+        };
+
+        let default = policy("");
+        assert_eq!(default.session_days, Some(1_095));
+        assert_eq!(default.session_max_rows, 200_000);
+
+        assert_eq!(
+            policy("reading_log_retention_days = 0").session_days,
+            None,
+            "zero must keep history for ever, never delete all of it"
+        );
+        assert_eq!(
+            policy("reading_log_retention_days = 30").session_days,
+            Some(30)
+        );
+
+        // A typo must not shrink the history to nothing or commit the server
+        // to gigabytes. Both directions are refused outright rather than
+        // silently adjusted, so the operator finds out at startup.
+        for bad in [
+            "reading_log_max_rows = 1",
+            "reading_log_max_rows = 999999999",
+            "completion_log_max_rows = 0",
+        ] {
+            let values = super::parse_server_config(bad).expect("config should parse");
+            assert!(
+                super::resolve_retention_policy(&values).is_err(),
+                "`{bad}` should be refused rather than quietly adjusted"
+            );
+        }
+        assert_eq!(
+            policy("reading_log_max_rows = 1000").session_max_rows,
+            super::MIN_READING_LOG_ROWS
+        );
+    }
+
     #[test]
     fn clean_imported_title_keeps_non_asin_brackets() {
         assert_eq!(
@@ -13232,6 +13576,7 @@ exit 0
             reading_log_file: data_dir.join("reading-log.jsonl"),
             completions_file: data_dir.join("completions.jsonl"),
             works_file: data_dir.join("works.json"),
+            retention_policy: super::reading_log::RetentionPolicy::default(),
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
             libation_requests_file: data_dir.join("libation-requests.json"),
             libation_refreshes_file: data_dir.join("libation-refreshes.json"),

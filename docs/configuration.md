@@ -111,9 +111,14 @@ The server keeps a small amount of state on disk: user accounts, listening progr
 | `data_dir` | `data` | Directory used as the working area for cached data and background jobs. Created if missing. |
 | `progress_file` | `data/progress.json` | JSON file storing per-user playback positions. |
 | `users_file` | `data/users.json` | JSON file storing accounts and Argon2 password hashes. |
-| `activity_file` | `data/activity.json` | Per-reader daily listening totals, used for streaks. |
+| `activity_file` | `data/activity.json` | Per-reader daily listening totals, used for streaks. Kept for ever; about thirty bytes per reader per day. |
+| `reading_log_retention_days` | `1095` | How long to keep full listening sessions. `0` keeps them for ever. Completions are never aged out. |
+| `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. Roughly 66 MB. |
+| `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Roughly 25 MB. |
 
 `data_dir` also holds files the server names itself, including `reading-log.jsonl` (per-reader listening sessions), `completions.jsonl` (an immutable record of every book finished, with a snapshot of the book as it was at the time), and `works.json` (the index linking different editions of the same book). All three are created on demand and, on Unix, kept readable only by the account running the server.
+
+The logs tidy themselves: a maintenance pass at startup and every six hours collapses superseded rows, applies the retention settings above, and drops work records that hold no reading history. A reader who listens three hours a day, every day, costs about 300 KB of session log per year. `GET /api/storage` reports the current figures, and `POST /api/storage/maintenance` runs the pass on demand.
 
 Back up `data_dir` to preserve progress, reading history, and accounts. `completions.jsonl` in particular is the only record of a book that has since been deleted from the library.
 
