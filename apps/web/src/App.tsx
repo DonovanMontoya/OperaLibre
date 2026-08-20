@@ -90,6 +90,7 @@ import {
   readBookGains,
   writeBookGains
 } from "./bookVolume";
+import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
 import { isLibationAdding } from "./libationState";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
@@ -596,7 +597,7 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
-type SortMode = "title" | "author" | "series" | "genre" | "duration" | "account";
+type SortMode = "title" | "author" | "series" | "genre" | "progress" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type ReaderTheme = "paper" | "sepia" | "night";
@@ -618,6 +619,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "author", label: "Author" },
   { value: "series", label: "Series" },
   { value: "genre", label: "Genre" },
+  { value: "progress", label: "Progress" },
   { value: "account", label: "Account" },
   { value: "duration", label: "Length" }
 ];
@@ -625,12 +627,18 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
 const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible"];
 
-// "account" only makes sense for the Audible shelf; "series"/"genre" only for the
-// local library. Sort mode is persisted per source so switching shelves — including
-// across restarts, since librarySource itself always starts back at "local" — restores
-// what was last chosen there instead of permanently collapsing to "title".
+// "account" only makes sense for the Audible shelf; "series"/"genre"/"progress" only
+// for the local library — an Audible row is a purchase that has not been downloaded yet,
+// so it carries no progress to sort on. Sort mode is persisted per source so switching
+// shelves — including across restarts, since librarySource itself always starts back at
+// "local" — restores what was last chosen there instead of permanently collapsing to
+// "title".
+const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
+const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "genre", "progress"];
+
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
-  return source === "local" ? mode !== "account" : mode !== "series" && mode !== "genre";
+  const unsupported = source === "local" ? AUDIBLE_ONLY_SORT_MODES : LOCAL_ONLY_SORT_MODES;
+  return !unsupported.includes(mode);
 }
 
 function sortModeStorageKey(source: LibrarySource) {
@@ -683,7 +691,16 @@ function compareShelfLabels(left: string | null | undefined, right: string | nul
 function bookSortGroupLabel(book: Book, sortMode: SortMode) {
   if (sortMode === "series") return book.metadata.series?.trim() || "Standalone";
   if (sortMode === "genre") return book.genres[0]?.trim() || "Uncategorized";
+  if (sortMode === "progress") return readingStatusLabel(readingStatus(book));
   return null;
+}
+
+// The caption above each run of rows, naming what the run is grouped by. Only the
+// modes bookSortGroupLabel groups ever reach this.
+function bookSortGroupCaption(sortMode: SortMode) {
+  if (sortMode === "series") return "Series";
+  if (sortMode === "genre") return "Genre";
+  return "Progress";
 }
 
 function formatTime(value: number | null | undefined) {
@@ -2449,6 +2466,8 @@ function MainApp({
             || a.title.localeCompare(b.title);
         case "genre":
           return compareShelfLabels(a.genres[0], b.genres[0]) || a.title.localeCompare(b.title);
+        case "progress":
+          return compareReadingStatus(a, b) || a.title.localeCompare(b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
         case "title":
@@ -5865,7 +5884,7 @@ function MainApp({
                   <Fragment key={book.id}>
                     {sortGroup && compareShelfLabels(sortGroup, previousSortGroup) !== 0 ? (
                       <div className="book-sort-group" role="heading" aria-level={2}>
-                        <span>{sortMode === "series" ? "Series" : "Genre"}</span>
+                        <span>{bookSortGroupCaption(sortMode)}</span>
                         <strong>{sortGroup}</strong>
                       </div>
                     ) : null}
