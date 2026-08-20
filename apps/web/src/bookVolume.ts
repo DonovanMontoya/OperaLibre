@@ -176,3 +176,61 @@ export function mergeServerBookGains(
   }
   return changed ? merged : null;
 }
+
+/**
+ * Serialize the server writes for a book and coalesce the ones a slider drag
+ * produces.
+ *
+ * The gain slider reports every step of a drag, so a single sweep asks for
+ * dozens of writes. Firing them concurrently lets them land out of order, and
+ * whichever the server happens to process last becomes the stored level — not
+ * necessarily where the listener let go. Only one write per book is in flight
+ * here; the rest collapse to the latest value, which is sent once the previous
+ * one settles. The last value asked for is therefore the last value written.
+ *
+ * `pending` is the guard the library merge consults, and only the final write
+ * for a book decides its fate. A write the server accepted keeps the book
+ * guarded until a payload echoes it back — that echo is the whole point. A
+ * write that failed, or one a backend had nowhere to store, releases the guard
+ * instead: nothing will ever echo it, and leaving the entry behind would shut
+ * the book out of reconciliation for the rest of the session.
+ */
+export function createBookGainSync(
+  write: (bookId: string, gain: number) => Promise<boolean>,
+  pending: Map<string, number>
+) {
+  const inFlight = new Set<string>();
+  const queued = new Map<string, number>();
+
+  function settle(bookId: string, gain: number, confirmable: boolean) {
+    inFlight.delete(bookId);
+    const next = queued.get(bookId);
+    if (next !== undefined) {
+      queued.delete(bookId);
+      send(bookId, next);
+      return;
+    }
+    // Only reached by the last write for this book, so `gain` is what the
+    // server now holds — or would have, had it not failed.
+    if (!confirmable && pending.get(bookId) === gain) pending.delete(bookId);
+  }
+
+  function send(bookId: string, gain: number) {
+    inFlight.add(bookId);
+    void write(bookId, gain).then(
+      (stored) => settle(bookId, gain, stored),
+      () => settle(bookId, gain, false)
+    );
+  }
+
+  return {
+    write(bookId: string, gain: number) {
+      pending.set(bookId, gain);
+      if (inFlight.has(bookId)) {
+        queued.set(bookId, gain);
+        return;
+      }
+      send(bookId, gain);
+    }
+  };
+}
