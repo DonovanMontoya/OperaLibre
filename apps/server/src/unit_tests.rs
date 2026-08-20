@@ -1453,11 +1453,6 @@ exit 0
         book_settings: super::Arc::new(super::BookSettingsStore::new(
             data_dir.join("book-settings.json"),
         )),
-        activity_file: data_dir.join("activity.json"),
-        metadata_overrides_file: data_dir.join("metadata-overrides.json"),
-        libation_requests_file: data_dir.join("libation-requests.json"),
-        libation_refreshes_file: data_dir.join("libation-refreshes.json"),
-        libation_accounts_file: data_dir.join("libation-accounts.json"),
         libation_accounts_root: data_dir.join("libation-accounts"),
         libation_config: super::LibationConfig {
             cli_path: Some(cli_path),
@@ -1471,7 +1466,8 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
-        metadata_overrides: super::Arc::new(super::RwLock::new(
+        metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
+            data_dir.join("metadata-overrides.json"),
             super::MetadataOverrideStore::default(),
         )),
         jobs: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
@@ -1483,14 +1479,20 @@ exit 0
             data_dir.join("sessions.json"),
             std::collections::HashMap::new(),
         )),
-        activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
-        libation_requests: super::Arc::new(super::RwLock::new(
+        activity: super::Arc::new(super::ActivityLog::new(
+            data_dir.join("activity.json"),
+            super::ActivityStore::default(),
+        )),
+        libation_requests: super::Arc::new(super::LibationRequests::new(
+            data_dir.join("libation-requests.json"),
             super::LibationRequestStore::default(),
         )),
-        libation_refreshes: super::Arc::new(super::Mutex::new(
+        libation_refreshes: super::Arc::new(super::LibationRefreshes::new(
+            data_dir.join("libation-refreshes.json"),
             super::LibationRefreshStore::default(),
         )),
-        libation_accounts: super::Arc::new(super::RwLock::new(
+        libation_accounts: super::Arc::new(super::LibationAccounts::new(
+            data_dir.join("libation-accounts.json"),
             super::ManagedLibationAccountStore::default(),
         )),
         libation_login_sessions: super::Arc::new(super::Mutex::new(
@@ -1796,6 +1798,25 @@ async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimite
     .await
     .unwrap_err();
     assert_eq!(limited.status, super::StatusCode::TOO_MANY_REQUESTS);
+
+    // The slot is reserved before the job is created, so a refused refresh
+    // must be rejected before anything is recorded. A refusal that still
+    // banked a timestamp would push the reader further past the quota on
+    // every retry.
+    let reader_id = approval_reader().id;
+    let recorded = state
+        .libation_refreshes
+        .read()
+        .await
+        .manual_refreshes
+        .get(&reader_id)
+        .map(|timestamps| timestamps.len())
+        .unwrap_or(0);
+    assert_eq!(
+        recorded as u64,
+        super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
+        "a refused refresh consumed a slot"
+    );
 
     let admin_first =
         super::sync_libation_library(super::State(state.clone()), super::Extension(admin_user()))

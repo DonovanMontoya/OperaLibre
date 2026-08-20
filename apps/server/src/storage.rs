@@ -155,13 +155,6 @@ pub(crate) async fn load_metadata_overrides(
     }
 }
 
-pub(crate) async fn write_metadata_overrides(
-    metadata_overrides_file: &FsPath,
-    store: &MetadataOverrideStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(metadata_overrides_file, store).await
-}
-
 pub(crate) async fn load_activity_store(activity_file: &FsPath) -> anyhow::Result<ActivityStore> {
     match fs::read_to_string(activity_file).await {
         Ok(contents) => {
@@ -180,19 +173,12 @@ pub(crate) async fn load_activity_store(activity_file: &FsPath) -> anyhow::Resul
     }
 }
 
-pub(crate) async fn write_activity_store(
-    activity_file: &FsPath,
-    store: &ActivityStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(activity_file, store).await
-}
-
 pub(crate) async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
     match fs::read_to_string(users_file).await {
         Ok(contents) => {
             let mut store: UsersStore = serde_json::from_str(&contents)?;
             if migrate_users_permissions(&mut store) {
-                write_users_store(users_file, &store)
+                write_json_atomic(users_file, &store)
                     .await
                     .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
             }
@@ -203,19 +189,12 @@ pub(crate) async fn load_users_store(users_file: &FsPath) -> anyhow::Result<User
     }
 }
 
-pub(crate) async fn write_users_store(
-    users_file: &FsPath,
-    store: &UsersStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(users_file, store).await
-}
-
 pub(crate) async fn load_libation_requests(path: &FsPath) -> anyhow::Result<LibationRequestStore> {
     match fs::read_to_string(path).await {
         Ok(contents) => {
             let mut store: LibationRequestStore = serde_json::from_str(&contents)?;
             if recover_interrupted_libation_requests(&mut store) {
-                write_libation_requests(path, &store)
+                write_json_atomic(path, &store)
                     .await
                     .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
             }
@@ -228,13 +207,6 @@ pub(crate) async fn load_libation_requests(path: &FsPath) -> anyhow::Result<Liba
     }
 }
 
-pub(crate) async fn write_libation_requests(
-    path: &FsPath,
-    store: &LibationRequestStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(path, store).await
-}
-
 pub(crate) async fn load_libation_refreshes(path: &FsPath) -> anyhow::Result<LibationRefreshStore> {
     match fs::read_to_string(path).await {
         Ok(contents) => Ok(serde_json::from_str(&contents)?),
@@ -243,13 +215,6 @@ pub(crate) async fn load_libation_refreshes(path: &FsPath) -> anyhow::Result<Lib
         }
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) async fn write_libation_refreshes(
-    path: &FsPath,
-    store: &LibationRefreshStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(path, store).await
 }
 
 pub(crate) async fn load_managed_libation_accounts(
@@ -262,13 +227,6 @@ pub(crate) async fn load_managed_libation_accounts(
         }
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) async fn write_managed_libation_accounts(
-    path: &FsPath,
-    store: &ManagedLibationAccountStore,
-) -> Result<(), ApiError> {
-    write_json_atomic(path, store).await
 }
 
 pub(crate) async fn load_sessions_store(
@@ -284,13 +242,6 @@ pub(crate) async fn load_sessions_store(
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) async fn write_sessions_store(
-    sessions_file: &FsPath,
-    sessions: &HashMap<String, Session>,
-) -> Result<(), ApiError> {
-    write_json_atomic(sessions_file, sessions).await
 }
 
 // ---------------------------------------------------------------------------
@@ -535,74 +486,63 @@ impl BookSettingsStore {
 // to be "take the lock, edit, remember to call the write helper", repeated at
 // twenty-one call sites.
 
-/// Every account, cached in memory and mirrored to a file.
+/// A store held in memory and mirrored to a JSON file.
+///
+/// Reads come from the cache, so they are cheap. Writes go through [`mutate`],
+/// which is the whole point of the type: every one of these stores used to be
+/// "take the lock, edit the cache, remember to call the matching write
+/// helper", and forgetting the last step left the two disagreeing until the
+/// next restart.
+///
+/// [`mutate`]: CachedStore::mutate
 #[derive(Debug)]
-pub(crate) struct UserStore {
+pub(crate) struct CachedStore<T> {
     file: PathBuf,
-    users: RwLock<UsersStore>,
+    value: RwLock<T>,
 }
 
-impl UserStore {
-    pub(crate) fn new(file: PathBuf, users: UsersStore) -> Self {
+impl<T: Serialize + Clone> CachedStore<T> {
+    pub(crate) fn new(file: PathBuf, value: T) -> Self {
         Self {
             file,
-            users: RwLock::new(users),
+            value: RwLock::new(value),
         }
     }
 
-    pub(crate) async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, UsersStore> {
-        self.users.read().await
+    pub(crate) async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, T> {
+        self.value.read().await
     }
 
     /// Apply a change under the write lock and persist it.
     ///
     /// The change runs against a copy, which is adopted only once it succeeds
-    /// and the write lands. A validation failure therefore leaves neither the
-    /// cache nor the file touched — previously a handler that rejected a
-    /// request after editing the cache left the two disagreeing until restart.
-    pub(crate) async fn mutate<T, F>(&self, change: F) -> Result<T, ApiError>
+    /// and the write lands. A rejected change therefore touches neither the
+    /// cache nor the file, and a failed write leaves both holding the last
+    /// state that was successfully stored.
+    pub(crate) async fn mutate<R, F>(&self, change: F) -> Result<R, ApiError>
     where
-        F: FnOnce(&mut UsersStore) -> Result<T, ApiError>,
+        F: FnOnce(&mut T) -> Result<R, ApiError>,
     {
-        let mut users = self.users.write().await;
-        let mut draft = users.clone();
+        let mut value = self.value.write().await;
+        let mut draft = value.clone();
         let outcome = change(&mut draft)?;
-        write_users_store(&self.file, &draft).await?;
-        *users = draft;
+        write_json_atomic(&self.file, &draft).await?;
+        *value = draft;
         Ok(outcome)
     }
 }
 
-/// Live sessions, cached in memory and mirrored to a file.
-#[derive(Debug)]
-pub(crate) struct SessionStore {
-    file: PathBuf,
-    sessions: RwLock<HashMap<String, Session>>,
-}
-
-impl SessionStore {
-    pub(crate) fn new(file: PathBuf, sessions: HashMap<String, Session>) -> Self {
-        Self {
-            file,
-            sessions: RwLock::new(sessions),
-        }
-    }
-
-    pub(crate) async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<String, Session>> {
-        self.sessions.read().await
-    }
-
-    /// Apply a change under the write lock and persist it, with the same
-    /// all-or-nothing guarantee as [`UserStore::mutate`].
-    pub(crate) async fn mutate<T, F>(&self, change: F) -> Result<T, ApiError>
-    where
-        F: FnOnce(&mut HashMap<String, Session>) -> Result<T, ApiError>,
-    {
-        let mut sessions = self.sessions.write().await;
-        let mut draft = sessions.clone();
-        let outcome = change(&mut draft)?;
-        write_sessions_store(&self.file, &draft).await?;
-        *sessions = draft;
-        Ok(outcome)
-    }
-}
+/// Every account.
+pub(crate) type UserStore = CachedStore<UsersStore>;
+/// Live sessions, keyed by token.
+pub(crate) type SessionStore = CachedStore<HashMap<String, Session>>;
+/// Per-listener daily listening totals.
+pub(crate) type ActivityLog = CachedStore<ActivityStore>;
+/// Administrator edits layered over scanned metadata.
+pub(crate) type MetadataOverrides = CachedStore<MetadataOverrideStore>;
+/// Pending and decided Libation download requests.
+pub(crate) type LibationRequests = CachedStore<LibationRequestStore>;
+/// Per-listener Libation refresh rate limiting.
+pub(crate) type LibationRefreshes = CachedStore<LibationRefreshStore>;
+/// Managed Libation accounts.
+pub(crate) type LibationAccounts = CachedStore<ManagedLibationAccountStore>;
