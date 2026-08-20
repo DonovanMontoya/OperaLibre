@@ -54,6 +54,8 @@ use walkdir::WalkDir;
 
 mod alignment;
 mod faststart;
+#[cfg(test)]
+mod http_tests;
 mod updates;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
@@ -1581,6 +1583,41 @@ async fn main() -> anyhow::Result<()> {
     rescan_library(&state).await?;
     schedule_automatic_libation_refresh(state.clone());
 
+    let app = build_router(
+        state,
+        config.web_dist_dir.as_deref(),
+        &config.allowed_origins,
+    )?;
+
+    let address: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
+    if config.deployment_mode == DeploymentMode::Lan {
+        tracing::warn!(
+            %address,
+            "LAN mode permits plain HTTP and non-Secure browser cookies; use only on a trusted LAN/VPN and never expose this port directly to the Internet"
+        );
+    } else if config.deployment_mode == DeploymentMode::Proxy {
+        tracing::info!(%address, "proxy mode expects a same-machine TLS reverse proxy");
+    }
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    tracing::info!("server listening on http://{address}");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Assemble the full application router.
+///
+/// Split out of `main` so integration tests can drive the real routing,
+/// authentication, and middleware stack instead of calling handlers directly.
+fn build_router(
+    state: AppState,
+    web_dist_dir: Option<&FsPath>,
+    allowed_origins: &[String],
+) -> anyhow::Result<Router> {
     let public_routes = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/status", get(auth_status))
@@ -1707,7 +1744,7 @@ async fn main() -> anyhow::Result<()> {
     let origins = OFFICIAL_APP_ORIGINS
         .iter()
         .copied()
-        .chain(config.allowed_origins.iter().map(String::as_str))
+        .chain(allowed_origins.iter().map(String::as_str))
         .map(|origin| {
             origin.parse::<HeaderValue>().map_err(|error| {
                 anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
@@ -1715,13 +1752,13 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     tracing::info!(
-        configured_origins = ?config.allowed_origins,
+        configured_origins = ?allowed_origins,
         "CORS restricted to official app and configured origins"
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
     let mut app = public_routes.merge(protected_routes);
-    if let Some(dist_dir) = config.web_dist_dir.as_ref() {
+    if let Some(dist_dir) = web_dist_dir {
         if dist_dir.join("index.html").is_file() {
             tracing::info!("serving web app from {}", dist_dir.display());
             app = app.fallback_service(
@@ -1734,7 +1771,7 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
-    let app = app
+    Ok(app
         .layer(
             cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
@@ -1752,26 +1789,7 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .layer(middleware::from_fn(security_headers))
-        .with_state(state);
-
-    let address: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
-    if config.deployment_mode == DeploymentMode::Lan {
-        tracing::warn!(
-            %address,
-            "LAN mode permits plain HTTP and non-Secure browser cookies; use only on a trusted LAN/VPN and never expose this port directly to the Internet"
-        );
-    } else if config.deployment_mode == DeploymentMode::Proxy {
-        tracing::info!(%address, "proxy mode expects a same-machine TLS reverse proxy");
-    }
-    let listener = tokio::net::TcpListener::bind(address).await?;
-    tracing::info!("server listening on http://{address}");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
-
-    Ok(())
+        .with_state(state))
 }
 
 fn record_server_pid(data_dir: &std::path::Path) -> std::io::Result<()> {
@@ -7206,7 +7224,10 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
     temp_file
         .write_all(&serde_json::to_vec_pretty(value)?)
         .await?;
-    temp_file.flush().await?;
+    // `flush` only drains tokio's userspace buffer. Without `sync_all` the
+    // bytes can still be sitting in the page cache when power is lost, and the
+    // rename below would then publish a truncated or empty store.
+    temp_file.sync_all().await?;
     drop(temp_file);
     secure_file_permissions(&temp_path).await?;
     if let Err(error) = fs::rename(&temp_path, path).await {
@@ -7214,8 +7235,50 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
         return Err(error.into());
     }
     secure_file_permissions(path).await?;
+    // The rename is atomic, but the directory entry it created is itself only
+    // durable once the directory is synced. Skipping this can lose the whole
+    // store after a crash even though the data was safely on disk.
+    sync_parent_directory(path).await;
     Ok(())
 }
+
+/// Fsync the directory holding `path` so a completed rename survives a crash.
+///
+/// Unix only: Windows has no directory handle to sync, and `ReplaceFile`-style
+/// rename semantics already order the metadata update.
+#[cfg(unix)]
+async fn sync_parent_directory(path: &FsPath) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let parent = parent.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        let dir = if parent.as_os_str().is_empty() {
+            std::fs::File::open(".")?
+        } else {
+            std::fs::File::open(&parent)?
+        };
+        dir.sync_all()
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        // A failed directory sync does not invalidate the write that just
+        // landed, so this warns rather than failing the request.
+        Ok(Err(error)) => {
+            tracing::warn!("could not fsync directory for {}: {error}", path.display());
+        }
+        Err(error) => {
+            tracing::warn!(
+                "directory fsync task failed for {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn sync_parent_directory(_path: &FsPath) {}
 
 #[cfg(unix)]
 async fn secure_file_permissions(path: &FsPath) -> io::Result<()> {
@@ -12315,6 +12378,47 @@ exit 0
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[tokio::test]
+    async fn atomic_write_leaves_no_temp_files_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("nested").join("progress.json");
+        let stored = serde_json::json!({ "user::book": { "positionSeconds": 1234.5 } });
+
+        super::write_json_atomic(&path, &stored).await.unwrap();
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread, stored);
+
+        // The temporary file is renamed, never left behind, so a later scan of
+        // the data directory cannot mistake a partial write for a real store.
+        let strays = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(strays, 0);
+    }
+
+    #[tokio::test]
+    async fn atomic_write_replaces_existing_store_without_truncating() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("progress.json");
+
+        super::write_json_atomic(&path, &serde_json::json!({ "a": 1, "b": 2 }))
+            .await
+            .unwrap();
+        // A shorter payload must fully replace the longer one rather than
+        // overwriting its prefix and leaving trailing bytes behind.
+        super::write_json_atomic(&path, &serde_json::json!({ "a": 1 }))
+            .await
+            .unwrap();
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread, serde_json::json!({ "a": 1 }));
     }
 
     #[test]
