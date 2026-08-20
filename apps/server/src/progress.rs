@@ -149,21 +149,103 @@ pub(crate) async fn update_book_volume(
     };
 
     let gain = clamp_book_volume_gain(payload.volume_gain);
-    {
-        let _guard = state.book_settings_write_lock.lock().await;
-        let mut settings = read_book_settings(&state.book_settings_file).await?;
-        let key = progress_key(&auth.id, &book_id);
-        if gain == BOOK_VOLUME_GAIN_DEFAULT {
-            // Unity gain is the absence of a setting rather than a stored one,
-            // so resetting a book leaves nothing behind in the file.
-            settings.remove(&key);
-        } else {
-            settings.insert(key, BookSettings { volume_gain: gain });
-        }
-        write_book_settings(&state.book_settings_file, &settings).await?;
-    }
+    state
+        .book_settings
+        .set_gain(&auth.id, &book_id, gain)
+        .await?;
 
     Ok(Json(book_with_progress(&state, &auth, book).await?))
+}
+
+/// What a progress write should do, decided without touching storage.
+///
+/// Every defense against losing a listener's place lives here: a replayed
+/// checkpoint from an offline queue, a device with a skewed clock, a client
+/// that failed to restore its position and reported zero, and a backwards jump
+/// nobody asked for. Keeping it pure means the rules are identical whatever
+/// the storage backend is, and testable without any I/O.
+#[derive(Debug, Clone)]
+pub(crate) enum ProgressDecision {
+    /// Keep the stored position. The client converges back to it on its next
+    /// successful fetch.
+    Keep,
+    /// Store this position, retaining the previous one first when the drop is
+    /// large enough to be worth recovering.
+    Store {
+        saved: Progress,
+        backup_previous: bool,
+    },
+}
+
+/// Decide what to do with one incoming progress write.
+pub(crate) fn decide_progress_write(
+    book: &Book,
+    track: &Track,
+    previous: Option<&Progress>,
+    update: &ProgressUpdate,
+    now_millis: u64,
+) -> ProgressDecision {
+    // Cap client timestamps at the server clock so one device with a
+    // future-skewed clock cannot lock every other device out of this book.
+    let now_seconds = now_millis as f64 / 1000.0;
+    let incoming_seconds = update
+        .updated_at_ms
+        .map(|ms| (ms as f64 / 1000.0).min(now_seconds));
+    if let (Some(previous), Some(incoming)) = (previous, incoming_seconds)
+        && progress_write_is_stale(&previous.updated_at, incoming)
+    {
+        // A replayed checkpoint - an offline queue flushing or a reinstalled
+        // client syncing old local state - must not roll back a position some
+        // device recorded more recently.
+        return ProgressDecision::Keep;
+    }
+
+    let incoming_track_position =
+        clamped_track_position(update.position_seconds, track.duration_seconds);
+    let incoming_book_position = validated_book_position_seconds(
+        book,
+        track,
+        incoming_track_position,
+        update.book_position_seconds,
+    );
+    let saved = Progress {
+        book_id: book.id.clone(),
+        track_id: track.id.clone(),
+        position_seconds: incoming_track_position,
+        book_position_seconds: incoming_book_position,
+        duration_seconds: update.duration_seconds.or(track.duration_seconds),
+        updated_at: next_progress_timestamp(previous, now_millis),
+        finished_override: carried_finished_override(
+            previous,
+            incoming_book_position,
+            update.intentional_seek,
+        ),
+    };
+
+    let mut backup_previous = false;
+    if let Some(previous) = previous {
+        if progress_write_is_unintentional_regression(
+            previous.book_position_seconds,
+            saved.book_position_seconds,
+            update.intentional_seek || update.intentional_regression,
+        ) {
+            return ProgressDecision::Keep;
+        }
+        if progress_write_is_suspect_reset(
+            previous.book_position_seconds,
+            saved.book_position_seconds,
+            update.intentional_regression,
+        ) {
+            return ProgressDecision::Keep;
+        }
+        backup_previous = previous.book_position_seconds - saved.book_position_seconds
+            > PROGRESS_BACKUP_REGRESSION_SECONDS;
+    }
+
+    ProgressDecision::Store {
+        saved,
+        backup_previous,
+    }
 }
 
 pub(crate) async fn get_progress(
@@ -172,8 +254,8 @@ pub(crate) async fn get_progress(
     Path(book_id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let progress = read_progress(&state.progress_file).await?;
-    let value = if let Some(saved) = progress.get(&progress_key(&auth.id, &book_id)) {
+    let saved = state.progress.get(&auth.id, &book_id).await?;
+    let value = if let Some(saved) = saved.as_ref() {
         let library = state.library.read().await;
         let enriched = library
             .books
@@ -207,71 +289,13 @@ pub(crate) async fn update_progress(
         .find(|candidate| candidate.id == update.track_id)
         .ok_or(ApiError::not_found("Track not found"))?;
 
-    let _progress_guard = state.progress_write_lock.lock().await;
-    let mut progress = read_progress(&state.progress_file).await?;
-    let key = progress_key(&auth.id, &book.id);
-    let previous = progress.get(&key).cloned();
-    // Cap client timestamps at the server clock so one device with a
-    // future-skewed clock cannot lock every other device out of this book.
     let now_millis = unix_now_millis();
-    let now_seconds = now_millis as f64 / 1000.0;
-    let incoming_seconds = update
-        .updated_at_ms
-        .map(|ms| (ms as f64 / 1000.0).min(now_seconds));
-    if let (Some(previous), Some(incoming)) = (&previous, incoming_seconds)
-        && progress_write_is_stale(&previous.updated_at, incoming)
-    {
-        // A replayed checkpoint — an offline queue flushing or a
-        // reinstalled client syncing old local state — must not roll back
-        // a position some device recorded more recently.
-        return Ok(Json(previous.clone()));
-    }
-    let incoming_track_position =
-        clamped_track_position(update.position_seconds, track.duration_seconds);
-    let incoming_book_position = validated_book_position_seconds(
-        book,
-        track,
-        incoming_track_position,
-        update.book_position_seconds,
-    );
-    let saved = Progress {
-        book_id: book.id.clone(),
-        track_id: track.id.clone(),
-        position_seconds: incoming_track_position,
-        book_position_seconds: incoming_book_position,
-        duration_seconds: update.duration_seconds.or(track.duration_seconds),
-        updated_at: next_progress_timestamp(previous.as_ref(), now_millis),
-        finished_override: carried_finished_override(
-            previous.as_ref(),
-            incoming_book_position,
-            update.intentional_seek,
-        ),
-    };
-    if let Some(previous) = &previous {
-        if progress_write_is_unintentional_regression(
-            previous.book_position_seconds,
-            saved.book_position_seconds,
-            update.intentional_seek || update.intentional_regression,
-        ) {
-            return Ok(Json(previous.clone()));
-        }
-        if progress_write_is_suspect_reset(
-            previous.book_position_seconds,
-            saved.book_position_seconds,
-            update.intentional_regression,
-        ) {
-            // Keep the stored copy, exactly like a stale write: the client
-            // that failed to restore converges back to the real position on
-            // its next successful fetch.
-            return Ok(Json(previous.clone()));
-        }
-        let regression_seconds = previous.book_position_seconds - saved.book_position_seconds;
-        if regression_seconds > PROGRESS_BACKUP_REGRESSION_SECONDS {
-            backup_progress_regression(&state.progress_file, &key, previous).await;
-        }
-    }
-    progress.insert(key, saved.clone());
-    write_progress(&state.progress_file, &progress).await?;
+    let (saved, previous) = state
+        .progress
+        .update_book(&auth.id, &book.id, |previous| {
+            decide_progress_write(book, track, previous, &update, now_millis)
+        })
+        .await?;
 
     let listened_delta =
         plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
@@ -328,34 +352,41 @@ pub(crate) async fn update_book_completion(
         }
     };
 
-    let _progress_guard = state.progress_write_lock.lock().await;
-    let mut progress = read_progress(&state.progress_file).await?;
-    let key = progress_key(&auth.id, &book.id);
-    let next_timestamp = next_progress_timestamp(progress.get(&key), unix_now_millis());
-    let saved = progress.entry(key).or_insert_with(|| Progress {
-        book_id: book.id.clone(),
-        track_id: first_track.id.clone(),
-        position_seconds: 0.0,
-        book_position_seconds: 0.0,
-        duration_seconds: first_track.duration_seconds,
-        updated_at: next_timestamp.clone(),
-        finished_override: None,
-    });
-    if let Some((track, position_seconds)) = final_position {
-        saved.track_id = track.id.clone();
-        saved.position_seconds = position_seconds;
-        saved.book_position_seconds = validated_book_position_seconds(
-            &book,
-            track,
-            position_seconds,
-            update.book_position_seconds,
-        );
-        saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
-        saved.updated_at = next_timestamp;
-    }
-    saved.finished_override = Some(update.finished);
-    let saved = saved.clone();
-    write_progress(&state.progress_file, &progress).await?;
+    let now_millis = unix_now_millis();
+    // Marking a book finished or unfinished is an explicit instruction, so it
+    // bypasses the regression rules that guard automatic checkpoints.
+    let (saved, _) = state
+        .progress
+        .update_book(&auth.id, &book.id, |previous| {
+            let next_timestamp = next_progress_timestamp(previous, now_millis);
+            let mut saved = previous.cloned().unwrap_or_else(|| Progress {
+                book_id: book.id.clone(),
+                track_id: first_track.id.clone(),
+                position_seconds: 0.0,
+                book_position_seconds: 0.0,
+                duration_seconds: first_track.duration_seconds,
+                updated_at: next_timestamp.clone(),
+                finished_override: None,
+            });
+            if let Some((track, position_seconds)) = final_position {
+                saved.track_id = track.id.clone();
+                saved.position_seconds = position_seconds;
+                saved.book_position_seconds = validated_book_position_seconds(
+                    &book,
+                    track,
+                    position_seconds,
+                    update.book_position_seconds,
+                );
+                saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
+                saved.updated_at = next_timestamp;
+            }
+            saved.finished_override = Some(update.finished);
+            ProgressDecision::Store {
+                saved,
+                backup_previous: false,
+            }
+        })
+        .await?;
 
     Ok(Json(summarize_book_progress(&book, &saved)))
 }
@@ -381,20 +412,26 @@ pub(crate) async fn books_with_progress(
     state: &AppState,
     auth: &AuthUser,
 ) -> Result<Vec<Book>, ApiError> {
-    let saved_progress = read_progress(&state.progress_file).await?;
-    let saved_settings = read_book_settings(&state.book_settings_file).await?;
+    let own_progress = state.progress.list_for_user(&auth.id).await?;
+    let own_gains = state.book_settings.list_for_user(&auth.id).await?;
     let sharers = progress_sharers(state, auth).await;
+    let shared_progress = state
+        .progress
+        .list_for_users(&sharers.iter().map(|(id, _)| id.clone()).collect())
+        .await?;
     let books = state.library.read().await.books.clone();
     Ok(books
         .into_iter()
         .filter(|book| can_access_book(auth, &book.id))
         .map(|mut book| {
-            let key = progress_key(&auth.id, &book.id);
-            book.progress = saved_progress
-                .get(&key)
+            book.progress = own_progress
+                .get(&book.id)
                 .map(|progress| summarize_book_progress(&book, progress));
-            book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
-            book.volume_gain = stored_volume_gain(&saved_settings, &key);
+            book.shared_progress = collect_shared_progress(&book, &shared_progress, &sharers);
+            book.volume_gain = own_gains
+                .get(&book.id)
+                .copied()
+                .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT);
             book
         })
         .collect())
@@ -405,15 +442,18 @@ pub(crate) async fn book_with_progress(
     auth: &AuthUser,
     mut book: Book,
 ) -> Result<Book, ApiError> {
-    let saved_progress = read_progress(&state.progress_file).await?;
-    let key = progress_key(&auth.id, &book.id);
-    book.progress = saved_progress
-        .get(&key)
-        .map(|progress| summarize_book_progress(&book, progress));
+    book.progress = state
+        .progress
+        .get(&auth.id, &book.id)
+        .await?
+        .map(|progress| summarize_book_progress(&book, &progress));
     let sharers = progress_sharers(state, auth).await;
-    book.shared_progress = collect_shared_progress(&book, &saved_progress, &sharers);
-    book.volume_gain =
-        stored_volume_gain(&read_book_settings(&state.book_settings_file).await?, &key);
+    let shared_progress = state
+        .progress
+        .list_for_users(&sharers.iter().map(|(id, _)| id.clone()).collect())
+        .await?;
+    book.shared_progress = collect_shared_progress(&book, &shared_progress, &sharers);
+    book.volume_gain = state.book_settings.gain(&auth.id, &book.id).await?;
     Ok(book)
 }
 
@@ -599,6 +639,9 @@ pub(crate) fn validated_book_position_seconds(
     }
 }
 
+// The four functions below are the raw JSON file access behind
+// `ProgressStore` and `BookSettingsStore`. Nothing else should call them: the
+// stores own the locking, and a SQL backend will replace these wholesale.
 pub(crate) async fn read_progress(
     progress_file: &FsPath,
 ) -> Result<HashMap<String, Progress>, ApiError> {

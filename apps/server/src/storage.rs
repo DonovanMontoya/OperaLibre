@@ -292,3 +292,229 @@ pub(crate) async fn write_sessions_store(
 ) -> Result<(), ApiError> {
     write_json_atomic(sessions_file, sessions).await
 }
+
+// ---------------------------------------------------------------------------
+// Playback progress and per-book settings
+// ---------------------------------------------------------------------------
+//
+// These two types are the only way the rest of the server reaches a listener's
+// saved position or a book's volume gain. The methods are deliberately narrow
+// -- one user, one book, or one user's own rows -- rather than "read the whole
+// file", so that a SQL implementation can answer each one with an indexed
+// query instead of loading everything.
+
+/// Every listener's saved position, keyed internally by user and book.
+#[derive(Debug)]
+pub(crate) struct ProgressStore {
+    file: PathBuf,
+    /// Serializes read-modify-write cycles so concurrent updates cannot
+    /// overwrite each other. A transaction replaces this under SQL.
+    write_lock: Mutex<()>,
+}
+
+impl ProgressStore {
+    pub(crate) fn new(file: PathBuf) -> Self {
+        Self {
+            file,
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    /// Store one listener's position outright, ignoring the rules that guard
+    /// automatic checkpoints.
+    ///
+    /// Only tests need this today, so it is gated rather than left as dead
+    /// code in the shipped binary. The SQLite migration will want the same
+    /// primitive and can drop the gate then.
+    #[cfg(test)]
+    pub(crate) async fn set(
+        &self,
+        user_id: &str,
+        book_id: &str,
+        progress: Progress,
+    ) -> Result<(), ApiError> {
+        let _guard = self.write_lock.lock().await;
+        let mut stored = read_progress(&self.file).await?;
+        stored.insert(progress_key(user_id, book_id), progress);
+        write_progress(&self.file, &stored).await
+    }
+
+    /// One listener's position in one book.
+    pub(crate) async fn get(
+        &self,
+        user_id: &str,
+        book_id: &str,
+    ) -> Result<Option<Progress>, ApiError> {
+        Ok(read_progress(&self.file)
+            .await?
+            .remove(&progress_key(user_id, book_id)))
+    }
+
+    /// Everything one listener has saved, keyed by book id.
+    pub(crate) async fn list_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<HashMap<String, Progress>, ApiError> {
+        let prefix = progress_key(user_id, "");
+        Ok(read_progress(&self.file)
+            .await?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(_, progress)| (progress.book_id.clone(), progress))
+            .collect())
+    }
+
+    /// Positions belonging to any of `user_ids`, keyed the way
+    /// `collect_shared_progress` looks them up.
+    pub(crate) async fn list_for_users(
+        &self,
+        user_ids: &HashSet<String>,
+    ) -> Result<HashMap<String, Progress>, ApiError> {
+        let prefixes: Vec<String> = user_ids
+            .iter()
+            .map(|user_id| progress_key(user_id, ""))
+            .collect();
+        Ok(read_progress(&self.file)
+            .await?
+            .into_iter()
+            .filter(|(key, _)| prefixes.iter().any(|prefix| key.starts_with(prefix)))
+            .collect())
+    }
+
+    /// Book ids whose stored position moved within the last `window_ms`.
+    pub(crate) async fn book_ids_active_within(
+        &self,
+        window_ms: u64,
+    ) -> Result<HashSet<String>, ApiError> {
+        let now_ms = unix_now_millis();
+        Ok(read_progress(&self.file)
+            .await?
+            .into_values()
+            .filter(|entry| {
+                now_ms.saturating_sub(progress_timestamp_millis(&entry.updated_at)) <= window_ms
+            })
+            .map(|entry| entry.book_id)
+            .collect())
+    }
+
+    /// Apply a decision to one listener's position, serialized against other
+    /// writers. `decide` sees whatever is stored and says what should happen;
+    /// the returned progress is what a client should now believe.
+    ///
+    /// The read, the decision, and the write all happen under one lock, which
+    /// is the same shape a SQL transaction takes.
+    pub(crate) async fn update_book<F>(
+        &self,
+        user_id: &str,
+        book_id: &str,
+        decide: F,
+    ) -> Result<(Progress, Option<Progress>), ApiError>
+    where
+        F: FnOnce(Option<&Progress>) -> ProgressDecision,
+    {
+        let _guard = self.write_lock.lock().await;
+        let mut stored = read_progress(&self.file).await?;
+        let key = progress_key(user_id, book_id);
+        let previous = stored.get(&key).cloned();
+        match decide(previous.as_ref()) {
+            ProgressDecision::Keep => {
+                // Nothing to write. A `Keep` with nothing stored cannot happen:
+                // every rule that returns it first requires a previous value.
+                let kept = previous.clone().ok_or_else(|| {
+                    ApiError::internal("Progress was kept without a stored position.")
+                })?;
+                Ok((kept, previous))
+            }
+            ProgressDecision::Store {
+                saved,
+                backup_previous,
+            } => {
+                if backup_previous && let Some(previous) = &previous {
+                    backup_progress_regression(&self.file, &key, previous).await;
+                }
+                stored.insert(key, saved.clone());
+                write_progress(&self.file, &stored).await?;
+                Ok((saved, previous))
+            }
+        }
+    }
+
+    /// Forget everything belonging to one listener.
+    pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
+        let _guard = self.write_lock.lock().await;
+        let mut stored = read_progress(&self.file).await?;
+        let prefix = progress_key(user_id, "");
+        stored.retain(|key, _| !key.starts_with(&prefix));
+        write_progress(&self.file, &stored).await
+    }
+}
+
+/// Per-listener, per-book playback settings. Only volume gain today.
+#[derive(Debug)]
+pub(crate) struct BookSettingsStore {
+    file: PathBuf,
+    write_lock: Mutex<()>,
+}
+
+impl BookSettingsStore {
+    pub(crate) fn new(file: PathBuf) -> Self {
+        Self {
+            file,
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    /// One book's gain for one listener, defaulting to unity.
+    pub(crate) async fn gain(&self, user_id: &str, book_id: &str) -> Result<f64, ApiError> {
+        let settings = read_book_settings(&self.file).await?;
+        Ok(stored_volume_gain(
+            &settings,
+            &progress_key(user_id, book_id),
+        ))
+    }
+
+    /// Every gain one listener has set, keyed by book id.
+    pub(crate) async fn list_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<HashMap<String, f64>, ApiError> {
+        let prefix = progress_key(user_id, "");
+        Ok(read_book_settings(&self.file)
+            .await?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .filter_map(|(key, settings)| {
+                key.strip_prefix(&prefix)
+                    .map(|book_id| (book_id.to_string(), settings.volume_gain))
+            })
+            .collect())
+    }
+
+    /// Set one book's gain for one listener.
+    pub(crate) async fn set_gain(
+        &self,
+        user_id: &str,
+        book_id: &str,
+        gain: f64,
+    ) -> Result<(), ApiError> {
+        let _guard = self.write_lock.lock().await;
+        let mut settings = read_book_settings(&self.file).await?;
+        let key = progress_key(user_id, book_id);
+        if gain == BOOK_VOLUME_GAIN_DEFAULT {
+            // Unity gain is the absence of a setting rather than a stored one,
+            // so resetting a book leaves nothing behind.
+            settings.remove(&key);
+        } else {
+            settings.insert(key, BookSettings { volume_gain: gain });
+        }
+        write_book_settings(&self.file, &settings).await
+    }
+
+    pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
+        let _guard = self.write_lock.lock().await;
+        let mut settings = read_book_settings(&self.file).await?;
+        let prefix = progress_key(user_id, "");
+        settings.retain(|key, _| !key.starts_with(&prefix));
+        write_book_settings(&self.file, &settings).await
+    }
+}

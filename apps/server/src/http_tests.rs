@@ -71,8 +71,8 @@ impl TestServer {
             min_download_free_bytes: DEFAULT_MIN_DOWNLOAD_FREE_GIB * GIBIBYTE_BYTES,
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
-            progress_file: data_dir.join("progress.json"),
-            book_settings_file: data_dir.join("book-settings.json"),
+            progress: Arc::new(ProgressStore::new(data_dir.join("progress.json"))),
+            book_settings: Arc::new(BookSettingsStore::new(data_dir.join("book-settings.json"))),
             users_file: data_dir.join("users.json"),
             sessions_file: data_dir.join("sessions.json"),
             activity_file: data_dir.join("activity.json"),
@@ -102,8 +102,6 @@ impl TestServer {
             libation_refreshes: Arc::new(Mutex::new(LibationRefreshStore::default())),
             libation_accounts: Arc::new(RwLock::new(ManagedLibationAccountStore::default())),
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            progress_write_lock: Arc::new(Mutex::new(())),
-            book_settings_write_lock: Arc::new(Mutex::new(())),
             rescan_lock: Arc::new(Mutex::new(())),
             libation_job_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
@@ -846,5 +844,91 @@ async fn a_misspelled_book_access_field_is_refused_rather_than_granting_everythi
         visible.as_array().unwrap().len(),
         1,
         "a misspelled field widened the reader's access"
+    );
+}
+
+#[tokio::test]
+async fn one_listeners_gain_does_not_follow_another_listener() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "second-ear").await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+
+    let set = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &owner,
+            serde_json::json!({ "volumeGain": 2.5 }),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text());
+
+    let owner_view = server.get("/api/books", &owner).await.json();
+    assert!(
+        (owner_view.as_array().unwrap()[0]["volumeGain"]
+            .as_f64()
+            .unwrap()
+            - 2.5)
+            .abs()
+            < 1e-9
+    );
+
+    let reader_view = server.get("/api/books", &reader).await.json();
+    assert!(
+        (reader_view.as_array().unwrap()[0]["volumeGain"]
+            .as_f64()
+            .unwrap()
+            - 1.0)
+            .abs()
+            < 1e-9,
+        "a gain set by one listener leaked to another"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_listener_forgets_their_position_and_settings() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "departing").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (book, track) = server.first_book_and_track(&reader).await;
+
+    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &reader,
+            serde_json::json!({ "volumeGain": 3.0 }),
+        )
+        .await;
+
+    let deleted = server
+        .send(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/users/{reader_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.text());
+
+    // Recreating the same username must not inherit the old account's state.
+    let reborn = server.add_reader(&owner, "departing").await;
+    let books = server.get("/api/books", &reborn).await.json();
+    let book_view = &books.as_array().unwrap()[0];
+    assert!(
+        book_view["progress"].is_null(),
+        "a deleted listener's position came back"
+    );
+    assert!(
+        (book_view["volumeGain"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+        "a deleted listener's gain came back"
     );
 }
