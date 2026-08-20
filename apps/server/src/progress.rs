@@ -90,7 +90,7 @@ pub(crate) struct BookVolumeUpdate {
     pub(crate) volume_gain: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProgressUpdate {
     pub(crate) track_id: String,
@@ -117,7 +117,7 @@ pub(crate) struct ProgressUpdate {
     pub(crate) tz_offset_minutes: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompletionUpdate {
     pub(crate) finished: bool,
@@ -277,23 +277,31 @@ pub(crate) async fn update_progress(
     Json(update): Json<ProgressUpdate>,
 ) -> Result<Json<Progress>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let library = state.library.read().await;
-    let book = library
-        .books
-        .iter()
-        .find(|candidate| candidate.id == book_id)
-        .ok_or(ApiError::not_found("Book not found"))?;
-    let track = book
-        .tracks
-        .iter()
-        .find(|candidate| candidate.id == update.track_id)
-        .ok_or(ApiError::not_found("Track not found"))?;
+    // Cloned out of the library so the decision can travel to the database's
+    // blocking task, and so the library lock is not held across the write.
+    let (book, track) = {
+        let library = state.library.read().await;
+        let book = library
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))?;
+        let track = book
+            .tracks
+            .iter()
+            .find(|candidate| candidate.id == update.track_id)
+            .ok_or(ApiError::not_found("Track not found"))?
+            .clone();
+        (book.clone(), track)
+    };
 
     let now_millis = unix_now_millis();
+    let decision_update = update.clone();
+    let decided_book_id = book.id.clone();
     let (saved, previous) = state
         .progress
-        .update_book(&auth.id, &book.id, |previous| {
-            decide_progress_write(book, track, previous, &update, now_millis)
+        .update_book(&auth.id, &decided_book_id, move |previous| {
+            decide_progress_write(&book, &track, previous, &decision_update, now_millis)
         })
         .await?;
 
@@ -331,7 +339,9 @@ pub(crate) async fn update_book_completion(
     let first_track = book
         .tracks
         .first()
-        .ok_or(ApiError::bad_request("This book has no playable tracks."))?;
+        .ok_or(ApiError::bad_request("This book has no playable tracks."))?
+        .clone();
+    // Owned, because the decision travels to the database's blocking task.
     let final_position = match (&update.track_id, update.position_seconds) {
         (None, None) => None,
         (Some(track_id), Some(position_seconds)) => {
@@ -339,11 +349,10 @@ pub(crate) async fn update_book_completion(
                 .tracks
                 .iter()
                 .find(|candidate| candidate.id == *track_id)
-                .ok_or(ApiError::not_found("Track not found"))?;
-            Some((
-                track,
-                clamped_track_position(position_seconds, track.duration_seconds),
-            ))
+                .ok_or(ApiError::not_found("Track not found"))?
+                .clone();
+            let clamped = clamped_track_position(position_seconds, track.duration_seconds);
+            Some((track, clamped))
         }
         _ => {
             return Err(ApiError::bad_request(
@@ -355,9 +364,14 @@ pub(crate) async fn update_book_completion(
     let now_millis = unix_now_millis();
     // Marking a book finished or unfinished is an explicit instruction, so it
     // bypasses the regression rules that guard automatic checkpoints.
+    let decision_book = book.clone();
+    let decision_update = update.clone();
+    let completion_book_id = book.id.clone();
     let (saved, _) = state
         .progress
-        .update_book(&auth.id, &book.id, |previous| {
+        .update_book(&auth.id, &completion_book_id, move |previous| {
+            let book = decision_book;
+            let update = decision_update;
             let next_timestamp = next_progress_timestamp(previous, now_millis);
             let mut saved = previous.cloned().unwrap_or_else(|| Progress {
                 book_id: book.id.clone(),
@@ -373,7 +387,7 @@ pub(crate) async fn update_book_completion(
                 saved.position_seconds = position_seconds;
                 saved.book_position_seconds = validated_book_position_seconds(
                     &book,
-                    track,
+                    &track,
                     position_seconds,
                     update.book_position_seconds,
                 );
@@ -639,50 +653,6 @@ pub(crate) fn validated_book_position_seconds(
     }
 }
 
-// The four functions below are the raw JSON file access behind
-// `ProgressStore` and `BookSettingsStore`. Nothing else should call them: the
-// stores own the locking, and a SQL backend will replace these wholesale.
-pub(crate) async fn read_progress(
-    progress_file: &FsPath,
-) -> Result<HashMap<String, Progress>, ApiError> {
-    match fs::read_to_string(progress_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn write_progress(
-    progress_file: &FsPath,
-    progress: &HashMap<String, Progress>,
-) -> Result<(), ApiError> {
-    write_json_atomic(progress_file, progress).await
-}
-
-pub(crate) async fn read_book_settings(
-    book_settings_file: &FsPath,
-) -> Result<HashMap<String, BookSettings>, ApiError> {
-    match fs::read_to_string(book_settings_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn write_book_settings(
-    book_settings_file: &FsPath,
-    settings: &HashMap<String, BookSettings>,
-) -> Result<(), ApiError> {
-    write_json_atomic(book_settings_file, settings).await
-}
-
-pub(crate) fn stored_volume_gain(settings: &HashMap<String, BookSettings>, key: &str) -> f64 {
-    settings
-        .get(key)
-        .map(|entry| clamp_book_volume_gain(entry.volume_gain))
-        .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT)
-}
-
 /// Slack absorbs realistic clock skew between devices; a genuinely stale
 /// replay (offline queue flush, reinstalled client) is hours or days old.
 pub(crate) const PROGRESS_STALE_WRITE_SLACK_SECONDS: f64 = 300.0;
@@ -813,28 +783,4 @@ pub(crate) fn progress_write_is_unintentional_regression(
     !intentional_seek
         && incoming_book_position + PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS
             < previous_book_position
-}
-
-/// Large backwards jumps are occasionally legitimate (restarting a book), but
-/// they are also the shape of every progress-loss bug, so the replaced copy is
-/// kept in a sibling file where it can always be recovered from disk.
-pub(crate) async fn backup_progress_regression(
-    progress_file: &FsPath,
-    key: &str,
-    previous: &Progress,
-) {
-    let path = progress_file.with_extension("backups.json");
-    let mut backups: HashMap<String, Vec<Progress>> = match fs::read_to_string(&path).await {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-        Err(_) => HashMap::new(),
-    };
-    let entries = backups.entry(key.to_string()).or_default();
-    entries.push(previous.clone());
-    if entries.len() > PROGRESS_BACKUPS_PER_BOOK {
-        let excess = entries.len() - PROGRESS_BACKUPS_PER_BOOK;
-        entries.drain(0..excess);
-    }
-    if write_json_atomic(&path, &backups).await.is_err() {
-        tracing::warn!("failed to write progress backup file {}", path.display());
-    }
 }
