@@ -465,10 +465,9 @@ impl Drop for RemoveOnDropFile {
 
 pub(crate) async fn delete_downloaded_book(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<Vec<Book>>, ApiError> {
-    require_admin(&auth)?;
     let _upload_guard = state.upload_lock.lock().await;
 
     let book_path = state

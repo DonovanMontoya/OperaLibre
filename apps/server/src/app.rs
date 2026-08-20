@@ -294,10 +294,9 @@ pub(crate) struct UpdateStatusQuery {
 
 pub(crate) async fn update_status(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Query(query): Query<UpdateStatusQuery>,
 ) -> Result<Json<updates::UpdateStatus>, ApiError> {
-    require_admin(&auth)?;
     state
         .update_manager
         .check(query.refresh)
@@ -308,9 +307,8 @@ pub(crate) async fn update_status(
 
 pub(crate) async fn install_update(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: OwnerUser,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
-    require_owner(&auth)?;
     state
         .update_manager
         .install()
@@ -321,10 +319,9 @@ pub(crate) async fn install_update(
 
 pub(crate) async fn frontend_update_status(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Query(query): Query<UpdateStatusQuery>,
 ) -> Result<Json<updates::FrontendUpdateStatus>, ApiError> {
-    require_admin(&auth)?;
     state
         .update_manager
         .check_frontend(query.refresh, query.current_version.as_deref())
@@ -337,9 +334,8 @@ pub(crate) async fn frontend_update_status(
 
 pub(crate) async fn install_frontend_update(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: OwnerUser,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
-    require_owner(&auth)?;
     state
         .update_manager
         .install_frontend()

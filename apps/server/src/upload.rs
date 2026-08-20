@@ -8,10 +8,9 @@ pub(crate) const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
 
 pub(crate) async fn upload_audiobook(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     mut multipart: Multipart,
 ) -> Result<Json<Vec<Book>>, ApiError> {
-    require_admin(&auth)?;
     let _upload_guard = state.upload_lock.lock().await;
     fs::create_dir_all(&state.library_root).await?;
 

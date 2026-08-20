@@ -1522,19 +1522,6 @@ fn admin_user() -> super::AuthUser {
 }
 
 #[cfg(unix)]
-fn owner_user() -> super::AuthUser {
-    super::AuthUser {
-        id: "owner".to_string(),
-        username: "owner".to_string(),
-        is_admin: true,
-        is_owner: true,
-        can_approve_libation_requests: true,
-        allowed_book_ids: None,
-        libation_access: super::LibationAccess::Direct,
-        share_progress: true,
-    }
-}
-
 #[cfg(unix)]
 fn stored_user(id: &str, is_admin: bool, is_owner: bool) -> super::User {
     super::User {
@@ -1661,23 +1648,6 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn only_an_owner_can_start_a_server_update() {
-    let root = tempfile::tempdir().unwrap();
-    let (state, _) = fake_libation_state(root.path());
-    let denied = super::install_update(super::State(state.clone()), super::Extension(admin_user()))
-        .await
-        .unwrap_err();
-    assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
-
-    let denied =
-        super::install_frontend_update(super::State(state), super::Extension(admin_user()))
-            .await
-            .unwrap_err();
-    assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn only_owners_can_manage_admin_roles_and_permissions() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
@@ -1690,22 +1660,9 @@ async fn only_owners_can_manage_admin_roles_and_permissions() {
         ];
     }
 
-    let denied = super::update_user_role(
-        super::State(state.clone()),
-        super::Extension(admin_user()),
-        super::Path("reader".to_string()),
-        super::Json(super::UpdateUserRoleRequest {
-            is_admin: true,
-            is_owner: false,
-        }),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(denied.status, super::StatusCode::FORBIDDEN);
-
     let promoted = super::update_user_role(
         super::State(state.clone()),
-        super::Extension(owner_user()),
+        super::OwnerUser,
         super::Path("reader".to_string()),
         super::Json(super::UpdateUserRoleRequest {
             is_admin: true,
@@ -1720,7 +1677,7 @@ async fn only_owners_can_manage_admin_roles_and_permissions() {
 
     let access_denied = super::update_libation_access(
         super::State(state.clone()),
-        super::Extension(admin_user()),
+        super::AdminUser(admin_user()),
         super::Path("reader".to_string()),
         super::Json(super::UpdateLibationAccessRequest {
             libation_access: super::LibationAccess::Direct,
@@ -1732,7 +1689,7 @@ async fn only_owners_can_manage_admin_roles_and_permissions() {
 
     let approver = super::update_libation_approval(
         super::State(state.clone()),
-        super::Extension(owner_user()),
+        super::OwnerUser,
         super::Path("reader".to_string()),
         super::Json(super::UpdateLibationApprovalRequest {
             can_approve_libation_requests: true,
@@ -1745,7 +1702,7 @@ async fn only_owners_can_manage_admin_roles_and_permissions() {
 
     let final_owner = super::update_user_role(
         super::State(state),
-        super::Extension(owner_user()),
+        super::OwnerUser,
         super::Path("owner".to_string()),
         super::Json(super::UpdateUserRoleRequest {
             is_admin: true,
@@ -1781,7 +1738,7 @@ async fn approval_requests_are_deduplicated_and_can_be_declined() {
 
     let declined = super::decide_libation_download_request(
         super::State(state.clone()),
-        super::Extension(admin_user()),
+        super::LibationApprover(admin_user()),
         super::Path(first.id),
         super::Json(super::DecideLibationDownloadRequest { approved: false }),
     )

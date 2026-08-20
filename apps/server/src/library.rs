@@ -233,9 +233,8 @@ pub(crate) async fn list_books(
 
 pub(crate) async fn rescan(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
 ) -> Result<Json<Vec<Book>>, ApiError> {
-    require_admin(&auth)?;
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth).await?))
 }
@@ -260,12 +259,10 @@ pub(crate) async fn get_book(
 
 pub(crate) async fn update_book_metadata(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Path(book_id): Path<String>,
     Json(payload): Json<BookMetadataUpdate>,
 ) -> Result<Json<Book>, ApiError> {
-    require_admin(&auth)?;
-
     let metadata_override = metadata_override_from_update(payload)?;
     {
         let library = state.library.read().await;

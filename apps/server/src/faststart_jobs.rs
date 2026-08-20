@@ -69,9 +69,8 @@ pub(crate) struct FaststartRequest {
 
 pub(crate) async fn faststart_status(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
 ) -> Result<Json<FaststartStatusResponse>, ApiError> {
-    require_admin(&auth)?;
     let survey = survey_faststart(&state, None).await?;
     let active_books = recently_active_book_ids(&state).await?;
 
@@ -133,10 +132,9 @@ pub(crate) async fn faststart_status(
 
 pub(crate) async fn start_faststart_conversion(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Json(payload): Json<FaststartRequest>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    require_admin(&auth)?;
     if state.faststart_tools.is_none() {
         return Err(ApiError::bad_request(
             "ffmpeg was not found. Set ffmpeg_path in server.config or put ffmpeg on PATH.",

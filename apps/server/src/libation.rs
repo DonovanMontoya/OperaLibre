@@ -119,13 +119,21 @@ pub(crate) struct LibationDownloadRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Permission payloads reject unknown fields. These types all model an
+// absent field as a permissive default -- a missing `allowedBookIds`
+// means "no restrictions" -- so a client that misspells a key would
+// otherwise silently widen a user's access and still get a 200.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateLibationAccessRequest {
     pub(crate) libation_access: LibationAccess,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Permission payloads reject unknown fields. These types all model an
+// absent field as a permissive default -- a missing `allowedBookIds`
+// means "no restrictions" -- so a client that misspells a key would
+// otherwise silently widen a user's access and still get a 200.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateLibationApprovalRequest {
     pub(crate) can_approve_libation_requests: bool,
 }
@@ -307,10 +315,9 @@ pub(crate) struct LibationExportRecord {
 
 pub(crate) async fn start_libation_account_login(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Json(payload): Json<StartLibationLoginRequest>,
 ) -> Result<Json<LibationLoginStarted>, ApiError> {
-    require_admin(&auth)?;
     if !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation CLI was not found. Configure libation_cli_path before adding an Audible account.",
@@ -444,11 +451,10 @@ pub(crate) async fn start_libation_account_login(
 
 pub(crate) async fn complete_libation_account_login(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Path(session_id): Path<String>,
     Json(payload): Json<CompleteLibationLoginRequest>,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    require_admin(&auth)?;
     let response_url = validate_libation_response_url(&payload.response_url)?;
     let pending = state
         .libation_login_sessions
@@ -524,10 +530,9 @@ pub(crate) async fn complete_libation_account_login(
 
 pub(crate) async fn cancel_libation_account_login(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_admin(&auth)?;
     let pending = state
         .libation_login_sessions
         .lock()
@@ -542,11 +547,10 @@ pub(crate) async fn cancel_libation_account_login(
 
 pub(crate) async fn update_libation_account(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Path(profile_id): Path<String>,
     Json(payload): Json<UpdateLibationAccountRequest>,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    require_admin(&auth)?;
     let label = payload.label.trim();
     if label.is_empty() || label.chars().count() > MAX_LIBATION_ACCOUNT_LABEL_CHARS {
         return Err(ApiError::bad_request(format!(
@@ -567,10 +571,9 @@ pub(crate) async fn update_libation_account(
 
 pub(crate) async fn delete_libation_account(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: OwnerUser,
     Path(profile_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_owner(&auth)?;
     {
         let sessions = state.libation_login_sessions.lock().await;
         if sessions
@@ -814,9 +817,8 @@ pub(crate) async fn initialize_managed_libation_profile(
 
 pub(crate) async fn libation_status(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    require_admin(&auth)?;
     let _libation_guard = state.libation_job_lock.lock().await;
     Ok(Json(read_libation_status(&state).await))
 }
@@ -950,11 +952,10 @@ pub(crate) async fn create_libation_download_request(
 
 pub(crate) async fn decide_libation_download_request(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    LibationApprover(auth): LibationApprover,
     Path(request_id): Path<String>,
     Json(payload): Json<DecideLibationDownloadRequest>,
 ) -> Result<Json<LibationDownloadRequest>, ApiError> {
-    require_libation_approver(&auth)?;
     if payload.approved && !state.libation_config.enabled() {
         return Err(ApiError::bad_request(
             "Libation is not configured on this server.",
@@ -1792,9 +1793,8 @@ pub(crate) async fn grant_user_book_access(
 
 pub(crate) async fn liberate_all_libation_books(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
 ) -> Result<Json<JobCreated>, ApiError> {
-    require_admin(&auth)?;
     if auth.libation_access != LibationAccess::Direct {
         return Err(ApiError::forbidden(
             "This administrator must request approval for Libation downloads.",
@@ -2834,11 +2834,10 @@ pub(crate) fn recover_interrupted_libation_requests(store: &mut LibationRequestS
 
 pub(crate) async fn update_libation_access(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    AdminUser(auth): AdminUser,
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationAccessRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    require_admin(&auth)?;
     let mut users = state.users.write().await;
     let user = users
         .users
@@ -2863,11 +2862,10 @@ pub(crate) async fn update_libation_access(
 
 pub(crate) async fn update_libation_approval(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: OwnerUser,
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationApprovalRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    require_owner(&auth)?;
     let mut users = state.users.write().await;
     let user = users
         .users

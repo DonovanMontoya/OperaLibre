@@ -209,6 +209,28 @@ impl TestServer {
         login.json()["token"].as_str().unwrap().to_string()
     }
 
+    /// Log in as an already-created user and return the bearer token.
+    async fn add_reader_login(&self, username: &str) -> String {
+        let login = self
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": username,
+                            "password": "deputy-password-1234"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::OK, "{}", login.text());
+        login.json()["token"].as_str().unwrap().to_string()
+    }
+
     async fn get(&self, uri: &str, token: &str) -> TestResponse {
         self.send(
             Request::builder()
@@ -673,5 +695,156 @@ async fn progress_is_private_to_each_user() {
     assert!(
         reader_books.as_array().unwrap()[0]["progress"].is_null(),
         "one user's position leaked into another user's library"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Authorization, enforced by the typed extractors
+// ---------------------------------------------------------------------------
+
+/// Owner-only routes, as `(method, path)`.
+const OWNER_ONLY_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/api/update/install"),
+    ("POST", "/api/frontend-update/install"),
+    ("PUT", "/api/users/someone/role"),
+    ("PUT", "/api/users/someone/libation-approval"),
+];
+
+/// Admin-only routes that a plain reader must never reach.
+///
+/// A wrong path here cannot silently pass: an unmatched route answers 404 from
+/// the API catch-all, which fails the 403 assertion.
+const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/users"),
+    ("POST", "/api/users"),
+    ("POST", "/api/library/rescan"),
+    ("GET", "/api/jobs"),
+    ("GET", "/api/library/faststart"),
+    ("PUT", "/api/users/someone/book-access"),
+    ("PUT", "/api/users/someone/libation-access"),
+];
+
+#[tokio::test]
+async fn owner_only_routes_refuse_a_plain_administrator() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    // A second administrator who is not the owner.
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let admin = server.add_reader_login("deputy").await;
+
+    for (method, path) in OWNER_ONLY_ROUTES {
+        let response = server
+            .send_json(method, path, &admin, serde_json::json!({}))
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} was reachable by a non-owner administrator"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_only_routes_refuse_a_reader() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "bystander").await;
+
+    for (method, path) in ADMIN_ONLY_ROUTES {
+        let response = server
+            .send_json(method, path, &reader, serde_json::json!({}))
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} was reachable by a reader"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_privileged_route_is_refused_before_its_body_is_read() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "prober").await;
+
+    // A body that would fail validation if it were ever deserialized. The
+    // guard runs first, so the answer must be 403 rather than 400 or 422.
+    for (method, path) in ADMIN_ONLY_ROUTES.iter().chain(OWNER_ONLY_ROUTES) {
+        let response = server
+            .send_json(
+                method,
+                path,
+                &reader,
+                serde_json::json!({ "nonsense": [1, 2, 3] }),
+            )
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} looked at an unauthorized caller's body"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_misspelled_book_access_field_is_refused_rather_than_granting_everything() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "limited").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed = books.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [allowed] }),
+        )
+        .await;
+
+    // `bookIds` is not a field on this payload. Before `deny_unknown_fields`
+    // this deserialized to `None`, which means "clear all restrictions", so a
+    // typo silently handed the reader the entire library.
+    let typo = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "bookIds": [] }),
+        )
+        .await;
+    assert_ne!(
+        typo.status,
+        StatusCode::OK,
+        "a misspelled field was accepted as a permission change"
+    );
+
+    let visible = server.get("/api/books", &reader).await.json();
+    assert_eq!(
+        visible.as_array().unwrap().len(),
+        1,
+        "a misspelled field widened the reader's access"
     );
 }

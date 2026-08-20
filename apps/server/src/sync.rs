@@ -34,9 +34,8 @@ pub(crate) async fn get_sync_map(
 
 pub(crate) async fn alignment_status(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&auth)?;
     let config = &state.alignment_config;
     Ok(Json(serde_json::json!({
         "enabled": config.enabled(),
@@ -46,10 +45,9 @@ pub(crate) async fn alignment_status(
 
 pub(crate) async fn generate_sync_map(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
+    _: AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    require_admin(&auth)?;
     let Some(cli_path) = state.alignment_config.cli_path.clone() else {
         return Err(ApiError::bad_request(
             "Alignment CLI was not found. Set alignment_cli_path in server.config or put echogarden on PATH.",
