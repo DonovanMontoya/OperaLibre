@@ -65,6 +65,7 @@ mod alignment;
 mod app;
 mod auth;
 mod config;
+mod db;
 mod error;
 mod faststart;
 mod faststart_jobs;
@@ -74,6 +75,7 @@ mod jobs;
 mod libation;
 mod library;
 mod media;
+mod migrate;
 mod progress;
 mod storage;
 mod sync;
@@ -87,12 +89,14 @@ use activity::*;
 use app::*;
 use auth::*;
 use config::*;
+use db::*;
 use error::*;
 use faststart_jobs::*;
 use jobs::*;
 use libation::*;
 use library::*;
 use media::*;
+use migrate::*;
 use progress::*;
 use storage::*;
 use sync::*;
@@ -133,7 +137,58 @@ async fn main() -> anyhow::Result<()> {
     create_private_directory(&config.download_temp_dir)?;
     secure_existing_state_files(&config).await?;
 
-    let users_store = load_users_store(&config.users_file).await?;
+    let database_path = config.data_dir.join("operalibre.db");
+    if env::args().any(|argument| argument == "--export-json") {
+        let layout = JsonLayout::for_config(&config);
+        let connection = db::open(&database_path)?;
+        let written = export_json(&connection, &layout)?;
+        println!(
+            "Exported {written} records from {} back to JSON in {}.",
+            database_path.display(),
+            config.data_dir.display()
+        );
+        return Ok(());
+    }
+    let json_layout = JsonLayout::for_config(&config);
+    migrate_if_needed(&database_path, &config.data_dir, &json_layout)?;
+    let database = Database::open(&database_path)?;
+
+    // Everything cached in memory now comes back out of the database. The JSON
+    // files are left where they are as the rollback path, and are never read
+    // again after the import above.
+    let mut snapshot = database
+        .call(|connection| {
+            read_cached_snapshot(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    // Two data migrations used to run when their file was read.
+    let promoted = migrate_users_permissions(&mut snapshot.users);
+    let recovered = recover_interrupted_libation_requests(&mut snapshot.libation_requests);
+    if promoted || recovered {
+        let users_payload = serde_json::to_string(&snapshot.users)?;
+        let requests_payload = serde_json::to_string(&snapshot.libation_requests)?;
+        database
+            .transaction(move |transaction| {
+                if promoted {
+                    write_users_rows(transaction, &users_payload)?;
+                }
+                if recovered {
+                    db::write_document(transaction, LIBATION_REQUESTS_DOCUMENT, &requests_payload)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+    }
+    let sessions_store = snapshot.sessions;
+    let activity_store = snapshot.activity;
+    let metadata_overrides = snapshot.metadata_overrides;
+    let libation_requests = snapshot.libation_requests;
+    let libation_refreshes = snapshot.libation_refreshes;
+    let libation_accounts = snapshot.libation_accounts;
+    let users_store = snapshot.users.clone();
     let setup_token =
         if users_store.users.is_empty() && config.deployment_mode.allows_remote_setup() {
             let token = generate_session_token();
@@ -146,19 +201,8 @@ async fn main() -> anyhow::Result<()> {
         } else {
             None
         };
-    let sessions_store = load_sessions_store(&config.sessions_file).await?;
-    let activity_store = load_activity_store(&config.activity_file).await?;
-    let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
-    let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
-    let libation_refreshes =
-        load_libation_refreshes(&config.data_dir.join("libation-refreshes.json")).await?;
-    let libation_accounts_file = config.data_dir.join("libation-accounts.json");
-    let libation_accounts = load_managed_libation_accounts(&libation_accounts_file).await?;
     let libation_accounts_root = config.data_dir.join("libation-accounts");
     create_private_directory(&libation_accounts_root)?;
-    if fs::try_exists(&libation_accounts_file).await? {
-        secure_file_permissions(&libation_accounts_file).await?;
-    }
     for account in &libation_accounts.accounts {
         initialize_managed_libation_profile(
             &libation_accounts_root.join(&account.id),
@@ -192,10 +236,8 @@ async fn main() -> anyhow::Result<()> {
         min_download_free_bytes: config.min_download_free_bytes,
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
-        progress: Arc::new(ProgressStore::new(config.progress_file.clone())),
-        book_settings: Arc::new(BookSettingsStore::new(
-            config.data_dir.join("book-settings.json"),
-        )),
+        progress: Arc::new(ProgressStore::new(database.clone())),
+        book_settings: Arc::new(BookSettingsStore::new(database.clone())),
         libation_accounts_root,
         libation_config: LibationConfig::from_server_config(&config),
         alignment_config: AlignmentConfig::from_server_config(&config),
@@ -211,29 +253,39 @@ async fn main() -> anyhow::Result<()> {
         sync_dir: config.data_dir.join("sync"),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(
-            config.metadata_overrides_file.clone(),
+            database.clone(),
+            StoreShape::Document(METADATA_OVERRIDES_DOCUMENT),
             metadata_overrides,
         )),
         jobs: Arc::new(RwLock::new(HashMap::new())),
-        users: Arc::new(UserStore::new(config.users_file.clone(), users_store)),
+        users: Arc::new(UserStore::new(
+            database.clone(),
+            StoreShape::Users,
+            users_store,
+        )),
         sessions: Arc::new(SessionStore::new(
-            config.sessions_file.clone(),
+            database.clone(),
+            StoreShape::Sessions,
             sessions_store,
         )),
         activity: Arc::new(ActivityLog::new(
-            config.activity_file.clone(),
+            database.clone(),
+            StoreShape::Activity,
             activity_store,
         )),
         libation_requests: Arc::new(LibationRequests::new(
-            config.libation_requests_file.clone(),
+            database.clone(),
+            StoreShape::Document(LIBATION_REQUESTS_DOCUMENT),
             libation_requests,
         )),
         libation_refreshes: Arc::new(LibationRefreshes::new(
-            config.data_dir.join("libation-refreshes.json"),
+            database.clone(),
+            StoreShape::Document(LIBATION_REFRESHES_DOCUMENT),
             libation_refreshes,
         )),
         libation_accounts: Arc::new(LibationAccounts::new(
-            libation_accounts_file,
+            database.clone(),
+            StoreShape::Document(LIBATION_ACCOUNTS_DOCUMENT),
             libation_accounts,
         )),
         libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),

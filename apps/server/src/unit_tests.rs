@@ -155,46 +155,44 @@ fn a_book_volume_gain_is_clamped_to_the_supported_range() {
     );
 }
 
-/// A settings file is read on the path that serves the whole library, so a
-/// row missing its gain must degrade to unity instead of failing the read.
-#[test]
-fn a_settings_row_without_a_gain_still_parses() {
-    let parsed: std::collections::HashMap<String, super::BookSettings> =
-        serde_json::from_str(r#"{"user:a:book:b":{},"user:a:book:c":{"volumeGain":2.0}}"#)
-            .expect("a row missing its gain must not fail the whole file");
-    assert_eq!(
-        super::stored_volume_gain(&parsed, "user:a:book:b"),
-        super::BOOK_VOLUME_GAIN_DEFAULT
-    );
-    assert_eq!(super::stored_volume_gain(&parsed, "user:a:book:c"), 2.0);
-}
+/// Books nobody has tuned must read back as unity rather than as silence, and
+/// a stored value that predates a narrowed range must still be safe to hand to
+/// a client. The clamp therefore applies on the way out, not only on the way in.
+#[tokio::test]
+async fn an_untuned_book_reads_back_at_unity_and_a_stored_extreme_is_clamped() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let settings = super::BookSettingsStore::new(database.clone());
 
-/// Books nobody has tuned must read back as unity rather than as silence,
-/// and a stored value that predates a narrowed range must still be safe.
-#[test]
-fn an_untuned_book_reads_back_at_unity_gain() {
-    let mut settings = std::collections::HashMap::new();
-    settings.insert(
-        "user:reader:book:loud".to_string(),
-        super::BookSettings { volume_gain: 99.0 },
-    );
-    settings.insert(
-        "user:reader:book:quiet".to_string(),
-        super::BookSettings { volume_gain: 2.0 },
-    );
+    settings.set_gain("reader", "quiet", 2.0).await.unwrap();
+    // Written straight past the store, the way an older release or a hand
+    // edit would have left it.
+    database
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO book_settings (user_id, book_id, volume_gain)
+                 VALUES ('reader', 'loud', 99.0)",
+                [],
+            )
+        })
+        .await
+        .unwrap();
 
     assert_eq!(
-        super::stored_volume_gain(&settings, "user:reader:book:untouched"),
+        settings.gain("reader", "untouched").await.unwrap(),
         super::BOOK_VOLUME_GAIN_DEFAULT
     );
+    assert_eq!(settings.gain("reader", "quiet").await.unwrap(), 2.0);
     assert_eq!(
-        super::stored_volume_gain(&settings, "user:reader:book:quiet"),
-        2.0
+        settings.gain("reader", "loud").await.unwrap(),
+        super::BOOK_VOLUME_GAIN_MAX,
+        "a stored gain above the supported range reached a client"
     );
-    assert_eq!(
-        super::stored_volume_gain(&settings, "user:reader:book:loud"),
-        super::BOOK_VOLUME_GAIN_MAX
-    );
+
+    let listed = settings.list_for_user("reader").await.unwrap();
+    assert_eq!(listed.get("loud"), Some(&super::BOOK_VOLUME_GAIN_MAX));
+    assert_eq!(listed.get("quiet"), Some(&2.0));
+    assert!(!listed.contains_key("untouched"));
 }
 
 #[tokio::test]
@@ -970,18 +968,21 @@ fn explicit_completion_overrides_position_without_moving_it() {
     ));
 }
 
-#[tokio::test]
-async fn the_legacy_position_estimate_is_dropped_from_stored_activity() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("activity.json");
+/// Older stores opened with a synthetic "everything before tracking started"
+/// bucket, estimated from how far into each book a reader had reached. It
+/// conflated ground covered with time spent listening, so it must not survive
+/// the move into the database either.
+#[test]
+fn the_legacy_position_estimate_is_dropped_when_an_installation_is_imported() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = legacy_data_dir(root.path());
+    let data_dir = root.path().join("data");
     std::fs::write(
-        &path,
+        &layout.activity,
         serde_json::json!({
             "reader": {
                 "2026-07-23": 600.0,
-                // An estimate of pre-tracking history from how far into
-                // books the reader had reached: fifty hours the reader
-                // never demonstrably spent listening.
+                // Fifty hours the reader never demonstrably spent listening.
                 super::ACTIVITY_BASELINE_KEY: 180_000.0,
             }
         })
@@ -989,7 +990,11 @@ async fn the_legacy_position_estimate_is_dropped_from_stored_activity() {
     )
     .unwrap();
 
-    let store = super::load_activity_store(&path).await.unwrap();
+    let database_path = data_dir.join("operalibre.db");
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+
+    let connection = super::db::open(&database_path).unwrap();
+    let store = super::read_activity_rows(&connection).unwrap();
     let reader = &store.by_user["reader"];
     assert_eq!(reader.len(), 1);
     assert_eq!(reader["2026-07-23"], 600.0);
@@ -1459,6 +1464,7 @@ exit 0
     permissions.set_mode(0o755);
     std::fs::set_permissions(&cli_path, permissions).unwrap();
 
+    let database = super::Database::open(&data_dir.join("operalibre.db")).unwrap();
     let state = super::AppState {
         deployment_mode: super::DeploymentMode::Local,
         csrf_allowed_origins: super::Arc::new(std::collections::HashSet::new()),
@@ -1469,10 +1475,8 @@ exit 0
         min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
         library_root: library_root.clone(),
         library_identities_file: data_dir.join("library-identities.json"),
-        progress: super::Arc::new(super::ProgressStore::new(data_dir.join("progress.json"))),
-        book_settings: super::Arc::new(super::BookSettingsStore::new(
-            data_dir.join("book-settings.json"),
-        )),
+        progress: super::Arc::new(super::ProgressStore::new(database.clone())),
+        book_settings: super::Arc::new(super::BookSettingsStore::new(database.clone())),
         libation_accounts_root: data_dir.join("libation-accounts"),
         libation_config: super::LibationConfig {
             cli_path: Some(cli_path),
@@ -1487,32 +1491,39 @@ exit 0
         sync_dir: data_dir.join("sync"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
         metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
-            data_dir.join("metadata-overrides.json"),
+            database.clone(),
+            super::StoreShape::Document(super::METADATA_OVERRIDES_DOCUMENT),
             super::MetadataOverrideStore::default(),
         )),
         jobs: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
         users: super::Arc::new(super::UserStore::new(
-            data_dir.join("users.json"),
+            database.clone(),
+            super::StoreShape::Users,
             super::UsersStore::default(),
         )),
         sessions: super::Arc::new(super::SessionStore::new(
-            data_dir.join("sessions.json"),
+            database.clone(),
+            super::StoreShape::Sessions,
             std::collections::HashMap::new(),
         )),
         activity: super::Arc::new(super::ActivityLog::new(
-            data_dir.join("activity.json"),
+            database.clone(),
+            super::StoreShape::Activity,
             super::ActivityStore::default(),
         )),
         libation_requests: super::Arc::new(super::LibationRequests::new(
-            data_dir.join("libation-requests.json"),
+            database.clone(),
+            super::StoreShape::Document(super::LIBATION_REQUESTS_DOCUMENT),
             super::LibationRequestStore::default(),
         )),
         libation_refreshes: super::Arc::new(super::LibationRefreshes::new(
-            data_dir.join("libation-refreshes.json"),
+            database.clone(),
+            super::StoreShape::Document(super::LIBATION_REFRESHES_DOCUMENT),
             super::LibationRefreshStore::default(),
         )),
         libation_accounts: super::Arc::new(super::LibationAccounts::new(
-            data_dir.join("libation-accounts.json"),
+            database.clone(),
+            super::StoreShape::Document(super::LIBATION_ACCOUNTS_DOCUMENT),
             super::ManagedLibationAccountStore::default(),
         )),
         libation_login_sessions: super::Arc::new(super::Mutex::new(
@@ -2854,14 +2865,18 @@ fn a_future_skewed_clock_does_not_lock_out_a_healthy_device() {
 }
 
 /// A handler that rejects a request after editing the account list used to
-/// leave the in-memory copy changed and the file untouched, and the two
+/// leave the in-memory copy changed and the stored copy untouched, and the two
 /// disagreed until the next restart. `mutate` works on a draft and adopts it
-/// only once the change succeeds and the write lands.
+/// only once the change succeeds and the write commits.
 #[tokio::test]
-async fn a_rejected_account_change_touches_neither_the_cache_nor_the_file() {
+async fn a_rejected_account_change_touches_neither_the_cache_nor_the_database() {
     let root = tempfile::tempdir().unwrap();
-    let file = root.path().join("users.json");
-    let store = super::UserStore::new(file.clone(), super::UsersStore::default());
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let store = super::UserStore::new(
+        database.clone(),
+        super::StoreShape::Users,
+        super::UsersStore::default(),
+    );
 
     store
         .mutate(|users| {
@@ -2885,7 +2900,331 @@ async fn a_rejected_account_change_touches_neither_the_cache_nor_the_file() {
         1,
         "a rejected change was left in the cache"
     );
-    let on_disk: super::UsersStore =
-        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(on_disk.users.len(), 1, "a rejected change reached the file");
+    let stored = database
+        .call(|connection| {
+            super::read_users_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        stored.users.len(),
+        1,
+        "a rejected change reached the database"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Importing an existing installation and exporting it back
+// ---------------------------------------------------------------------------
+
+/// Write a data directory that looks like a real installation before SQLite.
+fn legacy_data_dir(root: &std::path::Path) -> super::JsonLayout {
+    let data_dir = root.join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let write = |name: &str, value: serde_json::Value| {
+        std::fs::write(
+            data_dir.join(name),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    };
+
+    write(
+        "progress.json",
+        serde_json::json!({
+            "user:alice:book:one": {
+                "bookId": "one", "trackId": "t1",
+                "positionSeconds": 12.5, "bookPositionSeconds": 12.5,
+                "durationSeconds": 600.0, "updatedAt": "1750000000000",
+                "finishedOverride": true
+            },
+            "user:bob:book:two": {
+                "bookId": "two", "trackId": "t9",
+                "positionSeconds": 3.0, "bookPositionSeconds": 903.0,
+                "durationSeconds": null, "updatedAt": "1750000001000"
+            }
+        }),
+    );
+    write(
+        "book-settings.json",
+        serde_json::json!({ "user:alice:book:one": { "volumeGain": 2.25 } }),
+    );
+    write(
+        "users.json",
+        serde_json::json!({
+            "users": [
+                {
+                    "id": "alice", "username": "alice", "passwordHash": "hash-a",
+                    "isAdmin": true, "isOwner": true,
+                    "canApproveLibationRequests": true,
+                    "allowedBookIds": null, "libationAccess": "direct",
+                    "shareProgress": true, "createdAt": "2026-01-01T00:00:00Z"
+                },
+                {
+                    "id": "bob", "username": "bob", "passwordHash": "hash-b",
+                    "isAdmin": false, "isOwner": false,
+                    "canApproveLibationRequests": false,
+                    "allowedBookIds": ["two"], "libationAccess": "approval",
+                    "shareProgress": false, "createdAt": "2026-01-02T00:00:00Z"
+                }
+            ],
+            "permissions_version": 1
+        }),
+    );
+    write(
+        "sessions.json",
+        // Sessions are the one store written in snake_case on disk.
+        serde_json::json!({ "token-abc": { "user_id": "alice", "created_at": 1750000000u64 } }),
+    );
+    write(
+        "activity.json",
+        serde_json::json!({ "alice": { "2026-08-01": 1800.0, "2026-08-02": 60.0 } }),
+    );
+    write(
+        "metadata-overrides.json",
+        serde_json::json!({ "one": { "title": "Edited" } }),
+    );
+    write(
+        "libation-requests.json",
+        serde_json::json!({ "requests": [] }),
+    );
+    write(
+        "libation-refreshes.json",
+        serde_json::json!({ "manualRefreshes": {} }),
+    );
+    write(
+        "libation-accounts.json",
+        serde_json::json!({ "accounts": [] }),
+    );
+
+    super::JsonLayout {
+        progress: data_dir.join("progress.json"),
+        book_settings: data_dir.join("book-settings.json"),
+        users: data_dir.join("users.json"),
+        sessions: data_dir.join("sessions.json"),
+        activity: data_dir.join("activity.json"),
+        metadata_overrides: data_dir.join("metadata-overrides.json"),
+        libation_requests: data_dir.join("libation-requests.json"),
+        libation_refreshes: data_dir.join("libation-refreshes.json"),
+        libation_accounts: data_dir.join("libation-accounts.json"),
+    }
+}
+
+/// An absent optional field and one written as `null` mean the same thing to
+/// serde, and an older release may have written either. Comparing round trips
+/// should not care which form a file happens to use.
+fn without_nulls(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .into_iter()
+                .filter(|(_, field)| !field.is_null())
+                .map(|(key, field)| (key, without_nulls(field)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(without_nulls).collect())
+        }
+        other => other,
+    }
+}
+
+#[test]
+fn a_progress_key_splits_back_into_its_two_halves() {
+    assert_eq!(
+        super::split_progress_key("user:alice:book:one"),
+        Some(("alice".to_string(), "one".to_string()))
+    );
+    // Book ids are free-form and have contained colons.
+    assert_eq!(
+        super::split_progress_key("user:a:b:book:x:y"),
+        Some(("a:b".to_string(), "x:y".to_string()))
+    );
+    assert_eq!(super::split_progress_key("nonsense"), None);
+}
+
+#[tokio::test]
+async fn an_existing_installation_imports_and_exports_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = legacy_data_dir(root.path());
+    let data_dir = root.path().join("data");
+    let database_path = data_dir.join("operalibre.db");
+
+    let before: Vec<(String, String)> = [
+        &layout.progress,
+        &layout.book_settings,
+        &layout.users,
+        &layout.sessions,
+        &layout.activity,
+        &layout.metadata_overrides,
+    ]
+    .iter()
+    .map(|path| {
+        (
+            path.file_name().unwrap().to_string_lossy().to_string(),
+            std::fs::read_to_string(path).unwrap(),
+        )
+    })
+    .collect();
+
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+    assert!(database_path.is_file(), "the database was not created");
+
+    // Nothing was taken away: the originals stay, and a copy is kept.
+    for (name, contents) in &before {
+        assert_eq!(
+            &std::fs::read_to_string(data_dir.join(name)).unwrap(),
+            contents,
+            "{name} was modified by the import"
+        );
+        assert!(
+            data_dir.join("backup-pre-sqlite").join(name).is_file(),
+            "{name} was not backed up"
+        );
+    }
+
+    let database = super::Database::open(&database_path).unwrap();
+
+    // Every record survives the round trip.
+    let alice = database
+        .call(|connection| {
+            super::read_users_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(alice.users.len(), 2);
+    assert_eq!(alice.permissions_version, 1);
+    let bob = alice.users.iter().find(|user| user.id == "bob").unwrap();
+    assert_eq!(
+        bob.allowed_book_ids.as_deref(),
+        Some(&["two".to_string()][..])
+    );
+    let owner = alice.users.iter().find(|user| user.id == "alice").unwrap();
+    assert!(
+        owner.allowed_book_ids.is_none(),
+        "an unrestricted account gained restrictions"
+    );
+
+    let store = super::ProgressStore::new(database.clone());
+    let saved = store.get("alice", "one").await.unwrap().unwrap();
+    assert!((saved.position_seconds - 12.5).abs() < 1e-9);
+    assert_eq!(saved.finished_override, Some(true));
+    let bobs = store.get("bob", "two").await.unwrap().unwrap();
+    assert!((bobs.book_position_seconds - 903.0).abs() < 1e-9);
+    assert_eq!(bobs.duration_seconds, None);
+
+    let settings = super::BookSettingsStore::new(database.clone());
+    assert!((settings.gain("alice", "one").await.unwrap() - 2.25).abs() < 1e-9);
+    assert!((settings.gain("bob", "two").await.unwrap() - 1.0).abs() < 1e-9);
+
+    // And the export reproduces what was imported.
+    let exported_dir = root.path().join("exported");
+    std::fs::create_dir_all(&exported_dir).unwrap();
+    let export_layout = super::JsonLayout {
+        progress: exported_dir.join("progress.json"),
+        book_settings: exported_dir.join("book-settings.json"),
+        users: exported_dir.join("users.json"),
+        sessions: exported_dir.join("sessions.json"),
+        activity: exported_dir.join("activity.json"),
+        metadata_overrides: exported_dir.join("metadata-overrides.json"),
+        libation_requests: exported_dir.join("libation-requests.json"),
+        libation_refreshes: exported_dir.join("libation-refreshes.json"),
+        libation_accounts: exported_dir.join("libation-accounts.json"),
+    };
+    database
+        .call(move |connection| {
+            super::export_json(connection, &export_layout)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+
+    for name in [
+        "progress.json",
+        "book-settings.json",
+        "users.json",
+        "sessions.json",
+        "activity.json",
+        "metadata-overrides.json",
+    ] {
+        let original: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(data_dir.join(name)).unwrap()).unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(exported_dir.join(name)).unwrap())
+                .unwrap();
+        assert_eq!(
+            without_nulls(original),
+            without_nulls(exported),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_second_start_does_not_import_again() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = legacy_data_dir(root.path());
+    let data_dir = root.path().join("data");
+    let database_path = data_dir.join("operalibre.db");
+
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+
+    // A position saved after the import must not be overwritten by a second
+    // pass re-reading the now-stale JSON file.
+    let database = super::Database::open(&database_path).unwrap();
+    let store = super::ProgressStore::new(database.clone());
+    store
+        .set(
+            "alice",
+            "one",
+            super::Progress {
+                book_id: "one".to_string(),
+                track_id: "t1".to_string(),
+                position_seconds: 400.0,
+                book_position_seconds: 400.0,
+                duration_seconds: Some(600.0),
+                updated_at: super::unix_now_millis().to_string(),
+                finished_override: None,
+            },
+        )
+        .await
+        .unwrap();
+    drop(store);
+    drop(database);
+
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+
+    let database = super::Database::open(&database_path).unwrap();
+    let store = super::ProgressStore::new(database);
+    let saved = store.get("alice", "one").await.unwrap().unwrap();
+    assert!(
+        (saved.position_seconds - 400.0).abs() < 1e-9,
+        "a second import reverted a position saved after the first"
+    );
+}
+
+#[test]
+fn a_failed_import_leaves_no_database_behind() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = legacy_data_dir(root.path());
+    let data_dir = root.path().join("data");
+    // Corrupt one file so the import cannot complete.
+    std::fs::write(&layout.users, b"{ not json").unwrap();
+
+    let database_path = data_dir.join("operalibre.db");
+    let result = super::migrate_if_needed(&database_path, &data_dir, &layout);
+
+    assert!(result.is_err(), "a corrupt file was imported anyway");
+    assert!(
+        !database_path.exists(),
+        "a half-built database was left behind for the next start to adopt"
+    );
+    // The originals are untouched, so the server can carry on reading them.
+    assert!(layout.progress.is_file());
+    assert_eq!(
+        std::fs::read_to_string(&layout.users).unwrap(),
+        "{ not json"
+    );
 }
