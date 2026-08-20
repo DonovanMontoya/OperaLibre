@@ -2228,6 +2228,13 @@ function MainApp({
   // Null until the first poll lands, which is what keeps a session opening on
   // a backlog from announcing all of it at once.
   const previousFinishFeedRef = useRef<FinishFeed | null>(null);
+  // Ticks once per feed request, whether a poll or a mark-as-seen. Answers are
+  // not guaranteed to arrive in the order they were asked for — a focus poll
+  // can overlap the interval one, and either can outlast the 30s gap — so only
+  // the newest request is allowed to touch the feed or the baseline above.
+  // An older answer landing would rewind the baseline, and the next poll would
+  // then treat already-announced finishes as new and banner them again.
+  const finishRequestRef = useRef(0);
   const finishFeedAvailable =
     isOperaLibre && !demoMode && !localMode && isNotifiedOfFinishes(currentUser);
 
@@ -2243,9 +2250,10 @@ function MainApp({
     }
     let cancelled = false;
     const poll = () => {
+      const request = (finishRequestRef.current += 1);
       void getFinishFeed()
         .then(async (next) => {
-          if (cancelled) return;
+          if (cancelled || request !== finishRequestRef.current) return;
           const arrivals = arrivedSince(previousFinishFeedRef.current, next);
           previousFinishFeedRef.current = next;
           setFinishFeed(next);
@@ -2278,8 +2286,13 @@ function MainApp({
     // until the next open, which is why this marks by id rather than "all".
     const latest = finishFeed.latestId;
     if (!latest || finishFeed.unseenCount === 0) return;
+    const request = (finishRequestRef.current += 1);
     void markFinishFeedSeen(latest)
       .then((next) => {
+        // Shares the sequence with the poll above: a request already in flight
+        // when the panel opened must not land afterwards and un-clear the
+        // badge the listener just read.
+        if (request !== finishRequestRef.current) return;
         previousFinishFeedRef.current = next;
         setFinishFeed(next);
       })
