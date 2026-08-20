@@ -54,7 +54,9 @@ use walkdir::WalkDir;
 
 mod alignment;
 mod faststart;
+mod reading_log;
 mod updates;
+mod works;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
@@ -122,6 +124,9 @@ struct AppState {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    reading_log_file: PathBuf,
+    completions_file: PathBuf,
+    works_file: PathBuf,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_refreshes_file: PathBuf,
@@ -140,6 +145,12 @@ struct AppState {
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
+    /// Listening sittings still accumulating in memory. Flushed to the reading
+    /// log on a debounce, when they go quiet, and at shutdown.
+    open_sessions: Arc<Mutex<reading_log::OpenSessions>>,
+    /// The book-behind-the-file index, so a reading history survives a book
+    /// being re-downloaded, re-encoded, or replaced by another edition.
+    works: Arc<RwLock<works::WorkStore>>,
     libation_requests: Arc<RwLock<LibationRequestStore>>,
     libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
     libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
@@ -149,6 +160,9 @@ struct AppState {
     progress_write_lock: Arc<Mutex<()>>,
     /// Same guarantee for the per-book settings file.
     book_settings_write_lock: Arc<Mutex<()>>,
+    /// Serializes appends to the reading and completion logs so two concurrent
+    /// writers cannot interleave half-lines into a newline-delimited file.
+    reading_log_write_lock: Arc<Mutex<()>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot
     /// publish stale state over a newer scan.
@@ -630,6 +644,11 @@ struct Book {
     genres: Vec<String>,
     published_date: Option<String>,
     asin: Option<String>,
+    /// The print id, when a file carries one. Unlike the ASIN this is not an
+    /// Audible concept, so it is often the only identifier a book ripped or
+    /// bought elsewhere has in common with an Audible download of the same
+    /// title.
+    isbn: Option<String>,
     reading_file: Option<ReadingFile>,
     sync_file: Option<SyncFile>,
     chapters: Vec<Chapter>,
@@ -820,6 +839,12 @@ struct ProgressUpdate {
     /// listener's own calendar day, so an evening session west of UTC is not
     /// filed under tomorrow and does not split a streak. Absent means UTC.
     tz_offset_minutes: Option<i32>,
+    /// Playback rate at the time of this checkpoint. Recorded on the reading
+    /// session so "hours listened" can be told apart from "hours of audio".
+    speed: Option<f64>,
+    /// What the client calls itself — `web`, `android`, `ios`. Free-form and
+    /// bounded on arrival; it labels a session and nothing else.
+    client: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -830,6 +855,9 @@ struct CompletionUpdate {
     position_seconds: Option<f64>,
     book_position_seconds: Option<f64>,
     duration_seconds: Option<f64>,
+    /// The listener's offset from UTC, so a completion is filed on the day they
+    /// finished the book rather than the server's.
+    tz_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -854,6 +882,7 @@ struct TrackMetadata {
     narrator: Option<String>,
     duration_seconds: Option<f64>,
     asin: Option<String>,
+    isbn: Option<String>,
     chapters: Vec<ParsedChapter>,
     cover_art: Option<EmbeddedImage>,
     summary: MetadataSummary,
@@ -1491,6 +1520,14 @@ async fn main() -> anyhow::Result<()> {
         };
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
+    let work_store = works::load_works(&config.data_dir.join("works.json")).await?;
+    // Superseded session revisions accumulate while the server runs. Startup is
+    // the natural moment to collapse them, with nothing else touching the file.
+    if let Err(error) =
+        reading_log::compact_session_log(&config.data_dir.join("reading-log.jsonl")).await
+    {
+        tracing::warn!("could not compact the reading log: {error}");
+    }
     let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
     let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
     let libation_refreshes =
@@ -1523,6 +1560,8 @@ async fn main() -> anyhow::Result<()> {
             ),
         }
         let _ = fs::remove_file(&config.activity_file).await;
+        let _ = fs::remove_file(&config.data_dir.join("reading-log.jsonl")).await;
+        let _ = fs::remove_file(&config.data_dir.join("completions.jsonl")).await;
     }
 
     let state = AppState {
@@ -1540,6 +1579,9 @@ async fn main() -> anyhow::Result<()> {
         users_file: config.users_file.clone(),
         sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
+        reading_log_file: config.data_dir.join("reading-log.jsonl"),
+        completions_file: config.data_dir.join("completions.jsonl"),
+        works_file: config.data_dir.join("works.json"),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
         libation_refreshes_file: config.data_dir.join("libation-refreshes.json"),
@@ -1563,12 +1605,15 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
+        open_sessions: Arc::new(Mutex::new(reading_log::OpenSessions::default())),
+        works: Arc::new(RwLock::new(work_store)),
         libation_requests: Arc::new(RwLock::new(libation_requests)),
         libation_refreshes: Arc::new(Mutex::new(libation_refreshes)),
         libation_accounts: Arc::new(RwLock::new(libation_accounts)),
         libation_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         progress_write_lock: Arc::new(Mutex::new(())),
         book_settings_write_lock: Arc::new(Mutex::new(())),
+        reading_log_write_lock: Arc::new(Mutex::new(())),
         rescan_lock: Arc::new(Mutex::new(())),
         libation_job_lock: Arc::new(Mutex::new(())),
         faststart_lock: Arc::new(Mutex::new(())),
@@ -1579,6 +1624,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     rescan_library(&state).await?;
+    schedule_reading_session_sweeper(state.clone());
+    schedule_reading_session_shutdown_flush(state.clone());
     schedule_automatic_libation_refresh(state.clone());
 
     let public_routes = Router::new()
@@ -1594,6 +1641,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/profile/stats", get(profile_stats))
+        .route("/api/profile/sessions", get(reading_log_sessions))
+        .route("/api/profile/completions", get(reading_log_completions))
+        .route("/api/works", get(list_works))
+        .route("/api/works/link", post(link_work_edition))
+        .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
         .route("/api/update/install", post(install_update))
         .route("/api/frontend-update", get(frontend_update_status))
@@ -1813,6 +1865,9 @@ async fn secure_existing_state_files(config: &ServerConfig) -> io::Result<()> {
         config.data_dir.join("library-identities.json"),
         config.data_dir.join("libation-refreshes.json"),
         config.data_dir.join("book-settings.json"),
+        config.data_dir.join("reading-log.jsonl"),
+        config.data_dir.join("completions.jsonl"),
+        config.data_dir.join("works.json"),
     ] {
         if fs::try_exists(&path).await? {
             secure_file_permissions(&path).await?;
@@ -4776,17 +4831,54 @@ async fn update_progress(
     progress.insert(key, saved.clone());
     write_progress(&state.progress_file, &progress).await?;
 
+    let tz_offset_minutes = sanitized_tz_offset_minutes(update.tz_offset_minutes);
     let listened_delta =
         plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
     if listened_delta > 0.0 {
-        record_activity(
+        record_activity(&state, &auth.id, listened_delta, tz_offset_minutes).await;
+        record_reading_session(
             &state,
-            &auth.id,
-            listened_delta,
-            sanitized_tz_offset_minutes(update.tz_offset_minutes),
+            reading_log::Checkpoint {
+                user_id: auth.id.clone(),
+                book_id: book.id.clone(),
+                work_id: work_id_for_book(&state, &book.id).await,
+                at_ms: progress_timestamp_millis(&saved.updated_at),
+                listened_seconds: listened_delta,
+                position_seconds: saved.book_position_seconds,
+                speed: sanitized_speed(update.speed),
+                client: sanitized_client_label(update.client),
+                tz_offset_minutes,
+                today: today_ymd(tz_offset_minutes),
+            },
         )
         .await;
     }
+
+    // Reaching the end is a completion in its own right. It is derived from the
+    // same summary the library serves, so the log and the shelf agree.
+    let was_finished = previous
+        .as_ref()
+        .map(|previous| {
+            matches!(
+                summarize_book_progress(book, previous).status,
+                BookProgressStatus::Finished
+            )
+        })
+        .unwrap_or(false);
+    let is_finished = matches!(
+        summarize_book_progress(book, &saved).status,
+        BookProgressStatus::Finished
+    );
+    record_completion_if_crossed(
+        &state,
+        &auth.id,
+        book,
+        was_finished,
+        is_finished,
+        reading_log::CompletionSource::Reached,
+        tz_offset_minutes,
+    )
+    .await;
 
     Ok(Json(saved))
 }
@@ -4834,6 +4926,15 @@ async fn update_book_completion(
     let _progress_guard = state.progress_write_lock.lock().await;
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
+    let was_finished = progress
+        .get(&key)
+        .map(|previous| {
+            matches!(
+                summarize_book_progress(&book, previous).status,
+                BookProgressStatus::Finished
+            )
+        })
+        .unwrap_or(false);
     let next_timestamp = next_progress_timestamp(progress.get(&key), unix_now_millis());
     let saved = progress.entry(key).or_insert_with(|| Progress {
         book_id: book.id.clone(),
@@ -4860,7 +4961,19 @@ async fn update_book_completion(
     let saved = saved.clone();
     write_progress(&state.progress_file, &progress).await?;
 
-    Ok(Json(summarize_book_progress(&book, &saved)))
+    let summary = summarize_book_progress(&book, &saved);
+    record_completion_if_crossed(
+        &state,
+        &auth.id,
+        &book,
+        was_finished,
+        matches!(summary.status, BookProgressStatus::Finished),
+        reading_log::CompletionSource::Marked,
+        sanitized_tz_offset_minutes(update.tz_offset_minutes),
+    )
+    .await;
+
+    Ok(Json(summary))
 }
 
 async fn stream_track(
@@ -6077,6 +6190,7 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             genres: metadata_summary.genres.clone(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
+            isbn: metadata.iter().find_map(|item| item.isbn.clone()),
             reading_file: reading_file.map(|reading_file| reading_file.file),
             sync_file: sync_file.map(|sync_file| sync_file.file),
             chapters: book_chapters,
@@ -6096,6 +6210,11 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
+    // Works are resolved after the loop so they see each book's final title and
+    // author, metadata overrides included: an administrator correcting a
+    // mistagged import is exactly how two editions come to agree.
+    resolve_library_works(state, &books).await;
+
     let mut library = state.library.write().await;
     library.books = books;
     library.book_paths = book_paths;
@@ -6104,6 +6223,47 @@ async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     library.sync_paths = sync_paths;
     library.cover_art = cover_art;
     Ok(())
+}
+
+/// Files a book to its work, so a reading history can outlive the file.
+///
+/// Runs on every scan. Matching is idempotent — a book already on a work
+/// re-resolves to the same one — so this only ever adds links and suggestions.
+async fn resolve_library_works(state: &AppState, books: &[Book]) {
+    let now_ms = unix_now_millis();
+    let mut store = state.works.write().await;
+    for book in books {
+        let candidate = works::EditionCandidate {
+            book_id: book.id.clone(),
+            title: book.title.clone(),
+            author: book.author.clone(),
+            asin: book.asin.clone(),
+            isbn: book.isbn.clone(),
+            duration_seconds: book
+                .duration_seconds
+                .filter(|duration| *duration > 0.0)
+                .or_else(|| known_duration_from_tracks(book)),
+        };
+        let (work_id, tier) = store.resolve(&candidate, now_ms, || {
+            stable_id(&format!("work:{}:{now_ms}", book.id))
+        });
+        if tier != works::MatchTier::New {
+            tracing::debug!(
+                book = %book.id,
+                work = %work_id,
+                ?tier,
+                "linked an edition to an existing work"
+            );
+        }
+    }
+    let present = books
+        .iter()
+        .map(|book| book.id.clone())
+        .collect::<HashSet<_>>();
+    store.prune_suggestions(&present);
+    if let Err(error) = write_json_atomic(&state.works_file, &*store).await {
+        tracing::warn!("failed to persist the work index: {}", error.message);
+    }
 }
 
 struct DiscoveredSyncFile {
@@ -6417,6 +6577,7 @@ fn read_track_metadata(file_path: &FsPath) -> TrackMetadata {
         asin: tag
             .and_then(extract_asin)
             .or_else(|| extract_asin_from_path(file_path)),
+        isbn: tag.and_then(extract_isbn),
         chapters,
         cover_art: tag.and_then(extract_cover_art),
         summary,
@@ -6447,6 +6608,73 @@ fn extract_asin(tag: &Tag) -> Option<String> {
             ItemValue::Binary(_) => None,
         }
     })
+}
+
+/// Pulls a print id out of a tag, from the vendor JSON blob Audible downloads
+/// carry or from any field that names itself an ISBN.
+///
+/// Unlike an ASIN this is never guessed from a file name: an unqualified run of
+/// ten or thirteen digits in a path is far more likely to be a date or a track
+/// id, and a wrong ISBN would merge two unrelated books into one work.
+fn extract_isbn(tag: &Tag) -> Option<String> {
+    if let Some(value) = extract_vendor_json(tag).and_then(|json| {
+        ["isbn", "isbn13", "isbn_13", "isbn10", "isbn_10"]
+            .iter()
+            .find_map(|key| {
+                json.get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+    }) && let Some(isbn) = normalize_isbn(&value)
+    {
+        return Some(isbn);
+    }
+
+    tag.items().find_map(|item| {
+        let key = item_key_label(item.key()).to_lowercase();
+        let description = item.description().to_lowercase();
+        if !(key.contains("isbn") || description.contains("isbn")) {
+            return None;
+        }
+        match item.value() {
+            ItemValue::Text(value) | ItemValue::Locator(value) => normalize_isbn(value),
+            ItemValue::Binary(_) => None,
+        }
+    })
+}
+
+/// Accepts either ISBN shape, with separators stripped, and only when the check
+/// digit agrees. A malformed id is worse than none: it would be shared by every
+/// other book carrying the same typo.
+fn normalize_isbn(value: &str) -> Option<String> {
+    let cleaned = value
+        .trim()
+        .trim_matches(char::from(0))
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    match cleaned.len() {
+        10 if is_isbn10(&cleaned) => Some(cleaned),
+        13 if is_isbn13(&cleaned) => Some(cleaned),
+        _ => None,
+    }
+}
+
+/// Thirteen digits weighted alternately 1 and 3, summing to a multiple of 10.
+fn is_isbn13(value: &str) -> bool {
+    if value.len() != 13 || !value.chars().all(|character| character.is_ascii_digit()) {
+        return false;
+    }
+    let sum: u32 = value
+        .chars()
+        .enumerate()
+        .map(|(index, character)| {
+            let digit = character.to_digit(10).unwrap_or(0);
+            if index % 2 == 0 { digit } else { digit * 3 }
+        })
+        .sum();
+    sum.is_multiple_of(10)
 }
 
 fn extract_asin_from_path(path: &FsPath) -> Option<String> {
@@ -8382,6 +8610,104 @@ struct ProfileStats {
     measuring_since: Option<String>,
     streak_calendar: Vec<StreakDay>,
     recent_books: Vec<RecentBook>,
+    /// The shape of the reading habit, from the session log.
+    habits: ReadingHabits,
+    /// Completions, counted from the durable log rather than the shelf. Unlike
+    /// `books_finished` this does not fall to zero when a book is deleted.
+    works_finished: u32,
+    /// Every completion including re-reads, so finishing a book twice shows.
+    total_completions: u32,
+    finished_books: Vec<FinishedBook>,
+    abandoned_books: Vec<AbandonedBook>,
+    /// Time actually spent per book, most first.
+    most_read_books: Vec<BookTime>,
+}
+
+/// When a reader reads, how long their sittings run, and how fast they play —
+/// the shape of the habit rather than its size.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingHabits {
+    /// Listening hours by hour of the reader's own day, index 0 to 23.
+    hours_by_hour_of_day: Vec<f64>,
+    /// Listening hours by weekday, Monday first, matching the streak calendar.
+    hours_by_weekday: Vec<f64>,
+    /// The hour of day and weekday the reader listens most, when there is
+    /// enough of a log to have a favourite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peak_hour_of_day: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peak_weekday: Option<u32>,
+    session_count: u32,
+    avg_session_minutes: f64,
+    longest_session_minutes: f64,
+    median_session_minutes: f64,
+    /// Mean playback rate, weighted by how long it was used. `None` until some
+    /// client reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg_speed: Option<f64>,
+    /// Distinct clients seen in the log, so a reader can see where they listen.
+    clients: Vec<String>,
+}
+
+/// A book the reader finished, reconstructed from the completion log rather
+/// than the library — so it survives the audio being deleted, re-downloaded in
+/// another encoding, or replaced by a different edition.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinishedBook {
+    /// The work, when one is known; otherwise the edition that was finished.
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    narrator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<f64>,
+    /// How many times this work has been finished. Above one is a re-read.
+    times_finished: u32,
+    first_finished_on: String,
+    last_finished_on: String,
+    /// Whether an edition of this work is still on the server.
+    in_library: bool,
+    /// Cover art, only when an edition is still present to serve it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_art_url: Option<String>,
+}
+
+/// A book the reader started, put down, and has not touched since.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbandonedBook {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_art_url: Option<String>,
+    percent_complete: Option<f64>,
+    hours_read: f64,
+    last_read_on: String,
+    days_since: i64,
+}
+
+/// Real time spent inside one book, summed from the session log. Unlike
+/// `RecentBook::hours_read`, which measures how far in the reader has reached,
+/// this is time actually listened and can exceed the book's runtime on a
+/// re-read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BookTime {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_art_url: Option<String>,
+    hours_listened: f64,
+    session_count: u32,
+    first_read_on: String,
+    last_read_on: String,
+    /// Days between the first and last session, so "read over a weekend" and
+    /// "read over a year" are distinguishable.
+    span_days: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -8476,6 +8802,200 @@ fn ymd_to_days(ymd: &str) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
+/// A client-reported label, trimmed and bounded. Free-form strings from a
+/// client end up in a log that is read back for years, so an unbounded one
+/// would be a slow way to fill a disk.
+fn sanitized_client_label(value: Option<String>) -> Option<String> {
+    const MAX_CLIENT_LABEL_CHARS: usize = 32;
+    let value = value?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        trimmed
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+            .take(MAX_CLIENT_LABEL_CHARS)
+            .collect::<String>()
+            .to_lowercase(),
+    )
+    .filter(|label| !label.is_empty())
+}
+
+/// OperaLibre tops out at 2x, and a rate at or below zero is meaningless.
+/// Anything else is a broken client and is simply not recorded.
+fn sanitized_speed(value: Option<f64>) -> Option<f64> {
+    value.filter(|speed| speed.is_finite() && *speed > 0.0 && *speed <= 4.0)
+}
+
+/// The work a book is an edition of, when the index knows one.
+async fn work_id_for_book(state: &AppState, book_id: &str) -> Option<String> {
+    state
+        .works
+        .read()
+        .await
+        .work_for_book(book_id)
+        .map(|work| work.id.clone())
+}
+
+/// Folds one checkpoint into the reader's open sitting and writes through
+/// whatever that produces.
+///
+/// The log is the durable record, so a failed append is warned about rather
+/// than swallowed — but it never fails the caller's write. Losing a session row
+/// is a hole in the history; failing the request would be a hole in the
+/// listener's progress, which is the far worse trade.
+async fn record_reading_session(state: &AppState, checkpoint: reading_log::Checkpoint) {
+    let rows = {
+        let mut open = state.open_sessions.lock().await;
+        let seed = format!(
+            "session:{}:{}:{}",
+            checkpoint.user_id, checkpoint.book_id, checkpoint.at_ms
+        );
+        match open.record(checkpoint, || stable_id(&seed)) {
+            reading_log::SessionOutcome::Buffered => return,
+            reading_log::SessionOutcome::Append(rows) => rows,
+        }
+    };
+    flush_reading_sessions(state, &rows).await;
+}
+
+async fn flush_reading_sessions(state: &AppState, rows: &[reading_log::ReadingSession]) {
+    if rows.is_empty() {
+        return;
+    }
+    let _guard = state.reading_log_write_lock.lock().await;
+    if let Err(error) = reading_log::append_sessions(&state.reading_log_file, rows).await {
+        tracing::warn!("failed to append to the reading log: {error}");
+    }
+}
+
+/// Closes sittings that have gone quiet, so a listener who simply stops does
+/// not leave a session open until they next play something.
+fn schedule_reading_session_sweeper(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        // The first tick fires immediately; skip it so startup does not sweep
+        // an empty map.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let rows = {
+                let mut open = state.open_sessions.lock().await;
+                open.close_idle(unix_now_millis())
+            };
+            flush_reading_sessions(&state, &rows).await;
+        }
+    });
+}
+
+/// Writes open sittings out when the server is asked to stop, so a restart does
+/// not cost the session in progress.
+///
+/// This exits the process itself rather than draining connections first: a
+/// media server holds long-lived range requests, and waiting for those to
+/// finish would turn every restart into a hang. The flush is bounded for the
+/// same reason — a log that cannot be written must not prevent shutdown.
+fn schedule_reading_session_shutdown_flush(state: AppState) {
+    tokio::spawn(async move {
+        let interrupt = async {
+            let _ = tokio::signal::ctrl_c().await;
+        };
+        #[cfg(unix)]
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut stream) => {
+                    stream.recv().await;
+                }
+                Err(error) => {
+                    tracing::warn!("could not listen for SIGTERM: {error}");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = interrupt => {}
+            _ = terminate => {}
+        }
+
+        let rows = {
+            let mut open = state.open_sessions.lock().await;
+            open.drain()
+        };
+        if !rows.is_empty() {
+            let flush = flush_reading_sessions(&state, &rows);
+            if tokio::time::timeout(std::time::Duration::from_secs(5), flush)
+                .await
+                .is_err()
+            {
+                tracing::warn!("timed out flushing open reading sessions on shutdown");
+            }
+        }
+        std::process::exit(0);
+    });
+}
+
+/// Freezes what a book was, for a completion that has to outlive it.
+fn edition_snapshot(book: &Book) -> reading_log::EditionSnapshot {
+    reading_log::EditionSnapshot {
+        title: book.title.clone(),
+        author: book.author.clone(),
+        narrator: book.narrator.clone(),
+        duration_seconds: book
+            .duration_seconds
+            .filter(|duration| *duration > 0.0)
+            .or_else(|| known_duration_from_tracks(book)),
+        asin: book.asin.clone(),
+        isbn: book.isbn.clone(),
+        publisher: book.metadata.publisher.clone(),
+        published_date: book.published_date.clone(),
+        series: book.metadata.series.clone(),
+        series_position: book.metadata.series_position.clone(),
+        genres: book.genres.clone(),
+        track_count: book.tracks.len(),
+    }
+}
+
+/// Appends a completion when a book crosses into finished, and not otherwise.
+///
+/// Crossing is the trigger rather than the finished state itself, so a client
+/// re-sending the same checkpoint cannot log a book twice — while a genuine
+/// re-read, which clears the override on restart and sets it again at the end,
+/// correctly logs a second time.
+async fn record_completion_if_crossed(
+    state: &AppState,
+    user_id: &str,
+    book: &Book,
+    was_finished: bool,
+    is_finished: bool,
+    source: reading_log::CompletionSource,
+    tz_offset_minutes: i64,
+) {
+    if was_finished || !is_finished {
+        return;
+    }
+    let now_ms = unix_now_millis();
+    let event = reading_log::CompletionEvent {
+        id: stable_id(&format!("completion:{user_id}:{}:{now_ms}", book.id)),
+        user_id: user_id.to_string(),
+        book_id: book.id.clone(),
+        work_id: work_id_for_book(state, &book.id).await,
+        finished_at_ms: now_ms,
+        source,
+        tz_offset_minutes,
+        finished_on: today_ymd(tz_offset_minutes),
+        snapshot: edition_snapshot(book),
+    };
+    let _guard = state.reading_log_write_lock.lock().await;
+    if let Err(error) = reading_log::append_completion(&state.completions_file, &event).await {
+        tracing::warn!("failed to record a completion: {error}");
+    }
+}
+
 async fn record_activity(
     state: &AppState,
     user_id: &str,
@@ -8494,6 +9014,297 @@ async fn record_activity(
     }
 }
 
+/// Hour of the reader's own day a moment fell in, 0 to 23.
+fn hour_of_day(at_ms: u64, tz_offset_minutes: i64) -> u32 {
+    let local = (at_ms / 1000) as i64 + tz_offset_minutes * 60;
+    local.rem_euclid(86_400).div_euclid(3_600) as u32
+}
+
+/// Every session in the log belonging to one reader, with any sitting still
+/// open folded in so the current session is not invisible until it closes.
+async fn reader_sessions(state: &AppState, user_id: &str) -> Vec<reading_log::ReadingSession> {
+    let mut sessions = match reading_log::read_sessions(&state.reading_log_file).await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            tracing::warn!("could not read the reading log: {error}");
+            Vec::new()
+        }
+    };
+    sessions.retain(|session| session.user_id == user_id);
+    let open = state.open_sessions.lock().await;
+    for session in open.iter() {
+        if session.user_id == user_id && session.is_substantive() {
+            // An open sitting may already have been flushed under this id; the
+            // in-memory copy is the newer one either way.
+            match sessions.iter().position(|stored| stored.id == session.id) {
+                Some(index) => sessions[index] = session.clone(),
+                None => sessions.push(session.clone()),
+            }
+        }
+    }
+    sessions.sort_by_key(|session| session.started_at_ms);
+    sessions
+}
+
+/// Summarizes when and how a reader reads.
+fn summarize_habits(sessions: &[reading_log::ReadingSession]) -> ReadingHabits {
+    let mut hours_by_hour_of_day = vec![0.0; 24];
+    let mut hours_by_weekday = vec![0.0; 7];
+    let mut speed_weighted = 0.0;
+    let mut speed_weight = 0.0;
+    let mut clients: Vec<String> = Vec::new();
+    let mut lengths: Vec<f64> = Vec::new();
+
+    for session in sessions {
+        let hours = session.listened_seconds / 3600.0;
+        // A sitting is credited to the hour it began. Splitting it across the
+        // hours it spans would be more precise and would also claim to know
+        // where inside the sitting the listening happened, which the log does
+        // not record.
+        let hour = hour_of_day(session.started_at_ms, session.tz_offset_minutes) as usize;
+        hours_by_hour_of_day[hour] += hours;
+        if let Some(days) = ymd_to_days(&session.started_on) {
+            hours_by_weekday[weekday_from_monday(days) as usize] += hours;
+        }
+        if let Some(speed) = session.speed {
+            speed_weighted += speed * session.listened_seconds;
+            speed_weight += session.listened_seconds;
+        }
+        if let Some(client) = session.client.as_ref()
+            && !clients.iter().any(|known| known == client)
+        {
+            clients.push(client.clone());
+        }
+        lengths.push(session.listened_seconds / 60.0);
+    }
+
+    lengths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_session_minutes = match lengths.len() {
+        0 => 0.0,
+        count if count.is_multiple_of(2) => (lengths[count / 2 - 1] + lengths[count / 2]) / 2.0,
+        count => lengths[count / 2],
+    };
+    let total_minutes: f64 = lengths.iter().sum();
+    let session_count = lengths.len() as u32;
+
+    let peak = |buckets: &[f64]| -> Option<u32> {
+        buckets
+            .iter()
+            .enumerate()
+            .filter(|(_, hours)| **hours > 0.0)
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(index, _)| index as u32)
+    };
+
+    ReadingHabits {
+        peak_hour_of_day: peak(&hours_by_hour_of_day),
+        peak_weekday: peak(&hours_by_weekday),
+        hours_by_hour_of_day,
+        hours_by_weekday,
+        session_count,
+        avg_session_minutes: if session_count > 0 {
+            total_minutes / session_count as f64
+        } else {
+            0.0
+        },
+        longest_session_minutes: lengths.last().copied().unwrap_or(0.0),
+        median_session_minutes,
+        avg_speed: (speed_weight > 0.0).then(|| speed_weighted / speed_weight),
+        clients,
+    }
+}
+
+/// Time actually listened per book, from the session log.
+fn book_times(
+    sessions: &[reading_log::ReadingSession],
+    book_lookup: &HashMap<&str, &Book>,
+    today: i64,
+) -> Vec<BookTime> {
+    struct Accumulator {
+        seconds: f64,
+        sessions: u32,
+        first: String,
+        last: String,
+    }
+    let mut totals: HashMap<String, Accumulator> = HashMap::new();
+    for session in sessions {
+        let entry = totals
+            .entry(session.book_id.clone())
+            .or_insert_with(|| Accumulator {
+                seconds: 0.0,
+                sessions: 0,
+                first: session.started_on.clone(),
+                last: session.started_on.clone(),
+            });
+        entry.seconds += session.listened_seconds;
+        entry.sessions += 1;
+        if session.started_on < entry.first {
+            entry.first = session.started_on.clone();
+        }
+        if session.started_on > entry.last {
+            entry.last = session.started_on.clone();
+        }
+        let _ = today;
+    }
+
+    let mut rows = totals
+        .into_iter()
+        .filter_map(|(book_id, entry)| {
+            let book = book_lookup.get(book_id.as_str())?;
+            let span_days = match (ymd_to_days(&entry.first), ymd_to_days(&entry.last)) {
+                (Some(first), Some(last)) => (last - first).max(0),
+                _ => 0,
+            };
+            Some(BookTime {
+                id: book.id.clone(),
+                title: book.title.clone(),
+                cover_art_url: book.cover_art_url.clone(),
+                hours_listened: entry.seconds / 3600.0,
+                session_count: entry.sessions,
+                first_read_on: entry.first,
+                last_read_on: entry.last,
+                span_days,
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        b.hours_listened
+            .partial_cmp(&a.hours_listened)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows
+}
+
+/// Collapses the completion log into one row per work, so a book finished
+/// three times reads as one title with a count rather than three titles.
+fn summarize_completions(
+    completions: &[reading_log::CompletionEvent],
+    book_lookup: &HashMap<&str, &Book>,
+) -> Vec<FinishedBook> {
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: HashMap<String, FinishedBook> = HashMap::new();
+
+    for event in completions {
+        // A work id is the durable key: it is what survives the edition being
+        // replaced. Editions predating the work index fall back to their own id.
+        let key = event
+            .work_id
+            .clone()
+            .unwrap_or_else(|| event.book_id.clone());
+        let live = book_lookup.get(event.book_id.as_str());
+        match grouped.get_mut(&key) {
+            Some(existing) => {
+                existing.times_finished += 1;
+                if event.finished_on < existing.first_finished_on {
+                    existing.first_finished_on = event.finished_on.clone();
+                }
+                if event.finished_on > existing.last_finished_on {
+                    existing.last_finished_on = event.finished_on.clone();
+                    // The most recent completion names the book, so a re-read
+                    // of a different edition shows the one actually finished.
+                    existing.title = event.snapshot.title.clone();
+                    existing.narrator = event.snapshot.narrator.clone();
+                }
+                if let Some(book) = live {
+                    existing.in_library = true;
+                    existing.cover_art_url = book.cover_art_url.clone();
+                }
+            }
+            None => {
+                order.push(key.clone());
+                grouped.insert(
+                    key,
+                    FinishedBook {
+                        id: event
+                            .work_id
+                            .clone()
+                            .unwrap_or_else(|| event.book_id.clone()),
+                        title: event.snapshot.title.clone(),
+                        author: event.snapshot.author.clone(),
+                        narrator: event.snapshot.narrator.clone(),
+                        duration_seconds: event.snapshot.duration_seconds,
+                        times_finished: 1,
+                        first_finished_on: event.finished_on.clone(),
+                        last_finished_on: event.finished_on.clone(),
+                        in_library: live.is_some(),
+                        cover_art_url: live.and_then(|book| book.cover_art_url.clone()),
+                    },
+                );
+            }
+        }
+    }
+
+    let mut rows = order
+        .into_iter()
+        .filter_map(|key| grouped.remove(&key))
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.last_finished_on.cmp(&a.last_finished_on));
+    rows
+}
+
+/// Books that were started, listened to for a while, and left. A book still in
+/// its first few minutes is a sample rather than an abandonment, and one the
+/// reader touched recently may simply be in progress.
+fn abandoned_books(
+    sessions: &[reading_log::ReadingSession],
+    progress: &[(&String, &Progress)],
+    book_lookup: &HashMap<&str, &Book>,
+    today: i64,
+) -> Vec<AbandonedBook> {
+    const ABANDONED_AFTER_DAYS: i64 = 90;
+    const MIN_INVESTED_SECONDS: f64 = 15.0 * 60.0;
+
+    let mut seconds_by_book: HashMap<&str, f64> = HashMap::new();
+    let mut last_day_by_book: HashMap<&str, String> = HashMap::new();
+    for session in sessions {
+        *seconds_by_book
+            .entry(session.book_id.as_str())
+            .or_insert(0.0) += session.listened_seconds;
+        let entry = last_day_by_book
+            .entry(session.book_id.as_str())
+            .or_insert_with(|| session.started_on.clone());
+        if session.started_on > *entry {
+            *entry = session.started_on.clone();
+        }
+    }
+
+    let mut rows = Vec::new();
+    for (_, stored) in progress {
+        let Some(book) = book_lookup.get(stored.book_id.as_str()) else {
+            continue;
+        };
+        let summary = summarize_book_progress(book, stored);
+        if matches!(summary.status, BookProgressStatus::Finished) {
+            continue;
+        }
+        let Some(last_read_on) = last_day_by_book.get(stored.book_id.as_str()) else {
+            continue;
+        };
+        let Some(last_day) = ymd_to_days(last_read_on) else {
+            continue;
+        };
+        let days_since = today - last_day;
+        let invested = seconds_by_book
+            .get(stored.book_id.as_str())
+            .copied()
+            .unwrap_or(0.0);
+        if days_since < ABANDONED_AFTER_DAYS || invested < MIN_INVESTED_SECONDS {
+            continue;
+        }
+        rows.push(AbandonedBook {
+            id: book.id.clone(),
+            title: book.title.clone(),
+            cover_art_url: book.cover_art_url.clone(),
+            percent_complete: summary.percent_complete,
+            hours_read: invested / 3600.0,
+            last_read_on: last_read_on.clone(),
+            days_since,
+        });
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(row.days_since));
+    rows
+}
+
 async fn profile_stats(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -8501,6 +9312,18 @@ async fn profile_stats(
 ) -> Result<Json<ProfileStats>, ApiError> {
     let tz_offset_minutes = sanitized_tz_offset_minutes(query.tz_offset_minutes);
     let today = ymd_to_days(&today_ymd(tz_offset_minutes)).unwrap_or(0);
+    let sessions = reader_sessions(&state, &auth.id).await;
+    let completions = match reading_log::read_completions(&state.completions_file).await {
+        Ok(events) => events,
+        Err(error) => {
+            tracing::warn!("could not read the completion log: {error}");
+            Vec::new()
+        }
+    };
+    let completions = completions
+        .into_iter()
+        .filter(|event| event.user_id == auth.id)
+        .collect::<Vec<_>>();
     let library = state.library.read().await;
     let progress_map = read_progress(&state.progress_file).await?;
     let key_prefix = format!("user:{}:book:", auth.id);
@@ -8523,14 +9346,25 @@ async fn profile_stats(
         }
     }
 
+    // Seconds actually listened per book, so a narrator or genre is ranked by
+    // time spent rather than by how far a book was scrubbed into. The old
+    // ranking used reached position, which handed the crown to whichever long
+    // book had been skipped furthest through.
+    let mut listened_by_book: HashMap<&str, f64> = HashMap::new();
+    for session in sessions.iter() {
+        *listened_by_book
+            .entry(session.book_id.as_str())
+            .or_insert(0.0) += session.listened_seconds;
+    }
+
     let mut recent: Vec<RecentBook> = Vec::new();
     for (_, progress) in user_progress.iter() {
         if let Some(book) = book_lookup.get(progress.book_id.as_str()) {
             let summary = summarize_book_progress(book, progress);
-            // How far into the book the reader has reached — the only per-book
-            // signal there is, since the activity log records days and not
-            // books. Good enough to rank narrators and genres and to caption a
-            // shelf row; deliberately not added into the listening total.
+            // How far into the book the reader has reached, for captioning a
+            // shelf row. Not time spent — scrubbing forward moves it — so it is
+            // never added into the listening total, and narrator and genre
+            // rankings now use the session log's real per-book time instead.
             let hours = reached_position_seconds(book, progress) / 3600.0;
             let finished = matches!(summary.status, BookProgressStatus::Finished);
             if finished {
@@ -8544,11 +9378,16 @@ async fn profile_stats(
                     .unwrap_or(0);
                 total_tracks_completed += track_index as u32;
             }
+            let listened_hours = listened_by_book
+                .get(book.id.as_str())
+                .copied()
+                .unwrap_or(0.0)
+                / 3600.0;
             if let Some(narrator) = book.narrator.as_ref() {
-                *narrator_hours.entry(narrator.clone()).or_insert(0.0) += hours;
+                *narrator_hours.entry(narrator.clone()).or_insert(0.0) += listened_hours;
             }
             for genre in book.genres.iter() {
-                *genre_hours.entry(genre.clone()).or_insert(0.0) += hours;
+                *genre_hours.entry(genre.clone()).or_insert(0.0) += listened_hours;
             }
             recent.push(RecentBook {
                 id: book.id.clone(),
@@ -8637,6 +9476,17 @@ async fn profile_stats(
         .map(|user| user.created_at.clone())
         .unwrap_or_default();
 
+    let habits = summarize_habits(&sessions);
+    let finished_books = summarize_completions(&completions, &book_lookup);
+    let works_finished = finished_books.len() as u32;
+    let total_completions = finished_books
+        .iter()
+        .map(|book| book.times_finished)
+        .sum::<u32>();
+    let abandoned = abandoned_books(&sessions, &user_progress, &book_lookup, today);
+    let mut most_read = book_times(&sessions, &book_lookup, today);
+    most_read.truncate(10);
+
     Ok(Json(ProfileStats {
         total_hours_read,
         books_finished,
@@ -8652,6 +9502,12 @@ async fn profile_stats(
         measuring_since,
         streak_calendar,
         recent_books: recent,
+        habits,
+        works_finished,
+        total_completions,
+        finished_books,
+        abandoned_books: abandoned,
+        most_read_books: most_read,
     }))
 }
 
@@ -9586,6 +10442,180 @@ async fn update_progress_sharing(
     Ok(Json(public))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingLogQuery {
+    /// Most recent sessions first, capped so one request cannot pull a whole
+    /// multi-year history into memory.
+    limit: Option<usize>,
+    /// Inclusive lower bound as `YYYY-MM-DD`, in the reader's own days.
+    since: Option<String>,
+}
+
+const MAX_READING_LOG_PAGE: usize = 1_000;
+const DEFAULT_READING_LOG_PAGE: usize = 200;
+
+/// The reader's own sittings, newest first.
+///
+/// Deliberately self-only, with no route for reading anybody else's: shared
+/// progress exposes a percentage and a status by mutual opt-in, and a
+/// timestamped log of when somebody was awake and listening is a categorically
+/// different thing to hand over.
+async fn reading_log_sessions(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(query): Query<ReadingLogQuery>,
+) -> Result<Json<Vec<reading_log::ReadingSession>>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_READING_LOG_PAGE)
+        .clamp(1, MAX_READING_LOG_PAGE);
+    let mut sessions = reader_sessions(&state, &auth.id).await;
+    if let Some(since) = query.since.as_ref() {
+        sessions.retain(|session| session.started_on.as_str() >= since.as_str());
+    }
+    sessions.reverse();
+    sessions.truncate(limit);
+    Ok(Json(sessions))
+}
+
+/// Every completion the reader has recorded, newest first, each carrying the
+/// snapshot of what was finished. Survives the books themselves.
+async fn reading_log_completions(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(query): Query<ReadingLogQuery>,
+) -> Result<Json<Vec<reading_log::CompletionEvent>>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_READING_LOG_PAGE)
+        .clamp(1, MAX_READING_LOG_PAGE);
+    let mut events = reading_log::read_completions(&state.completions_file)
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!("The completion log could not be read: {error}"))
+        })?;
+    events.retain(|event| event.user_id == auth.id);
+    if let Some(since) = query.since.as_ref() {
+        events.retain(|event| event.finished_on.as_str() >= since.as_str());
+    }
+    events.sort_by_key(|event| std::cmp::Reverse(event.finished_at_ms));
+    events.truncate(limit);
+    Ok(Json(events))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorksResponse {
+    works: Vec<WorkSummary>,
+    suggestions: Vec<works::WorkSuggestion>,
+}
+
+/// A work as the administration screen sees it: which of its editions are still
+/// on the server and which are only remembered.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkSummary {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<f64>,
+    asins: Vec<String>,
+    isbns: Vec<String>,
+    /// Editions still in the library.
+    present_book_ids: Vec<String>,
+    /// Editions the work remembers that are no longer on disk. These are the
+    /// point of the index: they are what a history stays attached to.
+    missing_book_ids: Vec<String>,
+    manual_book_ids: Vec<String>,
+}
+
+async fn list_works(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<WorksResponse>, ApiError> {
+    require_admin(&auth)?;
+    let present = state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .map(|book| book.id.clone())
+        .collect::<HashSet<_>>();
+    let store = state.works.read().await;
+    let works = store
+        .works
+        .iter()
+        .map(|work| {
+            let (present_book_ids, missing_book_ids) = work
+                .book_ids
+                .iter()
+                .cloned()
+                .partition::<Vec<_>, _>(|id| present.contains(id));
+            WorkSummary {
+                id: work.id.clone(),
+                title: work.title.clone(),
+                author: work.author.clone(),
+                duration_seconds: work.duration_seconds,
+                asins: work.asins.clone(),
+                isbns: work.isbns.clone(),
+                present_book_ids,
+                missing_book_ids,
+                manual_book_ids: work.manual_book_ids.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(WorksResponse {
+        works,
+        suggestions: store.suggestions.clone(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkLinkRequest {
+    book_id: String,
+    work_id: String,
+}
+
+/// Attaches an edition to a work by hand. The decision outranks every heuristic
+/// and survives rescans, so an administrator only has to answer once.
+async fn link_work_edition(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(request): Json<WorkLinkRequest>,
+) -> Result<Json<WorksResponse>, ApiError> {
+    require_admin(&auth)?;
+    {
+        let mut store = state.works.write().await;
+        if !store.link_manually(&request.book_id, &request.work_id) {
+            return Err(ApiError::not_found("Work not found"));
+        }
+        write_json_atomic(&state.works_file, &*store).await?;
+    }
+    list_works(State(state), Extension(auth)).await
+}
+
+/// Rejects a suggested pairing for good, so a rescan does not ask again.
+async fn reject_work_suggestion(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(request): Json<WorkLinkRequest>,
+) -> Result<Json<WorksResponse>, ApiError> {
+    require_admin(&auth)?;
+    {
+        let mut store = state.works.write().await;
+        if !store.reject_suggestion(&request.book_id, &request.work_id) {
+            return Err(ApiError::not_found("Work not found"));
+        }
+        write_json_atomic(&state.works_file, &*store).await?;
+    }
+    list_works(State(state), Extension(auth)).await
+}
+
 fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
     if auth.is_admin {
         Ok(())
@@ -9741,6 +10771,18 @@ async fn delete_user(
     let mut book_settings = read_book_settings(&state.book_settings_file).await?;
     book_settings.retain(|key, _| !key.starts_with(&prefix));
     write_book_settings(&state.book_settings_file, &book_settings).await?;
+    drop(_settings_guard);
+
+    // A deleted account's reading history leaves with it. Any sitting still
+    // buffered in memory is dropped first, so it cannot be flushed back out
+    // after the logs have been purged.
+    state.open_sessions.lock().await.forget_user(&user_id);
+    let _log_guard = state.reading_log_write_lock.lock().await;
+    if let Err(error) =
+        reading_log::forget_user(&state.reading_log_file, &state.completions_file, &user_id).await
+    {
+        tracing::warn!("failed to purge the reading log for a deleted account: {error}");
+    }
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -10191,6 +11233,7 @@ mod tests {
             description: None,
             genres: Vec::new(),
             published_date: None,
+            isbn: None,
             asin: None,
             reading_file: None,
             sync_file: None,
@@ -10727,6 +11770,660 @@ mod tests {
         assert_eq!(clean_imported_title("Dune [B002V1OF70]"), "Dune");
         assert_eq!(clean_imported_title("Dune (B002V1OF70)"), "Dune");
         assert_eq!(clean_imported_title("Dune - [B002V1OF70]"), "Dune");
+    }
+
+    fn session(
+        id: &str,
+        book_id: &str,
+        started_at_ms: u64,
+        listened_seconds: f64,
+        started_on: &str,
+        tz_offset_minutes: i64,
+    ) -> super::reading_log::ReadingSession {
+        super::reading_log::ReadingSession {
+            id: id.to_string(),
+            user_id: "reader".to_string(),
+            book_id: book_id.to_string(),
+            work_id: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + (listened_seconds * 1000.0) as u64,
+            listened_seconds,
+            start_position_seconds: 0.0,
+            end_position_seconds: listened_seconds,
+            speed: Some(1.5),
+            client: Some("web".to_string()),
+            tz_offset_minutes,
+            started_on: started_on.to_string(),
+        }
+    }
+
+    fn completion(
+        id: &str,
+        book_id: &str,
+        work_id: Option<&str>,
+        finished_on: &str,
+        finished_at_ms: u64,
+        title: &str,
+    ) -> super::reading_log::CompletionEvent {
+        super::reading_log::CompletionEvent {
+            id: id.to_string(),
+            user_id: "reader".to_string(),
+            book_id: book_id.to_string(),
+            work_id: work_id.map(str::to_string),
+            finished_at_ms,
+            source: super::reading_log::CompletionSource::Reached,
+            tz_offset_minutes: 0,
+            finished_on: finished_on.to_string(),
+            snapshot: super::reading_log::EditionSnapshot {
+                title: title.to_string(),
+                author: Some("Homer".to_string()),
+                narrator: Some("Ian McKellen".to_string()),
+                duration_seconds: Some(46_920.0),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn a_completion_outlives_the_book_it_describes() {
+        // Nothing is in the library: the audio was deleted and never replaced.
+        let book_lookup = std::collections::HashMap::new();
+        let finished = super::summarize_completions(
+            &[completion(
+                "c1",
+                "book-1",
+                Some("work-1"),
+                "2026-03-14",
+                1_000,
+                "The Odyssey",
+            )],
+            &book_lookup,
+        );
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].title, "The Odyssey");
+        assert_eq!(finished[0].narrator.as_deref(), Some("Ian McKellen"));
+        assert_eq!(finished[0].duration_seconds, Some(46_920.0));
+        assert!(!finished[0].in_library);
+    }
+
+    #[test]
+    fn a_redownloaded_edition_does_not_count_as_a_second_book() {
+        let book_lookup = std::collections::HashMap::new();
+        // Finished once, deleted, re-downloaded under a new book id, finished
+        // again. One work, so one title with two completions.
+        let finished = super::summarize_completions(
+            &[
+                completion(
+                    "c1",
+                    "book-1",
+                    Some("work-1"),
+                    "2026-03-14",
+                    1_000,
+                    "The Odyssey",
+                ),
+                completion(
+                    "c2",
+                    "book-2",
+                    Some("work-1"),
+                    "2026-07-02",
+                    2_000,
+                    "The Odyssey",
+                ),
+            ],
+            &book_lookup,
+        );
+        assert_eq!(finished.len(), 1, "one work, not two books");
+        assert_eq!(finished[0].times_finished, 2);
+        assert_eq!(finished[0].first_finished_on, "2026-03-14");
+        assert_eq!(finished[0].last_finished_on, "2026-07-02");
+    }
+
+    #[test]
+    fn sessions_are_bucketed_by_the_listeners_hour_not_the_servers() {
+        // 2026-08-19T02:00:00Z is the evening of the 18th in New York.
+        let at_ms = 1_787_104_800_000;
+        assert_eq!(super::hour_of_day(at_ms, 0), 2);
+        assert_eq!(super::hour_of_day(at_ms, -4 * 60), 22);
+    }
+
+    #[test]
+    fn habits_summarize_when_and_how_long_a_reader_reads() {
+        // Three sittings, all starting at 22:00 local time on consecutive days.
+        let base = 1_787_104_800_000;
+        let day = 86_400_000;
+        let habits = super::summarize_habits(&[
+            session("s1", "book-1", base, 1_800.0, "2026-08-18", -4 * 60),
+            session("s2", "book-1", base + day, 3_600.0, "2026-08-19", -4 * 60),
+            session("s3", "book-1", base + 2 * day, 900.0, "2026-08-20", -4 * 60),
+        ]);
+        assert_eq!(habits.session_count, 3);
+        assert_eq!(habits.peak_hour_of_day, Some(22));
+        assert_eq!(habits.longest_session_minutes, 60.0);
+        assert_eq!(habits.median_session_minutes, 30.0);
+        assert_eq!(habits.avg_speed, Some(1.5));
+        assert_eq!(habits.clients, vec!["web".to_string()]);
+        assert_eq!(habits.hours_by_hour_of_day.len(), 24);
+        assert_eq!(habits.hours_by_weekday.len(), 7);
+        // Every hour lands in the one bucket and nowhere else.
+        let total: f64 = habits.hours_by_hour_of_day.iter().sum();
+        assert!((total - 1.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn habits_of_a_reader_with_no_log_are_empty_rather_than_wrong() {
+        let habits = super::summarize_habits(&[]);
+        assert_eq!(habits.session_count, 0);
+        assert_eq!(habits.avg_session_minutes, 0.0);
+        assert_eq!(habits.median_session_minutes, 0.0);
+        assert_eq!(habits.peak_hour_of_day, None);
+        assert_eq!(habits.avg_speed, None);
+        assert_eq!(habits.hours_by_hour_of_day.len(), 24);
+    }
+
+    #[test]
+    fn per_book_time_counts_listening_not_ground_covered() {
+        let book = book_with_tracks(
+            Some(3_600.0),
+            vec![track_with_duration("track", 0, Some(3_600.0))],
+        );
+        let mut book_lookup = std::collections::HashMap::new();
+        book_lookup.insert(book.id.as_str(), &book);
+        let rows = super::book_times(
+            &[
+                session("s1", "book", 1_000_000, 1_200.0, "2026-08-18", 0),
+                session("s2", "book", 90_000_000, 600.0, "2026-08-20", 0),
+            ],
+            &book_lookup,
+            super::ymd_to_days("2026-08-21").unwrap(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_count, 2);
+        assert!((rows[0].hours_listened - 0.5).abs() < 1e-9);
+        assert_eq!(rows[0].first_read_on, "2026-08-18");
+        assert_eq!(rows[0].last_read_on, "2026-08-20");
+        assert_eq!(rows[0].span_days, 2);
+    }
+
+    #[test]
+    fn a_book_put_down_long_ago_reads_as_abandoned_and_a_recent_one_does_not() {
+        let book = book_with_tracks(
+            Some(36_000.0),
+            vec![track_with_duration("track", 0, Some(36_000.0))],
+        );
+        let mut book_lookup = std::collections::HashMap::new();
+        book_lookup.insert(book.id.as_str(), &book);
+        let key = "user:reader:book:book".to_string();
+        let stored = super::Progress {
+            book_id: "book".to_string(),
+            track_id: "track".to_string(),
+            position_seconds: 7_200.0,
+            book_position_seconds: 7_200.0,
+            duration_seconds: Some(36_000.0),
+            updated_at: "1000".to_string(),
+            finished_override: None,
+        };
+        let progress = vec![(&key, &stored)];
+        let today = super::ymd_to_days("2026-08-19").unwrap();
+
+        let long_ago = super::abandoned_books(
+            &[session("s1", "book", 1_000_000, 3_600.0, "2026-01-05", 0)],
+            &progress,
+            &book_lookup,
+            today,
+        );
+        assert_eq!(long_ago.len(), 1);
+        assert_eq!(long_ago[0].last_read_on, "2026-01-05");
+
+        let recent = super::abandoned_books(
+            &[session("s1", "book", 1_000_000, 3_600.0, "2026-08-10", 0)],
+            &progress,
+            &book_lookup,
+            today,
+        );
+        assert!(
+            recent.is_empty(),
+            "a book read last week is simply in progress"
+        );
+
+        let barely_started = super::abandoned_books(
+            &[session("s1", "book", 1_000_000, 120.0, "2026-01-05", 0)],
+            &progress,
+            &book_lookup,
+            today,
+        );
+        assert!(
+            barely_started.is_empty(),
+            "two minutes is a sample, not an abandonment"
+        );
+    }
+
+    #[test]
+    fn a_finished_book_is_never_listed_as_abandoned() {
+        let book = book_with_tracks(
+            Some(36_000.0),
+            vec![track_with_duration("track", 0, Some(36_000.0))],
+        );
+        let mut book_lookup = std::collections::HashMap::new();
+        book_lookup.insert(book.id.as_str(), &book);
+        let key = "user:reader:book:book".to_string();
+        let stored = super::Progress {
+            book_id: "book".to_string(),
+            track_id: "track".to_string(),
+            position_seconds: 36_000.0,
+            book_position_seconds: 36_000.0,
+            duration_seconds: Some(36_000.0),
+            updated_at: "1000".to_string(),
+            finished_override: Some(true),
+        };
+        let abandoned = super::abandoned_books(
+            &[session("s1", "book", 1_000_000, 36_000.0, "2026-01-05", 0)],
+            &[(&key, &stored)],
+            &book_lookup,
+            super::ymd_to_days("2026-08-19").unwrap(),
+        );
+        assert!(abandoned.is_empty());
+    }
+
+    #[test]
+    fn client_labels_and_speeds_from_a_client_are_bounded() {
+        assert_eq!(
+            super::sanitized_client_label(Some("  Android  ".to_string())).as_deref(),
+            Some("android")
+        );
+        assert_eq!(super::sanitized_client_label(Some(String::new())), None);
+        assert_eq!(super::sanitized_client_label(Some("!!!".to_string())), None);
+        assert_eq!(
+            super::sanitized_client_label(Some("x".repeat(200))).map(|label| label.len()),
+            Some(32)
+        );
+
+        assert_eq!(super::sanitized_speed(Some(1.5)), Some(1.5));
+        assert_eq!(super::sanitized_speed(Some(0.0)), None);
+        assert_eq!(super::sanitized_speed(Some(-1.0)), None);
+        assert_eq!(super::sanitized_speed(Some(99.0)), None);
+        assert_eq!(super::sanitized_speed(Some(f64::NAN)), None);
+    }
+
+    #[test]
+    fn isbns_are_accepted_only_when_the_check_digit_agrees() {
+        // Real ISBNs for The Odyssey (Fagles) in both shapes.
+        assert_eq!(
+            super::normalize_isbn("978-0-14-026886-7").as_deref(),
+            Some("9780140268867")
+        );
+        assert_eq!(
+            super::normalize_isbn("0140268863").as_deref(),
+            Some("0140268863")
+        );
+        assert_eq!(super::normalize_isbn("9780140268868"), None);
+        assert_eq!(super::normalize_isbn("0140268864"), None);
+        assert_eq!(super::normalize_isbn("not an isbn"), None);
+    }
+
+    /// Writes a minimal readable WAV of `seconds` at 8 kHz, 16-bit mono.
+    ///
+    /// `fill` changes the audio bytes without changing the runtime, so two
+    /// calls that differ only in `fill` produce files the scanner fingerprints
+    /// differently while remaining the same length of recording — which is what
+    /// a re-encode or a different rip of one book looks like.
+    fn write_test_wav(path: &std::path::Path, fill: u8, seconds: usize) {
+        let sample_data = vec![fill; 8_000 * 2 * seconds];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + sample_data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8_000u32.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(sample_data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&sample_data);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, wav).unwrap();
+    }
+
+    async fn finish_book(state: &super::AppState, auth: &super::AuthUser, book_id: &str) {
+        let book = state
+            .library
+            .read()
+            .await
+            .books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .cloned()
+            .expect("book is in the library");
+        let _finished = super::update_book_completion(
+            axum::extract::State(state.clone()),
+            axum::Extension(auth.clone()),
+            axum::extract::Path(book.id.clone()),
+            axum::Json(super::CompletionUpdate {
+                finished: true,
+                track_id: None,
+                position_seconds: None,
+                book_position_seconds: None,
+                duration_seconds: None,
+                tz_offset_minutes: Some(0),
+            }),
+        )
+        .await
+        .expect("marking finished should succeed");
+    }
+
+    /// The scenario the reading log exists for: a book is read, finished,
+    /// deleted from the server, and later replaced by a different copy. The
+    /// completion has to survive all of it.
+    #[tokio::test]
+    async fn a_completion_survives_the_book_being_deleted_and_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let auth = admin_user();
+
+        let book_dir = state.library_root.join("The Odyssey");
+        write_test_wav(&book_dir.join("01.wav"), 0, 1);
+        write_test_wav(&book_dir.join("02.wav"), 0, 1);
+        super::rescan_library(&state).await.unwrap();
+
+        let first_book_id = state.library.read().await.books[0].id.clone();
+        let first_work_id = super::work_id_for_book(&state, &first_book_id)
+            .await
+            .expect("the scan files every book under a work");
+
+        finish_book(&state, &auth, &first_book_id).await;
+
+        let events = super::reading_log::read_completions(&state.completions_file)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].snapshot.title, "The Odyssey");
+        assert_eq!(events[0].work_id.as_deref(), Some(first_work_id.as_str()));
+
+        // The listener removes the book from the server entirely.
+        std::fs::remove_dir_all(&book_dir).unwrap();
+        super::rescan_library(&state).await.unwrap();
+        assert!(state.library.read().await.books.is_empty());
+
+        let stats = super::profile_stats(
+            axum::extract::State(state.clone()),
+            axum::Extension(auth.clone()),
+            axum::extract::Query(super::ProfileStatsQuery {
+                tz_offset_minutes: Some(0),
+            }),
+        )
+        .await
+        .expect("stats should still render with an empty library");
+        assert_eq!(
+            stats.works_finished, 1,
+            "a deleted book must not un-finish itself"
+        );
+        assert_eq!(stats.finished_books.len(), 1);
+        assert_eq!(stats.finished_books[0].title, "The Odyssey");
+        assert!(!stats.finished_books[0].in_library);
+        assert_eq!(
+            stats.books_finished, 0,
+            "the shelf-derived count only sees what is on the shelf; the log is what survives"
+        );
+
+        // A different copy arrives later: another folder, different bytes, so
+        // neither the path alias nor the content fingerprint can recognize it.
+        let replacement_dir = state.library_root.join("the odyssey!");
+        write_test_wav(&replacement_dir.join("01.wav"), 7, 1);
+        write_test_wav(&replacement_dir.join("02.wav"), 7, 1);
+        super::rescan_library(&state).await.unwrap();
+
+        let second_book_id = state.library.read().await.books[0].id.clone();
+        assert_ne!(
+            second_book_id, first_book_id,
+            "a different file is a different edition"
+        );
+        let second_work_id = super::work_id_for_book(&state, &second_book_id)
+            .await
+            .expect("the replacement is filed too");
+        assert_eq!(
+            second_work_id, first_work_id,
+            "the work layer must recognize the same book behind a new file"
+        );
+
+        // Finishing the replacement is a re-read of one work, not a second book.
+        finish_book(&state, &auth, &second_book_id).await;
+        let stats = super::profile_stats(
+            axum::extract::State(state.clone()),
+            axum::Extension(auth.clone()),
+            axum::extract::Query(super::ProfileStatsQuery {
+                tz_offset_minutes: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.works_finished, 1);
+        assert_eq!(stats.total_completions, 2);
+        assert!(stats.finished_books[0].in_library);
+    }
+
+    /// Completions are recorded on the crossing into finished, so a client that
+    /// re-sends the same state does not log a book over and over.
+    #[tokio::test]
+    async fn marking_a_finished_book_finished_again_logs_nothing_new() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let auth = admin_user();
+
+        write_test_wav(&state.library_root.join("Dune").join("01.wav"), 0, 1);
+        write_test_wav(&state.library_root.join("Dune").join("02.wav"), 0, 1);
+        super::rescan_library(&state).await.unwrap();
+        let book_id = state.library.read().await.books[0].id.clone();
+
+        finish_book(&state, &auth, &book_id).await;
+        finish_book(&state, &auth, &book_id).await;
+        finish_book(&state, &auth, &book_id).await;
+
+        let events = super::reading_log::read_completions(&state.completions_file)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1, "only the crossing is an event");
+    }
+
+    /// Checkpoints become a session, and the session becomes the reader's
+    /// habits — the path that used to end in a single number per day.
+    #[tokio::test]
+    async fn checkpoints_become_a_session_the_profile_can_describe() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let auth = admin_user();
+
+        write_test_wav(&state.library_root.join("Dune").join("01.wav"), 0, 60);
+        write_test_wav(&state.library_root.join("Dune").join("02.wav"), 0, 60);
+        super::rescan_library(&state).await.unwrap();
+        let (book_id, track_id) = {
+            let library = state.library.read().await;
+            let book = &library.books[0];
+            (book.id.clone(), book.tracks[0].id.clone())
+        };
+
+        let checkpoint = |position: f64| super::ProgressUpdate {
+            track_id: track_id.clone(),
+            position_seconds: position,
+            book_position_seconds: Some(position),
+            duration_seconds: None,
+            updated_at_ms: None,
+            intentional_regression: false,
+            intentional_seek: false,
+            tz_offset_minutes: Some(0),
+            speed: Some(1.5),
+            client: Some("android".to_string()),
+        };
+
+        for step in 1..=4 {
+            let _saved = super::update_progress(
+                axum::extract::State(state.clone()),
+                axum::Extension(auth.clone()),
+                axum::extract::Path(book_id.clone()),
+                axum::Json(checkpoint(step as f64 * 5.0)),
+            )
+            .await
+            .expect("progress writes should succeed");
+        }
+
+        // The sitting is still open, so the profile has to see it in memory.
+        let sessions = super::reader_sessions(&state, &auth.id).await;
+        assert_eq!(sessions.len(), 1, "one continuous sitting, not four rows");
+        assert_eq!(sessions[0].book_id, book_id);
+        assert_eq!(sessions[0].speed, Some(1.5));
+        assert_eq!(sessions[0].client.as_deref(), Some("android"));
+
+        let stats = super::profile_stats(
+            axum::extract::State(state.clone()),
+            axum::Extension(auth.clone()),
+            axum::extract::Query(super::ProfileStatsQuery {
+                tz_offset_minutes: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.habits.session_count, 1);
+        assert_eq!(stats.habits.avg_speed, Some(1.5));
+        assert_eq!(stats.habits.clients, vec!["android".to_string()]);
+        assert_eq!(stats.most_read_books.len(), 1);
+        assert_eq!(stats.most_read_books[0].id, book_id);
+        assert!(stats.most_read_books[0].hours_listened > 0.0);
+    }
+
+    /// A seek moves the position without any listening happening, so it must
+    /// not become a session.
+    #[tokio::test]
+    async fn a_seek_does_not_manufacture_a_reading_session() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let auth = admin_user();
+
+        write_test_wav(&state.library_root.join("Dune").join("01.wav"), 0, 60);
+        write_test_wav(&state.library_root.join("Dune").join("02.wav"), 0, 60);
+        super::rescan_library(&state).await.unwrap();
+        let (book_id, track_id) = {
+            let library = state.library.read().await;
+            let book = &library.books[0];
+            (book.id.clone(), book.tracks[0].id.clone())
+        };
+
+        let update = |position: f64, seek: bool| super::ProgressUpdate {
+            track_id: track_id.clone(),
+            position_seconds: position,
+            book_position_seconds: Some(position),
+            duration_seconds: None,
+            updated_at_ms: None,
+            intentional_regression: false,
+            intentional_seek: seek,
+            tz_offset_minutes: Some(0),
+            speed: None,
+            client: None,
+        };
+
+        for (position, seek) in [(5.0, false), (10.0, false), (55.0, true)] {
+            let _saved = super::update_progress(
+                axum::extract::State(state.clone()),
+                axum::Extension(auth.clone()),
+                axum::extract::Path(book_id.clone()),
+                axum::Json(update(position, seek)),
+            )
+            .await
+            .unwrap();
+        }
+
+        let sessions = super::reader_sessions(&state, &auth.id).await;
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            (sessions[0].listened_seconds - 5.0).abs() < 1e-9,
+            "only the five seconds actually heard count; the forty-five second \
+             scrub that followed is not listening, but got {}",
+            sessions[0].listened_seconds
+        );
+    }
+
+    /// The privacy policy says deleting a reader deletes their reading history.
+    /// It has to actually leave the disk, not merely stop being served.
+    #[tokio::test]
+    async fn deleting_a_reader_purges_their_reading_history() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+        let owner = owner_user();
+
+        write_test_wav(&state.library_root.join("Dune").join("01.wav"), 0, 60);
+        write_test_wav(&state.library_root.join("Dune").join("02.wav"), 0, 60);
+        super::rescan_library(&state).await.unwrap();
+        let (book_id, track_id) = {
+            let library = state.library.read().await;
+            let book = &library.books[0];
+            (book.id.clone(), book.tracks[0].id.clone())
+        };
+
+        let reader = super::AuthUser {
+            id: "reader".to_string(),
+            username: "reader".to_string(),
+            is_admin: false,
+            is_owner: false,
+            can_approve_libation_requests: false,
+            allowed_book_ids: None,
+            libation_access: Default::default(),
+            share_progress: true,
+        };
+        state
+            .users
+            .write()
+            .await
+            .users
+            .push(stored_user("reader", false, false));
+
+        for step in 1..=3 {
+            let _saved = super::update_progress(
+                axum::extract::State(state.clone()),
+                axum::Extension(reader.clone()),
+                axum::extract::Path(book_id.clone()),
+                axum::Json(super::ProgressUpdate {
+                    track_id: track_id.clone(),
+                    position_seconds: step as f64 * 5.0,
+                    book_position_seconds: Some(step as f64 * 5.0),
+                    duration_seconds: None,
+                    updated_at_ms: None,
+                    intentional_regression: false,
+                    intentional_seek: false,
+                    tz_offset_minutes: Some(0),
+                    speed: None,
+                    client: None,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        finish_book(&state, &reader, &book_id).await;
+
+        // The sitting is still buffered, so force it out to disk first: the
+        // purge has to clear both the file and the in-memory buffer.
+        let flushed = state.open_sessions.lock().await.drain();
+        super::flush_reading_sessions(&state, &flushed).await;
+        assert!(!super::reader_sessions(&state, "reader").await.is_empty());
+
+        let _ = super::delete_user(
+            axum::extract::State(state.clone()),
+            axum::Extension(owner),
+            axum::extract::Path("reader".to_string()),
+        )
+        .await
+        .expect("deleting the reader should succeed");
+
+        assert!(
+            super::reader_sessions(&state, "reader").await.is_empty(),
+            "the reading log must not outlive the account"
+        );
+        let completions = super::reading_log::read_completions(&state.completions_file)
+            .await
+            .unwrap();
+        assert!(
+            completions.iter().all(|event| event.user_id != "reader"),
+            "completions must not outlive the account"
+        );
     }
 
     #[test]
@@ -11532,6 +13229,9 @@ exit 0
             users_file: data_dir.join("users.json"),
             sessions_file: data_dir.join("sessions.json"),
             activity_file: data_dir.join("activity.json"),
+            reading_log_file: data_dir.join("reading-log.jsonl"),
+            completions_file: data_dir.join("completions.jsonl"),
+            works_file: data_dir.join("works.json"),
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
             libation_requests_file: data_dir.join("libation-requests.json"),
             libation_refreshes_file: data_dir.join("libation-refreshes.json"),
@@ -11557,6 +13257,8 @@ exit 0
             users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
             sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
             activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
+            open_sessions: super::Arc::new(super::Mutex::new(Default::default())),
+            works: super::Arc::new(super::RwLock::new(Default::default())),
             libation_requests: super::Arc::new(super::RwLock::new(
                 super::LibationRequestStore::default(),
             )),
@@ -11571,6 +13273,7 @@ exit 0
             )),
             progress_write_lock: super::Arc::new(super::Mutex::new(())),
             book_settings_write_lock: super::Arc::new(super::Mutex::new(())),
+            reading_log_write_lock: super::Arc::new(super::Mutex::new(())),
             rescan_lock: super::Arc::new(super::Mutex::new(())),
             libation_job_lock: super::Arc::new(super::Mutex::new(())),
             faststart_lock: super::Arc::new(super::Mutex::new(())),

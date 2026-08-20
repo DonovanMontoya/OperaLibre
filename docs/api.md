@@ -33,6 +33,16 @@ The web app obtains a session token and a separate scoped media token via `POST 
 | `POST` | `/api/auth/logout` | Invalidate the current session. |
 | `GET` | `/api/auth/me` | Return the current user. |
 | `GET` | `/api/profile/stats` | Listening stats for the current user. |
+| `GET` | `/api/profile/sessions` | The caller's own reading sessions, newest first. Accepts `limit` (default 200, max 1000) and `since=YYYY-MM-DD`. |
+| `GET` | `/api/profile/completions` | The caller's own completion history, newest first, with a frozen snapshot of each book as it was when finished. Same query parameters. |
+
+#### Works
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/works` | The work index and its pending suggestions. Admin only. |
+| `POST` | `/api/works/link` | Attach an edition to a work by hand with `{ "bookId": ..., "workId": ... }`. Admin only. |
+| `POST` | `/api/works/reject` | Permanently reject a suggested pairing, same body. Admin only. |
 
 #### Server updates
 
@@ -154,6 +164,26 @@ Progress updates use JSON with the current track and timing fields:
 Progress responses may include `finishedOverride`. `true` or `false` records the reader's explicit completion choice; when absent, completion continues to be inferred from playback position. The choice is carried onto later checkpoints, with one exception: an `intentionalSeek` write that lands within the first 60 seconds of a book marked finished clears the override, because that is a listener starting the book over. Automatic position reports never clear it.
 
 #### Per-book volume
+
+### The reading log
+
+Playback progress answers "where am I in this book" and is overwritten on every checkpoint. The reading log answers "what did this reader actually do", and is append-only.
+
+`reading-log.jsonl` holds one row per **session** — a continuous stretch of listening, coalesced in memory from the client's checkpoints and closed after a ten-minute gap. Each row carries the book, the work, start and end timestamps, seconds actually listened, the whole-book positions at either end, and the reported playback speed, client, and UTC offset. Open sessions are written through once a minute and on shutdown, so a crash costs at most a minute of the sitting in progress. Rows are revisions keyed by session id; the newest wins, and the log is compacted at startup.
+
+Seconds listened come from the same validated forward position movement the daily activity totals use: deliberate seeks contribute nothing, and movement is capped against elapsed wall-clock time. Scrubbing to the end of a book is not listening to it.
+
+`completions.jsonl` holds one immutable row per book finished, recorded on the **crossing** into finished so a client re-sending the same state cannot log a book twice, while a genuine re-read logs a second time. Each row carries an `EditionSnapshot` — title, author, narrator, runtime, ASIN, ISBN, publisher, series, genres — copied out of the library at the moment of completion. That snapshot is what makes a completion durable: it stays readable after the audio is deleted, re-downloaded in another encoding, or replaced by a different edition.
+
+`/api/profile/stats` reports both the shelf-derived `booksFinished` (what is on the server now) and the log-derived `worksFinished` and `totalCompletions` (what the reader has actually finished, ever). It also returns `habits` — listening hours by hour of the reader's own day and by weekday, session count, mean, median, and longest session, mean playback speed, and the clients seen — plus `finishedBooks`, `abandonedBooks`, and `mostReadBooks`, which measures time genuinely spent per book rather than how far into it the reader has reached.
+
+`speed` and `client` are optional on `PUT /api/books/{book_id}/progress`. Until a client sends them, `habits.avgSpeed` and `habits.clients` stay empty; every other statistic works without them.
+
+### Works
+
+Book identity is byte identity: a re-encode, a different rip, or another edition is a different book, which is the right answer for playback and the wrong one for a reading history. A **work** sits above those editions and collects them, so a history follows the reader across re-downloads and replacements. Progress stays keyed by book; a work is a view, never a replacement.
+
+Editions are matched to works in tiers: an administrator's manual link, then an exact ASIN, then an exact ISBN, then a normalized title and author whose runtimes agree within 15%. A title and author that agree while the runtimes do not — an abridgement, a dramatization, a missing duration — becomes a **suggestion** for an administrator rather than a silent merge. Manual links and rejections are permanent and survive rescans.
 
 Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book, in `book-settings.json`) and follows the listener to every client they sign in from. Every book in `/api/books` carries the caller's own `volumeGain`; `1.0` means the file's own level and is what an untuned book reports.
 
