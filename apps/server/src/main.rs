@@ -122,6 +122,7 @@ struct AppState {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    finish_events_file: PathBuf,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_refreshes_file: PathBuf,
@@ -140,6 +141,7 @@ struct AppState {
     users: Arc<RwLock<UsersStore>>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     activity: Arc<RwLock<ActivityStore>>,
+    finish_events: Arc<RwLock<FinishEventStore>>,
     libation_requests: Arc<RwLock<LibationRequestStore>>,
     libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
     libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
@@ -189,6 +191,41 @@ struct ActivityStore {
     by_user: HashMap<String, BTreeMap<String, f64>>,
 }
 
+/// The shared record of who finished what.
+///
+/// `SharedProgress` is recomputed from `progress.json` on every library read,
+/// so it can say a book *is* finished but never that finishing it just
+/// happened. The feed needs the event, so finishes are appended here as they
+/// occur, and each listener carries a mark for how far down the list they have
+/// already read.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinishEventStore {
+    #[serde(default)]
+    events: Vec<FinishEvent>,
+    /// user id -> the id of the last event that listener has seen.
+    #[serde(default)]
+    seen: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinishEvent {
+    id: String,
+    user_id: String,
+    book_id: String,
+    /// Snapshotted because a rescan can drop the book from the library while
+    /// the event stays worth reading. The live title wins when it is still
+    /// there, so a retitled book reads correctly.
+    book_title: String,
+    finished_at: String,
+}
+
+/// The feed is a "what did I miss" list, not an archive, and it lives in a
+/// JSON file that is rewritten whole. Old events are dropped once the list
+/// outgrows this.
+const FINISH_EVENT_LIMIT: usize = 500;
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 struct MetadataOverrideStore {
@@ -230,10 +267,24 @@ struct User {
     /// sharing, matching the default for new accounts.
     #[serde(default = "default_share_progress")]
     share_progress: bool,
+    /// Whether finishing a book adds an entry to the shared activity feed.
+    /// Only consulted while `share_progress` is on: a listener who is not
+    /// sharing at all has nothing to announce.
+    #[serde(default = "default_true")]
+    announce_finishes: bool,
+    /// Whether the finishes other listeners announce are delivered to this
+    /// one. Also gated on `share_progress`, which stays reciprocal: someone
+    /// who has withdrawn their own activity does not receive anyone else's.
+    #[serde(default = "default_true")]
+    notify_finishes: bool,
     created_at: String,
 }
 
 fn default_share_progress() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -248,6 +299,8 @@ struct UserPublic {
     allowed_book_ids: Option<Vec<String>>,
     libation_access: LibationAccess,
     share_progress: bool,
+    announce_finishes: bool,
+    notify_finishes: bool,
     created_at: String,
 }
 
@@ -267,6 +320,8 @@ impl From<&User> for UserPublic {
                 user.libation_access
             },
             share_progress: user.share_progress,
+            announce_finishes: user.announce_finishes,
+            notify_finishes: user.notify_finishes,
             created_at: user.created_at.clone(),
         }
     }
@@ -311,6 +366,8 @@ struct AuthUser {
     allowed_book_ids: Option<Vec<String>>,
     libation_access: LibationAccess,
     share_progress: bool,
+    announce_finishes: bool,
+    notify_finishes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +487,12 @@ struct UpdateLibationApprovalRequest {
 #[serde(rename_all = "camelCase")]
 struct UpdateProgressSharingRequest {
     share_progress: bool,
+    /// Omitted by clients that predate the finish feed, which must leave the
+    /// two finer settings exactly as they were rather than resetting them.
+    #[serde(default)]
+    announce_finishes: Option<bool>,
+    #[serde(default)]
+    notify_finishes: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1024,6 +1087,7 @@ struct ServerConfig {
     users_file: PathBuf,
     sessions_file: PathBuf,
     activity_file: PathBuf,
+    finish_events_file: PathBuf,
     metadata_overrides_file: PathBuf,
     libation_requests_file: PathBuf,
     libation_cli_path: Option<PathBuf>,
@@ -1166,6 +1230,9 @@ impl ServerConfig {
         let activity_file = config_path_value(&values, &config_dir, "activity_file")
             .or_else(|| env_path_value("OPERALIBRE_ACTIVITY_FILE"))
             .unwrap_or_else(|| data_dir.join("activity.json"));
+        let finish_events_file = config_path_value(&values, &config_dir, "finish_events_file")
+            .or_else(|| env_path_value("OPERALIBRE_FINISH_EVENTS_FILE"))
+            .unwrap_or_else(|| data_dir.join("finish-events.json"));
         let metadata_overrides_file =
             config_path_value(&values, &config_dir, "metadata_overrides_file")
                 .or_else(|| env_path_value("OPERALIBRE_METADATA_OVERRIDES_FILE"))
@@ -1224,6 +1291,7 @@ impl ServerConfig {
             users_file,
             sessions_file,
             activity_file,
+            finish_events_file,
             metadata_overrides_file,
             libation_requests_file,
             libation_cli_path: config_path_value(&values, &config_dir, "libation_cli_path")
@@ -1279,6 +1347,7 @@ fn parse_server_config(contents: &str) -> anyhow::Result<HashMap<String, String>
         "progress_file",
         "users_file",
         "activity_file",
+        "finish_events_file",
         "metadata_overrides_file",
         "libation_cli_path",
         "libation_files_dir",
@@ -1491,6 +1560,7 @@ async fn main() -> anyhow::Result<()> {
         };
     let sessions_store = load_sessions_store(&config.sessions_file).await?;
     let activity_store = load_activity_store(&config.activity_file).await?;
+    let finish_event_store = load_finish_events(&config.finish_events_file).await?;
     let metadata_overrides = load_metadata_overrides(&config.metadata_overrides_file).await?;
     let libation_requests = load_libation_requests(&config.libation_requests_file).await?;
     let libation_refreshes =
@@ -1523,6 +1593,7 @@ async fn main() -> anyhow::Result<()> {
             ),
         }
         let _ = fs::remove_file(&config.activity_file).await;
+        let _ = fs::remove_file(&config.finish_events_file).await;
     }
 
     let state = AppState {
@@ -1540,6 +1611,7 @@ async fn main() -> anyhow::Result<()> {
         users_file: config.users_file.clone(),
         sessions_file: config.sessions_file.clone(),
         activity_file: config.activity_file.clone(),
+        finish_events_file: config.finish_events_file.clone(),
         metadata_overrides_file: config.metadata_overrides_file.clone(),
         libation_requests_file: config.libation_requests_file.clone(),
         libation_refreshes_file: config.data_dir.join("libation-refreshes.json"),
@@ -1563,6 +1635,7 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users_store)),
         sessions: Arc::new(RwLock::new(sessions_store)),
         activity: Arc::new(RwLock::new(activity_store)),
+        finish_events: Arc::new(RwLock::new(finish_event_store)),
         libation_requests: Arc::new(RwLock::new(libation_requests)),
         libation_refreshes: Arc::new(Mutex::new(libation_refreshes)),
         libation_accounts: Arc::new(RwLock::new(libation_accounts)),
@@ -1615,6 +1688,8 @@ async fn main() -> anyhow::Result<()> {
             put(update_libation_approval),
         )
         .route("/api/me/progress-sharing", put(update_progress_sharing))
+        .route("/api/activity/finishes", get(finish_feed))
+        .route("/api/activity/finishes/seen", post(mark_finish_feed_seen))
         .route("/api/books", get(list_books))
         .route("/api/library/rescan", post(rescan))
         .route(
@@ -1802,6 +1877,7 @@ async fn secure_existing_state_files(config: &ServerConfig) -> io::Result<()> {
         &config.users_file,
         &config.sessions_file,
         &config.activity_file,
+        &config.finish_events_file,
         &config.metadata_overrides_file,
         &config.libation_requests_file,
     ] {
@@ -4776,6 +4852,20 @@ async fn update_progress(
     progress.insert(key, saved.clone());
     write_progress(&state.progress_file, &progress).await?;
 
+    // Reaching the end of a book finishes it without anyone pressing anything,
+    // so the feed is fed from here as well as from the explicit mark.
+    record_finish_event(
+        &state,
+        &auth,
+        book,
+        previous
+            .as_ref()
+            .map(|entry| summarize_book_progress(book, entry))
+            .as_ref(),
+        &summarize_book_progress(book, &saved),
+    )
+    .await;
+
     let listened_delta =
         plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
     if listened_delta > 0.0 {
@@ -4835,6 +4925,12 @@ async fn update_book_completion(
     let mut progress = read_progress(&state.progress_file).await?;
     let key = progress_key(&auth.id, &book.id);
     let next_timestamp = next_progress_timestamp(progress.get(&key), unix_now_millis());
+    // Snapshotted before the row is touched. Taking it afterwards would read
+    // the position this very request is writing, so a book carried to its end
+    // here would look finished on both sides and announce nothing.
+    let previous_summary = progress
+        .get(&key)
+        .map(|entry| summarize_book_progress(&book, entry));
     let saved = progress.entry(key).or_insert_with(|| Progress {
         book_id: book.id.clone(),
         track_id: first_track.id.clone(),
@@ -4860,7 +4956,10 @@ async fn update_book_completion(
     let saved = saved.clone();
     write_progress(&state.progress_file, &progress).await?;
 
-    Ok(Json(summarize_book_progress(&book, &saved)))
+    let summary = summarize_book_progress(&book, &saved);
+    record_finish_event(&state, &auth, &book, previous_summary.as_ref(), &summary).await;
+
+    Ok(Json(summary))
 }
 
 async fn stream_track(
@@ -8427,6 +8526,79 @@ async fn write_activity_store(
     write_json_atomic(activity_file, store).await
 }
 
+/// Whether this write is the moment a book became finished.
+///
+/// A book stays finished across every later progress save, so testing the new
+/// status alone would re-announce it on every heartbeat. Only the crossing
+/// counts, which also means re-finishing a book after marking it unfinished
+/// announces again — that is a real second reading, not a duplicate.
+fn crossed_into_finished(previous: Option<&BookProgress>, next: &BookProgress) -> bool {
+    next.status == BookProgressStatus::Finished
+        && previous.map(|entry| entry.status) != Some(BookProgressStatus::Finished)
+}
+
+/// Append a finish to the shared feed, if this listener announces them.
+///
+/// Silent for anyone who has withdrawn from sharing or turned announcements
+/// off, and silent when nothing crossed — so callers can hand every progress
+/// write to it without deciding first.
+async fn record_finish_event(
+    state: &AppState,
+    auth: &AuthUser,
+    book: &Book,
+    previous: Option<&BookProgress>,
+    next: &BookProgress,
+) {
+    if !auth.share_progress || !auth.announce_finishes {
+        return;
+    }
+    if !crossed_into_finished(previous, next) {
+        return;
+    }
+    let event = FinishEvent {
+        id: stable_id(&format!(
+            "finish:{}:{}:{}",
+            auth.id,
+            book.id,
+            unix_now_millis()
+        )),
+        user_id: auth.id.clone(),
+        book_id: book.id.clone(),
+        book_title: book.title.clone(),
+        finished_at: now_rfc3339ish(),
+    };
+    // The guard is deliberately held across the file write rather than dropped
+    // after the mutation. Two listeners finishing at once would otherwise each
+    // take their own snapshot and race to persist it, and if the one holding
+    // the older copy wrote last it would erase the other's event from disk —
+    // memory would still look right until the next restart.
+    let mut store = state.finish_events.write().await;
+    store.events.push(event);
+    // Oldest first, so trimming from the front keeps the recent tail the feed
+    // actually shows.
+    if store.events.len() > FINISH_EVENT_LIMIT {
+        let excess = store.events.len() - FINISH_EVENT_LIMIT;
+        store.events.drain(0..excess);
+    }
+    if let Err(error) = write_finish_events(&state.finish_events_file, &store).await {
+        // The listener's own progress is already saved and is what matters;
+        // a lost feed entry is not worth failing their request over.
+        tracing::warn!("failed to persist finish event: {}", error.message);
+    }
+}
+
+async fn load_finish_events(path: &FsPath) -> anyhow::Result<FinishEventStore> {
+    match fs::read_to_string(path).await {
+        Ok(contents) => Ok(serde_json::from_str(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FinishEventStore::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_finish_events(path: &FsPath, store: &FinishEventStore) -> Result<(), ApiError> {
+    write_json_atomic(path, store).await
+}
+
 /// Real UTC offsets span UTC-12 to UTC+14. Anything outside that is a broken
 /// or hostile client and is treated as UTC rather than shifting the calendar.
 fn sanitized_tz_offset_minutes(offset_minutes: Option<i32>) -> i64 {
@@ -9122,6 +9294,8 @@ async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
                 user.libation_access
             },
             share_progress: user.share_progress,
+            announce_finishes: user.announce_finishes,
+            notify_finishes: user.notify_finishes,
         })
 }
 
@@ -9241,6 +9415,8 @@ async fn auth_status(
                     allowed_book_ids: auth.allowed_book_ids,
                     libation_access: auth.libation_access,
                     share_progress: auth.share_progress,
+                    announce_finishes: auth.announce_finishes,
+                    notify_finishes: auth.notify_finishes,
                     created_at: String::new(),
                 }),
                 Some(media_token_for_session(&token)),
@@ -9315,6 +9491,8 @@ async fn setup_admin(
         allowed_book_ids: None,
         libation_access: LibationAccess::Direct,
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: now_rfc3339ish(),
     };
 
@@ -9565,6 +9743,8 @@ async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
         allowed_book_ids: auth.allowed_book_ids,
         libation_access: auth.libation_access,
         share_progress: auth.share_progress,
+        announce_finishes: auth.announce_finishes,
+        notify_finishes: auth.notify_finishes,
         created_at: String::new(),
     })
 }
@@ -9581,9 +9761,159 @@ async fn update_progress_sharing(
         .find(|user| user.id == auth.id)
         .ok_or(ApiError::not_found("User not found."))?;
     user.share_progress = payload.share_progress;
+    // Absent from older clients, which must not reset what they cannot show.
+    if let Some(announce) = payload.announce_finishes {
+        user.announce_finishes = announce;
+    }
+    if let Some(notify) = payload.notify_finishes {
+        user.notify_finishes = notify;
+    }
     let public = UserPublic::from(&*user);
     write_users_store(&state.users_file, &users).await?;
     Ok(Json(public))
+}
+
+/// How many finishes one request returns. The feed is a glance at what has
+/// happened lately, not a scrollable history.
+const FINISH_FEED_PAGE: usize = 50;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinishFeedEntry {
+    id: String,
+    user_id: String,
+    username: String,
+    book_id: String,
+    book_title: String,
+    finished_at: String,
+    /// False once the viewer has marked the feed read up to here.
+    unseen: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinishFeedResponse {
+    entries: Vec<FinishFeedEntry>,
+    unseen_count: usize,
+    /// What to send back to `/seen` to clear the badge. Null on an empty feed.
+    latest_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkFinishFeedSeenRequest {
+    /// The id the feed reported as `latestId`. Marking by id rather than
+    /// "clear everything" means a finish that lands mid-read stays unseen.
+    event_id: String,
+}
+
+async fn finish_feed(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<FinishFeedResponse>, ApiError> {
+    // Reciprocal, exactly like the shelf's shared progress: someone who has
+    // withdrawn their own activity does not read anyone else's.
+    if !auth.share_progress || !auth.notify_finishes {
+        return Ok(Json(FinishFeedResponse {
+            entries: Vec::new(),
+            unseen_count: 0,
+            latest_id: None,
+        }));
+    }
+
+    let announcers: HashMap<String, String> = {
+        let users = state.users.read().await;
+        users
+            .users
+            .iter()
+            .filter(|user| user.share_progress && user.announce_finishes && user.id != auth.id)
+            .map(|user| (user.id.clone(), user.username.clone()))
+            .collect()
+    };
+
+    let store = state.finish_events.read().await;
+    let seen_id = store.seen.get(&auth.id).cloned();
+    // Everything at or before the mark has been read. An id no longer in the
+    // list — trimmed away — leaves nothing seen, which is the safe direction:
+    // the viewer sees a finish twice rather than never.
+    let seen_index = seen_id
+        .as_ref()
+        .and_then(|id| store.events.iter().position(|event| &event.id == id));
+
+    let library = state.library.read().await;
+    let mut entries: Vec<FinishFeedEntry> = store
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            // Resolved live, so a listener who turns sharing or announcements
+            // off afterwards drops out of everyone's feed retroactively.
+            let username = announcers.get(&event.user_id)?;
+            // A book the viewer cannot open should not be named to them.
+            if !can_access_book(&auth, &event.book_id) {
+                return None;
+            }
+            let title = library
+                .books
+                .iter()
+                .find(|book| book.id == event.book_id)
+                .map(|book| book.title.clone())
+                .unwrap_or_else(|| event.book_title.clone());
+            Some(FinishFeedEntry {
+                id: event.id.clone(),
+                user_id: event.user_id.clone(),
+                username: username.clone(),
+                book_id: event.book_id.clone(),
+                book_title: title,
+                finished_at: event.finished_at.clone(),
+                unseen: seen_index.is_none_or(|seen| index > seen),
+            })
+        })
+        .collect();
+
+    // Newest first, then cut: the feed opens on what just happened.
+    entries.reverse();
+    entries.truncate(FINISH_FEED_PAGE);
+    let unseen_count = entries.iter().filter(|entry| entry.unseen).count();
+    let latest_id = entries.first().map(|entry| entry.id.clone());
+
+    Ok(Json(FinishFeedResponse {
+        entries,
+        unseen_count,
+        latest_id,
+    }))
+}
+
+async fn mark_finish_feed_seen(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<MarkFinishFeedSeenRequest>,
+) -> Result<Json<FinishFeedResponse>, ApiError> {
+    {
+        // Held across the write for the same reason as record_finish_event:
+        // a concurrent mark from another listener must not be able to persist
+        // a snapshot that predates this one.
+        let mut store = state.finish_events.write().await;
+        // Only ever moves forward. A stale request from a client that had an
+        // older page in hand must not re-raise a badge the viewer cleared.
+        let incoming = store
+            .events
+            .iter()
+            .position(|event| event.id == payload.event_id);
+        let current = store
+            .seen
+            .get(&auth.id)
+            .and_then(|id| store.events.iter().position(|event| &event.id == id));
+        match (incoming, current) {
+            (Some(next), Some(previous)) if next <= previous => {}
+            (Some(_), _) => {
+                store.seen.insert(auth.id.clone(), payload.event_id.clone());
+            }
+            (None, _) => {}
+        }
+        write_finish_events(&state.finish_events_file, &store).await?;
+    }
+    finish_feed(State(state), Extension(auth)).await
 }
 
 fn require_admin(auth: &AuthUser) -> Result<(), ApiError> {
@@ -9688,6 +10018,8 @@ async fn create_user(
             })
         },
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: now_rfc3339ish(),
     };
     users.users.push(new_user.clone());
@@ -10398,6 +10730,8 @@ mod tests {
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
             share_progress: true,
+            announce_finishes: true,
+            notify_finishes: true,
         };
         assert!(can_access_book(&unrestricted, "book-a"));
 
@@ -10444,6 +10778,8 @@ mod tests {
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
             share_progress,
+            announce_finishes: true,
+            notify_finishes: true,
             created_at: "0".to_string(),
         }
     }
@@ -10459,7 +10795,65 @@ mod tests {
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
             share_progress,
+            announce_finishes: true,
+            notify_finishes: true,
         }
+    }
+
+    fn finish_summary(status: super::BookProgressStatus) -> super::BookProgress {
+        super::BookProgress {
+            status,
+            finished_override: None,
+            book_position_seconds: 0.0,
+            duration_seconds: Some(3600.0),
+            remaining_seconds: Some(0.0),
+            percent_complete: Some(100.0),
+            updated_at: "0".to_string(),
+        }
+    }
+
+    #[test]
+    fn only_the_crossing_into_finished_announces() {
+        use super::BookProgressStatus::*;
+        let finished = finish_summary(Finished);
+        let reading = finish_summary(InProgress);
+        let unopened = finish_summary(NotStarted);
+
+        assert!(super::crossed_into_finished(Some(&reading), &finished));
+        assert!(super::crossed_into_finished(Some(&unopened), &finished));
+        // A book with no progress row at all being written as finished.
+        assert!(super::crossed_into_finished(None, &finished));
+    }
+
+    #[test]
+    fn a_book_already_finished_does_not_announce_again() {
+        use super::BookProgressStatus::*;
+        let finished = finish_summary(Finished);
+        // Every heartbeat while parked at the end re-saves the same status.
+        assert!(!super::crossed_into_finished(
+            Some(&finish_summary(Finished)),
+            &finished
+        ));
+        // And nothing announces while the book is merely being read.
+        assert!(!super::crossed_into_finished(
+            Some(&finish_summary(InProgress)),
+            &finish_summary(InProgress)
+        ));
+        assert!(!super::crossed_into_finished(
+            None,
+            &finish_summary(NotStarted)
+        ));
+    }
+
+    #[test]
+    fn marking_a_book_unfinished_then_finishing_it_announces_once_more() {
+        use super::BookProgressStatus::*;
+        // A real second reading, not a duplicate: the listener deliberately
+        // reset the book and got to the end again.
+        assert!(super::crossed_into_finished(
+            Some(&finish_summary(NotStarted)),
+            &finish_summary(Finished)
+        ));
     }
 
     #[test]
@@ -11532,6 +11926,7 @@ exit 0
             users_file: data_dir.join("users.json"),
             sessions_file: data_dir.join("sessions.json"),
             activity_file: data_dir.join("activity.json"),
+            finish_events_file: data_dir.join("finish-events.json"),
             metadata_overrides_file: data_dir.join("metadata-overrides.json"),
             libation_requests_file: data_dir.join("libation-requests.json"),
             libation_refreshes_file: data_dir.join("libation-refreshes.json"),
@@ -11557,6 +11952,7 @@ exit 0
             users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
             sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
             activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
+            finish_events: super::Arc::new(super::RwLock::new(super::FinishEventStore::default())),
             libation_requests: super::Arc::new(super::RwLock::new(
                 super::LibationRequestStore::default(),
             )),
@@ -11597,6 +11993,8 @@ exit 0
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Direct,
             share_progress: true,
+            announce_finishes: true,
+            notify_finishes: true,
         }
     }
 
@@ -11611,6 +12009,8 @@ exit 0
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Direct,
             share_progress: true,
+            announce_finishes: true,
+            notify_finishes: true,
         }
     }
 
@@ -11630,6 +12030,8 @@ exit 0
                 super::LibationAccess::Approval
             },
             share_progress: true,
+            announce_finishes: true,
+            notify_finishes: true,
             created_at: "0".to_string(),
         }
     }
@@ -11645,6 +12047,8 @@ exit 0
             allowed_book_ids: None,
             libation_access: super::LibationAccess::Approval,
             share_progress: true,
+            announce_finishes: true,
+            notify_finishes: true,
         }
     }
 
@@ -11680,6 +12084,58 @@ exit 0
         assert_eq!(users.users.len(), 1);
         assert!(users.users[0].is_owner);
         assert!(users.users[0].is_admin);
+    }
+
+    fn announcing_viewer(id: &str) -> AuthUser {
+        let mut viewer = viewer(id, true);
+        viewer.announce_finishes = true;
+        viewer
+    }
+
+    fn finished_book(id: &str, title: &str) -> super::Book {
+        let mut book = book_with_tracks(Some(3600.0), Vec::new());
+        book.id = id.to_string();
+        book.title = title.to_string();
+        book
+    }
+
+    /// Real threads, because the interleaving is the whole point: on a
+    /// single-threaded runtime `join!` polls in a fixed order, so the newest
+    /// snapshot always happens to write last and the race cannot appear.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_finishes_all_survive_a_restart() {
+        use super::BookProgressStatus::*;
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = fake_libation_state(root.path());
+
+        // Enough writers that a snapshot-then-persist implementation loses at
+        // least one to an older copy landing last.
+        const WRITERS: usize = 24;
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|index| {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    super::record_finish_event(
+                        &state,
+                        &announcing_viewer(&format!("reader-{index}")),
+                        &finished_book(&format!("book-{index}"), "The Lantern Atlas"),
+                        Some(&finish_summary(InProgress)),
+                        &finish_summary(Finished),
+                    )
+                    .await;
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Memory would pass either way, so assert against the file the next
+        // boot actually reads.
+        let reloaded = super::load_finish_events(&state.finish_events_file)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.events.len(), WRITERS);
     }
 
     #[cfg(unix)]
@@ -12039,7 +12495,7 @@ exit 0
             .map(str::to_string)
             .collect::<Vec<_>>();
         assert_eq!(lines.len(), asins.len() * 2 + 2);
-        for pair in lines.chunks_exact(2) {
+        for pair in lines.as_chunks::<2>().0 {
             assert!(pair[0].starts_with("start "));
             assert_eq!(pair[1], pair[0].replacen("start ", "end ", 1));
         }

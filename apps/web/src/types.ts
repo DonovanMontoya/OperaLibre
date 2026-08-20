@@ -316,7 +316,33 @@ export type AuthUser = {
   libationAccess: LibationAccess;
   /** Absent on servers released before progress sharing; treated as sharing. */
   shareProgress?: boolean;
+  /**
+   * Absent on servers released before the finish feed. Both default to on, so
+   * a listener who is already sharing keeps the behaviour they would expect
+   * rather than silently opting out of a feature they never saw.
+   */
+  announceFinishes?: boolean;
+  notifyFinishes?: boolean;
   createdAt: string;
+};
+
+/** One "so-and-so finished X" entry in the shared activity feed. */
+export type FinishEvent = {
+  id: string;
+  userId: string;
+  username: string;
+  bookId: string;
+  bookTitle: string;
+  finishedAt: string;
+  /** False once the viewer has marked the feed read past this entry. */
+  unseen: boolean;
+};
+
+export type FinishFeed = {
+  entries: FinishEvent[];
+  unseenCount: number;
+  /** Send back to mark the feed read. Null when the feed is empty. */
+  latestId: string | null;
 };
 
 export type ServerType = "operalibre" | "jellyfin";

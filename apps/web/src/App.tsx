@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   ArrowUp,
+  Bell,
   Bookmark,
   ChevronDown,
   ChevronLeft,
@@ -113,7 +114,9 @@ import {
   getLibationBooks,
   getLibationAccess,
   getLibationStatus,
+  getFinishFeed,
   getMe,
+  markFinishFeedSeen,
   getProgress,
   getServerStorageKey,
   getServerAliases,
@@ -206,7 +209,15 @@ import {
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
 import { ProfilePage } from "./Profile";
-import { ProgressSharingCard } from "./ProgressSharing";
+import { ProgressSharingCard, isNotifiedOfFinishes } from "./ProgressSharing";
+import {
+  EMPTY_FINISH_FEED,
+  arrivedSince,
+  finishAnnouncement,
+  finishBannerText,
+  finishedAgoLabel
+} from "./finishFeed";
+import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
@@ -214,6 +225,7 @@ import type {
   Book,
   BookMetadataUpdate,
   Chapter,
+  FinishFeed,
   JobStatus,
   LibationBook,
   LibationAccount,
@@ -2206,6 +2218,86 @@ function MainApp({
       window.removeEventListener("focus", refreshCurrentUser);
     };
   }, [demoMode, isOperaLibre, localMode, onCurrentUserChanged]);
+
+  // The shared "who finished what" feed. Polled on the same cadence as the
+  // account refresh above: a finish is news for hours, so a tighter loop would
+  // buy nothing and cost a request every few seconds.
+  const [finishFeed, setFinishFeed] = useState<FinishFeed>(EMPTY_FINISH_FEED);
+  const [finishFeedOpen, setFinishFeedOpen] = useState(false);
+  // The previous poll, so a banner fires only for what actually just arrived.
+  // Null until the first poll lands, which is what keeps a session opening on
+  // a backlog from announcing all of it at once.
+  const previousFinishFeedRef = useRef<FinishFeed | null>(null);
+  // Ticks once per feed request, whether a poll or a mark-as-seen. Answers are
+  // not guaranteed to arrive in the order they were asked for — a focus poll
+  // can overlap the interval one, and either can outlast the 30s gap — so only
+  // the newest request is allowed to touch the feed or the baseline above.
+  // An older answer landing would rewind the baseline, and the next poll would
+  // then treat already-announced finishes as new and banner them again.
+  const finishRequestRef = useRef(0);
+  const finishFeedAvailable =
+    isOperaLibre && !demoMode && !localMode && isNotifiedOfFinishes(currentUser);
+
+  useEffect(() => {
+    if (!finishFeedAvailable) {
+      // Turning the setting off empties the bell rather than freezing the last
+      // feed behind it, and resets the baseline so re-enabling does not fire a
+      // burst of banners for everything that happened meanwhile.
+      setFinishFeed(EMPTY_FINISH_FEED);
+      setFinishFeedOpen(false);
+      previousFinishFeedRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      const request = (finishRequestRef.current += 1);
+      void getFinishFeed()
+        .then(async (next) => {
+          if (cancelled || request !== finishRequestRef.current) return;
+          const arrivals = arrivedSince(previousFinishFeedRef.current, next);
+          previousFinishFeedRef.current = next;
+          setFinishFeed(next);
+          const banner = finishBannerText(arrivals);
+          // Permission is asked for here, the first time there is actually
+          // something to show, rather than at launch with no context.
+          if (banner && (await ensureFinishBannerPermission())) {
+            await postFinishBanner(banner);
+          }
+        })
+        .catch(() => undefined);
+    };
+    poll();
+    const timer = window.setInterval(poll, 30_000);
+    window.addEventListener("focus", poll);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", poll);
+    };
+  }, [finishFeedAvailable]);
+
+  function toggleFinishFeed() {
+    const opening = !finishFeedOpen;
+    setFinishFeedOpen(opening);
+    if (!opening) return;
+    haptic("light");
+    // Opening the panel is the listener reading it, so the badge clears from
+    // the top entry down. A finish that lands while it is open stays unseen
+    // until the next open, which is why this marks by id rather than "all".
+    const latest = finishFeed.latestId;
+    if (!latest || finishFeed.unseenCount === 0) return;
+    const request = (finishRequestRef.current += 1);
+    void markFinishFeedSeen(latest)
+      .then((next) => {
+        // Shares the sequence with the poll above: a request already in flight
+        // when the panel opened must not land afterwards and un-clear the
+        // badge the listener just read.
+        if (request !== finishRequestRef.current) return;
+        previousFinishFeedRef.current = next;
+        setFinishFeed(next);
+      })
+      .catch(() => undefined);
+  }
 
   function saveAlias(event: React.FormEvent) {
     event.preventDefault();
@@ -5516,6 +5608,70 @@ function MainApp({
               >
                 <Upload size={16} />
               </button>
+            ) : null}
+            {finishFeedAvailable ? (
+              <div className="finish-feed-wrap">
+                <button
+                  className="icon-button finish-feed-button"
+                  aria-label={
+                    finishFeed.unseenCount > 0
+                      ? `Shared reading, ${finishFeed.unseenCount} new`
+                      : "Shared reading"
+                  }
+                  aria-expanded={finishFeedOpen}
+                  onClick={toggleFinishFeed}
+                >
+                  <Bell size={16} />
+                  {finishFeed.unseenCount > 0 ? (
+                    <span className="finish-feed-badge" aria-hidden="true">
+                      {finishFeed.unseenCount > 9 ? "9+" : finishFeed.unseenCount}
+                    </span>
+                  ) : null}
+                </button>
+                {finishFeedOpen ? (
+                  <div className="finish-feed-panel" role="dialog" aria-label="Shared reading">
+                    <header>
+                      <strong>Shared reading</strong>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="Close shared reading"
+                        onClick={() => setFinishFeedOpen(false)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </header>
+                    {finishFeed.entries.length === 0 ? (
+                      <p className="finish-feed-empty">
+                        Nobody has finished a book yet. When someone does, it shows up here.
+                      </p>
+                    ) : (
+                      <ul>
+                        {finishFeed.entries.map((entry) => (
+                          <li key={entry.id} className={entry.unseen ? "unseen" : ""}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const book = books.find((candidate) => candidate.id === entry.bookId);
+                                if (book) {
+                                  selectBook(book);
+                                  setLibraryOpen(false);
+                                }
+                                setFinishFeedOpen(false);
+                              }}
+                            >
+                              <span className="finish-feed-text">{finishAnnouncement(entry)}</span>
+                              <span className="finish-feed-when">
+                                {finishedAgoLabel(entry.finishedAt)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
             <button
               className="icon-button"
