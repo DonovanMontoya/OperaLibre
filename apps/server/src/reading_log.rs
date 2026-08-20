@@ -104,9 +104,20 @@ pub struct ReadingSession {
 impl ReadingSession {
     /// Whether a checkpoint at this moment continues the sitting or starts a
     /// new one.
+    ///
+    /// A checkpoint stamped *before* the session's end is not a new sitting —
+    /// session times come from the monotonic progress revision, which runs
+    /// ahead of the wall clock whenever writes arrive faster than one a
+    /// millisecond, so a moment slightly in the past is ordinary. Only the size
+    /// of a forward gap ends a sitting.
     pub fn accepts(&self, at_ms: u64) -> bool {
-        at_ms >= self.ended_at_ms
-            && (at_ms - self.ended_at_ms) <= SESSION_GAP_SECONDS.saturating_mul(1_000)
+        self.idle_for_ms(at_ms) <= SESSION_GAP_SECONDS.saturating_mul(1_000)
+    }
+
+    /// How long this sitting has been quiet as of `at_ms`. Zero when `at_ms`
+    /// precedes the last checkpoint.
+    pub fn idle_for_ms(&self, at_ms: u64) -> u64 {
+        at_ms.saturating_sub(self.ended_at_ms)
     }
 
     /// A session worth keeping. The floor is on listened audio rather than
@@ -194,6 +205,9 @@ struct OpenSession {
     /// so a long sitting costs a logarithmic number of revisions instead of a
     /// linear one.
     flush_interval_ms: u64,
+    /// Whether anything has changed since the last write-through. Cleared on
+    /// every flush, so a sitting that closes without further checkpoints is not
+    /// appended a second time identical to the row already on disk.
     dirty: bool,
 }
 
@@ -274,6 +288,7 @@ impl OpenSessions {
                         .flush_interval_ms
                         .saturating_mul(2)
                         .min(SESSION_FLUSH_MAX_SECONDS.saturating_mul(1_000));
+                    open.dirty = false;
                     rows.push(open.session.clone());
                 }
             }
@@ -383,13 +398,30 @@ async fn append_lines<T: Serialize>(path: &FsPath, rows: &[T]) -> io::Result<()>
     if buffer.is_empty() {
         return Ok(());
     }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
+    // A reading log is a timestamped record of when somebody was awake and
+    // listening. It is created owner-only rather than left to the umask, and
+    // hardened again afterwards in case it already existed at wider
+    // permissions — matching how every other state file here is written.
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).await?;
     file.write_all(buffer.as_bytes()).await?;
     file.flush().await?;
+    drop(file);
+    harden(path).await
+}
+
+/// Restricts a log to its owner. A no-op off Unix.
+async fn harden(path: &FsPath) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -399,13 +431,33 @@ async fn append_lines<T: Serialize>(path: &FsPath, rows: &[T]) -> io::Result<()>
 /// written by a future build with another shape — must cost that line and not
 /// the reader's entire past.
 async fn read_lines<T: for<'a> Deserialize<'a>>(path: &FsPath) -> io::Result<Vec<T>> {
+    Ok(read_log(path).await?.rows)
+}
+
+/// A log as read: the rows that parsed, and how many lines did not.
+///
+/// The skip count is not diagnostic decoration. A rewrite reconstructs the file
+/// from the parsed rows alone, so it must not run while lines it could not read
+/// are present — those lines may be perfectly good history written by a build
+/// that knew a field this one does not.
+struct LogContents<T> {
+    rows: Vec<T>,
+    unreadable: usize,
+}
+
+async fn read_log<T: for<'a> Deserialize<'a>>(path: &FsPath) -> io::Result<LogContents<T>> {
     let contents = match fs::read_to_string(path).await {
         Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(LogContents {
+                rows: Vec::new(),
+                unreadable: 0,
+            });
+        }
         Err(error) => return Err(error),
     };
     let mut rows = Vec::new();
-    let mut skipped = 0usize;
+    let mut unreadable = 0usize;
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -413,13 +465,16 @@ async fn read_lines<T: for<'a> Deserialize<'a>>(path: &FsPath) -> io::Result<Vec
         }
         match serde_json::from_str(line) {
             Ok(row) => rows.push(row),
-            Err(_) => skipped += 1,
+            Err(_) => unreadable += 1,
         }
     }
-    if skipped > 0 {
-        tracing::warn!("skipped {skipped} unreadable row(s) in {}", path.display());
+    if unreadable > 0 {
+        tracing::warn!(
+            "skipped {unreadable} unreadable row(s) in {}",
+            path.display()
+        );
     }
-    Ok(rows)
+    Ok(LogContents { rows, unreadable })
 }
 
 pub async fn append_sessions(path: &FsPath, rows: &[ReadingSession]) -> io::Result<()> {
@@ -520,6 +575,10 @@ pub struct MaintenanceReport {
     /// Sessions dropped to stay under the row ceiling.
     pub sessions_trimmed: usize,
     pub completions_trimmed: usize,
+    /// Lines the running build could not parse. Any at all suppresses the
+    /// rewrite, because rebuilding the file would delete them.
+    pub sessions_unreadable: usize,
+    pub completions_unreadable: usize,
     /// Whether anything was actually rewritten. A pass that changes nothing
     /// touches no files.
     pub rewrote_sessions: bool,
@@ -549,9 +608,15 @@ pub async fn maintain(
 ) -> io::Result<MaintenanceReport> {
     let mut report = MaintenanceReport::default();
 
-    let raw: Vec<ReadingSession> = read_lines(sessions_path).await?;
-    let raw_len = raw.len();
-    let mut sessions = compact_sessions(raw);
+    let raw: LogContents<ReadingSession> = read_log(sessions_path).await?;
+    // A rewrite would reconstruct the file from the rows below and silently
+    // drop everything this build could not parse. That is the right answer for
+    // a torn line and the wrong one for history written by a newer build the
+    // operator has since rolled back from, and the two are indistinguishable
+    // from here. So the pass reports and leaves the file alone.
+    report.sessions_unreadable = raw.unreadable;
+    let raw_len = raw.rows.len();
+    let mut sessions = compact_sessions(raw.rows);
     report.sessions_compacted = raw_len - sessions.len();
 
     if let Some(days) = policy.session_days {
@@ -576,28 +641,34 @@ pub async fn maintain(
         // Collapsing a handful of revisions is not worth rewriting a large
         // file; expiring or trimming always is, because that is disk coming
         // back.
-        let worth_it = report.sessions_expired > 0
-            || report.sessions_trimmed > 0
-            || raw_len >= COMPACTION_LINE_THRESHOLD;
+        let worth_it = report.sessions_unreadable == 0
+            && (report.sessions_expired > 0
+                || report.sessions_trimmed > 0
+                || raw_len >= COMPACTION_LINE_THRESHOLD);
         if worth_it {
             rewrite(sessions_path, &sessions).await?;
             report.rewrote_sessions = true;
         } else {
             report.sessions_compacted = 0;
+            report.sessions_expired = 0;
+            report.sessions_trimmed = 0;
         }
     }
 
-    let raw: Vec<CompletionEvent> = read_lines(completions_path).await?;
-    let raw_len = raw.len();
-    let mut completions = dedupe_completions(raw);
+    let raw: LogContents<CompletionEvent> = read_log(completions_path).await?;
+    report.completions_unreadable = raw.unreadable;
+    let raw_len = raw.rows.len();
+    let mut completions = dedupe_completions(raw.rows);
     let deduped = raw_len - completions.len();
     if completions.len() > policy.completion_max_rows {
         report.completions_trimmed = completions.len() - policy.completion_max_rows;
         completions.drain(0..report.completions_trimmed);
     }
-    if report.completions_trimmed > 0 || deduped > 0 {
+    if report.completions_unreadable == 0 && (report.completions_trimmed > 0 || deduped > 0) {
         rewrite(completions_path, &completions).await?;
         report.rewrote_completions = true;
+    } else {
+        report.completions_trimmed = 0;
     }
 
     Ok(report)
@@ -634,7 +705,20 @@ pub async fn forget_user(
     completions_path: &FsPath,
     user_id: &str,
 ) -> io::Result<()> {
-    let sessions: Vec<ReadingSession> = read_lines(sessions_path).await?;
+    // Unlike [`maintain`], this rewrites even when some lines could not be
+    // parsed. Maintenance is optional tidying and defers to unreadable history;
+    // an account deletion is a promise, and a line this build cannot read is a
+    // line it cannot prove belongs to somebody else. Erring towards keeping it
+    // would mean retaining data the operator asked to destroy.
+    let sessions: LogContents<ReadingSession> = read_log(sessions_path).await?;
+    if sessions.unreadable > 0 {
+        tracing::warn!(
+            "purging a deleted account dropped {} unreadable row(s) from {}",
+            sessions.unreadable,
+            sessions_path.display()
+        );
+    }
+    let sessions = sessions.rows;
     let kept = sessions
         .into_iter()
         .filter(|row| row.user_id != user_id)
@@ -662,9 +746,25 @@ async fn rewrite<T: Serialize>(path: &FsPath, rows: &[T]) -> io::Result<()> {
             buffer.push('\n');
         }
     }
+    // Written to a fresh sibling and renamed into place, so an interrupted
+    // rewrite leaves the original intact. `create_new` refuses to follow a
+    // pre-existing path, and the mode is set at creation rather than after, so
+    // the replacement is never briefly readable by anybody else.
     let temporary = path.with_extension("jsonl.tmp");
-    fs::write(&temporary, buffer.as_bytes()).await?;
-    fs::rename(&temporary, path).await
+    let _ = fs::remove_file(&temporary).await;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary).await?;
+    file.write_all(buffer.as_bytes()).await?;
+    file.flush().await?;
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path).await {
+        let _ = fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+    harden(path).await
 }
 
 #[cfg(test)]
@@ -1133,6 +1233,123 @@ mod tests {
              {} sessions",
             sessions.len()
         );
+    }
+
+    #[tokio::test]
+    async fn logs_are_created_and_rewritten_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reading-log.jsonl");
+        let row = dated_session("a", "2026-08-19");
+        append_sessions(&path, std::slice::from_ref(&row))
+            .await
+            .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |path: &FsPath| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode(&path),
+                0o600,
+                "a reading log records when somebody was awake and listening; \
+                 it must not be created world-readable"
+            );
+
+            // A rewrite replaces the file wholesale and must not widen it again.
+            rewrite(&path, &[row]).await.unwrap();
+            assert_eq!(mode(&path), 0o600, "maintenance must not un-harden the log");
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_stamped_before_the_last_one_still_continues_the_sitting() {
+        // Session times come from the monotonic progress revision, which runs
+        // ahead of the wall clock after a burst of writes. A moment slightly in
+        // the past is ordinary, not a new sitting.
+        let session = dated_session("a", "2026-08-19");
+        assert!(session.accepts(session.ended_at_ms - 1));
+        assert!(session.accepts(session.ended_at_ms));
+        assert!(
+            !session.accepts(session.ended_at_ms + SESSION_GAP_SECONDS.saturating_mul(1_000) + 1)
+        );
+    }
+
+    #[test]
+    fn a_sitting_whose_clock_ran_ahead_is_not_swept_as_idle() {
+        let mut open = OpenSessions::default();
+        let mut next_id = ids();
+        let at = 1_000_000_000u64;
+        open.record(checkpoint(at, 60.0, 60.0), &mut next_id);
+        // The sweeper ticks with a wall clock a few hundred milliseconds behind
+        // the revision the checkpoint carried.
+        assert!(
+            open.close_idle(at - 500).is_empty(),
+            "a session in the future is not an idle one"
+        );
+        assert_eq!(open.iter().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_sitting_is_not_appended_twice() {
+        let mut open = OpenSessions::default();
+        let mut next_id = ids();
+        open.record(checkpoint(1_000_000, 10.0, 10.0), &mut next_id);
+        let due = 1_000_000 + SESSION_FLUSH_SECONDS * 1_000;
+        let flushed = match open.record(checkpoint(due, 50.0, 60.0), &mut next_id) {
+            SessionOutcome::Append(rows) => rows,
+            other => panic!("expected a flush, got {other:?}"),
+        };
+        assert_eq!(flushed.len(), 1);
+        // Nothing has changed since that flush, so closing writes nothing more.
+        assert!(
+            open.drain().is_empty(),
+            "a sitting already on disk unchanged must not be written again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pass_leaves_the_file_alone_when_rows_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_path = dir.path().join("reading-log.jsonl");
+        let completions_path = dir.path().join("completions.jsonl");
+
+        // One row this build understands, and one written by a build that knew
+        // a field this one does not.
+        write_log(&sessions_path, &[dated_session("ancient", "2019-01-01")]).await;
+        tokio::fs::write(
+            dir.path().join("extra.jsonl"),
+            b"{\"id\":\"future\",\"somethingNew\":true}\n",
+        )
+        .await
+        .unwrap();
+        let mut existing = tokio::fs::read_to_string(&sessions_path).await.unwrap();
+        existing.push_str("{\"id\":\"future\",\"somethingNew\":true}\n");
+        tokio::fs::write(&sessions_path, existing.as_bytes())
+            .await
+            .unwrap();
+
+        let report = maintain(
+            &sessions_path,
+            &completions_path,
+            RetentionPolicy::default(),
+            ymd_days("2026-08-19").unwrap(),
+            ymd_days,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.sessions_unreadable, 1);
+        assert!(
+            !report.rewrote_sessions,
+            "rebuilding the file would delete history this build cannot parse"
+        );
+        let raw = tokio::fs::read_to_string(&sessions_path).await.unwrap();
+        assert!(
+            raw.contains("somethingNew"),
+            "the unreadable row must survive the pass"
+        );
+        assert!(raw.contains("ancient"));
     }
 
     #[test]

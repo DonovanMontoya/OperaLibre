@@ -192,6 +192,8 @@ Every write-through of an open session appends a superseded revision, so the flu
 
 A maintenance pass runs at startup and every six hours. It collapses superseded revisions, drops sessions past the retention window, enforces the row ceilings oldest-first, and prunes work records that hold no reading history and name no book on the server. Nothing is rewritten unless something actually changed, so a settled server pays one read per pass.
 
+A pass that encounters a line it cannot parse rewrites nothing. Rebuilding a log from the rows the running build understood would delete anything it did not — which after a rollback to an older release is every row the newer one wrote. Account deletion is the deliberate exception: it must rewrite, because a line the server cannot read is a line it cannot prove belongs to somebody else.
+
 Measured: a reader who listens three hours a day, every day, for a year produces about 2.1 MB of raw rows that compact to **about 300 KB**. The default 200,000-row ceiling is roughly 66 MB — decades of that reader.
 
 Sessions age out; completions do not. The daily totals in `activity.json` are a separate permanent archive at roughly thirty bytes per reader per day, and every lifetime headline number is computed from those rather than from the session log. Expiring old sessions therefore costs the *texture* of an old year — its hour-of-day pattern, its session lengths, its per-book time — and none of its totals. A completion is the only record that a book was read at all, and is small enough to keep for ever.
@@ -202,7 +204,7 @@ Sessions age out; completions do not. The daily totals in `activity.json` are a 
 | `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. |
 | `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Reaching it means something is wrong, not that somebody reads a lot. |
 
-Both ceilings accept 1,000 to 5,000,000; a value outside that range is refused at startup rather than quietly adjusted.
+Both ceilings accept 1,000 to 500,000; a value outside that range is refused at startup rather than quietly adjusted. The upper bound is set by the reader rather than the disk — a log is parsed whole into memory, and 500,000 session rows is about as much as the Raspberry Pi class hardware these builds target can hold.
 
 ### Works
 
