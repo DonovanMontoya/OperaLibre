@@ -13,8 +13,10 @@ pub(crate) struct AppState {
     pub(crate) min_download_free_bytes: u64,
     pub(crate) library_root: PathBuf,
     pub(crate) library_identities_file: PathBuf,
-    pub(crate) progress_file: PathBuf,
-    pub(crate) book_settings_file: PathBuf,
+    /// Saved playback positions. The only way to reach a listener's place.
+    pub(crate) progress: Arc<ProgressStore>,
+    /// Per-listener, per-book playback settings.
+    pub(crate) book_settings: Arc<BookSettingsStore>,
     pub(crate) users_file: PathBuf,
     pub(crate) sessions_file: PathBuf,
     pub(crate) activity_file: PathBuf,
@@ -40,11 +42,6 @@ pub(crate) struct AppState {
     pub(crate) libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
     pub(crate) libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
     pub(crate) libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
-    /// Serializes read-modify-write cycles on the progress file so concurrent
-    /// updates cannot overwrite each other.
-    pub(crate) progress_write_lock: Arc<Mutex<()>>,
-    /// Same guarantee for the per-book settings file.
-    pub(crate) book_settings_write_lock: Arc<Mutex<()>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot
     /// publish stale state over a newer scan.

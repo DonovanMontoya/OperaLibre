@@ -1196,17 +1196,8 @@ pub(crate) async fn delete_user(
     write_sessions_store(&state.sessions_file, &sessions).await?;
     drop(sessions);
 
-    let _progress_guard = state.progress_write_lock.lock().await;
-    let mut progress = read_progress(&state.progress_file).await?;
-    let prefix = format!("user:{user_id}:");
-    progress.retain(|key, _| !key.starts_with(&prefix));
-    write_progress(&state.progress_file, &progress).await?;
-    drop(_progress_guard);
-
-    let _settings_guard = state.book_settings_write_lock.lock().await;
-    let mut book_settings = read_book_settings(&state.book_settings_file).await?;
-    book_settings.retain(|key, _| !key.starts_with(&prefix));
-    write_book_settings(&state.book_settings_file, &book_settings).await?;
+    state.progress.remove_user(&user_id).await?;
+    state.book_settings.remove_user(&user_id).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

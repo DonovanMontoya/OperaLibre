@@ -139,7 +139,7 @@ After this, forgetting the guard is a compile error rather than a review miss.
 
 ---
 
-## Phase 3 — Introduce a storage seam (still JSON)
+## Phase 3 — Introduce a storage seam (still JSON) *(progress and settings done)*
 
 This is the phase that turns Phase 4 from a rewrite into a swap. No behavior
 change and no format change; only the call sites move.
@@ -164,6 +164,19 @@ doing its own read-modify-write against a whole file.
 
 At the end of this phase the server behaves exactly as it does today, but the
 storage backend is one type parameter away from being replaceable.
+
+### Landed so far
+
+`ProgressStore` and `BookSettingsStore` cover the hot path and the two stores
+SQLite most needs to own. The progress decision rules are now a pure function,
+`decide_progress_write`, tested without any I/O.
+
+### Still to do in this phase
+
+`UserStore`, `SessionStore`, `ActivityStore`, `MetadataOverrideStore`, and the
+Libation stores still read and rewrite whole files from their handlers. They
+are colder paths and none of them sit behind a per-request write, so they can
+follow in a second commit without blocking Phase 4's design.
 
 ---
 

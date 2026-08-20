@@ -132,12 +132,8 @@ pub(crate) async fn profile_stats(
     let tz_offset_minutes = sanitized_tz_offset_minutes(query.tz_offset_minutes);
     let today = ymd_to_days(&today_ymd(tz_offset_minutes)).unwrap_or(0);
     let library = state.library.read().await;
-    let progress_map = read_progress(&state.progress_file).await?;
-    let key_prefix = format!("user:{}:book:", auth.id);
-    let user_progress: Vec<(&String, &Progress)> = progress_map
-        .iter()
-        .filter(|(key, _)| key.starts_with(&key_prefix))
-        .collect();
+    let progress_map = state.progress.list_for_user(&auth.id).await?;
+    let user_progress: Vec<(&String, &Progress)> = progress_map.iter().collect();
 
     // Headline numbers.
     let mut books_finished = 0u32;
