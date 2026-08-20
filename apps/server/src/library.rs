@@ -275,13 +275,15 @@ pub(crate) async fn update_book_metadata(
         }
     }
 
-    {
-        let mut overrides = state.metadata_overrides.write().await;
-        overrides
-            .books
-            .insert(book_id.clone(), metadata_override.clone());
-        write_metadata_overrides(&state.metadata_overrides_file, &overrides).await?;
-    }
+    state
+        .metadata_overrides
+        .mutate(|overrides| {
+            overrides
+                .books
+                .insert(book_id.clone(), metadata_override.clone());
+            Ok(())
+        })
+        .await?;
 
     let updated_book = {
         let mut library = state.library.write().await;

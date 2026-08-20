@@ -4,7 +4,7 @@ use crate::*;
 
 pub(crate) const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct ActivityStore {
     pub(crate) by_user: HashMap<String, BTreeMap<String, f64>>,
@@ -115,11 +115,19 @@ pub(crate) async fn record_activity(
     let today = today_ymd(tz_offset_minutes);
     // Keep mutation and persistence under one lock. Otherwise two snapshots can
     // be written in reverse order and an older activity total can win on disk.
-    let mut activity = state.activity.write().await;
-    let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
-    let entry = user_activity.entry(today).or_insert(0.0);
-    *entry += delta_seconds;
-    if let Err(error) = write_activity_store(&state.activity_file, &activity).await {
+    let stored = state
+        .activity
+        .mutate(|activity| {
+            let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
+            let entry = user_activity.entry(today).or_insert(0.0);
+            *entry += delta_seconds;
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
+        // The increment is dropped rather than kept only in memory: listening
+        // totals that exist in the cache but not on disk reappear as a jump
+        // backwards after any restart.
         tracing::warn!("failed to persist activity log: {}", error.message);
     }
 }

@@ -17,11 +17,6 @@ pub(crate) struct AppState {
     pub(crate) progress: Arc<ProgressStore>,
     /// Per-listener, per-book playback settings.
     pub(crate) book_settings: Arc<BookSettingsStore>,
-    pub(crate) activity_file: PathBuf,
-    pub(crate) metadata_overrides_file: PathBuf,
-    pub(crate) libation_requests_file: PathBuf,
-    pub(crate) libation_refreshes_file: PathBuf,
-    pub(crate) libation_accounts_file: PathBuf,
     pub(crate) libation_accounts_root: PathBuf,
     pub(crate) libation_config: LibationConfig,
     pub(crate) alignment_config: AlignmentConfig,
@@ -31,16 +26,18 @@ pub(crate) struct AppState {
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
-    pub(crate) metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
+    /// Administrator metadata edits, cached and mirrored to disk.
+    pub(crate) metadata_overrides: Arc<MetadataOverrides>,
     pub(crate) jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
     /// Accounts, cached in memory and mirrored to disk.
     pub(crate) users: Arc<UserStore>,
     /// Live sessions, cached in memory and mirrored to disk.
     pub(crate) sessions: Arc<SessionStore>,
-    pub(crate) activity: Arc<RwLock<ActivityStore>>,
-    pub(crate) libation_requests: Arc<RwLock<LibationRequestStore>>,
-    pub(crate) libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
-    pub(crate) libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
+    /// Daily listening totals, cached and mirrored to disk.
+    pub(crate) activity: Arc<ActivityLog>,
+    pub(crate) libation_requests: Arc<LibationRequests>,
+    pub(crate) libation_refreshes: Arc<LibationRefreshes>,
+    pub(crate) libation_accounts: Arc<LibationAccounts>,
     pub(crate) libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot

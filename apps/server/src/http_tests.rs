@@ -73,11 +73,6 @@ impl TestServer {
             library_identities_file: data_dir.join("library-identities.json"),
             progress: Arc::new(ProgressStore::new(data_dir.join("progress.json"))),
             book_settings: Arc::new(BookSettingsStore::new(data_dir.join("book-settings.json"))),
-            activity_file: data_dir.join("activity.json"),
-            metadata_overrides_file: data_dir.join("metadata-overrides.json"),
-            libation_requests_file: data_dir.join("libation-requests.json"),
-            libation_refreshes_file: data_dir.join("libation-refreshes.json"),
-            libation_accounts_file: data_dir.join("libation-accounts.json"),
             libation_accounts_root: data_dir.join("libation-accounts"),
             libation_config: LibationConfig {
                 cli_path: None,
@@ -91,7 +86,10 @@ impl TestServer {
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             library: Arc::new(RwLock::new(LibraryState::default())),
-            metadata_overrides: Arc::new(RwLock::new(MetadataOverrideStore::default())),
+            metadata_overrides: Arc::new(MetadataOverrides::new(
+                data_dir.join("metadata-overrides.json"),
+                MetadataOverrideStore::default(),
+            )),
             jobs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             users: Arc::new(UserStore::new(
                 data_dir.join("users.json"),
@@ -101,10 +99,22 @@ impl TestServer {
                 data_dir.join("sessions.json"),
                 std::collections::HashMap::new(),
             )),
-            activity: Arc::new(RwLock::new(ActivityStore::default())),
-            libation_requests: Arc::new(RwLock::new(LibationRequestStore::default())),
-            libation_refreshes: Arc::new(Mutex::new(LibationRefreshStore::default())),
-            libation_accounts: Arc::new(RwLock::new(ManagedLibationAccountStore::default())),
+            activity: Arc::new(ActivityLog::new(
+                data_dir.join("activity.json"),
+                ActivityStore::default(),
+            )),
+            libation_requests: Arc::new(LibationRequests::new(
+                data_dir.join("libation-requests.json"),
+                LibationRequestStore::default(),
+            )),
+            libation_refreshes: Arc::new(LibationRefreshes::new(
+                data_dir.join("libation-refreshes.json"),
+                LibationRefreshStore::default(),
+            )),
+            libation_accounts: Arc::new(LibationAccounts::new(
+                data_dir.join("libation-accounts.json"),
+                ManagedLibationAccountStore::default(),
+            )),
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             rescan_lock: Arc::new(Mutex::new(())),
             libation_job_lock: Arc::new(Mutex::new(())),
