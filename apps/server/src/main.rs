@@ -7203,9 +7203,7 @@ fn validated_book_position_seconds(
 /// Serialize to a temporary file in the destination directory and rename it
 /// into place, so a crash mid-write never leaves a truncated store behind.
 async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(), ApiError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await?;
-    }
+    let created_directories = ensure_parent_directory(path).await?;
     let mut suffix = [0u8; 8];
     rand::rng().fill(&mut suffix);
     let file_name = path
@@ -7230,7 +7228,7 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
     temp_file.sync_all().await?;
     drop(temp_file);
     secure_file_permissions(&temp_path).await?;
-    if let Err(error) = fs::rename(&temp_path, path).await {
+    if let Err(error) = replace_file(&temp_path, path).await {
         let _ = fs::remove_file(&temp_path).await;
         return Err(error.into());
     }
@@ -7238,47 +7236,110 @@ async fn write_json_atomic<T: Serialize>(path: &FsPath, value: &T) -> Result<(),
     // The rename is atomic, but the directory entry it created is itself only
     // durable once the directory is synced. Skipping this can lose the whole
     // store after a crash even though the data was safely on disk.
-    sync_parent_directory(path).await;
+    sync_parent_directories(path, &created_directories).await?;
     Ok(())
 }
 
-/// Fsync the directory holding `path` so a completed rename survives a crash.
+/// Create the destination directory and remember every directory created.
 ///
-/// Unix only: Windows has no directory handle to sync, and `ReplaceFile`-style
-/// rename semantics already order the metadata update.
-#[cfg(unix)]
-async fn sync_parent_directory(path: &FsPath) {
+/// After the file is published, their parents must also be synced: syncing the
+/// immediate parent persists the file entry, while syncing each ancestor
+/// persists the newly-created directory entries themselves.
+async fn ensure_parent_directory(path: &FsPath) -> io::Result<Vec<PathBuf>> {
     let Some(parent) = path.parent() else {
-        return;
+        return Ok(Vec::new());
     };
-    let parent = parent.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        let dir = if parent.as_os_str().is_empty() {
-            std::fs::File::open(".")?
-        } else {
-            std::fs::File::open(&parent)?
+
+    let mut created = Vec::new();
+    let mut candidate = parent;
+    while !candidate.exists() {
+        created.push(candidate.to_path_buf());
+        let Some(next) = candidate.parent() else {
+            break;
         };
-        dir.sync_all()
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => {}
-        // A failed directory sync does not invalidate the write that just
-        // landed, so this warns rather than failing the request.
-        Ok(Err(error)) => {
-            tracing::warn!("could not fsync directory for {}: {error}", path.display());
-        }
-        Err(error) => {
-            tracing::warn!(
-                "directory fsync task failed for {}: {error}",
-                path.display()
-            );
-        }
+        candidate = next;
     }
+    fs::create_dir_all(parent).await?;
+    Ok(created)
+}
+
+#[cfg(unix)]
+async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    fs::rename(temp_path, path).await
+}
+
+#[cfg(windows)]
+async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temp_path = temp_path.to_path_buf();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let from = temp_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let to = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // Tokio's rename does not replace an existing destination on Windows.
+        // MoveFileExW does, and both paths are in the same directory so this is
+        // a same-volume rename.
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+/// Fsync the directory holding the file and any newly-created ancestor links.
+#[cfg(unix)]
+async fn sync_parent_directories(path: &FsPath, created_directories: &[PathBuf]) -> io::Result<()> {
+    let mut directories = Vec::with_capacity(created_directories.len() + 1);
+    if let Some(parent) = path.parent() {
+        directories.push(parent.to_path_buf());
+    }
+    directories.extend(
+        created_directories
+            .iter()
+            .filter_map(|directory| directory.parent().map(|parent| parent.to_path_buf())),
+    );
+    directories.sort();
+    directories.dedup();
+
+    tokio::task::spawn_blocking(move || -> io::Result<()> {
+        for directory in directories {
+            std::fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 #[cfg(not(unix))]
-async fn sync_parent_directory(_path: &FsPath) {}
+async fn sync_parent_directories(
+    _path: &FsPath,
+    _created_directories: &[PathBuf],
+) -> io::Result<()> {
+    Ok(())
+}
 
 #[cfg(unix)]
 async fn secure_file_permissions(path: &FsPath) -> io::Result<()> {
@@ -12102,7 +12163,7 @@ exit 0
             .map(str::to_string)
             .collect::<Vec<_>>();
         assert_eq!(lines.len(), asins.len() * 2 + 2);
-        for pair in lines.chunks_exact(2) {
+        for pair in lines.as_chunks::<2>().0 {
             assert!(pair[0].starts_with("start "));
             assert_eq!(pair[1], pair[0].replacen("start ", "end ", 1));
         }
