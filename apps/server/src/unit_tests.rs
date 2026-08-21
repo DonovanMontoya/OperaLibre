@@ -3452,3 +3452,14 @@ fn replacing_cover_art_replaces_the_file_and_its_etag() {
     assert_eq!(before.path, after.path, "the cache path should be stable");
     assert_eq!(std::fs::read(&after.path).unwrap(), b"replacement art");
 }
+
+/// Atom requires a real RFC 3339 instant in `<updated>`; the server's own
+/// timestamps are bare unix seconds, which a strict reader rejects.
+#[test]
+fn rfc3339_formats_an_instant_a_feed_reader_will_accept() {
+    assert_eq!(super::rfc3339_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(super::rfc3339_utc(1_750_000_000), "2025-06-15T15:06:40Z");
+    // Last second of a day, and the first of the next.
+    assert_eq!(super::rfc3339_utc(86_399), "1970-01-01T23:59:59Z");
+    assert_eq!(super::rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
+}
