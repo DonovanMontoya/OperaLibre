@@ -1232,8 +1232,12 @@ pub(crate) async fn delete_user(
     state
         .reading_history
         .mutate(|history| {
-            history.sessions.retain(|session| session.user_id != user_id);
-            history.completions.retain(|completion| completion.user_id != user_id);
+            history
+                .sessions
+                .retain(|session| session.user_id != user_id);
+            history
+                .completions
+                .retain(|completion| completion.user_id != user_id);
             Ok(())
         })
         .await?;
