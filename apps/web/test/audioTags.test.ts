@@ -109,6 +109,23 @@ test("an m4b's iTunes atoms become book metadata", async () => {
   assert.ok(tags.rawFields.some((field) => field.key === "NARRATOR" && field.value === "Rob Inglis"));
 });
 
+test("tag descriptions cannot reconstruct HTML from encoded or malformed markup", async () => {
+  for (const description of [
+    "&lt;scrip&lt;script&gt;ignored&lt;/script&gt;t&gt;alert(1)&lt;/script&gt;",
+    "&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;"
+  ]) {
+    const file = concat(
+      box("ftyp", latin1("M4B ")),
+      box("moov", mvhd(1_000, 1_000), ilst(textItem("©nam", "Volume &lt; 2"), textItem("desc", description)))
+    );
+
+    const tags = await readAudioFileTags(bytesSource(file));
+    assert.ok(tags);
+    assert.equal(tags.title, "Volume < 2");
+    assert.doesNotMatch(tags.description ?? "", /[<>]/);
+  }
+});
+
 test("the composer is read as the narrator only when another tag names the author", async () => {
   const withTags = async (...items: Uint8Array[]) => {
     const file = concat(box("ftyp", latin1("M4B ")), box("moov", mvhd(1_000, 1_000), ilst(...items)));
