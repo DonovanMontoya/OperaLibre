@@ -122,39 +122,50 @@ async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
 
 #[cfg(windows)]
 async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    let temp_path = temp_path.to_path_buf();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || replace_file_blocking(&temp_path, &path))
+        .await
+        .map_err(io::Error::other)?
+}
+
+/// Replace a file from a synchronous path such as JSON export. Windows cannot
+/// use `rename` when the destination already exists, so every synchronous
+/// writer shares the same replacement semantics as `write_json_atomic`.
+#[cfg(unix)]
+pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    std::fs::rename(temp_path, path)
+}
+
+#[cfg(windows)]
+pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
-    let temp_path = temp_path.to_path_buf();
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let from = temp_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let to = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        if unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    })
-    .await
-    .map_err(io::Error::other)?
+    let from = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Fsync the directory holding the file and any newly-created ancestor links.
@@ -201,151 +212,74 @@ pub(crate) async fn secure_file_permissions(_path: &FsPath) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn load_metadata_overrides(
-    metadata_overrides_file: &FsPath,
-) -> anyhow::Result<MetadataOverrideStore> {
-    match fs::read_to_string(metadata_overrides_file).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(MetadataOverrideStore::default())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_activity_store(activity_file: &FsPath) -> anyhow::Result<ActivityStore> {
-    match fs::read_to_string(activity_file).await {
-        Ok(contents) => {
-            let mut store: ActivityStore = serde_json::from_str(&contents)?;
-            // Older stores opened with a synthetic "everything before tracking
-            // started" bucket, estimated from how far into each book the reader
-            // had got. That conflated ground covered with time spent listening
-            // and could only ever overstate it, so it is dropped on sight.
-            for entries in store.by_user.values_mut() {
-                entries.remove(ACTIVITY_BASELINE_KEY);
-            }
-            Ok(store)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ActivityStore::default()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_users_store(users_file: &FsPath) -> anyhow::Result<UsersStore> {
-    match fs::read_to_string(users_file).await {
-        Ok(contents) => {
-            let mut store: UsersStore = serde_json::from_str(&contents)?;
-            if migrate_users_permissions(&mut store) {
-                write_json_atomic(users_file, &store)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
-            }
-            Ok(store)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(UsersStore::default()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_libation_requests(path: &FsPath) -> anyhow::Result<LibationRequestStore> {
-    match fs::read_to_string(path).await {
-        Ok(contents) => {
-            let mut store: LibationRequestStore = serde_json::from_str(&contents)?;
-            if recover_interrupted_libation_requests(&mut store) {
-                write_json_atomic(path, &store)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.message.clone()))?;
-            }
-            Ok(store)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(LibationRequestStore::default())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_libation_refreshes(path: &FsPath) -> anyhow::Result<LibationRefreshStore> {
-    match fs::read_to_string(path).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(LibationRefreshStore::default())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_managed_libation_accounts(
-    path: &FsPath,
-) -> anyhow::Result<ManagedLibationAccountStore> {
-    match fs::read_to_string(path).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(ManagedLibationAccountStore::default())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(crate) async fn load_sessions_store(
-    sessions_file: &FsPath,
-) -> anyhow::Result<HashMap<String, Session>> {
-    match fs::read_to_string(sessions_file).await {
-        Ok(contents) => {
-            let mut sessions: HashMap<String, Session> = serde_json::from_str(&contents)?;
-            let now = unix_now_seconds();
-            sessions.retain(|_, session| !session.is_expired(now));
-            Ok(sessions)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Playback progress and per-book settings
+// The stores
 // ---------------------------------------------------------------------------
 //
-// These two types are the only way the rest of the server reaches a listener's
-// saved position or a book's volume gain. The methods are deliberately narrow
-// -- one user, one book, or one user's own rows -- rather than "read the whole
-// file", so that a SQL implementation can answer each one with an indexed
-// query instead of loading everything.
+// Every method here keeps the signature it had when these were JSON files, so
+// the handlers did not change when the backend did. What changed is what each
+// call costs: reading one listener's position is now an indexed lookup rather
+// than parsing every listener's positions for every book.
 
-/// Every listener's saved position, keyed internally by user and book.
+use rusqlite::{OptionalExtension, params};
+
+/// Rebuild a `Progress` from its row. The book id comes from the key column,
+/// not a stored copy, so the two can never disagree.
+fn progress_from_row(row: &rusqlite::Row<'_>, book_id: String) -> rusqlite::Result<Progress> {
+    Ok(Progress {
+        book_id,
+        track_id: row.get("track_id")?,
+        position_seconds: row.get("position_seconds")?,
+        book_position_seconds: row.get("book_position_seconds")?,
+        duration_seconds: row.get("duration_seconds")?,
+        updated_at: row.get("updated_at")?,
+        finished_override: row
+            .get::<_, Option<i64>>("finished_override")?
+            .map(|value| value != 0),
+    })
+}
+
+fn upsert_progress(
+    connection: &rusqlite::Connection,
+    user_id: &str,
+    book_id: &str,
+    progress: &Progress,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT INTO progress (
+             user_id, book_id, track_id, position_seconds,
+             book_position_seconds, duration_seconds, updated_at, finished_override
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT (user_id, book_id) DO UPDATE SET
+             track_id              = excluded.track_id,
+             position_seconds      = excluded.position_seconds,
+             book_position_seconds = excluded.book_position_seconds,
+             duration_seconds      = excluded.duration_seconds,
+             updated_at            = excluded.updated_at,
+             finished_override     = excluded.finished_override",
+        params![
+            user_id,
+            book_id,
+            progress.track_id,
+            progress.position_seconds,
+            progress.book_position_seconds,
+            progress.duration_seconds,
+            progress.updated_at,
+            progress.finished_override.map(i64::from),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Every listener's saved position.
 #[derive(Debug)]
 pub(crate) struct ProgressStore {
-    file: PathBuf,
-    /// Serializes read-modify-write cycles so concurrent updates cannot
-    /// overwrite each other. A transaction replaces this under SQL.
-    write_lock: Mutex<()>,
+    db: Database,
 }
 
 impl ProgressStore {
-    pub(crate) fn new(file: PathBuf) -> Self {
-        Self {
-            file,
-            write_lock: Mutex::new(()),
-        }
-    }
-
-    /// Store one listener's position outright, ignoring the rules that guard
-    /// automatic checkpoints.
-    ///
-    /// Only tests need this today, so it is gated rather than left as dead
-    /// code in the shipped binary. The SQLite migration will want the same
-    /// primitive and can drop the gate then.
-    #[cfg(test)]
-    pub(crate) async fn set(
-        &self,
-        user_id: &str,
-        book_id: &str,
-        progress: Progress,
-    ) -> Result<(), ApiError> {
-        let _guard = self.write_lock.lock().await;
-        let mut stored = read_progress(&self.file).await?;
-        stored.insert(progress_key(user_id, book_id), progress);
-        write_progress(&self.file, &stored).await
+    pub(crate) fn new(db: Database) -> Self {
+        Self { db }
     }
 
     /// One listener's position in one book.
@@ -354,9 +288,18 @@ impl ProgressStore {
         user_id: &str,
         book_id: &str,
     ) -> Result<Option<Progress>, ApiError> {
-        Ok(read_progress(&self.file)
-            .await?
-            .remove(&progress_key(user_id, book_id)))
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        self.db
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT * FROM progress WHERE user_id = ?1 AND book_id = ?2",
+                        params![user_id, book_id],
+                        |row| progress_from_row(row, book_id.clone()),
+                    )
+                    .optional()
+            })
+            .await
     }
 
     /// Everything one listener has saved, keyed by book id.
@@ -364,20 +307,18 @@ impl ProgressStore {
         &self,
         user_id: &str,
     ) -> Result<HashMap<String, Progress>, ApiError> {
-        let prefix = progress_key(user_id, "");
-        Ok(read_progress(&self.file)
-            .await?
-            .into_iter()
-            // Keyed by the book id in the storage key, not the one in the
-            // stored row. Callers look these up by the book they are rendering,
-            // which is what the composite key encodes; trusting the field
-            // instead would resolve differently for any row whose two copies
-            // ever disagreed.
-            .filter_map(|(key, progress)| {
-                key.strip_prefix(&prefix)
-                    .map(|book_id| (book_id.to_string(), progress))
+        let user_id = user_id.to_string();
+        self.db
+            .call(move |connection| {
+                let mut statement =
+                    connection.prepare("SELECT * FROM progress WHERE user_id = ?1")?;
+                let rows = statement.query_map(params![user_id], |row| {
+                    let book_id: String = row.get("book_id")?;
+                    Ok((book_id.clone(), progress_from_row(row, book_id)?))
+                })?;
+                rows.collect()
             })
-            .collect())
+            .await
     }
 
     /// Positions belonging to any of `user_ids`, keyed the way
@@ -386,15 +327,28 @@ impl ProgressStore {
         &self,
         user_ids: &HashSet<String>,
     ) -> Result<HashMap<String, Progress>, ApiError> {
-        let prefixes: Vec<String> = user_ids
-            .iter()
-            .map(|user_id| progress_key(user_id, ""))
-            .collect();
-        Ok(read_progress(&self.file)
-            .await?
-            .into_iter()
-            .filter(|(key, _)| prefixes.iter().any(|prefix| key.starts_with(prefix)))
-            .collect())
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let user_ids: Vec<String> = user_ids.iter().cloned().collect();
+        self.db
+            .call(move |connection| {
+                let mut found = HashMap::new();
+                let mut statement =
+                    connection.prepare("SELECT * FROM progress WHERE user_id = ?1")?;
+                for user_id in user_ids {
+                    let rows = statement.query_map(params![user_id], |row| {
+                        let book_id: String = row.get("book_id")?;
+                        Ok((book_id.clone(), progress_from_row(row, book_id)?))
+                    })?;
+                    for row in rows {
+                        let (book_id, progress) = row?;
+                        found.insert(progress_key(&user_id, &book_id), progress);
+                    }
+                }
+                Ok(found)
+            })
+            .await
     }
 
     /// Book ids whose stored position moved within the last `window_ms`.
@@ -403,22 +357,30 @@ impl ProgressStore {
         window_ms: u64,
     ) -> Result<HashSet<String>, ApiError> {
         let now_ms = unix_now_millis();
-        Ok(read_progress(&self.file)
-            .await?
-            .into_values()
-            .filter(|entry| {
-                now_ms.saturating_sub(progress_timestamp_millis(&entry.updated_at)) <= window_ms
+        self.db
+            .call(move |connection| {
+                let mut statement =
+                    connection.prepare("SELECT book_id, updated_at FROM progress")?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                let mut active = HashSet::new();
+                for row in rows {
+                    let (book_id, updated_at) = row?;
+                    if now_ms.saturating_sub(progress_timestamp_millis(&updated_at)) <= window_ms {
+                        active.insert(book_id);
+                    }
+                }
+                Ok(active)
             })
-            .map(|entry| entry.book_id)
-            .collect())
+            .await
     }
 
-    /// Apply a decision to one listener's position, serialized against other
-    /// writers. `decide` sees whatever is stored and says what should happen;
-    /// the returned progress is what a client should now believe.
+    /// Apply a decision to one listener's position.
     ///
-    /// The read, the decision, and the write all happen under one lock, which
-    /// is the same shape a SQL transaction takes.
+    /// The read, the decision, and the write happen in one transaction, so a
+    /// concurrent checkpoint cannot slip between the position this decision
+    /// was based on and the position it stores.
     pub(crate) async fn update_book<F>(
         &self,
         user_id: &str,
@@ -426,67 +388,126 @@ impl ProgressStore {
         decide: F,
     ) -> Result<(Progress, Option<Progress>), ApiError>
     where
-        F: FnOnce(Option<&Progress>) -> ProgressDecision,
+        F: FnOnce(Option<&Progress>) -> ProgressDecision + Send + 'static,
     {
-        let _guard = self.write_lock.lock().await;
-        let mut stored = read_progress(&self.file).await?;
-        let key = progress_key(user_id, book_id);
-        let previous = stored.get(&key).cloned();
-        match decide(previous.as_ref()) {
-            ProgressDecision::Keep => {
-                // Nothing to write. A `Keep` with nothing stored cannot happen:
-                // every rule that returns it first requires a previous value.
-                let kept = previous.clone().ok_or_else(|| {
-                    ApiError::internal("Progress was kept without a stored position.")
-                })?;
-                Ok((kept, previous))
-            }
-            ProgressDecision::Store {
-                saved,
-                backup_previous,
-            } => {
-                if backup_previous && let Some(previous) = &previous {
-                    backup_progress_regression(&self.file, &key, previous).await;
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        self.db
+            .transaction(move |transaction| {
+                let previous = transaction
+                    .query_row(
+                        "SELECT * FROM progress WHERE user_id = ?1 AND book_id = ?2",
+                        params![user_id, book_id],
+                        |row| progress_from_row(row, book_id.clone()),
+                    )
+                    .optional()?;
+                match decide(previous.as_ref()) {
+                    ProgressDecision::Keep => {
+                        // Every rule that keeps a position first requires one
+                        // to be stored, so this branch always has a previous.
+                        let kept = previous.clone().ok_or_else(|| {
+                            rusqlite::Error::InvalidParameterName(
+                                "progress was kept without a stored position".to_string(),
+                            )
+                        })?;
+                        Ok((kept, previous))
+                    }
+                    ProgressDecision::Store {
+                        saved,
+                        backup_previous,
+                    } => {
+                        if backup_previous
+                            && let Some(previous) = &previous
+                        {
+                            transaction.execute(
+                                "INSERT INTO progress_backups (user_id, book_id, backed_up_at, payload)
+                                 VALUES (?1, ?2, ?3, ?4)",
+                                params![
+                                    user_id,
+                                    book_id,
+                                    now_rfc3339ish(),
+                                    serde_json::to_string(previous).unwrap_or_default(),
+                                ],
+                            )?;
+                            transaction.execute(
+                                "DELETE FROM progress_backups
+                                 WHERE user_id = ?1 AND book_id = ?2 AND rowid NOT IN (
+                                     SELECT rowid FROM progress_backups
+                                     WHERE user_id = ?1 AND book_id = ?2
+                                     ORDER BY rowid DESC LIMIT ?3
+                                 )",
+                                params![user_id, book_id, PROGRESS_BACKUPS_PER_BOOK as i64],
+                            )?;
+                        }
+                        upsert_progress(transaction, &user_id, &book_id, &saved)?;
+                        Ok((saved, previous))
+                    }
                 }
-                stored.insert(key, saved.clone());
-                write_progress(&self.file, &stored).await?;
-                Ok((saved, previous))
-            }
-        }
+            })
+            .await
+    }
+
+    /// Store one listener's position outright, ignoring the rules that guard
+    /// automatic checkpoints. Used by tests and by the import.
+    #[cfg(test)]
+    pub(crate) async fn set(
+        &self,
+        user_id: &str,
+        book_id: &str,
+        progress: Progress,
+    ) -> Result<(), ApiError> {
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        self.db
+            .call(move |connection| upsert_progress(connection, &user_id, &book_id, &progress))
+            .await
     }
 
     /// Forget everything belonging to one listener.
     pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
-        let _guard = self.write_lock.lock().await;
-        let mut stored = read_progress(&self.file).await?;
-        let prefix = progress_key(user_id, "");
-        stored.retain(|key, _| !key.starts_with(&prefix));
-        write_progress(&self.file, &stored).await
+        let user_id = user_id.to_string();
+        self.db
+            .transaction(move |transaction| {
+                transaction.execute("DELETE FROM progress WHERE user_id = ?1", params![user_id])?;
+                transaction.execute(
+                    "DELETE FROM progress_backups WHERE user_id = ?1",
+                    params![user_id],
+                )?;
+                Ok(())
+            })
+            .await
     }
 }
 
 /// Per-listener, per-book playback settings. Only volume gain today.
 #[derive(Debug)]
 pub(crate) struct BookSettingsStore {
-    file: PathBuf,
-    write_lock: Mutex<()>,
+    db: Database,
 }
 
 impl BookSettingsStore {
-    pub(crate) fn new(file: PathBuf) -> Self {
-        Self {
-            file,
-            write_lock: Mutex::new(()),
-        }
+    pub(crate) fn new(db: Database) -> Self {
+        Self { db }
     }
 
     /// One book's gain for one listener, defaulting to unity.
     pub(crate) async fn gain(&self, user_id: &str, book_id: &str) -> Result<f64, ApiError> {
-        let settings = read_book_settings(&self.file).await?;
-        Ok(stored_volume_gain(
-            &settings,
-            &progress_key(user_id, book_id),
-        ))
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        Ok(self
+            .db
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT volume_gain FROM book_settings WHERE user_id = ?1 AND book_id = ?2",
+                        params![user_id, book_id],
+                        |row| row.get::<_, f64>(0),
+                    )
+                    .optional()
+            })
+            .await?
+            // Clamped on the way out as well as the way in: a value stored by
+            // an older release, or edited by hand, must not reach a client as
+            // an eardrum-splitting multiplier.
+            .map(clamp_book_volume_gain)
+            .unwrap_or(BOOK_VOLUME_GAIN_DEFAULT))
     }
 
     /// Every gain one listener has set, keyed by book id.
@@ -494,20 +515,17 @@ impl BookSettingsStore {
         &self,
         user_id: &str,
     ) -> Result<HashMap<String, f64>, ApiError> {
-        let prefix = progress_key(user_id, "");
-        Ok(read_book_settings(&self.file)
-            .await?
-            .into_iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .filter_map(|(key, settings)| {
-                key.strip_prefix(&prefix).map(|book_id| {
-                    (
-                        book_id.to_string(),
-                        clamp_book_volume_gain(settings.volume_gain),
-                    )
-                })
+        let user_id = user_id.to_string();
+        self.db
+            .call(move |connection| {
+                let mut statement = connection
+                    .prepare("SELECT book_id, volume_gain FROM book_settings WHERE user_id = ?1")?;
+                let rows = statement.query_map(params![user_id], |row| {
+                    Ok((row.get(0)?, clamp_book_volume_gain(row.get(1)?)))
+                })?;
+                rows.collect()
             })
-            .collect())
+            .await
     }
 
     /// Set one book's gain for one listener.
@@ -517,56 +535,84 @@ impl BookSettingsStore {
         book_id: &str,
         gain: f64,
     ) -> Result<(), ApiError> {
-        let _guard = self.write_lock.lock().await;
-        let mut settings = read_book_settings(&self.file).await?;
-        let key = progress_key(user_id, book_id);
-        if gain == BOOK_VOLUME_GAIN_DEFAULT {
-            // Unity gain is the absence of a setting rather than a stored one,
-            // so resetting a book leaves nothing behind.
-            settings.remove(&key);
-        } else {
-            settings.insert(key, BookSettings { volume_gain: gain });
-        }
-        write_book_settings(&self.file, &settings).await
+        let (user_id, book_id) = (user_id.to_string(), book_id.to_string());
+        self.db
+            .call(move |connection| {
+                if gain == BOOK_VOLUME_GAIN_DEFAULT {
+                    // Unity gain is the absence of a setting rather than a
+                    // stored one, so resetting a book leaves no row behind.
+                    connection.execute(
+                        "DELETE FROM book_settings WHERE user_id = ?1 AND book_id = ?2",
+                        params![user_id, book_id],
+                    )?;
+                } else {
+                    connection.execute(
+                        "INSERT INTO book_settings (user_id, book_id, volume_gain)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT (user_id, book_id) DO UPDATE SET
+                             volume_gain = excluded.volume_gain",
+                        params![user_id, book_id, gain],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
     }
 
     pub(crate) async fn remove_user(&self, user_id: &str) -> Result<(), ApiError> {
-        let _guard = self.write_lock.lock().await;
-        let mut settings = read_book_settings(&self.file).await?;
-        let prefix = progress_key(user_id, "");
-        settings.retain(|key, _| !key.starts_with(&prefix));
-        write_book_settings(&self.file, &settings).await
+        let user_id = user_id.to_string();
+        self.db
+            .call(move |connection| {
+                connection.execute(
+                    "DELETE FROM book_settings WHERE user_id = ?1",
+                    params![user_id],
+                )?;
+                Ok(())
+            })
+            .await
     }
 }
 
 // ---------------------------------------------------------------------------
-// Accounts and sessions
+// Stores that stay cached in memory
 // ---------------------------------------------------------------------------
 //
-// Unlike progress, these are held in memory and mirrored to disk, so reads are
-// already cheap. The seam these need is around *writing*: every mutation used
-// to be "take the lock, edit, remember to call the write helper", repeated at
-// twenty-one call sites.
+// These are small and bounded, and the auth path reads accounts and sessions
+// on every request, so they keep their in-memory copy. What moved is where the
+// copy is persisted: one transactional database instead of a file each.
 
-/// A store held in memory and mirrored to a JSON file.
+/// A store held in memory and persisted to the database.
 ///
-/// Reads come from the cache, so they are cheap. Writes go through [`mutate`],
-/// which is the whole point of the type: every one of these stores used to be
-/// "take the lock, edit the cache, remember to call the matching write
-/// helper", and forgetting the last step left the two disagreeing until the
-/// next restart.
+/// Reads come from the cache. Writes go through [`mutate`], which applies the
+/// change to a draft and adopts it only once the change succeeds and the write
+/// commits, so a rejected change touches neither the cache nor the database.
 ///
 /// [`mutate`]: CachedStore::mutate
 #[derive(Debug)]
 pub(crate) struct CachedStore<T> {
-    file: PathBuf,
+    db: Database,
+    persist: StoreShape,
     value: RwLock<T>,
 }
 
-impl<T: Serialize + Clone> CachedStore<T> {
-    pub(crate) fn new(file: PathBuf, value: T) -> Self {
+/// How a cached store writes itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoreShape {
+    /// Rewritten as rows in the named table's dedicated schema.
+    Users,
+    Sessions,
+    Activity,
+    /// Kept as a JSON document under this name. These structures are still
+    /// moving and are never queried by anything but their own handlers, so
+    /// columns would cost a schema migration per field and buy nothing.
+    Document(&'static str),
+}
+
+impl<T: Serialize + Clone + Send + Sync + 'static> CachedStore<T> {
+    pub(crate) fn new(db: Database, persist: StoreShape, value: T) -> Self {
         Self {
-            file,
+            db,
+            persist,
             value: RwLock::new(value),
         }
     }
@@ -575,12 +621,6 @@ impl<T: Serialize + Clone> CachedStore<T> {
         self.value.read().await
     }
 
-    /// Apply a change under the write lock and persist it.
-    ///
-    /// The change runs against a copy, which is adopted only once it succeeds
-    /// and the write lands. A rejected change therefore touches neither the
-    /// cache nor the file, and a failed write leaves both holding the last
-    /// state that was successfully stored.
     pub(crate) async fn mutate<R, F>(&self, change: F) -> Result<R, ApiError>
     where
         F: FnOnce(&mut T) -> Result<R, ApiError>,
@@ -588,10 +628,131 @@ impl<T: Serialize + Clone> CachedStore<T> {
         let mut value = self.value.write().await;
         let mut draft = value.clone();
         let outcome = change(&mut draft)?;
-        write_json_atomic(&self.file, &draft).await?;
+        self.persist(&draft).await?;
         *value = draft;
         Ok(outcome)
     }
+
+    async fn persist(&self, draft: &T) -> Result<(), ApiError> {
+        let payload = serde_json::to_string(draft)?;
+        let shape = self.persist;
+        self.db
+            .transaction(move |transaction| {
+                match shape {
+                    StoreShape::Document(name) => write_document(transaction, name, &payload)?,
+                    StoreShape::Users => {
+                        write_users_rows(transaction, &payload)?;
+                    }
+                    StoreShape::Sessions => {
+                        write_sessions_rows(transaction, &payload)?;
+                    }
+                    StoreShape::Activity => {
+                        write_activity_rows(transaction, &payload)?;
+                    }
+                }
+                Ok(())
+            })
+            .await
+    }
+}
+
+/// Names for the stores that keep their JSON shape.
+pub(crate) const METADATA_OVERRIDES_DOCUMENT: &str = "metadata-overrides";
+pub(crate) const LIBATION_REQUESTS_DOCUMENT: &str = "libation-requests";
+pub(crate) const LIBATION_REFRESHES_DOCUMENT: &str = "libation-refreshes";
+pub(crate) const LIBATION_ACCOUNTS_DOCUMENT: &str = "libation-accounts";
+/// The account permission migration's watermark. It belongs with the accounts
+/// but is not a property of any one of them, so it rides alongside the rows.
+pub(crate) const USERS_PERMISSIONS_VERSION_DOCUMENT: &str = "users-permissions-version";
+
+/// Accounts are rewritten wholesale. There are tens of them, they change only
+/// when an administrator acts, and doing it in one transaction keeps the
+/// account list and its book grants consistent with each other.
+pub(crate) fn write_users_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    payload: &str,
+) -> rusqlite::Result<usize> {
+    let store: UsersStore = serde_json::from_str(payload)
+        .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    transaction.execute("DELETE FROM book_access", [])?;
+    transaction.execute("DELETE FROM users", [])?;
+    db::write_document(
+        transaction,
+        USERS_PERMISSIONS_VERSION_DOCUMENT,
+        &store.permissions_version.to_string(),
+    )?;
+    for user in &store.users {
+        transaction.execute(
+            "INSERT INTO users (
+                 id, username, password_hash, is_admin, is_owner,
+                 can_approve_libation_requests, libation_access, share_progress,
+                 created_at, restricted
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                user.id,
+                user.username,
+                user.password_hash,
+                user.is_admin,
+                user.is_owner,
+                user.can_approve_libation_requests,
+                serde_json::to_string(&user.libation_access)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+                user.share_progress,
+                user.created_at,
+                user.allowed_book_ids.is_some(),
+            ],
+        )?;
+        for book_id in user.allowed_book_ids.iter().flatten() {
+            transaction.execute(
+                "INSERT OR IGNORE INTO book_access (user_id, book_id) VALUES (?1, ?2)",
+                params![user.id, book_id],
+            )?;
+        }
+    }
+    Ok(store.users.len())
+}
+
+pub(crate) fn write_sessions_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    payload: &str,
+) -> rusqlite::Result<usize> {
+    let sessions: HashMap<String, Session> = serde_json::from_str(payload)
+        .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    transaction.execute("DELETE FROM sessions", [])?;
+    for (token, session) in &sessions {
+        transaction.execute(
+            "INSERT INTO sessions (token, user_id, created_at, media_token)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                token,
+                session.user_id,
+                session.created_at,
+                media_token_for_session(token),
+            ],
+        )?;
+    }
+    Ok(sessions.len())
+}
+
+pub(crate) fn write_activity_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    payload: &str,
+) -> rusqlite::Result<usize> {
+    let store: ActivityStore = serde_json::from_str(payload)
+        .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+    transaction.execute("DELETE FROM activity", [])?;
+    let mut written = 0;
+    for (user_id, days) in &store.by_user {
+        for (day, seconds) in days {
+            transaction.execute(
+                "INSERT INTO activity (user_id, day, seconds) VALUES (?1, ?2, ?3)",
+                params![user_id, day, seconds],
+            )?;
+            written += 1;
+        }
+    }
+    Ok(written)
 }
 
 /// Every account.
@@ -608,3 +769,134 @@ pub(crate) type LibationRequests = CachedStore<LibationRequestStore>;
 pub(crate) type LibationRefreshes = CachedStore<LibationRefreshStore>;
 /// Managed Libation accounts.
 pub(crate) type LibationAccounts = CachedStore<ManagedLibationAccountStore>;
+
+// ---------------------------------------------------------------------------
+// Loading the caches at startup
+// ---------------------------------------------------------------------------
+
+/// Read one JSON-shaped store back out of the database.
+pub(crate) fn read_document_store<T: serde::de::DeserializeOwned + Default>(
+    connection: &rusqlite::Connection,
+    name: &str,
+) -> anyhow::Result<T> {
+    match db::read_document(connection, name)? {
+        Some(payload) => Ok(serde_json::from_str(&payload)?),
+        None => Ok(T::default()),
+    }
+}
+
+pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Result<UsersStore> {
+    let mut grants: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut statement = connection.prepare("SELECT user_id, book_id FROM book_access")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (user_id, book_id) = row?;
+            grants.entry(user_id).or_default().push(book_id);
+        }
+    }
+
+    let mut statement = connection.prepare("SELECT * FROM users")?;
+    let rows = statement.query_map([], |row| {
+        let id: String = row.get("id")?;
+        let restricted: bool = row.get("restricted")?;
+        let libation_access: String = row.get("libation_access")?;
+        Ok(User {
+            allowed_book_ids: restricted.then(|| grants.get(&id).cloned().unwrap_or_default()),
+            id,
+            username: row.get("username")?,
+            password_hash: row.get("password_hash")?,
+            is_admin: row.get("is_admin")?,
+            is_owner: row.get("is_owner")?,
+            can_approve_libation_requests: row.get("can_approve_libation_requests")?,
+            libation_access: serde_json::from_str(&format!("\"{libation_access}\""))
+                .unwrap_or_default(),
+            share_progress: row.get("share_progress")?,
+            created_at: row.get("created_at")?,
+        })
+    })?;
+    let mut users = Vec::new();
+    for row in rows {
+        users.push(row?);
+    }
+    // Accounts are presented oldest first, the order the file preserved.
+    users.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    let permissions_version = db::read_document(connection, USERS_PERMISSIONS_VERSION_DOCUMENT)?
+        .and_then(|payload| payload.parse().ok())
+        .unwrap_or(0);
+    Ok(UsersStore {
+        users,
+        permissions_version,
+    })
+}
+
+pub(crate) fn read_sessions_rows(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<HashMap<String, Session>> {
+    let mut statement = connection.prepare("SELECT token, user_id, created_at FROM sessions")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Session {
+                user_id: row.get(1)?,
+                created_at: row.get(2)?,
+            },
+        ))
+    })?;
+    let mut sessions = HashMap::new();
+    for row in rows {
+        let (token, session) = row?;
+        sessions.insert(token, session);
+    }
+    Ok(sessions)
+}
+
+pub(crate) fn read_activity_rows(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<ActivityStore> {
+    let mut statement = connection.prepare("SELECT user_id, day, seconds FROM activity")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    })?;
+    let mut store = ActivityStore::default();
+    for row in rows {
+        let (user_id, day, seconds) = row?;
+        store
+            .by_user
+            .entry(user_id)
+            .or_default()
+            .insert(day, seconds);
+    }
+    Ok(store)
+}
+
+/// Everything the server keeps cached in memory, read back at startup.
+pub(crate) struct CachedSnapshot {
+    pub(crate) users: UsersStore,
+    pub(crate) sessions: HashMap<String, Session>,
+    pub(crate) activity: ActivityStore,
+    pub(crate) metadata_overrides: MetadataOverrideStore,
+    pub(crate) libation_requests: LibationRequestStore,
+    pub(crate) libation_refreshes: LibationRefreshStore,
+    pub(crate) libation_accounts: ManagedLibationAccountStore,
+}
+
+pub(crate) fn read_cached_snapshot(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<CachedSnapshot> {
+    Ok(CachedSnapshot {
+        users: read_users_rows(connection)?,
+        sessions: read_sessions_rows(connection)?,
+        activity: read_activity_rows(connection)?,
+        metadata_overrides: read_document_store(connection, METADATA_OVERRIDES_DOCUMENT)?,
+        libation_requests: read_document_store(connection, LIBATION_REQUESTS_DOCUMENT)?,
+        libation_refreshes: read_document_store(connection, LIBATION_REFRESHES_DOCUMENT)?,
+        libation_accounts: read_document_store(connection, LIBATION_ACCOUNTS_DOCUMENT)?,
+    })
+}

@@ -192,7 +192,7 @@ it into the `books` and `tracks` tables directly.
 
 ---
 
-## Phase 4 — SQLite behind the seam
+## Phase 4 — SQLite behind the seam *(done)*
 
 The highest-leverage change in the plan. It resolves the full-file
 read-modify-write, the global write mutex, the linear `Vec` scans, and the
@@ -323,11 +323,15 @@ Each row is mirrored into the body of the PR it belongs to.
 | C2 | `pub(crate)` is wider than necessary. Every moved item and struct field was made crate-visible so the split would compile; much can be private again now that module boundaries exist. | Open | Phase 1 |
 | C3 | Permission payloads accepted unknown fields, so a misspelled `allowedBookIds` cleared every restriction on a user and still returned 200. | Fixed — `30c59c1` | Phase 2 |
 | C4 | `ProgressStore::list_for_user` keyed results by the stored `book_id` field while the code it replaced looked up by the composite storage key. The two resolve differently for any row whose copies disagree. | Fixed — `bb58f7f` | Phase 3 |
+| C19 | `ProgressStore::set` is `#[cfg(test)]` again. The import writes progress rows with its own statement rather than going through the store, so the two paths could drift. | Open | Phase 4 |
 | C5 | `UserStore`, `SessionStore`, `ActivityStore`, `MetadataOverrideStore`, and the Libation stores still read and rewrite whole files from their handlers. | Fixed — all seven behind `CachedStore` | Phase 3 |
 | C6 | The converted call sites in `activity.rs`, `faststart_jobs.rs`, and `auth.rs` were not differential-tested the way the progress rules were. They are simpler transpositions, but that is a judgement rather than a proof. | Open | Phase 3 |
 | C13 | `create_user` and `change_password` previously held the account write lock across Argon2 work, so every account change queued behind one hash. The hashing now happens outside the lock and the authority check is repeated inside the mutation. | Fixed — accounts commit | Phase 3 |
 | C14 | The Libation refresh limiter held its lock across two awaits to keep check-and-reserve atomic. It now reserves the slot before creating the job and releases it if no job starts, so two simultaneous refreshes cannot both pass a quota with room for one. | Fixed — Libation commit | Phase 3 |
 | C15 | `record_activity` previously kept a listening increment in memory when the write failed, so the cache and disk disagreed until restart. `CachedStore::mutate` now drops the increment instead, keeping both consistent. | Fixed — deliberate behaviour change | Phase 3 |
+| C16 | `BookSettingsStore::gain` briefly stopped clamping on read, which the JSON helper it replaced did. A gain stored by an older release or edited by hand would have reached a client unclamped. | Fixed — SQLite commit | Phase 4 |
+| C17 | The whole database is reached through one connection behind a lock, so reads serialise even though WAL would allow them to run concurrently. Fine for a household; a small read pool is the fix if it ever is not. | Open | Phase 4 |
+| C18 | Metadata overrides and the three Libation stores keep their JSON shape in a `documents` table rather than becoming columns. They are small, bounded, cached, and still changing shape. Promote them if anything ever needs to query inside them. | Open | Phase 4 |
 | C7 | `ProgressStore::set` is `#[cfg(test)]` because only tests need it today. The SQLite migration wants the same primitive and should drop the gate rather than duplicating it. | Open | Phase 3 |
 | C8 | `OwnerUser` carries no payload because no owner-only handler needs the acting user. A handler that does need it must add the `AuthUser` field back rather than reaching for `AuthUser` separately. | Open | Phase 2 |
 | C9 | `http_tests.rs` lives in the crate rather than `tests/` because the server is a binary-only target. It should move unchanged once there is a library target. | Open | Phase 0 |
@@ -343,7 +347,7 @@ Each row is mirrored into the body of the PR it belongs to.
 | 1 | Split `main.rs` | Low, mechanical | Reviewability — **done** |
 | 2 | Typed auth extractors | Low | Permanent authz guarantee — **done** |
 | 3 | Storage seam, still JSON | Medium | Phase 4 — **done** |
-| 4 | SQLite | High, gated by 0 and 3 | Phase 5 |
+| 4 | SQLite | High, gated by 0 and 3 | Phase 5 — **done** |
 | 5 | Hot paths | Medium | Scale |
 | 6 | Operations | Low | Reliability |
 | 7 | OPDS / ABS compatibility | Low | Ecosystem |

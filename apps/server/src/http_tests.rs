@@ -61,6 +61,7 @@ impl TestServer {
             }
         }
 
+        let database = Database::open(&data_dir.join("operalibre.db")).unwrap();
         let state = AppState {
             deployment_mode: DeploymentMode::Local,
             csrf_allowed_origins: Arc::new(std::collections::HashSet::new()),
@@ -71,8 +72,8 @@ impl TestServer {
             min_download_free_bytes: DEFAULT_MIN_DOWNLOAD_FREE_GIB * GIBIBYTE_BYTES,
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
-            progress: Arc::new(ProgressStore::new(data_dir.join("progress.json"))),
-            book_settings: Arc::new(BookSettingsStore::new(data_dir.join("book-settings.json"))),
+            progress: Arc::new(ProgressStore::new(database.clone())),
+            book_settings: Arc::new(BookSettingsStore::new(database.clone())),
             libation_accounts_root: data_dir.join("libation-accounts"),
             libation_config: LibationConfig {
                 cli_path: None,
@@ -87,32 +88,39 @@ impl TestServer {
             sync_dir: data_dir.join("sync"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(
-                data_dir.join("metadata-overrides.json"),
+                database.clone(),
+                StoreShape::Document(METADATA_OVERRIDES_DOCUMENT),
                 MetadataOverrideStore::default(),
             )),
             jobs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             users: Arc::new(UserStore::new(
-                data_dir.join("users.json"),
+                database.clone(),
+                StoreShape::Users,
                 UsersStore::default(),
             )),
             sessions: Arc::new(SessionStore::new(
-                data_dir.join("sessions.json"),
+                database.clone(),
+                StoreShape::Sessions,
                 std::collections::HashMap::new(),
             )),
             activity: Arc::new(ActivityLog::new(
-                data_dir.join("activity.json"),
+                database.clone(),
+                StoreShape::Activity,
                 ActivityStore::default(),
             )),
             libation_requests: Arc::new(LibationRequests::new(
-                data_dir.join("libation-requests.json"),
+                database.clone(),
+                StoreShape::Document(LIBATION_REQUESTS_DOCUMENT),
                 LibationRequestStore::default(),
             )),
             libation_refreshes: Arc::new(LibationRefreshes::new(
-                data_dir.join("libation-refreshes.json"),
+                database.clone(),
+                StoreShape::Document(LIBATION_REFRESHES_DOCUMENT),
                 LibationRefreshStore::default(),
             )),
             libation_accounts: Arc::new(LibationAccounts::new(
-                data_dir.join("libation-accounts.json"),
+                database.clone(),
+                StoreShape::Document(LIBATION_ACCOUNTS_DOCUMENT),
                 ManagedLibationAccountStore::default(),
             )),
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
