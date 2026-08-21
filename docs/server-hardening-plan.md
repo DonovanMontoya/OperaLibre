@@ -61,7 +61,7 @@ path is testable without committing binaries.
 
 ---
 
-## Phase 1 — Split `main.rs`
+## Phase 1 — Split `main.rs` *(done)*
 
 12,682 lines and 455 functions in one file. Purely mechanical, no behavior
 change, reviewable by diffing the function list before and after.
@@ -95,9 +95,24 @@ src/
 Rule for this PR: move code, do not edit it. Any genuine fix found along the way
 gets its own follow-up commit so the mechanical diff stays reviewable.
 
+### Follow-ups left by the split
+
+Both are consequences of keeping Phase 1 a pure move, and neither blocks later
+phases.
+
+- **The crate root is a de facto prelude.** Every module pulls the shared
+  dependency imports in with `use crate::*`. That is what let the split happen
+  without hand-editing hundreds of import lists, but it hides which module
+  actually needs which dependency, and clippy cannot report an unused import
+  through a glob. Tighten to explicit per-module imports.
+- **`pub(crate)` is wider than necessary.** Every moved item and struct field
+  was marked crate-visible so the move would compile. Now that module
+  boundaries exist, much of it can be private again; the compiler identifies
+  each case.
+
 ---
 
-## Phase 2 — Make authorization un-forgettable
+## Phase 2 — Make authorization un-forgettable *(done)*
 
 There are 51 `is_admin` checks across 52 handlers that take
 `Extension<AuthUser>`. A new route that forgets the check is a silent privilege
@@ -271,8 +286,8 @@ first-party clients.
 | Phase | Theme | Risk | Unblocks |
 |---|---|---|---|
 | 0 | fsync + integration tests | Low | Everything — **done** |
-| 1 | Split `main.rs` | Low, mechanical | Reviewability |
-| 2 | Typed auth extractors | Low | Permanent authz guarantee |
+| 1 | Split `main.rs` | Low, mechanical | Reviewability — **done** |
+| 2 | Typed auth extractors | Low | Permanent authz guarantee — **done** |
 | 3 | Storage seam, still JSON | Medium | Phase 4 |
 | 4 | SQLite | High, gated by 0 and 3 | Phase 5 |
 | 5 | Hot paths | Medium | Scale |
