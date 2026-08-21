@@ -286,6 +286,7 @@ async fn main() -> anyhow::Result<()> {
             StoreShape::Document(READING_HISTORY_DOCUMENT),
             reading_history,
         )),
+        open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
         works: Arc::new(WorksStore::new(
             database.clone(),
             StoreShape::Document(WORKS_DOCUMENT),

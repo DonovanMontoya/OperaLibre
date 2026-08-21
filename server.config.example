@@ -34,21 +34,6 @@ data_dir = data
 progress_file = data/progress.json
 users_file = data/users.json
 
-# Reading history retention. The server keeps per-listener reading sessions in
-# data/reading-log.jsonl and finished books in data/completions.jsonl, and tidies
-# both at startup and every six hours.
-#
-# Sessions age out; finished books never do. Lifetime totals and streaks come
-# from data/activity.json, which is kept for ever and costs about thirty bytes
-# per listener per day, so expiring old sessions loses the detail of an old year
-# and none of its totals.
-#
-# Three hours of listening a day costs roughly 300 KB of session log per year.
-# Set the retention to 0 to keep every session for ever.
-reading_log_retention_days = 1095
-reading_log_max_rows = 200000
-completion_log_max_rows = 50000
-
 # Serve the built web app from this server (single-origin deployment).
 # Point at the folder produced by `npm run build`, e.g. apps/web/dist.
 # Leave blank if a reverse proxy or the Vite dev server hosts the frontend.

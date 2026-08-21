@@ -19,7 +19,7 @@ pub(crate) async fn record_listening(
     tz_offset_minutes: i64,
 ) {
     let listened_seconds = plausible_listened_delta(previous, saved, intentional_seek);
-    if listened_seconds < reading_log::MIN_SESSION_SECONDS {
+    if listened_seconds <= 0.0 {
         return;
     }
     let work_id = state
@@ -28,26 +28,28 @@ pub(crate) async fn record_listening(
         .await
         .work_for_book(&book.id)
         .map(|work| work.id.clone());
-    let session = ReadingSession {
-        id: generate_session_token(),
-        user_id: user_id.to_string(),
-        book_id: book.id.clone(),
-        work_id,
-        started_at_ms: progress_timestamp_millis(&saved.updated_at)
-            .saturating_sub((listened_seconds * 1000.0) as u64),
-        ended_at_ms: progress_timestamp_millis(&saved.updated_at),
-        listened_seconds,
-        start_position_seconds: (saved.book_position_seconds - listened_seconds).max(0.0),
-        end_position_seconds: saved.book_position_seconds,
-        speed: None,
-        client: None,
-        tz_offset_minutes,
-        started_on: today_ymd(tz_offset_minutes),
+    let outcome = state.open_sessions.lock().await.record(
+        Checkpoint {
+            user_id: user_id.to_string(),
+            book_id: book.id.clone(),
+            work_id,
+            at_ms: progress_timestamp_millis(&saved.updated_at),
+            listened_seconds,
+            position_seconds: saved.book_position_seconds,
+            speed: None,
+            client: None,
+            tz_offset_minutes,
+            today: today_ymd(tz_offset_minutes),
+        },
+        generate_session_token,
+    );
+    let SessionOutcome::Append(sessions) = outcome else {
+        return;
     };
     if let Err(error) = state
         .reading_history
         .mutate(|history| {
-            history.sessions.push(session);
+            history.sessions.extend(sessions);
             Ok(())
         })
         .await
@@ -109,31 +111,65 @@ pub(crate) async fn record_completion(
 pub(crate) async fn reading_log_sessions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Query(query): Query<ReadingLogQuery>,
 ) -> Json<Vec<ReadingSession>> {
     let history = state.reading_history.read().await;
-    Json(
-        history
-            .sessions
-            .iter()
-            .filter(|row| row.user_id == auth.id)
-            .cloned()
-            .collect(),
-    )
+    Json(history_rows(
+        &history.sessions,
+        &auth.id,
+        &query,
+        |row| row.user_id.as_str(),
+        |row| row.started_on.as_str(),
+        |row| row.ended_at_ms,
+    ))
 }
 
 pub(crate) async fn reading_log_completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Query(query): Query<ReadingLogQuery>,
 ) -> Json<Vec<CompletionEvent>> {
     let history = state.reading_history.read().await;
-    Json(
-        history
-            .completions
-            .iter()
-            .filter(|row| row.user_id == auth.id)
-            .cloned()
-            .collect(),
-    )
+    Json(history_rows(
+        &history.completions,
+        &auth.id,
+        &query,
+        |row| row.user_id.as_str(),
+        |row| row.finished_on.as_str(),
+        |row| row.finished_at_ms,
+    ))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ReadingLogQuery {
+    limit: Option<usize>,
+    since: Option<String>,
+}
+
+const DEFAULT_READING_LOG_PAGE: usize = 200;
+const MAX_READING_LOG_PAGE: usize = 1_000;
+
+fn history_rows<T: Clone>(
+    rows: &[T],
+    user_id: &str,
+    query: &ReadingLogQuery,
+    user: impl Fn(&T) -> &str,
+    day: impl Fn(&T) -> &str,
+    at: impl Fn(&T) -> u64,
+) -> Vec<T> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_READING_LOG_PAGE)
+        .min(MAX_READING_LOG_PAGE);
+    let since = query.since.as_deref();
+    let mut result = rows
+        .iter()
+        .filter(|row| user(row) == user_id && since.is_none_or(|date| day(row) >= date))
+        .cloned()
+        .collect::<Vec<_>>();
+    result.sort_by_key(|row| std::cmp::Reverse(at(row)));
+    result.truncate(limit);
+    result
 }
 
 pub(crate) async fn list_works(

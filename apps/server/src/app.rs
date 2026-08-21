@@ -37,6 +37,9 @@ pub(crate) struct AppState {
     pub(crate) activity: Arc<ActivityLog>,
     /// Durable, per-listener reading sessions and immutable completion events.
     pub(crate) reading_history: Arc<ReadingHistoryStore>,
+    /// Coalesces the client's frequent playback checkpoints into substantive
+    /// listening sessions before they are persisted.
+    pub(crate) open_sessions: Arc<Mutex<OpenSessions>>,
     /// The work identity index above individual audio-file editions.
     pub(crate) works: Arc<WorksStore>,
     pub(crate) libation_requests: Arc<LibationRequests>,

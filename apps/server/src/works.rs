@@ -194,6 +194,17 @@ impl WorkStore {
         now_ms: u64,
         new_id: impl FnOnce() -> String,
     ) -> (String, MatchTier) {
+        // A scan sees the same byte-identity again on every run. Preserve its
+        // existing work before metadata heuristics so unknown or edited tags
+        // cannot mint a duplicate work for the same edition.
+        if let Some(index) = self
+            .works
+            .iter()
+            .position(|work| work.book_ids.contains(&candidate.book_id))
+        {
+            self.link(index, candidate);
+            return (self.works[index].id.clone(), MatchTier::Manual);
+        }
         if let Some(index) = self.manual_index(&candidate.book_id) {
             self.link(index, candidate);
             return (self.works[index].id.clone(), MatchTier::Manual);

@@ -113,6 +113,7 @@ impl TestServer {
                 StoreShape::Document(READING_HISTORY_DOCUMENT),
                 ReadingHistory::default(),
             )),
+            open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
             works: Arc::new(WorksStore::new(
                 database.clone(),
                 StoreShape::Document(WORKS_DOCUMENT),
