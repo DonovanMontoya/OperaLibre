@@ -1497,6 +1497,7 @@ exit 0
             super::ReadingHistory::default(),
         )),
         open_sessions: super::Arc::new(super::Mutex::new(super::OpenSessions::default())),
+        shutdown: tokio::sync::broadcast::channel(1).0,
         works: super::Arc::new(super::WorksStore::new(
             database.clone(),
             super::StoreShape::Document(super::WORKS_DOCUMENT),
@@ -2719,7 +2720,40 @@ fn decision_update(position_seconds: f64) -> super::ProgressUpdate {
         intentional_regression: false,
         intentional_seek: false,
         tz_offset_minutes: None,
+        speed: None,
+        client: None,
     }
+}
+
+#[test]
+fn reading_log_metadata_is_parsed_and_sanitized() {
+    let update: super::ProgressUpdate = serde_json::from_value(serde_json::json!({
+        "trackId": "t1",
+        "positionSeconds": 12.0,
+        "speed": 1.5,
+        "client": "ios"
+    }))
+    .unwrap();
+    assert_eq!(super::sanitized_playback_speed(update.speed), Some(1.5));
+    assert_eq!(
+        super::sanitized_client_name(update.client.as_deref()),
+        Some("ios".to_string())
+    );
+    assert_eq!(super::sanitized_playback_speed(Some(f64::INFINITY)), None);
+    assert_eq!(super::sanitized_client_name(Some("\nnot-a-client")), None);
+}
+
+#[test]
+fn manual_completion_timezone_is_parsed() {
+    let update: super::CompletionUpdate = serde_json::from_value(serde_json::json!({
+        "finished": true,
+        "tzOffsetMinutes": -240
+    }))
+    .unwrap();
+    assert_eq!(
+        super::sanitized_tz_offset_minutes(update.tz_offset_minutes),
+        -240
+    );
 }
 
 fn stored_at(book_position_seconds: f64, age_ms: u64) -> super::Progress {

@@ -308,10 +308,6 @@ impl UpdateManager {
             .spawn()
             .with_context(|| format!("Could not start {}", updater_path.display()))?;
 
-        tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1_500)).await;
-            std::process::exit(0);
-        });
         Ok(UpdateInstallStarted {
             version: status.latest_version,
             restarting: true,

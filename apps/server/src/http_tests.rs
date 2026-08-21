@@ -114,6 +114,7 @@ impl TestServer {
                 ReadingHistory::default(),
             )),
             open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
+            shutdown: tokio::sync::broadcast::channel(1).0,
             works: Arc::new(WorksStore::new(
                 database.clone(),
                 StoreShape::Document(WORKS_DOCUMENT),

@@ -36,13 +36,6 @@ The web app obtains a session token and a separate scoped media token via `POST 
 | `GET` | `/api/profile/sessions` | The caller's own reading sessions, newest first. Accepts `limit` (default 200, max 1000) and `since=YYYY-MM-DD`. |
 | `GET` | `/api/profile/completions` | The caller's own completion history, newest first, with a frozen snapshot of each book as it was when finished. Same query parameters. |
 
-#### Storage
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/api/storage` | What the reading history costs on disk, per file, with the retention policy in force. Admin only. |
-| `POST` | `/api/storage/maintenance` | Run the retention pass now instead of waiting for the schedule. Returns the same report. Admin only. |
-
 #### Works
 
 | Method | Path | Description |
@@ -174,37 +167,15 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 
 ### The reading log
 
-Playback progress answers "where am I in this book" and is overwritten on every checkpoint. The reading log answers "what did this reader actually do", and is append-only.
+Playback progress answers "where am I in this book" and is overwritten on every checkpoint. The reading log answers "what did this reader actually do" and keeps one current row per listening session.
 
-`reading-log.jsonl` holds one row per **session** — a continuous stretch of listening, coalesced in memory from the client's checkpoints and closed after a ten-minute gap. Each row carries the book, the work, start and end timestamps, seconds actually listened, the whole-book positions at either end, and the reported playback speed, client, and UTC offset. Open sessions are written through once a minute and on shutdown, so a crash costs at most a minute of the sitting in progress. Rows are revisions keyed by session id; the newest wins, and the log is compacted at startup.
+SQLite holds one row per **session** — a continuous stretch of listening, coalesced in memory from the client's checkpoints and closed after a ten-minute gap. Each row carries the book, the work, start and end timestamps, seconds actually listened, the whole-book positions at either end, and the reported playback speed, client, and UTC offset. Open sessions are written through once a minute, when they become idle, and during graceful shutdown. A hard crash can lose only the unflushed tail of an in-progress sitting.
 
 Seconds listened come from the same validated forward position movement the daily activity totals use: deliberate seeks contribute nothing, and movement is capped against elapsed wall-clock time. Scrubbing to the end of a book is not listening to it.
 
-`completions.jsonl` holds one immutable row per book finished, recorded on the **crossing** into finished so a client re-sending the same state cannot log a book twice, while a genuine re-read logs a second time. Each row carries an `EditionSnapshot` — title, author, narrator, runtime, ASIN, ISBN, publisher, series, genres — copied out of the library at the moment of completion. That snapshot is what makes a completion durable: it stays readable after the audio is deleted, re-downloaded in another encoding, or replaced by a different edition.
+SQLite also holds one immutable row per book finished, recorded on the **crossing** into finished so a client re-sending the same state cannot log a book twice, while a genuine re-read logs a second time. Each row carries an `EditionSnapshot` — title, author, narrator, runtime, ASIN, ISBN, publisher, series, genres — copied out of the library at the moment of completion. That snapshot is what makes a completion durable: it stays readable after the audio is deleted, re-downloaded in another encoding, or replaced by a different edition.
 
-`/api/profile/stats` reports both the shelf-derived `booksFinished` (what is on the server now) and the log-derived `worksFinished` and `totalCompletions` (what the reader has actually finished, ever). It also returns `habits` — listening hours by hour of the reader's own day and by weekday, session count, mean, median, and longest session, mean playback speed, and the clients seen — plus `finishedBooks`, `abandonedBooks`, and `mostReadBooks`, which measures time genuinely spent per book rather than how far into it the reader has reached.
-
-`speed` and `client` are optional on `PUT /api/books/{book_id}/progress`. Until a client sends them, `habits.avgSpeed` and `habits.clients` stay empty; every other statistic works without them.
-
-#### Keeping the logs small
-
-Every write-through of an open session appends a superseded revision, so the flush interval backs off — sixty seconds, then doubling to a ceiling of fifteen minutes. A three-hour sitting costs about fifteen rows instead of a hundred and eighty. A hard crash costs the detail of the sitting in progress back to its last revision; it never costs the reader their place, because playback progress is written separately on its own two-second cadence.
-
-A maintenance pass runs at startup and every six hours. It collapses superseded revisions, drops sessions past the retention window, enforces the row ceilings oldest-first, and prunes work records that hold no reading history and name no book on the server. Nothing is rewritten unless something actually changed, so a settled server pays one read per pass.
-
-A pass that encounters a line it cannot parse rewrites nothing. Rebuilding a log from the rows the running build understood would delete anything it did not — which after a rollback to an older release is every row the newer one wrote. Account deletion is the deliberate exception: it must rewrite, because a line the server cannot read is a line it cannot prove belongs to somebody else.
-
-Measured: a reader who listens three hours a day, every day, for a year produces about 2.1 MB of raw rows that compact to **about 300 KB**. The default 200,000-row ceiling is roughly 66 MB — decades of that reader.
-
-Sessions age out; completions do not. The daily totals in `activity.json` are a separate permanent archive at roughly thirty bytes per reader per day, and every lifetime headline number is computed from those rather than from the session log. Expiring old sessions therefore costs the *texture* of an old year — its hour-of-day pattern, its session lengths, its per-book time — and none of its totals. A completion is the only record that a book was read at all, and is small enough to keep for ever.
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `reading_log_retention_days` | `1095` | Drop sessions older than this. `0` keeps them for ever. |
-| `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. |
-| `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Reaching it means something is wrong, not that somebody reads a lot. |
-
-Both ceilings accept 1,000 to 500,000; a value outside that range is refused at startup rather than quietly adjusted. The upper bound is set by the reader rather than the disk — a log is parsed whole into memory, and 500,000 session rows is about as much as the Raspberry Pi class hardware these builds target can hold.
+`speed` and `client` are optional on `PUT /api/books/{book_id}/progress` and, when valid, are retained with the session that reported them.
 
 ### Works
 

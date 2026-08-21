@@ -50,7 +50,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::{
     fs,
     process::Command,
-    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, RwLock, Semaphore, broadcast},
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -234,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = fs::remove_file(&config.activity_file).await;
     }
 
+    let (shutdown, _) = broadcast::channel(1);
     let state = AppState {
         deployment_mode: config.deployment_mode,
         csrf_allowed_origins: Arc::new(build_csrf_allowed_origins(&config.allowed_origins)),
@@ -287,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
             reading_history,
         )),
         open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
+        shutdown,
         works: Arc::new(WorksStore::new(
             database.clone(),
             StoreShape::Document(WORKS_DOCUMENT),
@@ -320,9 +322,10 @@ async fn main() -> anyhow::Result<()> {
 
     rescan_library(&state).await?;
     schedule_automatic_libation_refresh(state.clone());
+    schedule_reading_session_sweeper(state.clone());
 
     let app = build_router(
-        state,
+        state.clone(),
         config.web_dist_dir.as_deref(),
         &config.allowed_origins,
     )?;
@@ -342,9 +345,30 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal(state.shutdown.subscribe()))
     .await?;
+    drain_reading_sessions(&state).await;
 
     Ok(())
+}
+
+async fn shutdown_signal(mut shutdown: broadcast::Receiver<()>) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+            _ = shutdown.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = shutdown.recv() => {},
+    }
 }
 
 // ---------------------------------------------------------------------------

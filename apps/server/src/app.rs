@@ -40,6 +40,9 @@ pub(crate) struct AppState {
     /// Coalesces the client's frequent playback checkpoints into substantive
     /// listening sessions before they are persisted.
     pub(crate) open_sessions: Arc<Mutex<OpenSessions>>,
+    /// A server-owned stop request, used when an in-process update needs the
+    /// same graceful drain path as a signal-driven shutdown.
+    pub(crate) shutdown: broadcast::Sender<()>,
     /// The work identity index above individual audio-file editions.
     pub(crate) works: Arc<WorksStore>,
     pub(crate) libation_requests: Arc<LibationRequests>,
@@ -320,12 +323,14 @@ pub(crate) async fn install_update(
     State(state): State<AppState>,
     _: OwnerUser,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
-    state
-        .update_manager
-        .install()
-        .await
-        .map(Json)
-        .map_err(|error| ApiError::bad_request(format!("Could not install the update: {error}")))
+    let started =
+        state.update_manager.install().await.map_err(|error| {
+            ApiError::bad_request(format!("Could not install the update: {error}"))
+        })?;
+    // The updater waits for this process, so let `main` own the exit. That
+    // runs the reading-session drain after this response has been accepted.
+    let _ = state.shutdown.send(());
+    Ok(Json(started))
 }
 
 pub(crate) async fn frontend_update_status(
