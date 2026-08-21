@@ -136,6 +136,20 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
     Ok(connection)
 }
 
+/// Open an already-initialized database without creating a new file.
+///
+/// Administrative export must never turn a misspelled data directory into an
+/// empty database and then overwrite the JSON rollback files with its defaults.
+pub(crate) fn open_existing(path: &FsPath) -> anyhow::Result<Connection> {
+    if !path.is_file() {
+        anyhow::bail!(
+            "No SQLite database exists at {}. Start the server normally first, or check the data directory.",
+            path.display()
+        );
+    }
+    open(path)
+}
+
 #[cfg(unix)]
 pub(crate) fn secure_database_files(path: &FsPath) {
     use std::os::unix::fs::PermissionsExt;

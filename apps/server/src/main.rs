@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
     let database_path = config.data_dir.join("operalibre.db");
     if env::args().any(|argument| argument == "--export-json") {
         let layout = JsonLayout::for_config(&config);
-        let connection = db::open(&database_path)?;
+        let connection = db::open_existing(&database_path)?;
         let written = export_json(&connection, &layout)?;
         println!(
             "Exported {written} records from {} back to JSON in {}.",

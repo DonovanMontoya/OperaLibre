@@ -2947,6 +2947,16 @@ fn legacy_data_dir(root: &std::path::Path) -> super::JsonLayout {
         }),
     );
     write(
+        "progress.backups.json",
+        serde_json::json!({
+            "user:alice:book:one": [{
+                "bookId": "one", "trackId": "t1",
+                "positionSeconds": 300.0, "bookPositionSeconds": 300.0,
+                "durationSeconds": 600.0, "updatedAt": "1749999999000"
+            }]
+        }),
+    );
+    write(
         "book-settings.json",
         serde_json::json!({ "user:alice:book:one": { "volumeGain": 2.25 } }),
     );
@@ -3000,6 +3010,7 @@ fn legacy_data_dir(root: &std::path::Path) -> super::JsonLayout {
 
     super::JsonLayout {
         progress: data_dir.join("progress.json"),
+        progress_backups: data_dir.join("progress.backups.json"),
         book_settings: data_dir.join("book-settings.json"),
         users: data_dir.join("users.json"),
         sessions: data_dir.join("sessions.json"),
@@ -3053,6 +3064,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
 
     let before: Vec<(String, String)> = [
         &layout.progress,
+        &layout.progress_backups,
         &layout.book_settings,
         &layout.users,
         &layout.sessions,
@@ -3124,6 +3136,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
     std::fs::create_dir_all(&exported_dir).unwrap();
     let export_layout = super::JsonLayout {
         progress: exported_dir.join("progress.json"),
+        progress_backups: exported_dir.join("progress.backups.json"),
         book_settings: exported_dir.join("book-settings.json"),
         users: exported_dir.join("users.json"),
         sessions: exported_dir.join("sessions.json"),
@@ -3143,6 +3156,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
 
     for name in [
         "progress.json",
+        "progress.backups.json",
         "book-settings.json",
         "users.json",
         "sessions.json",
@@ -3202,6 +3216,37 @@ async fn a_second_start_does_not_import_again() {
     assert!(
         (saved.position_seconds - 400.0).abs() < 1e-9,
         "a second import reverted a position saved after the first"
+    );
+}
+
+#[test]
+fn an_incomplete_database_does_not_suppress_a_legacy_import_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = legacy_data_dir(root.path());
+    let data_dir = root.path().join("data");
+    let database_path = data_dir.join("operalibre.db");
+
+    // This is the state an earlier implementation could leave after creating
+    // the schema but before committing its import transaction.
+    drop(super::db::open(&database_path).unwrap());
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+
+    let connection = super::db::open(&database_path).unwrap();
+    let progress: i64 = connection
+        .query_row("SELECT COUNT(*) FROM progress", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(progress, 2, "the legacy positions were skipped");
+}
+
+#[test]
+fn export_opening_a_missing_database_does_not_create_it() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("missing.db");
+
+    assert!(super::db::open_existing(&database_path).is_err());
+    assert!(
+        !database_path.exists(),
+        "export setup created an empty database instead of refusing"
     );
 }
 
