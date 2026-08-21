@@ -280,11 +280,24 @@ pub(crate) async fn list_books(
     }
 
     // The tag covers the response as it was actually built, so a change to a
-    // shared listener's position or to a volume gain invalidates it too. A
-    // cheaper tag derived from a library counter would answer 304 to some
-    // requests whose content had in fact changed.
+    // shared listener's position or to a volume gain invalidates it too. It
+    // also covers the navigation state: a page that was exactly full gains a
+    // next cursor when a later-sorting book arrives, with a body that did not
+    // change, and a client holding only the old tag must not be told there is
+    // nothing new. A cheaper tag derived from a library counter would answer
+    // 304 to some requests whose content had in fact changed.
     let body = serde_json::to_vec(&books)?;
-    let etag = bytes_etag(&body);
+    let mut tag_input = Vec::with_capacity(body.len() + 32);
+    tag_input.extend_from_slice(&body);
+    match &next_cursor {
+        Some(cursor) => {
+            tag_input.extend_from_slice(b"\nnext:");
+            tag_input.extend_from_slice(cursor.as_bytes());
+        }
+        None => tag_input.extend_from_slice(b"\nend"),
+    }
+    let etag = bytes_etag(&tag_input);
+    drop(tag_input);
     if if_none_match_matches(&headers, &etag) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
@@ -1001,18 +1014,22 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     // would stall every route that reads the library, including media
     // streaming, for the length of the pass.
     let covers_dir = state.covers_dir.clone();
-    let cover_art =
+    let (cover_art, stale_covers) =
         tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
             .await
             .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
 
-    let mut library = state.library.write().await;
-    library.books = books;
-    library.book_paths = book_paths;
-    library.track_paths = track_paths;
-    library.reading_paths = reading_paths;
-    library.sync_paths = sync_paths;
-    library.cover_art = cover_art;
+    {
+        let mut library = state.library.write().await;
+        library.books = books;
+        library.book_paths = book_paths;
+        library.track_paths = track_paths;
+        library.reading_paths = reading_paths;
+        library.sync_paths = sync_paths;
+        library.cover_art = cover_art;
+    }
+    // Only now is the published library done with these.
+    remove_stale_covers(&stale_covers);
     Ok(())
 }
 
@@ -1857,16 +1874,22 @@ pub(crate) fn unique_metadata_fields(fields: Vec<MetadataField>) -> Vec<Metadata
 }
 
 /// Write freshly extracted cover art to the cache directory and return what
-/// the serving route needs, without the bytes.
+/// the serving route needs, without the bytes, plus the paths of stale files.
 ///
 /// Files are named by book id and rewritten only when their content actually
 /// changed: a length mismatch skips the rewrite outright, and matching art is
-/// confirmed by reading the existing file back. Anything left over from a book
-/// that is no longer in the library is removed.
+/// confirmed by reading the existing file back. A rewrite goes to a temporary
+/// file that is renamed into place — the currently published library still
+/// points readers at this path until the new snapshot lands, so an in-place
+/// write would stream truncated bytes under the old length and etag.
+///
+/// Stale files — covers for books that have left the library — are reported
+/// rather than removed, for the same reason: the caller deletes them only
+/// after the new snapshot is published.
 pub(crate) fn write_cover_cache(
     covers_dir: &FsPath,
     extracted: Vec<(String, EmbeddedImage)>,
-) -> anyhow::Result<HashMap<String, CachedCover>> {
+) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
     create_private_directory(covers_dir)?;
     let mut cached = HashMap::new();
     let mut keep = HashSet::new();
@@ -1874,7 +1897,7 @@ pub(crate) fn write_cover_cache(
     for (book_id, image) in extracted {
         let file_name = format!("{}.cover", sanitize_filename(&book_id));
         let path = covers_dir.join(&file_name);
-        keep.insert(file_name);
+        keep.insert(file_name.clone());
 
         let unchanged = std::fs::metadata(&path)
             .ok()
@@ -1883,7 +1906,14 @@ pub(crate) fn write_cover_cache(
                 .ok()
                 .is_some_and(|existing| bytes_etag(&existing) == image.etag);
         if !unchanged {
-            std::fs::write(&path, &image.data)?;
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since_epoch| since_epoch.as_nanos())
+                .unwrap_or(0);
+            let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
+            std::fs::write(&temp_path, &image.data)?;
+            replace_file_blocking(&temp_path, &path)
+                .map_err(|error| anyhow::anyhow!("could not publish cover {file_name}: {error}"))?;
         }
 
         cached.insert(
@@ -1898,13 +1928,21 @@ pub(crate) fn write_cover_cache(
     }
 
     // Covers for books that have left the library.
+    let mut stale = Vec::new();
     if let Ok(entries) = std::fs::read_dir(covers_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.ends_with(".cover") && !keep.contains(&name) {
-                let _ = std::fs::remove_file(entry.path());
+                stale.push(entry.path());
             }
         }
     }
-    Ok(cached)
+    Ok((cached, stale))
+}
+
+/// Delete cover files the published library no longer points at.
+pub(crate) fn remove_stale_covers(stale: &[PathBuf]) {
+    for path in stale {
+        let _ = std::fs::remove_file(path);
+    }
 }

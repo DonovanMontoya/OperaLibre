@@ -18,6 +18,8 @@ use tower::ServiceExt;
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
+    /// Where the scanned library lives, for tests that grow it mid-flight.
+    library_root: PathBuf,
     /// Held so the temporary directory outlives the server.
     _root: tempfile::TempDir,
 }
@@ -149,8 +151,10 @@ impl TestServer {
 
         rescan_library(&state).await.unwrap();
 
+        let library_root = state.library_root.clone();
         Self {
             router: build_router(state, None, &[]).unwrap(),
+            library_root,
             _root: root,
         }
     }
@@ -1141,4 +1145,53 @@ async fn an_unknown_cursor_restarts_the_walk() {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_eq!(page.json().as_array().unwrap().len(), 2);
+}
+
+/// A page that was exactly full gains a next cursor when a later-sorting book
+/// arrives, with a body that did not change. The tag covers the navigation
+/// state, so the conditional refetch must not answer 304 and hide the new
+/// page from a paginating client.
+#[tokio::test]
+async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+
+    let next_cursor = axum::http::HeaderName::from_static("x-next-cursor");
+    let first = server.get("/api/books?limit=2", &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert!(
+        first.header(next_cursor.clone()).is_empty(),
+        "the whole library fit on one page, so there was no cursor"
+    );
+    let etag = first.header(header::ETAG);
+
+    // Sorts after both existing books, so the first page's body is unchanged.
+    let folder = server.library_root.join("Book 99");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("01 Track.wav"), fixture_wav()).unwrap();
+    let rescan = server
+        .send_json("POST", "/api/library/rescan", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(rescan.status, StatusCode::OK, "{}", rescan.text());
+
+    let again = server
+        .send(
+            Request::builder()
+                .uri("/api/books?limit=2")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::OK,
+        "a stale tag was accepted after the page gained a next cursor"
+    );
+    assert_eq!(again.json().as_array().unwrap().len(), 2);
+    assert!(
+        !again.header(next_cursor).is_empty(),
+        "the refetch did not reveal the new page"
+    );
 }

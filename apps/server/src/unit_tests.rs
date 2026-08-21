@@ -3392,7 +3392,8 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
             ("book-two".to_string(), image(b"second cover bytes")),
         ],
     )
-    .unwrap();
+    .unwrap()
+    .0;
     assert_eq!(first.len(), 2);
     let one = first["book-one"].clone();
     assert_eq!(one.len, b"first cover bytes".len() as u64);
@@ -3402,7 +3403,7 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
 
     // A rescan finding the same art for one book, new art for the other, and
     // no art at all for a book that has been removed.
-    let second = super::write_cover_cache(
+    let (second, stale) = super::write_cover_cache(
         &covers,
         vec![
             ("book-one".to_string(), image(b"first cover bytes")),
@@ -3420,6 +3421,13 @@ fn extracted_cover_art_is_reused_and_tidied_up() {
         std::fs::read(&second["book-three"].path).unwrap(),
         b"third cover bytes"
     );
+    // Stale art is reported rather than removed, so the published library can
+    // finish serving it; the caller tidies up once the new snapshot is live.
+    assert!(
+        first["book-two"].path.exists(),
+        "stale art was removed early"
+    );
+    super::remove_stale_covers(&stale);
     assert!(
         !first["book-two"].path.exists(),
         "cover art for a departed book was left behind"
@@ -3438,13 +3446,15 @@ fn replacing_cover_art_replaces_the_file_and_its_etag() {
     };
 
     let before = super::write_cover_cache(&covers, vec![("book".to_string(), image(b"old art"))])
-        .unwrap()["book"]
+        .unwrap()
+        .0["book"]
         .clone();
     let after = super::write_cover_cache(
         &covers,
         vec![("book".to_string(), image(b"replacement art"))],
     )
-    .unwrap()["book"]
+    .unwrap()
+    .0["book"]
         .clone();
 
     assert_ne!(before.etag, after.etag);
