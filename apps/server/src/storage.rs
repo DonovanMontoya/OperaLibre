@@ -55,9 +55,7 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     path: &FsPath,
     value: &T,
 ) -> Result<(), ApiError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await?;
-    }
+    let created_directories = ensure_parent_directory(path).await?;
     let mut suffix = [0u8; 8];
     rand::rng().fill(&mut suffix);
     let file_name = path
@@ -90,8 +88,31 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     // The rename is atomic, but the directory entry it created is itself only
     // durable once the directory is synced. Skipping this can lose the whole
     // store after a crash even though the data was safely on disk.
-    sync_parent_directory(path).await;
+    sync_parent_directories(path, &created_directories).await?;
     Ok(())
+}
+
+/// Create the destination directory and remember every directory created.
+///
+/// After the file is published, their parents must also be synced: syncing the
+/// immediate parent persists the file entry, while syncing each ancestor
+/// persists the newly-created directory entries themselves.
+async fn ensure_parent_directory(path: &FsPath) -> io::Result<Vec<PathBuf>> {
+    let Some(parent) = path.parent() else {
+        return Ok(Vec::new());
+    };
+
+    let mut created = Vec::new();
+    let mut candidate = parent;
+    while !candidate.exists() {
+        created.push(candidate.to_path_buf());
+        let Some(next) = candidate.parent() else {
+            break;
+        };
+        candidate = next;
+    }
+    fs::create_dir_all(parent).await?;
+    Ok(created)
 }
 
 #[cfg(unix)]
@@ -136,43 +157,38 @@ async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     .map_err(io::Error::other)?
 }
 
-/// Fsync the directory holding `path` so a completed rename survives a crash.
-///
-/// Unix only: Windows has no directory handle to sync, and `ReplaceFile`-style
-/// rename semantics already order the metadata update.
+/// Fsync the directory holding the file and any newly-created ancestor links.
 #[cfg(unix)]
-pub(crate) async fn sync_parent_directory(path: &FsPath) {
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let parent = parent.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        let dir = if parent.as_os_str().is_empty() {
-            std::fs::File::open(".")?
-        } else {
-            std::fs::File::open(&parent)?
-        };
-        dir.sync_all()
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => {}
-        // A failed directory sync does not invalidate the write that just
-        // landed, so this warns rather than failing the request.
-        Ok(Err(error)) => {
-            tracing::warn!("could not fsync directory for {}: {error}", path.display());
-        }
-        Err(error) => {
-            tracing::warn!(
-                "directory fsync task failed for {}: {error}",
-                path.display()
-            );
-        }
+async fn sync_parent_directories(path: &FsPath, created_directories: &[PathBuf]) -> io::Result<()> {
+    let mut directories = Vec::with_capacity(created_directories.len() + 1);
+    if let Some(parent) = path.parent() {
+        directories.push(parent.to_path_buf());
     }
+    directories.extend(
+        created_directories
+            .iter()
+            .filter_map(|directory| directory.parent().map(|parent| parent.to_path_buf())),
+    );
+    directories.sort();
+    directories.dedup();
+
+    tokio::task::spawn_blocking(move || -> io::Result<()> {
+        for directory in directories {
+            std::fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 #[cfg(not(unix))]
-pub(crate) async fn sync_parent_directory(_path: &FsPath) {}
+async fn sync_parent_directories(
+    _path: &FsPath,
+    _created_directories: &[PathBuf],
+) -> io::Result<()> {
+    Ok(())
+}
 
 #[cfg(unix)]
 pub(crate) async fn secure_file_permissions(path: &FsPath) -> io::Result<()> {
