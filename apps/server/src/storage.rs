@@ -661,6 +661,8 @@ pub(crate) const METADATA_OVERRIDES_DOCUMENT: &str = "metadata-overrides";
 pub(crate) const LIBATION_REQUESTS_DOCUMENT: &str = "libation-requests";
 pub(crate) const LIBATION_REFRESHES_DOCUMENT: &str = "libation-refreshes";
 pub(crate) const LIBATION_ACCOUNTS_DOCUMENT: &str = "libation-accounts";
+pub(crate) const READING_HISTORY_DOCUMENT: &str = "reading-history";
+pub(crate) const WORKS_DOCUMENT: &str = "works";
 /// The account permission migration's watermark. It belongs with the accounts
 /// but is not a property of any one of them, so it rides alongside the rows.
 pub(crate) const USERS_PERMISSIONS_VERSION_DOCUMENT: &str = "users-permissions-version";
@@ -769,6 +771,8 @@ pub(crate) type LibationRequests = CachedStore<LibationRequestStore>;
 pub(crate) type LibationRefreshes = CachedStore<LibationRefreshStore>;
 /// Managed Libation accounts.
 pub(crate) type LibationAccounts = CachedStore<ManagedLibationAccountStore>;
+pub(crate) type ReadingHistoryStore = CachedStore<ReadingHistory>;
+pub(crate) type WorksStore = CachedStore<WorkStore>;
 
 // ---------------------------------------------------------------------------
 // Loading the caches at startup
@@ -885,6 +889,8 @@ pub(crate) struct CachedSnapshot {
     pub(crate) libation_requests: LibationRequestStore,
     pub(crate) libation_refreshes: LibationRefreshStore,
     pub(crate) libation_accounts: ManagedLibationAccountStore,
+    pub(crate) reading_history: ReadingHistory,
+    pub(crate) works: WorkStore,
 }
 
 pub(crate) fn read_cached_snapshot(
@@ -898,5 +904,7 @@ pub(crate) fn read_cached_snapshot(
         libation_requests: read_document_store(connection, LIBATION_REQUESTS_DOCUMENT)?,
         libation_refreshes: read_document_store(connection, LIBATION_REFRESHES_DOCUMENT)?,
         libation_accounts: read_document_store(connection, LIBATION_ACCOUNTS_DOCUMENT)?,
+        reading_history: read_document_store(connection, READING_HISTORY_DOCUMENT)?,
+        works: read_document_store(connection, WORKS_DOCUMENT)?,
     })
 }

@@ -115,6 +115,11 @@ pub(crate) struct ProgressUpdate {
     /// listener's own calendar day, so an evening session west of UTC is not
     /// filed under tomorrow and does not split a streak. Absent means UTC.
     pub(crate) tz_offset_minutes: Option<i32>,
+    /// Playback rate reported by the client. Invalid rates are ignored rather
+    /// than allowing a malformed request to poison reading-history averages.
+    pub(crate) speed: Option<f64>,
+    /// A short client identifier such as `web`, `ios`, or `android`.
+    pub(crate) client: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,6 +130,10 @@ pub(crate) struct CompletionUpdate {
     pub(crate) position_seconds: Option<f64>,
     pub(crate) book_position_seconds: Option<f64>,
     pub(crate) duration_seconds: Option<f64>,
+    /// The reader's offset from UTC in minutes, with the same semantics as a
+    /// progress checkpoint. Completion dates are immutable, so use the
+    /// listener's calendar day at the time it is recorded.
+    pub(crate) tz_offset_minutes: Option<i32>,
 }
 
 /// Per-listener playback gain for one book. Unlike the metadata override this
@@ -298,10 +307,17 @@ pub(crate) async fn update_progress(
     let now_millis = unix_now_millis();
     let decision_update = update.clone();
     let decided_book_id = book.id.clone();
+    let decision_book = book.clone();
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &decided_book_id, move |previous| {
-            decide_progress_write(&book, &track, previous, &decision_update, now_millis)
+            decide_progress_write(
+                &decision_book,
+                &track,
+                previous,
+                &decision_update,
+                now_millis,
+            )
         })
         .await?;
 
@@ -312,6 +328,39 @@ pub(crate) async fn update_progress(
             &state,
             &auth.id,
             listened_delta,
+            sanitized_tz_offset_minutes(update.tz_offset_minutes),
+        )
+        .await;
+        record_listening(
+            &state,
+            &auth.id,
+            &book,
+            &saved,
+            ListeningCheckpoint {
+                previous: previous.as_ref(),
+                intentional_seek: update.intentional_seek,
+                tz_offset_minutes: sanitized_tz_offset_minutes(update.tz_offset_minutes),
+                speed: sanitized_playback_speed(update.speed),
+                client: sanitized_client_name(update.client.as_deref()),
+            },
+        )
+        .await;
+    }
+
+    let was_finished = previous
+        .as_ref()
+        .map(|progress| {
+            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
+        })
+        .unwrap_or(false);
+    if !was_finished
+        && summarize_book_progress(&book, &saved).status == BookProgressStatus::Finished
+    {
+        record_completion(
+            &state,
+            &auth.id,
+            &book,
+            CompletionSource::Reached,
             sanitized_tz_offset_minutes(update.tz_offset_minutes),
         )
         .await;
@@ -367,7 +416,7 @@ pub(crate) async fn update_book_completion(
     let decision_book = book.clone();
     let decision_update = update.clone();
     let completion_book_id = book.id.clone();
-    let (saved, _) = state
+    let (saved, previous) = state
         .progress
         .update_book(&auth.id, &completion_book_id, move |previous| {
             let book = decision_book;
@@ -402,7 +451,39 @@ pub(crate) async fn update_book_completion(
         })
         .await?;
 
-    Ok(Json(summarize_book_progress(&book, &saved)))
+    let summary = summarize_book_progress(&book, &saved);
+    let was_finished = previous
+        .as_ref()
+        .map(|progress| {
+            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
+        })
+        .unwrap_or(false);
+    if update.finished && !was_finished {
+        record_completion(
+            &state,
+            &auth.id,
+            &book,
+            CompletionSource::Marked,
+            sanitized_tz_offset_minutes(update.tz_offset_minutes),
+        )
+        .await;
+    }
+    Ok(Json(summary))
+}
+
+/// Accept a plausible finite playback rate only. Playback engines vary, but
+/// this covers the useful range without allowing zero, negative, or absurd
+/// values to distort history aggregates.
+pub(crate) fn sanitized_playback_speed(speed: Option<f64>) -> Option<f64> {
+    speed.filter(|rate| rate.is_finite() && (0.25..=4.0).contains(rate))
+}
+
+/// Keep client names small and printable. The value is descriptive metadata,
+/// not an arbitrary user-provided label.
+pub(crate) fn sanitized_client_name(client: Option<&str>) -> Option<String> {
+    let client = client?;
+    (!client.is_empty() && client.len() <= 64 && client.chars().all(|c| c.is_ascii_graphic()))
+        .then(|| client.to_string())
 }
 
 pub(crate) fn enrich_progress(book: &Book, progress: &Progress) -> Progress {
