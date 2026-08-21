@@ -290,7 +290,7 @@ With SQLite in place these become straightforward.
 
 ---
 
-## Phase 7 — Third-party client compatibility
+## Phase 7 — Third-party client compatibility *(done)*
 
 The README already positions OperaLibre as a headless server other clients can
 build against. Making that literally true is cheaper than writing more
@@ -335,6 +335,9 @@ Each row is mirrored into the body of the PR it belongs to.
 | C20 | The library listing's ETag is a hash of the response as built, so a conditional request saves bandwidth but not server work. A tag derived from a library generation counter would save the query too, but would have to account for shared listeners' positions and volume gains — both of which change the response without touching the requester's own progress — and answering 304 with stale content is worse than answering 200. | Open | Phase 5 |
 | C21 | The scan now uses rayon's global pool. On a machine also running transcodes or Libation downloads, a large first scan will compete for cores. A scan-specific pool with a lower thread count is the fix if that ever bites. | Open | Phase 5 |
 | C22 | The request timeout is scoped: uploads and book downloads sit outside it, because a download builds its archive before the response begins and a large book takes minutes. Neither can hang without an operation behind it hanging first, but neither is bounded either. | Open | Phase 6 |
+| C23 | **The Audiobookshelf layer has not been tested against a real client.** It is written to the shapes Prologue, ShelfPlayer and Voice ask for, and the flow is covered end to end by tests and by hand against the running server — but no actual third-party player has been pointed at it. Until one has, treat it as unproven. | Open | Phase 7 |
+| C24 | OPDS is served with the server's own credentials (`Authorization: Bearer` or the read-only `?token=`). Readers that only speak HTTP Basic cannot use it. Basic would mean an Argon2 verification per request, which is unacceptable on a range request, so it needs a cheaper derived credential first. | Open | Phase 7 |
+| C25 | The compatibility layer is mounted at `/abs` because Audiobookshelf puts `/api/me` and `/login` where OperaLibre already has its own. Clients must be given a base URL including that path; one that assumes the server root will not work. | Open | Phase 7 |
 | C7 | `ProgressStore::set` is `#[cfg(test)]` because only tests need it today. The SQLite migration wants the same primitive and should drop the gate rather than duplicating it. | Open | Phase 3 |
 | C8 | `OwnerUser` carries no payload because no owner-only handler needs the acting user. A handler that does need it must add the `AuthUser` field back rather than reaching for `AuthUser` separately. | Open | Phase 2 |
 | C9 | `http_tests.rs` lives in the crate rather than `tests/` because the server is a binary-only target. It should move unchanged once there is a library target. | Open | Phase 0 |
@@ -353,7 +356,7 @@ Each row is mirrored into the body of the PR it belongs to.
 | 4 | SQLite | High, gated by 0 and 3 | Phase 5 — **done** |
 | 5 | Hot paths | Medium | Scale — **done** |
 | 6 | Operations | Low | Reliability — **done** |
-| 7 | OPDS / ABS compatibility | Low | Ecosystem |
+| 7 | OPDS / ABS compatibility | Low | Ecosystem — **done** |
 
 Phases 0 through 2 are safe to land in any order and could ship in a single
 release. Phase 4 should ship alone, early in a release cycle, with the JSON

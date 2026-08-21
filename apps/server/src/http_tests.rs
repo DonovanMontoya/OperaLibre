@@ -1230,3 +1230,226 @@ async fn an_oversized_json_body_is_refused() {
 
     assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+// ---------------------------------------------------------------------------
+// Third-party client surfaces
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_opds_catalogue_lists_only_what_the_reader_may_hear() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "opds-reader").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed = books.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [allowed] }),
+        )
+        .await;
+
+    let root = server.get("/api/opds", &reader).await;
+    assert_eq!(root.status, StatusCode::OK);
+    assert!(root.header(header::CONTENT_TYPE).contains("opds-catalog"));
+    assert!(root.text().contains("/api/opds/books"));
+
+    let feed = server.get("/api/opds/books", &reader).await;
+    assert_eq!(feed.status, StatusCode::OK, "{}", feed.text());
+    let body = feed.text();
+    assert_eq!(
+        body.matches("<entry>").count(),
+        1,
+        "the feed showed books the reader cannot hear"
+    );
+    assert!(body.contains(&format!("urn:operalibre:book:{allowed}")));
+    assert!(body.contains("opds-spec.org/acquisition"));
+    // Well-formed enough that a reader will not choke on the declaration.
+    assert!(body.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+}
+
+#[test]
+fn opds_entries_escape_text_that_would_break_the_feed() {
+    // The title comes from a file name or a tag, so it can contain anything.
+    assert_eq!(
+        super::xml_escape("Tom & Jerry <\"quoted\">"),
+        "Tom &amp; Jerry &lt;&quot;quoted&quot;&gt;"
+    );
+    assert_eq!(super::xml_escape("bell\u{7}here"), "bellhere");
+}
+
+#[tokio::test]
+async fn an_audiobookshelf_client_can_sign_in_and_browse() {
+    let server = TestServer::start(2).await;
+    server.setup_owner().await;
+
+    let login = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/abs/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": "owner",
+                        "password": "owner-password-1234"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text());
+    let login = login.json();
+    let token = login["user"]["token"].as_str().unwrap().to_string();
+    assert_eq!(login["userDefaultLibraryId"], super::ABS_LIBRARY_ID);
+    assert_eq!(login["user"]["username"], "owner");
+
+    let libraries = server.get("/abs/api/libraries", &token).await.json();
+    assert_eq!(libraries["libraries"][0]["id"], super::ABS_LIBRARY_ID);
+    assert_eq!(libraries["libraries"][0]["mediaType"], "book");
+
+    let items = server
+        .get(
+            &format!("/abs/api/libraries/{}/items", super::ABS_LIBRARY_ID),
+            &token,
+        )
+        .await
+        .json();
+    assert_eq!(items["total"], 2);
+    let item_id = items["results"][0]["id"].as_str().unwrap().to_string();
+
+    let item = server
+        .get(&format!("/abs/api/items/{item_id}"), &token)
+        .await
+        .json();
+    assert_eq!(item["mediaType"], "book");
+    let files = item["media"]["audioFiles"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    // A player hands this URL to the platform's audio stack, which cannot
+    // attach a header, so the credential has to be in the address.
+    assert!(files[0]["contentUrl"].as_str().unwrap().contains("token="));
+    assert!((files[1]["startOffset"].as_f64().unwrap() - 10.0).abs() < 0.5);
+
+    let unknown = server
+        .get("/abs/api/libraries/not-a-library/items", &token)
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+/// The compatibility layer is a translation, not a second copy of the data: a
+/// position saved by a third-party player has to be the same position the web
+/// app resumes from.
+#[tokio::test]
+async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let patched = server
+        .send(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/abs/api/me/progress/{book}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "currentTime": 14.0, "duration": 20.0 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text());
+
+    // Second track of two ten-second tracks: four seconds into it.
+    let native = server.get("/api/books", &token).await.json();
+    let progress = &native.as_array().unwrap()[0]["progress"];
+    assert!((progress["bookPositionSeconds"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    let synced = server
+        .get(&format!("/abs/api/me/progress/{book}"), &token)
+        .await
+        .json();
+    assert!((synced["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert!((synced["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+
+    let session = server
+        .send_json(
+            "POST",
+            &format!("/abs/api/items/{book}/play"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await
+        .json();
+    assert!((session["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(session["playMethod"], 0);
+}
+
+#[tokio::test]
+async fn the_compatibility_layer_honours_book_access() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "abs-reader").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let books = books.as_array().unwrap();
+    let allowed = books[0]["id"].as_str().unwrap().to_string();
+    let denied = books[1]["id"].as_str().unwrap().to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [allowed] }),
+        )
+        .await;
+
+    let items = server
+        .get(
+            &format!("/abs/api/libraries/{}/items", super::ABS_LIBRARY_ID),
+            &reader,
+        )
+        .await
+        .json();
+    assert_eq!(items["total"], 1);
+
+    for uri in [
+        format!("/abs/api/items/{denied}"),
+        format!("/abs/api/me/progress/{denied}"),
+    ] {
+        let response = server.get(&uri, &reader).await;
+        assert!(
+            response.status == StatusCode::FORBIDDEN || response.status == StatusCode::NOT_FOUND,
+            "{uri} leaked to a reader without access: {}",
+            response.status
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_compatibility_layer_requires_a_session() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+
+    for uri in ["/abs/api/me", "/abs/api/libraries"] {
+        let response = server
+            .send(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
