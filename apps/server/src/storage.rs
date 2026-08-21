@@ -82,7 +82,7 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     temp_file.sync_all().await?;
     drop(temp_file);
     secure_file_permissions(&temp_path).await?;
-    if let Err(error) = fs::rename(&temp_path, path).await {
+    if let Err(error) = replace_file(&temp_path, path).await {
         let _ = fs::remove_file(&temp_path).await;
         return Err(error.into());
     }
@@ -92,6 +92,48 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     // store after a crash even though the data was safely on disk.
     sync_parent_directory(path).await;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    fs::rename(temp_path, path).await
+}
+
+#[cfg(windows)]
+async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temp_path = temp_path.to_path_buf();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let from = temp_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let to = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 /// Fsync the directory holding `path` so a completed rename survives a crash.

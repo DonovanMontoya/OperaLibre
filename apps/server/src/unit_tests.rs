@@ -1914,7 +1914,7 @@ async fn four_libation_downloads_are_serialized_and_keep_their_targets() {
         .map(str::to_string)
         .collect::<Vec<_>>();
     assert_eq!(lines.len(), asins.len() * 2 + 2);
-    for pair in lines.chunks_exact(2) {
+    for pair in lines.as_chunks::<2>().0 {
         assert!(pair[0].starts_with("start "));
         assert_eq!(pair[1], pair[0].replacen("start ", "end ", 1));
     }
