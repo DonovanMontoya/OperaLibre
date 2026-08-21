@@ -188,6 +188,18 @@ pub struct CompletionEvent {
     pub snapshot: EditionSnapshot,
 }
 
+/// The persisted part of the reading log. Open sessions remain in request
+/// handling; completed sessions and completion events live in SQLite's
+/// document store so the server's durable state has one backend.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingHistory {
+    #[serde(default)]
+    pub sessions: Vec<ReadingSession>,
+    #[serde(default)]
+    pub completions: Vec<CompletionEvent>,
+}
+
 /// Sessions still accumulating, keyed by listener and book. An entry lives here
 /// between checkpoints and is flushed to disk on a debounce and on close.
 #[derive(Debug, Default)]
