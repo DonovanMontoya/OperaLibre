@@ -120,8 +120,28 @@ pub(crate) fn unix_now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Despite the name, this is unix seconds as a string: it is what the stores
+/// have always written, and their timestamps are compared, not displayed.
+/// Anything that has to hand a timestamp to another program wants
+/// [`rfc3339_utc`] instead.
 pub(crate) fn now_rfc3339ish() -> String {
     unix_now_seconds().to_string()
+}
+
+/// A real RFC 3339 instant in UTC, for formats that specify one.
+///
+/// Atom requires this for `<updated>`, and a strict reader rejects a feed that
+/// carries a bare unix timestamp there.
+pub(crate) fn rfc3339_utc(unix_seconds: u64) -> String {
+    let days = (unix_seconds / 86_400) as i64;
+    let seconds_today = unix_seconds % 86_400;
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        days_to_ymd(days),
+        seconds_today / 3_600,
+        (seconds_today % 3_600) / 60,
+        seconds_today % 60
+    )
 }
 
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
