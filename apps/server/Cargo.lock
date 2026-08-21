@@ -958,10 +958,12 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
