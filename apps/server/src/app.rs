@@ -25,6 +25,8 @@ pub(crate) struct AppState {
     pub(crate) faststart_tools: Option<faststart::Tools>,
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
+    /// Where cover art extracted during the scan is kept.
+    pub(crate) covers_dir: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
     /// Administrator metadata edits, cached and mirrored to disk.
     pub(crate) metadata_overrides: Arc<MetadataOverrides>,

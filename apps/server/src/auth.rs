@@ -529,13 +529,7 @@ pub(crate) async fn resolve_media_session(
     state: &AppState,
     media_token: &str,
 ) -> Option<(AuthUser, String)> {
-    let session_token = {
-        let sessions = state.sessions.read().await;
-        sessions
-            .keys()
-            .find(|token| media_token_for_session(token) == media_token)
-            .cloned()?
-    };
+    let session_token = state.sessions.session_for_media_token(media_token).await?;
     resolve_session(state, &session_token)
         .await
         .map(|user| (user, session_token))
