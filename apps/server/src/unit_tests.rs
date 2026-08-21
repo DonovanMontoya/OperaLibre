@@ -1470,6 +1470,7 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         covers_dir: data_dir.join("covers"),
+        database_path: data_dir.join("operalibre.db"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
         metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
             database.clone(),
