@@ -197,6 +197,26 @@ fn an_untuned_book_reads_back_at_unity_gain() {
     );
 }
 
+#[tokio::test]
+async fn bulk_book_settings_lookup_clamps_legacy_gains() {
+    let root = tempfile::tempdir().unwrap();
+    let settings_file = root.path().join("book-settings.json");
+    tokio::fs::write(
+        &settings_file,
+        r#"{"user:reader:book:loud":{"volumeGain":99.0},"user:reader:book:quiet":{"volumeGain":2.0}}"#,
+    )
+    .await
+    .unwrap();
+
+    let gains = super::BookSettingsStore::new(settings_file)
+        .list_for_user("reader")
+        .await
+        .unwrap();
+
+    assert_eq!(gains.get("loud"), Some(&super::BOOK_VOLUME_GAIN_MAX));
+    assert_eq!(gains.get("quiet"), Some(&2.0));
+}
+
 /// lofty reports Duration::ZERO for media it cannot measure. Treating that
 /// as a known zero-length book clamps the stored position to 0 and reports
 /// the book as not started — and the library summary is what a reinstalled
@@ -1449,15 +1469,10 @@ exit 0
         min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
         library_root: library_root.clone(),
         library_identities_file: data_dir.join("library-identities.json"),
-        progress_file: data_dir.join("progress.json"),
-        book_settings_file: data_dir.join("book-settings.json"),
-        users_file: data_dir.join("users.json"),
-        sessions_file: data_dir.join("sessions.json"),
-        activity_file: data_dir.join("activity.json"),
-        metadata_overrides_file: data_dir.join("metadata-overrides.json"),
-        libation_requests_file: data_dir.join("libation-requests.json"),
-        libation_refreshes_file: data_dir.join("libation-refreshes.json"),
-        libation_accounts_file: data_dir.join("libation-accounts.json"),
+        progress: super::Arc::new(super::ProgressStore::new(data_dir.join("progress.json"))),
+        book_settings: super::Arc::new(super::BookSettingsStore::new(
+            data_dir.join("book-settings.json"),
+        )),
         libation_accounts_root: data_dir.join("libation-accounts"),
         libation_config: super::LibationConfig {
             cli_path: Some(cli_path),
@@ -1471,29 +1486,41 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
-        metadata_overrides: super::Arc::new(super::RwLock::new(
+        metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
+            data_dir.join("metadata-overrides.json"),
             super::MetadataOverrideStore::default(),
         )),
         jobs: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
-        users: super::Arc::new(super::RwLock::new(super::UsersStore::default())),
-        sessions: super::Arc::new(super::RwLock::new(std::collections::HashMap::new())),
-        activity: super::Arc::new(super::RwLock::new(super::ActivityStore::default())),
-        libation_requests: super::Arc::new(super::RwLock::new(
+        users: super::Arc::new(super::UserStore::new(
+            data_dir.join("users.json"),
+            super::UsersStore::default(),
+        )),
+        sessions: super::Arc::new(super::SessionStore::new(
+            data_dir.join("sessions.json"),
+            std::collections::HashMap::new(),
+        )),
+        activity: super::Arc::new(super::ActivityLog::new(
+            data_dir.join("activity.json"),
+            super::ActivityStore::default(),
+        )),
+        libation_requests: super::Arc::new(super::LibationRequests::new(
+            data_dir.join("libation-requests.json"),
             super::LibationRequestStore::default(),
         )),
-        libation_refreshes: super::Arc::new(super::Mutex::new(
+        libation_refreshes: super::Arc::new(super::LibationRefreshes::new(
+            data_dir.join("libation-refreshes.json"),
             super::LibationRefreshStore::default(),
         )),
-        libation_accounts: super::Arc::new(super::RwLock::new(
+        libation_accounts: super::Arc::new(super::LibationAccounts::new(
+            data_dir.join("libation-accounts.json"),
             super::ManagedLibationAccountStore::default(),
         )),
         libation_login_sessions: super::Arc::new(super::Mutex::new(
             std::collections::HashMap::new(),
         )),
-        progress_write_lock: super::Arc::new(super::Mutex::new(())),
-        book_settings_write_lock: super::Arc::new(super::Mutex::new(())),
         rescan_lock: super::Arc::new(super::Mutex::new(())),
         libation_job_lock: super::Arc::new(super::Mutex::new(())),
+        libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
         password_task_slots: super::Arc::new(super::Semaphore::new(
@@ -1651,14 +1678,18 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
 async fn only_owners_can_manage_admin_roles_and_permissions() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
-    {
-        let mut users = state.users.write().await;
-        users.users = vec![
-            stored_user("owner", true, true),
-            stored_user("admin", true, false),
-            stored_user("reader", false, false),
-        ];
-    }
+    state
+        .users
+        .mutate(|users| {
+            users.users = vec![
+                stored_user("owner", true, true),
+                stored_user("admin", true, false),
+                stored_user("reader", false, false),
+            ];
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let promoted = super::update_user_role(
         super::State(state.clone()),
@@ -1789,6 +1820,25 @@ async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimite
     .unwrap_err();
     assert_eq!(limited.status, super::StatusCode::TOO_MANY_REQUESTS);
 
+    // The slot is reserved before the job is created, so a refused refresh
+    // must be rejected before anything is recorded. A refusal that still
+    // banked a timestamp would push the reader further past the quota on
+    // every retry.
+    let reader_id = approval_reader().id;
+    let recorded = state
+        .libation_refreshes
+        .read()
+        .await
+        .manual_refreshes
+        .get(&reader_id)
+        .map(|timestamps| timestamps.len())
+        .unwrap_or(0);
+    assert_eq!(
+        recorded as u64,
+        super::DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
+        "a refused refresh consumed a slot"
+    );
+
     let admin_first =
         super::sync_libation_library(super::State(state.clone()), super::Extension(admin_user()))
             .await
@@ -1817,6 +1867,49 @@ async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimite
             .unwrap()
             .0;
     assert_ne!(admin_first.job_id, admin_second.job_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn simultaneous_reader_refreshes_join_before_spending_the_quota() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    state.libation_config.reader_refreshes_per_hour = 1;
+
+    // Start both calls together. The reservation lock makes the first publish
+    // its queued job before the second checks the one-refresh quota.
+    let gate = state.libation_refresh_reservation_lock.lock().await;
+    let first_state = state.clone();
+    let second_state = state.clone();
+    let first = tokio::spawn(async move {
+        super::sync_libation_library(
+            super::State(first_state),
+            super::Extension(approval_reader()),
+        )
+        .await
+    });
+    let second = tokio::spawn(async move {
+        super::sync_libation_library(
+            super::State(second_state),
+            super::Extension(approval_reader()),
+        )
+        .await
+    });
+    drop(gate);
+
+    let first = first.await.unwrap().unwrap().0;
+    let second = second.await.unwrap().unwrap().0;
+    assert_eq!(first.job_id, second.job_id);
+    assert_eq!(
+        state
+            .libation_refreshes
+            .read()
+            .await
+            .manual_refreshes
+            .get(&approval_reader().id)
+            .map(Vec::len),
+        Some(1),
+    );
 }
 
 #[cfg(unix)]
@@ -2512,13 +2605,13 @@ async fn faststart_conversion_keeps_book_identity_and_saved_progress() {
         return;
     };
 
-    let key = super::progress_key("admin", &book_id);
-    let mut progress = std::collections::HashMap::new();
-    progress.insert(
-        key.clone(),
-        saved_position(&book_id, &track_id, 60 * 60 * 1_000),
-    );
-    super::write_progress(&state.progress_file, &progress)
+    state
+        .progress
+        .set(
+            "admin",
+            &book_id,
+            saved_position(&book_id, &track_id, 60 * 60 * 1_000),
+        )
         .await
         .unwrap();
 
@@ -2541,8 +2634,12 @@ async fn faststart_conversion_keeps_book_identity_and_saved_progress() {
     assert_eq!(library.books[0].tracks[0].id, track_id);
     drop(library);
 
-    let saved = super::read_progress(&state.progress_file).await.unwrap();
-    let entry = saved.get(&key).expect("progress should survive conversion");
+    let entry = state
+        .progress
+        .get("admin", &book_id)
+        .await
+        .unwrap()
+        .expect("progress should survive conversion");
     assert_eq!(entry.track_id, track_id);
     assert!((entry.position_seconds - 1.5).abs() < 1e-9);
 }
@@ -2556,12 +2653,13 @@ async fn faststart_conversion_leaves_a_book_somebody_is_listening_to() {
         return;
     };
 
-    let mut progress = std::collections::HashMap::new();
-    progress.insert(
-        super::progress_key("admin", &book_id),
-        saved_position(&book_id, &track_id, 5_000),
-    );
-    super::write_progress(&state.progress_file, &progress)
+    state
+        .progress
+        .set(
+            "admin",
+            &book_id,
+            saved_position(&book_id, &track_id, 5_000),
+        )
         .await
         .unwrap();
 
@@ -2593,4 +2691,201 @@ async fn faststart_conversion_leaves_a_book_somebody_is_listening_to() {
         super::faststart::inspect(&track).unwrap(),
         super::faststart::Layout::Faststart
     );
+}
+
+// ---------------------------------------------------------------------------
+// The progress decision rules, without any storage
+// ---------------------------------------------------------------------------
+
+fn decision_book() -> super::Book {
+    book_with_tracks(
+        Some(1200.0),
+        vec![
+            track_with_duration("t1", 0, Some(600.0)),
+            track_with_duration("t2", 1, Some(600.0)),
+        ],
+    )
+}
+
+fn decision_update(position_seconds: f64) -> super::ProgressUpdate {
+    super::ProgressUpdate {
+        track_id: "t1".to_string(),
+        position_seconds,
+        book_position_seconds: Some(position_seconds),
+        duration_seconds: Some(600.0),
+        updated_at_ms: None,
+        intentional_regression: false,
+        intentional_seek: false,
+        tz_offset_minutes: None,
+    }
+}
+
+fn stored_at(book_position_seconds: f64, age_ms: u64) -> super::Progress {
+    super::Progress {
+        book_id: "book".to_string(),
+        track_id: "t1".to_string(),
+        position_seconds: book_position_seconds,
+        book_position_seconds,
+        duration_seconds: Some(600.0),
+        updated_at: super::unix_now_millis().saturating_sub(age_ms).to_string(),
+        finished_override: None,
+    }
+}
+
+/// The position a decision would store, or `None` when it keeps what is there.
+fn decided_position(
+    previous: Option<&super::Progress>,
+    update: &super::ProgressUpdate,
+) -> Option<f64> {
+    let book = decision_book();
+    match super::decide_progress_write(
+        &book,
+        &book.tracks[0],
+        previous,
+        update,
+        super::unix_now_millis(),
+    ) {
+        super::ProgressDecision::Keep => None,
+        super::ProgressDecision::Store { saved, .. } => Some(saved.book_position_seconds),
+    }
+}
+
+#[test]
+fn a_first_position_is_always_stored() {
+    assert_eq!(decided_position(None, &decision_update(42.0)), Some(42.0));
+}
+
+#[test]
+fn moving_forward_is_stored() {
+    let previous = stored_at(100.0, 5_000);
+    assert_eq!(
+        decided_position(Some(&previous), &decision_update(160.0)),
+        Some(160.0)
+    );
+}
+
+#[test]
+fn a_replayed_checkpoint_is_refused() {
+    let previous = stored_at(300.0, 1_000);
+    let mut update = decision_update(10.0);
+    update.updated_at_ms = Some(super::unix_now_millis().saturating_sub(3_600_000));
+    assert_eq!(decided_position(Some(&previous), &update), None);
+}
+
+#[test]
+fn a_backwards_jump_nobody_asked_for_is_refused() {
+    let previous = stored_at(300.0, 5_000);
+    assert_eq!(
+        decided_position(Some(&previous), &decision_update(10.0)),
+        None
+    );
+}
+
+#[test]
+fn a_deliberate_seek_backwards_is_honoured() {
+    let previous = stored_at(300.0, 5_000);
+    let mut update = decision_update(10.0);
+    update.intentional_seek = true;
+    assert_eq!(decided_position(Some(&previous), &update), Some(10.0));
+}
+
+#[test]
+fn a_client_that_failed_to_restore_does_not_reset_the_book() {
+    let previous = stored_at(300.0, 5_000);
+    assert_eq!(
+        decided_position(Some(&previous), &decision_update(0.0)),
+        None
+    );
+}
+
+/// `intentionalSeek` and `intentionalRegression` are not interchangeable. A
+/// seek may move backwards, but only an explicit restart may drop a book that
+/// is hours in back to near zero -- which is exactly what a client that failed
+/// to restore its position looks like.
+#[test]
+fn a_seek_alone_cannot_reset_a_book_that_is_hours_in() {
+    let previous = stored_at(500.0, 5_000);
+    let mut seek_only = decision_update(1.0);
+    seek_only.intentional_seek = true;
+    assert_eq!(decided_position(Some(&previous), &seek_only), None);
+
+    let mut restart = decision_update(1.0);
+    restart.intentional_regression = true;
+    assert_eq!(decided_position(Some(&previous), &restart), Some(1.0));
+}
+
+#[test]
+fn a_large_drop_asks_for_the_previous_position_to_be_kept() {
+    let previous = stored_at(500.0, 5_000);
+    let mut update = decision_update(1.0);
+    update.intentional_regression = true;
+    let book = decision_book();
+    let decision = super::decide_progress_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &update,
+        super::unix_now_millis(),
+    );
+    match decision {
+        super::ProgressDecision::Store {
+            backup_previous, ..
+        } => assert!(
+            backup_previous,
+            "a large deliberate drop should back the old position up first"
+        ),
+        super::ProgressDecision::Keep => panic!("an explicit restart should be stored"),
+    }
+}
+
+#[test]
+fn a_future_skewed_clock_does_not_lock_out_a_healthy_device() {
+    // The skewed device writes first, a year ahead.
+    let previous = stored_at(100.0, 0);
+    let mut update = decision_update(200.0);
+    update.updated_at_ms = Some(super::unix_now_millis().saturating_add(31_536_000_000));
+    assert_eq!(decided_position(Some(&previous), &update), Some(200.0));
+
+    // A correctly-clocked device must still be able to move forward.
+    assert_eq!(
+        decided_position(Some(&previous), &decision_update(250.0)),
+        Some(250.0)
+    );
+}
+
+/// A handler that rejects a request after editing the account list used to
+/// leave the in-memory copy changed and the file untouched, and the two
+/// disagreed until the next restart. `mutate` works on a draft and adopts it
+/// only once the change succeeds and the write lands.
+#[tokio::test]
+async fn a_rejected_account_change_touches_neither_the_cache_nor_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("users.json");
+    let store = super::UserStore::new(file.clone(), super::UsersStore::default());
+
+    store
+        .mutate(|users| {
+            users.users = vec![stored_user("owner", true, true)];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let rejected = store
+        .mutate(|users| {
+            // Edit first, then refuse -- the order that used to leave a mess.
+            users.users.push(stored_user("intruder", true, true));
+            Err::<(), _>(super::ApiError::conflict("nope"))
+        })
+        .await;
+    assert!(rejected.is_err());
+
+    assert_eq!(
+        store.read().await.users.len(),
+        1,
+        "a rejected change was left in the cache"
+    );
+    let on_disk: super::UsersStore =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(on_disk.users.len(), 1, "a rejected change reached the file");
 }

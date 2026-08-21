@@ -221,16 +221,8 @@ pub(crate) async fn survey_faststart(
 pub(crate) async fn recently_active_book_ids(
     state: &AppState,
 ) -> Result<HashSet<String>, ApiError> {
-    let progress = read_progress(&state.progress_file).await?;
-    let now_ms = unix_now_millis();
     let window_ms = FASTSTART_ACTIVE_LISTENER_SECONDS.saturating_mul(1_000);
-    Ok(progress
-        .values()
-        .filter(|entry| {
-            now_ms.saturating_sub(progress_timestamp_millis(&entry.updated_at)) <= window_ms
-        })
-        .map(|entry| entry.book_id.clone())
-        .collect())
+    state.progress.book_ids_active_within(window_ms).await
 }
 
 pub(crate) fn spawn_faststart_job(state: AppState, job_id: String, request: FaststartRequest) {

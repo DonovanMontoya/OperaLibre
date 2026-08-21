@@ -343,63 +343,65 @@ pub(crate) async fn start_libation_account_login(
     }
 
     prune_expired_libation_login_sessions(&state).await;
-    let profile_id = {
-        let mut store = state.libation_accounts.write().await;
-        if let Some(requested_id) = payload.profile_id.as_deref() {
-            if store.accounts.iter().any(|account| {
-                account.id != requested_id
-                    && account.account_id.eq_ignore_ascii_case(account_id)
-                    && account.locale == locale
-            }) {
-                return Err(ApiError::conflict(
-                    "That Audible account and marketplace are already configured.",
+    let added_by = auth.username.clone();
+    let stored_locale = locale.clone();
+    let profile_id = state
+        .libation_accounts
+        .mutate(move |store| {
+            let locale = stored_locale;
+            if let Some(requested_id) = payload.profile_id.as_deref() {
+                if store.accounts.iter().any(|account| {
+                    account.id != requested_id
+                        && account.account_id.eq_ignore_ascii_case(account_id)
+                        && account.locale == locale
+                }) {
+                    return Err(ApiError::conflict(
+                        "That Audible account and marketplace are already configured.",
+                    ));
+                }
+                let account = store
+                    .accounts
+                    .iter_mut()
+                    .find(|account| account.id == requested_id)
+                    .ok_or(ApiError::not_found("Audible account not found."))?;
+                account.label = label.to_string();
+                account.account_id = account_id.to_string();
+                account.locale = locale.clone();
+                account.authenticated = false;
+                account.connection_state = "signing_in".to_string();
+                account.last_error = None;
+                Ok(account.id.clone())
+            } else {
+                if store.accounts.iter().any(|account| {
+                    account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
+                }) {
+                    return Err(ApiError::conflict(
+                        "That Audible account and marketplace are already configured. Use Reconnect on the existing account.",
+                    ));
+                }
+                let id = stable_id(&format!(
+                    "libation-account:{}:{}:{}",
+                    account_id,
+                    locale,
+                    generate_session_token()
                 ));
+                store.accounts.push(ManagedLibationAccount {
+                    id: id.clone(),
+                    label: label.to_string(),
+                    account_id: account_id.to_string(),
+                    locale: locale.clone(),
+                    added_by,
+                    added_at: now_rfc3339ish(),
+                    connection_state: "signing_in".to_string(),
+                    authenticated: false,
+                    last_successful_auth: None,
+                    last_successful_refresh: None,
+                    last_error: None,
+                });
+                Ok(id)
             }
-            let account = store
-                .accounts
-                .iter_mut()
-                .find(|account| account.id == requested_id)
-                .ok_or(ApiError::not_found("Audible account not found."))?;
-            account.label = label.to_string();
-            account.account_id = account_id.to_string();
-            account.locale = locale.clone();
-            account.authenticated = false;
-            account.connection_state = "signing_in".to_string();
-            account.last_error = None;
-            let id = account.id.clone();
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
-            id
-        } else {
-            if store.accounts.iter().any(|account| {
-                account.account_id.eq_ignore_ascii_case(account_id) && account.locale == locale
-            }) {
-                return Err(ApiError::conflict(
-                    "That Audible account and marketplace are already configured. Use Reconnect on the existing account.",
-                ));
-            }
-            let id = stable_id(&format!(
-                "libation-account:{}:{}:{}",
-                account_id,
-                locale,
-                generate_session_token()
-            ));
-            store.accounts.push(ManagedLibationAccount {
-                id: id.clone(),
-                label: label.to_string(),
-                account_id: account_id.to_string(),
-                locale: locale.clone(),
-                added_by: auth.username,
-                added_at: now_rfc3339ish(),
-                connection_state: "signing_in".to_string(),
-                authenticated: false,
-                last_successful_auth: None,
-                last_successful_refresh: None,
-                last_error: None,
-            });
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
-            id
-        }
-    };
+        })
+        .await?;
 
     let profile_dir = state.libation_accounts_root.join(&profile_id);
     initialize_managed_libation_profile(&profile_dir, &state.library_root).await?;
@@ -557,15 +559,18 @@ pub(crate) async fn update_libation_account(
             "Account label must be between 1 and {MAX_LIBATION_ACCOUNT_LABEL_CHARS} characters."
         )));
     }
-    let mut store = state.libation_accounts.write().await;
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == profile_id)
-        .ok_or(ApiError::not_found("Audible account not found."))?;
-    account.label = label.to_string();
-    write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
-    drop(store);
+    state
+        .libation_accounts
+        .mutate(|store| {
+            let account = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+                .ok_or(ApiError::not_found("Audible account not found."))?;
+            account.label = label.to_string();
+            Ok(())
+        })
+        .await?;
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -601,14 +606,17 @@ pub(crate) async fn delete_libation_account(
         ));
     }
     let _libation_guard = state.libation_job_lock.lock().await;
-    let mut store = state.libation_accounts.write().await;
-    let before = store.accounts.len();
-    store.accounts.retain(|account| account.id != profile_id);
-    if store.accounts.len() == before {
-        return Err(ApiError::not_found("Audible account not found."));
-    }
-    write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
-    drop(store);
+    state
+        .libation_accounts
+        .mutate(|store| {
+            let before = store.accounts.len();
+            store.accounts.retain(|account| account.id != profile_id);
+            if store.accounts.len() == before {
+                return Err(ApiError::not_found("Audible account not found."));
+            }
+            Ok(())
+        })
+        .await?;
     let profile_dir = state.libation_accounts_root.join(&profile_id);
     if profile_dir.starts_with(&state.libation_accounts_root) {
         match fs::remove_dir_all(&profile_dir).await {
@@ -670,19 +678,22 @@ pub(crate) async fn mark_managed_libation_account_authenticated(
     state: &AppState,
     profile_id: &str,
 ) -> Result<(), ApiError> {
-    let mut store = state.libation_accounts.write().await;
-    if let Some(account) = store
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == profile_id)
-    {
-        account.authenticated = true;
-        account.connection_state = "connected".to_string();
-        account.last_successful_auth = Some(now_rfc3339ish());
-        account.last_error = None;
-        write_managed_libation_accounts(&state.libation_accounts_file, &store).await?;
-    }
-    Ok(())
+    state
+        .libation_accounts
+        .mutate(|store| {
+            if let Some(account) = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+            {
+                account.authenticated = true;
+                account.connection_state = "connected".to_string();
+                account.last_successful_auth = Some(now_rfc3339ish());
+                account.last_error = None;
+            }
+            Ok(())
+        })
+        .await
 }
 
 pub(crate) async fn mark_managed_libation_account_error(
@@ -690,23 +701,26 @@ pub(crate) async fn mark_managed_libation_account_error(
     profile_id: &str,
     message: &str,
 ) {
-    let mut store = state.libation_accounts.write().await;
-    if let Some(account) = store
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == profile_id)
-    {
-        account.authenticated = false;
-        account.connection_state = "needs_sign_in".to_string();
-        account.last_error = Some(sanitize_libation_login_output(message));
-        if let Err(error) =
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
-        {
-            tracing::warn!(
-                "failed to persist Libation account health: {}",
-                error.message
-            );
-        }
+    let stored = state
+        .libation_accounts
+        .mutate(|store| {
+            if let Some(account) = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+            {
+                account.authenticated = false;
+                account.connection_state = "needs_sign_in".to_string();
+                account.last_error = Some(sanitize_libation_login_output(message));
+            }
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
+        tracing::warn!(
+            "failed to persist Libation account health: {}",
+            error.message
+        );
     }
 }
 
@@ -715,22 +729,25 @@ pub(crate) async fn mark_managed_libation_account_scan_error(
     profile_id: &str,
     message: &str,
 ) {
-    let mut store = state.libation_accounts.write().await;
-    if let Some(account) = store
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == profile_id)
-    {
-        account.connection_state = "error".to_string();
-        account.last_error = Some(sanitize_libation_login_output(message));
-        if let Err(error) =
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
-        {
-            tracing::warn!(
-                "failed to persist Libation account scan error: {}",
-                error.message
-            );
-        }
+    let stored = state
+        .libation_accounts
+        .mutate(|store| {
+            if let Some(account) = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+            {
+                account.connection_state = "error".to_string();
+                account.last_error = Some(sanitize_libation_login_output(message));
+            }
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
+        tracing::warn!(
+            "failed to persist Libation account scan error: {}",
+            error.message
+        );
     }
 }
 
@@ -889,64 +906,72 @@ pub(crate) async fn create_libation_download_request(
         ));
     }
 
-    let mut requests = state.libation_requests.write().await;
-    if let Some(existing) = requests.requests.iter().find(|request| {
-        request.user_id == auth.id
-            && request.asin == asin
-            && request.profile_id.as_deref().unwrap_or("legacy") == profile.id
-            && request.status == "pending"
-    }) {
-        return Ok(Json(existing.clone()));
-    }
-    if requests
-        .requests
-        .iter()
-        .filter(|request| request.user_id == auth.id && request.status == "pending")
-        .count()
-        >= MAX_PENDING_LIBATION_REQUESTS_PER_USER
-    {
-        return Err(ApiError::too_many_requests(
-            "This reader has too many pending Libation requests.",
-        ));
-    }
-    while requests.requests.len() >= MAX_TRACKED_LIBATION_REQUESTS {
-        let Some(index) = requests
-            .requests
-            .iter()
-            .enumerate()
-            .filter(|(_, request)| request.status != "pending")
-            .min_by_key(|(_, request)| &request.requested_at)
-            .map(|(index, _)| index)
-        else {
-            return Err(ApiError::too_many_requests(
-                "The Libation request queue is full.",
-            ));
-        };
-        requests.requests.remove(index);
-    }
-    let request = LibationDownloadRequest {
-        id: stable_id(&format!(
-            "libation-request:{}:{}:{}:{}",
-            auth.id,
-            profile.id,
-            asin,
-            now_rfc3339ish()
-        )),
-        user_id: auth.id,
-        username: auth.username,
-        asin,
-        profile_id: Some(profile.id),
-        profile_name: Some(profile.name),
-        catalog_id: Some(catalog_id),
-        title: title.to_string(),
-        status: "pending".to_string(),
-        requested_at: now_rfc3339ish(),
-        decided_at: None,
-        decided_by: None,
-        job_id: None,
-    };
-    requests.requests.push(request.clone());
-    write_libation_requests(&state.libation_requests_file, &requests).await?;
+    let user_id = auth.id.clone();
+    let username = auth.username.clone();
+    let request = state
+        .libation_requests
+        .mutate(move |requests| {
+            // Deduplication, the quota check, and the insert all happen inside
+            // the lock so two simultaneous requests cannot both pass.
+            if let Some(existing) = requests.requests.iter().find(|request| {
+                request.user_id == user_id
+                    && request.asin == asin
+                    && request.profile_id.as_deref().unwrap_or("legacy") == profile.id
+                    && request.status == "pending"
+            }) {
+                return Ok(existing.clone());
+            }
+            if requests
+                .requests
+                .iter()
+                .filter(|request| request.user_id == user_id && request.status == "pending")
+                .count()
+                >= MAX_PENDING_LIBATION_REQUESTS_PER_USER
+            {
+                return Err(ApiError::too_many_requests(
+                    "This reader has too many pending Libation requests.",
+                ));
+            }
+            while requests.requests.len() >= MAX_TRACKED_LIBATION_REQUESTS {
+                let Some(index) = requests
+                    .requests
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, request)| request.status != "pending")
+                    .min_by_key(|(_, request)| &request.requested_at)
+                    .map(|(index, _)| index)
+                else {
+                    return Err(ApiError::too_many_requests(
+                        "The Libation request queue is full.",
+                    ));
+                };
+                requests.requests.remove(index);
+            }
+            let request = LibationDownloadRequest {
+                id: stable_id(&format!(
+                    "libation-request:{}:{}:{}:{}",
+                    user_id,
+                    profile.id,
+                    asin,
+                    now_rfc3339ish()
+                )),
+                user_id,
+                username,
+                asin,
+                profile_id: Some(profile.id),
+                profile_name: Some(profile.name),
+                catalog_id: Some(catalog_id),
+                title: title.to_string(),
+                status: "pending".to_string(),
+                requested_at: now_rfc3339ish(),
+                decided_at: None,
+                decided_by: None,
+                job_id: None,
+            };
+            requests.requests.push(request.clone());
+            Ok(request)
+        })
+        .await?;
     Ok(Json(request))
 }
 
@@ -962,35 +987,37 @@ pub(crate) async fn decide_libation_download_request(
         ));
     }
 
-    let request = {
-        let mut requests = state.libation_requests.write().await;
-        let request = requests
-            .requests
-            .iter_mut()
-            .find(|request| request.id == request_id)
-            .ok_or(ApiError::not_found("Download request not found."))?;
-        if request.user_id == auth.id {
-            return Err(ApiError::forbidden(
-                "A requester cannot decide their own Libation request.",
-            ));
-        }
-        if request.status != "pending" {
-            return Err(ApiError::conflict(
-                "This download request has already been decided.",
-            ));
-        }
-        request.status = if payload.approved {
-            "approved"
-        } else {
-            "rejected"
-        }
-        .to_string();
-        request.decided_at = Some(now_rfc3339ish());
-        request.decided_by = Some(auth.username);
-        let request = request.clone();
-        write_libation_requests(&state.libation_requests_file, &requests).await?;
-        request
-    };
+    let decider_id = auth.id.clone();
+    let decider_name = auth.username.clone();
+    let request = state
+        .libation_requests
+        .mutate(move |requests| {
+            let request = requests
+                .requests
+                .iter_mut()
+                .find(|request| request.id == request_id)
+                .ok_or(ApiError::not_found("Download request not found."))?;
+            if request.user_id == decider_id {
+                return Err(ApiError::forbidden(
+                    "A requester cannot decide their own Libation request.",
+                ));
+            }
+            if request.status != "pending" {
+                return Err(ApiError::conflict(
+                    "This download request has already been decided.",
+                ));
+            }
+            request.status = if payload.approved {
+                "approved"
+            } else {
+                "rejected"
+            }
+            .to_string();
+            request.decided_at = Some(now_rfc3339ish());
+            request.decided_by = Some(decider_name);
+            Ok(request.clone())
+        })
+        .await?;
 
     if !payload.approved {
         return Ok(Json(request));
@@ -1006,30 +1033,36 @@ pub(crate) async fn decide_libation_download_request(
     {
         Ok(created) => created.0,
         Err(error) => {
-            let mut requests = state.libation_requests.write().await;
-            if let Some(stored) = requests
-                .requests
-                .iter_mut()
-                .find(|item| item.id == request.id)
-            {
-                stored.status = "pending".to_string();
-                stored.decided_at = None;
-                stored.decided_by = None;
-            }
-            let _ = write_libation_requests(&state.libation_requests_file, &requests).await;
+            let _ = state
+                .libation_requests
+                .mutate(|requests| {
+                    if let Some(stored) = requests
+                        .requests
+                        .iter_mut()
+                        .find(|item| item.id == request.id)
+                    {
+                        stored.status = "pending".to_string();
+                        stored.decided_at = None;
+                        stored.decided_by = None;
+                    }
+                    Ok(())
+                })
+                .await;
             return Err(error);
         }
     };
-    let mut requests = state.libation_requests.write().await;
-    let stored = requests
-        .requests
-        .iter_mut()
-        .find(|item| item.id == request.id)
-        .ok_or(ApiError::not_found("Download request not found."))?;
-    stored.job_id = Some(created.job_id);
-    let response = stored.clone();
-    write_libation_requests(&state.libation_requests_file, &requests).await?;
-    drop(requests);
+    let response = state
+        .libation_requests
+        .mutate(|requests| {
+            let stored = requests
+                .requests
+                .iter_mut()
+                .find(|item| item.id == request.id)
+                .ok_or(ApiError::not_found("Download request not found."))?;
+            stored.job_id = Some(created.job_id);
+            Ok(stored.clone())
+        })
+        .await?;
     schedule_libation_request_completion(
         state.clone(),
         response.id.clone(),
@@ -1057,17 +1090,21 @@ pub(crate) fn schedule_libation_request_completion(
                 _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
             }
         };
-        let mut requests = state.libation_requests.write().await;
-        let Some(request) = requests
-            .requests
-            .iter_mut()
-            .find(|request| request.id == request_id && request.status == "approved")
-        else {
-            return;
-        };
-        request.status = final_status.to_string();
-        if let Err(error) = write_libation_requests(&state.libation_requests_file, &requests).await
-        {
+        let stored = state
+            .libation_requests
+            .mutate(|requests| {
+                let Some(request) = requests
+                    .requests
+                    .iter_mut()
+                    .find(|request| request.id == request_id && request.status == "approved")
+                else {
+                    return Ok(false);
+                };
+                request.status = final_status.to_string();
+                Ok(true)
+            })
+            .await;
+        if let Err(error) = stored {
             tracing::warn!(
                 "failed to persist Libation request completion: {}",
                 error.message
@@ -1300,47 +1337,75 @@ pub(crate) async fn reserve_manual_libation_refresh(
         return Ok(create_libation_job(state, "libation-sync", None).await);
     }
 
-    let mut refreshes = state.libation_refreshes.lock().await;
+    // Make the queued job visible before another reader checks the quota. If
+    // these operations interleave, duplicate clicks can consume all the slots
+    // and one can receive a 429 even though it would only join this job.
+    let _reservation_guard = state.libation_refresh_reservation_lock.lock().await;
+
     if let Some(job_id) = active_libation_sync_job(state).await {
         return Ok((job_id, false));
     }
 
     let now = unix_now_seconds();
-    for timestamps in refreshes.manual_refreshes.values_mut() {
-        timestamps.retain(|timestamp| {
-            now.saturating_sub(*timestamp) < LIBATION_READER_REFRESH_WINDOW_SECONDS
-        });
-    }
-    refreshes
-        .manual_refreshes
-        .retain(|_, timestamps| !timestamps.is_empty());
-
     let refresh_limit = state.libation_config.reader_refreshes_per_hour;
     let refresh_limit_count = usize::try_from(refresh_limit).unwrap_or(usize::MAX);
-    let timestamps = refreshes
-        .manual_refreshes
-        .entry(auth.id.clone())
-        .or_default();
-    if refresh_limit > 0
-        && timestamps.len() >= refresh_limit_count
-        && let Some(first_refresh) = timestamps.first()
-    {
-        let elapsed = now.saturating_sub(*first_refresh);
-        let remaining_minutes = (LIBATION_READER_REFRESH_WINDOW_SECONDS - elapsed).div_ceil(60);
-        return Err(ApiError::too_many_requests(format!(
-            "You have used all {refresh_limit} Audible refreshes for this hour. Try again in {remaining_minutes} minute{}.",
-            if remaining_minutes == 1 { "" } else { "s" }
-        )));
+
+    // The slot is reserved before the job is created rather than recorded
+    // after it. Checking the quota and taking the slot happen in one locked
+    // step, so two simultaneous refreshes cannot both pass a quota with room
+    // for one. If no job actually starts, the slot is handed back below.
+    if refresh_limit > 0 {
+        state
+            .libation_refreshes
+            .mutate(|refreshes| {
+                for timestamps in refreshes.manual_refreshes.values_mut() {
+                    timestamps.retain(|timestamp| {
+                        now.saturating_sub(*timestamp) < LIBATION_READER_REFRESH_WINDOW_SECONDS
+                    });
+                }
+                refreshes
+                    .manual_refreshes
+                    .retain(|_, timestamps| !timestamps.is_empty());
+
+                let timestamps = refreshes
+                    .manual_refreshes
+                    .entry(auth.id.clone())
+                    .or_default();
+                if timestamps.len() >= refresh_limit_count
+                    && let Some(first_refresh) = timestamps.first()
+                {
+                    let elapsed = now.saturating_sub(*first_refresh);
+                    let remaining_minutes =
+                        (LIBATION_READER_REFRESH_WINDOW_SECONDS - elapsed).div_ceil(60);
+                    return Err(ApiError::too_many_requests(format!(
+                        "You have used all {refresh_limit} Audible refreshes for this hour. Try again in {remaining_minutes} minute{}.",
+                        if remaining_minutes == 1 { "" } else { "s" }
+                    )));
+                }
+                timestamps.push(now);
+                Ok(())
+            })
+            .await?;
     }
 
     let (job_id, created) = create_libation_job(state, "libation-sync", None).await;
-    if created && refresh_limit > 0 {
-        timestamps.push(now);
-        if let Err(error) =
-            write_libation_refreshes(&state.libation_refreshes_file, &refreshes).await
-        {
+    if !created && refresh_limit > 0 {
+        // An existing job was joined instead of a new one starting, so the
+        // reservation is released rather than counted against the reader.
+        let released = state
+            .libation_refreshes
+            .mutate(|refreshes| {
+                if let Some(timestamps) = refreshes.manual_refreshes.get_mut(&auth.id)
+                    && let Some(index) = timestamps.iter().rposition(|timestamp| *timestamp == now)
+                {
+                    timestamps.remove(index);
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = released {
             tracing::warn!(
-                "failed to persist Libation refresh limit: {}",
+                "failed to release an unused Libation refresh slot: {}",
                 error.message
             );
         }
@@ -1440,31 +1505,39 @@ pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
 }
 
 pub(crate) async fn mark_managed_libation_account_refreshed(state: &AppState, profile_id: &str) {
-    let mut store = state.libation_accounts.write().await;
-    if let Some(account) = store
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == profile_id)
-    {
-        account.authenticated = true;
-        account.connection_state = "connected".to_string();
-        account.last_successful_refresh = Some(now_rfc3339ish());
-        account.last_error = None;
-        if let Err(error) =
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
-        {
-            tracing::warn!(
-                "failed to persist Libation refresh health: {}",
-                error.message
-            );
-        }
+    let stored = state
+        .libation_accounts
+        .mutate(|store| {
+            if let Some(account) = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == profile_id)
+            {
+                account.authenticated = true;
+                account.connection_state = "connected".to_string();
+                account.last_successful_refresh = Some(now_rfc3339ish());
+                account.last_error = None;
+            }
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
+        tracing::warn!(
+            "failed to persist Libation refresh health: {}",
+            error.message
+        );
     }
 }
 
 pub(crate) async fn record_successful_libation_scan(state: &AppState) {
-    let mut refreshes = state.libation_refreshes.lock().await;
-    refreshes.last_successful_scan = Some(unix_now_seconds());
-    if let Err(error) = write_libation_refreshes(&state.libation_refreshes_file, &refreshes).await {
+    let stored = state
+        .libation_refreshes
+        .mutate(|refreshes| {
+            refreshes.last_successful_scan = Some(unix_now_seconds());
+            Ok(())
+        })
+        .await;
+    if let Err(error) = stored {
         tracing::warn!(
             "failed to persist successful Libation refresh: {}",
             error.message
@@ -1489,7 +1562,7 @@ pub(crate) fn schedule_automatic_libation_refresh(state: AppState) {
         loop {
             timer.tick().await;
             let due = {
-                let refreshes = state.libation_refreshes.lock().await;
+                let refreshes = state.libation_refreshes.read().await;
                 refreshes
                     .last_successful_scan
                     .is_none_or(|last| unix_now_seconds().saturating_sub(last) >= interval_seconds)
@@ -1772,23 +1845,27 @@ pub(crate) async fn grant_user_book_access(
     user_id: &str,
     book_id: &str,
 ) -> Result<(), ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    let Some(allowed_book_ids) = user.allowed_book_ids.as_mut() else {
-        return Ok(());
-    };
-    if allowed_book_ids
-        .iter()
-        .any(|candidate| candidate == book_id)
-    {
-        return Ok(());
-    }
-    allowed_book_ids.push(book_id.to_string());
-    write_users_store(&state.users_file, &users).await
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            let Some(allowed_book_ids) = user.allowed_book_ids.as_mut() else {
+                return Ok(());
+            };
+            if allowed_book_ids
+                .iter()
+                .any(|candidate| candidate == book_id)
+            {
+                return Ok(());
+            }
+            allowed_book_ids.push(book_id.to_string());
+            Ok(())
+        })
+        .await
 }
 
 pub(crate) async fn liberate_all_libation_books(
@@ -2368,18 +2445,22 @@ pub(crate) async fn read_libation_status(state: &AppState) -> LibationStatus {
         });
     }
     if !changed_health.is_empty() {
-        let mut store = state.libation_accounts.write().await;
-        for account in &mut store.accounts {
-            if let Some((authenticated, connection_state, error)) = changed_health.get(&account.id)
-            {
-                account.authenticated = *authenticated;
-                account.connection_state = connection_state.clone();
-                account.last_error = error.clone();
-            }
-        }
-        if let Err(error) =
-            write_managed_libation_accounts(&state.libation_accounts_file, &store).await
-        {
+        let stored = state
+            .libation_accounts
+            .mutate(|store| {
+                for account in &mut store.accounts {
+                    if let Some((authenticated, connection_state, error)) =
+                        changed_health.get(&account.id)
+                    {
+                        account.authenticated = *authenticated;
+                        account.connection_state = connection_state.clone();
+                        account.last_error = error.clone();
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = stored {
             tracing::warn!(
                 "failed to persist Libation account status: {}",
                 error.message
@@ -2838,25 +2919,28 @@ pub(crate) async fn update_libation_access(
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationAccessRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    if user.is_owner {
-        return Err(ApiError::bad_request(
-            "Owners always have direct Libation access.",
-        ));
-    }
-    if user.is_admin && !auth.is_owner {
-        return Err(ApiError::forbidden(
-            "Only an owner can change an administrator's Libation access.",
-        ));
-    }
-    user.libation_access = payload.libation_access;
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if user.is_owner {
+                return Err(ApiError::bad_request(
+                    "Owners always have direct Libation access.",
+                ));
+            }
+            if user.is_admin && !auth.is_owner {
+                return Err(ApiError::forbidden(
+                    "Only an owner can change an administrator's Libation access.",
+                ));
+            }
+            user.libation_access = payload.libation_access;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
 
@@ -2866,24 +2950,27 @@ pub(crate) async fn update_libation_approval(
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateLibationApprovalRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    if !user.is_admin && !user.is_owner {
-        return Err(ApiError::bad_request(
-            "Only administrators can approve Libation requests.",
-        ));
-    }
-    if user.is_owner && !payload.can_approve_libation_requests {
-        return Err(ApiError::bad_request(
-            "Owners always have permission to approve Libation requests.",
-        ));
-    }
-    user.can_approve_libation_requests = payload.can_approve_libation_requests;
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if !user.is_admin && !user.is_owner {
+                return Err(ApiError::bad_request(
+                    "Only administrators can approve Libation requests.",
+                ));
+            }
+            if user.is_owner && !payload.can_approve_libation_requests {
+                return Err(ApiError::bad_request(
+                    "Owners always have permission to approve Libation requests.",
+                ));
+            }
+            user.can_approve_libation_requests = payload.can_approve_libation_requests;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
