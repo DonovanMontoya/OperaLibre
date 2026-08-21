@@ -376,6 +376,31 @@ impl ProgressStore {
             .await
     }
 
+    /// Listener ids whose stored position moved within the last `window_ms`.
+    pub(crate) async fn listener_ids_active_within(
+        &self,
+        window_ms: u64,
+    ) -> Result<HashSet<String>, ApiError> {
+        let now_ms = unix_now_millis();
+        self.db
+            .call(move |connection| {
+                let mut statement =
+                    connection.prepare("SELECT user_id, updated_at FROM progress")?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                let mut active = HashSet::new();
+                for row in rows {
+                    let (user_id, updated_at) = row?;
+                    if now_ms.saturating_sub(progress_timestamp_millis(&updated_at)) <= window_ms {
+                        active.insert(user_id);
+                    }
+                }
+                Ok(active)
+            })
+            .await
+    }
+
     /// Apply a decision to one listener's position.
     ///
     /// The read, the decision, and the write happen in one transaction, so a
