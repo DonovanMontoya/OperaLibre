@@ -197,6 +197,26 @@ fn an_untuned_book_reads_back_at_unity_gain() {
     );
 }
 
+#[tokio::test]
+async fn bulk_book_settings_lookup_clamps_legacy_gains() {
+    let root = tempfile::tempdir().unwrap();
+    let settings_file = root.path().join("book-settings.json");
+    tokio::fs::write(
+        &settings_file,
+        r#"{"user:reader:book:loud":{"volumeGain":99.0},"user:reader:book:quiet":{"volumeGain":2.0}}"#,
+    )
+    .await
+    .unwrap();
+
+    let gains = super::BookSettingsStore::new(settings_file)
+        .list_for_user("reader")
+        .await
+        .unwrap();
+
+    assert_eq!(gains.get("loud"), Some(&super::BOOK_VOLUME_GAIN_MAX));
+    assert_eq!(gains.get("quiet"), Some(&2.0));
+}
+
 /// lofty reports Duration::ZERO for media it cannot measure. Treating that
 /// as a known zero-length book clamps the stored position to 0 and reports
 /// the book as not started — and the library summary is what a reinstalled

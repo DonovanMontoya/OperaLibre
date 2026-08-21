@@ -1270,7 +1270,7 @@ pub(crate) async fn change_password(
 
     if changing_self {
         let current = payload.current_password.unwrap_or_default();
-        if !verify_password_async(&state, current, current_hash).await? {
+        if !verify_password_async(&state, current, current_hash.clone()).await? {
             return Err(ApiError::unauthorized("Current password is incorrect."));
         }
     }
@@ -1288,6 +1288,11 @@ pub(crate) async fn change_password(
                 return Err(ApiError::forbidden(
                     "Only an owner can reset an administrator or owner's password.",
                 ));
+            }
+            // The password was verified before the Argon2 work. Do not let a
+            // self-service request overwrite a reset that landed meanwhile.
+            if changing_self && user.password_hash != current_hash {
+                return Err(ApiError::unauthorized("Current password is incorrect."));
             }
             user.password_hash = new_hash;
             Ok(())
