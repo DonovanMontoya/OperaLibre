@@ -11,9 +11,13 @@
 
 use crate::*;
 
+/// Marks a database which has finished importing the legacy JSON layout.
+const JSON_IMPORT_COMPLETE_DOCUMENT: &str = "json-import-complete";
+
 /// The JSON files an installation may have, and the store each one feeds.
 pub(crate) struct JsonLayout {
     pub(crate) progress: PathBuf,
+    pub(crate) progress_backups: PathBuf,
     pub(crate) book_settings: PathBuf,
     pub(crate) users: PathBuf,
     pub(crate) sessions: PathBuf,
@@ -28,6 +32,7 @@ impl JsonLayout {
     pub(crate) fn for_config(config: &ServerConfig) -> Self {
         Self {
             progress: config.progress_file.clone(),
+            progress_backups: config.progress_file.with_extension("backups.json"),
             book_settings: config.data_dir.join("book-settings.json"),
             users: config.users_file.clone(),
             sessions: config.sessions_file.clone(),
@@ -42,6 +47,7 @@ impl JsonLayout {
     fn all(&self) -> Vec<&PathBuf> {
         vec![
             &self.progress,
+            &self.progress_backups,
             &self.book_settings,
             &self.users,
             &self.sessions,
@@ -86,6 +92,7 @@ fn back_up(layout: &JsonLayout, data_dir: &FsPath) -> anyhow::Result<PathBuf> {
 /// Import the JSON files into an empty database.
 fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow::Result<u64> {
     let progress: HashMap<String, Progress> = read_json(&layout.progress)?;
+    let progress_backups: HashMap<String, Vec<Progress>> = read_json(&layout.progress_backups)?;
     let book_settings: HashMap<String, BookSettings> = read_json(&layout.book_settings)?;
     let users: UsersStore = read_json(&layout.users)?;
     let sessions: HashMap<String, Session> = read_json(&layout.sessions)?;
@@ -129,6 +136,29 @@ fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow:
         rows += 1;
     }
 
+    // The JSON format did not record when a backup was made, only the saved
+    // position itself. Its update time is the closest stable ordering value;
+    // row insertion order preserves the order within one legacy backup list.
+    for (key, entries) in &progress_backups {
+        let Some((user_id, book_id)) = split_progress_key(key) else {
+            tracing::warn!("skipping unparseable progress backup key `{key}` during import");
+            continue;
+        };
+        for entry in entries {
+            transaction.execute(
+                "INSERT INTO progress_backups (user_id, book_id, backed_up_at, payload)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    user_id,
+                    book_id,
+                    entry.updated_at,
+                    serde_json::to_string(entry)?,
+                ],
+            )?;
+            rows += 1;
+        }
+    }
+
     for (key, settings) in &book_settings {
         let Some((user_id, book_id)) = split_progress_key(key) else {
             tracing::warn!("skipping unparseable book settings key `{key}` during import");
@@ -168,6 +198,7 @@ fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow:
         db::write_document(&transaction, name, &payload)?;
         rows += 1;
     }
+    db::write_document(&transaction, JSON_IMPORT_COMPLETE_DOCUMENT, "true")?;
 
     transaction.commit()?;
     Ok(rows)
@@ -192,7 +223,10 @@ pub(crate) fn migrate_if_needed(
     data_dir: &FsPath,
     layout: &JsonLayout,
 ) -> anyhow::Result<()> {
-    if database_path.exists() || !layout.any_present() {
+    if database_path.exists() && migration_completed(database_path)? {
+        return Ok(());
+    }
+    if !layout.any_present() {
         return Ok(());
     }
 
@@ -203,10 +237,20 @@ pub(crate) fn migrate_if_needed(
     let backup_dir = back_up(layout, data_dir)?;
     tracing::info!("copied the existing files to {}", backup_dir.display());
 
-    let mut connection = db::open(database_path)?;
+    // Build alongside the live path and publish only after the transaction has
+    // committed. A process killed before then leaves the JSON files as the
+    // authority, and the next start simply retries from them.
+    let temporary_path = database_path.with_extension("importing");
+    remove_database_files(&temporary_path);
+    let mut connection = db::open(&temporary_path)?;
     match import(&mut connection, layout) {
         Ok(rows) => {
             drop(connection);
+            // An old database can only be an incomplete import: a completed
+            // migration publishes the database atomically below. Remove it
+            // before replacing it with the complete import.
+            remove_database_files(database_path);
+            std::fs::rename(&temporary_path, database_path)?;
             db::secure_database_files(database_path);
             tracing::info!(
                 "imported {rows} records. The original files were left in place; \
@@ -218,13 +262,27 @@ pub(crate) fn migrate_if_needed(
             // Leave nothing half-built. The server carries on from the JSON
             // files, which have not been touched, and tries again next start.
             drop(connection);
-            for suffix in ["", "-wal", "-shm"] {
-                let mut candidate = database_path.as_os_str().to_os_string();
-                candidate.push(suffix);
-                let _ = std::fs::remove_file(PathBuf::from(candidate));
-            }
+            remove_database_files(&temporary_path);
             Err(error)
         }
+    }
+}
+
+/// A database published by this migration is safe to prefer over the legacy
+/// files. An unmarked database was left by an interrupted older attempt and
+/// must not suppress a retry while the JSON sources remain available.
+fn migration_completed(database_path: &FsPath) -> anyhow::Result<bool> {
+    let connection = db::open_existing(database_path)?;
+    Ok(db::read_document(&connection, JSON_IMPORT_COMPLETE_DOCUMENT)?.as_deref() == Some("true"))
+}
+
+/// Remove a database and its SQLite sidecar files. These paths are generated
+/// from the one explicit database target, never user input.
+fn remove_database_files(path: &FsPath) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut candidate = path.as_os_str().to_os_string();
+        candidate.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(candidate));
     }
 }
 
@@ -267,6 +325,26 @@ pub(crate) fn export_json(
         }
     }
 
+    let mut progress_backups: HashMap<String, Vec<Progress>> = HashMap::new();
+    {
+        let mut statement = connection
+            .prepare("SELECT user_id, book_id, payload FROM progress_backups ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                progress_key(&row.get::<_, String>(0)?, &row.get::<_, String>(1)?),
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (key, payload) = row?;
+            progress_backups
+                .entry(key)
+                .or_default()
+                .push(serde_json::from_str(&payload)?);
+            written += 1;
+        }
+    }
+
     let mut book_settings: HashMap<String, BookSettings> = HashMap::new();
     {
         let mut statement =
@@ -300,6 +378,7 @@ pub(crate) fn export_json(
     written += users.users.len() as u64 + sessions.len() as u64 + 4;
 
     write_json_file(&layout.progress, &progress)?;
+    write_json_file(&layout.progress_backups, &progress_backups)?;
     write_json_file(&layout.book_settings, &book_settings)?;
     write_json_file(&layout.users, &users)?;
     write_json_file(&layout.sessions, &sessions)?;
