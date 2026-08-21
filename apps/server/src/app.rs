@@ -47,6 +47,11 @@ pub(crate) struct AppState {
     /// a time so a second title has a real queue state instead of racing the
     /// first download.
     pub(crate) libation_job_lock: Arc<Mutex<()>>,
+    /// Serializes the brief quota-reservation and job-creation sequence for a
+    /// manual Libation refresh. The queued job is visible before the next
+    /// caller checks its quota, so duplicate clicks join it rather than spend
+    /// or exhaust refresh slots.
+    pub(crate) libation_refresh_reservation_lock: Arc<Mutex<()>>,
     /// Faststart conversion rewrites library files. One job at a time, so two
     /// admins cannot remux the same book from opposite ends.
     pub(crate) faststart_lock: Arc<Mutex<()>>,

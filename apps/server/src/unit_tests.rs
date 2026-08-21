@@ -1520,6 +1520,7 @@ exit 0
         )),
         rescan_lock: super::Arc::new(super::Mutex::new(())),
         libation_job_lock: super::Arc::new(super::Mutex::new(())),
+        libation_refresh_reservation_lock: super::Arc::new(super::Mutex::new(())),
         faststart_lock: super::Arc::new(super::Mutex::new(())),
         login_attempts: super::Arc::new(super::Mutex::new(std::collections::HashMap::new())),
         password_task_slots: super::Arc::new(super::Semaphore::new(
@@ -1866,6 +1867,49 @@ async fn readers_get_three_libation_refreshes_per_hour_while_admins_are_unlimite
             .unwrap()
             .0;
     assert_ne!(admin_first.job_id, admin_second.job_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn simultaneous_reader_refreshes_join_before_spending_the_quota() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    state.libation_config.reader_refreshes_per_hour = 1;
+
+    // Start both calls together. The reservation lock makes the first publish
+    // its queued job before the second checks the one-refresh quota.
+    let gate = state.libation_refresh_reservation_lock.lock().await;
+    let first_state = state.clone();
+    let second_state = state.clone();
+    let first = tokio::spawn(async move {
+        super::sync_libation_library(
+            super::State(first_state),
+            super::Extension(approval_reader()),
+        )
+        .await
+    });
+    let second = tokio::spawn(async move {
+        super::sync_libation_library(
+            super::State(second_state),
+            super::Extension(approval_reader()),
+        )
+        .await
+    });
+    drop(gate);
+
+    let first = first.await.unwrap().unwrap().0;
+    let second = second.await.unwrap().unwrap().0;
+    assert_eq!(first.job_id, second.job_id);
+    assert_eq!(
+        state
+            .libation_refreshes
+            .read()
+            .await
+            .manual_refreshes
+            .get(&approval_reader().id)
+            .map(Vec::len),
+        Some(1),
+    );
 }
 
 #[cfg(unix)]
