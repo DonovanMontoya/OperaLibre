@@ -125,7 +125,6 @@ pub(crate) fn build_router(
         )
         .route("/api/me/progress-sharing", put(update_progress_sharing))
         .route("/api/books", get(list_books))
-        .route("/api/library/rescan", post(rescan))
         .route(
             "/api/library/faststart",
             get(faststart_status).post(start_faststart_conversion),
@@ -134,10 +133,6 @@ pub(crate) fn build_router(
         .route(
             "/api/libation/accounts/login/start",
             post(start_libation_account_login),
-        )
-        .route(
-            "/api/libation/accounts/login/{session_id}/complete",
-            post(complete_libation_account_login),
         )
         .route(
             "/api/libation/accounts/login/{session_id}",
@@ -218,10 +213,22 @@ pub(crate) fn build_router(
     // large book. A timeout here would cut off exactly the transfers that most
     // need to finish, and neither route can hang without an operation behind
     // it hanging first.
+    //
+    // A rescan walks and fingerprints the whole library synchronously, and
+    // completing a Libation sign-in waits up to 90 seconds on the browser flow
+    // before running its own scan -- either can legitimately outlast the
+    // timeout. The sign-in completion also removes its pending session before
+    // waiting, so a 408 here would leave the client unable to retry and the
+    // account stuck in `signing_in`.
     let long_running_routes = Router::new()
         .route(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/library/rescan", post(rescan))
+        .route(
+            "/api/libation/accounts/login/{session_id}/complete",
+            post(complete_libation_account_login),
         )
         .route(
             "/api/books/{book_id}/download",
@@ -414,8 +421,8 @@ pub(crate) struct ServerMetrics {
     tracks: usize,
     users: usize,
     active_sessions: usize,
-    /// Books whose position moved in the last five minutes: how many people
-    /// are actually listening right now.
+    /// Listeners whose position moved in the last five minutes: how many
+    /// people are actually listening right now.
     listening_now: usize,
     running_jobs: usize,
     database_bytes: u64,
@@ -456,7 +463,7 @@ pub(crate) async fn metrics(
         .count();
     let listening_now = state
         .progress
-        .book_ids_active_within(5 * 60 * 1_000)
+        .listener_ids_active_within(5 * 60 * 1_000)
         .await?
         .len();
 
