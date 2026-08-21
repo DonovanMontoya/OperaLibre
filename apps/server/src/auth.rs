@@ -271,7 +271,11 @@ pub(crate) fn migrate_users_permissions(store: &mut UsersStore) -> bool {
 }
 
 pub(crate) static DUMMY_PASSWORD_HASH: LazyLock<String> =
-    LazyLock::new(|| hash_password("operalibre-timing-equalizer").unwrap_or_default());
+    // A fresh per-process secret is enough: this hash only equalizes the cost
+    // of an unknown-user login with a real password verification. It is never
+    // an account credential, so keeping a fixed password-shaped value here
+    // serves no purpose and can be mistaken for one by security tooling.
+    LazyLock::new(|| hash_password(&generate_session_token()).unwrap_or_default());
 
 pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut PasswordOsRng);
