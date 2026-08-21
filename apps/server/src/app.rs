@@ -244,6 +244,12 @@ pub(crate) fn build_router(
         .layer(
             cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
+                // Browser clients need to read these to walk a paged listing
+                // and issue conditional requests; neither is CORS-safelisted.
+                .expose_headers([
+                    axum::http::header::ETAG,
+                    axum::http::HeaderName::from_static("x-next-cursor"),
+                ])
                 .allow_credentials(true),
         )
         .layer(
