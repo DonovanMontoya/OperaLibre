@@ -13,15 +13,10 @@ pub(crate) struct AppState {
     pub(crate) min_download_free_bytes: u64,
     pub(crate) library_root: PathBuf,
     pub(crate) library_identities_file: PathBuf,
-    pub(crate) progress_file: PathBuf,
-    pub(crate) book_settings_file: PathBuf,
-    pub(crate) users_file: PathBuf,
-    pub(crate) sessions_file: PathBuf,
-    pub(crate) activity_file: PathBuf,
-    pub(crate) metadata_overrides_file: PathBuf,
-    pub(crate) libation_requests_file: PathBuf,
-    pub(crate) libation_refreshes_file: PathBuf,
-    pub(crate) libation_accounts_file: PathBuf,
+    /// Saved playback positions. The only way to reach a listener's place.
+    pub(crate) progress: Arc<ProgressStore>,
+    /// Per-listener, per-book playback settings.
+    pub(crate) book_settings: Arc<BookSettingsStore>,
     pub(crate) libation_accounts_root: PathBuf,
     pub(crate) libation_config: LibationConfig,
     pub(crate) alignment_config: AlignmentConfig,
@@ -31,20 +26,19 @@ pub(crate) struct AppState {
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
-    pub(crate) metadata_overrides: Arc<RwLock<MetadataOverrideStore>>,
+    /// Administrator metadata edits, cached and mirrored to disk.
+    pub(crate) metadata_overrides: Arc<MetadataOverrides>,
     pub(crate) jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
-    pub(crate) users: Arc<RwLock<UsersStore>>,
-    pub(crate) sessions: Arc<RwLock<HashMap<String, Session>>>,
-    pub(crate) activity: Arc<RwLock<ActivityStore>>,
-    pub(crate) libation_requests: Arc<RwLock<LibationRequestStore>>,
-    pub(crate) libation_refreshes: Arc<Mutex<LibationRefreshStore>>,
-    pub(crate) libation_accounts: Arc<RwLock<ManagedLibationAccountStore>>,
+    /// Accounts, cached in memory and mirrored to disk.
+    pub(crate) users: Arc<UserStore>,
+    /// Live sessions, cached in memory and mirrored to disk.
+    pub(crate) sessions: Arc<SessionStore>,
+    /// Daily listening totals, cached and mirrored to disk.
+    pub(crate) activity: Arc<ActivityLog>,
+    pub(crate) libation_requests: Arc<LibationRequests>,
+    pub(crate) libation_refreshes: Arc<LibationRefreshes>,
+    pub(crate) libation_accounts: Arc<LibationAccounts>,
     pub(crate) libation_login_sessions: Arc<Mutex<HashMap<String, PendingLibationLogin>>>,
-    /// Serializes read-modify-write cycles on the progress file so concurrent
-    /// updates cannot overwrite each other.
-    pub(crate) progress_write_lock: Arc<Mutex<()>>,
-    /// Same guarantee for the per-book settings file.
-    pub(crate) book_settings_write_lock: Arc<Mutex<()>>,
     /// Library scans read and replace one shared identity snapshot. Serialize
     /// them so overlapping imports, downloads, and manual rescans cannot
     /// publish stale state over a newer scan.
@@ -53,6 +47,11 @@ pub(crate) struct AppState {
     /// a time so a second title has a real queue state instead of racing the
     /// first download.
     pub(crate) libation_job_lock: Arc<Mutex<()>>,
+    /// Serializes the brief quota-reservation and job-creation sequence for a
+    /// manual Libation refresh. The queued job is visible before the next
+    /// caller checks its quota, so duplicate clicks join it rather than spend
+    /// or exhaust refresh slots.
+    pub(crate) libation_refresh_reservation_lock: Arc<Mutex<()>>,
     /// Faststart conversion rewrites library files. One job at a time, so two
     /// admins cannot remux the same book from opposite ends.
     pub(crate) faststart_lock: Arc<Mutex<()>>,

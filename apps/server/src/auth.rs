@@ -111,7 +111,7 @@ impl From<&User> for UserPublic {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct UsersStore {
     #[serde(default)]
     pub(crate) permissions_version: u32,
@@ -491,9 +491,10 @@ pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<Aut
     let session = sessions.get(token)?.clone();
     drop(sessions);
     if session.is_expired(unix_now_seconds()) {
-        let mut sessions = state.sessions.write().await;
-        if sessions.remove(token).is_some()
-            && let Err(error) = write_sessions_store(&state.sessions_file, &sessions).await
+        if let Err(error) = state
+            .sessions
+            .mutate(|sessions| Ok(sessions.remove(token).is_some()))
+            .await
         {
             tracing::warn!(
                 "failed to persist expired session removal: {}",
@@ -723,16 +724,18 @@ pub(crate) async fn setup_admin(
         created_at: now_rfc3339ish(),
     };
 
-    {
-        let mut users = state.users.write().await;
-        if !users.users.is_empty() {
-            return Err(ApiError::conflict(
-                "Setup was completed by another request. Sign in instead.",
-            ));
-        }
-        users.users.push(new_user.clone());
-        write_users_store(&state.users_file, &users).await?;
-    }
+    state
+        .users
+        .mutate(|users| {
+            if !users.users.is_empty() {
+                return Err(ApiError::conflict(
+                    "Setup was completed by another request. Sign in instead.",
+                ));
+            }
+            users.users.push(new_user.clone());
+            Ok(())
+        })
+        .await?;
     state.setup_token.lock().await.take();
 
     let token = create_session(&state, &new_user.id).await?;
@@ -888,10 +891,14 @@ pub(crate) async fn create_session(state: &AppState, user_id: &str) -> Result<St
         user_id: user_id.to_string(),
         created_at: unix_now_seconds(),
     };
-    let mut sessions = state.sessions.write().await;
-    prune_sessions_for_new_session(&mut sessions, user_id, session.created_at);
-    sessions.insert(token.clone(), session);
-    write_sessions_store(&state.sessions_file, &sessions).await?;
+    state
+        .sessions
+        .mutate(|sessions| {
+            prune_sessions_for_new_session(sessions, user_id, session.created_at);
+            sessions.insert(token.clone(), session);
+            Ok(())
+        })
+        .await?;
     Ok(token)
 }
 
@@ -945,9 +952,13 @@ pub(crate) async fn logout(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(token) = token_from_headers(&headers) {
-        let mut sessions = state.sessions.write().await;
-        sessions.remove(&token);
-        write_sessions_store(&state.sessions_file, &sessions).await?;
+        state
+            .sessions
+            .mutate(|sessions| {
+                sessions.remove(&token);
+                Ok(())
+            })
+            .await?;
     }
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
@@ -979,15 +990,18 @@ pub(crate) async fn update_progress_sharing(
     Extension(auth): Extension<AuthUser>,
     Json(payload): Json<UpdateProgressSharingRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == auth.id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    user.share_progress = payload.share_progress;
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == auth.id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            user.share_progress = payload.share_progress;
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
 
@@ -1127,19 +1141,11 @@ pub(crate) async fn create_user(
     validate_username(&username)?;
     validate_password(&payload.password)?;
 
-    let mut users = state.users.write().await;
-    if users
-        .users
-        .iter()
-        .any(|user| user.username.eq_ignore_ascii_case(&username))
-    {
-        return Err(ApiError::bad_request("That username is already taken."));
-    }
-
+    let password_hash = hash_password_async(&state, payload.password.clone()).await?;
     let new_user = User {
         id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
         username,
-        password_hash: hash_password_async(&state, payload.password.clone()).await?,
+        password_hash,
         is_admin,
         is_owner,
         can_approve_libation_requests: is_owner
@@ -1161,8 +1167,23 @@ pub(crate) async fn create_user(
         share_progress: true,
         created_at: now_rfc3339ish(),
     };
-    users.users.push(new_user.clone());
-    write_users_store(&state.users_file, &users).await?;
+    let created = new_user.clone();
+    state
+        .users
+        .mutate(move |users| {
+            // Checked inside the lock so two concurrent requests cannot both
+            // claim the same name.
+            if users
+                .users
+                .iter()
+                .any(|user| user.username.eq_ignore_ascii_case(&created.username))
+            {
+                return Err(ApiError::bad_request("That username is already taken."));
+            }
+            users.users.push(created);
+            Ok(())
+        })
+        .await?;
     Ok(Json(UserPublic::from(&new_user)))
 }
 
@@ -1177,40 +1198,37 @@ pub(crate) async fn delete_user(
         ));
     }
 
-    let mut users = state.users.write().await;
-    let target = users
+    state
         .users
-        .iter()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    if (target.is_admin || target.is_owner) && !auth.is_owner {
-        return Err(ApiError::forbidden(
-            "Only an owner can delete an administrator or owner.",
-        ));
-    }
-    if target.is_owner && users.users.iter().filter(|user| user.is_owner).count() <= 1 {
-        return Err(ApiError::conflict("The final owner cannot be deleted."));
-    }
-    users.users.retain(|user| user.id != user_id);
-    write_users_store(&state.users_file, &users).await?;
-    drop(users);
+        .mutate(|users| {
+            let target = users
+                .users
+                .iter()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if (target.is_admin || target.is_owner) && !auth.is_owner {
+                return Err(ApiError::forbidden(
+                    "Only an owner can delete an administrator or owner.",
+                ));
+            }
+            if target.is_owner && users.users.iter().filter(|user| user.is_owner).count() <= 1 {
+                return Err(ApiError::conflict("The final owner cannot be deleted."));
+            }
+            users.users.retain(|user| user.id != user_id);
+            Ok(())
+        })
+        .await?;
 
-    let mut sessions = state.sessions.write().await;
-    sessions.retain(|_, session| session.user_id != user_id);
-    write_sessions_store(&state.sessions_file, &sessions).await?;
-    drop(sessions);
+    state
+        .sessions
+        .mutate(|sessions| {
+            sessions.retain(|_, session| session.user_id != user_id);
+            Ok(())
+        })
+        .await?;
 
-    let _progress_guard = state.progress_write_lock.lock().await;
-    let mut progress = read_progress(&state.progress_file).await?;
-    let prefix = format!("user:{user_id}:");
-    progress.retain(|key, _| !key.starts_with(&prefix));
-    write_progress(&state.progress_file, &progress).await?;
-    drop(_progress_guard);
-
-    let _settings_guard = state.book_settings_write_lock.lock().await;
-    let mut book_settings = read_book_settings(&state.book_settings_file).await?;
-    book_settings.retain(|key, _| !key.starts_with(&prefix));
-    write_book_settings(&state.book_settings_file, &book_settings).await?;
+    state.progress.remove_user(&user_id).await?;
+    state.book_settings.remove_user(&user_id).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1230,14 +1248,25 @@ pub(crate) async fn change_password(
     }
     validate_password(&payload.new_password)?;
 
-    let mut users = state.users.write().await;
-    let user = users
-        .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
+    // Verifying and hashing are deliberately done without the write lock held:
+    // both are Argon2 work, and holding the lock across them queued every other
+    // account change behind this request. The authority check is repeated
+    // inside the mutation so nothing can change underneath it.
+    let (target_id, current_hash, target_is_privileged) = {
+        let users = state.users.read().await;
+        let user = users
+            .users
+            .iter()
+            .find(|user| user.id == user_id)
+            .ok_or(ApiError::not_found("User not found."))?;
+        (
+            user.id.clone(),
+            user.password_hash.clone(),
+            user.is_admin || user.is_owner,
+        )
+    };
 
-    if !changing_self && (user.is_admin || user.is_owner) && !auth.is_owner {
+    if !changing_self && target_is_privileged && !auth.is_owner {
         return Err(ApiError::forbidden(
             "Only an owner can reset an administrator or owner's password.",
         ));
@@ -1245,23 +1274,46 @@ pub(crate) async fn change_password(
 
     if changing_self {
         let current = payload.current_password.unwrap_or_default();
-        if !verify_password_async(&state, current, user.password_hash.clone()).await? {
+        if !verify_password_async(&state, current, current_hash.clone()).await? {
             return Err(ApiError::unauthorized("Current password is incorrect."));
         }
     }
 
-    user.password_hash = hash_password_async(&state, payload.new_password).await?;
-    let target_id = user.id.clone();
-    write_users_store(&state.users_file, &users).await?;
-    drop(users);
+    let new_hash = hash_password_async(&state, payload.new_password).await?;
+    state
+        .users
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            if !changing_self && (user.is_admin || user.is_owner) && !auth.is_owner {
+                return Err(ApiError::forbidden(
+                    "Only an owner can reset an administrator or owner's password.",
+                ));
+            }
+            // The password was verified before the Argon2 work. Do not let a
+            // self-service request overwrite a reset that landed meanwhile.
+            if changing_self && user.password_hash != current_hash {
+                return Err(ApiError::unauthorized("Current password is incorrect."));
+            }
+            user.password_hash = new_hash;
+            Ok(())
+        })
+        .await?;
 
-    let mut sessions = state.sessions.write().await;
-    revoke_password_change_sessions(
-        &mut sessions,
-        &target_id,
-        changing_self.then_some(current_session.0.as_str()),
-    );
-    write_sessions_store(&state.sessions_file, &sessions).await?;
+    state
+        .sessions
+        .mutate(|sessions| {
+            revoke_password_change_sessions(
+                sessions,
+                &target_id,
+                changing_self.then_some(current_session.0.as_str()),
+            );
+            Ok(())
+        })
+        .await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1298,19 +1350,22 @@ pub(crate) async fn update_book_access(
         None
     };
 
-    let mut users = state.users.write().await;
-    let user = users
+    let public = state
         .users
-        .iter_mut()
-        .find(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    user.allowed_book_ids = if user.is_admin {
-        None
-    } else {
-        allowed_book_ids
-    };
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+        .mutate(|users| {
+            let user = users
+                .users
+                .iter_mut()
+                .find(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            user.allowed_book_ids = if user.is_admin {
+                None
+            } else {
+                allowed_book_ids
+            };
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
 
@@ -1320,33 +1375,36 @@ pub(crate) async fn update_user_role(
     Path(user_id): Path<String>,
     Json(payload): Json<UpdateUserRoleRequest>,
 ) -> Result<Json<UserPublic>, ApiError> {
-    let mut users = state.users.write().await;
-    let target_index = users
+    let public = state
         .users
-        .iter()
-        .position(|user| user.id == user_id)
-        .ok_or(ApiError::not_found("User not found."))?;
-    let was_owner = users.users[target_index].is_owner;
-    if was_owner
-        && !payload.is_owner
-        && users.users.iter().filter(|user| user.is_owner).count() <= 1
-    {
-        return Err(ApiError::conflict("The final owner cannot be demoted."));
-    }
+        .mutate(|users| {
+            let target_index = users
+                .users
+                .iter()
+                .position(|user| user.id == user_id)
+                .ok_or(ApiError::not_found("User not found."))?;
+            let was_owner = users.users[target_index].is_owner;
+            if was_owner
+                && !payload.is_owner
+                && users.users.iter().filter(|user| user.is_owner).count() <= 1
+            {
+                return Err(ApiError::conflict("The final owner cannot be demoted."));
+            }
 
-    let user = &mut users.users[target_index];
-    user.is_owner = payload.is_owner;
-    user.is_admin = payload.is_admin || payload.is_owner;
-    if user.is_owner {
-        user.libation_access = LibationAccess::Direct;
-        user.can_approve_libation_requests = true;
-        user.allowed_book_ids = None;
-    } else if user.is_admin {
-        user.allowed_book_ids = None;
-    } else {
-        user.can_approve_libation_requests = false;
-    }
-    let public = UserPublic::from(&*user);
-    write_users_store(&state.users_file, &users).await?;
+            let user = &mut users.users[target_index];
+            user.is_owner = payload.is_owner;
+            user.is_admin = payload.is_admin || payload.is_owner;
+            if user.is_owner {
+                user.libation_access = LibationAccess::Direct;
+                user.can_approve_libation_requests = true;
+                user.allowed_book_ids = None;
+            } else if user.is_admin {
+                user.allowed_book_ids = None;
+            } else {
+                user.can_approve_libation_requests = false;
+            }
+            Ok(UserPublic::from(&*user))
+        })
+        .await?;
     Ok(Json(public))
 }
