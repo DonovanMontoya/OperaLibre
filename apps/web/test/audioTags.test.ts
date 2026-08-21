@@ -116,11 +116,12 @@ test("tag descriptions cannot reconstruct HTML from encoded or malformed markup"
   ]) {
     const file = concat(
       box("ftyp", latin1("M4B ")),
-      box("moov", mvhd(1_000, 1_000), ilst(textItem("desc", description)))
+      box("moov", mvhd(1_000, 1_000), ilst(textItem("©nam", "Volume &lt; 2"), textItem("desc", description)))
     );
 
     const tags = await readAudioFileTags(bytesSource(file));
     assert.ok(tags);
+    assert.equal(tags.title, "Volume < 2");
     assert.doesNotMatch(tags.description ?? "", /[<>]/);
   }
 });

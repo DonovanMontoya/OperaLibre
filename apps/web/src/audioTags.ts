@@ -233,29 +233,45 @@ function decodeLatin1(bytes: Uint8Array) {
   return text;
 }
 
-/**
- * Tag text as a reader should see it: audiobook stores routinely put HTML in
- * the description atom, and every tag can carry padding NULs.
- */
+/** Normalizes text shared by tags, raw fields, and chapter names. */
 function cleanTagText(value: string) {
   return value
     .replace(/\0+$/g, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;|&#160;/gi, " ")
     .replace(/&quot;|&#34;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    // Strip any markup reconstructed from malformed tags or decoded entities.
-    .replace(/[<>]/g, "")
-    // Decode ampersands last so `&amp;lt;` cannot become a tag in this pass.
     .replace(/&amp;/gi, "&")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** Description atoms may contain HTML, unlike the other tag values. */
+function cleanDescriptionText(value: string | null) {
+  if (value === null) return null;
+  const decoded = cleanTagText(value);
+  let text = "";
+  let tag = "";
+  let inTag = false;
+  for (const character of decoded) {
+    if (character === "<") {
+      inTag = true;
+      tag = "";
+    } else if (character === ">" && inTag) {
+      if (/^br\s*\/?$/i.test(tag) || /^\/p\s*$/i.test(tag)) text += "\n";
+      inTag = false;
+    } else if (character === ">") {
+      // A malformed opening tag can leave a stray closing delimiter behind.
+    } else if (inTag) {
+      tag += character;
+    } else {
+      text += character;
+    }
+  }
+  return text.replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() || null;
 }
 
 function imageContentType(bytes: Uint8Array, declared?: string | null) {
@@ -448,7 +464,7 @@ async function readMp4Tags(source: ByteSource): Promise<AudioFileTags | null> {
     values.first("©prf", "©con", "narrator", "narratedby") ??
     values.firstMatching("narrat") ??
     composerNarrator(values.first("©wrt", "composer"), tags.author);
-  tags.description = values.first("ldes", "desc", "©des", "©cmt", "description", "comment");
+  tags.description = cleanDescriptionText(values.first("ldes", "desc", "©des", "©cmt", "description", "comment"));
   tags.publisher = values.first("©pub", "publisher", "©lab", "label");
   tags.publishedDate = values.first("©day", "rldt", "releasedate", "year");
   tags.language = values.first("©lan", "language");
@@ -745,7 +761,7 @@ async function readId3Tags(source: ByteSource, head: Uint8Array): Promise<AudioF
     values.first("TPE3", "TP3", "narrator", "narratedby") ??
     values.firstMatching("narrat") ??
     composerNarrator(values.first("TCOM", "TCM"), tags.author);
-  tags.description = values.first("COMM", "COM", "description", "TDES");
+  tags.description = cleanDescriptionText(values.first("COMM", "COM", "description", "TDES"));
   tags.publisher = values.first("TPUB", "TPB", "publisher");
   tags.publishedDate = values.first("TDRL", "TDRC", "TYER", "TYE", "TDAT");
   tags.language = values.first("TLAN", "TLA");
