@@ -302,7 +302,13 @@ pub(crate) async fn update_progress(
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &decided_book_id, move |previous| {
-            decide_progress_write(&decision_book, &track, previous, &decision_update, now_millis)
+            decide_progress_write(
+                &decision_book,
+                &track,
+                previous,
+                &decision_update,
+                now_millis,
+            )
         })
         .await?;
 
@@ -330,9 +336,13 @@ pub(crate) async fn update_progress(
 
     let was_finished = previous
         .as_ref()
-        .map(|progress| summarize_book_progress(&book, progress).status == BookProgressStatus::Finished)
+        .map(|progress| {
+            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
+        })
         .unwrap_or(false);
-    if !was_finished && summarize_book_progress(&book, &saved).status == BookProgressStatus::Finished {
+    if !was_finished
+        && summarize_book_progress(&book, &saved).status == BookProgressStatus::Finished
+    {
         record_completion(&state, &auth.id, &book, CompletionSource::Reached, 0).await;
     }
 
@@ -424,7 +434,9 @@ pub(crate) async fn update_book_completion(
     let summary = summarize_book_progress(&book, &saved);
     let was_finished = previous
         .as_ref()
-        .map(|progress| summarize_book_progress(&book, progress).status == BookProgressStatus::Finished)
+        .map(|progress| {
+            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
+        })
         .unwrap_or(false);
     if update.finished && !was_finished {
         record_completion(&state, &auth.id, &book, CompletionSource::Marked, 0).await;

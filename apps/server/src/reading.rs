@@ -84,57 +84,100 @@ pub(crate) async fn record_completion(
         track_count: book.track_count,
     };
     let event = CompletionEvent {
-        id: generate_session_token(), user_id: user_id.to_string(), book_id: book.id.clone(),
-        work_id, finished_at_ms: unix_now_millis(), source, tz_offset_minutes,
-        finished_on: today_ymd(tz_offset_minutes), snapshot,
+        id: generate_session_token(),
+        user_id: user_id.to_string(),
+        book_id: book.id.clone(),
+        work_id,
+        finished_at_ms: unix_now_millis(),
+        source,
+        tz_offset_minutes,
+        finished_on: today_ymd(tz_offset_minutes),
+        snapshot,
     };
-    if let Err(error) = state.reading_history.mutate(|history| {
-        history.completions.push(event);
-        Ok(())
-    }).await {
+    if let Err(error) = state
+        .reading_history
+        .mutate(|history| {
+            history.completions.push(event);
+            Ok(())
+        })
+        .await
+    {
         tracing::warn!("failed to persist completion: {}", error.message);
     }
 }
 
 pub(crate) async fn reading_log_sessions(
-    State(state): State<AppState>, Extension(auth): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Json<Vec<ReadingSession>> {
     let history = state.reading_history.read().await;
-    Json(history.sessions.iter().filter(|row| row.user_id == auth.id).cloned().collect())
+    Json(
+        history
+            .sessions
+            .iter()
+            .filter(|row| row.user_id == auth.id)
+            .cloned()
+            .collect(),
+    )
 }
 
 pub(crate) async fn reading_log_completions(
-    State(state): State<AppState>, Extension(auth): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Json<Vec<CompletionEvent>> {
     let history = state.reading_history.read().await;
-    Json(history.completions.iter().filter(|row| row.user_id == auth.id).cloned().collect())
+    Json(
+        history
+            .completions
+            .iter()
+            .filter(|row| row.user_id == auth.id)
+            .cloned()
+            .collect(),
+    )
 }
 
 pub(crate) async fn list_works(
-    State(state): State<AppState>, Extension(auth): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<WorkStore>, ApiError> {
     require_admin(&auth)?;
     Ok(Json(state.works.read().await.clone()))
 }
 
 pub(crate) async fn link_work_edition(
-    State(state): State<AppState>, Extension(auth): Extension<AuthUser>, Json(request): Json<WorkLinkRequest>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(request): Json<WorkLinkRequest>,
 ) -> Result<Json<WorkStore>, ApiError> {
     require_admin(&auth)?;
-    state.works.mutate(|works| {
-        if works.link_manually(&request.book_id, &request.work_id) { Ok(()) }
-        else { Err(ApiError::not_found("Work not found")) }
-    }).await?;
+    state
+        .works
+        .mutate(|works| {
+            if works.link_manually(&request.book_id, &request.work_id) {
+                Ok(())
+            } else {
+                Err(ApiError::not_found("Work not found"))
+            }
+        })
+        .await?;
     Ok(Json(state.works.read().await.clone()))
 }
 
 pub(crate) async fn reject_work_suggestion(
-    State(state): State<AppState>, Extension(auth): Extension<AuthUser>, Json(request): Json<WorkLinkRequest>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(request): Json<WorkLinkRequest>,
 ) -> Result<Json<WorkStore>, ApiError> {
     require_admin(&auth)?;
-    state.works.mutate(|works| {
-        if works.reject_suggestion(&request.book_id, &request.work_id) { Ok(()) }
-        else { Err(ApiError::not_found("Work not found")) }
-    }).await?;
+    state
+        .works
+        .mutate(|works| {
+            if works.reject_suggestion(&request.book_id, &request.work_id) {
+                Ok(())
+            } else {
+                Err(ApiError::not_found("Work not found"))
+            }
+        })
+        .await?;
     Ok(Json(state.works.read().await.clone()))
 }
