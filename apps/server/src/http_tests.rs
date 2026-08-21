@@ -108,6 +108,18 @@ impl TestServer {
                 StoreShape::Activity,
                 ActivityStore::default(),
             )),
+            reading_history: Arc::new(ReadingHistoryStore::new(
+                database.clone(),
+                StoreShape::Document(READING_HISTORY_DOCUMENT),
+                ReadingHistory::default(),
+            )),
+            open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
+            shutdown: tokio::sync::broadcast::channel(1).0,
+            works: Arc::new(WorksStore::new(
+                database.clone(),
+                StoreShape::Document(WORKS_DOCUMENT),
+                WorkStore::default(),
+            )),
             libation_requests: Arc::new(LibationRequests::new(
                 database.clone(),
                 StoreShape::Document(LIBATION_REQUESTS_DOCUMENT),

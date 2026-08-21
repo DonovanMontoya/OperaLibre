@@ -50,7 +50,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::{
     fs,
     process::Command,
-    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, RwLock, Semaphore, broadcast},
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -77,6 +77,8 @@ mod library;
 mod media;
 mod migrate;
 mod progress;
+mod reading;
+mod reading_log;
 mod storage;
 mod sync;
 #[cfg(test)]
@@ -84,6 +86,7 @@ mod unit_tests;
 mod updates;
 mod upload;
 mod util;
+mod works;
 
 use activity::*;
 use app::*;
@@ -98,10 +101,13 @@ use library::*;
 use media::*;
 use migrate::*;
 use progress::*;
+use reading::*;
+use reading_log::*;
 use storage::*;
 use sync::*;
 use upload::*;
 use util::*;
+use works::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -188,6 +194,8 @@ async fn main() -> anyhow::Result<()> {
     let libation_requests = snapshot.libation_requests;
     let libation_refreshes = snapshot.libation_refreshes;
     let libation_accounts = snapshot.libation_accounts;
+    let reading_history = snapshot.reading_history;
+    let works_store = snapshot.works;
     let users_store = snapshot.users.clone();
     let setup_token =
         if users_store.users.is_empty() && config.deployment_mode.allows_remote_setup() {
@@ -226,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = fs::remove_file(&config.activity_file).await;
     }
 
+    let (shutdown, _) = broadcast::channel(1);
     let state = AppState {
         deployment_mode: config.deployment_mode,
         csrf_allowed_origins: Arc::new(build_csrf_allowed_origins(&config.allowed_origins)),
@@ -273,6 +282,18 @@ async fn main() -> anyhow::Result<()> {
             StoreShape::Activity,
             activity_store,
         )),
+        reading_history: Arc::new(ReadingHistoryStore::new(
+            database.clone(),
+            StoreShape::Document(READING_HISTORY_DOCUMENT),
+            reading_history,
+        )),
+        open_sessions: Arc::new(Mutex::new(OpenSessions::default())),
+        shutdown,
+        works: Arc::new(WorksStore::new(
+            database.clone(),
+            StoreShape::Document(WORKS_DOCUMENT),
+            works_store,
+        )),
         libation_requests: Arc::new(LibationRequests::new(
             database.clone(),
             StoreShape::Document(LIBATION_REQUESTS_DOCUMENT),
@@ -301,9 +322,10 @@ async fn main() -> anyhow::Result<()> {
 
     rescan_library(&state).await?;
     schedule_automatic_libation_refresh(state.clone());
+    schedule_reading_session_sweeper(state.clone());
 
     let app = build_router(
-        state,
+        state.clone(),
         config.web_dist_dir.as_deref(),
         &config.allowed_origins,
     )?;
@@ -323,9 +345,30 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal(state.shutdown.subscribe()))
     .await?;
+    drain_reading_sessions(&state).await;
 
     Ok(())
+}
+
+async fn shutdown_signal(mut shutdown: broadcast::Receiver<()>) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+            _ = shutdown.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = shutdown.recv() => {},
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,16 @@ pub(crate) struct AppState {
     pub(crate) sessions: Arc<SessionStore>,
     /// Daily listening totals, cached and mirrored to disk.
     pub(crate) activity: Arc<ActivityLog>,
+    /// Durable, per-listener reading sessions and immutable completion events.
+    pub(crate) reading_history: Arc<ReadingHistoryStore>,
+    /// Coalesces the client's frequent playback checkpoints into substantive
+    /// listening sessions before they are persisted.
+    pub(crate) open_sessions: Arc<Mutex<OpenSessions>>,
+    /// A server-owned stop request, used when an in-process update needs the
+    /// same graceful drain path as a signal-driven shutdown.
+    pub(crate) shutdown: broadcast::Sender<()>,
+    /// The work identity index above individual audio-file editions.
+    pub(crate) works: Arc<WorksStore>,
     pub(crate) libation_requests: Arc<LibationRequests>,
     pub(crate) libation_refreshes: Arc<LibationRefreshes>,
     pub(crate) libation_accounts: Arc<LibationAccounts>,
@@ -83,6 +93,11 @@ pub(crate) fn build_router(
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/profile/stats", get(profile_stats))
+        .route("/api/profile/sessions", get(reading_log_sessions))
+        .route("/api/profile/completions", get(reading_log_completions))
+        .route("/api/works", get(list_works))
+        .route("/api/works/link", post(link_work_edition))
+        .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
         .route("/api/update/install", post(install_update))
         .route("/api/frontend-update", get(frontend_update_status))
@@ -308,12 +323,14 @@ pub(crate) async fn install_update(
     State(state): State<AppState>,
     _: OwnerUser,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
-    state
-        .update_manager
-        .install()
-        .await
-        .map(Json)
-        .map_err(|error| ApiError::bad_request(format!("Could not install the update: {error}")))
+    let started =
+        state.update_manager.install().await.map_err(|error| {
+            ApiError::bad_request(format!("Could not install the update: {error}"))
+        })?;
+    // The updater waits for this process, so let `main` own the exit. That
+    // runs the reading-session drain after this response has been accepted.
+    let _ = state.shutdown.send(());
+    Ok(Json(started))
 }
 
 pub(crate) async fn frontend_update_status(

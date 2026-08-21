@@ -6,7 +6,7 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** July 18, 2026
+**Last updated:** August 19, 2026
 
 OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre or Jellyfin server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
@@ -41,6 +41,8 @@ The App may receive or create:
 - audiobook titles, authors, narrators, descriptions, chapters, cover artwork, and other library metadata;
 - audio streams and audiobook files;
 - playback position, listening progress, completion status, and related timestamps;
+- a reading log recorded by the server: when each listening session started and ended, how long it lasted, which book it covered, the playback speed, the kind of client used, and the time zone offset reported by the device;
+- a record of each book finished, including the date and a copy of that book's title, author, narrator, runtime, and catalog identifiers, which the server keeps even after the audiobook itself is removed;
 - playback preferences such as listening speed; and
 - downloaded books and cached library information used for offline playback.
 
@@ -80,7 +82,11 @@ Server settings, authentication tokens, playback preferences, cached metadata, l
 
 ### On an OperaLibre server
 
-An OperaLibre server may store usernames, password hashes, session tokens, library metadata, audiobook and readalong files, and per-user listening progress. The server operator controls retention. An OperaLibre administrator can remove a reader account and its associated progress. The server operator can remove library files and other stored data directly from the server.
+An OperaLibre server may store usernames, password hashes, session tokens, library metadata, audiobook and readalong files, per-user listening progress, and a per-user reading log.
+
+The reading log is more detailed than a playback position: it records when a reader was listening and for how long, which over time describes their daily routine. It is stored on the server the reader signs in to, is never sent anywhere else, and is readable only by that reader — an administrator's own view of other readers remains limited to the optional shared-progress feature, which shows a percentage and a status by mutual opt-in.
+
+The server operator controls retention. An OperaLibre administrator can remove a reader account, which deletes its progress and reading log. The server operator can remove library files and other stored data directly from the server.
 
 ### On a Jellyfin server
 
@@ -112,7 +118,7 @@ You can:
 - sign out or change the selected server;
 - delete downloaded books and imported on-device books in the App;
 - uninstall the App to remove its locally stored data, subject to normal device backup behavior;
-- ask the operator of an OperaLibre server to delete your reader account and listening progress; or
+- ask the operator of an OperaLibre server to delete your reader account, listening progress, and reading log; or
 - use the account and data-management options provided by your Jellyfin server or contact its operator.
 
 Because the developer does not receive or centrally store your server account or listening data, requests concerning data held by a self-hosted server must be directed to that server’s operator.

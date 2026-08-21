@@ -50,6 +50,9 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - Sleep timer.
 - Library search and sorting.
 - Per-user listening profiles, streaks, and recent-book statistics.
+- A per-reader reading log: listening sessions with times, durations, speed, and client, rolled up into hour-of-day and weekday patterns, session lengths, real per-book listening time, and abandoned-book detection.
+- Durable completion history. Finishing a book is recorded as an immutable event with a snapshot of the edition, so it survives the audiobook being deleted, re-downloaded, or replaced.
+- Work-level book identity, linking different editions, rips, and ISBNs of the same book so a reading history follows the reader across copies. Uncertain matches are queued for an administrator rather than merged silently.
 - On-device audiobook downloads and offline playback in the native mobile apps.
 - Media Session integration for OS-level playback controls where supported.
 - PWA manifest plus Capacitor Android and iPhone apps that reuse the web frontend.

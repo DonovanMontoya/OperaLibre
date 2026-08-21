@@ -1229,6 +1229,18 @@ pub(crate) async fn delete_user(
 
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    state
+        .reading_history
+        .mutate(|history| {
+            history
+                .sessions
+                .retain(|session| session.user_id != user_id);
+            history
+                .completions
+                .retain(|completion| completion.user_id != user_id);
+            Ok(())
+        })
+        .await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

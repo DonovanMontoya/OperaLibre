@@ -868,6 +868,37 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         books.push(book);
     }
 
+    // Resolve the stable work identity after a complete scan. Playback remains
+    // keyed by the edition's byte identity; this index is only for history and
+    // lets replacement downloads roll up under the same work.
+    let editions = books
+        .iter()
+        .map(|book| EditionCandidate {
+            book_id: book.id.clone(),
+            title: book.title.clone(),
+            author: book.author.clone(),
+            asin: book.asin.clone(),
+            isbn: None,
+            duration_seconds: book.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+    state
+        .works
+        .mutate(move |works| {
+            let now = unix_now_millis();
+            for edition in &editions {
+                works.resolve(edition, now, generate_session_token);
+            }
+            let present = editions
+                .iter()
+                .map(|edition| edition.book_id.clone())
+                .collect::<HashSet<_>>();
+            works.prune_suggestions(&present);
+            Ok(())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+
     write_json_atomic(&state.library_identities_file, &identities)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
