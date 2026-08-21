@@ -442,8 +442,12 @@ impl BookSettingsStore {
             .into_iter()
             .filter(|(key, _)| key.starts_with(&prefix))
             .filter_map(|(key, settings)| {
-                key.strip_prefix(&prefix)
-                    .map(|book_id| (book_id.to_string(), settings.volume_gain))
+                key.strip_prefix(&prefix).map(|book_id| {
+                    (
+                        book_id.to_string(),
+                        clamp_book_volume_gain(settings.volume_gain),
+                    )
+                })
             })
             .collect())
     }
