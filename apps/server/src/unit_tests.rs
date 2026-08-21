@@ -1496,6 +1496,7 @@ exit 0
             super::StoreShape::Document(super::READING_HISTORY_DOCUMENT),
             super::ReadingHistory::default(),
         )),
+        open_sessions: super::Arc::new(super::Mutex::new(super::OpenSessions::default())),
         works: super::Arc::new(super::WorksStore::new(
             database.clone(),
             super::StoreShape::Document(super::WORKS_DOCUMENT),

@@ -343,7 +343,14 @@ pub(crate) async fn update_progress(
     if !was_finished
         && summarize_book_progress(&book, &saved).status == BookProgressStatus::Finished
     {
-        record_completion(&state, &auth.id, &book, CompletionSource::Reached, 0).await;
+        record_completion(
+            &state,
+            &auth.id,
+            &book,
+            CompletionSource::Reached,
+            sanitized_tz_offset_minutes(update.tz_offset_minutes),
+        )
+        .await;
     }
 
     Ok(Json(saved))
