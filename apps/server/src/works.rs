@@ -385,6 +385,7 @@ impl WorkStore {
     /// Read paths resolve through this rather than trusting the work id frozen
     /// onto an old log row, so an administrator linking two editions merges the
     /// history those editions already accumulated.
+    #[allow(dead_code)]
     pub fn book_to_work(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         for work in self.works.iter() {
@@ -405,6 +406,7 @@ impl WorkStore {
     /// before anybody played it.
     ///
     /// Returns how many were removed.
+    #[allow(dead_code)]
     pub fn prune_unused(
         &mut self,
         present_book_ids: &HashSet<String>,
@@ -445,6 +447,7 @@ impl WorkStore {
     }
 }
 
+#[allow(dead_code)]
 pub async fn load_works(path: &FsPath) -> io::Result<WorkStore> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) => Ok(serde_json::from_str(&contents).unwrap_or_else(|error| {

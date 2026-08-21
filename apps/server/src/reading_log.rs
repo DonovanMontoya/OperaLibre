@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! The reading log: what each listener actually did, kept in a form that
 //! outlives the files they did it to.
 //!
