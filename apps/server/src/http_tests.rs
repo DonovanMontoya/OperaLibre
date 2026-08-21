@@ -1198,6 +1198,8 @@ async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
         !again.header(next_cursor).is_empty(),
         "the refetch did not reveal the new page"
     );
+}
+
 // ---------------------------------------------------------------------------
 // Operational surface
 // ---------------------------------------------------------------------------
@@ -1233,6 +1235,25 @@ async fn metrics_count_a_listener_who_just_saved_a_position() {
 
     let metrics = server.get("/api/metrics", &owner).await.json();
     assert_eq!(metrics["listeningNow"], 1);
+}
+
+/// Two people on the same book are two listeners, and one person touching two
+/// books is one listener: the count is of people, not of books.
+#[tokio::test]
+async fn listening_now_counts_people_not_books() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "second").await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+
+    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
+    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
+
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(
+        metrics["listeningNow"], 2,
+        "two listeners on one book were collapsed into one"
+    );
 }
 
 /// The request timeout must not sit in front of a book download: the archive
