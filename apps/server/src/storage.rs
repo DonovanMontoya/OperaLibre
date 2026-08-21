@@ -122,39 +122,50 @@ async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
 
 #[cfg(windows)]
 async fn replace_file(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    let temp_path = temp_path.to_path_buf();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || replace_file_blocking(&temp_path, &path))
+        .await
+        .map_err(io::Error::other)?
+}
+
+/// Replace a file from a synchronous path such as JSON export. Windows cannot
+/// use `rename` when the destination already exists, so every synchronous
+/// writer shares the same replacement semantics as `write_json_atomic`.
+#[cfg(unix)]
+pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
+    std::fs::rename(temp_path, path)
+}
+
+#[cfg(windows)]
+pub(crate) fn replace_file_blocking(temp_path: &FsPath, path: &FsPath) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
-    let temp_path = temp_path.to_path_buf();
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let from = temp_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let to = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        if unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    })
-    .await
-    .map_err(io::Error::other)?
+    let from = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Fsync the directory holding the file and any newly-created ancestor links.

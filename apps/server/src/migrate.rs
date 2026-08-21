@@ -408,6 +408,6 @@ fn write_json_file<T: Serialize>(path: &FsPath, value: &T) -> anyhow::Result<()>
     file.write_all(&serde_json::to_vec_pretty(value)?)?;
     file.sync_all()?;
     drop(file);
-    std::fs::rename(&temp_path, path)?;
+    replace_file_blocking(&temp_path, path)?;
     Ok(())
 }

@@ -3126,6 +3126,23 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
         libation_refreshes: exported_dir.join("libation-refreshes.json"),
         libation_accounts: exported_dir.join("libation-accounts.json"),
     };
+    // Export replaces the JSON files migration intentionally leaves behind.
+    // This also exercises the Windows replacement path, where a plain rename
+    // cannot overwrite an existing destination.
+    for name in [
+        "progress.json",
+        "progress.backups.json",
+        "book-settings.json",
+        "users.json",
+        "sessions.json",
+        "activity.json",
+        "metadata-overrides.json",
+        "libation-requests.json",
+        "libation-refreshes.json",
+        "libation-accounts.json",
+    ] {
+        std::fs::write(exported_dir.join(name), "stale export").unwrap();
+    }
     database
         .call(move |connection| {
             super::export_json(connection, &export_layout)
