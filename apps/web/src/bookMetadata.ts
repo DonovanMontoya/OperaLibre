@@ -21,11 +21,14 @@ function cleanCatalogDescription(value: string | null) {
     ?.replace(/<br\s*\/?>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&quot;|&#34;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
+    // Strip any markup reconstructed from malformed tags or decoded entities.
+    .replace(/[<>]/g, "")
+    // Decode ampersands last so `&amp;lt;` cannot become a tag in this pass.
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
   return description || null;
