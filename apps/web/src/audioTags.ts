@@ -244,11 +244,14 @@ function cleanTagText(value: string) {
     .replace(/<\/p>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&quot;|&#34;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
+    // Strip any markup reconstructed from malformed tags or decoded entities.
+    .replace(/[<>]/g, "")
+    // Decode ampersands last so `&amp;lt;` cannot become a tag in this pass.
+    .replace(/&amp;/gi, "&")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
