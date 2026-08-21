@@ -56,6 +56,7 @@ use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
@@ -261,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
         )?,
         sync_dir: config.data_dir.join("sync"),
         covers_dir: config.data_dir.join("covers"),
+        database_path: database_path.clone(),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(
             database.clone(),

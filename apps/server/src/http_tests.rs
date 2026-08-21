@@ -51,6 +51,9 @@ impl TestServer {
         let data_dir = root.path().join("data");
         std::fs::create_dir_all(&library_root).unwrap();
         std::fs::create_dir_all(&data_dir).unwrap();
+        // Startup creates this; a harness that skips it makes the download
+        // route fail for a reason that has nothing to do with the test.
+        std::fs::create_dir_all(data_dir.join("download-temp")).unwrap();
 
         let audio = fixture_wav();
         for book in 0..book_count {
@@ -87,6 +90,7 @@ impl TestServer {
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             covers_dir: data_dir.join("covers"),
+            database_path: data_dir.join("operalibre.db"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(
                 database.clone(),
@@ -1141,4 +1145,88 @@ async fn an_unknown_cursor_restarts_the_walk() {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_eq!(page.json().as_array().unwrap().len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Operational surface
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_are_owner_only_and_describe_the_server() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "curious").await;
+
+    let refused = server.get("/api/metrics", &reader).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let metrics = server.get("/api/metrics", &owner).await;
+    assert_eq!(metrics.status, StatusCode::OK, "{}", metrics.text());
+    let metrics = metrics.json();
+    assert_eq!(metrics["books"], 3);
+    assert_eq!(metrics["tracks"], 6);
+    assert_eq!(metrics["users"], 2);
+    assert_eq!(metrics["listeningNow"], 0);
+    assert!(metrics["activeSessions"].as_u64().unwrap() >= 1);
+    assert!(metrics["databaseBytes"].as_u64().unwrap() > 0);
+    assert!(!metrics["version"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn metrics_count_a_listener_who_just_saved_a_position() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+
+    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
+
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
+}
+
+/// The request timeout must not sit in front of a book download: the archive
+/// is built before the response begins, and a large book takes minutes.
+#[tokio::test]
+async fn downloading_a_book_is_not_behind_the_request_timeout() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let response = server
+        .get(&format!("/api/books/{book}/download"), &token)
+        .await;
+
+    // The point is that the route answers on its own terms. A timeout layer in
+    // front of it would surface as 408 rather than a real answer.
+    assert_ne!(
+        response.status,
+        StatusCode::REQUEST_TIMEOUT,
+        "the download route was placed behind the request timeout"
+    );
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert!(!response.body.is_empty(), "the archive was empty");
+}
+
+#[tokio::test]
+async fn an_oversized_json_body_is_refused() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    // Well past MAX_JSON_BODY_BYTES, padded with a field the payload ignores.
+    let padding = "x".repeat(2 * 1024 * 1024);
+    let response = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &token,
+            serde_json::json!({
+                "trackId": track,
+                "positionSeconds": 1.0,
+                "padding": padding,
+            }),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
