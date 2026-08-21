@@ -118,6 +118,7 @@ impl TestServer {
             libation_login_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             rescan_lock: Arc::new(Mutex::new(())),
             libation_job_lock: Arc::new(Mutex::new(())),
+            libation_refresh_reservation_lock: Arc::new(Mutex::new(())),
             faststart_lock: Arc::new(Mutex::new(())),
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),

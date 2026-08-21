@@ -1337,6 +1337,11 @@ pub(crate) async fn reserve_manual_libation_refresh(
         return Ok(create_libation_job(state, "libation-sync", None).await);
     }
 
+    // Make the queued job visible before another reader checks the quota. If
+    // these operations interleave, duplicate clicks can consume all the slots
+    // and one can receive a 429 even though it would only join this job.
+    let _reservation_guard = state.libation_refresh_reservation_lock.lock().await;
+
     if let Some(job_id) = active_libation_sync_job(state).await {
         return Ok((job_id, false));
     }
