@@ -260,6 +260,7 @@ async fn main() -> anyhow::Result<()> {
             config.port,
         )?,
         sync_dir: config.data_dir.join("sync"),
+        covers_dir: config.data_dir.join("covers"),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(
             database.clone(),

@@ -246,7 +246,7 @@ remaining durability questions in one move.
 
 ---
 
-## Phase 5 — Hot paths
+## Phase 5 — Hot paths *(done)*
 
 With SQLite in place these become straightforward.
 
@@ -332,11 +332,13 @@ Each row is mirrored into the body of the PR it belongs to.
 | C16 | `BookSettingsStore::gain` briefly stopped clamping on read, which the JSON helper it replaced did. A gain stored by an older release or edited by hand would have reached a client unclamped. | Fixed — SQLite commit | Phase 4 |
 | C17 | The whole database is reached through one connection behind a lock, so reads serialise even though WAL would allow them to run concurrently. Fine for a household; a small read pool is the fix if it ever is not. | Open | Phase 4 |
 | C18 | Metadata overrides and the three Libation stores keep their JSON shape in a `documents` table rather than becoming columns. They are small, bounded, cached, and still changing shape. Promote them if anything ever needs to query inside them. | Open | Phase 4 |
+| C20 | The library listing's ETag is a hash of the response as built, so a conditional request saves bandwidth but not server work. A tag derived from a library generation counter would save the query too, but would have to account for shared listeners' positions and volume gains — both of which change the response without touching the requester's own progress — and answering 304 with stale content is worse than answering 200. | Open | Phase 5 |
+| C21 | The scan now uses rayon's global pool. On a machine also running transcodes or Libation downloads, a large first scan will compete for cores. A scan-specific pool with a lower thread count is the fix if that ever bites. | Open | Phase 5 |
 | C7 | `ProgressStore::set` is `#[cfg(test)]` because only tests need it today. The SQLite migration wants the same primitive and should drop the gate rather than duplicating it. | Open | Phase 3 |
 | C8 | `OwnerUser` carries no payload because no owner-only handler needs the acting user. A handler that does need it must add the `AuthUser` field back rather than reaching for `AuthUser` separately. | Open | Phase 2 |
 | C9 | `http_tests.rs` lives in the crate rather than `tests/` because the server is a binary-only target. It should move unchanged once there is a library target. | Open | Phase 0 |
 | C10 | `sync_parent_directory` is a no-op on Windows. The rename is still atomic there, but the durability guarantee is weaker than on Unix and nothing warns about it. | Open | Phase 0 |
-| C11 | `resolve_media_session` scans every session and hashes each one on the hottest route in the server, and compares with a non-constant-time `==` even though `constant_time_eq` already exists in the crate. | Open | Review |
+| C11 | `resolve_media_session` scans every session and hashes each one on the hottest route in the server, and compares with a non-constant-time `==`. | Fixed — reverse index on `SessionStore`, confirmed with `constant_time_eq` | Review |
 | C12 | Media tokens ride in query strings by design. The server drops them from its own tracing spans, but `operalibre-nginx.conf` will log them by default. | Open | Review |
 
 ## Sequencing summary
@@ -348,7 +350,7 @@ Each row is mirrored into the body of the PR it belongs to.
 | 2 | Typed auth extractors | Low | Permanent authz guarantee — **done** |
 | 3 | Storage seam, still JSON | Medium | Phase 4 — **done** |
 | 4 | SQLite | High, gated by 0 and 3 | Phase 5 — **done** |
-| 5 | Hot paths | Medium | Scale |
+| 5 | Hot paths | Medium | Scale — **done** |
 | 6 | Operations | Low | Reliability |
 | 7 | OPDS / ABS compatibility | Low | Ecosystem |
 
