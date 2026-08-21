@@ -769,6 +769,13 @@ pub(crate) type UserStore = CachedStore<UsersStore>;
 pub(crate) struct SessionStore {
     inner: CachedStore<HashMap<String, Session>>,
     by_media_token: RwLock<HashMap<String, String>>,
+    /// Serializes mutation and index publication. The index is rebuilt from a
+    /// fresh read of the map after each commit, so two overlapping mutations
+    /// must not be free to publish out of order — without the gate, the first
+    /// could overwrite the second's newer index with its own older snapshot,
+    /// leaving a just-signed-in session's media token unresolvable until the
+    /// next session change.
+    mutate_gate: tokio::sync::Mutex<()>,
 }
 
 fn media_token_index(sessions: &HashMap<String, Session>) -> HashMap<String, String> {
@@ -788,6 +795,7 @@ impl SessionStore {
         Self {
             inner: CachedStore::new(db, persist, sessions),
             by_media_token,
+            mutate_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -799,9 +807,13 @@ impl SessionStore {
     where
         F: FnOnce(&mut HashMap<String, Session>) -> Result<R, ApiError>,
     {
+        let _gate = self.mutate_gate.lock().await;
         let outcome = self.inner.mutate(change).await?;
         // Rebuilt rather than patched: sessions change on sign-in and sign-out
         // only, the map is capped, and a rebuild cannot drift from the truth.
+        // The gate keeps the read-and-publish step from interleaving with
+        // another mutation's commit, so the index never lags the map it
+        // mirrors.
         let rebuilt = media_token_index(&*self.inner.read().await);
         *self.by_media_token.write().await = rebuilt;
         Ok(outcome)
@@ -811,8 +823,9 @@ impl SessionStore {
     pub(crate) async fn session_for_media_token(&self, media_token: &str) -> Option<String> {
         let index = self.by_media_token.read().await;
         let (stored, session_token) = index.get_key_value(media_token)?;
-        // The map found it by hash; confirm the match without an early-exit
-        // comparison, so a near miss cannot be distinguished by timing.
+        // Defense in depth only: the map's own lookup has already compared
+        // keys with an early-exiting equality, so this cannot restore a
+        // timing guarantee. It costs nothing and keeps the match explicit.
         constant_time_eq(stored.as_bytes(), media_token.as_bytes()).then(|| session_token.clone())
     }
 }

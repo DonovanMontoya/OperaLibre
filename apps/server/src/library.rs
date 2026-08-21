@@ -264,14 +264,13 @@ pub(crate) async fn list_books(
     let mut next_cursor = None;
     if let Some(limit) = query.limit {
         if let Some(cursor) = query.cursor.as_deref() {
-            match books.iter().position(|book| book.id == cursor) {
-                Some(index) => books.drain(..=index),
-                // A cursor for a book this listener can no longer see - it was
-                // removed, or access was revoked - restarts rather than fails,
-                // which is the behaviour a paging client can actually recover
-                // from mid-scroll.
-                None => books.drain(..0),
-            };
+            // A cursor for a book this listener can no longer see - it was
+            // removed, or access was revoked - restarts rather than fails,
+            // which is the behaviour a paging client can actually recover
+            // from mid-scroll.
+            if let Some(index) = books.iter().position(|book| book.id == cursor) {
+                books.drain(..=index);
+            }
         }
         let limit = limit.clamp(1, MAX_BOOKS_PAGE);
         if books.len() > limit {
@@ -997,13 +996,17 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
-    let mut library = state.library.write().await;
+    // Cover extraction touches the disk for every book with art, so it runs
+    // before the lock is taken: holding the library write guard through it
+    // would stall every route that reads the library, including media
+    // streaming, for the length of the pass.
     let covers_dir = state.covers_dir.clone();
     let cover_art =
         tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
             .await
             .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
 
+    let mut library = state.library.write().await;
     library.books = books;
     library.book_paths = book_paths;
     library.track_paths = track_paths;
@@ -1857,8 +1860,9 @@ pub(crate) fn unique_metadata_fields(fields: Vec<MetadataField>) -> Vec<Metadata
 /// the serving route needs, without the bytes.
 ///
 /// Files are named by book id and rewritten only when their content actually
-/// changed, so a rescan that finds the same art does no I/O. Anything left
-/// over from a book that is no longer in the library is removed.
+/// changed: a length mismatch skips the rewrite outright, and matching art is
+/// confirmed by reading the existing file back. Anything left over from a book
+/// that is no longer in the library is removed.
 pub(crate) fn write_cover_cache(
     covers_dir: &FsPath,
     extracted: Vec<(String, EmbeddedImage)>,

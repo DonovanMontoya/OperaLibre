@@ -3451,3 +3451,49 @@ fn replacing_cover_art_replaces_the_file_and_its_etag() {
     assert_eq!(before.path, after.path, "the cache path should be stable");
     assert_eq!(std::fs::read(&after.path).unwrap(), b"replacement art");
 }
+
+/// Overlapping mutations must not be able to publish their index snapshots
+/// out of order. Without the mutation gate, the loser of a race could
+/// overwrite a newer index with its own older snapshot, leaving a
+/// just-signed-in session's media token unresolvable until the next session
+/// change.
+#[tokio::test]
+async fn overlapping_session_mutations_keep_the_media_index_current() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let sessions = std::sync::Arc::new(super::SessionStore::new(
+        database,
+        super::StoreShape::Sessions,
+        std::collections::HashMap::new(),
+    ));
+
+    let mut handles = Vec::new();
+    for index in 0..32 {
+        let sessions = sessions.clone();
+        handles.push(tokio::spawn(async move {
+            let token = format!("session-{index}");
+            sessions
+                .mutate(|live| {
+                    live.insert(
+                        token.clone(),
+                        super::Session {
+                            user_id: "reader".to_string(),
+                            created_at: super::unix_now_seconds(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            super::media_token_for_session(&token)
+        }));
+    }
+
+    for handle in handles {
+        let media = handle.await.unwrap();
+        assert!(
+            sessions.session_for_media_token(&media).await.is_some(),
+            "a committed session's media token was missing from the index"
+        );
+    }
+}
