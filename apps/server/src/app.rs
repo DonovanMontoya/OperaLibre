@@ -25,6 +25,8 @@ pub(crate) struct AppState {
     pub(crate) faststart_tools: Option<faststart::Tools>,
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
+    /// Where cover art extracted during the scan is kept.
+    pub(crate) covers_dir: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
     /// Administrator metadata edits, cached and mirrored to disk.
     pub(crate) metadata_overrides: Arc<MetadataOverrides>,
@@ -242,6 +244,12 @@ pub(crate) fn build_router(
         .layer(
             cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
+                // Browser clients need to read these to walk a paged listing
+                // and issue conditional requests; neither is CORS-safelisted.
+                .expose_headers([
+                    axum::http::header::ETAG,
+                    axum::http::HeaderName::from_static("x-next-cursor"),
+                ])
                 .allow_credentials(true),
         )
         .layer(

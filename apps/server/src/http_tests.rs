@@ -18,6 +18,8 @@ use tower::ServiceExt;
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
+    /// Where the scanned library lives, for tests that grow it mid-flight.
+    library_root: PathBuf,
     /// Held so the temporary directory outlives the server.
     _root: tempfile::TempDir,
 }
@@ -86,6 +88,7 @@ impl TestServer {
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
+            covers_dir: data_dir.join("covers"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(
                 database.clone(),
@@ -148,8 +151,10 @@ impl TestServer {
 
         rescan_library(&state).await.unwrap();
 
+        let library_root = state.library_root.clone();
         Self {
             router: build_router(state, None, &[]).unwrap(),
+            library_root,
             _root: root,
         }
     }
@@ -965,5 +970,228 @@ async fn deleting_a_listener_forgets_their_position_and_settings() {
     assert!(
         (book_view["volumeGain"].as_f64().unwrap() - 1.0).abs() < 1e-9,
         "a deleted listener's gain came back"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Library listing: conditional requests and paging
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_unchanged_library_answers_a_conditional_request_with_304() {
+    let server = TestServer::start(3).await;
+    let token = server.setup_owner().await;
+
+    let first = server.get("/api/books", &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let etag = first.header(header::ETAG);
+    assert!(!etag.is_empty(), "the listing carried no ETag");
+
+    let again = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_MODIFIED);
+    assert!(again.body.is_empty());
+}
+
+#[tokio::test]
+async fn saving_a_position_invalidates_the_listing_tag() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    let etag = server.get("/api/books", &token).await.header(header::ETAG);
+    save_position(&server, &token, &book, &track, 5.0, serde_json::json!({})).await;
+
+    let after = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        after.status,
+        StatusCode::OK,
+        "a stale tag was accepted after the position moved"
+    );
+}
+
+/// A volume gain does not touch any position, so a tag derived only from
+/// progress timestamps would answer 304 with the old gain still in it.
+#[tokio::test]
+async fn changing_a_gain_invalidates_the_listing_tag() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let etag = server.get("/api/books", &token).await.header(header::ETAG);
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &token,
+            serde_json::json!({ "volumeGain": 2.0 }),
+        )
+        .await;
+
+    let after = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(after.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_library_can_be_walked_a_page_at_a_time() {
+    let server = TestServer::start(5).await;
+    let token = server.setup_owner().await;
+
+    let whole = server.get("/api/books", &token).await.json();
+    let whole: Vec<String> = whole
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(whole.len(), 5);
+
+    let mut walked = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..10 {
+        let uri = match &cursor {
+            Some(cursor) => format!("/api/books?limit=2&cursor={cursor}"),
+            None => "/api/books?limit=2".to_string(),
+        };
+        let page = server.get(&uri, &token).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        for book in page.json().as_array().unwrap() {
+            walked.push(book["id"].as_str().unwrap().to_string());
+        }
+        let next = page.header(axum::http::HeaderName::from_static("x-next-cursor"));
+        if next.is_empty() {
+            break;
+        }
+        cursor = Some(next);
+    }
+
+    assert_eq!(walked, whole, "paging did not reproduce the whole library");
+}
+
+#[tokio::test]
+async fn a_page_only_contains_books_the_listener_may_see() {
+    let server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "paged").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed: Vec<String> = books.as_array().unwrap()[..2]
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": allowed }),
+        )
+        .await;
+
+    let page = server.get("/api/books?limit=10", &reader).await;
+    let listed: Vec<String> = page
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        listed, allowed,
+        "paging leaked a book the reader cannot see"
+    );
+}
+
+/// A cursor can name a book that has since been removed, or that the listener
+/// has just lost access to. Restarting the walk is recoverable; a 404 or an
+/// empty page forever is not.
+#[tokio::test]
+async fn an_unknown_cursor_restarts_the_walk() {
+    let server = TestServer::start(3).await;
+    let token = server.setup_owner().await;
+
+    let page = server
+        .get("/api/books?limit=2&cursor=no-such-book", &token)
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_eq!(page.json().as_array().unwrap().len(), 2);
+}
+
+/// A page that was exactly full gains a next cursor when a later-sorting book
+/// arrives, with a body that did not change. The tag covers the navigation
+/// state, so the conditional refetch must not answer 304 and hide the new
+/// page from a paginating client.
+#[tokio::test]
+async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+
+    let next_cursor = axum::http::HeaderName::from_static("x-next-cursor");
+    let first = server.get("/api/books?limit=2", &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert!(
+        first.header(next_cursor.clone()).is_empty(),
+        "the whole library fit on one page, so there was no cursor"
+    );
+    let etag = first.header(header::ETAG);
+
+    // Sorts after both existing books, so the first page's body is unchanged.
+    let folder = server.library_root.join("Book 99");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("01 Track.wav"), fixture_wav()).unwrap();
+    let rescan = server
+        .send_json("POST", "/api/library/rescan", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(rescan.status, StatusCode::OK, "{}", rescan.text());
+
+    let again = server
+        .send(
+            Request::builder()
+                .uri("/api/books?limit=2")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::OK,
+        "a stale tag was accepted after the page gained a next cursor"
+    );
+    assert_eq!(again.json().as_array().unwrap().len(), 2);
+    assert!(
+        !again.header(next_cursor).is_empty(),
+        "the refetch did not reveal the new page"
     );
 }
