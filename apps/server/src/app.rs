@@ -91,7 +91,16 @@ pub(crate) fn build_router(
         .route("/api/auth/login", post(login))
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
-        .route("/api/{*path}", any(api_not_found));
+        .route("/api/{*path}", any(api_not_found))
+        // Sign-in and setup wait on the password-hashing worker pool, and
+        // every concurrent attempt clears the throttle check before any of
+        // them records a failure. Without this bound a saturated or wedged
+        // worker queue would hold unauthenticated connections open forever.
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+        ))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
@@ -104,12 +113,7 @@ pub(crate) fn build_router(
         .route("/api/works/link", post(link_work_edition))
         .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
-        .route("/api/update/install", post(install_update))
         .route("/api/frontend-update", get(frontend_update_status))
-        .route(
-            "/api/frontend-update/install",
-            post(install_frontend_update),
-        )
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -220,12 +224,23 @@ pub(crate) fn build_router(
     // timeout. The sign-in completion also removes its pending session before
     // waiting, so a 408 here would leave the client unable to retry and the
     // account stuck in `signing_in`.
+    //
+    // Installing an update downloads the release asset -- allowed ten minutes
+    // on its own -- before extracting and installing it. `UpdateManager` sets
+    // its `installing` flag before that work and clears it afterwards, so a
+    // timeout that dropped the future mid-install would leave the flag set and
+    // every later install refused as already in progress until a restart.
     let long_running_routes = Router::new()
         .route(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/library/rescan", post(rescan))
+        .route("/api/update/install", post(install_update))
+        .route(
+            "/api/frontend-update/install",
+            post(install_frontend_update),
+        )
         .route(
             "/api/libation/accounts/login/{session_id}/complete",
             post(complete_libation_account_login),
