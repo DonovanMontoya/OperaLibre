@@ -1348,6 +1348,41 @@ async fn the_opds_catalogue_lists_only_what_the_reader_may_hear() {
     assert!(body.contains("opds-spec.org/acquisition"));
     // Well-formed enough that a reader will not choke on the declaration.
     assert!(body.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+
+    // Many OPDS readers cannot attach a Bearer header while following feed
+    // links, so the same read-only media credential used by playback must be
+    // accepted on both catalogue routes.
+    let media_token = media_token_for_session(&reader);
+    let root_uri = format!("/api/opds?token={media_token}");
+    let root = server
+        .send(
+            Request::builder()
+                .uri(&root_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(root.status, StatusCode::OK, "{}", root.text());
+    assert!(
+        root.text()
+            .contains(&format!("/api/opds/books?token={media_token}"))
+    );
+
+    let books_uri = format!("/api/opds/books?token={media_token}");
+    let books = server
+        .send(
+            Request::builder()
+                .uri(&books_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    assert!(
+        books
+            .text()
+            .contains(&format!("stream?token={media_token}"))
+    );
 }
 
 #[test]
@@ -1466,6 +1501,73 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .json();
     assert!((session["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(session["playMethod"], 0);
+
+    // A delayed automatic checkpoint cannot roll the listener back.
+    let rejected_regression = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 4.0 }),
+        )
+        .await;
+    assert_eq!(rejected_regression.status, StatusCode::OK);
+    assert!((rejected_regression.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    let rejected_stale = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 16.0, "lastUpdate": 1 }),
+        )
+        .await;
+    assert_eq!(rejected_stale.status, StatusCode::OK);
+    assert!((rejected_stale.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    // Completion-only PATCHes preserve the position, and false is an explicit
+    // state rather than being ignored after true.
+    let finished = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "isFinished": true }),
+        )
+        .await
+        .json();
+    assert!((finished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(finished["isFinished"], true);
+
+    let unfinished = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "isFinished": false }),
+        )
+        .await
+        .json();
+    assert!((unfinished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(unfinished["isFinished"], false);
+
+    // A later forward checkpoint contributes to the native activity and
+    // reading-history surfaces instead of updating only the resume point.
+    let forward = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 16.0, "isFinished": false }),
+        )
+        .await;
+    assert_eq!(forward.status, StatusCode::OK, "{}", forward.text());
+    let stats = server.get("/api/profile/stats", &token).await.json();
+    assert!(stats["totalHoursRead"].as_f64().unwrap() > 0.0);
+    let completions = server.get("/api/profile/completions", &token).await.json();
+    assert_eq!(completions.as_array().unwrap().len(), 1);
+    let metrics = server.get("/api/metrics", &token).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
 }
 
 #[tokio::test]

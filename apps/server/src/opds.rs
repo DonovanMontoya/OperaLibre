@@ -46,8 +46,12 @@ fn feed_response(body: String, content_type: &str) -> Result<Response, ApiError>
 }
 
 /// The catalogue root: one entry per shelf a reader can open.
-pub(crate) async fn opds_root(Extension(auth): Extension<AuthUser>) -> Result<Response, ApiError> {
+pub(crate) async fn opds_root(
+    Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<SessionToken>,
+) -> Result<Response, ApiError> {
     let updated = rfc3339_utc(unix_now_seconds());
+    let media_token = media_token_for_session(&session.0);
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -55,14 +59,14 @@ pub(crate) async fn opds_root(Extension(auth): Extension<AuthUser>) -> Result<Re
   <title>OperaLibre</title>
   <updated>{updated}</updated>
   <author><name>OperaLibre</name></author>
-  <link rel="self" href="/api/opds" type="{OPDS_NAVIGATION_TYPE}"/>
-  <link rel="start" href="/api/opds" type="{OPDS_NAVIGATION_TYPE}"/>
+  <link rel="self" href="/api/opds?token={media_token}" type="{OPDS_NAVIGATION_TYPE}"/>
+  <link rel="start" href="/api/opds?token={media_token}" type="{OPDS_NAVIGATION_TYPE}"/>
   <entry>
     <id>urn:operalibre:catalog:all</id>
     <title>All audiobooks</title>
     <updated>{updated}</updated>
     <content type="text">Everything {username} can listen to.</content>
-    <link rel="subsection" href="/api/opds/books" type="{OPDS_FEED_TYPE}"/>
+    <link rel="subsection" href="/api/opds/books?token={media_token}" type="{OPDS_FEED_TYPE}"/>
   </entry>
 </feed>
 "#,
@@ -75,9 +79,11 @@ pub(crate) async fn opds_root(Extension(auth): Extension<AuthUser>) -> Result<Re
 pub(crate) async fn opds_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<SessionToken>,
 ) -> Result<Response, ApiError> {
     let books = books_with_progress(&state, &auth).await?;
     let updated = rfc3339_utc(unix_now_seconds());
+    let media_token = media_token_for_session(&session.0);
     let mut body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -85,8 +91,8 @@ pub(crate) async fn opds_books(
   <title>All audiobooks</title>
   <updated>{updated}</updated>
   <author><name>OperaLibre</name></author>
-  <link rel="self" href="/api/opds/books" type="{OPDS_FEED_TYPE}"/>
-  <link rel="start" href="/api/opds" type="{OPDS_NAVIGATION_TYPE}"/>
+  <link rel="self" href="/api/opds/books?token={media_token}" type="{OPDS_FEED_TYPE}"/>
+  <link rel="start" href="/api/opds?token={media_token}" type="{OPDS_NAVIGATION_TYPE}"/>
 "#
     );
 
@@ -132,15 +138,17 @@ pub(crate) async fn opds_books(
         ));
         if book.cover_art_url.is_some() {
             body.push_str(&format!(
-                "    <link rel=\"http://opds-spec.org/image\" href=\"/api/books/{}/cover\"/>\n",
-                xml_escape(&book.id)
+                "    <link rel=\"http://opds-spec.org/image\" href=\"/api/books/{}/cover?token={}\"/>\n",
+                xml_escape(&book.id),
+                media_token
             ));
         }
         for track in &book.tracks {
             body.push_str(&format!(
-                "    <link rel=\"http://opds-spec.org/acquisition\" href=\"/api/books/{}/tracks/{}/stream\" type=\"{}\" title=\"{}\"/>\n",
+                "    <link rel=\"http://opds-spec.org/acquisition\" href=\"/api/books/{}/tracks/{}/stream?token={}\" type=\"{}\" title=\"{}\"/>\n",
                 xml_escape(&book.id),
                 xml_escape(&track.id),
+                media_token,
                 xml_escape(&media_content_type(FsPath::new(&track.file_name))),
                 xml_escape(&track.title)
             ));
