@@ -27,6 +27,8 @@ pub(crate) struct AppState {
     pub(crate) sync_dir: PathBuf,
     /// Where cover art extracted during the scan is kept.
     pub(crate) covers_dir: PathBuf,
+    /// Where the database lives, for the metrics route to size.
+    pub(crate) database_path: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
     /// Administrator metadata edits, cached and mirrored to disk.
     pub(crate) metadata_overrides: Arc<MetadataOverrides>,
@@ -89,24 +91,29 @@ pub(crate) fn build_router(
         .route("/api/auth/login", post(login))
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
-        .route("/api/{*path}", any(api_not_found));
+        .route("/api/{*path}", any(api_not_found))
+        // Sign-in and setup wait on the password-hashing worker pool, and
+        // every concurrent attempt clears the throttle check before any of
+        // them records a failure. Without this bound a saturated or wedged
+        // worker queue would hold unauthenticated connections open forever.
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+        ))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES));
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/profile/stats", get(profile_stats))
+        .route("/api/metrics", get(metrics))
         .route("/api/profile/sessions", get(reading_log_sessions))
         .route("/api/profile/completions", get(reading_log_completions))
         .route("/api/works", get(list_works))
         .route("/api/works/link", post(link_work_edition))
         .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
-        .route("/api/update/install", post(install_update))
         .route("/api/frontend-update", get(frontend_update_status))
-        .route(
-            "/api/frontend-update/install",
-            post(install_frontend_update),
-        )
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -122,11 +129,6 @@ pub(crate) fn build_router(
         )
         .route("/api/me/progress-sharing", put(update_progress_sharing))
         .route("/api/books", get(list_books))
-        .route("/api/library/rescan", post(rescan))
-        .route(
-            "/api/library/upload",
-            post(upload_audiobook).layer(DefaultBodyLimit::disable()),
-        )
         .route(
             "/api/library/faststart",
             get(faststart_status).post(start_faststart_conversion),
@@ -135,10 +137,6 @@ pub(crate) fn build_router(
         .route(
             "/api/libation/accounts/login/start",
             post(start_libation_account_login),
-        )
-        .route(
-            "/api/libation/accounts/login/{session_id}/complete",
-            post(complete_libation_account_login),
         )
         .route(
             "/api/libation/accounts/login/{session_id}",
@@ -201,6 +199,52 @@ pub(crate) fn build_router(
             "/api/books/{book_id}/tracks/{track_id}/stream",
             get(stream_track),
         )
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+        ))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // Routes that are expected to take a long time, and so are not given the
+    // request timeout above.
+    //
+    // An upload is bounded by `max_upload_bytes` while it streams, and a book
+    // download builds its archive before the response begins -- minutes, for a
+    // large book. A timeout here would cut off exactly the transfers that most
+    // need to finish, and neither route can hang without an operation behind
+    // it hanging first.
+    //
+    // A rescan walks and fingerprints the whole library synchronously, and
+    // completing a Libation sign-in waits up to 90 seconds on the browser flow
+    // before running its own scan -- either can legitimately outlast the
+    // timeout. The sign-in completion also removes its pending session before
+    // waiting, so a 408 here would leave the client unable to retry and the
+    // account stuck in `signing_in`.
+    //
+    // Installing an update downloads the release asset -- allowed ten minutes
+    // on its own -- before extracting and installing it. `UpdateManager` sets
+    // its `installing` flag before that work and clears it afterwards, so a
+    // timeout that dropped the future mid-install would leave the flag set and
+    // every later install refused as already in progress until a restart.
+    let long_running_routes = Router::new()
+        .route(
+            "/api/library/upload",
+            post(upload_audiobook).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/library/rescan", post(rescan))
+        .route("/api/update/install", post(install_update))
+        .route(
+            "/api/frontend-update/install",
+            post(install_frontend_update),
+        )
+        .route(
+            "/api/libation/accounts/login/{session_id}/complete",
+            post(complete_libation_account_login),
+        )
         .route(
             "/api/books/{book_id}/download",
             get(download_book).delete(delete_downloaded_book),
@@ -226,7 +270,9 @@ pub(crate) fn build_router(
     );
     let cors = CorsLayer::new().allow_origin(AllowOrigin::list(origins));
 
-    let mut app = public_routes.merge(protected_routes);
+    let mut app = public_routes
+        .merge(protected_routes)
+        .merge(long_running_routes);
     if let Some(dist_dir) = web_dist_dir {
         if dist_dir.join("index.html").is_file() {
             tracing::info!("serving web app from {}", dist_dir.display());
@@ -368,4 +414,110 @@ pub(crate) async fn install_frontend_update(
         .map_err(|error| {
             ApiError::bad_request(format!("Could not install the frontend update: {error}"))
         })
+}
+
+/// How long a request may take before it is abandoned.
+///
+/// Generous on purpose. Starting a Libation sign-in waits on an external
+/// browser flow for half a minute by design, so this is not a latency budget —
+/// it is the point past which a handler is assumed to be stuck.
+pub(crate) const REQUEST_TIMEOUT_SECONDS: u64 = 90;
+
+/// The largest JSON body any route accepts. Uploads opt out; nothing else here
+/// takes more than a small object.
+pub(crate) const MAX_JSON_BODY_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerMetrics {
+    version: &'static str,
+    deployment_mode: String,
+    books: usize,
+    tracks: usize,
+    users: usize,
+    active_sessions: usize,
+    /// Listeners whose position moved in the last five minutes: how many
+    /// people are actually listening right now.
+    listening_now: usize,
+    running_jobs: usize,
+    database_bytes: u64,
+    covers_bytes: u64,
+    library_root: String,
+}
+
+/// Owner-only operational numbers, as plain JSON.
+///
+/// Deliberately not a Prometheus exposition: nothing here scrapes it yet, and
+/// a JSON object is what the Administration screen and a curious owner with
+/// `curl` can both read.
+pub(crate) async fn metrics(
+    State(state): State<AppState>,
+    _: OwnerUser,
+) -> Result<Json<ServerMetrics>, ApiError> {
+    let (books, tracks) = {
+        let library = state.library.read().await;
+        (
+            library.books.len(),
+            library.books.iter().map(|book| book.tracks.len()).sum(),
+        )
+    };
+    let now_seconds = unix_now_seconds();
+    let active_sessions = state
+        .sessions
+        .read()
+        .await
+        .values()
+        .filter(|session| !session.is_expired(now_seconds))
+        .count();
+    let running_jobs = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| is_active_job(job))
+        .count();
+    let listening_now = state
+        .progress
+        .listener_ids_active_within(5 * 60 * 1_000)
+        .await?
+        .len();
+
+    Ok(Json(ServerMetrics {
+        version: env!("CARGO_PKG_VERSION"),
+        deployment_mode: format!("{:?}", state.deployment_mode).to_lowercase(),
+        books,
+        tracks,
+        users: state.users.read().await.users.len(),
+        active_sessions,
+        listening_now,
+        running_jobs,
+        database_bytes: directory_bytes(&state.database_path),
+        covers_bytes: directory_size(&state.covers_dir),
+        library_root: state.library_root.display().to_string(),
+    }))
+}
+
+/// One file's size, plus its write-ahead log if it has one.
+fn directory_bytes(path: &FsPath) -> u64 {
+    ["", "-wal", "-shm"]
+        .iter()
+        .filter_map(|suffix| {
+            let mut candidate = path.as_os_str().to_os_string();
+            candidate.push(suffix);
+            std::fs::metadata(PathBuf::from(candidate)).ok()
+        })
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+fn directory_size(path: &FsPath) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
 }
