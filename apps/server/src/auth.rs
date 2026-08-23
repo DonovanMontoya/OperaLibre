@@ -454,7 +454,9 @@ pub(crate) fn query_token_allowed(method: &Method, path: &str) -> bool {
     let segments: Vec<_> = path.trim_matches('/').split('/').collect();
     matches!(
         segments.as_slice(),
-        ["api", "books", _, "cover"]
+        ["api", "opds"]
+            | ["api", "opds", "books"]
+            | ["api", "books", _, "cover"]
             | ["api", "books", _, "readalong"]
             | ["api", "books", _, "download"]
             | ["api", "books", _, "tracks", _, "stream"]

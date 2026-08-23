@@ -160,6 +160,9 @@ pub(crate) struct AbsProgressUpdate {
     current_time: Option<f64>,
     progress: Option<f64>,
     is_finished: Option<bool>,
+    /// Audiobookshelf timestamps checkpoints in epoch milliseconds. Keeping
+    /// it lets the native stale-write defense reject a delayed request.
+    last_update: Option<u64>,
     /// Clients send the book's duration back with every checkpoint. The server
     /// already knows it from the scan and does not take the client's word for
     /// it, but the field is accepted so the payload still deserialises.
@@ -478,7 +481,7 @@ pub(crate) async fn abs_update_progress(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_book_access(&auth, &item_id)?;
 
-    let (book, track, position) = {
+    let (book, requested_book_position, first_track) = {
         let library = state.library.read().await;
         let book = library
             .books
@@ -493,45 +496,119 @@ pub(crate) async fn abs_update_progress(
         let book_position = update
             .current_time
             .or_else(|| update.progress.map(|fraction| fraction * duration))
-            .unwrap_or(0.0)
-            .clamp(0.0, duration.max(0.0));
-        let (track, offset) = track_at_book_position(&book, book_position);
-        (book, track, (book_position, offset))
+            .map(|position| position.clamp(0.0, duration.max(0.0)));
+        let first_track = book
+            .tracks
+            .first()
+            .cloned()
+            .ok_or(ApiError::bad_request("This book has no playable tracks."))?;
+        (book, book_position, first_track)
     };
-    let (book_position, track_position) = position;
 
     let now_millis = unix_now_millis();
-    let finished = update.is_finished.unwrap_or(false);
+    let finished = update.is_finished;
+    let last_update = update.last_update;
     let decision_book = book.clone();
-    let decision_track = track.clone();
-    let (saved, _) = state
+    let (saved, previous) = state
         .progress
         .update_book(&auth.id, &item_id, move |previous| {
-            let mut saved = previous.cloned().unwrap_or_else(|| Progress {
-                book_id: decision_book.id.clone(),
-                track_id: decision_track.id.clone(),
-                position_seconds: 0.0,
-                book_position_seconds: 0.0,
-                duration_seconds: decision_track.duration_seconds,
-                updated_at: next_progress_timestamp(previous, now_millis),
-                finished_override: None,
-            });
-            saved.track_id = decision_track.id.clone();
-            saved.position_seconds = track_position;
-            saved.book_position_seconds = book_position;
-            saved.duration_seconds = decision_track.duration_seconds;
-            saved.updated_at = next_progress_timestamp(previous, now_millis);
-            if finished {
-                saved.finished_override = Some(true);
+            let explicit_restart = abs_checkpoint_is_restart(
+                &decision_book,
+                previous,
+                requested_book_position,
+                finished,
+            );
+            let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position
+            {
+                let (track, track_position) = track_at_book_position(&decision_book, book_position);
+                let checkpoint = ProgressUpdate {
+                    track_id: track.id.clone(),
+                    position_seconds: track_position,
+                    book_position_seconds: Some(book_position),
+                    duration_seconds: track.duration_seconds,
+                    updated_at_ms: last_update,
+                    intentional_regression: explicit_restart,
+                    intentional_seek: explicit_restart,
+                    tz_offset_minutes: None,
+                    speed: None,
+                    client: Some("audiobookshelf".to_string()),
+                };
+                match decide_progress_write(
+                    &decision_book,
+                    &track,
+                    previous,
+                    &checkpoint,
+                    now_millis,
+                ) {
+                    ProgressDecision::Keep => return ProgressDecision::Keep,
+                    ProgressDecision::Store {
+                        saved,
+                        backup_previous,
+                    } => (saved, backup_previous),
+                }
+            } else {
+                // PATCH semantics: a completion-only request must not erase a
+                // position the client deliberately omitted.
+                (
+                    previous.cloned().unwrap_or_else(|| Progress {
+                        book_id: decision_book.id.clone(),
+                        track_id: first_track.id.clone(),
+                        position_seconds: 0.0,
+                        book_position_seconds: 0.0,
+                        duration_seconds: first_track.duration_seconds,
+                        updated_at: next_progress_timestamp(previous, now_millis),
+                        finished_override: None,
+                    }),
+                    false,
+                )
+            };
+            if let Some(finished) = finished {
+                saved.finished_override = Some(finished);
             }
             ProgressDecision::Store {
                 saved,
-                backup_previous: false,
+                backup_previous,
             }
         })
         .await?;
 
+    let intentional_seek =
+        abs_checkpoint_is_restart(&book, previous.as_ref(), requested_book_position, finished);
+    record_progress_bookkeeping(
+        &state,
+        &auth,
+        &book,
+        &saved,
+        previous.as_ref(),
+        ProgressBookkeeping {
+            intentional_seek,
+            tz_offset_minutes: None,
+            speed: None,
+            client: Some("audiobookshelf"),
+            completion_source: if finished == Some(true) {
+                CompletionSource::Marked
+            } else {
+                CompletionSource::Reached
+            },
+        },
+    )
+    .await;
+
     Ok(Json(serde_json::to_value(media_progress(&book, &saved))?))
+}
+
+fn abs_checkpoint_is_restart(
+    book: &Book,
+    previous: Option<&Progress>,
+    requested_book_position: Option<f64>,
+    finished: Option<bool>,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    finished == Some(false)
+        && requested_book_position.is_some_and(|position| position < PROGRESS_NEAR_ZERO_SECONDS)
+        && summarize_book_progress(book, previous).status == BookProgressStatus::Finished
 }
 
 /// `GET /abs/api/me/progress/{id}`
