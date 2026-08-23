@@ -46,6 +46,45 @@ pub struct UpdateManager {
     installing: Arc<AtomicBool>,
 }
 
+/// Holds the `installing` flag for the length of one install and releases it
+/// unless the install is `keep`-ed.
+///
+/// The flag has to be cleared even if the install future is never polled to
+/// completion -- a dropped future would otherwise leave it set and every later
+/// install refused as already in progress until the process restarts. `Drop`
+/// runs on cancellation, where code after an `.await` does not.
+struct InstallGuard {
+    installing: Arc<AtomicBool>,
+    release: bool,
+}
+
+impl InstallGuard {
+    /// Claims the flag, or returns `None` if an install is already running.
+    fn acquire(installing: &Arc<AtomicBool>) -> Option<Self> {
+        if installing.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(Self {
+            installing: Arc::clone(installing),
+            release: true,
+        })
+    }
+
+    /// Leaves the flag set: a staged backend update keeps it held so nothing
+    /// else installs over it while the restart is pending.
+    fn keep(mut self) {
+        self.release = false;
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        if self.release {
+            self.installing.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 struct CachedUpdateStatus {
     checked_at: Instant,
     status: UpdateStatus,
@@ -177,12 +216,14 @@ impl UpdateManager {
     }
 
     pub async fn install(&self) -> anyhow::Result<UpdateInstallStarted> {
-        if self.installing.swap(true, Ordering::SeqCst) {
+        let Some(guard) = InstallGuard::acquire(&self.installing) else {
             bail!("An OperaLibre update is already being installed.");
-        }
+        };
         let result = self.install_inner().await;
-        if result.is_err() {
-            self.installing.store(false, Ordering::SeqCst);
+        if result.is_ok() {
+            // A staged backend update restarts the process; hold the flag so
+            // nothing installs over it in the meantime.
+            guard.keep();
         }
         result
     }
@@ -215,12 +256,10 @@ impl UpdateManager {
     }
 
     pub async fn install_frontend(&self) -> anyhow::Result<UpdateInstallStarted> {
-        if self.installing.swap(true, Ordering::SeqCst) {
+        let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("An OperaLibre update is already being installed.");
-        }
-        let result = self.install_frontend_inner().await;
-        self.installing.store(false, Ordering::SeqCst);
-        result
+        };
+        self.install_frontend_inner().await
     }
 
     async fn install_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
@@ -875,9 +914,13 @@ fn truncate_notes(notes: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        GithubRelease, GithubReleaseAsset, InstallLayout, UpdateManager, install_frontend_files,
-        install_layout, installed_frontend_version, normalize_version, truncate_notes,
-        validated_frontend_asset, validated_update_asset,
+        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, UpdateManager,
+        install_frontend_files, install_layout, installed_frontend_version, normalize_version,
+        truncate_notes, validated_frontend_asset, validated_update_asset,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
     };
 
     #[test]
@@ -1024,5 +1067,52 @@ mod tests {
         assert!(status.update_available);
         assert!(!status.can_auto_update);
         assert!(status.message.unwrap().contains("hosting provider"));
+    }
+
+    /// A cancelled install must not wedge the flag. This is the failure the
+    /// request timeout used to cause: the future is dropped mid-install, the
+    /// cleanup after the `.await` never runs, and every later install is
+    /// refused as already in progress until the process restarts.
+    #[tokio::test]
+    async fn a_cancelled_install_releases_the_flag() {
+        let installing = Arc::new(AtomicBool::new(false));
+
+        let install = {
+            let installing = Arc::clone(&installing);
+            async move {
+                let _guard = InstallGuard::acquire(&installing).expect("flag was free");
+                // Stands in for the download-and-extract work.
+                std::future::pending::<()>().await;
+            }
+        };
+        // Elapsing drops the inner future mid-install, which is precisely what
+        // the request timeout layer does to a handler.
+        let outcome = tokio::time::timeout(std::time::Duration::from_millis(50), install).await;
+        assert!(outcome.is_err(), "the install should have been cancelled");
+
+        assert!(
+            !installing.load(Ordering::SeqCst),
+            "a cancelled install left the flag set, blocking every later install"
+        );
+        assert!(
+            InstallGuard::acquire(&installing).is_some(),
+            "a later install was refused after a cancelled one"
+        );
+    }
+
+    /// A staged backend update deliberately keeps the flag: the process is
+    /// about to restart and nothing should install over it.
+    #[test]
+    fn a_staged_install_keeps_the_flag_held() {
+        let installing = Arc::new(AtomicBool::new(false));
+
+        let guard = InstallGuard::acquire(&installing).expect("flag was free");
+        guard.keep();
+
+        assert!(installing.load(Ordering::SeqCst), "the flag was released");
+        assert!(
+            InstallGuard::acquire(&installing).is_none(),
+            "a second install started while one was staged for restart"
+        );
     }
 }
