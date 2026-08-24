@@ -1162,8 +1162,12 @@ pub(crate) async fn create_user(
         password_hash,
         is_admin,
         is_owner,
+        // Only an owner may persist this permission. Administrators cannot
+        // create administrators, and the flag is dropped for plain readers,
+        // so ignoring it otherwise keeps every approver owner-minted while
+        // clients that send the field regardless of role keep working.
         can_approve_libation_requests: is_owner
-            || (is_admin && payload.can_approve_libation_requests),
+            || (auth.is_owner && is_admin && payload.can_approve_libation_requests),
         allowed_book_ids: if is_admin {
             None
         } else {
