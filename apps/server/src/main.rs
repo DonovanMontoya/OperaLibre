@@ -61,6 +61,7 @@ use tower_http::{
 };
 use walkdir::WalkDir;
 
+mod abs;
 mod activity;
 mod alignment;
 mod app;
@@ -77,6 +78,7 @@ mod libation;
 mod library;
 mod media;
 mod migrate;
+mod opds;
 mod progress;
 mod reading;
 mod reading_log;
@@ -89,6 +91,7 @@ mod upload;
 mod util;
 mod works;
 
+use abs::*;
 use activity::*;
 use app::*;
 use auth::*;
@@ -101,6 +104,7 @@ use libation::*;
 use library::*;
 use media::*;
 use migrate::*;
+use opds::*;
 use progress::*;
 use reading::*;
 use reading_log::*;

@@ -454,10 +454,14 @@ pub(crate) fn query_token_allowed(method: &Method, path: &str) -> bool {
     let segments: Vec<_> = path.trim_matches('/').split('/').collect();
     matches!(
         segments.as_slice(),
-        ["api", "books", _, "cover"]
+        ["api", "opds"]
+            | ["api", "opds", "books"]
+            | ["api", "books", _, "cover"]
             | ["api", "books", _, "readalong"]
             | ["api", "books", _, "download"]
             | ["api", "books", _, "tracks", _, "stream"]
+            | ["abs", "api", "books", _, "cover"]
+            | ["abs", "api", "books", _, "tracks", _, "stream"]
             | ["api", "libation", "covers", _]
     )
 }
@@ -760,58 +764,8 @@ pub(crate) async fn login(
     headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let username = normalize_username(&payload.username);
-    let throttle_key = login_throttle_key(&username);
-    let ip_throttle_key = login_ip_throttle_key(request_client_ip(peer_address, &headers));
-    {
-        let mut attempts = state.login_attempts.lock().await;
-        let now = unix_now_seconds();
-        attempts.retain(|_, throttle| !throttle.is_stale(now));
-        if attempts
-            .get(&throttle_key)
-            .is_some_and(|throttle| throttle.is_locked(now, LOGIN_MAX_FAILURES))
-            || attempts
-                .get(&ip_throttle_key)
-                .is_some_and(|throttle| throttle.is_locked(now, LOGIN_IP_MAX_FAILURES))
-        {
-            return Err(ApiError::too_many_requests(
-                "Too many failed sign-in attempts. Try again in a minute.",
-            ));
-        }
-    }
-
-    if payload.password.chars().count() > MAX_PASSWORD_CHARS {
-        let _ = verify_dummy_password_async(&state, "oversized-password".to_string()).await?;
-        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
-        return Err(ApiError::unauthorized("Invalid username or password."));
-    }
-
-    let matched_user = {
-        let users = state.users.read().await;
-        users
-            .users
-            .iter()
-            .find(|user| user.username.eq_ignore_ascii_case(&username))
-            .cloned()
-    };
-
-    let Some(user) = matched_user else {
-        // Burn the same time as a real verification so response timing does
-        // not reveal whether the username exists.
-        let _ = verify_dummy_password_async(&state, payload.password).await?;
-        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
-        return Err(ApiError::unauthorized("Invalid username or password."));
-    };
-    if !verify_password_async(&state, payload.password, user.password_hash.clone()).await? {
-        record_login_failures(&state, [&throttle_key, &ip_throttle_key]).await;
-        return Err(ApiError::unauthorized("Invalid username or password."));
-    }
-    let mut attempts = state.login_attempts.lock().await;
-    attempts.remove(&throttle_key);
-    attempts.remove(&ip_throttle_key);
-    drop(attempts);
-
-    let token = create_session(&state, &user.id).await?;
+    let (user, token) =
+        authenticate_and_open_session(&state, peer_address, &headers, payload).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
@@ -831,6 +785,72 @@ pub(crate) async fn login(
             user: UserPublic::from(&user),
         }),
     ))
+}
+
+/// Check a username and password and open a session for the account.
+///
+/// Shared with the Audiobookshelf-compatible sign-in so that the throttle, the
+/// constant-time treatment of unknown usernames, and session pruning cannot
+/// drift between the two entry points.
+pub(crate) async fn authenticate_and_open_session(
+    state: &AppState,
+    peer_address: SocketAddr,
+    headers: &HeaderMap,
+    payload: LoginRequest,
+) -> Result<(User, String), ApiError> {
+    let username = normalize_username(&payload.username);
+    let throttle_key = login_throttle_key(&username);
+    let ip_throttle_key = login_ip_throttle_key(request_client_ip(peer_address, headers));
+    {
+        let mut attempts = state.login_attempts.lock().await;
+        let now = unix_now_seconds();
+        attempts.retain(|_, throttle| !throttle.is_stale(now));
+        if attempts
+            .get(&throttle_key)
+            .is_some_and(|throttle| throttle.is_locked(now, LOGIN_MAX_FAILURES))
+            || attempts
+                .get(&ip_throttle_key)
+                .is_some_and(|throttle| throttle.is_locked(now, LOGIN_IP_MAX_FAILURES))
+        {
+            return Err(ApiError::too_many_requests(
+                "Too many failed sign-in attempts. Try again in a minute.",
+            ));
+        }
+    }
+
+    if payload.password.chars().count() > MAX_PASSWORD_CHARS {
+        let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
+        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    }
+
+    let matched_user = {
+        let users = state.users.read().await;
+        users
+            .users
+            .iter()
+            .find(|user| user.username.eq_ignore_ascii_case(&username))
+            .cloned()
+    };
+
+    let Some(user) = matched_user else {
+        // Burn the same time as a real verification so response timing does
+        // not reveal whether the username exists.
+        let _ = verify_dummy_password_async(state, payload.password).await?;
+        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    };
+    if !verify_password_async(state, payload.password, user.password_hash.clone()).await? {
+        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    }
+    let mut attempts = state.login_attempts.lock().await;
+    attempts.remove(&throttle_key);
+    attempts.remove(&ip_throttle_key);
+    drop(attempts);
+
+    let token = create_session(state, &user.id).await?;
+    Ok((user, token))
 }
 
 /// Throttle keys come from unauthenticated input, so bound their length

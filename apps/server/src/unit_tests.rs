@@ -1313,6 +1313,16 @@ fn query_tokens_are_limited_to_read_only_media_routes() {
         &Method::GET,
         "/api/libation/covers/picture"
     ));
+    assert!(super::query_token_allowed(&Method::GET, "/api/opds"));
+    assert!(super::query_token_allowed(&Method::GET, "/api/opds/books"));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/cover"
+    ));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/tracks/track/stream"
+    ));
     assert!(!super::query_token_allowed(&Method::GET, "/api/users"));
     assert!(!super::query_token_allowed(
         &Method::DELETE,
@@ -3507,4 +3517,15 @@ async fn overlapping_session_mutations_keep_the_media_index_current() {
             "a committed session's media token was missing from the index"
         );
     }
+}
+
+/// Atom requires a real RFC 3339 instant in `<updated>`; the server's own
+/// timestamps are bare unix seconds, which a strict reader rejects.
+#[test]
+fn rfc3339_formats_an_instant_a_feed_reader_will_accept() {
+    assert_eq!(super::rfc3339_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(super::rfc3339_utc(1_750_000_000), "2025-06-15T15:06:40Z");
+    // Last second of a day, and the first of the next.
+    assert_eq!(super::rfc3339_utc(86_399), "1970-01-01T23:59:59Z");
+    assert_eq!(super::rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
 }

@@ -89,6 +89,13 @@ pub(crate) fn build_router(
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
         .route("/api/auth/login", post(login))
+        // Audiobookshelf clients validate the server before presenting their
+        // login form, and ping it again when checking a saved connection.
+        .route("/abs/status", get(abs_status))
+        .route("/abs/ping", get(abs_ping))
+        // Audiobookshelf-compatible sign-in. Mounted under /abs so it cannot
+        // collide with the routes above; clients take a base URL with a path.
+        .route("/abs/login", post(abs_login))
         // Catch-all so unknown API paths return a JSON 404 instead of
         // falling through to the SPA fallback (or the auth middleware).
         .route("/api/{*path}", any(api_not_found))
@@ -107,6 +114,36 @@ pub(crate) fn build_router(
         .route("/api/auth/me", get(me))
         .route("/api/profile/stats", get(profile_stats))
         .route("/api/metrics", get(metrics))
+        // OPDS: the catalogue a third-party reader can browse. Authenticated
+        // the same way everything else is, so a reader that only speaks HTTP
+        // Basic cannot use it yet.
+        .route("/api/opds", get(opds_root))
+        .route("/api/opds/books", get(opds_books))
+        // The Audiobookshelf-shaped surface those clients actually use.
+        .route("/abs/api/me", get(abs_me))
+        .route("/abs/api/libraries", get(abs_libraries))
+        .route(
+            "/abs/api/libraries/{library_id}/items",
+            get(abs_library_items),
+        )
+        .route("/abs/api/items/{item_id}", get(abs_library_item))
+        .route("/abs/api/items/{item_id}/cover", get(abs_cover))
+        // Some clients concatenate content URLs with the configured `/abs`
+        // base while others resolve their leading slash from the origin. Keep
+        // both forms on the same native, access-controlled media handlers.
+        .route("/abs/api/books/{book_id}/cover", get(get_cover_art))
+        .route(
+            "/abs/api/books/{book_id}/tracks/{track_id}/stream",
+            get(stream_track),
+        )
+        .route(
+            "/abs/api/items/{item_id}/play",
+            post(abs_play).get(abs_play),
+        )
+        .route(
+            "/abs/api/me/progress/{item_id}",
+            get(abs_get_progress).patch(abs_update_progress),
+        )
         .route("/api/profile/sessions", get(reading_log_sessions))
         .route("/api/profile/completions", get(reading_log_completions))
         .route("/api/works", get(list_works))
