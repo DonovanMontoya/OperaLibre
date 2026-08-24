@@ -89,6 +89,10 @@ pub(crate) fn build_router(
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
         .route("/api/auth/login", post(login))
+        // Audiobookshelf clients validate the server before presenting their
+        // login form, and ping it again when checking a saved connection.
+        .route("/abs/status", get(abs_status))
+        .route("/abs/ping", get(abs_ping))
         // Audiobookshelf-compatible sign-in. Mounted under /abs so it cannot
         // collide with the routes above; clients take a base URL with a path.
         .route("/abs/login", post(abs_login))
