@@ -1151,6 +1151,15 @@ pub(crate) async fn create_user(
             "Only an owner can create an administrator or owner account.",
         ));
     }
+    // The flag is dormant while the account is only a reader, but promoting
+    // that account to administrator later preserves it. Granting it here would
+    // let a non-owner administrator mint an approver the moment an owner
+    // promotes the account.
+    if payload.can_approve_libation_requests && !auth.is_owner {
+        return Err(ApiError::forbidden(
+            "Only an owner can grant Libation request approval.",
+        ));
+    }
     let username = normalize_username(&payload.username);
     validate_username(&username)?;
     validate_password(&payload.password)?;
