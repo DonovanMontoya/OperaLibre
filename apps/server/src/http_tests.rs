@@ -69,7 +69,7 @@ impl TestServer {
         let database = Database::open(&data_dir.join("operalibre.db")).unwrap();
         let state = AppState {
             deployment_mode: DeploymentMode::Local,
-            csrf_allowed_origins: Arc::new(std::collections::HashSet::new()),
+            csrf_allowed_origins: Arc::new(build_csrf_allowed_origins(&[])),
             setup_token: Arc::new(Mutex::new(None)),
             max_upload_bytes: Some(DEFAULT_MAX_UPLOAD_GIB * GIBIBYTE_BYTES),
             max_book_download_bytes: Some(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES),
@@ -1258,6 +1258,196 @@ async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
         !again.header(next_cursor).is_empty(),
         "the refetch did not reveal the new page"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cookie CSRF enforcement
+// ---------------------------------------------------------------------------
+
+impl TestServer {
+    /// Sign in through the real route and return the session cookie it sets.
+    async fn login_cookie(&self, username: &str, password: &str) -> String {
+        let response = self
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": username,
+                            "password": password,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        let set_cookie = response.header(SET_COOKIE);
+        assert!(
+            set_cookie.starts_with(super::SESSION_COOKIE_NAME),
+            "login did not set the session cookie: {set_cookie}"
+        );
+        set_cookie.split(';').next().unwrap_or_default().to_string()
+    }
+}
+
+/// POST a logout carrying only a session cookie, with extra headers.
+async fn cookie_logout_with(
+    server: &TestServer,
+    cookie: &str,
+    headers: &[(&'static str, &str)],
+) -> TestResponse {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/auth/logout")
+        .header(header::COOKIE, cookie);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    server.send(builder.body(Body::empty()).unwrap()).await
+}
+
+#[tokio::test]
+async fn a_cookie_change_from_a_foreign_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response =
+        cookie_logout_with(&server, &cookie, &[("origin", "https://evil.example")]).await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        response.text()
+    );
+}
+
+/// No Origin and no Referer means the request cannot be attributed to the web
+/// app, so it is refused rather than given the benefit of the doubt.
+#[tokio::test]
+async fn a_cookie_change_without_any_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response = cookie_logout_with(&server, &cookie, &[]).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_null_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response = cookie_logout_with(&server, &cookie, &[("origin", "null")]).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[("origin", super::OFFICIAL_APP_ORIGINS[0])],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// A same-origin browser request may carry an Origin that names this very
+/// server; matching the Host header accepts it without configuration.
+#[tokio::test]
+async fn a_cookie_change_from_the_server_host_origin_is_allowed() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[
+            ("origin", "http://operalibre.local:4000"),
+            ("host", "operalibre.local:4000"),
+        ],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// Some cross-origin form posts strip Origin but keep Referer.
+#[tokio::test]
+async fn a_matching_referer_is_accepted_when_the_origin_is_absent() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[
+            ("referer", "http://operalibre.local:4000/library"),
+            ("host", "operalibre.local:4000"),
+        ],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// Bearer callers do not rely on ambient cookies, so a hostile page cannot
+/// make their requests: the origin check does not apply to them.
+#[tokio::test]
+async fn bearer_requests_are_exempt_from_the_origin_check() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// The CSRF guard only narrows cookie-authenticated requests; an anonymous
+/// caller must still see the ordinary 401 from missing credentials.
+#[tokio::test]
+async fn an_anonymous_request_is_unauthorized_not_csrf_forbidden() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------
