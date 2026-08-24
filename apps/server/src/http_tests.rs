@@ -799,6 +799,66 @@ async fn owner_only_routes_refuse_a_plain_administrator() {
     }
 }
 
+/// The approval flag is dormant on a reader but survives promotion, so a
+/// non-owner administrator must not be able to seed it at creation time and
+/// wait for an owner to promote the account.
+#[tokio::test]
+async fn a_non_owner_administrator_cannot_seed_libation_approval_on_creation() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let admin = server.add_reader_login("deputy").await;
+
+    let seeded = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "sleeper",
+                "password": "sleeper-password-1234",
+                "canApproveLibationRequests": true
+            }),
+        )
+        .await;
+    assert_eq!(seeded.status, StatusCode::FORBIDDEN, "{}", seeded.text());
+
+    // An owner granting the flag alongside an administrator account still
+    // works: that is the supported path.
+    let granted = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "approver",
+                "password": "approver-password-1234",
+                "isAdmin": true,
+                "canApproveLibationRequests": true
+            }),
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.text());
+    assert_eq!(
+        granted.json()["canApproveLibationRequests"],
+        true,
+        "the owner's explicit grant was dropped"
+    );
+}
+
 #[tokio::test]
 async fn admin_only_routes_refuse_a_reader() {
     let server = TestServer::start(1).await;
