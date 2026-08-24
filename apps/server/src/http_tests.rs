@@ -1443,10 +1443,44 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
     assert_eq!(item["mediaType"], "book");
     let files = item["media"]["audioFiles"].as_array().unwrap();
     assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["title"], "01 Track.wav");
+    assert_eq!(files[0]["mimeType"], "audio/wav");
     // A player hands this URL to the platform's audio stack, which cannot
     // attach a header, so the credential has to be in the address.
-    assert!(files[0]["contentUrl"].as_str().unwrap().contains("token="));
+    let content_url = files[0]["contentUrl"].as_str().unwrap();
+    assert!(content_url.contains("token="));
     assert!((files[1]["startOffset"].as_f64().unwrap() - 10.0).abs() < 0.5);
+
+    // Clients configured with `https://server/abs` concatenate that base with
+    // the returned path. The composed URL must remain a working, query-token
+    // authenticated stream without an Authorization header.
+    let composed_url = format!("/abs{content_url}");
+    let streamed = server
+        .send(
+            Request::builder()
+                .uri(&composed_url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(streamed.status, StatusCode::OK, "{}", streamed.text());
+    assert_eq!(streamed.body.len(), fixture_wav().len());
+
+    // The same derived credential is accepted by the ABS-prefixed cover
+    // alias. This fixture has no cover, so reaching the handler is a 404; an
+    // auth wiring failure would be a 401.
+    let media_token = media_token_for_session(&token);
+    let cover = server
+        .send(
+            Request::builder()
+                .uri(format!(
+                    "/abs/api/books/{item_id}/cover?token={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cover.status, StatusCode::NOT_FOUND, "{}", cover.text());
 
     let unknown = server
         .get("/abs/api/libraries/not-a-library/items", &token)
@@ -1500,6 +1534,7 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .await
         .json();
     assert!((session["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert!((session["startTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(session["playMethod"], 0);
 
     // A delayed automatic checkpoint cannot roll the listener back.
@@ -1568,6 +1603,24 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
     assert_eq!(completions.as_array().unwrap().len(), 1);
     let metrics = server.get("/api/metrics", &token).await.json();
     assert_eq!(metrics["listeningNow"], 1);
+}
+
+#[tokio::test]
+async fn missing_audiobookshelf_progress_is_not_found() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let response = server
+        .get(&format!("/abs/api/me/progress/{book}"), &token)
+        .await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        response.text()
+    );
 }
 
 #[tokio::test]

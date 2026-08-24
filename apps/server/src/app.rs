@@ -124,6 +124,14 @@ pub(crate) fn build_router(
         )
         .route("/abs/api/items/{item_id}", get(abs_library_item))
         .route("/abs/api/items/{item_id}/cover", get(abs_cover))
+        // Some clients concatenate content URLs with the configured `/abs`
+        // base while others resolve their leading slash from the origin. Keep
+        // both forms on the same native, access-controlled media handlers.
+        .route("/abs/api/books/{book_id}/cover", get(get_cover_art))
+        .route(
+            "/abs/api/books/{book_id}/tracks/{track_id}/stream",
+            get(stream_track),
+        )
         .route(
             "/abs/api/items/{item_id}/play",
             post(abs_play).get(abs_play),

@@ -112,7 +112,9 @@ pub(crate) struct AbsAudioFile {
     duration: f64,
     /// Seconds into the whole book at which this file begins.
     start_offset: f64,
+    title: String,
     content_url: String,
+    mime_type: String,
     metadata: AbsFileMetadata,
 }
 
@@ -148,6 +150,7 @@ pub(crate) struct AbsPlaybackSession {
     media_type: &'static str,
     play_method: u8,
     duration: f64,
+    start_time: f64,
     current_time: f64,
     audio_tracks: Vec<AbsAudioFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -208,6 +211,7 @@ fn audio_files(book: &Book, media_token: &str) -> Vec<AbsAudioFile> {
             ino: track.id.clone(),
             duration,
             start_offset,
+            title: track.file_name.clone(),
             // The media credential rides in the URL because a player handing
             // the address to the platform's own audio stack cannot attach a
             // header to it. It is read-only and derived from the session.
@@ -215,6 +219,7 @@ fn audio_files(book: &Book, media_token: &str) -> Vec<AbsAudioFile> {
                 "/api/books/{}/tracks/{}/stream?token={}",
                 book.id, track.id, media_token
             ),
+            mime_type: media_content_type(FsPath::new(&track.file_name)),
             metadata: AbsFileMetadata {
                 filename: track.file_name.clone(),
             },
@@ -250,7 +255,7 @@ fn chapters(book: &Book) -> Vec<AbsChapter> {
         .collect()
 }
 
-fn library_item(book: &Book, media_token: Option<&str>) -> AbsLibraryItem {
+fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> AbsLibraryItem {
     AbsLibraryItem {
         id: book.id.clone(),
         library_id: ABS_LIBRARY_ID,
@@ -269,12 +274,14 @@ fn library_item(book: &Book, media_token: Option<&str>) -> AbsLibraryItem {
             cover_path: book
                 .cover_art_url
                 .as_ref()
-                .map(|_| format!("/abs/api/items/{}/cover", book.id)),
+                .map(|_| format!("/api/books/{}/cover?token={media_token}", book.id)),
             duration: book_duration(book),
             num_tracks: book.tracks.len(),
-            audio_files: media_token
-                .map(|token| audio_files(book, token))
-                .unwrap_or_default(),
+            audio_files: if include_audio_files {
+                audio_files(book, media_token)
+            } else {
+                Vec::new()
+            },
             chapters: chapters(book),
         },
     }
@@ -385,6 +392,7 @@ pub(crate) async fn abs_libraries(
 pub(crate) async fn abs_library_items(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<SessionToken>,
     Path(library_id): Path<String>,
     Query(query): Query<AbsItemsQuery>,
 ) -> Result<Json<AbsLibraryItemsResponse>, ApiError> {
@@ -403,13 +411,14 @@ pub(crate) async fn abs_library_items(
         .filter(|limit| *limit > 0)
         .unwrap_or(total.max(1));
     let page = query.page.unwrap_or(0);
+    let media_token = media_token_for_session(&session.0);
     let results = visible
         .into_iter()
         .skip(page.saturating_mul(limit))
         .take(limit)
         // The listing carries no audio files: a client fetches the item or
         // opens a playback session when it actually wants to play something.
-        .map(|book| library_item(book, None))
+        .map(|book| library_item(book, &media_token, false))
         .collect();
     Ok(Json(AbsLibraryItemsResponse {
         results,
@@ -435,7 +444,8 @@ pub(crate) async fn abs_library_item(
         .ok_or(ApiError::not_found("Library item not found."))?;
     Ok(Json(library_item(
         book,
-        Some(&media_token_for_session(&session.0)),
+        &media_token_for_session(&session.0),
+        true,
     )))
 }
 
@@ -455,6 +465,10 @@ pub(crate) async fn abs_play(
         .find(|book| book.id == item_id)
         .ok_or(ApiError::not_found("Library item not found."))?;
 
+    let current_time = saved
+        .as_ref()
+        .map(|progress| progress.book_position_seconds)
+        .unwrap_or(0.0);
     Ok(Json(AbsPlaybackSession {
         id: stable_id(&format!("abs-session:{}:{}", auth.id, item_id)),
         library_item_id: book.id.clone(),
@@ -463,10 +477,8 @@ pub(crate) async fn abs_play(
         // Nothing here transcodes.
         play_method: 0,
         duration: book_duration(book),
-        current_time: saved
-            .as_ref()
-            .map(|progress| progress.book_position_seconds)
-            .unwrap_or(0.0),
+        start_time: current_time,
+        current_time,
         audio_tracks: audio_files(book, &media_token_for_session(&session.0)),
         chapters: chapters(book),
     }))
@@ -625,10 +637,8 @@ pub(crate) async fn abs_get_progress(
         .iter()
         .find(|book| book.id == item_id)
         .ok_or(ApiError::not_found("Library item not found."))?;
-    Ok(Json(match saved {
-        Some(progress) => serde_json::to_value(media_progress(book, &progress))?,
-        None => serde_json::Value::Null,
-    }))
+    let progress = saved.ok_or(ApiError::not_found("Media progress not found."))?;
+    Ok(Json(serde_json::to_value(media_progress(book, &progress))?))
 }
 
 /// `GET /abs/api/items/{id}/cover`
