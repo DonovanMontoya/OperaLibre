@@ -799,11 +799,12 @@ async fn owner_only_routes_refuse_a_plain_administrator() {
     }
 }
 
-/// The approval flag is dormant on a reader but survives promotion, so a
-/// non-owner administrator must not be able to seed it at creation time and
-/// wait for an owner to promote the account.
+/// A non-owner administrator cannot mint an approver at creation time: the
+/// flag is only persisted when an owner asked for it. Clients that send the
+/// field regardless of role keep working, and creating administrators stays
+/// owner-only.
 #[tokio::test]
-async fn a_non_owner_administrator_cannot_seed_libation_approval_on_creation() {
+async fn a_non_owner_administrator_cannot_mint_a_libation_approver() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;
 
@@ -822,6 +823,25 @@ async fn a_non_owner_administrator_cannot_seed_libation_approval_on_creation() {
     assert_eq!(created.status, StatusCode::OK, "{}", created.text());
     let admin = server.add_reader_login("deputy").await;
 
+    let promoted = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "understudy",
+                "password": "understudy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        promoted.text()
+    );
+
     let seeded = server
         .send_json(
             "POST",
@@ -834,7 +854,12 @@ async fn a_non_owner_administrator_cannot_seed_libation_approval_on_creation() {
             }),
         )
         .await;
-    assert_eq!(seeded.status, StatusCode::FORBIDDEN, "{}", seeded.text());
+    assert_eq!(seeded.status, StatusCode::OK, "{}", seeded.text());
+    assert_eq!(
+        seeded.json()["canApproveLibationRequests"],
+        false,
+        "a non-owner administrator minted an approver"
+    );
 
     // An owner granting the flag alongside an administrator account still
     // works: that is the supported path.
@@ -1265,8 +1290,9 @@ async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
 // ---------------------------------------------------------------------------
 
 impl TestServer {
-    /// Sign in through the real route and return the session cookie it sets.
-    async fn login_cookie(&self, username: &str, password: &str) -> String {
+    /// Sign in as the owner through the real route and return the session
+    /// cookie it sets.
+    async fn setup_owner_cookie(&self) -> String {
         let response = self
             .send(
                 Request::builder()
@@ -1275,8 +1301,8 @@ impl TestServer {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::json!({
-                            "username": username,
-                            "password": password,
+                            "username": "owner",
+                            "password": "owner-password-1234"
                         })
                         .to_string(),
                     ))
@@ -1313,7 +1339,7 @@ async fn cookie_logout_with(
 async fn a_cookie_change_from_a_foreign_origin_is_refused() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response =
         cookie_logout_with(&server, &cookie, &[("origin", "https://evil.example")]).await;
@@ -1332,7 +1358,7 @@ async fn a_cookie_change_from_a_foreign_origin_is_refused() {
 async fn a_cookie_change_without_any_origin_is_refused() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response = cookie_logout_with(&server, &cookie, &[]).await;
 
@@ -1343,7 +1369,7 @@ async fn a_cookie_change_without_any_origin_is_refused() {
 async fn a_null_origin_is_refused() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response = cookie_logout_with(&server, &cookie, &[("origin", "null")]).await;
 
@@ -1354,7 +1380,7 @@ async fn a_null_origin_is_refused() {
 async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response = cookie_logout_with(
         &server,
@@ -1372,7 +1398,7 @@ async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
 async fn a_cookie_change_from_the_server_host_origin_is_allowed() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response = cookie_logout_with(
         &server,
@@ -1392,7 +1418,7 @@ async fn a_cookie_change_from_the_server_host_origin_is_allowed() {
 async fn a_matching_referer_is_accepted_when_the_origin_is_absent() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.login_cookie("owner", "owner-password-1234").await;
+    let cookie = server.setup_owner_cookie().await;
 
     let response = cookie_logout_with(
         &server,
