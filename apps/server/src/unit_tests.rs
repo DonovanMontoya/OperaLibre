@@ -1313,6 +1313,16 @@ fn query_tokens_are_limited_to_read_only_media_routes() {
         &Method::GET,
         "/api/libation/covers/picture"
     ));
+    assert!(super::query_token_allowed(&Method::GET, "/api/opds"));
+    assert!(super::query_token_allowed(&Method::GET, "/api/opds/books"));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/cover"
+    ));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/tracks/track/stream"
+    ));
     assert!(!super::query_token_allowed(&Method::GET, "/api/users"));
     assert!(!super::query_token_allowed(
         &Method::DELETE,
@@ -1469,6 +1479,8 @@ exit 0
         faststart_tools: None,
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
+        covers_dir: data_dir.join("covers"),
+        database_path: data_dir.join("operalibre.db"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
         metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
             database.clone(),
@@ -3314,4 +3326,206 @@ fn a_failed_import_leaves_no_database_behind() {
         std::fs::read_to_string(&layout.users).unwrap(),
         "{ not json"
     );
+}
+
+/// The media route resolves its caller through a reverse index rather than by
+/// hashing every live session. An index that outlived the session it points at
+/// would keep a signed-out listener streaming, so it is rebuilt on every
+/// change rather than patched.
+#[tokio::test]
+async fn the_media_token_index_follows_the_sessions_it_points_at() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let sessions = super::SessionStore::new(
+        database,
+        super::StoreShape::Sessions,
+        std::collections::HashMap::new(),
+    );
+
+    let token = "session-one".to_string();
+    let media = super::media_token_for_session(&token);
+    sessions
+        .mutate(|live| {
+            live.insert(
+                token.clone(),
+                super::Session {
+                    user_id: "reader".to_string(),
+                    created_at: super::unix_now_seconds(),
+                },
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sessions.session_for_media_token(&media).await,
+        Some(token.clone())
+    );
+    assert_eq!(
+        sessions.session_for_media_token("not-a-media-token").await,
+        None
+    );
+
+    sessions
+        .mutate(|live| {
+            live.remove(&token);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sessions.session_for_media_token(&media).await,
+        None,
+        "a signed-out session was still reachable through its media token"
+    );
+}
+
+/// Cover art is extracted to disk during the scan instead of being held in
+/// memory. A rescan that finds the same art must not rewrite the file, and art
+/// belonging to a book that has left the library must not linger.
+#[test]
+fn extracted_cover_art_is_reused_and_tidied_up() {
+    let root = tempfile::tempdir().unwrap();
+    let covers = root.path().join("covers");
+
+    let image = |bytes: &[u8]| super::EmbeddedImage {
+        mime_type: "image/jpeg".to_string(),
+        data: bytes.to_vec(),
+        etag: super::bytes_etag(bytes),
+    };
+
+    let first = super::write_cover_cache(
+        &covers,
+        vec![
+            ("book-one".to_string(), image(b"first cover bytes")),
+            ("book-two".to_string(), image(b"second cover bytes")),
+        ],
+    )
+    .unwrap()
+    .0;
+    assert_eq!(first.len(), 2);
+    let one = first["book-one"].clone();
+    assert_eq!(one.len, b"first cover bytes".len() as u64);
+    assert_eq!(std::fs::read(&one.path).unwrap(), b"first cover bytes");
+
+    let written_at = std::fs::metadata(&one.path).unwrap().modified().unwrap();
+
+    // A rescan finding the same art for one book, new art for the other, and
+    // no art at all for a book that has been removed.
+    let (second, stale) = super::write_cover_cache(
+        &covers,
+        vec![
+            ("book-one".to_string(), image(b"first cover bytes")),
+            ("book-three".to_string(), image(b"third cover bytes")),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&one.path).unwrap().modified().unwrap(),
+        written_at,
+        "unchanged cover art was rewritten"
+    );
+    assert_eq!(
+        std::fs::read(&second["book-three"].path).unwrap(),
+        b"third cover bytes"
+    );
+    // Stale art is reported rather than removed, so the published library can
+    // finish serving it; the caller tidies up once the new snapshot is live.
+    assert!(
+        first["book-two"].path.exists(),
+        "stale art was removed early"
+    );
+    super::remove_stale_covers(&stale);
+    assert!(
+        !first["book-two"].path.exists(),
+        "cover art for a departed book was left behind"
+    );
+}
+
+/// The etag identifies the image, so replacing a book's art must change it.
+#[test]
+fn replacing_cover_art_replaces_the_file_and_its_etag() {
+    let root = tempfile::tempdir().unwrap();
+    let covers = root.path().join("covers");
+    let image = |bytes: &[u8]| super::EmbeddedImage {
+        mime_type: "image/jpeg".to_string(),
+        data: bytes.to_vec(),
+        etag: super::bytes_etag(bytes),
+    };
+
+    let before = super::write_cover_cache(&covers, vec![("book".to_string(), image(b"old art"))])
+        .unwrap()
+        .0["book"]
+        .clone();
+    let after = super::write_cover_cache(
+        &covers,
+        vec![("book".to_string(), image(b"replacement art"))],
+    )
+    .unwrap()
+    .0["book"]
+        .clone();
+
+    assert_ne!(before.etag, after.etag);
+    assert_eq!(before.path, after.path, "the cache path should be stable");
+    assert_eq!(std::fs::read(&after.path).unwrap(), b"replacement art");
+}
+
+/// Overlapping mutations must not be able to publish their index snapshots
+/// out of order. Without the mutation gate, the loser of a race could
+/// overwrite a newer index with its own older snapshot, leaving a
+/// just-signed-in session's media token unresolvable until the next session
+/// change.
+#[tokio::test]
+async fn overlapping_session_mutations_keep_the_media_index_current() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let sessions = std::sync::Arc::new(super::SessionStore::new(
+        database,
+        super::StoreShape::Sessions,
+        std::collections::HashMap::new(),
+    ));
+
+    let mut handles = Vec::new();
+    for index in 0..32 {
+        let sessions = sessions.clone();
+        handles.push(tokio::spawn(async move {
+            let token = format!("session-{index}");
+            sessions
+                .mutate(|live| {
+                    live.insert(
+                        token.clone(),
+                        super::Session {
+                            user_id: "reader".to_string(),
+                            created_at: super::unix_now_seconds(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            super::media_token_for_session(&token)
+        }));
+    }
+
+    for handle in handles {
+        let media = handle.await.unwrap();
+        assert!(
+            sessions.session_for_media_token(&media).await.is_some(),
+            "a committed session's media token was missing from the index"
+        );
+    }
+}
+
+/// Atom requires a real RFC 3339 instant in `<updated>`; the server's own
+/// timestamps are bare unix seconds, which a strict reader rejects.
+#[test]
+fn rfc3339_formats_an_instant_a_feed_reader_will_accept() {
+    assert_eq!(super::rfc3339_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(super::rfc3339_utc(1_750_000_000), "2025-06-15T15:06:40Z");
+    // Last second of a day, and the first of the next.
+    assert_eq!(super::rfc3339_utc(86_399), "1970-01-01T23:59:59Z");
+    assert_eq!(super::rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
 }

@@ -41,7 +41,19 @@ pub(crate) struct LibraryState {
     pub(crate) reading_paths: HashMap<String, PathBuf>,
     /// Sync map file paths keyed by book id.
     pub(crate) sync_paths: HashMap<String, PathBuf>,
-    pub(crate) cover_art: HashMap<String, EmbeddedImage>,
+    /// Cover art, extracted to disk during the scan. Holding every embedded
+    /// image in memory cost a gigabyte on a few thousand books, and every
+    /// request copied one again on its way out.
+    pub(crate) cover_art: HashMap<String, CachedCover>,
+}
+
+/// An extracted cover on disk.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedCover {
+    pub(crate) mime_type: String,
+    pub(crate) etag: String,
+    pub(crate) path: PathBuf,
+    pub(crate) len: u64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -224,11 +236,85 @@ pub(crate) struct ParsedChapter {
     pub(crate) source: String,
 }
 
+/// Optional paging for the library listing.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListBooksQuery {
+    /// Omitted means the whole library, which is what every existing client
+    /// asks for and keeps asking for.
+    pub(crate) limit: Option<usize>,
+    /// The last book id from the previous page.
+    pub(crate) cursor: Option<String>,
+}
+
+/// The largest page a client may ask for at once.
+const MAX_BOOKS_PAGE: usize = 500;
+
 pub(crate) async fn list_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-) -> Result<Json<Vec<Book>>, ApiError> {
-    Ok(Json(books_with_progress(&state, &auth).await?))
+    Query(query): Query<ListBooksQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let mut books = books_with_progress(&state, &auth).await?;
+
+    // Paging is by the id of the last book seen rather than by offset: a
+    // rescan between two pages can insert or remove a book, and an offset
+    // would then skip or repeat one.
+    let mut next_cursor = None;
+    if let Some(limit) = query.limit {
+        if let Some(cursor) = query.cursor.as_deref() {
+            // A cursor for a book this listener can no longer see - it was
+            // removed, or access was revoked - restarts rather than fails,
+            // which is the behaviour a paging client can actually recover
+            // from mid-scroll.
+            if let Some(index) = books.iter().position(|book| book.id == cursor) {
+                books.drain(..=index);
+            }
+        }
+        let limit = limit.clamp(1, MAX_BOOKS_PAGE);
+        if books.len() > limit {
+            books.truncate(limit);
+            next_cursor = books.last().map(|book| book.id.clone());
+        }
+    }
+
+    // The tag covers the response as it was actually built, so a change to a
+    // shared listener's position or to a volume gain invalidates it too. It
+    // also covers the navigation state: a page that was exactly full gains a
+    // next cursor when a later-sorting book arrives, with a body that did not
+    // change, and a client holding only the old tag must not be told there is
+    // nothing new. A cheaper tag derived from a library counter would answer
+    // 304 to some requests whose content had in fact changed.
+    let body = serde_json::to_vec(&books)?;
+    let mut tag_input = Vec::with_capacity(body.len() + 32);
+    tag_input.extend_from_slice(&body);
+    match &next_cursor {
+        Some(cursor) => {
+            tag_input.extend_from_slice(b"\nnext:");
+            tag_input.extend_from_slice(cursor.as_bytes());
+        }
+        None => tag_input.extend_from_slice(b"\nend"),
+    }
+    let etag = bytes_etag(&tag_input);
+    drop(tag_input);
+    if if_none_match_matches(&headers, &etag) {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(ETAG, &etag)
+            .header(CACHE_CONTROL, "private, no-cache")
+            .body(Body::empty())?);
+    }
+
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ETAG, &etag)
+        .header(CACHE_CONTROL, "private, no-cache");
+    if let Some(cursor) = next_cursor {
+        response = response.header("x-next-cursor", cursor);
+    }
+    Ok(response.body(Body::from(body))?)
 }
 
 pub(crate) async fn rescan(
@@ -491,6 +577,10 @@ pub(crate) fn path_identity_fingerprint(path: &FsPath) -> String {
 /// so the steady state here is one stat per file.
 ///
 /// Blocking: run this on a blocking task, not on a runtime worker.
+/// One file's scan result: where it is, how the identity store names it, its
+/// fingerprint, and the size and mtime the cache is keyed on.
+type ScannedFingerprint = (PathBuf, String, String, Option<(u64, u64)>);
+
 pub(crate) fn fingerprint_tracks(
     library_root: &FsPath,
     files: &[PathBuf],
@@ -499,34 +589,46 @@ pub(crate) fn fingerprint_tracks(
     HashMap<PathBuf, String>,
     BTreeMap<String, CachedFingerprint>,
 ) {
+    use rayon::prelude::*;
+
+    // Each file is fingerprinted independently, and the work is a content hash
+    // over the file, so it fans out across the pool. The results are collected
+    // in the input's order and folded afterwards, which keeps the outcome
+    // identical to the sequential walk regardless of completion order.
+    let scanned: Vec<ScannedFingerprint> = files
+        .par_iter()
+        .map(|path| {
+            let alias = library_identity_path(library_root, path);
+            let stat = std::fs::metadata(path).ok().map(|metadata| {
+                let modified_ms = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since_epoch| u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX))
+                    .unwrap_or(0);
+                (metadata.len(), modified_ms)
+            });
+            let reused = stat.and_then(|(size, modified_ms)| {
+                previous
+                    .get(&alias)
+                    .filter(|entry| entry.size == size && entry.modified_ms == modified_ms)
+                    .map(|entry| entry.fingerprint.clone())
+            });
+            let fingerprint = match reused {
+                Some(fingerprint) => fingerprint,
+                None => file_identity_fingerprint(path).unwrap_or_else(|error| {
+                    tracing::warn!("could not fingerprint {}: {error}", path.display());
+                    path_identity_fingerprint(path)
+                }),
+            };
+            (path.clone(), alias, fingerprint, stat)
+        })
+        .collect();
+
     let mut fingerprints = HashMap::with_capacity(files.len());
     // Rebuilt from scratch so entries for removed files are pruned.
     let mut cache = BTreeMap::new();
-
-    for path in files {
-        let alias = library_identity_path(library_root, path);
-        let stat = std::fs::metadata(path).ok().map(|metadata| {
-            let modified_ms = metadata
-                .modified()
-                .ok()
-                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|since_epoch| u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or(0);
-            (metadata.len(), modified_ms)
-        });
-        let reused = stat.and_then(|(size, modified_ms)| {
-            previous
-                .get(&alias)
-                .filter(|entry| entry.size == size && entry.modified_ms == modified_ms)
-                .map(|entry| entry.fingerprint.clone())
-        });
-        let fingerprint = match reused {
-            Some(fingerprint) => fingerprint,
-            None => file_identity_fingerprint(path).unwrap_or_else(|error| {
-                tracing::warn!("could not fingerprint {}: {error}", path.display());
-                path_identity_fingerprint(path)
-            }),
-        };
+    for (path, alias, fingerprint, stat) in scanned {
         // Path-derived stand-ins are never cached: the next scan should retry
         // the read in case the file became readable again.
         if let Some((size, modified_ms)) = stat
@@ -541,7 +643,7 @@ pub(crate) fn fingerprint_tracks(
                 },
             );
         }
-        fingerprints.insert(path.clone(), fingerprint);
+        fingerprints.insert(path, fingerprint);
     }
 
     (fingerprints, cache)
@@ -668,9 +770,13 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let fingerprint_task = tokio::task::spawn_blocking(move || {
         fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
     });
+    // Tag reading is the slowest part of a first scan, and every file is
+    // independent, so it fans out across the pool instead of walking the list
+    // on one thread.
     let metadata_task = tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
         metadata_files
-            .into_iter()
+            .into_par_iter()
             .map(|path| {
                 let metadata = read_track_metadata(&path);
                 (path, metadata)
@@ -687,7 +793,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut book_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
     let mut sync_paths = HashMap::new();
-    let mut cover_art = HashMap::new();
+    let mut extracted_covers: Vec<(String, EmbeddedImage)> = Vec::new();
     let mut books = Vec::new();
 
     for (group_key, grouped_files) in groups {
@@ -797,7 +903,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .iter()
             .find_map(|item| item.cover_art.clone())
             .map(|image| {
-                cover_art.insert(book_id.clone(), image);
+                extracted_covers.push((book_id.clone(), image));
                 format!("/api/books/{book_id}/cover")
             });
         let mut metadata_summary = merge_metadata_summary(&metadata);
@@ -903,13 +1009,27 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
-    let mut library = state.library.write().await;
-    library.books = books;
-    library.book_paths = book_paths;
-    library.track_paths = track_paths;
-    library.reading_paths = reading_paths;
-    library.sync_paths = sync_paths;
-    library.cover_art = cover_art;
+    // Cover extraction touches the disk for every book with art, so it runs
+    // before the lock is taken: holding the library write guard through it
+    // would stall every route that reads the library, including media
+    // streaming, for the length of the pass.
+    let covers_dir = state.covers_dir.clone();
+    let (cover_art, stale_covers) =
+        tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
+            .await
+            .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
+
+    {
+        let mut library = state.library.write().await;
+        library.books = books;
+        library.book_paths = book_paths;
+        library.track_paths = track_paths;
+        library.reading_paths = reading_paths;
+        library.sync_paths = sync_paths;
+        library.cover_art = cover_art;
+    }
+    // Only now is the published library done with these.
+    remove_stale_covers(&stale_covers);
     Ok(())
 }
 
@@ -1751,4 +1871,78 @@ pub(crate) fn unique_metadata_fields(fields: Vec<MetadataField>) -> Vec<Metadata
         }
     }
     output
+}
+
+/// Write freshly extracted cover art to the cache directory and return what
+/// the serving route needs, without the bytes, plus the paths of stale files.
+///
+/// Files are named by book id and rewritten only when their content actually
+/// changed: a length mismatch skips the rewrite outright, and matching art is
+/// confirmed by reading the existing file back. A rewrite goes to a temporary
+/// file that is renamed into place — the currently published library still
+/// points readers at this path until the new snapshot lands, so an in-place
+/// write would stream truncated bytes under the old length and etag.
+///
+/// Stale files — covers for books that have left the library — are reported
+/// rather than removed, for the same reason: the caller deletes them only
+/// after the new snapshot is published.
+pub(crate) fn write_cover_cache(
+    covers_dir: &FsPath,
+    extracted: Vec<(String, EmbeddedImage)>,
+) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
+    create_private_directory(covers_dir)?;
+    let mut cached = HashMap::new();
+    let mut keep = HashSet::new();
+
+    for (book_id, image) in extracted {
+        let file_name = format!("{}.cover", sanitize_filename(&book_id));
+        let path = covers_dir.join(&file_name);
+        keep.insert(file_name.clone());
+
+        let unchanged = std::fs::metadata(&path)
+            .ok()
+            .is_some_and(|metadata| metadata.len() == image.data.len() as u64)
+            && std::fs::read(&path)
+                .ok()
+                .is_some_and(|existing| bytes_etag(&existing) == image.etag);
+        if !unchanged {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since_epoch| since_epoch.as_nanos())
+                .unwrap_or(0);
+            let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
+            std::fs::write(&temp_path, &image.data)?;
+            replace_file_blocking(&temp_path, &path)
+                .map_err(|error| anyhow::anyhow!("could not publish cover {file_name}: {error}"))?;
+        }
+
+        cached.insert(
+            book_id,
+            CachedCover {
+                mime_type: image.mime_type,
+                etag: image.etag,
+                len: image.data.len() as u64,
+                path,
+            },
+        );
+    }
+
+    // Covers for books that have left the library.
+    let mut stale = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(covers_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".cover") && !keep.contains(&name) {
+                stale.push(entry.path());
+            }
+        }
+    }
+    Ok((cached, stale))
+}
+
+/// Delete cover files the published library no longer points at.
+pub(crate) fn remove_stale_covers(stale: &[PathBuf]) {
+    for path in stale {
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -56,10 +56,12 @@ use tokio_util::io::ReaderStream;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use walkdir::WalkDir;
 
+mod abs;
 mod activity;
 mod alignment;
 mod app;
@@ -76,6 +78,7 @@ mod libation;
 mod library;
 mod media;
 mod migrate;
+mod opds;
 mod progress;
 mod reading;
 mod reading_log;
@@ -88,6 +91,7 @@ mod upload;
 mod util;
 mod works;
 
+use abs::*;
 use activity::*;
 use app::*;
 use auth::*;
@@ -100,6 +104,7 @@ use libation::*;
 use library::*;
 use media::*;
 use migrate::*;
+use opds::*;
 use progress::*;
 use reading::*;
 use reading_log::*;
@@ -260,6 +265,8 @@ async fn main() -> anyhow::Result<()> {
             config.port,
         )?,
         sync_dir: config.data_dir.join("sync"),
+        covers_dir: config.data_dir.join("covers"),
+        database_path: database_path.clone(),
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(
             database.clone(),
