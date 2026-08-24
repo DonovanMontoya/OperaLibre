@@ -30,13 +30,21 @@ pub(crate) async fn get_cover_art(
             .body(Body::empty())?);
     }
 
+    // Streamed from the extracted file rather than copied out of a map that
+    // held every cover in the library resident.
+    let cover = cover.clone();
+    drop(library);
+    let file = fs::File::open(&cover.path)
+        .await
+        .map_err(|_| ApiError::not_found("Cover art not found"))?;
+
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, cover.mime_type.clone())
-        .header(CONTENT_LENGTH, cover.data.len().to_string())
-        .header(ETAG, cover.etag.clone())
+        .header(CONTENT_TYPE, cover.mime_type)
+        .header(CONTENT_LENGTH, cover.len.to_string())
+        .header(ETAG, cover.etag)
         .header(CACHE_CONTROL, COVER_CACHE_CONTROL)
-        .body(Body::from(cover.data.clone()))?)
+        .body(Body::from_stream(ReaderStream::new(file)))?)
 }
 
 pub(crate) fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {

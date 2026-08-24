@@ -321,52 +321,81 @@ pub(crate) async fn update_progress(
         })
         .await?;
 
-    let listened_delta =
-        plausible_listened_delta(previous.as_ref(), &saved, update.intentional_seek);
+    record_progress_bookkeeping(
+        &state,
+        &auth,
+        &book,
+        &saved,
+        previous.as_ref(),
+        ProgressBookkeeping {
+            intentional_seek: update.intentional_seek,
+            tz_offset_minutes: update.tz_offset_minutes,
+            speed: update.speed,
+            client: update.client.as_deref(),
+            completion_source: CompletionSource::Reached,
+        },
+    )
+    .await;
+
+    Ok(Json(saved))
+}
+
+/// Apply the durable history derived from an accepted playback checkpoint.
+/// Compatibility APIs call this too, so a position has the same activity,
+/// listening-session, and completion effects regardless of which client sent
+/// it.
+pub(crate) struct ProgressBookkeeping<'a> {
+    pub(crate) intentional_seek: bool,
+    pub(crate) tz_offset_minutes: Option<i32>,
+    pub(crate) speed: Option<f64>,
+    pub(crate) client: Option<&'a str>,
+    pub(crate) completion_source: CompletionSource,
+}
+
+pub(crate) async fn record_progress_bookkeeping(
+    state: &AppState,
+    auth: &AuthUser,
+    book: &Book,
+    saved: &Progress,
+    previous: Option<&Progress>,
+    bookkeeping: ProgressBookkeeping<'_>,
+) {
+    let tz_offset_minutes = sanitized_tz_offset_minutes(bookkeeping.tz_offset_minutes);
+    let listened_delta = plausible_listened_delta(previous, saved, bookkeeping.intentional_seek);
     if listened_delta > 0.0 {
-        record_activity(
-            &state,
-            &auth.id,
-            listened_delta,
-            sanitized_tz_offset_minutes(update.tz_offset_minutes),
-        )
-        .await;
+        record_activity(state, &auth.id, listened_delta, tz_offset_minutes).await;
         record_listening(
-            &state,
+            state,
             &auth.id,
-            &book,
-            &saved,
+            book,
+            saved,
             ListeningCheckpoint {
-                previous: previous.as_ref(),
-                intentional_seek: update.intentional_seek,
-                tz_offset_minutes: sanitized_tz_offset_minutes(update.tz_offset_minutes),
-                speed: sanitized_playback_speed(update.speed),
-                client: sanitized_client_name(update.client.as_deref()),
+                previous,
+                intentional_seek: bookkeeping.intentional_seek,
+                tz_offset_minutes,
+                speed: sanitized_playback_speed(bookkeeping.speed),
+                client: sanitized_client_name(bookkeeping.client),
             },
         )
         .await;
     }
 
     let was_finished = previous
-        .as_ref()
         .map(|progress| {
-            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
+            summarize_book_progress(book, progress).status == BookProgressStatus::Finished
         })
         .unwrap_or(false);
-    if !was_finished
-        && summarize_book_progress(&book, &saved).status == BookProgressStatus::Finished
+    if !was_finished && summarize_book_progress(book, saved).status == BookProgressStatus::Finished
     {
         record_completion(
-            &state,
+            state,
             &auth.id,
-            &book,
-            CompletionSource::Reached,
-            sanitized_tz_offset_minutes(update.tz_offset_minutes),
+            book,
+            bookkeeping.completion_source,
+            tz_offset_minutes,
         )
         .await;
     }
-
-    Ok(Json(saved))
 }
 
 pub(crate) async fn update_book_completion(

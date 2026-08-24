@@ -18,6 +18,8 @@ use tower::ServiceExt;
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
+    /// Where the scanned library lives, for tests that grow it mid-flight.
+    library_root: PathBuf,
     /// Held so the temporary directory outlives the server.
     _root: tempfile::TempDir,
 }
@@ -51,6 +53,9 @@ impl TestServer {
         let data_dir = root.path().join("data");
         std::fs::create_dir_all(&library_root).unwrap();
         std::fs::create_dir_all(&data_dir).unwrap();
+        // Startup creates this; a harness that skips it makes the download
+        // route fail for a reason that has nothing to do with the test.
+        std::fs::create_dir_all(data_dir.join("download-temp")).unwrap();
 
         let audio = fixture_wav();
         for book in 0..book_count {
@@ -86,6 +91,8 @@ impl TestServer {
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
+            covers_dir: data_dir.join("covers"),
+            database_path: data_dir.join("operalibre.db"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(
                 database.clone(),
@@ -148,8 +155,10 @@ impl TestServer {
 
         rescan_library(&state).await.unwrap();
 
+        let library_root = state.library_root.clone();
         Self {
             router: build_router(state, None, &[]).unwrap(),
+            library_root,
             _root: root,
         }
     }
@@ -966,4 +975,743 @@ async fn deleting_a_listener_forgets_their_position_and_settings() {
         (book_view["volumeGain"].as_f64().unwrap() - 1.0).abs() < 1e-9,
         "a deleted listener's gain came back"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Library listing: conditional requests and paging
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_unchanged_library_answers_a_conditional_request_with_304() {
+    let server = TestServer::start(3).await;
+    let token = server.setup_owner().await;
+
+    let first = server.get("/api/books", &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let etag = first.header(header::ETAG);
+    assert!(!etag.is_empty(), "the listing carried no ETag");
+
+    let again = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_MODIFIED);
+    assert!(again.body.is_empty());
+}
+
+#[tokio::test]
+async fn saving_a_position_invalidates_the_listing_tag() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    let etag = server.get("/api/books", &token).await.header(header::ETAG);
+    save_position(&server, &token, &book, &track, 5.0, serde_json::json!({})).await;
+
+    let after = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        after.status,
+        StatusCode::OK,
+        "a stale tag was accepted after the position moved"
+    );
+}
+
+/// A volume gain does not touch any position, so a tag derived only from
+/// progress timestamps would answer 304 with the old gain still in it.
+#[tokio::test]
+async fn changing_a_gain_invalidates_the_listing_tag() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let etag = server.get("/api/books", &token).await.header(header::ETAG);
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/volume"),
+            &token,
+            serde_json::json!({ "volumeGain": 2.0 }),
+        )
+        .await;
+
+    let after = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(after.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_library_can_be_walked_a_page_at_a_time() {
+    let server = TestServer::start(5).await;
+    let token = server.setup_owner().await;
+
+    let whole = server.get("/api/books", &token).await.json();
+    let whole: Vec<String> = whole
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(whole.len(), 5);
+
+    let mut walked = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..10 {
+        let uri = match &cursor {
+            Some(cursor) => format!("/api/books?limit=2&cursor={cursor}"),
+            None => "/api/books?limit=2".to_string(),
+        };
+        let page = server.get(&uri, &token).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        for book in page.json().as_array().unwrap() {
+            walked.push(book["id"].as_str().unwrap().to_string());
+        }
+        let next = page.header(axum::http::HeaderName::from_static("x-next-cursor"));
+        if next.is_empty() {
+            break;
+        }
+        cursor = Some(next);
+    }
+
+    assert_eq!(walked, whole, "paging did not reproduce the whole library");
+}
+
+#[tokio::test]
+async fn a_page_only_contains_books_the_listener_may_see() {
+    let server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "paged").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed: Vec<String> = books.as_array().unwrap()[..2]
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": allowed }),
+        )
+        .await;
+
+    let page = server.get("/api/books?limit=10", &reader).await;
+    let listed: Vec<String> = page
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|book| book["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        listed, allowed,
+        "paging leaked a book the reader cannot see"
+    );
+}
+
+/// A cursor can name a book that has since been removed, or that the listener
+/// has just lost access to. Restarting the walk is recoverable; a 404 or an
+/// empty page forever is not.
+#[tokio::test]
+async fn an_unknown_cursor_restarts_the_walk() {
+    let server = TestServer::start(3).await;
+    let token = server.setup_owner().await;
+
+    let page = server
+        .get("/api/books?limit=2&cursor=no-such-book", &token)
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_eq!(page.json().as_array().unwrap().len(), 2);
+}
+
+/// A page that was exactly full gains a next cursor when a later-sorting book
+/// arrives, with a body that did not change. The tag covers the navigation
+/// state, so the conditional refetch must not answer 304 and hide the new
+/// page from a paginating client.
+#[tokio::test]
+async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
+    let server = TestServer::start(2).await;
+    let token = server.setup_owner().await;
+
+    let next_cursor = axum::http::HeaderName::from_static("x-next-cursor");
+    let first = server.get("/api/books?limit=2", &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert!(
+        first.header(next_cursor.clone()).is_empty(),
+        "the whole library fit on one page, so there was no cursor"
+    );
+    let etag = first.header(header::ETAG);
+
+    // Sorts after both existing books, so the first page's body is unchanged.
+    let folder = server.library_root.join("Book 99");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("01 Track.wav"), fixture_wav()).unwrap();
+    let rescan = server
+        .send_json("POST", "/api/library/rescan", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(rescan.status, StatusCode::OK, "{}", rescan.text());
+
+    let again = server
+        .send(
+            Request::builder()
+                .uri("/api/books?limit=2")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::OK,
+        "a stale tag was accepted after the page gained a next cursor"
+    );
+    assert_eq!(again.json().as_array().unwrap().len(), 2);
+    assert!(
+        !again.header(next_cursor).is_empty(),
+        "the refetch did not reveal the new page"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Operational surface
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_are_owner_only_and_describe_the_server() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "curious").await;
+
+    let refused = server.get("/api/metrics", &reader).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let metrics = server.get("/api/metrics", &owner).await;
+    assert_eq!(metrics.status, StatusCode::OK, "{}", metrics.text());
+    let metrics = metrics.json();
+    assert_eq!(metrics["books"], 3);
+    assert_eq!(metrics["tracks"], 6);
+    assert_eq!(metrics["users"], 2);
+    assert_eq!(metrics["listeningNow"], 0);
+    assert!(metrics["activeSessions"].as_u64().unwrap() >= 1);
+    assert!(metrics["databaseBytes"].as_u64().unwrap() > 0);
+    assert!(!metrics["version"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn metrics_count_a_listener_who_just_saved_a_position() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+
+    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
+
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
+}
+
+/// Two people on the same book are two listeners, and one person touching two
+/// books is one listener: the count is of people, not of books.
+#[tokio::test]
+async fn listening_now_counts_people_not_books() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "second").await;
+    let (book, track) = server.first_book_and_track(&owner).await;
+
+    save_position(&server, &owner, &book, &track, 3.0, serde_json::json!({})).await;
+    save_position(&server, &reader, &book, &track, 4.0, serde_json::json!({})).await;
+
+    let metrics = server.get("/api/metrics", &owner).await.json();
+    assert_eq!(
+        metrics["listeningNow"], 2,
+        "two listeners on one book were collapsed into one"
+    );
+}
+
+/// The request timeout must not sit in front of a book download: the archive
+/// is built before the response begins, and a large book takes minutes.
+#[tokio::test]
+async fn downloading_a_book_is_not_behind_the_request_timeout() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let response = server
+        .get(&format!("/api/books/{book}/download"), &token)
+        .await;
+
+    // The point is that the route answers on its own terms. A timeout layer in
+    // front of it would surface as 408 rather than a real answer.
+    assert_ne!(
+        response.status,
+        StatusCode::REQUEST_TIMEOUT,
+        "the download route was placed behind the request timeout"
+    );
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert!(!response.body.is_empty(), "the archive was empty");
+}
+
+#[tokio::test]
+async fn an_oversized_json_body_is_refused() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    // Well past MAX_JSON_BODY_BYTES, padded with a field the payload ignores.
+    let padding = "x".repeat(2 * 1024 * 1024);
+    let response = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book}/progress"),
+            &token,
+            serde_json::json!({
+                "trackId": track,
+                "positionSeconds": 1.0,
+                "padding": padding,
+            }),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+// ---------------------------------------------------------------------------
+// Third-party client surfaces
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_opds_catalogue_lists_only_what_the_reader_may_hear() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "opds-reader").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let allowed = books.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [allowed] }),
+        )
+        .await;
+
+    let root = server.get("/api/opds", &reader).await;
+    assert_eq!(root.status, StatusCode::OK);
+    assert!(root.header(header::CONTENT_TYPE).contains("opds-catalog"));
+    assert!(root.text().contains("/api/opds/books"));
+
+    let feed = server.get("/api/opds/books", &reader).await;
+    assert_eq!(feed.status, StatusCode::OK, "{}", feed.text());
+    let body = feed.text();
+    assert_eq!(
+        body.matches("<entry>").count(),
+        1,
+        "the feed showed books the reader cannot hear"
+    );
+    assert!(body.contains(&format!("urn:operalibre:book:{allowed}")));
+    assert!(body.contains("opds-spec.org/acquisition"));
+    // Well-formed enough that a reader will not choke on the declaration.
+    assert!(body.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+
+    // Many OPDS readers cannot attach a Bearer header while following feed
+    // links, so the same read-only media credential used by playback must be
+    // accepted on both catalogue routes.
+    let media_token = media_token_for_session(&reader);
+    let root_uri = format!("/api/opds?token={media_token}");
+    let root = server
+        .send(
+            Request::builder()
+                .uri(&root_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(root.status, StatusCode::OK, "{}", root.text());
+    assert!(
+        root.text()
+            .contains(&format!("/api/opds/books?token={media_token}"))
+    );
+
+    let books_uri = format!("/api/opds/books?token={media_token}");
+    let books = server
+        .send(
+            Request::builder()
+                .uri(&books_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    assert!(
+        books
+            .text()
+            .contains(&format!("stream?token={media_token}"))
+    );
+}
+
+#[test]
+fn opds_entries_escape_text_that_would_break_the_feed() {
+    // The title comes from a file name or a tag, so it can contain anything.
+    assert_eq!(
+        super::xml_escape("Tom & Jerry <\"quoted\">"),
+        "Tom &amp; Jerry &lt;&quot;quoted&quot;&gt;"
+    );
+    assert_eq!(super::xml_escape("bell\u{7}here"), "bellhere");
+    assert_eq!(
+        super::xml_escape("before\u{FFFE}\u{FFFF}after"),
+        "beforeafter"
+    );
+}
+
+#[tokio::test]
+async fn an_audiobookshelf_client_can_sign_in_and_browse() {
+    let server = TestServer::start(2).await;
+    server.setup_owner().await;
+
+    // The official client performs both discovery checks without credentials
+    // before it will present or reuse the login form.
+    let status = server
+        .send(
+            Request::builder()
+                .uri("/abs/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text());
+    let status = status.json();
+    assert_eq!(status["isInit"], true);
+    assert_eq!(status["language"], "en-us");
+    assert_eq!(status["authMethods"], serde_json::json!(["local"]));
+
+    let ping = server
+        .send(
+            Request::builder()
+                .uri("/abs/ping")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(ping.status, StatusCode::OK, "{}", ping.text());
+    assert_eq!(ping.json()["success"], true);
+
+    let login = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/abs/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": "owner",
+                        "password": "owner-password-1234"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text());
+    let login = login.json();
+    let token = login["user"]["token"].as_str().unwrap().to_string();
+    assert_eq!(login["userDefaultLibraryId"], super::ABS_LIBRARY_ID);
+    assert_eq!(login["user"]["username"], "owner");
+
+    let libraries = server.get("/abs/api/libraries", &token).await.json();
+    assert_eq!(libraries["libraries"][0]["id"], super::ABS_LIBRARY_ID);
+    assert_eq!(libraries["libraries"][0]["mediaType"], "book");
+
+    let items = server
+        .get(
+            &format!("/abs/api/libraries/{}/items", super::ABS_LIBRARY_ID),
+            &token,
+        )
+        .await
+        .json();
+    assert_eq!(items["total"], 2);
+    let item_id = items["results"][0]["id"].as_str().unwrap().to_string();
+
+    let item = server
+        .get(&format!("/abs/api/items/{item_id}"), &token)
+        .await
+        .json();
+    assert_eq!(item["mediaType"], "book");
+    let files = item["media"]["audioFiles"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["title"], "01 Track.wav");
+    assert_eq!(files[0]["mimeType"], "audio/wav");
+    // A player hands this URL to the platform's audio stack, which cannot
+    // attach a header, so the credential has to be in the address.
+    let content_url = files[0]["contentUrl"].as_str().unwrap();
+    assert!(content_url.contains("token="));
+    assert!((files[1]["startOffset"].as_f64().unwrap() - 10.0).abs() < 0.5);
+
+    // Clients configured with `https://server/abs` concatenate that base with
+    // the returned path. The composed URL must remain a working, query-token
+    // authenticated stream without an Authorization header.
+    let composed_url = format!("/abs{content_url}");
+    let streamed = server
+        .send(
+            Request::builder()
+                .uri(&composed_url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(streamed.status, StatusCode::OK, "{}", streamed.text());
+    assert_eq!(streamed.body.len(), fixture_wav().len());
+
+    // The same derived credential is accepted by the ABS-prefixed cover
+    // alias. This fixture has no cover, so reaching the handler is a 404; an
+    // auth wiring failure would be a 401.
+    let media_token = media_token_for_session(&token);
+    let cover = server
+        .send(
+            Request::builder()
+                .uri(format!(
+                    "/abs/api/books/{item_id}/cover?token={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cover.status, StatusCode::NOT_FOUND, "{}", cover.text());
+
+    let unknown = server
+        .get("/abs/api/libraries/not-a-library/items", &token)
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+/// The compatibility layer is a translation, not a second copy of the data: a
+/// position saved by a third-party player has to be the same position the web
+/// app resumes from.
+#[tokio::test]
+async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let patched = server
+        .send(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/abs/api/me/progress/{book}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "currentTime": 14.0, "duration": 20.0 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text());
+
+    // Second track of two ten-second tracks: four seconds into it.
+    let native = server.get("/api/books", &token).await.json();
+    let progress = &native.as_array().unwrap()[0]["progress"];
+    assert!((progress["bookPositionSeconds"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    let synced = server
+        .get(&format!("/abs/api/me/progress/{book}"), &token)
+        .await
+        .json();
+    assert!((synced["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert!((synced["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+    let before_completion_update = synced["lastUpdate"].as_u64().unwrap();
+
+    let session = server
+        .send_json(
+            "POST",
+            &format!("/abs/api/items/{book}/play"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await
+        .json();
+    assert!((session["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert!((session["startTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(session["playMethod"], 0);
+
+    // A delayed automatic checkpoint cannot roll the listener back.
+    let rejected_regression = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 4.0 }),
+        )
+        .await;
+    assert_eq!(rejected_regression.status, StatusCode::OK);
+    assert!((rejected_regression.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    let rejected_stale = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 16.0, "lastUpdate": 1 }),
+        )
+        .await;
+    assert_eq!(rejected_stale.status, StatusCode::OK);
+    assert!((rejected_stale.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    // Completion-only PATCHes preserve the position, and false is an explicit
+    // state rather than being ignored after true.
+    let finished = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "isFinished": true }),
+        )
+        .await
+        .json();
+    assert!((finished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(finished["isFinished"], true);
+    let finished_revision = finished["lastUpdate"].as_u64().unwrap();
+    assert!(finished_revision > before_completion_update);
+
+    let unfinished = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "isFinished": false }),
+        )
+        .await
+        .json();
+    assert!((unfinished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(unfinished["isFinished"], false);
+    assert!(unfinished["lastUpdate"].as_u64().unwrap() > finished_revision);
+
+    // A later forward checkpoint contributes to the native activity and
+    // reading-history surfaces instead of updating only the resume point.
+    let forward = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 16.0, "isFinished": false }),
+        )
+        .await;
+    assert_eq!(forward.status, StatusCode::OK, "{}", forward.text());
+    let stats = server.get("/api/profile/stats", &token).await.json();
+    assert!(stats["totalHoursRead"].as_f64().unwrap() > 0.0);
+    let completions = server.get("/api/profile/completions", &token).await.json();
+    assert_eq!(completions.as_array().unwrap().len(), 1);
+    let metrics = server.get("/api/metrics", &token).await.json();
+    assert_eq!(metrics["listeningNow"], 1);
+}
+
+#[tokio::test]
+async fn missing_audiobookshelf_progress_is_not_found() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let response = server
+        .get(&format!("/abs/api/me/progress/{book}"), &token)
+        .await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        response.text()
+    );
+}
+
+#[tokio::test]
+async fn the_compatibility_layer_honours_book_access() {
+    let server = TestServer::start(3).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "abs-reader").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let books = server.get("/api/books", &owner).await.json();
+    let books = books.as_array().unwrap();
+    let allowed = books[0]["id"].as_str().unwrap().to_string();
+    let denied = books[1]["id"].as_str().unwrap().to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &owner,
+            serde_json::json!({ "allowedBookIds": [allowed] }),
+        )
+        .await;
+
+    let items = server
+        .get(
+            &format!("/abs/api/libraries/{}/items", super::ABS_LIBRARY_ID),
+            &reader,
+        )
+        .await
+        .json();
+    assert_eq!(items["total"], 1);
+
+    for uri in [
+        format!("/abs/api/items/{denied}"),
+        format!("/abs/api/me/progress/{denied}"),
+    ] {
+        let response = server.get(&uri, &reader).await;
+        assert!(
+            response.status == StatusCode::FORBIDDEN || response.status == StatusCode::NOT_FOUND,
+            "{uri} leaked to a reader without access: {}",
+            response.status
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_compatibility_layer_requires_a_session() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+
+    for uri in ["/abs/api/me", "/abs/api/libraries"] {
+        let response = server
+            .send(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
 }
