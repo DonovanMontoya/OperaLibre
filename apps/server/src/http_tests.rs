@@ -69,7 +69,7 @@ impl TestServer {
         let database = Database::open(&data_dir.join("operalibre.db")).unwrap();
         let state = AppState {
             deployment_mode: DeploymentMode::Local,
-            csrf_allowed_origins: Arc::new(std::collections::HashSet::new()),
+            csrf_allowed_origins: Arc::new(build_csrf_allowed_origins(&[])),
             setup_token: Arc::new(Mutex::new(None)),
             max_upload_bytes: Some(DEFAULT_MAX_UPLOAD_GIB * GIBIBYTE_BYTES),
             max_book_download_bytes: Some(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES),
@@ -799,6 +799,91 @@ async fn owner_only_routes_refuse_a_plain_administrator() {
     }
 }
 
+/// A non-owner administrator cannot mint an approver at creation time: the
+/// flag is only persisted when an owner asked for it. Clients that send the
+/// field regardless of role keep working, and creating administrators stays
+/// owner-only.
+#[tokio::test]
+async fn a_non_owner_administrator_cannot_mint_a_libation_approver() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let admin = server.add_reader_login("deputy").await;
+
+    let promoted = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "understudy",
+                "password": "understudy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        promoted.text()
+    );
+
+    let seeded = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "sleeper",
+                "password": "sleeper-password-1234",
+                "canApproveLibationRequests": true
+            }),
+        )
+        .await;
+    assert_eq!(seeded.status, StatusCode::OK, "{}", seeded.text());
+    assert_eq!(
+        seeded.json()["canApproveLibationRequests"],
+        false,
+        "a non-owner administrator minted an approver"
+    );
+
+    // An owner granting the flag alongside an administrator account still
+    // works: that is the supported path.
+    let granted = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "approver",
+                "password": "approver-password-1234",
+                "isAdmin": true,
+                "canApproveLibationRequests": true
+            }),
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.text());
+    assert_eq!(
+        granted.json()["canApproveLibationRequests"],
+        true,
+        "the owner's explicit grant was dropped"
+    );
+}
+
 #[tokio::test]
 async fn admin_only_routes_refuse_a_reader() {
     let server = TestServer::start(1).await;
@@ -1198,6 +1283,197 @@ async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
         !again.header(next_cursor).is_empty(),
         "the refetch did not reveal the new page"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cookie CSRF enforcement
+// ---------------------------------------------------------------------------
+
+impl TestServer {
+    /// Sign in as the owner through the real route and return the session
+    /// cookie it sets.
+    async fn setup_owner_cookie(&self) -> String {
+        let response = self
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": "owner",
+                            "password": "owner-password-1234"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        let set_cookie = response.header(SET_COOKIE);
+        assert!(
+            set_cookie.starts_with(super::SESSION_COOKIE_NAME),
+            "login did not set the session cookie: {set_cookie}"
+        );
+        set_cookie.split(';').next().unwrap_or_default().to_string()
+    }
+}
+
+/// POST a logout carrying only a session cookie, with extra headers.
+async fn cookie_logout_with(
+    server: &TestServer,
+    cookie: &str,
+    headers: &[(&'static str, &str)],
+) -> TestResponse {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/auth/logout")
+        .header(header::COOKIE, cookie);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    server.send(builder.body(Body::empty()).unwrap()).await
+}
+
+#[tokio::test]
+async fn a_cookie_change_from_a_foreign_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response =
+        cookie_logout_with(&server, &cookie, &[("origin", "https://evil.example")]).await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        response.text()
+    );
+}
+
+/// No Origin and no Referer means the request cannot be attributed to the web
+/// app, so it is refused rather than given the benefit of the doubt.
+#[tokio::test]
+async fn a_cookie_change_without_any_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(&server, &cookie, &[]).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_null_origin_is_refused() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(&server, &cookie, &[("origin", "null")]).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[("origin", super::OFFICIAL_APP_ORIGINS[0])],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// A same-origin browser request may carry an Origin that names this very
+/// server; matching the Host header accepts it without configuration.
+#[tokio::test]
+async fn a_cookie_change_from_the_server_host_origin_is_allowed() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[
+            ("origin", "http://operalibre.local:4000"),
+            ("host", "operalibre.local:4000"),
+        ],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// Some cross-origin form posts strip Origin but keep Referer.
+#[tokio::test]
+async fn a_matching_referer_is_accepted_when_the_origin_is_absent() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    let response = cookie_logout_with(
+        &server,
+        &cookie,
+        &[
+            ("referer", "http://operalibre.local:4000/library"),
+            ("host", "operalibre.local:4000"),
+        ],
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// Bearer callers do not rely on ambient cookies, so a hostile page cannot
+/// make their requests: the origin check does not apply to them.
+#[tokio::test]
+async fn bearer_requests_are_exempt_from_the_origin_check() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+}
+
+/// The CSRF guard only narrows cookie-authenticated requests; an anonymous
+/// caller must still see the ordinary 401 from missing credentials.
+#[tokio::test]
+async fn an_anonymous_request_is_unauthorized_not_csrf_forbidden() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------
