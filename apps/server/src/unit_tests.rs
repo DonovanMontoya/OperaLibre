@@ -1315,6 +1315,14 @@ fn query_tokens_are_limited_to_read_only_media_routes() {
     ));
     assert!(super::query_token_allowed(&Method::GET, "/api/opds"));
     assert!(super::query_token_allowed(&Method::GET, "/api/opds/books"));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/cover"
+    ));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/abs/api/books/book/tracks/track/stream"
+    ));
     assert!(!super::query_token_allowed(&Method::GET, "/api/users"));
     assert!(!super::query_token_allowed(
         &Method::DELETE,
