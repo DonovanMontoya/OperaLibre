@@ -1393,12 +1393,43 @@ fn opds_entries_escape_text_that_would_break_the_feed() {
         "Tom &amp; Jerry &lt;&quot;quoted&quot;&gt;"
     );
     assert_eq!(super::xml_escape("bell\u{7}here"), "bellhere");
+    assert_eq!(
+        super::xml_escape("before\u{FFFE}\u{FFFF}after"),
+        "beforeafter"
+    );
 }
 
 #[tokio::test]
 async fn an_audiobookshelf_client_can_sign_in_and_browse() {
     let server = TestServer::start(2).await;
     server.setup_owner().await;
+
+    // The official client performs both discovery checks without credentials
+    // before it will present or reuse the login form.
+    let status = server
+        .send(
+            Request::builder()
+                .uri("/abs/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text());
+    let status = status.json();
+    assert_eq!(status["isInit"], true);
+    assert_eq!(status["language"], "en-us");
+    assert_eq!(status["authMethods"], serde_json::json!(["local"]));
+
+    let ping = server
+        .send(
+            Request::builder()
+                .uri("/abs/ping")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(ping.status, StatusCode::OK, "{}", ping.text());
+    assert_eq!(ping.json()["success"], true);
 
     let login = server
         .send(
@@ -1523,6 +1554,7 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .json();
     assert!((synced["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert!((synced["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+    let before_completion_update = synced["lastUpdate"].as_u64().unwrap();
 
     let session = server
         .send_json(
@@ -1573,6 +1605,8 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .json();
     assert!((finished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(finished["isFinished"], true);
+    let finished_revision = finished["lastUpdate"].as_u64().unwrap();
+    assert!(finished_revision > before_completion_update);
 
     let unfinished = server
         .send_json(
@@ -1585,6 +1619,7 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .json();
     assert!((unfinished["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(unfinished["isFinished"], false);
+    assert!(unfinished["lastUpdate"].as_u64().unwrap() > finished_revision);
 
     // A later forward checkpoint contributes to the native activity and
     // reading-history surfaces instead of updating only the resume point.

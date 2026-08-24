@@ -23,6 +23,19 @@ pub(crate) const ABS_LIBRARY_ID: &str = "operalibre";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AbsStatusResponse {
+    is_init: bool,
+    language: &'static str,
+    auth_methods: [&'static str; 1],
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AbsPingResponse {
+    success: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AbsLoginResponse {
     user: AbsUser,
     user_default_library_id: &'static str,
@@ -337,6 +350,20 @@ fn abs_user(auth: &AuthUser, token: String, progress: Vec<AbsMediaProgress>) -> 
     }
 }
 
+/// `GET /abs/status`
+pub(crate) async fn abs_status(State(state): State<AppState>) -> Json<AbsStatusResponse> {
+    Json(AbsStatusResponse {
+        is_init: !state.users.read().await.users.is_empty(),
+        language: "en-us",
+        auth_methods: ["local"],
+    })
+}
+
+/// `GET /abs/ping`
+pub(crate) async fn abs_ping() -> Json<AbsPingResponse> {
+    Json(AbsPingResponse { success: true })
+}
+
 /// `POST /abs/login`
 pub(crate) async fn abs_login(
     State(state): State<AppState>,
@@ -576,6 +603,9 @@ pub(crate) async fn abs_update_progress(
             };
             if let Some(finished) = finished {
                 saved.finished_override = Some(finished);
+                // A completion-only PATCH is still a new media-progress
+                // revision. Clients use lastUpdate to choose the newest copy.
+                saved.updated_at = next_progress_timestamp(previous, now_millis);
             }
             ProgressDecision::Store {
                 saved,

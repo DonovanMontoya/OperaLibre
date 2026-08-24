@@ -18,19 +18,23 @@ const OPDS_NAVIGATION_TYPE: &str = "application/atom+xml;profile=opds-catalog;ki
 pub(crate) fn xml_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
+        // XML 1.0 permits exactly these scalar ranges. Rust strings cannot
+        // contain surrogates, but can contain the forbidden U+FFFE/U+FFFF.
+        if !matches!(
+            character,
+            '\u{9}' | '\u{A}' | '\u{D}'
+                | '\u{20}'..='\u{D7FF}'
+                | '\u{E000}'..='\u{FFFD}'
+                | '\u{10000}'..='\u{10FFFF}'
+        ) {
+            continue;
+        }
         match character {
             '&' => escaped.push_str("&amp;"),
             '<' => escaped.push_str("&lt;"),
             '>' => escaped.push_str("&gt;"),
             '"' => escaped.push_str("&quot;"),
             '\'' => escaped.push_str("&apos;"),
-            // XML 1.0 forbids most control characters outright, and a stray
-            // one from a mangled tag would make the whole feed unparseable.
-            character
-                if (character as u32) < 0x20
-                    && character != '\n'
-                    && character != '\t'
-                    && character != '\r' => {}
             character => escaped.push(character),
         }
     }
