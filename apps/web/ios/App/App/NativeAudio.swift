@@ -489,10 +489,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             self?.generation += 1
-            // stop() ends the listening session (unmount, logout, failover),
-            // so its sleep timer must not keep counting into the next one.
-            // load() deliberately leaves the timer alone: it spans the track
-            // transitions within a session.
+            // stop() must disarm the sleep timer so it cannot keep counting
+            // into a session that did not arm it (logout, failover, reload).
+            // stop() also runs between track reattachments, so the JS attach
+            // path re-arms the timer with the seconds React still holds;
+            // load() leaves the timer alone for the same reason.
             self?.sleepTimerRemaining = 0
             self?.sleepTimerLastTick = nil
             self?.sleepTimerFinishedWhileInactive = false
