@@ -40,6 +40,13 @@ type NativeAudioRecoveryIdentity = {
    * previous book's and the first seconds would play at the wrong level.
    */
   gain: () => number;
+  /**
+   * Native `stop()` disarms its sleep timer so a countdown can never outlive
+   * the session that armed it — but the attachment cleanup also calls stop()
+   * on every track change, so each attach re-arms the timer from the seconds
+   * React still holds.
+   */
+  sleepTimerSeconds: () => number;
 };
 
 interface NativeAudioPlugin {
@@ -258,6 +265,11 @@ export function attachNativeAudioPlayer(
   };
 
   audio.muted = true;
+  // Unconditional: passing 0 also disarms a timer left behind by a WebView
+  // reload, where the detach cleanup (and its stop()) never ran.
+  void NativeAudio.setSleepTimer({
+    seconds: Math.max(0, recovery.sleepTimerSeconds())
+  }).catch(() => undefined);
   audio.addEventListener("loadedmetadata", load);
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);

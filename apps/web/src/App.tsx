@@ -2365,6 +2365,10 @@ function MainApp({
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const sleepDeadlineRef = useRef<number | null>(null);
+  const sleepRemainingRef = useRef(0);
+  useEffect(() => {
+    sleepRemainingRef.current = sleepRemaining;
+  }, [sleepRemaining]);
   const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -3642,7 +3646,12 @@ function MainApp({
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
         queue: () => nativeAudioQueueRef.current,
-        gain: () => playbackGainRef.current
+        gain: () => playbackGainRef.current,
+        sleepTimerSeconds: () => {
+          const deadline = sleepDeadlineRef.current;
+          if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
+          return sleepRemainingRef.current;
+        }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
