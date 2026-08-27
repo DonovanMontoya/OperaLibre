@@ -150,6 +150,22 @@ function sameCell(left: MatchCell | null, right: MatchCell) {
   return left?.row === right.row && left.col === right.col;
 }
 
+// How far a press must travel before it reads as a swipe rather than a tap.
+const SWIPE_DISTANCE = 12;
+// Offset from a piece's center — in the same [-0.5, 0.5] fraction-of-piece
+// units the tap handler computes — beyond which a retap of the selected piece
+// reads as a reach for the neighbor on that side. Generous on purpose: a
+// misread deselect is an annoyance, but a misread swap is irreversible.
+const DESELECT_RADIUS = 0.3;
+
+function neighborToward(cell: MatchCell, dx: number, dy: number): MatchCell | null {
+  const next = Math.abs(dx) >= Math.abs(dy)
+    ? { row: cell.row, col: cell.col + Math.sign(dx) }
+    : { row: cell.row + Math.sign(dy), col: cell.col };
+  const inBounds = next.row >= 0 && next.row < MATCH_SIZE && next.col >= 0 && next.col < MATCH_SIZE;
+  return inBounds ? next : null;
+}
+
 function cellsThatFall(matches: Set<string>) {
   const lowestMatchByColumn = new Map<number, number>();
   matches.forEach((key) => {
@@ -206,6 +222,11 @@ function ChapterMatch() {
   const [arriving, setArriving] = useState(true);
   const actionVersion = useRef(0);
   const popupSerial = useRef(0);
+  const drag = useRef<{ pointerId: number; cell: MatchCell; x: number; y: number; swiped: boolean } | null>(null);
+  const pendingTap = useRef<{ dx: number; dy: number } | null>(null);
+  // Mirrors `busy` synchronously: pointer handlers can fire twice before a
+  // re-render, and the state closure alone would let both swaps start.
+  const busyRef = useRef(false);
 
   useEffect(() => {
     setArriving(true);
@@ -236,6 +257,11 @@ function ChapterMatch() {
   function announce(nextMessage: string) {
     setMessage(nextMessage);
     setStatusTick((value) => value + 1);
+  }
+
+  function markBusy(value: boolean) {
+    busyRef.current = value;
+    setBusy(value);
   }
 
   async function clearCascades(start: MatchBoard, version: number) {
@@ -271,17 +297,60 @@ function ChapterMatch() {
     } else {
       announce(cascades > 1 ? `A ${cascades} chapter cascade!` : "Chapter cleared.");
     }
-    setBusy(false);
+    markBusy(false);
   }
 
-  async function choose(cell: MatchCell) {
-    if (busy) return;
+  async function performSwap(first: MatchCell, second: MatchCell) {
+    if (busyRef.current) return;
+    const swapped = swapCells(board, first, second);
+    const matches = findMatches(swapped);
+    const version = actionVersion.current + 1;
+    actionVersion.current = version;
+    markBusy(true);
+    setSelected(null);
+    setSwapping({ from: first, to: second });
+    await motionDelay(190);
+    if (version !== actionVersion.current) return;
+    setBoard(swapped);
+    setSwapping(null);
+
+    if (!matches.size) {
+      const invalidCells = new Set([cellKey(first), cellKey(second)]);
+      setInvalid(invalidCells);
+      announce("No line there — returning those symbols.");
+      await motionDelay(220);
+      if (version !== actionVersion.current) return;
+      setInvalid(new Set());
+      setSwapping({ from: first, to: second });
+      await motionDelay(190);
+      if (version !== actionVersion.current) return;
+      setBoard(board);
+      setSwapping(null);
+      markBusy(false);
+      return;
+    }
+
+    await clearCascades(swapped, version);
+  }
+
+  function choose(cell: MatchCell, tapOffset?: { dx: number; dy: number }) {
+    if (busyRef.current) return;
     if (!selected) {
       setSelected(cell);
       announce("Now choose a neighboring symbol.");
       return;
     }
     if (sameCell(selected, cell)) {
+      // On small boards a retap near the piece's edge is almost always a
+      // missed reach for the neighbor on that side; honor the intent instead
+      // of deselecting. A tap near the center still deselects.
+      const aimed = tapOffset && Math.max(Math.abs(tapOffset.dx), Math.abs(tapOffset.dy)) > DESELECT_RADIUS
+        ? neighborToward(cell, tapOffset.dx, tapOffset.dy)
+        : null;
+      if (aimed) {
+        void performSwap(cell, aimed);
+        return;
+      }
       setSelected(null);
       announce("Selection cleared.");
       return;
@@ -291,37 +360,7 @@ function ChapterMatch() {
       announce("Choose one of the glowing neighbors.");
       return;
     }
-
-    const first = selected;
-    const swapped = swapCells(board, first, cell);
-    const matches = findMatches(swapped);
-    const version = actionVersion.current + 1;
-    actionVersion.current = version;
-    setBusy(true);
-    setSelected(null);
-    setSwapping({ from: first, to: cell });
-    await motionDelay(190);
-    if (version !== actionVersion.current) return;
-    setBoard(swapped);
-    setSwapping(null);
-
-    if (!matches.size) {
-      const invalidCells = new Set([cellKey(first), cellKey(cell)]);
-      setInvalid(invalidCells);
-      announce("No line there — returning those symbols.");
-      await motionDelay(220);
-      if (version !== actionVersion.current) return;
-      setInvalid(new Set());
-      setSwapping({ from: first, to: cell });
-      await motionDelay(190);
-      if (version !== actionVersion.current) return;
-      setBoard(board);
-      setSwapping(null);
-      setBusy(false);
-      return;
-    }
-
-    await clearCascades(swapped, version);
+    void performSwap(selected, cell);
   }
 
   function reset() {
@@ -329,7 +368,7 @@ function ChapterMatch() {
     setBoard(makeMatchBoard());
     setScore(0);
     setSelected(null);
-    setBusy(false);
+    markBusy(false);
     setSwapping(null);
     setClearing(new Set());
     setFalling(new Set());
@@ -370,7 +409,59 @@ function ChapterMatch() {
           falling.has(key) && "falling",
           invalid.has(key) && "invalid"
         ].filter(Boolean).join(" ");
-        return <button type="button" role="gridcell" className={classes} style={style} aria-label={`Symbol at row ${rowIndex + 1}, column ${colIndex + 1}`} aria-selected={active} aria-disabled={busy} key={`${boardEpoch}:${key}`} onClick={() => choose(cell)}>{MATCH_GLYPHS[kind]}</button>;
+        return <button
+          type="button"
+          role="gridcell"
+          className={classes}
+          style={style}
+          aria-label={`Symbol at row ${rowIndex + 1}, column ${colIndex + 1}`}
+          aria-selected={active}
+          aria-disabled={busy}
+          key={`${boardEpoch}:${key}`}
+          onPointerDown={(event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            // One gesture at a time: a second concurrent touch never steals
+            // or corrupts the first finger's drag state.
+            if (drag.current) return;
+            pendingTap.current = null;
+            drag.current = { pointerId: event.pointerId, cell, x: event.clientX, y: event.clientY, swiped: false };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const start = drag.current;
+            if (!start || start.swiped || start.pointerId !== event.pointerId) return;
+            const dx = event.clientX - start.x;
+            const dy = event.clientY - start.y;
+            if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_DISTANCE) return;
+            // A swipe swaps with the neighbor it points at — no second tap,
+            // so no precision needed on small screens.
+            start.swiped = true;
+            const target = neighborToward(start.cell, dx, dy);
+            if (target) void performSwap(start.cell, target);
+          }}
+          onPointerUp={(event) => {
+            const start = drag.current;
+            if (!start || start.pointerId !== event.pointerId) return;
+            drag.current = null;
+            if (start.swiped) return;
+            // Just note where the tap landed; the click event does the work,
+            // so assistive tech and keyboards (click only, no pointer
+            // sequence) activate pieces exactly the same way.
+            const bounds = event.currentTarget.getBoundingClientRect();
+            pendingTap.current = {
+              dx: (event.clientX - bounds.left) / bounds.width - 0.5,
+              dy: (event.clientY - bounds.top) / bounds.height - 0.5
+            };
+          }}
+          onPointerCancel={(event) => {
+            if (drag.current?.pointerId === event.pointerId) drag.current = null;
+          }}
+          onClick={() => {
+            const offset = pendingTap.current;
+            pendingTap.current = null;
+            choose(cell, offset ?? undefined);
+          }}
+        >{MATCH_GLYPHS[kind]}</button>;
       }))}
       {popups.map((popup) => (
         <span
