@@ -11,6 +11,23 @@
   --spine: #1a1410;
   --spine-deep: #0e0a07;
 
+  /* RGB triples for the translucent tones the theme is built from, so the
+     iOS dark appearance can flip them in one place. --ink-rgb backs the
+     hairlines and tints drawn as transparent ink over paper; the rest are
+     the lifted/frosted light surfaces. Shadows keep literal dark rgba(). */
+  --ink-rgb: 26, 20, 16;
+  --lift-rgb: 255, 252, 244;
+  --lift-soft-rgb: 255, 253, 247;
+  --sheet-rgb: 255, 250, 235;
+  --sheet-deep-rgb: 241, 230, 207;
+  --sheen-rgb: 236, 220, 190;
+  --field-rgb: 255, 255, 255;
+  /* Text sitting on a gold-soft fill: constant, never flips — gold stays
+     mid-tone in both appearances, so its label must stay near-black. */
+  --on-gold: #1a1410;
+  /* Text on an ink-filled control; flips opposite to --ink. */
+  --on-ink: #f1e7d0;
+
   color-scheme: light;
   font-family: "Fraunces", "Times New Roman", serif;
   font-optical-sizing: auto;
@@ -278,7 +295,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .view-toggle button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -339,7 +356,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .source-toggle button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -631,7 +648,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .libation-actions button:hover,
 .audible-row button:hover {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -1327,8 +1344,8 @@ img.cover-mark {
   background: linear-gradient(
     180deg,
     transparent,
-    rgba(26, 20, 16, 0.18) 12%,
-    rgba(26, 20, 16, 0.18) 88%,
+    rgba(var(--ink-rgb), 0.18) 12%,
+    rgba(var(--ink-rgb), 0.18) 88%,
     transparent
   );
 }
@@ -1344,7 +1361,7 @@ img.cover-mark {
   text-transform: uppercase;
   color: var(--ink-faded);
   padding-bottom: 18px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.15);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.15);
 }
 
 .folio .dot {
@@ -1441,14 +1458,14 @@ img.large-cover {
   text-transform: uppercase;
   color: var(--ink);
   text-decoration: none;
-  border: 1px solid rgba(26, 20, 16, 0.25);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
   transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
 }
 
 .download-btn:hover,
 .download-btn.active {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   transform: translateY(-1px);
 }
@@ -1545,8 +1562,8 @@ img.large-cover {
   gap: 12px;
   margin-top: 14px;
   padding: 8px 16px 8px 0;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .book-runtime-label {
@@ -1574,7 +1591,7 @@ img.large-cover {
 .metadata-strip span {
   min-height: 28px;
   padding: 7px 10px;
-  border: 1px solid rgba(26, 20, 16, 0.16);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.66rem;
   letter-spacing: 0.12em;
@@ -1602,8 +1619,8 @@ img.large-cover {
   align-items: baseline;
   gap: 8px;
   padding: 7px 11px;
-  border: 1px solid rgba(26, 20, 16, 0.16);
-  background: rgba(26, 20, 16, 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  background: rgba(var(--ink-rgb), 0.03);
 }
 
 .shared-reader-name {
@@ -1654,7 +1671,7 @@ img.large-cover {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--red);
+  color: var(--oxblood);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.68rem;
   font-weight: 700;
@@ -1674,8 +1691,8 @@ img.large-cover {
   display: grid;
   gap: 14px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
-  background: rgba(255, 252, 244, 0.34);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-rgb), 0.34);
 }
 
 .readalong-header,
@@ -1727,7 +1744,7 @@ img.large-cover {
   height: min(72vh, 780px);
   height: min(72dvh, 780px);
   min-height: 420px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   background: #fffdf7;
 }
 
@@ -1985,7 +2002,7 @@ img.large-cover {
   padding: 32px;
   text-align: center;
   color: var(--ink-faded);
-  border: 1px dashed rgba(26, 20, 16, 0.22);
+  border: 1px dashed rgba(var(--ink-rgb), 0.22);
 }
 
 .readalong-fallback p {
@@ -2012,7 +2029,7 @@ img.large-cover {
   align-items: baseline;
   gap: 16px;
   padding-top: 12px;
-  border-top: 1px solid rgba(26, 20, 16, 0.15);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.15);
 }
 
 .track-line .title {
@@ -2081,8 +2098,8 @@ img.large-cover {
   min-width: 5px;
   height: 100%;
   overflow: hidden;
-  background: rgba(26, 20, 16, 0.13);
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
 }
 
@@ -2123,8 +2140,8 @@ img.large-cover {
   height: 12px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(26, 20, 16, 0.13);
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 .book-progressbar span {
@@ -2146,7 +2163,7 @@ input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.22), rgba(26, 20, 16, 0.22)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.22), rgba(var(--ink-rgb), 0.22)) left center / 100% 2px no-repeat;
   border-radius: 0;
 }
 
@@ -2154,7 +2171,7 @@ input[type="range"]::-moz-range-track {
   height: 4px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.22), rgba(26, 20, 16, 0.22)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.22), rgba(var(--ink-rgb), 0.22)) left center / 100% 2px no-repeat;
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -2204,7 +2221,7 @@ input[type="range"]::-moz-range-thumb {
   justify-content: space-between;
   gap: 16px;
   padding-top: 8px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
@@ -2236,8 +2253,8 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   gap: 16px;
   padding: 32px 0 26px;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .book-preview-actions .round-button.primary {
@@ -2289,7 +2306,7 @@ input[type="range"]::-moz-range-thumb {
   width: 58px;
   height: 58px;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   background: transparent;
 }
 
@@ -2334,7 +2351,7 @@ input[type="range"]::-moz-range-thumb {
 .round-button.primary {
   width: 92px;
   height: 92px;
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink);
   box-shadow:
     0 14px 36px -10px rgba(26, 20, 16, 0.5),
@@ -2345,7 +2362,7 @@ input[type="range"]::-moz-range-thumb {
   content: "";
   position: absolute;
   inset: -8px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 50%;
   pointer-events: none;
 }
@@ -2360,8 +2377,8 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   grid-template-columns: 1.5fr 1fr 1fr;
   gap: 0;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 /* The card count is not fixed: book volume belongs to the book rather than to
@@ -2380,7 +2397,7 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   gap: 14px;
   padding: 22px clamp(14px, 2vw, 28px);
-  border-right: 1px solid rgba(26, 20, 16, 0.12);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.12);
   min-width: 0;
 }
 
@@ -2415,7 +2432,7 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.15);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   background: transparent;
   transition: all 0.2s ease;
 }
@@ -2425,7 +2442,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .segmented button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink);
   border-color: var(--ink);
 }
@@ -2487,7 +2504,7 @@ input[type="range"]::-moz-range-thumb {
   min-height: 42px;
   padding: 0;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.16);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
   border-radius: 999px;
   background: transparent;
   transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
@@ -2509,9 +2526,9 @@ input[type="range"]::-moz-range-thumb {
   height: 72px;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(var(--field-rgb), 0.28);
   perspective: 260px;
   touch-action: pan-y;
   cursor: ew-resize;
@@ -2580,7 +2597,7 @@ input[type="range"]::-moz-range-thumb {
 .speed-wheel-value.distance-3 { opacity: 0.18; }
 
 .speed-wheel-value.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   font-size: 1rem;
   font-weight: 600;
   opacity: 1;
@@ -2619,7 +2636,7 @@ input[type="range"]::-moz-range-thumb {
   min-height: 30px;
   padding: 5px 3px;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 5px;
   background: transparent;
   font-family: "JetBrains Mono", monospace;
@@ -2633,7 +2650,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .speed-presets button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   background: var(--ink);
 }
@@ -2647,7 +2664,7 @@ select {
   color: var(--ink);
   background: transparent;
   border: 0;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.3);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.3);
   border-radius: 0;
   appearance: none;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%238b2e1f' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
@@ -2748,7 +2765,7 @@ select:focus {
   min-height: 30px;
   padding: 5px 3px;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 5px;
   background: transparent;
   font-family: "JetBrains Mono", monospace;
@@ -2763,7 +2780,7 @@ select:focus {
 }
 
 .book-volume-presets button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   background: var(--ink);
 }
@@ -2781,7 +2798,7 @@ select:focus {
   gap: 8px;
   margin-top: 20px;
   padding-top: 18px;
-  border-top: 1px solid rgba(26, 20, 16, 0.12);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
 }
 
 .speed-sheet-volume .sleep-sheet-hint {
@@ -2800,7 +2817,7 @@ select:focus {
   justify-content: space-between;
   gap: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .track-list-header .title-of-contents {
@@ -2839,7 +2856,7 @@ select:focus {
   align-items: baseline;
   padding: 14px 4px;
   text-align: left;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.2);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.2);
   color: var(--ink);
   position: relative;
   transition: padding 0.3s ease, color 0.3s ease;
@@ -3218,7 +3235,7 @@ select:focus {
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   background: transparent;
   justify-self: start;
   transition: background 0.2s ease, color 0.2s ease;
@@ -3226,7 +3243,7 @@ select:focus {
 
 .library-open-btn:hover {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
 }
 
 .library-scrim {
@@ -3303,8 +3320,8 @@ select:focus {
   }
 
   .control-section {
-    border-right: 1px solid rgba(26, 20, 16, 0.12);
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-right: 1px solid rgba(var(--ink-rgb), 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
   }
 
   .control-section:nth-child(2n) {
@@ -3517,7 +3534,7 @@ select:focus {
 
   .control-section {
     border-right: 0;
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
     padding: 18px 4px;
   }
 
@@ -3697,8 +3714,8 @@ select:focus {
   inset: 0;
   display: grid;
   place-items: center;
-  background: #f1e7d0;
-  color: #1a1410;
+  background: var(--paper);
+  color: var(--ink);
 }
 
 .native-launch-placeholder span {
@@ -3842,7 +3859,7 @@ select:focus {
   margin-top: 5px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
 }
 
 .startup-progress i {
@@ -3889,8 +3906,8 @@ select:focus {
 }
 
 .auth-card {
-  background: rgba(255, 250, 235, 0.94);
-  border: 1px solid rgba(26, 20, 16, 0.15);
+  background: rgba(var(--sheet-rgb), 0.94);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 14px;
   padding: 2.25rem 2rem;
   width: min(420px, 100%);
@@ -3923,8 +3940,8 @@ select:focus {
   font: inherit;
   padding: 0.6rem 0.7rem;
   border-radius: 8px;
-  border: 1px solid rgba(26, 20, 16, 0.25);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .auth-card input:focus-visible {
@@ -3944,9 +3961,9 @@ select:focus {
   gap: 0.6rem;
   min-width: 0;
   padding: 0.7rem;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 9px;
-  background: rgba(255, 252, 244, 0.65);
+  background: rgba(var(--lift-rgb), 0.65);
   color: var(--ink-soft);
   text-align: left;
   cursor: pointer;
@@ -4019,8 +4036,8 @@ select:focus {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   padding: 2px 6px;
-  background: rgba(26, 20, 16, 0.06);
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   color: var(--ink-soft);
 }
 
@@ -4028,7 +4045,7 @@ select:focus {
   margin-top: 0.4rem;
   background: transparent;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 999px;
   padding: 0.55rem 1rem;
   font: inherit;
@@ -4039,7 +4056,7 @@ select:focus {
 
 .auth-secondary:hover {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
 }
 
@@ -4056,7 +4073,7 @@ select:focus {
   content: "";
   height: 1px;
   flex: 1;
-  background: rgba(26, 20, 16, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 
 .auth-demo-button {
@@ -4082,7 +4099,7 @@ select:focus {
   gap: 12px;
   flex-wrap: wrap;
   padding-top: 12px;
-  border-top: 1px dotted rgba(26, 20, 16, 0.2);
+  border-top: 1px dotted rgba(var(--ink-rgb), 0.2);
   font-family: "Fraunces", serif;
   font-style: italic;
   font-size: 0.85rem;
@@ -4135,8 +4152,8 @@ select:focus {
   right: 0;
   z-index: 30;
   min-width: 200px;
-  background: rgba(255, 250, 235, 0.98);
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  background: rgba(var(--sheet-rgb), 0.98);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 10px;
   box-shadow: 0 18px 36px rgba(26, 20, 16, 0.18);
   padding: 0.5rem;
@@ -4149,7 +4166,7 @@ select:focus {
   display: flex;
   flex-direction: column;
   padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   margin-bottom: 0.25rem;
 }
 
@@ -4193,8 +4210,8 @@ select:focus {
 }
 
 .modal-card {
-  background: rgba(255, 250, 235, 0.98);
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  background: rgba(var(--sheet-rgb), 0.98);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 14px;
   padding: 1.5rem 1.5rem 1.75rem;
   width: min(540px, 100%);
@@ -4279,8 +4296,8 @@ select:focus {
 
 .unplayed-confirm-cancel {
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.18);
-  background: rgba(255, 253, 247, 0.72);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-soft-rgb), 0.72);
 }
 
 .unplayed-confirm-submit {
@@ -4347,9 +4364,9 @@ select:focus {
 .metadata-edit-form input,
 .metadata-edit-form textarea {
   width: 100%;
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 8px;
-  background: rgba(255, 252, 244, 0.92);
+  background: rgba(var(--lift-rgb), 0.92);
   padding: 0.58rem 0.68rem;
   /* >=16px so iOS doesn't zoom the page when the field is focused. */
   font: 1rem "Fraunces", serif;
@@ -4376,8 +4393,8 @@ select:focus {
 .metadata-edit-actions button {
   padding: 0.55rem 0.9rem;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .metadata-edit-actions button[type="submit"] {
@@ -4412,9 +4429,9 @@ select:focus {
 .upload-audiobook-field input {
   width: 100%;
   padding: 11px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(var(--field-rgb), 0.58);
   color: var(--ink);
   font: 1rem "Fraunces", serif;
 }
@@ -4473,9 +4490,9 @@ select:focus {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.6rem 0.75rem;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(255, 252, 244, 0.8);
+  background: rgba(var(--lift-rgb), 0.8);
 }
 
 .user-list li > div:first-child {
@@ -4498,8 +4515,8 @@ select:focus {
   font: inherit;
   padding: 0.4rem 0.7rem;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
   cursor: pointer;
 }
 
@@ -4529,8 +4546,8 @@ select:focus {
   font: inherit;
   padding: 0.5rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .add-user-form label.checkbox {
@@ -4670,7 +4687,7 @@ select:focus {
   gap: clamp(28px, 4vw, 56px);
   align-items: end;
   padding-bottom: 28px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.16);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.16);
 }
 
 .headline-primary {
@@ -4678,7 +4695,7 @@ select:focus {
   flex-direction: column;
   gap: 6px;
   padding-right: clamp(20px, 3vw, 36px);
-  border-right: 1px solid rgba(26, 20, 16, 0.12);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.12);
 }
 
 .headline-value {
@@ -4801,7 +4818,7 @@ select:focus {
   width: 18px;
   height: 18px;
   border-radius: 2px;
-  background: rgba(26, 20, 16, 0.07);
+  background: rgba(var(--ink-rgb), 0.07);
 }
 
 .calendar-weekdays span {
@@ -4858,11 +4875,11 @@ select:focus {
 }
 
 .profile-recent li {
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .profile-recent li:last-child {
-  border-bottom: 1px solid rgba(26, 20, 16, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .recent-row {
@@ -4937,7 +4954,7 @@ select:focus {
     padding-right: 0;
     border-right: 0;
     padding-bottom: 20px;
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
   }
   .headline-secondary {
     grid-template-columns: repeat(2, 1fr);
@@ -5618,7 +5635,7 @@ html.native-app .profile-shell {
 html.native-app {
   --m-radius: 22px;
   --m-radius-sm: 14px;
-  --m-card-light: rgba(255, 252, 244, 0.5);
+  --m-card-light: rgba(var(--lift-rgb), 0.5);
   --m-card-dark: rgba(255, 255, 255, 0.05);
 }
 
@@ -5783,7 +5800,7 @@ html.native-app .heading-actions .download-btn {
   min-width: 0;
   padding: 8px 15px;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   background: var(--m-card-light);
   letter-spacing: 0.08em;
 }
@@ -5813,9 +5830,9 @@ html.native-app .chapter-now {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 12px;
-  background: rgba(255, 253, 247, 0.48);
+  background: rgba(var(--lift-soft-rgb), 0.48);
 }
 
 html.native-app .chapter-now span:first-child {
@@ -5838,7 +5855,7 @@ html.native-app .timeline input[type="range"]::-webkit-slider-runnable-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .timeline input[type="range"]::-moz-range-track {
@@ -5846,7 +5863,7 @@ html.native-app .timeline input[type="range"]::-moz-range-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .timeline input[type="range"]::-webkit-slider-thumb {
@@ -5890,7 +5907,7 @@ html.native-app .round-button.secondary {
   width: 60px;
   height: 60px;
   border: 0;
-  background: rgba(26, 20, 16, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   color: var(--ink-soft);
 }
 
@@ -5923,8 +5940,8 @@ html.native-app .native-player-view-now .native-now-playing {
   border: 1px solid rgba(91, 65, 42, 0.14);
   border-radius: 28px;
   background:
-    linear-gradient(155deg, rgba(255, 253, 247, 0.62), rgba(236, 220, 190, 0.34)),
-    rgba(255, 252, 244, 0.32);
+    linear-gradient(155deg, rgba(var(--lift-soft-rgb), 0.62), rgba(var(--sheen-rgb), 0.34)),
+    rgba(var(--lift-rgb), 0.32);
   box-shadow:
     0 24px 52px -36px rgba(39, 24, 14, 0.78),
     inset 0 1px 0 rgba(255, 255, 255, 0.65);
@@ -5962,7 +5979,7 @@ html.native-app .native-player-return {
   padding: 4px 15px 4px 5px;
   border: 1px solid rgba(139, 46, 31, 0.2);
   border-radius: 999px;
-  background: rgba(255, 253, 247, 0.82);
+  background: rgba(var(--lift-soft-rgb), 0.82);
   color: var(--oxblood-deep);
   box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
   font-family: "JetBrains Mono", monospace;
@@ -6089,7 +6106,7 @@ html.native-app .native-now-timeline input[type="range"]::-moz-range-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .native-now-timeline input[type="range"]::-webkit-slider-thumb {
@@ -6147,7 +6164,7 @@ html.native-app .native-now-transport .native-now-seek {
   width: 46px;
   height: 52px;
   border-radius: 18px;
-  background: rgba(26, 20, 16, 0.055);
+  background: rgba(var(--ink-rgb), 0.055);
 }
 
 html.native-app .native-now-transport .native-now-seek span {
@@ -6193,10 +6210,10 @@ html.native-app .native-now-utility button {
   justify-content: center;
   gap: 3px;
   padding: 5px 3px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 13px;
   color: var(--ink-soft);
-  background: rgba(255, 253, 247, 0.44);
+  background: rgba(var(--lift-soft-rgb), 0.44);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.5rem;
   letter-spacing: 0.04em;
@@ -6417,8 +6434,8 @@ html:not(.native-app) .native-now-playing {
   border: 1px solid rgba(91, 65, 42, 0.14);
   border-radius: 32px;
   background:
-    linear-gradient(155deg, rgba(255, 253, 247, 0.68), rgba(236, 220, 190, 0.38)),
-    rgba(255, 252, 244, 0.36);
+    linear-gradient(155deg, rgba(var(--lift-soft-rgb), 0.68), rgba(var(--sheen-rgb), 0.38)),
+    rgba(var(--lift-rgb), 0.36);
   box-shadow:
     0 30px 70px -48px rgba(39, 24, 14, 0.88),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -6509,7 +6526,7 @@ html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-r
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-moz-range-track {
@@ -6517,7 +6534,7 @@ html:not(.native-app) .native-now-timeline input[type="range"]::-moz-range-track
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-thumb {
@@ -6583,7 +6600,7 @@ html:not(.native-app) .native-now-transport .native-now-seek {
   width: 52px;
   height: 56px;
   flex: 0 0 52px;
-  background: rgba(26, 20, 16, 0.055);
+  background: rgba(var(--ink-rgb), 0.055);
 }
 
 html:not(.native-app) .native-now-transport > button:not(.native-now-play):not(:disabled):hover {
@@ -6658,10 +6675,10 @@ html:not(.native-app) .native-now-utility button {
   justify-content: center;
   gap: 4px;
   padding: 6px 4px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 14px;
   color: var(--ink-soft);
-  background: rgba(255, 253, 247, 0.46);
+  background: rgba(var(--lift-soft-rgb), 0.46);
   font: 0.54rem "JetBrains Mono", monospace;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -6671,7 +6688,7 @@ html:not(.native-app) .native-now-utility button {
 html:not(.native-app) .native-now-utility button:hover {
   transform: translateY(-1px);
   border-color: rgba(139, 46, 31, 0.24);
-  background: rgba(255, 253, 247, 0.78);
+  background: rgba(var(--lift-soft-rgb), 0.78);
 }
 
 html:not(.native-app) .native-now-utility button:active {
@@ -6686,7 +6703,7 @@ html:not(.native-app) .web-now-extras {
   gap: 12px;
   margin-top: 8px;
   padding-top: 22px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
   text-align: left;
 }
 
@@ -6696,9 +6713,9 @@ html:not(.native-app) .web-now-panel {
   align-content: start;
   gap: 13px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.09);
+  border: 1px solid rgba(var(--ink-rgb), 0.09);
   border-radius: 18px;
-  background: rgba(255, 253, 247, 0.46);
+  background: rgba(var(--lift-soft-rgb), 0.46);
 }
 
 html:not(.native-app) .web-now-about {
@@ -6790,7 +6807,7 @@ html:not(.native-app) .web-now-progressbar {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.11);
+  background: rgba(var(--ink-rgb), 0.11);
 }
 
 html:not(.native-app) .web-now-progressbar span {
@@ -6805,7 +6822,7 @@ html:not(.native-app) .web-now-facts {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 11px;
 }
 
@@ -6817,7 +6834,7 @@ html:not(.native-app) .web-now-facts > div {
 }
 
 html:not(.native-app) .web-now-facts > div + div {
-  border-left: 1px solid rgba(26, 20, 16, 0.08);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 html:not(.native-app) .web-now-facts dt {
@@ -6876,7 +6893,7 @@ html:not(.native-app) .web-now-chapter-list button {
   grid-template-columns: 24px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 7px;
-  border-top: 1px solid rgba(26, 20, 16, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
   color: var(--ink-soft);
   text-align: left;
 }
@@ -6917,7 +6934,7 @@ html:not(.native-app) .native-player-return {
   border: 1px solid rgba(139, 46, 31, 0.2);
   border-radius: 999px;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.82);
+  background: rgba(var(--lift-soft-rgb), 0.82);
   box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
   font: 600 0.64rem "JetBrains Mono", monospace;
   letter-spacing: 0.06em;
@@ -7307,7 +7324,7 @@ html.native-app .controls-grid {
   grid-template-columns: 1fr;
   gap: 0;
   margin-top: 4px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: var(--m-radius-sm);
   background: var(--m-card-light);
   overflow: hidden;
@@ -7324,7 +7341,7 @@ html.native-app .control-section {
 }
 
 html.native-app .control-section + .control-section {
-  border-top: 1px solid rgba(26, 20, 16, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 html.native-app .segmented {
@@ -7334,7 +7351,7 @@ html.native-app .segmented {
 html.native-app .segmented button {
   min-height: 40px;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   background: transparent;
 }
 
@@ -7345,7 +7362,7 @@ html.native-app .segmented button.selected {
 }
 
 html.native-app .control-section select {
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 999px;
   padding: 10px 34px 10px 14px;
 }
@@ -7640,13 +7657,13 @@ html.native-app .round-button.secondary:hover {
 html.native-app .download-btn:not(.active):hover {
   background: transparent;
   color: var(--ink);
-  border-color: rgba(26, 20, 16, 0.25);
+  border-color: rgba(var(--ink-rgb), 0.25);
   transform: none;
 }
 
 html.native-app .heading-actions .download-btn:not(.active):hover {
   background: var(--m-card-light);
-  border-color: rgba(26, 20, 16, 0.14);
+  border-color: rgba(var(--ink-rgb), 0.14);
 }
 
 /* The library detail page shares its lower edge with the persistent player.
@@ -7692,8 +7709,8 @@ html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .down
   margin-top: 2px;
   padding: 4px 9px;
   color: var(--ink-faded);
-  background: rgba(26, 20, 16, 0.045);
-  border-color: rgba(26, 20, 16, 0.09);
+  background: rgba(var(--ink-rgb), 0.045);
+  border-color: rgba(var(--ink-rgb), 0.09);
 }
 
 html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn.device-status svg {
@@ -7837,7 +7854,7 @@ html.native-app .preview-return {
   padding: 6px 12px;
   border: 1px solid rgba(139, 46, 31, 0.12);
   border-radius: 999px;
-  background: rgba(255, 253, 247, 0.42);
+  background: rgba(var(--lift-soft-rgb), 0.42);
   color: var(--oxblood);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.58rem;
@@ -7880,12 +7897,12 @@ html.native-app .chapter-jump-top:active {
 }
 
 html.native-app .segmented button:not(.selected):hover {
-  border-color: rgba(26, 20, 16, 0.12);
+  border-color: rgba(var(--ink-rgb), 0.12);
 }
 
 html.native-app .chapter-segment:not(.active):hover {
-  background: rgba(26, 20, 16, 0.13);
-  border-color: rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border-color: rgba(var(--ink-rgb), 0.08);
 }
 
 html.native-app .libation-actions button:not(:disabled):hover,
@@ -7932,8 +7949,8 @@ html.native-app .source-toggle button:not(.selected):hover {
 
 html.native-app .epub-toolbar button:hover {
   color: var(--ink);
-  background: rgba(255, 252, 244, 0.48);
-  border-color: rgba(26, 20, 16, 0.2);
+  background: rgba(var(--lift-rgb), 0.48);
+  border-color: rgba(var(--ink-rgb), 0.2);
 }
 
 html.native-app .library-search:focus-within {
@@ -7979,7 +7996,7 @@ html.native-app .metadata-editor-card .modal-head {
   z-index: 1;
   margin: 0 -18px;
   padding: 12px 18px;
-  background: rgba(255, 250, 235, 0.98);
+  background: rgba(var(--sheet-rgb), 0.98);
   box-shadow: 0 8px 14px rgba(26, 20, 16, 0.05);
 }
 
@@ -7995,7 +8012,7 @@ html.native-app .modal-card::before {
   width: 40px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
 }
 
 html.native-app .metadata-edit-form input,
@@ -8062,7 +8079,7 @@ html.native-app .user-menu::before {
   width: 40px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.16);
+  background: rgba(var(--ink-rgb), 0.16);
   margin-bottom: 4px;
 }
 
@@ -8105,8 +8122,8 @@ html.native-app .auth-card input {
   min-height: 52px;
   padding: 0.7rem 0.95rem;
   border-radius: 14px;
-  border-color: rgba(26, 20, 16, 0.18);
-  background: rgba(255, 252, 244, 0.75);
+  border-color: rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-rgb), 0.75);
 }
 
 /* Keep the startup mark centered even though native auth forms begin near the
@@ -8205,7 +8222,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   flex: 0 0 auto;
   border-color: rgba(112, 37, 24, 0.34);
   color: var(--oxblood);
-  background: rgba(255, 252, 244, 0.95);
+  background: rgba(var(--lift-rgb), 0.95);
   box-shadow: 0 10px 24px -16px rgba(26, 20, 16, 0.7);
   cursor: pointer;
 }
@@ -8224,9 +8241,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   display: flex;
   gap: 5px;
   padding: 5px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 12px;
-  background: rgba(255, 252, 244, 0.55);
+  background: rgba(var(--lift-rgb), 0.55);
 }
 
 .admin-nav button {
@@ -8281,7 +8298,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 7px;
   min-height: 38px;
   padding: 8px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 999px;
   color: var(--paper);
   background: var(--oxblood);
@@ -8289,7 +8306,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   text-decoration: none;
   cursor: pointer;
 }
-.admin-update-actions .quiet-button { color: var(--ink); background: rgba(255, 252, 244, 0.9); }
+.admin-update-actions .quiet-button { color: var(--ink); background: rgba(var(--lift-rgb), 0.9); }
 .admin-update-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .admin-metrics {
@@ -8300,9 +8317,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-metrics article,
 .admin-card {
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 12px;
-  background: rgba(255, 252, 244, 0.72);
+  background: rgba(var(--lift-rgb), 0.72);
   box-shadow: 0 16px 36px -30px rgba(26, 20, 16, 0.55);
 }
 
@@ -8379,14 +8396,14 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 10px;
   min-width: 0;
   padding: 14px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 10px;
   background: rgba(112, 37, 24, 0.025);
 }
 
 .admin-software-versions > article.update-available {
   border-color: rgba(156, 104, 21, 0.3);
-  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(var(--lift-rgb), 0.72));
 }
 
 .admin-software-version-head {
@@ -8549,7 +8566,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   padding: 14px;
   border: 1px solid rgba(156, 104, 21, 0.3);
   border-radius: 10px;
-  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(var(--lift-rgb), 0.72));
 }
 
 .admin-faststart-confirm strong {
@@ -8575,7 +8592,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   display: grid;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .admin-faststart-job-state {
@@ -8596,9 +8613,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   margin: 0;
   overflow: auto;
   padding: 10px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(26, 20, 16, 0.035);
+  background: rgba(var(--ink-rgb), 0.035);
   font: 0.68rem/1.5 "JetBrains Mono", monospace;
   color: var(--ink);
   white-space: pre-wrap;
@@ -8617,9 +8634,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 7px;
   min-height: 38px;
   padding: 8px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 999px;
-  background: rgba(255, 252, 244, 0.9);
+  background: rgba(var(--lift-rgb), 0.9);
   color: var(--ink);
   font: 600 0.68rem "JetBrains Mono", monospace;
   cursor: pointer;
@@ -8636,18 +8653,18 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 }
 
 .admin-user-list { display: grid; gap: 10px; margin-top: 18px; }
-.admin-user { border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; overflow: hidden; }
+.admin-user { border: 1px solid rgba(var(--ink-rgb), 0.11); border-radius: 10px; overflow: hidden; }
 .admin-user-head { display: flex; align-items: center; gap: 11px; padding: 12px; }
 .admin-avatar { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: var(--paper); background: var(--oxblood); font: 1.1rem "Instrument Serif", serif; }
 .admin-user-head > div:nth-child(2) { min-width: 0; display: grid; flex: 1; }
 .admin-user-head > div:nth-child(2) span { color: var(--ink-faded); font-size: 0.77rem; }
 .admin-row-actions button { min-height: 32px; padding: 5px 9px; }
 
-.admin-access { padding: 12px; border-top: 1px solid rgba(26, 20, 16, 0.1); background: rgba(112, 37, 24, 0.025); }
-.admin-libation-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-access { padding: 12px; border-top: 1px solid rgba(var(--ink-rgb), 0.1); background: rgba(112, 37, 24, 0.025); }
+.admin-libation-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(var(--ink-rgb), 0.09); }
 .admin-libation-access > span { display: grid; }
 .admin-libation-access small { color: var(--ink-faded); font-size: 0.72rem; }
-.admin-libation-access select { min-width: 190px; padding: 8px 10px; border: 1px solid rgba(26, 20, 16, 0.18); border-radius: 8px; color: var(--ink); background: rgba(255, 252, 244, 0.9); font: 0.78rem "Fraunces", serif; }
+.admin-libation-access select { min-width: 190px; padding: 8px 10px; border: 1px solid rgba(var(--ink-rgb), 0.18); border-radius: 8px; color: var(--ink); background: rgba(var(--lift-rgb), 0.9); font: 0.78rem "Fraunces", serif; }
 .admin-all-access,
 .admin-checkbox { display: flex; align-items: center; gap: 10px; }
 .admin-all-access > span,
@@ -8657,7 +8674,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-all-access input,
 .admin-checkbox input,
 .admin-book-checks input { accent-color: var(--oxblood); }
-.admin-book-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; max-height: 230px; overflow: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-book-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; max-height: 230px; overflow: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(var(--ink-rgb), 0.09); }
 .admin-book-checks label { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 0.82rem; }
 .admin-book-checks label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -8669,9 +8686,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   width: 100%;
   min-width: 0;
   padding: 10px 11px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(var(--field-rgb), 0.58);
   color: var(--ink);
   font: 1rem "Fraunces", serif;
 }
@@ -8679,7 +8696,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-library-list { display: grid; gap: 7px; margin-top: 18px; }
 .admin-request-list { display: grid; gap: 8px; margin-top: 18px; }
-.admin-request { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; }
+.admin-request { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(var(--ink-rgb), 0.11); border-radius: 10px; }
 .admin-request > div:first-child { display: grid; min-width: 0; }
 .admin-request > div:first-child strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-request > div:first-child span { color: var(--ink-faded); font-size: 0.76rem; }
@@ -8769,7 +8786,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   justify-items: start;
   gap: 14px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: var(--m-radius-sm);
   background: var(--m-card-light);
 }
@@ -8822,15 +8839,125 @@ html.native-app .admin-shell:not(.admin-overlay) {
 }
 
 .settings-toggle-row strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-family: "Fraunces", serif;
   font-size: 0.95rem;
   font-weight: 500;
   color: var(--ink-soft);
 }
 
+/* iOS appearance option. The shelf and tab bar are already dark; this turns
+   the paper screens into a warm near-black while preserving OperaLibre's
+   oxblood and gold accents. */
+html.native-app.platform-ios.dark-mode {
+  /* --paper deliberately does NOT flip: it doubles as the light-text color on
+     the app's always-dark surfaces (the shelf spine, sheets, tab bar). The
+     paper *screens* are darkened by the background rules below instead. */
+  --paper-deep: #211914;
+  --ink: #f3ead8;
+  --ink-soft: #ddd0bb;
+  --ink-faded: #aa9b86;
+  --oxblood: #c65b49;
+  /* Matches --oxblood: -deep is mostly small label text in the sheets, and
+     the darker red reads as mud on the lifted dark cards. Gradients built
+     from the pair flatten to a solid, which is fine at phone size. */
+  --oxblood-deep: #c65b49;
+  --gold: #c99a4b;
+  --on-ink: #17120f;
+  --m-card-light: rgba(255, 255, 255, 0.055);
+  /* Hairlines/tints flip to translucent cream; the frosted light surfaces
+     become lifted warm darks. Same alphas as light mode throughout. */
+  --ink-rgb: 243, 234, 216;
+  --lift-rgb: 56, 45, 36;
+  --lift-soft-rgb: 62, 50, 40;
+  --sheet-rgb: 34, 27, 22;
+  --sheet-deep-rgb: 28, 22, 17;
+  --sheen-rgb: 74, 60, 46;
+  --field-rgb: 10, 7, 5;
+  color-scheme: dark;
+}
+
+html.native-app.platform-ios.dark-mode body,
+html.native-app.platform-ios.dark-mode .native-shell > .player-pane,
+html.native-app.platform-ios.dark-mode .settings-shell,
+html.native-app.platform-ios.dark-mode .profile-shell,
+html.native-app.platform-ios.dark-mode .profile-page,
+html.native-app.platform-ios.dark-mode .admin-shell:not(.admin-overlay),
+html.native-app.platform-ios.dark-mode .admin-overlay,
+html.native-app.platform-ios.dark-mode .native-launch-placeholder {
+  background-color: #17120f;
+  background-image: none;
+}
+
+html.native-app.platform-ios.dark-mode .native-shell.tab-reading .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-ledger .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-settings .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-admin .ios-status-veil {
+  background: rgba(23, 18, 15, 0.78);
+}
+
+html.native-app.platform-ios.dark-mode .settings-card,
+html.native-app.platform-ios.dark-mode .chapter-now,
+html.native-app.platform-ios.dark-mode .heading-actions .download-btn,
+html.native-app.platform-ios.dark-mode .round-button.secondary {
+  border-color: rgba(243, 234, 216, 0.1);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch {
+  background: rgba(243, 234, 216, 0.2);
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch > span {
+  background: #f3ead8;
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch[aria-checked="true"] {
+  background: var(--oxblood);
+}
+
+html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
+    linear-gradient(rgba(243, 234, 216, 0.2), rgba(243, 234, 216, 0.2)) left center / 100% 3px no-repeat;
+}
+
 .settings-toggle-row small {
   color: var(--ink-faded);
   font: italic 0.85rem/1.35 "Fraunces", serif;
+}
+
+/* Three-way appearance choice (Light / Dark / System). Wraps under its label
+   on narrow phones rather than squeezing the copy. */
+.settings-appearance-row {
+  flex-wrap: wrap;
+}
+
+.settings-mode-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+.settings-mode-toggle button {
+  min-height: 30px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  font: 500 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.settings-mode-toggle button.selected {
+  color: var(--on-ink);
+  background: var(--ink);
 }
 
 .settings-switch {
@@ -8841,7 +8968,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   cursor: pointer;
   transition: background 0.18s ease;
 }
@@ -8913,7 +9040,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 0;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
 .settings-download-row:first-child {
@@ -8966,7 +9093,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   gap: 12px;
   width: 100%;
   padding: 9px 0;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
 .server-alias-row > span {
@@ -8989,9 +9116,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .server-alias-form input {
   min-width: 0;
   padding: 9px 10px;
-  border: 1px solid rgba(26, 20, 16, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--field-rgb), 0.55);
   color: var(--ink);
 }
 
@@ -9119,7 +9246,7 @@ html.native-app .recent-row {
   color: var(--ink);
   background:
     radial-gradient(circle at 88% 4%, rgba(184, 137, 58, 0.2), transparent 32%),
-    linear-gradient(180deg, #fffaf0, #f1e6cf 100%);
+    linear-gradient(180deg, rgb(var(--sheet-rgb)), rgb(var(--sheet-deep-rgb)) 100%);
   box-shadow: 0 -24px 60px -28px rgba(0, 0, 0, 0.72);
   animation: sheet-up 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -9147,8 +9274,8 @@ html.native-app .recent-row {
 .details-sheet-header .icon-button {
   flex: 0 0 auto;
   color: var(--ink-soft);
-  border-color: rgba(26, 20, 16, 0.12);
-  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(var(--ink-rgb), 0.12);
+  background: rgba(var(--field-rgb), 0.5);
 }
 
 .details-sheet-hero {
@@ -9238,7 +9365,7 @@ html.native-app .recent-row {
   height: 5px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
 }
 
 .details-sheet-progressbar i {
@@ -9256,9 +9383,9 @@ html.native-app .recent-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 13px;
-  background: rgba(255, 253, 247, 0.5);
+  background: rgba(var(--lift-soft-rgb), 0.5);
 }
 
 .details-sheet-facts > div {
@@ -9269,7 +9396,7 @@ html.native-app .recent-row {
 }
 
 .details-sheet-facts > div + div {
-  border-left: 1px solid rgba(26, 20, 16, 0.09);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.09);
 }
 
 .details-sheet-facts span {
@@ -9298,7 +9425,7 @@ html.native-app .recent-row {
   border: 1px solid rgba(139, 46, 31, 0.13);
   border-radius: 999px;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.48);
+  background: rgba(var(--lift-soft-rgb), 0.48);
   font: 0.56rem "JetBrains Mono", monospace;
   letter-spacing: 0.05em;
 }
@@ -9319,7 +9446,7 @@ html.native-app .recent-row {
   gap: 8px;
   margin: 16px -2px 0;
   padding: 12px 2px max(2px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(241, 230, 207, 0), #f1e6cf 24%);
+  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 24%);
 }
 
 .details-sheet-actions button {
@@ -9337,13 +9464,13 @@ html.native-app .recent-row {
 
 .details-sheet-actions .details-sheet-completion {
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.7);
+  background: rgba(var(--lift-soft-rgb), 0.7);
 }
 
 .details-sheet-actions .details-sheet-reset {
   grid-column: 1 / -1;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.52);
+  background: rgba(var(--lift-soft-rgb), 0.52);
 }
 
 .details-sheet-actions .details-sheet-full {
@@ -9445,7 +9572,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-wheel-value.selected {
-  color: var(--ink);
+  color: var(--on-gold);
 }
 
 .sleep-sheet .speed-presets button {
@@ -9458,7 +9585,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-presets button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   border-color: var(--gold-soft);
   background: var(--gold-soft);
 }
@@ -9513,7 +9640,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .book-volume-presets button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   border-color: var(--gold-soft);
   background: var(--gold-soft);
 }
@@ -9526,7 +9653,7 @@ html.native-app .recent-row {
   width: 100%;
   min-height: 46px;
   margin-top: 18px;
-  color: var(--ink);
+  color: var(--on-gold);
   border-radius: 999px;
   background: var(--gold-soft);
   font-family: "JetBrains Mono", monospace;
