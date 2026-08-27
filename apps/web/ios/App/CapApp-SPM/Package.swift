@@ -16,6 +16,7 @@ let package = Package(
         .package(name: "CapacitorFilesystem", path: "../../../../../node_modules/@capacitor/filesystem"),
         .package(name: "CapacitorHaptics", path: "../../../../../node_modules/@capacitor/haptics"),
         .package(name: "CapacitorScreenOrientation", path: "../../../../../node_modules/@capacitor/screen-orientation"),
+        .package(name: "CapacitorStatusBar", path: "../../../../../node_modules/@capacitor/status-bar"),
         .package(name: "CapawesomeCapacitorFilePicker", path: "../../../../../node_modules/@capawesome/capacitor-file-picker")
     ],
     targets: [
@@ -28,6 +29,7 @@ let package = Package(
                 .product(name: "CapacitorFilesystem", package: "CapacitorFilesystem"),
                 .product(name: "CapacitorHaptics", package: "CapacitorHaptics"),
                 .product(name: "CapacitorScreenOrientation", package: "CapacitorScreenOrientation"),
+                .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
                 .product(name: "CapawesomeCapacitorFilePicker", package: "CapawesomeCapacitorFilePicker")
             ]
         )

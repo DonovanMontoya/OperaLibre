@@ -1,6 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
+import { StatusBar, Style } from "@capacitor/status-bar";
+import type { AppearanceMode } from "./appearance";
 
 /**
  * Native-only ergonomics for the Capacitor Android and iOS builds. Everything here is a
@@ -111,4 +113,20 @@ export function selectionHaptic(phase: "start" | "change" | "end"): void {
     end: () => Haptics.selectionEnd()
   }[phase];
   void feedback().catch(() => undefined);
+}
+
+/* The web view's veils can disagree with the device theme once the user pins
+   an appearance, so the status-bar icons must follow the chosen mode rather
+   than the system. System mode hands control back to iOS (Style.Default),
+   which also keeps the icons in step with live device-theme changes. */
+export function syncStatusBarStyle(mode: AppearanceMode): void {
+  if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios") {
+    return;
+  }
+  const style = {
+    light: Style.Light,
+    dark: Style.Dark,
+    system: Style.Default
+  }[mode];
+  void StatusBar.setStyle({ style }).catch(() => undefined);
 }

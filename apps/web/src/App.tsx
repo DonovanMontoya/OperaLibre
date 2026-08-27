@@ -172,7 +172,7 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, openNativeBrowser, selectionHaptic } from "./native";
+import { haptic, openNativeBrowser, selectionHaptic, syncStatusBarStyle } from "./native";
 import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
@@ -2204,6 +2204,7 @@ function MainApp({
     setAppearanceMode(mode);
     writeAppearanceMode(window.localStorage, mode);
     applyAppearanceMode(mode);
+    syncStatusBarStyle(mode);
     haptic("light");
   }
 

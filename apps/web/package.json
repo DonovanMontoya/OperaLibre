@@ -22,6 +22,7 @@
     "@capacitor/haptics": "^8.0.2",
     "@capacitor/ios": "^8.5.0",
     "@capacitor/screen-orientation": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
     "@capawesome/capacitor-file-picker": "^8.0.3",
     "epubjs": "^0.3.93",
     "lucide-react": "^1.28.0",

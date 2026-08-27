@@ -1,14 +1,15 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { markNativePlatform } from "./native";
+import { markNativePlatform, syncStatusBarStyle } from "./native";
 import { applyStoredRotationLock } from "./rotationLock";
-import { applyStoredAppearance, watchSystemAppearance } from "./appearance";
+import { applyStoredAppearance, readAppearanceMode, watchSystemAppearance } from "./appearance";
 import "./styles.css";
 
 markNativePlatform();
 applyStoredAppearance();
 watchSystemAppearance();
+syncStatusBarStyle(readAppearanceMode(window.localStorage));
 void applyStoredRotationLock().catch((error) => {
   console.warn("Could not restore the app rotation lock", error);
 });
