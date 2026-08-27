@@ -173,7 +173,8 @@ import {
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, openNativeBrowser, selectionHaptic } from "./native";
-import { applyDarkMode, readDarkMode, writeDarkMode } from "./appearance";
+import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
   disableRotationLock,
@@ -2187,7 +2188,9 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
-  const [darkModeEnabled, setDarkModeEnabled] = useState(() => ios && readDarkMode(window.localStorage));
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
+    ios ? readAppearanceMode(window.localStorage) : "light"
+  );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -2196,11 +2199,11 @@ function MainApp({
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
 
-  function toggleDarkMode() {
-    const enabled = !darkModeEnabled;
-    setDarkModeEnabled(enabled);
-    writeDarkMode(window.localStorage, enabled);
-    applyDarkMode(document.documentElement, enabled);
+  function updateAppearanceMode(mode: AppearanceMode) {
+    if (mode === appearanceMode) return;
+    setAppearanceMode(mode);
+    writeAppearanceMode(window.localStorage, mode);
+    applyAppearanceMode(mode);
     haptic("light");
   }
 
@@ -7721,21 +7724,25 @@ function MainApp({
 
           {ios || rotationLockAvailable ? <section className="settings-card">
             <span className="section-label"><Smartphone size={13} /> Display</span>
-            {ios ? <div className="settings-toggle-row">
+            {ios ? <div className="settings-toggle-row settings-appearance-row">
               <span>
-                <strong><Moon size={15} aria-hidden="true" /> Dark mode</strong>
-                <small>Uses a darker reading-room interface in OperaLibre.</small>
+                <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
+                <small>System follows your device's light or dark theme.</small>
               </span>
-              <button
-                type="button"
-                className="settings-switch"
-                role="switch"
-                aria-checked={darkModeEnabled}
-                aria-label="Dark mode"
-                onClick={toggleDarkMode}
-              >
-                <span aria-hidden="true" />
-              </button>
+              <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
+                {(["light", "dark", "system"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={appearanceMode === mode}
+                    className={appearanceMode === mode ? "selected" : undefined}
+                    onClick={() => updateAppearanceMode(mode)}
+                  >
+                    {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
+                  </button>
+                ))}
+              </div>
             </div> : null}
             {rotationLockAvailable ? <div className="settings-toggle-row">
               <span>
