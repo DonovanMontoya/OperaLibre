@@ -367,6 +367,17 @@ function BookVolumeControl({
   const maximum = canBoost ? BOOK_GAIN_DB_MAX : 0;
   const position = Math.min(db, maximum);
   const presetOptions = BOOK_GAIN_DB_PRESETS.filter((preset) => preset <= maximum);
+  const sliderDragging = useRef(false);
+
+  // The same tactile grammar as the speed wheel beside it: a drag ticks once
+  // per decibel step, a discrete nudge (stepper button, arrow key) bumps.
+  function change(next: number, source: "drag" | "step") {
+    const bounded = Math.min(maximum, Math.max(BOOK_GAIN_DB_MIN, next));
+    if (bounded === position) return;
+    if (source === "drag") selectionHaptic("change");
+    else haptic("light");
+    onChange(bounded);
+  }
 
   const slider = (
     <input
@@ -377,7 +388,19 @@ function BookVolumeControl({
       step={BOOK_GAIN_DB_STEP}
       value={position}
       aria-valuetext={formatBookGainDb(position)}
-      onChange={(event) => onChange(Number(event.currentTarget.value))}
+      onPointerDown={() => {
+        sliderDragging.current = true;
+        selectionHaptic("start");
+      }}
+      onPointerUp={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onPointerCancel={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onChange={(event) => change(Number(event.currentTarget.value), sliderDragging.current ? "drag" : "step")}
     />
   );
 
@@ -409,7 +432,25 @@ function BookVolumeControl({
         <output aria-live="polite">{formatBookGainDb(db)}</output>
         <span>{BOOK_GAIN_DB_STEP} dB steps</span>
       </div>
-      {slider}
+      <div className="book-volume-slider-row">
+        <button
+          type="button"
+          aria-label={`Decrease amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position <= BOOK_GAIN_DB_MIN}
+          onClick={() => change(position - BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Minus size={17} />
+        </button>
+        {slider}
+        <button
+          type="button"
+          aria-label={`Increase amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position >= maximum}
+          onClick={() => change(position + BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Plus size={17} />
+        </button>
+      </div>
       <div className="book-volume-range-labels" aria-hidden="true">
         <span>{formatBookGainDb(BOOK_GAIN_DB_MIN)}</span>
         <span>{maximum === 0 ? "Original" : `+${maximum} dB`}</span>

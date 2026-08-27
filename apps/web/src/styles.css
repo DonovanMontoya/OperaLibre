@@ -2491,14 +2491,18 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.04em;
 }
 
-.speed-wheel-shell {
+/* The gain stepper row wears the same shell so the two controls read as one
+   family. */
+.speed-wheel-shell,
+.book-volume-slider-row {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) 38px;
   align-items: center;
   gap: 7px;
 }
 
-.speed-wheel-shell > button {
+.speed-wheel-shell > button,
+.book-volume-slider-row > button {
   display: grid;
   place-items: center;
   min-height: 42px;
@@ -2510,13 +2514,15 @@ input[type="range"]::-moz-range-thumb {
   transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
-.speed-wheel-shell > button:hover:not(:disabled) {
+.speed-wheel-shell > button:hover:not(:disabled),
+.book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--oxblood);
   border-color: var(--oxblood);
   transform: translateY(-1px);
 }
 
-.speed-wheel-shell > button:disabled {
+.speed-wheel-shell > button:disabled,
+.book-volume-slider-row > button:disabled {
   cursor: default;
   opacity: 0.32;
 }
@@ -2721,8 +2727,13 @@ select:focus {
   letter-spacing: 0.04em;
 }
 
-.book-volume-full > input[type="range"] {
+.book-volume-slider-row > input[type="range"] {
   height: 20px;
+}
+
+/* Keep the end labels under the track rather than under the steppers. */
+.book-volume-full .book-volume-range-labels {
+  margin: 0 45px;
 }
 
 /* The desktop card states its value the way the Nightfall card beside it
@@ -9555,13 +9566,15 @@ html.native-app .recent-row {
   gap: 11px;
 }
 
-.sleep-sheet .speed-wheel-shell > button {
+.sleep-sheet .speed-wheel-shell > button,
+.sleep-sheet .book-volume-slider-row > button {
   color: var(--paper);
   border-color: rgba(241, 231, 208, 0.18);
   background: rgba(255, 255, 255, 0.05);
 }
 
-.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled) {
+.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled),
+.sleep-sheet .book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--gold-soft);
   border-color: rgba(217, 181, 116, 0.7);
 }
