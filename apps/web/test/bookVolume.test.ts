@@ -360,6 +360,43 @@ test("a failed write survives a restart and re-arms the guard", async () => {
 });
 
 /**
+ * An offline write made just before the app is closed or backgrounded may
+ * never reject — the WebView is suspended first. The intent is recorded the
+ * moment the adjustment is made, so the restart still re-arms the guard.
+ */
+test("a write that never settles before shutdown still survives a restart", () => {
+  const { calls, write } = deferredWriter();
+  const store = memoryUnsyncedStore();
+  const sync = createBookGainSync(write, new Map(), store);
+
+  sync.write("book-1", 2);
+  // The request is on the wire but the app dies here: no settle, no reject.
+  assert.equal(calls.length, 1);
+  assert.deepEqual(store.current(), { "book-1": 2 });
+
+  const revived = deferredWriter();
+  const pending = new Map<string, number>();
+  const revivedSync = createBookGainSync(revived.write, pending, store);
+  assert.equal(pending.get("book-1"), 2);
+
+  revivedSync.retry();
+  assert.equal(revived.calls.length, 1);
+  assert.equal(revived.calls[0].gain, 2);
+});
+
+test("a confirmed write erases the owed record", async () => {
+  const { calls, write } = deferredWriter();
+  const store = memoryUnsyncedStore();
+  const sync = createBookGainSync(write, new Map(), store);
+
+  sync.write("book-1", 2);
+  assert.deepEqual(store.current(), { "book-1": 2 });
+  calls[0].settle(true);
+  await flush();
+  assert.deepEqual(store.current(), {});
+});
+
+/**
  * A reset to Original made offline is still a write the server owes an
  * acknowledgement for; dropping it would leave the old boost stored.
  */
