@@ -24,6 +24,7 @@ import {
   Maximize2,
   Minimize2,
   Minus,
+  Moon,
   Network,
   Pause,
   Pencil,
@@ -172,6 +173,7 @@ import {
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, openNativeBrowser, selectionHaptic } from "./native";
+import { applyDarkMode, readDarkMode, writeDarkMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
   disableRotationLock,
@@ -2177,6 +2179,7 @@ function MainApp({
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
   const native = isNativeApp();
+  const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
   const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
@@ -2184,6 +2187,7 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
+  const [darkModeEnabled, setDarkModeEnabled] = useState(() => ios && readDarkMode(window.localStorage));
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -2191,6 +2195,14 @@ function MainApp({
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+
+  function toggleDarkMode() {
+    const enabled = !darkModeEnabled;
+    setDarkModeEnabled(enabled);
+    writeDarkMode(window.localStorage, enabled);
+    applyDarkMode(document.documentElement, enabled);
+    haptic("light");
+  }
 
   useEffect(() => {
     if (!isOperaLibre || demoMode || localMode) {
@@ -7707,9 +7719,25 @@ function MainApp({
             </div>
           </section>
 
-          {rotationLockAvailable ? <section className="settings-card">
+          {ios || rotationLockAvailable ? <section className="settings-card">
             <span className="section-label"><Smartphone size={13} /> Display</span>
-            <div className="settings-toggle-row">
+            {ios ? <div className="settings-toggle-row">
+              <span>
+                <strong><Moon size={15} aria-hidden="true" /> Dark mode</strong>
+                <small>Uses a darker reading-room interface in OperaLibre.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={darkModeEnabled}
+                aria-label="Dark mode"
+                onClick={toggleDarkMode}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div> : null}
+            {rotationLockAvailable ? <div className="settings-toggle-row">
               <span>
                 <strong>Rotation lock</strong>
                 <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
@@ -7725,7 +7753,7 @@ function MainApp({
               >
                 <span aria-hidden="true" />
               </button>
-            </div>
+            </div> : null}
             {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
           </section> : null}
 
