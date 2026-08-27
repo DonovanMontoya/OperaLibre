@@ -5056,7 +5056,10 @@ select:focus {
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
   --status-h: env(safe-area-inset-top);
-  --mini-player-height: 128px;
+  /* Fallback matching the slim transport ribbon (40px cover + 16px padding +
+     border). JavaScript overwrites it with the measured height, but the
+     measurement is 0 while the ribbon is display:none (e.g. Reading tab). */
+  --mini-player-height: 60px;
   /* JavaScript replaces this with visualViewport.height and keeps it current
      through WKWebView's multi-phase rotation. 100vh remains a safe fallback
      for the earliest supported iOS 15 releases, before dvh was available. */
@@ -5365,9 +5368,204 @@ html.native-app .mini-player {
 
 /* Persist playback controls while browsing the shelf; the Reading
    screen already has the full transport, so hide it there. */
-html.native-app .native-shell.tab-shelf .mini-player {
+html.native-app .native-shell.tab-shelf .mini-player,
+html.native-app .native-shell.tab-games .mini-player {
   display: grid;
 }
+
+/* --- Games: quiet, tactile diversions that remain entirely on-device. --- */
+html.native-app .games-shell {
+  position: fixed;
+  inset: 0 0 var(--tabs-h);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: none;
+  padding: calc(var(--status-h) + 14px) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+  color: var(--paper);
+  background:
+    radial-gradient(circle at 85% 8%, rgba(184, 137, 58, 0.16), transparent 28%),
+    linear-gradient(155deg, #21150f, #0f0b08 68%);
+  z-index: 2;
+}
+
+/* The parlour surface runs all the way down behind the floating mini-player;
+   only the content clears it, so no light strip shows through beneath. */
+html.native-app .native-shell.has-mini-player .games-shell {
+  padding-bottom: calc(var(--mini-player-height) + 20px);
+}
+
+html.native-app .games-head { flex: none; }
+html.native-app .games-head h1 { margin: 3px 0 1px; font-size: clamp(1.9rem, 8vw, 2.65rem); }
+html.native-app .games-head p { margin: 0; color: rgba(241, 231, 208, 0.55); }
+
+html.native-app .games-switcher {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 14px 0 10px;
+  padding: 4px;
+  border: 1px solid rgba(217, 181, 116, 0.14);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html.native-app .games-switcher button {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 38px; border-radius: 11px; color: rgba(241, 231, 208, 0.55);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+}
+html.native-app .games-switcher button.active { color: #24150d; background: var(--gold-soft); box-shadow: 0 8px 22px -14px #000; }
+
+html.native-app .game-card {
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  border-radius: 20px;
+  background: rgba(255, 252, 244, 0.055);
+  box-shadow: 0 24px 50px -36px #000;
+}
+html.native-app .match-game { flex: 1 1 auto; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+html.native-app .game-title-row { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; }
+html.native-app .game-title-row h2 { margin: 1px 0 0; font-size: 1.22rem; }
+/* .section-label's ink color is meant for paper surfaces; on the dark card it
+   falls below readable contrast. */
+html.native-app .game-card .section-label { color: rgba(217, 181, 116, 0.78); }
+html.native-app .game-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; color: var(--gold-soft); background: rgba(184, 137, 58, 0.12); }
+html.native-app .game-stat, html.native-app .game-reset { color: rgba(241, 231, 208, 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
+html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
+
+html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+/* Same trick as the match board: the frame is the flexible row, and the board
+   derives its width from the measured height so it can never overflow. A 5×6
+   board of square tiles is 1.2× taller than wide, hence the 82cqh cap. */
+html.native-app .word-board-frame { min-height: 0; container-type: size; display: grid; place-items: center; }
+/* iOS 15 WebKit lacks container units, so first approximate the frame height
+   from the shell chrome (conservatively — clipping is worse than a small
+   board); modern engines take the exact cqh declarations in @supports. */
+html.native-app .word-board { display: grid; gap: 5px; width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 500px) * .82))); }
+html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 500px) * .82))); }
+@supports (width: 1cqh) {
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, 82cqh); }
+}
+html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(241,231,208,.18); border-radius: 9px; color: var(--paper); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
+html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
+html.native-app .word-tile.present { border-color: #b78f46; background: #8b682c; }
+html.native-app .word-tile.absent { border-color: #48423d; background: #38332f; color: rgba(241,231,208,.62); }
+html.native-app .word-keys { display: grid; gap: 6px; margin-top: 10px; }
+html.native-app .word-keys-row { display: flex; justify-content: center; gap: 5px; }
+html.native-app .word-key { flex: 1 1 0; min-width: 0; max-width: 34px; min-height: 44px; border-radius: 8px; border: 1px solid rgba(241,231,208,.12); color: var(--paper); background: rgba(255,255,255,.07); font: 700 .82rem "JetBrains Mono", monospace; }
+html.native-app .word-key.wide { max-width: 56px; flex: 1.6 1 0; font-size: .68rem; }
+html.native-app .word-key:disabled { opacity: .4; }
+html.native-app .word-key.correct { border-color: #72936a; background: #526f4c; }
+html.native-app .word-key.present { border-color: #b78f46; background: #8b682c; }
+html.native-app .word-key.absent { border-color: #3d3833; background: #2c2723; color: rgba(241,231,208,.45); }
+html.native-app .game-message { min-height: 1.2em; margin: 10px 0 2px; text-align: center; color: rgba(241,231,208,.78); font-size: .8rem; }
+
+html.native-app .match-score { display: flex; align-items: baseline; justify-content: space-between; margin: 10px 2px 7px; color: rgba(241,231,208,.62); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; }
+html.native-app .match-score strong { color: var(--gold-soft); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
+html.native-app .match-score strong.score-bump { animation: match-score-bump .34s cubic-bezier(.2,.85,.35,1.3); }
+/* The frame is the card's flexible row; sizing the board from its measured
+   height (100cqh) keeps the square inside the card on any screen. */
+html.native-app .match-board-frame { min-height: 0; container-type: size; display: grid; place-items: start center; }
+/* Same iOS 15 fallback strategy as the word board above. */
+html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
+@supports (width: 1cqh) {
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+}
+html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
+html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font-size: clamp(.8rem, 4.4vw, 1.25rem); text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; }
+/* Entrance plays only during the board's brief arriving phase; if it lived on
+   the base rule, removing any modifier class would replay it on settled
+   pieces. :where keeps specificity level with the base rule so the modifier
+   animations below still win. */
+html.native-app .match-board:where(.arriving) .match-piece { animation: match-piece-arrive .3s both; animation-delay: var(--match-delay, 0ms); }
+html.native-app .match-piece:active { transform: scale(.9); }
+html.native-app .match-piece.selected { z-index: 2; transform: scale(.82) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(241,231,208,.28); animation: match-selected-pulse .9s ease-in-out infinite; }
+html.native-app .match-piece.neighbor { box-shadow: inset 0 0 0 2px rgba(241,231,208,.42); filter: brightness(1.12); }
+html.native-app .match-piece.swapping { z-index: 4; animation: match-piece-swap .19s cubic-bezier(.45,0,.2,1) both; }
+html.native-app .match-piece.clearing { z-index: 3; pointer-events: none; animation: match-piece-clear .26s ease-in both; }
+html.native-app .match-piece.clearing::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid rgba(255, 243, 196, 0.85); animation: match-clear-ring .26s ease-out both; }
+html.native-app .match-popup { position: absolute; z-index: 6; transform: translate(-50%, -50%); pointer-events: none; color: #ffe9b0; font: 800 1.02rem "JetBrains Mono", monospace; letter-spacing: -0.02em; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 3px 10px rgba(0, 0, 0, 0.6); animation: match-popup-rise .85s cubic-bezier(.2, .7, .3, 1) both; }
+html.native-app .match-popup.cascade { color: #fff3c4; font-size: 1.22rem; }
+html.native-app .match-piece.falling { animation: match-piece-fall .31s cubic-bezier(.15,.75,.25,1) both; }
+html.native-app .match-piece.invalid { animation: match-piece-invalid .22s ease-in-out; filter: saturate(.55) brightness(.85); }
+html.native-app .match-piece.kind-0 { background: #a94a3d; } html.native-app .match-piece.kind-1 { background: #447f8e; }
+html.native-app .match-piece.kind-2 { background: #9b7732; } html.native-app .match-piece.kind-3 { background: #6c5b91; }
+html.native-app .match-piece.kind-4 { background: #54815e; } html.native-app .match-piece.kind-5 { background: #a24d6a; }
+html.native-app .match-message { display: inline-block; animation: match-message-in .25s ease-out both; }
+
+@keyframes match-piece-arrive {
+  from { opacity: 0; transform: translateY(-8px) scale(.78); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes match-selected-pulse {
+  0%, 100% { transform: scale(.82) rotate(-3deg); }
+  50% { transform: scale(.88) rotate(2deg); }
+}
+@keyframes match-piece-swap {
+  from { transform: none; }
+  45% { transform: translate(var(--match-mid-x), var(--match-mid-y)) scale(1.14); filter: brightness(1.3); box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.7); }
+  to { transform: translate(var(--match-x), var(--match-y)); filter: brightness(1); }
+}
+@keyframes match-clear-ring {
+  from { opacity: .9; transform: scale(.7); }
+  to { opacity: 0; transform: scale(1.5); }
+}
+@keyframes match-popup-rise {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(.55); }
+  18% { opacity: 1; transform: translate(-50%, -65%) scale(1.12); }
+  30% { transform: translate(-50%, -75%) scale(1); }
+  72% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -190%) scale(.96); }
+}
+@keyframes match-piece-clear {
+  0% { opacity: 1; transform: scale(1); filter: brightness(1); }
+  45% { opacity: 1; transform: scale(1.22) rotate(7deg); filter: brightness(1.5); }
+  100% { opacity: 0; transform: scale(.15) rotate(-14deg); filter: brightness(1.8); }
+}
+@keyframes match-piece-fall {
+  from { opacity: .15; transform: translateY(-85%) scale(.88); }
+  70% { opacity: 1; transform: translateY(5%) scale(1.03); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes match-piece-invalid {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-4px) rotate(-4deg); }
+  65% { transform: translateX(4px) rotate(4deg); }
+}
+@keyframes match-score-bump {
+  0% { transform: scale(1); color: var(--gold-soft); }
+  45% { transform: scale(1.38) rotate(-3deg); color: #fff3c4; }
+  100% { transform: scale(1); color: var(--gold-soft); }
+}
+@keyframes match-message-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app .match-piece,
+  html.native-app .match-board:where(.arriving) .match-piece,
+  html.native-app .match-piece.selected,
+  html.native-app .match-piece.swapping,
+  html.native-app .match-piece.clearing,
+  html.native-app .match-piece.falling,
+  html.native-app .match-piece.invalid,
+  html.native-app .match-piece.clearing::after,
+  html.native-app .match-popup,
+  html.native-app .match-score strong.score-bump,
+  html.native-app .match-message { animation: none; transition-duration: 0s; }
+}
+html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,231,208,.36); text-align: center; font-size: .66rem; }
+
+html.native-app .native-shell.tab-games .ios-status-veil { background: rgba(18, 12, 8, 0.66); }
 
 /* Room for the ribbon when it's showing over the shelf list. */
 html.native-app .native-shell.tab-shelf > .library-pane {
@@ -5450,17 +5648,23 @@ html.native-app .spine-tab.active svg {
   transform: translateY(-1px);
 }
 
-/* --- Mini-player becomes a floating rounded card --- */
+/* --- Mini-player becomes a slim floating transport ribbon: cover, titles,
+   and controls only. The scrubber lives on the Reading screen. --- */
 html.native-app .mini-player {
   left: 12px;
   right: 12px;
   bottom: calc(var(--tabs-h) + 8px);
+  /* The base 4-column template reserves a slot for the hidden scrubber above
+     620px wide; collapse it so the transport buttons stay flush right. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   border-radius: 18px;
   border: 1px solid rgba(217, 181, 116, 0.16);
-  padding-left: 12px;
-  padding-right: 12px;
+  padding: 8px 12px;
   box-shadow: 0 20px 34px -18px rgba(0, 0, 0, 0.75);
 }
+
+html.native-app .mini-progress { display: none; }
+html.native-app .mini-cover-button { height: 40px; }
 
 html.native-app .mini-player::before {
   display: none;
