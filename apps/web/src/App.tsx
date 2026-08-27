@@ -10,6 +10,7 @@ import {
   CloudDownload,
   Download,
   FolderOpen,
+  Gamepad2,
   Gauge,
   Headphones,
   KeyRound,
@@ -209,6 +210,8 @@ import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
 import { ProfilePage } from "./Profile";
 import { ProgressSharingCard } from "./ProgressSharing";
+import { GamesPage } from "./GameRoom";
+import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
@@ -234,7 +237,7 @@ const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
-type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
+type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 type DeviceDownloadActivity = {
   bookId: string;
@@ -2179,6 +2182,7 @@ function MainApp({
   const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
+  const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
@@ -4980,6 +4984,7 @@ function MainApp({
   }
 
   function openNativeTab(tab: NativeTab) {
+    if (tab === "games" && !gamesEnabled) return;
     haptic("light");
     // Re-tapping the active Shelf tab is an escape hatch from the Audible
     // catalogue back to the listener's own library.
@@ -4988,6 +4993,13 @@ function MainApp({
     }
     setNativeTab(tab);
     if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
+  }
+
+  function toggleGamesEnabled() {
+    const enabled = !gamesEnabled;
+    writeGamesEnabled(enabled);
+    setGamesEnabled(enabled);
+    if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
   async function refreshLibrary() {
@@ -5460,7 +5472,7 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}`
+          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
@@ -7677,6 +7689,8 @@ function MainApp({
         />
       ) : null}
 
+      {native && gamesEnabled && nativeTab === "games" ? <GamesPage /> : null}
+
       {native && nativeTab === "settings" ? (
         <section className="settings-shell" aria-label="Settings">
           <header className="settings-head">
@@ -7714,6 +7728,26 @@ function MainApp({
             </div>
             {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
           </section> : null}
+
+          <section className="settings-card">
+            <span className="section-label"><Gamepad2 size={13} /> Extras</span>
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Games tab</strong>
+                <small>Shows optional, on-device games in the bottom navigation.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={gamesEnabled}
+                aria-label="Games tab"
+                onClick={toggleGamesEnabled}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+          </section>
 
           {sharedProgressAvailable ? (
             <ProgressSharingCard
@@ -7951,6 +7985,15 @@ function MainApp({
             <Headphones size={20} strokeWidth={1.6} />
             <span>Reading</span>
           </button>
+          {gamesEnabled ? <button
+            type="button"
+            className={`spine-tab ${nativeTab === "games" ? "active" : ""}`}
+            aria-current={nativeTab === "games" ? "page" : undefined}
+            onClick={() => openNativeTab("games")}
+          >
+            <Gamepad2 size={20} strokeWidth={1.6} />
+            <span>Games</span>
+          </button> : null}
           {showLedgerTab ? (
             <button
               type="button"
