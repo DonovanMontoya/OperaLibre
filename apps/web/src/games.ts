@@ -72,19 +72,39 @@ export function findMatches(board: MatchBoard): Set<string> {
   return matches;
 }
 
-export function makeMatchBoard(random = Math.random): MatchBoard {
-  const board: MatchBoard = [];
-  for (let row = 0; row < MATCH_SIZE; row += 1) {
-    const line: number[] = [];
-    for (let col = 0; col < MATCH_SIZE; col += 1) {
-      let kind = Math.floor(random() * MATCH_KINDS);
-      while (
-        (col >= 2 && line[col - 1] === kind && line[col - 2] === kind)
-        || (row >= 2 && board[row - 1][col] === kind && board[row - 2][col] === kind)
-      ) kind = (kind + 1) % MATCH_KINDS;
-      line.push(kind);
+export function hasLegalMove(board: MatchBoard): boolean {
+  for (let row = 0; row < board.length; row += 1) {
+    for (let col = 0; col < board[row].length; col += 1) {
+      for (const [rowStep, colStep] of [[0, 1], [1, 0]] as const) {
+        const target = { row: row + rowStep, col: col + colStep };
+        if (target.row >= board.length || target.col >= board[row].length) continue;
+        if (findMatches(swapCells(board, { row, col }, target)).size) return true;
+      }
     }
-    board.push(line);
+  }
+  return false;
+}
+
+export function makeMatchBoard(random = Math.random): MatchBoard {
+  // A moveless deal is astronomically rare at 7×7 with six kinds, but an
+  // "endless" game must never open dead; the bound keeps a pathological
+  // random source from spinning forever.
+  let board: MatchBoard = [];
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    board = [];
+    for (let row = 0; row < MATCH_SIZE; row += 1) {
+      const line: number[] = [];
+      for (let col = 0; col < MATCH_SIZE; col += 1) {
+        let kind = Math.floor(random() * MATCH_KINDS);
+        while (
+          (col >= 2 && line[col - 1] === kind && line[col - 2] === kind)
+          || (row >= 2 && board[row - 1][col] === kind && board[row - 2][col] === kind)
+        ) kind = (kind + 1) % MATCH_KINDS;
+        line.push(kind);
+      }
+      board.push(line);
+    }
+    if (hasLegalMove(board)) return board;
   }
   return board;
 }

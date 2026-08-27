@@ -8,8 +8,10 @@ import {
   WORD_LENGTH,
   cellsAreAdjacent,
   collapseMatches,
+  WORDS,
   dailyWord,
   findMatches,
+  hasLegalMove,
   makeMatchBoard,
   randomWord,
   scoreWord,
@@ -24,10 +26,22 @@ type WordSave = { word: string; guesses: string[] };
 const WORD_SAVE_KEY = "operalibre.games.word-grid";
 const MATCH_SAVE_KEY = "operalibre.games.chapter-match";
 
+function isPlayableGuess(value: unknown): value is string {
+  return typeof value === "string" && value.length === WORD_LENGTH && /^[a-z]+$/.test(value);
+}
+
 function readWordSave(): WordSave {
   try {
     const parsed = JSON.parse(localStorage.getItem(WORD_SAVE_KEY) ?? "null") as WordSave | null;
-    if (typeof parsed?.word === "string" && parsed.word.length === WORD_LENGTH && Array.isArray(parsed.guesses)) {
+    // The answer must come from the pool (an arbitrary string may be
+    // unwinnable on the letter-only keyboard) and every guess must be a
+    // well-formed word, or scoring throws mid-render.
+    if (
+      (WORDS as readonly string[]).includes(parsed?.word as string)
+      && Array.isArray(parsed?.guesses)
+      && parsed.guesses.length <= WORD_ATTEMPTS
+      && parsed.guesses.every(isPlayableGuess)
+    ) {
       return { word: parsed.word, guesses: parsed.guesses };
     }
   } catch { /* Start fresh if local storage was cleared or malformed. */ }
@@ -164,7 +178,9 @@ function readMatchSave(): { board: MatchBoard; score: number } {
         row.every((cell) => Number.isInteger(cell) && cell >= 0 && cell < MATCH_KINDS));
     if (validBoard) {
       const score = typeof stored?.score === "number" && Number.isFinite(stored.score) && stored.score > 0 ? Math.floor(stored.score) : 0;
-      return { board: board as MatchBoard, score };
+      // A restored board with no legal swap would strand the player; deal a
+      // fresh board but let them keep their run.
+      return { board: hasLegalMove(board as MatchBoard) ? (board as MatchBoard) : makeMatchBoard(), score };
     }
   } catch { /* A fresh board is always safe. */ }
   return { board: makeMatchBoard(), score: 0 };
@@ -246,7 +262,15 @@ function ChapterMatch() {
       setFalling(new Set());
     }
 
-    announce(cascades > 1 ? `A ${cascades} chapter cascade!` : "Chapter cleared.");
+    if (!hasLegalMove(nextBoard)) {
+      // Cascade refills can strand the board; reshuffle so endless play
+      // stays endless, and keep the score.
+      setBoard(makeMatchBoard());
+      setBoardEpoch((value) => value + 1);
+      announce("No moves remained — a fresh page is turned.");
+    } else {
+      announce(cascades > 1 ? `A ${cascades} chapter cascade!` : "Chapter cleared.");
+    }
     setBusy(false);
   }
 

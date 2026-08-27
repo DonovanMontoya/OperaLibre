@@ -5442,7 +5442,15 @@ html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: 
    derives its width from the measured height so it can never overflow. A 5×6
    board of square tiles is 1.2× taller than wide, hence the 82cqh cap. */
 html.native-app .word-board-frame { min-height: 0; container-type: size; display: grid; place-items: center; }
-html.native-app .word-board { display: grid; gap: 5px; width: min(100%, 260px); width: min(100%, 260px, 82cqh); }
+/* iOS 15 WebKit lacks container units, so first approximate the frame height
+   from the shell chrome (conservatively — clipping is worse than a small
+   board); modern engines take the exact cqh declarations in @supports. */
+html.native-app .word-board { display: grid; gap: 5px; width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 500px) * .82))); }
+html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 500px) * .82))); }
+@supports (width: 1cqh) {
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, 82cqh); }
+}
 html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
 html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(241,231,208,.18); border-radius: 9px; color: var(--paper); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
 html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
@@ -5464,7 +5472,13 @@ html.native-app .match-score strong.score-bump { animation: match-score-bump .34
 /* The frame is the card's flexible row; sizing the board from its measured
    height (100cqh) keeps the square inside the card on any screen. */
 html.native-app .match-board-frame { min-height: 0; container-type: size; display: grid; place-items: start center; }
-html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, 340px); width: min(100%, 100cqh); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+/* Same iOS 15 fallback strategy as the word board above. */
+html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
+@supports (width: 1cqh) {
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+}
 html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
 html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font-size: clamp(.8rem, 4.4vw, 1.25rem); text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; }
 /* Entrance plays only during the board's brief arriving phase; if it lived on
