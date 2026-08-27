@@ -24,6 +24,7 @@ import {
   Maximize2,
   Minimize2,
   Minus,
+  Moon,
   Network,
   Pause,
   Pencil,
@@ -171,7 +172,9 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, openNativeBrowser, selectionHaptic } from "./native";
+import { haptic, openNativeBrowser, selectionHaptic, syncStatusBarStyle } from "./native";
+import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
   disableRotationLock,
@@ -2177,6 +2180,7 @@ function MainApp({
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
   const native = isNativeApp();
+  const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
   const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
@@ -2184,6 +2188,9 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
+    ios ? readAppearanceMode(window.localStorage) : "light"
+  );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -2191,6 +2198,15 @@ function MainApp({
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+
+  function updateAppearanceMode(mode: AppearanceMode) {
+    if (mode === appearanceMode) return;
+    setAppearanceMode(mode);
+    writeAppearanceMode(window.localStorage, mode);
+    applyAppearanceMode(mode);
+    syncStatusBarStyle(mode);
+    haptic("light");
+  }
 
   useEffect(() => {
     if (!isOperaLibre || demoMode || localMode) {
@@ -7707,9 +7723,29 @@ function MainApp({
             </div>
           </section>
 
-          {rotationLockAvailable ? <section className="settings-card">
+          {ios || rotationLockAvailable ? <section className="settings-card">
             <span className="section-label"><Smartphone size={13} /> Display</span>
-            <div className="settings-toggle-row">
+            {ios ? <div className="settings-toggle-row settings-appearance-row">
+              <span>
+                <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
+                <small>System follows your device's light or dark theme.</small>
+              </span>
+              <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
+                {(["light", "dark", "system"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={appearanceMode === mode}
+                    className={appearanceMode === mode ? "selected" : undefined}
+                    onClick={() => updateAppearanceMode(mode)}
+                  >
+                    {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
+                  </button>
+                ))}
+              </div>
+            </div> : null}
+            {rotationLockAvailable ? <div className="settings-toggle-row">
               <span>
                 <strong>Rotation lock</strong>
                 <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
@@ -7725,7 +7761,7 @@ function MainApp({
               >
                 <span aria-hidden="true" />
               </button>
-            </div>
+            </div> : null}
             {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
           </section> : null}
 
