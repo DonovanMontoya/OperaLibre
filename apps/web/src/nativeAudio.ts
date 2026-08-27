@@ -40,6 +40,13 @@ type NativeAudioRecoveryIdentity = {
    * previous book's and the first seconds would play at the wrong level.
    */
   gain: () => number;
+  /**
+   * Native `stop()` disarms its sleep timer so a countdown can never outlive
+   * the session that armed it — but the attachment cleanup also calls stop()
+   * on every track change, so each attach re-arms the timer from the seconds
+   * React still holds.
+   */
+  sleepTimerSeconds: () => number;
 };
 
 interface NativeAudioPlugin {
@@ -61,6 +68,8 @@ interface NativeAudioPlugin {
   setRate(options: { rate: number }): Promise<void>;
   setVolume(options: { volume: number }): Promise<void>;
   setGain(options: { gain: number }): Promise<void>;
+  setSleepTimer(options: { seconds: number }): Promise<void>;
+  getSleepTimer(): Promise<{ remainingSeconds: number }>;
   setNowPlaying(options: {
     title: string;
     artist: string;
@@ -78,6 +87,7 @@ interface NativeAudioPlugin {
   stop(): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "ended", listener: (state: Partial<NativeAudioState>) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: "sleepTimerEnded", listener: () => void): Promise<PluginListenerHandle>;
   addListener(
     eventName: "trackChanged",
     listener: (event: {
@@ -134,6 +144,21 @@ export function pauseNativeAudio() {
   return NativeAudio.pause();
 }
 
+export function setNativeAudioSleepTimer(seconds: number) {
+  if (!usesNativeAudioPlayer()) return Promise.resolve();
+  return NativeAudio.setSleepTimer({ seconds: Math.max(0, seconds) });
+}
+
+/**
+ * AVPlayer's countdown only advances during playback, while the web timer is
+ * wall-clock, so after any pause the app did not observe (lock screen,
+ * interruption) the native value is the authoritative one.
+ */
+export function getNativeAudioSleepTimer(): Promise<number> {
+  if (!usesNativeAudioPlayer()) return Promise.resolve(0);
+  return NativeAudio.getSleepTimer().then((result) => Math.max(0, result.remainingSeconds));
+}
+
 export function seekNativeAudio(positionSeconds: number) {
   return NativeAudio.seek({ positionSeconds });
 }
@@ -166,7 +191,8 @@ export function attachNativeAudioPlayer(
     bookPositionSeconds: number,
     isPlaying: boolean
   ) => void,
-  onIntentionalSeek: () => void
+  onIntentionalSeek: () => void,
+  onSleepTimerEnded: () => void
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -239,6 +265,11 @@ export function attachNativeAudioPlayer(
   };
 
   audio.muted = true;
+  // Unconditional: passing 0 also disarms a timer left behind by a WebView
+  // reload, where the detach cleanup (and its stop()) never ran.
+  void NativeAudio.setSleepTimer({
+    seconds: Math.max(0, recovery.sleepTimerSeconds())
+  }).catch(() => undefined);
   audio.addEventListener("loadedmetadata", load);
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
@@ -298,6 +329,19 @@ export function attachNativeAudioPlayer(
     audio.currentTime = Math.max(0, event.positionSeconds);
     onIntentionalSeek();
     audio.dispatchEvent(new Event("timeupdate"));
+  }).then((handle) => {
+    if (disposed) void handle.remove();
+    else listenerHandles.push(handle);
+  });
+
+  void NativeAudio.addListener("sleepTimerEnded", () => {
+    if (disposed || fellBack) return;
+    nativeIsPlaying = false;
+    // The follow-up state event compares against the flag just cleared and
+    // will not dispatch the synthetic pause itself, so React only learns the
+    // transport stopped from this event.
+    audio.dispatchEvent(new Event("pause"));
+    onSleepTimerEnded();
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);

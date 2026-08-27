@@ -181,10 +181,12 @@ import {
 import {
   attachNativeAudioPlayer,
   getNativeAudioRecovery,
+  getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
   seekNativeAudio,
   setNativeAudioGain,
+  setNativeAudioSleepTimer,
   updateNativeAudioNowPlaying,
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
@@ -2363,6 +2365,10 @@ function MainApp({
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const sleepDeadlineRef = useRef<number | null>(null);
+  const sleepRemainingRef = useRef(0);
+  useEffect(() => {
+    sleepRemainingRef.current = sleepRemaining;
+  }, [sleepRemaining]);
   const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -3640,7 +3646,12 @@ function MainApp({
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
         queue: () => nativeAudioQueueRef.current,
-        gain: () => playbackGainRef.current
+        gain: () => playbackGainRef.current,
+        sleepTimerSeconds: () => {
+          const deadline = sleepDeadlineRef.current;
+          if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
+          return sleepRemainingRef.current;
+        }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
@@ -3662,6 +3673,11 @@ function MainApp({
       () => {
         markPlaybackTouched(true);
         void persistProgress();
+      },
+      () => {
+        sleepDeadlineRef.current = null;
+        setSleepMinutes(0);
+        setSleepRemaining(0);
       }
     );
   }, [currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -3841,10 +3857,31 @@ function MainApp({
     }
 
     sleepDeadlineRef.current ??= Date.now() + sleepRemaining * 1000;
+    // The wall-clock deadline cannot see pauses that happen while the WebView
+    // is suspended, so on the native path AVPlayer's playing-time countdown is
+    // authoritative and this deadline only drives the displayed value.
+    const syncFromNative = () => {
+      void getNativeAudioSleepTimer().then((remaining) => {
+        const next = Math.ceil(remaining);
+        if (next > 0) {
+          sleepDeadlineRef.current = Date.now() + next * 1000;
+          setSleepRemaining(next);
+        }
+      }).catch(() => undefined);
+    };
+    if (nativeAudio) syncFromNative();
     const timer = window.setInterval(() => {
       const deadline = sleepDeadlineRef.current;
       if (deadline === null) return;
       const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (next === 0 && nativeAudio) {
+        // Native owns expiry: it pauses AVPlayer and emits sleepTimerEnded,
+        // which clears this state. Zeroing the native timer here would disarm
+        // a countdown that may legitimately still hold minutes after a pause
+        // this clock never saw.
+        syncFromNative();
+        return;
+      }
       setSleepRemaining(next);
       if (next === 0) {
         sleepDeadlineRef.current = null;
@@ -3856,14 +3893,17 @@ function MainApp({
     return () => {
       window.clearInterval(timer);
       const deadline = sleepDeadlineRef.current;
-      if (deadline !== null) {
-        const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        setSleepRemaining(next);
-        if (next === 0) setSleepMinutes(0);
-        sleepDeadlineRef.current = null;
-      }
+      if (deadline === null) return;
+      sleepDeadlineRef.current = null;
+      // On the native path the countdown keeps its true value in AVPlayer and
+      // re-syncs when the effect re-arms; recomputing from the wall clock here
+      // could zero the UI while the native timer still holds minutes.
+      if (nativeAudio) return;
+      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSleepRemaining(next);
+      if (next === 0) setSleepMinutes(0);
     };
-  }, [isPlaying, sleepRemaining > 0]);
+  }, [isPlaying, nativeAudio, sleepRemaining > 0]);
 
   function configureSleepTimer(minutes: number) {
     haptic("light");
@@ -3872,6 +3912,16 @@ function MainApp({
       : null;
     setSleepMinutes(minutes);
     setSleepRemaining(minutes * 60);
+    if (nativeAudio) {
+      void setNativeAudioSleepTimer(minutes * 60).catch((error) => {
+        // Nothing enforces the timer once the WebView is suspended, so
+        // showing it armed after a failed native call would be a lie.
+        sleepDeadlineRef.current = null;
+        setSleepMinutes(0);
+        setSleepRemaining(0);
+        setPlaybackError(errorMessage(error, "The sleep timer could not be configured."));
+      });
+    }
     setNativePlayerSheet(null);
   }
 
