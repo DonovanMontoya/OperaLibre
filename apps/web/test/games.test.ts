@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WORDS, cellsAreAdjacent, findMatches, randomWord, scoreWord, swapCells } from "../src/games.ts";
+import { WORDS, cellsAreAdjacent, findMatches, hasLegalMove, makeMatchBoard, randomWord, scoreWord, swapCells } from "../src/games.ts";
 
 test("scores duplicate letters without over-counting", () => {
   assert.deepEqual(scoreWord("books", "prose"), ["absent", "absent", "correct", "absent", "present"]);
   assert.deepEqual(scoreWord("tales", "audio"), ["absent", "present", "absent", "absent", "absent"]);
+});
+
+test("dead boards are detected and never dealt", () => {
+  // Period-2 rows cycling three disjoint kind pairs: no run exists and no
+  // single swap can line up three of a kind.
+  const pairs = [[0, 1], [2, 3], [4, 5]];
+  const stuck = Array.from({ length: 7 }, (_, row) =>
+    Array.from({ length: 7 }, (_, col) => pairs[row % 3][col % 2]));
+  assert.equal(findMatches(stuck).size, 0);
+  assert.equal(hasLegalMove(stuck), false);
+  for (let round = 0; round < 25; round += 1) {
+    assert.equal(hasLegalMove(makeMatchBoard()), true);
+  }
 });
 
 test("random word never repeats the excluded word", () => {
