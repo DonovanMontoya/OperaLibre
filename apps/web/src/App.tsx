@@ -91,7 +91,10 @@ import {
   createBookGainSync,
   mergeServerBookGains,
   readBookGains,
-  writeBookGains
+  readUnsyncedBookGains,
+  unsyncedBookGainStorageKey,
+  writeBookGains,
+  writeUnsyncedBookGains
 } from "./bookVolume";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
@@ -310,6 +313,26 @@ function writeStoredBookGains(userId: string, gains: Record<string, number>) {
   } catch {
     // ignore storage failures
   }
+}
+
+/** The gain writes the server never received, kept across restarts for retry. */
+function unsyncedBookGainStore(userId: string) {
+  return {
+    read() {
+      try {
+        return readUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId));
+      } catch {
+        return {};
+      }
+    },
+    write(entries: Record<string, number>) {
+      try {
+        writeUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId), entries);
+      } catch {
+        // ignore storage failures
+      }
+    }
+  };
 }
 
 const SPEED_WHEEL_SPACING_PX = 48;
@@ -2376,7 +2399,11 @@ function MainApp({
   // every step of a drag, and owns the release of the guard above.
   const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
   if (!gainSyncRef.current) {
-    gainSyncRef.current = createBookGainSync(setBookVolume, localGainWritesRef.current);
+    gainSyncRef.current = createBookGainSync(
+      setBookVolume,
+      localGainWritesRef.current,
+      unsyncedBookGainStore(currentUser.id)
+    );
   }
   // Read by the native player at load time, which happens before the effect
   // that pushes the gain across.
@@ -2892,6 +2919,7 @@ function MainApp({
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);
+      reconcileServerBookGains(serverBooks);
       setIsOffline(false);
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
@@ -3747,15 +3775,22 @@ function MainApp({
   // The server's copy is what follows the listener between devices, so a boost
   // set on the phone is already applied the first time the book opens here.
   // Backends with nowhere to store it omit the field entirely and leave the
-  // local mirror alone.
-  useEffect(() => {
+  // local mirror alone. Only genuinely fresh server payloads take part: the
+  // long-lived `books` state keeps whatever volumeGain it arrived with, and
+  // re-merging it after a failed write released nothing would still be safe —
+  // but merging it after every identity change (a progress tick, a pause) is
+  // exactly what used to snap an offline adjustment back mid-chapter.
+  function reconcileServerBookGains(payload: readonly Book[]) {
     setBookGains((existing) => {
-      const merged = mergeServerBookGains(existing, books, localGainWritesRef.current);
+      const merged = mergeServerBookGains(existing, payload, localGainWritesRef.current);
       if (!merged) return existing;
       writeStoredBookGains(currentUser.id, merged);
       return merged;
     });
-  }, [books]);
+    // The server just answered, so anything it missed while unreachable can
+    // land now; a no-op whenever nothing is owed.
+    gainSyncRef.current?.retry();
+  }
 
   useEffect(() => {
     let active = true;
@@ -4983,14 +5018,13 @@ function MainApp({
       engageGainChain(audioRef.current, gain);
     }
     // Device books exist only on this phone, so there is no server row to sync.
-    // Everything else keeps the local change even if the sync fails; the gain
-    // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
       // Guards the book against a library payload older than this adjustment,
       // and holds it until the server echoes the value back. Clearing the guard
       // when the PUT settles would be too early: a getBooks() issued before the
       // write can still answer after it, carrying the old gain. A write that
-      // never landed releases it instead — see createBookGainSync.
+      // never landed keeps the guard and is re-sent once the server answers
+      // again — see createBookGainSync.
       gainSyncRef.current?.write(book.id, gain);
     }
   }
@@ -5032,6 +5066,7 @@ function MainApp({
         ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
         : nextBooks;
       setBooks(visibleBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -5058,6 +5093,7 @@ function MainApp({
       ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
       : nextBooks;
     setBooks(visibleBooks);
+    reconcileServerBookGains(nextBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
     setPlaybackBookId((existing) => {
       const next = resolveActivePlaybackBookId(visibleBooks, existing);
@@ -5101,6 +5137,7 @@ function MainApp({
       const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
       const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
       setBooks(nextBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setError(null);
       if (uploadedBook) {
@@ -5369,6 +5406,7 @@ function MainApp({
       setBooks((existing) =>
         existing.map((book) => (book.id === updatedBook.id ? updatedBook : book))
       );
+      reconcileServerBookGains([updatedBook]);
       setMetadataEditOpen(false);
       setMetadataForm(null);
     } catch (error) {

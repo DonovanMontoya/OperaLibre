@@ -13,7 +13,10 @@ import {
   normalizeBookGain,
   normalizeBookGainDb,
   readBookGains,
-  writeBookGains
+  readUnsyncedBookGains,
+  unsyncedBookGainStorageKey,
+  writeBookGains,
+  writeUnsyncedBookGains
 } from "../src/bookVolume.ts";
 
 const KEY = bookVolumeStorageKey("books.local", "reader");
@@ -67,6 +70,15 @@ test("stored gains survive a round-trip and drop books left at the original leve
   writeBookGains(storage, KEY, { quiet: 2, loud: 0.5, untouched: 1 });
 
   assert.deepEqual(readBookGains(storage, KEY), { quiet: 2, loud: 0.5 });
+});
+
+test("the unsynced record keeps unity entries where the mirror drops them", () => {
+  const storage = memoryStorage();
+  const key = unsyncedBookGainStorageKey("books.local", "reader");
+  writeUnsyncedBookGains(storage, key, { reset: 1, boosted: 2 });
+
+  assert.deepEqual(readUnsyncedBookGains(storage, key), { reset: 1, boosted: 2 });
+  assert.notEqual(key, KEY);
 });
 
 test("a corrupt or hand-edited record never leaks a bad gain into playback", () => {
@@ -221,11 +233,11 @@ test("writes to different books still run concurrently", async () => {
 });
 
 /**
- * The guard exists to stop a stale payload undoing a write. A write that never
- * reached the server has nothing to protect, and holding the guard anyway would
- * shut the book out of reconciliation for the rest of the session.
+ * The listener's choice is right and the unreachable server is behind, so the
+ * guard is held — otherwise any payload served while offline (or the stale
+ * copy on the in-memory shelf) would snap the adjustment back mid-chapter.
  */
-test("a failed write releases the guard so the server leads again", async () => {
+test("a failed write keeps the guard so a stale payload cannot undo it", async () => {
   const { calls, write } = deferredWriter();
   const pending = new Map<string, number>();
   const sync = createBookGainSync(write, pending);
@@ -234,7 +246,51 @@ test("a failed write releases the guard so the server leads again", async () => 
   assert.equal(pending.get("book-1"), 2);
   calls[0].fail();
   await flush();
-  assert.equal(pending.has("book-1"), false);
+  assert.equal(pending.get("book-1"), 2);
+  assert.equal(
+    mergeServerBookGains({ "book-1": 2 }, [{ id: "book-1", volumeGain: 1 }], pending),
+    null
+  );
+});
+
+test("retry re-sends a failed write and the echo then releases the guard", async () => {
+  const { calls, write } = deferredWriter();
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending);
+
+  sync.write("book-1", 2);
+  calls[0].fail();
+  await flush();
+
+  sync.retry();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].gain, 2);
+  calls[1].settle(true);
+  await flush();
+
+  // The write landed; the server's echo now hands the book back as usual.
+  assert.equal(pending.get("book-1"), 2);
+  mergeServerBookGains({ "book-1": 2 }, [{ id: "book-1", volumeGain: 2 }], pending);
+  assert.equal(pending.size, 0);
+
+  // Nothing left owing: another retry sends nothing.
+  sync.retry();
+  assert.equal(calls.length, 2);
+});
+
+test("retry leaves a book alone while a newer write is already on its way", async () => {
+  const { calls, write } = deferredWriter();
+  const sync = createBookGainSync(write, new Map());
+
+  sync.write("book-1", 2);
+  calls[0].fail();
+  await flush();
+
+  sync.write("book-1", 3);
+  sync.retry();
+  // The in-flight write supersedes the failed one; no duplicate send.
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].gain, 3);
 });
 
 test("a backend with nowhere to store gains releases the guard", async () => {
@@ -269,19 +325,68 @@ test("only the last write of a drag decides whether the guard is held", async ()
   assert.equal(pending.get("book-1"), 3);
 });
 
-test("a guard released by a failure lets the next payload correct the mirror", async () => {
-  const { calls, write } = deferredWriter();
-  const pending = new Map<string, number>();
-  const sync = createBookGainSync(write, pending);
+function memoryUnsyncedStore(initial: Record<string, number> = {}) {
+  let entries = initial;
+  return {
+    read: () => entries,
+    write: (next: Record<string, number>) => { entries = next; },
+    current: () => entries
+  };
+}
 
-  sync.write("book-1", 4);
+test("a failed write survives a restart and re-arms the guard", async () => {
+  const { calls, write } = deferredWriter();
+  const store = memoryUnsyncedStore();
+  const sync = createBookGainSync(write, new Map(), store);
+
+  sync.write("book-1", 2);
   calls[0].fail();
   await flush();
+  assert.deepEqual(store.current(), { "book-1": 2 });
 
-  // With the guard gone the merge accepts the server's copy, which is what the
-  // failed write means the server still holds.
-  assert.deepEqual(
-    mergeServerBookGains({ "book-1": 4 }, [{ id: "book-1", volumeGain: 2 }], pending),
-    { "book-1": 2 }
-  );
+  // A fresh session with the same store: the guard is re-armed before any
+  // payload can arrive, and retry() re-sends the owed write.
+  const revived = deferredWriter();
+  const pending = new Map<string, number>();
+  const revivedSync = createBookGainSync(revived.write, pending, store);
+  assert.equal(pending.get("book-1"), 2);
+
+  revivedSync.retry();
+  assert.equal(revived.calls.length, 1);
+  assert.equal(revived.calls[0].gain, 2);
+  revived.calls[0].settle(true);
+  await flush();
+  assert.deepEqual(store.current(), {});
+});
+
+/**
+ * A reset to Original made offline is still a write the server owes an
+ * acknowledgement for; dropping it would leave the old boost stored.
+ */
+test("an offline reset to the original level is kept for retry", async () => {
+  const { calls, write } = deferredWriter();
+  const store = memoryUnsyncedStore();
+  const sync = createBookGainSync(write, new Map(), store);
+
+  sync.write("book-1", 1);
+  calls[0].fail();
+  await flush();
+  assert.deepEqual(store.current(), { "book-1": 1 });
+
+  sync.retry();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].gain, 1);
+});
+
+test("a backend with nowhere to store gains clears the owed record too", async () => {
+  const { calls, write } = deferredWriter();
+  const store = memoryUnsyncedStore({ "book-1": 2 });
+  const pending = new Map<string, number>();
+  const sync = createBookGainSync(write, pending, store);
+
+  sync.retry();
+  calls[0].settle(false);
+  await flush();
+  assert.deepEqual(store.current(), {});
+  assert.equal(pending.size, 0);
 });
