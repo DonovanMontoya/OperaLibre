@@ -237,6 +237,12 @@ export function mergeServerBookGains(
  * later payload snap an offline adjustment back. With an `unsynced` store the
  * kept writes also survive a restart, restored entries re-arming the guard so
  * a payload served before the retry lands cannot undo the change either.
+ *
+ * The store is written when the adjustment is *made*, not when its request
+ * fails: an offline write made just before the app is closed or backgrounded
+ * may never reject before the WebView is suspended, and a rejection-only
+ * record would leave the restart with a mirror value no guard protects. The
+ * entry is erased once the server settles the write.
  */
 type UnsyncedGainStore = {
   read(): Record<string, number>;
@@ -250,11 +256,11 @@ export function createBookGainSync(
 ) {
   const inFlight = new Set<string>();
   const queued = new Map<string, number>();
-  const failed = new Map<string, number>(Object.entries(unsynced?.read() ?? {}));
-  for (const [bookId, gain] of failed) pending.set(bookId, gain);
+  const owed = new Map<string, number>(Object.entries(unsynced?.read() ?? {}));
+  for (const [bookId, gain] of owed) pending.set(bookId, gain);
 
-  function persistFailed() {
-    unsynced?.write(Object.fromEntries(failed));
+  function persistOwed() {
+    unsynced?.write(Object.fromEntries(owed));
   }
 
   function settle(bookId: string, gain: number, outcome: "stored" | "unconfirmable" | "failed") {
@@ -268,11 +274,11 @@ export function createBookGainSync(
     // Only reached by the last write for this book, so `gain` is the value
     // the listener settled on.
     if (outcome === "failed") {
-      failed.set(bookId, gain);
-      persistFailed();
+      // Still owed: write() already recorded this value, so a restart will
+      // find it even though the rejection ran this time.
       return;
     }
-    if (failed.delete(bookId)) persistFailed();
+    if (owed.delete(bookId)) persistOwed();
     if (outcome === "unconfirmable" && pending.get(bookId) === gain) pending.delete(bookId);
   }
 
@@ -287,6 +293,10 @@ export function createBookGainSync(
   return {
     write(bookId: string, gain: number) {
       pending.set(bookId, gain);
+      // Recorded before the request goes out — see the note on the type
+      // above. A newer value simply replaces the owed one.
+      owed.set(bookId, gain);
+      persistOwed();
       if (inFlight.has(bookId)) {
         queued.set(bookId, gain);
         return;
@@ -299,7 +309,7 @@ export function createBookGainSync(
      * detect the exact moment connectivity returned.
      */
     retry() {
-      for (const [bookId, gain] of [...failed]) {
+      for (const [bookId, gain] of [...owed]) {
         if (inFlight.has(bookId) || queued.has(bookId)) continue;
         send(bookId, gain);
       }
