@@ -5454,6 +5454,16 @@ html.native-app .game-mark { display: grid; place-items: center; width: 39px; he
 html.native-app .game-stat, html.native-app .game-reset { color: rgba(241, 231, 208, 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
 html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
 
+/* On short screens the parlour dressing gives its space to the match board,
+   whose --match-board-min floor (below) needs the room. The word board has no
+   floor — its tiles are display-only; the tappable keys hold 44px on their own. */
+@media (max-height: 700px) {
+  html.native-app .games-head h1 { margin: 0; font-size: 1.4rem; }
+  html.native-app .games-head p { display: none; }
+  html.native-app .games-switcher { margin: 8px 0; }
+  html.native-app .game-card { padding: 10px; }
+}
+
 html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 /* Same trick as the match board: the frame is the flexible row, and the board
    derives its width from the measured height so it can never overflow. A 5×6
@@ -5487,14 +5497,25 @@ html.native-app .match-score { display: flex; align-items: baseline; justify-con
 html.native-app .match-score strong { color: var(--gold-soft); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
 html.native-app .match-score strong.score-bump { animation: match-score-bump .34s cubic-bezier(.2,.85,.35,1.3); }
 /* The frame is the card's flexible row; sizing the board from its measured
-   height (100cqh) keeps the square inside the card on any screen. */
+   height (100cqh) keeps the square inside the card on any screen. The floor
+   below aims each of the 7 pieces at --match-piece-min — but the tiers step
+   it down on short screens so the board never spills under the mini-player
+   or off the shell, and min(100%) still wins on very narrow screens. Small
+   pieces stay playable either way: swipe-to-swap needs no tap precision. */
+html.native-app {
+  --match-piece-min: 36px;
+  /* 7 pieces + 6 gaps + the board's own padding. */
+  --match-board-min: calc(7 * var(--match-piece-min) + 6 * 3px + 12px);
+}
+@media (max-height: 700px) { html.native-app { --match-piece-min: 32px; } }
+@media (max-height: 600px) { html.native-app { --match-piece-min: 27px; } }
 html.native-app .match-board-frame { min-height: 0; container-type: size; display: grid; place-items: start center; }
 /* Same iOS 15 fallback strategy as the word board above. */
-html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
-html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
+html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
 @supports (width: 1cqh) {
   html.native-app .match-board,
-  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), 100cqh)); }
 }
 html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
 /* touch-action: none — a drag on a piece is a swap gesture, never a scroll;
