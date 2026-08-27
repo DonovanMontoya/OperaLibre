@@ -30,6 +30,15 @@ export function bookVolumeStorageKey(serverKey: string, userId: string) {
   return `operalibre.bookVolume.${serverKey}.${userId}`;
 }
 
+/**
+ * Writes the server never received, waiting to be re-sent. Scoped like the
+ * mirror above, and kept separately from it: the mirror is "what this device
+ * plays at", this is "what the server still owes us".
+ */
+export function unsyncedBookGainStorageKey(serverKey: string, userId: string) {
+  return `operalibre.bookVolumeUnsynced.${serverKey}.${userId}`;
+}
+
 type VolumeStorage = {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -80,7 +89,7 @@ export function formatBookGainDb(db: number) {
   return `${normalized > 0 ? "+" : "−"}${Math.abs(normalized)} dB`;
 }
 
-function parseGainMap(raw: string | null): Record<string, number> {
+function parseGainMap(raw: string | null, keepDefault = false): Record<string, number> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -89,7 +98,7 @@ function parseGainMap(raw: string | null): Record<string, number> {
     for (const [bookId, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof value !== "number" || !Number.isFinite(value)) continue;
       const gain = normalizeBookGain(value);
-      if (gain !== BOOK_GAIN_DEFAULT) entries[bookId] = gain;
+      if (keepDefault || gain !== BOOK_GAIN_DEFAULT) entries[bookId] = gain;
     }
     return entries;
   } catch {
@@ -120,6 +129,32 @@ export function writeBookGains(
     // Unity is the absence of a setting, so a reset shrinks the record rather
     // than growing it with a no-op entry for every book ever opened.
     if (gain !== BOOK_GAIN_DEFAULT) stored[bookId] = gain;
+  }
+  storage.setItem(key, JSON.stringify(stored));
+}
+
+/**
+ * Unlike the mirror, the unsynced record keeps unity entries: a book reset to
+ * Original while the server was unreachable is still a write the server owes
+ * an acknowledgement for, and dropping it would leave the old boost stored.
+ */
+export function readUnsyncedBookGains(
+  storage: Pick<VolumeStorage, "getItem">,
+  key: string
+): Record<string, number> {
+  return parseGainMap(storage.getItem(key), true);
+}
+
+export function writeUnsyncedBookGains(
+  storage: VolumeStorage,
+  key: string,
+  entries: Record<string, number>
+) {
+  const stored: Record<string, number> = {};
+  for (const [bookId, value] of Object.entries(entries)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      stored[bookId] = normalizeBookGain(value);
+    }
   }
   storage.setItem(key, JSON.stringify(stored));
 }
@@ -191,18 +226,38 @@ export function mergeServerBookGains(
  * `pending` is the guard the library merge consults, and only the final write
  * for a book decides its fate. A write the server accepted keeps the book
  * guarded until a payload echoes it back — that echo is the whole point. A
- * write that failed, or one a backend had nowhere to store, releases the guard
- * instead: nothing will ever echo it, and leaving the entry behind would shut
- * the book out of reconciliation for the rest of the session.
+ * write a backend had nowhere to store releases the guard: nothing will ever
+ * echo it, and leaving the entry behind would shut the book out of
+ * reconciliation for the rest of the session.
+ *
+ * A write that *failed* — the server was unreachable — is different: the
+ * listener's choice is right and the server is behind, so the guard is held
+ * and the value is kept for `retry()`, which the caller invokes once the
+ * server answers again. Releasing the guard here is what used to let any
+ * later payload snap an offline adjustment back. With an `unsynced` store the
+ * kept writes also survive a restart, restored entries re-arming the guard so
+ * a payload served before the retry lands cannot undo the change either.
  */
+type UnsyncedGainStore = {
+  read(): Record<string, number>;
+  write(entries: Record<string, number>): void;
+};
+
 export function createBookGainSync(
   write: (bookId: string, gain: number) => Promise<boolean>,
-  pending: Map<string, number>
+  pending: Map<string, number>,
+  unsynced?: UnsyncedGainStore
 ) {
   const inFlight = new Set<string>();
   const queued = new Map<string, number>();
+  const failed = new Map<string, number>(Object.entries(unsynced?.read() ?? {}));
+  for (const [bookId, gain] of failed) pending.set(bookId, gain);
 
-  function settle(bookId: string, gain: number, confirmable: boolean) {
+  function persistFailed() {
+    unsynced?.write(Object.fromEntries(failed));
+  }
+
+  function settle(bookId: string, gain: number, outcome: "stored" | "unconfirmable" | "failed") {
     inFlight.delete(bookId);
     const next = queued.get(bookId);
     if (next !== undefined) {
@@ -210,16 +265,22 @@ export function createBookGainSync(
       send(bookId, next);
       return;
     }
-    // Only reached by the last write for this book, so `gain` is what the
-    // server now holds — or would have, had it not failed.
-    if (!confirmable && pending.get(bookId) === gain) pending.delete(bookId);
+    // Only reached by the last write for this book, so `gain` is the value
+    // the listener settled on.
+    if (outcome === "failed") {
+      failed.set(bookId, gain);
+      persistFailed();
+      return;
+    }
+    if (failed.delete(bookId)) persistFailed();
+    if (outcome === "unconfirmable" && pending.get(bookId) === gain) pending.delete(bookId);
   }
 
   function send(bookId: string, gain: number) {
     inFlight.add(bookId);
     void write(bookId, gain).then(
-      (stored) => settle(bookId, gain, stored),
-      () => settle(bookId, gain, false)
+      (stored) => settle(bookId, gain, stored ? "stored" : "unconfirmable"),
+      () => settle(bookId, gain, "failed")
     );
   }
 
@@ -231,6 +292,17 @@ export function createBookGainSync(
         return;
       }
       send(bookId, gain);
+    },
+    /**
+     * Re-send writes the server never received. Harmless when there are none,
+     * so callers fire it on every fresh server payload rather than trying to
+     * detect the exact moment connectivity returned.
+     */
+    retry() {
+      for (const [bookId, gain] of [...failed]) {
+        if (inFlight.has(bookId) || queued.has(bookId)) continue;
+        send(bookId, gain);
+      }
     }
   };
 }
