@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { BookOpenText, Grid3X3, RotateCcw, Sparkles } from "lucide-react";
+import { haptic } from "./native";
 import {
   MATCH_GLYPHS,
   MATCH_KINDS,
@@ -89,10 +90,13 @@ function WordGrid() {
     const guesses = [...save.guesses, guess];
     setSave({ ...save, guesses });
     setDraft("");
+    // The end of a game — won or spent — earns a firmer bump than a keystroke.
+    if (guess === answer || guesses.length === WORD_ATTEMPTS) haptic("medium");
     setMessage(guess === answer ? "Beautifully read." : guesses.length === WORD_ATTEMPTS ? `The word was ${answer.toUpperCase()}.` : "Keep reading between the lines.");
   }
 
   function refresh() {
+    haptic("light");
     setSave({ word: randomWord(answer), guesses: [] });
     setDraft("");
     setMessage("A fresh word is on the shelf.");
@@ -100,6 +104,7 @@ function WordGrid() {
 
   function pressKey(key: string) {
     if (finished) return;
+    haptic("light");
     if (key === "enter") {
       submit();
       return;
@@ -271,6 +276,8 @@ function ChapterMatch() {
       const matches = findMatches(nextBoard);
       if (!matches.size) break;
 
+      // A cascade the player didn't ask for lands harder than the match they did.
+      haptic(cascades ? "medium" : "light");
       setClearing(matches);
       spawnPopup(matches, cascades);
       announce(cascades ? `Cascade ${cascades + 1}!` : `${matches.size} symbols aligned.`);
@@ -291,6 +298,7 @@ function ChapterMatch() {
     if (!hasLegalMove(nextBoard)) {
       // Cascade refills can strand the board; reshuffle so endless play
       // stays endless, and keep the score.
+      haptic("heavy");
       setBoard(makeMatchBoard());
       setBoardEpoch((value) => value + 1);
       announce("No moves remained — a fresh page is turned.");
@@ -306,6 +314,7 @@ function ChapterMatch() {
     const matches = findMatches(swapped);
     const version = actionVersion.current + 1;
     actionVersion.current = version;
+    haptic("light");
     markBusy(true);
     setSelected(null);
     setSwapping({ from: first, to: second });
@@ -316,6 +325,7 @@ function ChapterMatch() {
 
     if (!matches.size) {
       const invalidCells = new Set([cellKey(first), cellKey(second)]);
+      haptic("medium");
       setInvalid(invalidCells);
       announce("No line there — returning those symbols.");
       await motionDelay(220);
@@ -336,6 +346,7 @@ function ChapterMatch() {
   function choose(cell: MatchCell, tapOffset?: { dx: number; dy: number }) {
     if (busyRef.current) return;
     if (!selected) {
+      haptic("light");
       setSelected(cell);
       announce("Now choose a neighboring symbol.");
       return;
@@ -356,6 +367,7 @@ function ChapterMatch() {
       return;
     }
     if (!cellsAreAdjacent(selected, cell)) {
+      haptic("light");
       setSelected(cell);
       announce("Choose one of the glowing neighbors.");
       return;
@@ -364,6 +376,7 @@ function ChapterMatch() {
   }
 
   function reset() {
+    haptic("light");
     actionVersion.current += 1;
     setBoard(makeMatchBoard());
     setScore(0);
