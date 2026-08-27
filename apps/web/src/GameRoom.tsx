@@ -1,0 +1,377 @@
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { BookOpenText, Grid3X3, RotateCcw, Sparkles } from "lucide-react";
+import {
+  MATCH_GLYPHS,
+  MATCH_KINDS,
+  MATCH_SIZE,
+  WORD_ATTEMPTS,
+  WORD_LENGTH,
+  cellsAreAdjacent,
+  collapseMatches,
+  dailyWord,
+  findMatches,
+  makeMatchBoard,
+  randomWord,
+  scoreWord,
+  swapCells,
+  type LetterResult,
+  type MatchBoard,
+  type MatchCell
+} from "./games";
+
+type GameName = "words" | "match";
+type WordSave = { word: string; guesses: string[] };
+const WORD_SAVE_KEY = "operalibre.games.word-grid";
+const MATCH_SAVE_KEY = "operalibre.games.chapter-match";
+
+function readWordSave(): WordSave {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORD_SAVE_KEY) ?? "null") as WordSave | null;
+    if (typeof parsed?.word === "string" && parsed.word.length === WORD_LENGTH && Array.isArray(parsed.guesses)) {
+      return { word: parsed.word, guesses: parsed.guesses };
+    }
+  } catch { /* Start fresh if local storage was cleared or malformed. */ }
+  return { word: dailyWord(), guesses: [] };
+}
+
+const KEY_ROWS = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+const RESULT_RANK: Record<LetterResult, number> = { absent: 0, present: 1, correct: 2 };
+
+function WordGrid() {
+  const [save, setSave] = useState(readWordSave);
+  const [draft, setDraft] = useState("");
+  const [message, setMessage] = useState("Guess the shelf’s five-letter word.");
+  const answer = save.word;
+  const finished = save.guesses.includes(answer) || save.guesses.length >= WORD_ATTEMPTS;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WORD_SAVE_KEY, JSON.stringify(save));
+    } catch { /* Keep playing without persistence when storage is unavailable. */ }
+  }, [save]);
+
+  const guessResults = useMemo(() => save.guesses.map((guess) => scoreWord(guess, answer)), [save.guesses, answer]);
+
+  // The best result each guessed letter has earned, to shade its key.
+  const keyResults = useMemo(() => {
+    const results: Partial<Record<string, LetterResult>> = {};
+    guessResults.forEach((letterResults, guessIndex) => {
+      letterResults.forEach((result, index) => {
+        const letter = save.guesses[guessIndex][index];
+        const known = results[letter];
+        if (!known || RESULT_RANK[result] > RESULT_RANK[known]) results[letter] = result;
+      });
+    });
+    return results;
+  }, [guessResults, save.guesses]);
+
+  function submit() {
+    const guess = draft.toLowerCase();
+    if (finished) return;
+    if (guess.length !== WORD_LENGTH) {
+      setMessage("Enter five letters first.");
+      return;
+    }
+    const guesses = [...save.guesses, guess];
+    setSave({ ...save, guesses });
+    setDraft("");
+    setMessage(guess === answer ? "Beautifully read." : guesses.length === WORD_ATTEMPTS ? `The word was ${answer.toUpperCase()}.` : "Keep reading between the lines.");
+  }
+
+  function refresh() {
+    setSave({ word: randomWord(answer), guesses: [] });
+    setDraft("");
+    setMessage("A fresh word is on the shelf.");
+  }
+
+  function pressKey(key: string) {
+    if (finished) return;
+    if (key === "enter") {
+      submit();
+      return;
+    }
+    if (key === "back") {
+      setDraft((current) => current.slice(0, -1));
+      return;
+    }
+    setDraft((current) => (current.length < WORD_LENGTH ? current + key : current));
+  }
+
+  const rows = Array.from({ length: WORD_ATTEMPTS }, (_, row) => save.guesses[row] ?? (row === save.guesses.length ? draft : ""));
+  return <section className="game-card word-game" aria-label="Word Grid game">
+    <div className="game-title-row">
+      <span className="game-mark"><BookOpenText size={22} /></span>
+      <div><span className="section-label">Word puzzle</span><h2>Word Grid</h2></div>
+      <span className="game-stat">{save.guesses.length}/{WORD_ATTEMPTS}</span>
+      <button className="game-reset" type="button" onClick={refresh} aria-label="New word"><RotateCcw size={16} /></button>
+    </div>
+    <div className="word-board-frame"><div className="word-board" aria-label="Word guesses">
+      {rows.map((word, row) => {
+        const result = guessResults[row] ?? [];
+        return <div className="word-row" key={row}>
+          {Array.from({ length: WORD_LENGTH }, (_, col) => <span className={`word-tile ${result[col] ?? ""}`} key={col}>{word[col]?.toUpperCase() ?? ""}</span>)}
+        </div>;
+      })}
+    </div></div>
+    <div className="word-keys" aria-label="Letter keyboard">
+      {KEY_ROWS.map((rowKeys, rowIndex) => <div className="word-keys-row" key={rowIndex}>
+        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || draft.length !== WORD_LENGTH} onClick={() => pressKey("enter")} aria-label="Submit guess">Enter</button>}
+        {rowKeys.split("").map((letter) => (
+          <button type="button" className={`word-key ${keyResults[letter] ?? ""}`} disabled={finished} onClick={() => pressKey(letter)} key={letter}>{letter.toUpperCase()}</button>
+        ))}
+        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || !draft.length} onClick={() => pressKey("back")} aria-label="Delete letter">⌫</button>}
+      </div>)}
+    </div>
+    <p className="game-message" aria-live="polite">{message}</p>
+  </section>;
+}
+
+type ScorePopup = { id: number; points: number; cascade: number; left: number; top: number };
+
+function cellKey(cell: MatchCell) {
+  return `${cell.row}:${cell.col}`;
+}
+
+function sameCell(left: MatchCell | null, right: MatchCell) {
+  return left?.row === right.row && left.col === right.col;
+}
+
+function cellsThatFall(matches: Set<string>) {
+  const lowestMatchByColumn = new Map<number, number>();
+  matches.forEach((key) => {
+    const [row, col] = key.split(":").map(Number);
+    lowestMatchByColumn.set(col, Math.max(row, lowestMatchByColumn.get(col) ?? -1));
+  });
+  return new Set(
+    [...lowestMatchByColumn].flatMap(([col, lowestRow]) =>
+      Array.from({ length: lowestRow + 1 }, (_, row) => `${row}:${col}`)
+    )
+  );
+}
+
+const reducedMotionQuery = typeof window === "undefined" ? undefined : window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+function motionDelay(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, reducedMotionQuery?.matches ? 0 : milliseconds));
+}
+
+function readMatchSave(): { board: MatchBoard; score: number } {
+  try {
+    const stored = JSON.parse(localStorage.getItem(MATCH_SAVE_KEY) ?? "null") as { board?: unknown; score?: unknown } | null;
+    const board = stored?.board;
+    const validBoard = Array.isArray(board) && board.length === MATCH_SIZE &&
+      board.every((row) => Array.isArray(row) && row.length === MATCH_SIZE &&
+        row.every((cell) => Number.isInteger(cell) && cell >= 0 && cell < MATCH_KINDS));
+    if (validBoard) {
+      const score = typeof stored?.score === "number" && Number.isFinite(stored.score) && stored.score > 0 ? Math.floor(stored.score) : 0;
+      return { board: board as MatchBoard, score };
+    }
+  } catch { /* A fresh board is always safe. */ }
+  return { board: makeMatchBoard(), score: 0 };
+}
+
+function ChapterMatch() {
+  const [board, setBoard] = useState<MatchBoard>(() => readMatchSave().board);
+  const [score, setScore] = useState(() => readMatchSave().score);
+  const [selected, setSelected] = useState<MatchCell | null>(null);
+  const [message, setMessage] = useState("Tap two neighboring symbols to make a line of three.");
+  const [busy, setBusy] = useState(false);
+  const [swapping, setSwapping] = useState<{ from: MatchCell; to: MatchCell } | null>(null);
+  const [clearing, setClearing] = useState<Set<string>>(new Set());
+  const [falling, setFalling] = useState<Set<string>>(new Set());
+  const [invalid, setInvalid] = useState<Set<string>>(new Set());
+  const [scorePulse, setScorePulse] = useState(0);
+  const [statusTick, setStatusTick] = useState(0);
+  const [boardEpoch, setBoardEpoch] = useState(0);
+  const [popups, setPopups] = useState<ScorePopup[]>([]);
+  // Pieces only wear the entrance animation while this is set; otherwise
+  // removing a modifier class (selected/falling/invalid) would flip
+  // animation-name back to the entrance and visibly replay it.
+  const [arriving, setArriving] = useState(true);
+  const actionVersion = useRef(0);
+  const popupSerial = useRef(0);
+
+  useEffect(() => {
+    setArriving(true);
+    const timer = window.setTimeout(() => setArriving(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [boardEpoch]);
+
+  function spawnPopup(matches: Set<string>, cascade: number) {
+    const cells = [...matches].map((key) => key.split(":").map(Number));
+    const id = ++popupSerial.current;
+    setPopups((current) => [...current, {
+      id,
+      points: matches.size * 10,
+      cascade,
+      left: (cells.reduce((sum, [, col]) => sum + col + 0.5, 0) / cells.length / MATCH_SIZE) * 100,
+      top: (cells.reduce((sum, [row]) => sum + row + 0.5, 0) / cells.length / MATCH_SIZE) * 100
+    }]);
+    window.setTimeout(() => setPopups((current) => current.filter((popup) => popup.id !== id)), 900);
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MATCH_SAVE_KEY, JSON.stringify({ board, score }));
+    } catch { /* Keep playing without persistence when storage is unavailable. */ }
+  }, [board, score]);
+  useEffect(() => () => { actionVersion.current += 1; }, []);
+
+  function announce(nextMessage: string) {
+    setMessage(nextMessage);
+    setStatusTick((value) => value + 1);
+  }
+
+  async function clearCascades(start: MatchBoard, version: number) {
+    let nextBoard = start;
+    let cascades = 0;
+    for (; cascades < 12; cascades += 1) {
+      const matches = findMatches(nextBoard);
+      if (!matches.size) break;
+
+      setClearing(matches);
+      spawnPopup(matches, cascades);
+      announce(cascades ? `Cascade ${cascades + 1}!` : `${matches.size} symbols aligned.`);
+      await motionDelay(260);
+      if (version !== actionVersion.current) return;
+
+      nextBoard = collapseMatches(nextBoard, matches);
+      setBoard(nextBoard);
+      setClearing(new Set());
+      setFalling(cellsThatFall(matches));
+      setScore((value) => value + matches.size * 10);
+      setScorePulse((value) => value + 1);
+      await motionDelay(310);
+      if (version !== actionVersion.current) return;
+      setFalling(new Set());
+    }
+
+    announce(cascades > 1 ? `A ${cascades} chapter cascade!` : "Chapter cleared.");
+    setBusy(false);
+  }
+
+  async function choose(cell: MatchCell) {
+    if (busy) return;
+    if (!selected) {
+      setSelected(cell);
+      announce("Now choose a neighboring symbol.");
+      return;
+    }
+    if (sameCell(selected, cell)) {
+      setSelected(null);
+      announce("Selection cleared.");
+      return;
+    }
+    if (!cellsAreAdjacent(selected, cell)) {
+      setSelected(cell);
+      announce("Choose one of the glowing neighbors.");
+      return;
+    }
+
+    const first = selected;
+    const swapped = swapCells(board, first, cell);
+    const matches = findMatches(swapped);
+    const version = actionVersion.current + 1;
+    actionVersion.current = version;
+    setBusy(true);
+    setSelected(null);
+    setSwapping({ from: first, to: cell });
+    await motionDelay(190);
+    if (version !== actionVersion.current) return;
+    setBoard(swapped);
+    setSwapping(null);
+
+    if (!matches.size) {
+      const invalidCells = new Set([cellKey(first), cellKey(cell)]);
+      setInvalid(invalidCells);
+      announce("No line there — returning those symbols.");
+      await motionDelay(220);
+      if (version !== actionVersion.current) return;
+      setInvalid(new Set());
+      setSwapping({ from: first, to: cell });
+      await motionDelay(190);
+      if (version !== actionVersion.current) return;
+      setBoard(board);
+      setSwapping(null);
+      setBusy(false);
+      return;
+    }
+
+    await clearCascades(swapped, version);
+  }
+
+  function reset() {
+    actionVersion.current += 1;
+    setBoard(makeMatchBoard());
+    setScore(0);
+    setSelected(null);
+    setBusy(false);
+    setSwapping(null);
+    setClearing(new Set());
+    setFalling(new Set());
+    setInvalid(new Set());
+    setPopups([]);
+    setBoardEpoch((value) => value + 1);
+    announce("A fresh volume is ready.");
+  }
+
+  return <section className="game-card match-game" aria-label="Chapter Match game">
+    <div className="game-title-row">
+      <span className="game-mark"><Grid3X3 size={22} /></span>
+      <div><span className="section-label">Endless play</span><h2>Chapter Match</h2></div>
+      <button className="game-reset" type="button" onClick={reset} aria-label="Reset Chapter Match"><RotateCcw size={16} /></button>
+    </div>
+    <div className="match-score"><span>{busy ? "Resolving" : "Score"}</span><strong className={scorePulse ? "score-bump" : ""} key={scorePulse}>{score.toLocaleString()}</strong></div>
+    <div className="match-board-frame"><div className={`match-board ${busy ? "busy" : ""} ${arriving ? "arriving" : ""}`} role="grid" aria-label="Matching board" aria-busy={busy}>
+      {board.map((row, rowIndex) => row.map((kind, colIndex) => {
+        const cell = { row: rowIndex, col: colIndex };
+        const key = cellKey(cell);
+        const active = sameCell(selected, cell);
+        const neighbor = !!selected && cellsAreAdjacent(selected, cell);
+        const swapTarget = swapping && (sameCell(swapping.from, cell) ? swapping.to : sameCell(swapping.to, cell) ? swapping.from : null);
+        const style = swapTarget ? {
+          "--match-x": `${(swapTarget.col - colIndex) * 100}%`,
+          "--match-y": `${(swapTarget.row - rowIndex) * 100}%`,
+          "--match-mid-x": `${(swapTarget.col - colIndex) * 55}%`,
+          "--match-mid-y": `${(swapTarget.row - rowIndex) * 55}%`,
+          "--match-delay": `${(rowIndex + colIndex) * 22}ms`
+        } as CSSProperties : { "--match-delay": `${(rowIndex + colIndex) * 22}ms` } as CSSProperties;
+        const classes = [
+          "match-piece",
+          `kind-${kind}`,
+          active && "selected",
+          neighbor && "neighbor",
+          swapTarget && "swapping",
+          clearing.has(key) && "clearing",
+          falling.has(key) && "falling",
+          invalid.has(key) && "invalid"
+        ].filter(Boolean).join(" ");
+        return <button type="button" role="gridcell" className={classes} style={style} aria-label={`Symbol at row ${rowIndex + 1}, column ${colIndex + 1}`} aria-selected={active} aria-disabled={busy} key={`${boardEpoch}:${key}`} onClick={() => choose(cell)}>{MATCH_GLYPHS[kind]}</button>;
+      }))}
+      {popups.map((popup) => (
+        <span
+          className={`match-popup ${popup.cascade ? "cascade" : ""}`}
+          style={{ left: `${popup.left}%`, top: `${popup.top}%` }}
+          aria-hidden="true"
+          key={popup.id}
+        >{popup.cascade ? `×${popup.cascade + 1} ` : ""}+{popup.points}</span>
+      ))}
+    </div></div>
+    {/* The live region stays mounted so screen readers announce updates; only
+        the inner span remounts, to restart its entrance animation. */}
+    <p className="game-message" aria-live="polite"><span className="match-message" key={statusTick}>{message}</span></p>
+  </section>;
+}
+
+export function GamesPage() {
+  const [game, setGame] = useState<GameName>("match");
+  return <section className="games-shell" aria-label="Games">
+    <header className="games-head"><span className="eyebrow"><Sparkles size={13} /> The Parlour</span><h1>Games</h1><p>Small diversions for long listens.</p></header>
+    <div className="games-switcher" role="tablist" aria-label="Choose a game">
+      <button type="button" role="tab" aria-selected={game === "match"} className={game === "match" ? "active" : ""} onClick={() => setGame("match")}><Grid3X3 size={16} /> Chapter Match</button>
+      <button type="button" role="tab" aria-selected={game === "words"} className={game === "words" ? "active" : ""} onClick={() => setGame("words")}><BookOpenText size={16} /> Word Grid</button>
+    </div>
+    {game === "words" ? <WordGrid /> : <ChapterMatch />}
+    <p className="games-privacy">Saved only on this device. No account or connection needed.</p>
+  </section>;
+}
