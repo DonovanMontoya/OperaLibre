@@ -8929,6 +8929,37 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
   font: italic 0.85rem/1.35 "Fraunces", serif;
 }
 
+/* Three-way appearance choice (Light / Dark / System). Wraps under its label
+   on narrow phones rather than squeezing the copy. */
+.settings-appearance-row {
+  flex-wrap: wrap;
+}
+
+.settings-mode-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+.settings-mode-toggle button {
+  min-height: 30px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  font: 500 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.settings-mode-toggle button.selected {
+  color: var(--on-ink);
+  background: var(--ink);
+}
+
 .settings-switch {
   position: relative;
   flex: 0 0 auto;

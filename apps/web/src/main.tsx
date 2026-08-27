@@ -3,11 +3,12 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { markNativePlatform } from "./native";
 import { applyStoredRotationLock } from "./rotationLock";
-import { applyStoredDarkMode } from "./appearance";
+import { applyStoredAppearance, watchSystemAppearance } from "./appearance";
 import "./styles.css";
 
 markNativePlatform();
-applyStoredDarkMode();
+applyStoredAppearance();
+watchSystemAppearance();
 void applyStoredRotationLock().catch((error) => {
   console.warn("Could not restore the app rotation lock", error);
 });
