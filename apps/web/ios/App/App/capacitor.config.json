@@ -19,6 +19,7 @@
 		"FilesystemPlugin",
 		"HapticsPlugin",
 		"ScreenOrientationPlugin",
+		"StatusBarPlugin",
 		"FilePickerPlugin"
 	]
 }
