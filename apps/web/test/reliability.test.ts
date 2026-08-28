@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  adoptableServerProgress,
   deviceBookMatchesServer,
   freshestProgress,
   isSuspectProgressReset,
@@ -481,4 +482,60 @@ test("the shelf's play button resumes exactly when it says Resume", () => {
     shouldResumeSavedPosition({ status: "inProgress", bookPositionSeconds: 0 }),
     false
   );
+});
+
+test("a foregrounded idle session adopts only a strictly newer, materially different server copy", () => {
+  const local = progress({ bookPositionSeconds: 1000, updatedAt: "2026-08-27T08:00:00.000Z" });
+  const webFinal = progress({
+    bookPositionSeconds: 5000,
+    positionSeconds: 1400,
+    trackId: "track-2",
+    // Server rows carry server-issued millisecond revisions, not ISO strings.
+    updatedAt: String(Date.parse("2026-08-27T12:00:00.000Z"))
+  });
+
+  // The reported cross-save sequence: web listened while this app was in the
+  // background, so the server's copy is newer and far ahead. Adopt it.
+  assert.equal(adoptableServerProgress(local, webFinal), webFinal);
+
+  // A deliberate rewind or restart made on another device is newer but
+  // behind; the server's own regression guards already vetted it. Adopt it.
+  const webRestart = progress({
+    bookPositionSeconds: 3,
+    updatedAt: String(Date.parse("2026-08-27T12:00:00.000Z"))
+  });
+  assert.equal(adoptableServerProgress(local, webRestart), webRestart);
+
+  // No stored server row, or a server copy that is not strictly newer,
+  // changes nothing — the local session stays authoritative.
+  assert.equal(adoptableServerProgress(local, null), null);
+  assert.equal(
+    adoptableServerProgress(local, progress({
+      bookPositionSeconds: 5000,
+      updatedAt: "2026-08-27T07:00:00.000Z"
+    })),
+    null
+  );
+  assert.equal(
+    adoptableServerProgress(local, progress({
+      bookPositionSeconds: 5000,
+      updatedAt: "2026-08-27T08:00:00.000Z"
+    })),
+    null
+  );
+
+  // A newer revision within the clock-slack of the same position is this
+  // device's own last accepted write echoed back. Re-seeking would make a
+  // paused player twitch for no benefit.
+  assert.equal(
+    adoptableServerProgress(local, progress({
+      bookPositionSeconds: 1001.5,
+      updatedAt: String(Date.parse("2026-08-27T08:00:05.000Z"))
+    })),
+    null
+  );
+
+  // A device with no local copy at all takes whatever the server has.
+  const serverOnly = progress({ updatedAt: String(Date.parse("2026-08-27T12:00:00.000Z")) });
+  assert.equal(adoptableServerProgress(null, serverOnly), serverOnly);
 });

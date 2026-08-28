@@ -54,6 +54,7 @@ import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  adoptableServerProgress,
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
@@ -2373,6 +2374,7 @@ function MainApp({
   const resumeAutoplayBookIdRef = useRef<string | null>(null);
   const resumeAutoplayPendingRef = useRef(false);
   const resumeReconciliationBookIdRef = useRef<string | null>(null);
+  const foregroundAdoptInFlightRef = useRef(false);
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
   // Authentication can be restored synchronously, but the native destination
@@ -4025,18 +4027,20 @@ function MainApp({
     const saveBeforeLeaving = () => {
       void persistProgress();
     };
-    const saveWhenHidden = () => {
+    const syncWhenVisibilityChanges = () => {
       if (document.visibilityState === "hidden") {
         void persistProgress();
+      } else if (document.visibilityState === "visible") {
+        void adoptNewerServerProgress();
       }
     };
 
     window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", saveWhenHidden);
+    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
 
     return () => {
       window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", saveWhenHidden);
+      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
@@ -4219,6 +4223,68 @@ function MainApp({
       }
     }
     updateBookProgress(book.id, saved);
+  }
+
+  /**
+   * Returning to the foreground is the one moment another device's position
+   * can be newer without any local signal — the restore effect runs once per
+   * book and deliberately never re-fires. Adopt the server's copy only while
+   * this session is provably idle: restore finished, playback paused, and no
+   * local save queued or in flight. A moving or unsynced session is always
+   * authoritative and is left completely alone.
+   */
+  async function adoptNewerServerProgress() {
+    const book = playbackBook;
+    const audio = audioRef.current;
+    if (
+      !book ||
+      book.source === "device" ||
+      !currentTrack ||
+      !audio ||
+      restoredProgressBookId.current !== book.id ||
+      resumeReconciliationBookIdRef.current === book.id ||
+      foregroundAdoptInFlightRef.current
+    ) {
+      return;
+    }
+    const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
+    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveInFlight.current) {
+      return;
+    }
+    const actionVersion = playbackActionVersionRef.current;
+    const mutationVersion = progressMutationVersion.current;
+    foregroundAdoptInFlightRef.current = true;
+    try {
+      const server = await getProgress(book.id).catch(() => null);
+      const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+      if (
+        !server ||
+        restoredProgressBookId.current !== book.id ||
+        playbackActionVersionRef.current !== actionVersion ||
+        progressMutationVersion.current !== mutationVersion
+      ) {
+        return;
+      }
+      const checkpoint = readProgressCheckpoint(
+        window.localStorage,
+        getServerStorageKey(),
+        currentUser.id,
+        book.id
+      );
+      const adopted = adoptableServerProgress(freshestProgress(checkpoint, cached), server);
+      if (!adopted) return;
+      const location = resolveProgressLocation(book.tracks, adopted);
+      if (!location) return;
+      storeCanonicalServerProgress(book, adopted);
+      setCurrentTrackId(location.trackId);
+      setPendingSeek(location);
+      setPosition(location.positionSeconds);
+      setDuration(
+        book.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0
+      );
+    } finally {
+      foregroundAdoptInFlightRef.current = false;
+    }
   }
 
   function clearPlaybackSession() {
