@@ -450,6 +450,10 @@ function ChapterMatch() {
             // so no precision needed on small screens.
             start.swiped = true;
             const target = neighborToward(start.cell, dx, dy);
+            // iOS can drop the final pointer-up when it transfers or loses
+            // capture. Release our gesture lock before starting the async
+            // swap, so that cannot leave the board tap-only until remount.
+            drag.current = null;
             if (target) void performSwap(start.cell, target);
           }}
           onPointerUp={(event) => {
@@ -467,6 +471,9 @@ function ChapterMatch() {
             };
           }}
           onPointerCancel={(event) => {
+            if (drag.current?.pointerId === event.pointerId) drag.current = null;
+          }}
+          onLostPointerCapture={(event) => {
             if (drag.current?.pointerId === event.pointerId) drag.current = null;
           }}
           onClick={() => {
