@@ -6990,14 +6990,16 @@ function MainApp({
                           />
                         </div>
                       )}
-                      <ScrubSlider
-                        ariaLabel={`Playback position in ${activeChapter.title}`}
-                        max={chapterDuration}
-                        value={Math.min(chapterElapsed, chapterDuration)}
-                        onPreview={setScrubPreview}
-                        onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
-                      />
                     </>
+                  ) : null}
+                  {activeChapter ? (
+                    <ScrubSlider
+                      ariaLabel={`Playback position in ${activeChapter.title}`}
+                      max={chapterDuration}
+                      value={Math.min(chapterElapsed, chapterDuration)}
+                      onPreview={setScrubPreview}
+                      onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
+                    />
                   ) : (
                     <ScrubSlider
                       ariaLabel="Playback position"
