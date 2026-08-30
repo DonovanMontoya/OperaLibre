@@ -5631,7 +5631,7 @@ html.native-app .native-shell.tab-games .ios-status-veil { background: rgba(18, 
     grid-template-rows: auto minmax(0, 1fr) auto;
     column-gap: clamp(20px, 3vw, 48px);
     padding-top: calc(var(--status-h) + 20px);
-    padding-bottom: calc(var(--mini-player-height) + 20px);
+    padding-bottom: 20px;
   }
 
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
