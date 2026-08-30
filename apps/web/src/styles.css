@@ -2491,14 +2491,18 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.04em;
 }
 
-.speed-wheel-shell {
+/* The gain stepper row wears the same shell so the two controls read as one
+   family. */
+.speed-wheel-shell,
+.book-volume-slider-row {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) 38px;
   align-items: center;
   gap: 7px;
 }
 
-.speed-wheel-shell > button {
+.speed-wheel-shell > button,
+.book-volume-slider-row > button {
   display: grid;
   place-items: center;
   min-height: 42px;
@@ -2510,13 +2514,15 @@ input[type="range"]::-moz-range-thumb {
   transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
-.speed-wheel-shell > button:hover:not(:disabled) {
+.speed-wheel-shell > button:hover:not(:disabled),
+.book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--oxblood);
   border-color: var(--oxblood);
   transform: translateY(-1px);
 }
 
-.speed-wheel-shell > button:disabled {
+.speed-wheel-shell > button:disabled,
+.book-volume-slider-row > button:disabled {
   cursor: default;
   opacity: 0.32;
 }
@@ -2721,8 +2727,13 @@ select:focus {
   letter-spacing: 0.04em;
 }
 
-.book-volume-full > input[type="range"] {
+.book-volume-slider-row > input[type="range"] {
   height: 20px;
+}
+
+/* Keep the end labels under the track rather than under the steppers. */
+.book-volume-full .book-volume-range-labels {
+  margin: 0 45px;
 }
 
 /* The desktop card states its value the way the Nightfall card beside it
@@ -5454,6 +5465,16 @@ html.native-app .game-mark { display: grid; place-items: center; width: 39px; he
 html.native-app .game-stat, html.native-app .game-reset { color: rgba(241, 231, 208, 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
 html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
 
+/* On short screens the parlour dressing gives its space to the match board,
+   whose --match-board-min floor (below) needs the room. The word board has no
+   floor — its tiles are display-only; the tappable keys hold 44px on their own. */
+@media (max-height: 700px) {
+  html.native-app .games-head h1 { margin: 0; font-size: 1.4rem; }
+  html.native-app .games-head p { display: none; }
+  html.native-app .games-switcher { margin: 8px 0; }
+  html.native-app .game-card { padding: 10px; }
+}
+
 html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 /* Same trick as the match board: the frame is the flexible row, and the board
    derives its width from the measured height so it can never overflow. A 5×6
@@ -5487,24 +5508,39 @@ html.native-app .match-score { display: flex; align-items: baseline; justify-con
 html.native-app .match-score strong { color: var(--gold-soft); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
 html.native-app .match-score strong.score-bump { animation: match-score-bump .34s cubic-bezier(.2,.85,.35,1.3); }
 /* The frame is the card's flexible row; sizing the board from its measured
-   height (100cqh) keeps the square inside the card on any screen. */
+   height (100cqh) keeps the square inside the card on any screen. The floor
+   below aims each of the 7 pieces at --match-piece-min — but the tiers step
+   it down on short screens so the board never spills under the mini-player
+   or off the shell, and min(100%) still wins on very narrow screens. Small
+   pieces stay playable either way: swipe-to-swap needs no tap precision. */
+html.native-app {
+  --match-piece-min: 36px;
+  /* 7 pieces + 6 gaps + the board's own padding. */
+  --match-board-min: calc(7 * var(--match-piece-min) + 6 * 3px + 12px);
+}
+@media (max-height: 700px) { html.native-app { --match-piece-min: 32px; } }
+@media (max-height: 600px) { html.native-app { --match-piece-min: 27px; } }
 html.native-app .match-board-frame { min-height: 0; container-type: size; display: grid; place-items: start center; }
 /* Same iOS 15 fallback strategy as the word board above. */
-html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
-html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(160px, calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
+html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
 @supports (width: 1cqh) {
   html.native-app .match-board,
-  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), 100cqh)); }
 }
 html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
-html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font-size: clamp(.8rem, 4.4vw, 1.25rem); text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; }
+/* touch-action: none — a drag on a piece is a swap gesture, never a scroll;
+   without it the browser takes over the pointer stream mid-swipe. */
+html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font-size: clamp(.8rem, 4.4vw, 1.25rem); text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; touch-action: none; }
 /* Entrance plays only during the board's brief arriving phase; if it lived on
    the base rule, removing any modifier class would replay it on settled
    pieces. :where keeps specificity level with the base rule so the modifier
    animations below still win. */
 html.native-app .match-board:where(.arriving) .match-piece { animation: match-piece-arrive .3s both; animation-delay: var(--match-delay, 0ms); }
 html.native-app .match-piece:active { transform: scale(.9); }
-html.native-app .match-piece.selected { z-index: 2; transform: scale(.82) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(241,231,208,.28); animation: match-selected-pulse .9s ease-in-out infinite; }
+/* Grows rather than shrinks: the selected piece is the likeliest next touch
+   target, so its visual (and perceived) size shouldn't drop on selection. */
+html.native-app .match-piece.selected { z-index: 2; transform: scale(1.06) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(241,231,208,.28); animation: match-selected-pulse .9s ease-in-out infinite; }
 html.native-app .match-piece.neighbor { box-shadow: inset 0 0 0 2px rgba(241,231,208,.42); filter: brightness(1.12); }
 html.native-app .match-piece.swapping { z-index: 4; animation: match-piece-swap .19s cubic-bezier(.45,0,.2,1) both; }
 html.native-app .match-piece.clearing { z-index: 3; pointer-events: none; animation: match-piece-clear .26s ease-in both; }
@@ -5523,8 +5559,8 @@ html.native-app .match-message { display: inline-block; animation: match-message
   to { opacity: 1; transform: none; }
 }
 @keyframes match-selected-pulse {
-  0%, 100% { transform: scale(.82) rotate(-3deg); }
-  50% { transform: scale(.88) rotate(2deg); }
+  0%, 100% { transform: scale(1.06) rotate(-3deg); }
+  50% { transform: scale(1.12) rotate(2deg); }
 }
 @keyframes match-piece-swap {
   from { transform: none; }
@@ -9530,13 +9566,15 @@ html.native-app .recent-row {
   gap: 11px;
 }
 
-.sleep-sheet .speed-wheel-shell > button {
+.sleep-sheet .speed-wheel-shell > button,
+.sleep-sheet .book-volume-slider-row > button {
   color: var(--paper);
   border-color: rgba(241, 231, 208, 0.18);
   background: rgba(255, 255, 255, 0.05);
 }
 
-.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled) {
+.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled),
+.sleep-sheet .book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--gold-soft);
   border-color: rgba(217, 181, 116, 0.7);
 }
