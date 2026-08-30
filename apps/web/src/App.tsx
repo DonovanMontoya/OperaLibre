@@ -120,6 +120,7 @@ import {
   getLibationAccess,
   getLibationStatus,
   getMe,
+  getFreshProgress,
   getProgress,
   getServerStorageKey,
   getServerAliases,
@@ -2356,6 +2357,11 @@ function MainApp({
   // reply look stale.
   const playbackActionVersionRef = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
+  // Tearing a session down (completion, reset) is not a progress mutation and
+  // not a listener action, so neither version above moves. Foreground adoption
+  // still has to notice: a continuation that lands after the session was
+  // cleared would restore the position it just discarded.
+  const playbackSessionVersion = useRef(0);
   // Whether the listener moved playback (play, seek, track change) since the
   // current book was restored. Until then no progress is persisted anywhere:
   // re-stamping the restored — or failed-to-restore — position with a fresh
@@ -4253,15 +4259,17 @@ function MainApp({
     }
     const actionVersion = playbackActionVersionRef.current;
     const mutationVersion = progressMutationVersion.current;
+    const sessionVersion = playbackSessionVersion.current;
     foregroundAdoptInFlightRef.current = true;
     try {
-      const server = await getProgress(book.id).catch(() => null);
+      const server = await getFreshProgress(book).catch(() => null);
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||
         restoredProgressBookId.current !== book.id ||
         playbackActionVersionRef.current !== actionVersion ||
-        progressMutationVersion.current !== mutationVersion
+        progressMutationVersion.current !== mutationVersion ||
+        playbackSessionVersion.current !== sessionVersion
       ) {
         return;
       }
@@ -4290,6 +4298,7 @@ function MainApp({
   function clearPlaybackSession() {
     // Completion owns the durable final position. Prevent pause/teardown
     // events from following it with a stale media-element clock.
+    playbackSessionVersion.current += 1;
     playbackTouchedRef.current = false;
     nativePlaybackPlayingRef.current = false;
     playWhenTrackLoads.current = false;
