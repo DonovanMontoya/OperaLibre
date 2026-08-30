@@ -219,6 +219,36 @@ export function progressAfterSave(
 }
 
 /**
+ * Whether a session returning to the foreground should quietly adopt the
+ * server's copy — the position another device recorded while this app was in
+ * the background. Deliberately conservative: the caller only asks while
+ * playback is paused and no local save is pending, and this adopts nothing
+ * unless the server's revision is strictly newer AND the position materially
+ * differs. Within the slack the local player is already in the right place,
+ * and moving it would make a paused clock twitch for no benefit. A newer
+ * server copy that is *behind* is adopted too: it can only be another
+ * device's deliberate rewind or restart, which the server's own regression
+ * guards have already vetted.
+ */
+export function adoptableServerProgress(
+  local: Progress | null,
+  server: Progress | null
+): Progress | null {
+  if (!server) return null;
+  if (!local) return server;
+  if (progressTimestamp(server.updatedAt) <= progressTimestamp(local.updatedAt)) {
+    return null;
+  }
+  return Math.abs(server.bookPositionSeconds - local.bookPositionSeconds)
+    > FOREGROUND_ADOPTION_SLACK_SECONDS
+    ? server
+    : null;
+}
+
+/** Mirrors the server's PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS. */
+export const FOREGROUND_ADOPTION_SLACK_SECONDS = 2;
+
+/**
  * A local copy at the very start of the book that outranks substantial server
  * progress by timestamp alone is the signature of a device that once failed
  * to restore and then persisted near-zero. A listener who deliberately

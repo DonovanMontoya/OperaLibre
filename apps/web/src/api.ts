@@ -32,6 +32,7 @@ import {
   loginToJellyfin,
   logoutFromJellyfin,
   pingJellyfin,
+  refreshJellyfinProgress,
   reportJellyfinPlaybackStart,
   saveJellyfinProgress,
   setJellyfinBookCompletion
@@ -785,6 +786,23 @@ export async function getProgress(bookId: string) {
     return getCachedJellyfinProgress(bookId);
   }
   return request<Progress | null>(`/api/books/${bookId}/progress`);
+}
+
+/**
+ * Foreground adoption asks the backend for the truth right now, so it cannot
+ * settle for Jellyfin's library-fetch cache the way `getProgress` does — a
+ * stale cached copy is exactly the position it is trying to move off.
+ */
+export async function getFreshProgress(book: Book) {
+  if (isDemoMode()) return getDemoProgress(book.id);
+  if (getServerType() === "jellyfin") {
+    const token = getStoredToken();
+    if (!token) {
+      throw new ApiError("Not signed in.", 401);
+    }
+    return refreshJellyfinProgress(currentApiBase(), token, book);
+  }
+  return request<Progress | null>(`/api/books/${book.id}/progress`);
 }
 
 export async function saveProgress(
