@@ -54,6 +54,7 @@ import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  adoptableServerProgress,
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
@@ -91,7 +92,10 @@ import {
   createBookGainSync,
   mergeServerBookGains,
   readBookGains,
-  writeBookGains
+  readUnsyncedBookGains,
+  unsyncedBookGainStorageKey,
+  writeBookGains,
+  writeUnsyncedBookGains
 } from "./bookVolume";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
@@ -116,6 +120,7 @@ import {
   getLibationAccess,
   getLibationStatus,
   getMe,
+  getFreshProgress,
   getProgress,
   getServerStorageKey,
   getServerAliases,
@@ -312,6 +317,26 @@ function writeStoredBookGains(userId: string, gains: Record<string, number>) {
   }
 }
 
+/** The gain writes the server never received, kept across restarts for retry. */
+function unsyncedBookGainStore(userId: string) {
+  return {
+    read() {
+      try {
+        return readUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId));
+      } catch {
+        return {};
+      }
+    },
+    write(entries: Record<string, number>) {
+      try {
+        writeUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId), entries);
+      } catch {
+        // ignore storage failures
+      }
+    }
+  };
+}
+
 const SPEED_WHEEL_SPACING_PX = 48;
 
 /**
@@ -344,6 +369,17 @@ function BookVolumeControl({
   const maximum = canBoost ? BOOK_GAIN_DB_MAX : 0;
   const position = Math.min(db, maximum);
   const presetOptions = BOOK_GAIN_DB_PRESETS.filter((preset) => preset <= maximum);
+  const sliderDragging = useRef(false);
+
+  // The same tactile grammar as the speed wheel beside it: a drag ticks once
+  // per decibel step, a discrete nudge (stepper button, arrow key) bumps.
+  function change(next: number, source: "drag" | "step") {
+    const bounded = Math.min(maximum, Math.max(BOOK_GAIN_DB_MIN, next));
+    if (bounded === position) return;
+    if (source === "drag") selectionHaptic("change");
+    else haptic("light");
+    onChange(bounded);
+  }
 
   const slider = (
     <input
@@ -354,7 +390,19 @@ function BookVolumeControl({
       step={BOOK_GAIN_DB_STEP}
       value={position}
       aria-valuetext={formatBookGainDb(position)}
-      onChange={(event) => onChange(Number(event.currentTarget.value))}
+      onPointerDown={() => {
+        sliderDragging.current = true;
+        selectionHaptic("start");
+      }}
+      onPointerUp={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onPointerCancel={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onChange={(event) => change(Number(event.currentTarget.value), sliderDragging.current ? "drag" : "step")}
     />
   );
 
@@ -386,7 +434,25 @@ function BookVolumeControl({
         <output aria-live="polite">{formatBookGainDb(db)}</output>
         <span>{BOOK_GAIN_DB_STEP} dB steps</span>
       </div>
-      {slider}
+      <div className="book-volume-slider-row">
+        <button
+          type="button"
+          aria-label={`Decrease amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position <= BOOK_GAIN_DB_MIN}
+          onClick={() => change(position - BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Minus size={17} />
+        </button>
+        {slider}
+        <button
+          type="button"
+          aria-label={`Increase amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position >= maximum}
+          onClick={() => change(position + BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Plus size={17} />
+        </button>
+      </div>
       <div className="book-volume-range-labels" aria-hidden="true">
         <span>{formatBookGainDb(BOOK_GAIN_DB_MIN)}</span>
         <span>{maximum === 0 ? "Original" : `+${maximum} dB`}</span>
@@ -2302,6 +2368,11 @@ function MainApp({
   // reply look stale.
   const playbackActionVersionRef = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
+  // Tearing a session down (completion, reset) is not a progress mutation and
+  // not a listener action, so neither version above moves. Foreground adoption
+  // still has to notice: a continuation that lands after the session was
+  // cleared would restore the position it just discarded.
+  const playbackSessionVersion = useRef(0);
   // Whether the listener moved playback (play, seek, track change) since the
   // current book was restored. Until then no progress is persisted anywhere:
   // re-stamping the restored — or failed-to-restore — position with a fresh
@@ -2320,6 +2391,7 @@ function MainApp({
   const resumeAutoplayBookIdRef = useRef<string | null>(null);
   const resumeAutoplayPendingRef = useRef(false);
   const resumeReconciliationBookIdRef = useRef<string | null>(null);
+  const foregroundAdoptInFlightRef = useRef(false);
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
   // Authentication can be restored synchronously, but the native destination
@@ -2388,7 +2460,11 @@ function MainApp({
   // every step of a drag, and owns the release of the guard above.
   const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
   if (!gainSyncRef.current) {
-    gainSyncRef.current = createBookGainSync(setBookVolume, localGainWritesRef.current);
+    gainSyncRef.current = createBookGainSync(
+      setBookVolume,
+      localGainWritesRef.current,
+      unsyncedBookGainStore(currentUser.id)
+    );
   }
   // Read by the native player at load time, which happens before the effect
   // that pushes the gain across.
@@ -2905,6 +2981,7 @@ function MainApp({
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);
+      reconcileServerBookGains(serverBooks);
       setIsOffline(false);
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
@@ -3760,15 +3837,22 @@ function MainApp({
   // The server's copy is what follows the listener between devices, so a boost
   // set on the phone is already applied the first time the book opens here.
   // Backends with nowhere to store it omit the field entirely and leave the
-  // local mirror alone.
-  useEffect(() => {
+  // local mirror alone. Only genuinely fresh server payloads take part: the
+  // long-lived `books` state keeps whatever volumeGain it arrived with, and
+  // re-merging it after a failed write released nothing would still be safe —
+  // but merging it after every identity change (a progress tick, a pause) is
+  // exactly what used to snap an offline adjustment back mid-chapter.
+  function reconcileServerBookGains(payload: readonly Book[]) {
     setBookGains((existing) => {
-      const merged = mergeServerBookGains(existing, books, localGainWritesRef.current);
+      const merged = mergeServerBookGains(existing, payload, localGainWritesRef.current);
       if (!merged) return existing;
       writeStoredBookGains(currentUser.id, merged);
       return merged;
     });
-  }, [books]);
+    // The server just answered, so anything it missed while unreachable can
+    // land now; a no-op whenever nothing is owed.
+    gainSyncRef.current?.retry();
+  }
 
   useEffect(() => {
     let active = true;
@@ -3962,18 +4046,20 @@ function MainApp({
     const saveBeforeLeaving = () => {
       void persistProgress();
     };
-    const saveWhenHidden = () => {
+    const syncWhenVisibilityChanges = () => {
       if (document.visibilityState === "hidden") {
         void persistProgress();
+      } else if (document.visibilityState === "visible") {
+        void adoptNewerServerProgress();
       }
     };
 
     window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", saveWhenHidden);
+    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
 
     return () => {
       window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", saveWhenHidden);
+      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
@@ -4158,9 +4244,74 @@ function MainApp({
     updateBookProgress(book.id, saved);
   }
 
+  /**
+   * Returning to the foreground is the one moment another device's position
+   * can be newer without any local signal — the restore effect runs once per
+   * book and deliberately never re-fires. Adopt the server's copy only while
+   * this session is provably idle: restore finished, playback paused, and no
+   * local save queued or in flight. A moving or unsynced session is always
+   * authoritative and is left completely alone.
+   */
+  async function adoptNewerServerProgress() {
+    const book = playbackBook;
+    const audio = audioRef.current;
+    if (
+      !book ||
+      book.source === "device" ||
+      !currentTrack ||
+      !audio ||
+      restoredProgressBookId.current !== book.id ||
+      resumeReconciliationBookIdRef.current === book.id ||
+      foregroundAdoptInFlightRef.current
+    ) {
+      return;
+    }
+    const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
+    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveInFlight.current) {
+      return;
+    }
+    const actionVersion = playbackActionVersionRef.current;
+    const mutationVersion = progressMutationVersion.current;
+    const sessionVersion = playbackSessionVersion.current;
+    foregroundAdoptInFlightRef.current = true;
+    try {
+      const server = await getFreshProgress(book).catch(() => null);
+      const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+      if (
+        !server ||
+        restoredProgressBookId.current !== book.id ||
+        playbackActionVersionRef.current !== actionVersion ||
+        progressMutationVersion.current !== mutationVersion ||
+        playbackSessionVersion.current !== sessionVersion
+      ) {
+        return;
+      }
+      const checkpoint = readProgressCheckpoint(
+        window.localStorage,
+        getServerStorageKey(),
+        currentUser.id,
+        book.id
+      );
+      const adopted = adoptableServerProgress(freshestProgress(checkpoint, cached), server);
+      if (!adopted) return;
+      const location = resolveProgressLocation(book.tracks, adopted);
+      if (!location) return;
+      storeCanonicalServerProgress(book, adopted);
+      setCurrentTrackId(location.trackId);
+      setPendingSeek(location);
+      setPosition(location.positionSeconds);
+      setDuration(
+        book.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0
+      );
+    } finally {
+      foregroundAdoptInFlightRef.current = false;
+    }
+  }
+
   function clearPlaybackSession() {
     // Completion owns the durable final position. Prevent pause/teardown
     // events from following it with a stale media-element clock.
+    playbackSessionVersion.current += 1;
     playbackTouchedRef.current = false;
     nativePlaybackPlayingRef.current = false;
     playWhenTrackLoads.current = false;
@@ -4996,14 +5147,13 @@ function MainApp({
       engageGainChain(audioRef.current, gain);
     }
     // Device books exist only on this phone, so there is no server row to sync.
-    // Everything else keeps the local change even if the sync fails; the gain
-    // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
       // Guards the book against a library payload older than this adjustment,
       // and holds it until the server echoes the value back. Clearing the guard
       // when the PUT settles would be too early: a getBooks() issued before the
       // write can still answer after it, carrying the old gain. A write that
-      // never landed releases it instead — see createBookGainSync.
+      // never landed keeps the guard and is re-sent once the server answers
+      // again — see createBookGainSync.
       gainSyncRef.current?.write(book.id, gain);
     }
   }
@@ -5045,6 +5195,7 @@ function MainApp({
         ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
         : nextBooks;
       setBooks(visibleBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -5071,6 +5222,7 @@ function MainApp({
       ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
       : nextBooks;
     setBooks(visibleBooks);
+    reconcileServerBookGains(nextBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
     setPlaybackBookId((existing) => {
       const next = resolveActivePlaybackBookId(visibleBooks, existing);
@@ -5114,6 +5266,7 @@ function MainApp({
       const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
       const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
       setBooks(nextBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setError(null);
       if (uploadedBook) {
@@ -5382,6 +5535,7 @@ function MainApp({
       setBooks((existing) =>
         existing.map((book) => (book.id === updatedBook.id ? updatedBook : book))
       );
+      reconcileServerBookGains([updatedBook]);
       setMetadataEditOpen(false);
       setMetadataForm(null);
     } catch (error) {

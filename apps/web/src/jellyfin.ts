@@ -220,6 +220,52 @@ function groupKey(item: JellyfinItem) {
   return item.AlbumId || (item.Album ? `album:${albumArtist}:${item.Album}` : item.Id) || "unknown";
 }
 
+/**
+ * Jellyfin keeps playback state on each track item rather than on the book, so
+ * a book's position is whichever track carries a position (or the first
+ * unplayed one) plus the durations before it. Shared by the library mapper and
+ * the single-book refresh so both read the same book position from the same
+ * user data.
+ */
+function readItemProgress(bookId: string, items: JellyfinItem[], tracks: Track[]) {
+  const totalDuration = tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
+  const firstUnplayedIndex = items.findIndex((item) => !item.UserData?.Played);
+  const positionedIndex = items.reduce(
+    (found, item, index) => (item.UserData?.PlaybackPositionTicks ?? 0) > 0 ? index : found,
+    -1
+  );
+  const activeIndex = positionedIndex >= 0
+    ? positionedIndex
+    : firstUnplayedIndex >= 0
+      ? firstUnplayedIndex
+      : Math.max(0, tracks.length - 1);
+  const activeTrack = tracks[activeIndex];
+  const activePosition = seconds(items[activeIndex]?.UserData?.PlaybackPositionTicks) ?? 0;
+  const bookPosition = tracks
+    .slice(0, activeIndex)
+    .reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0) + activePosition;
+  const allPlayed = items.every((item) => item.UserData?.Played);
+  const playedDates = items
+    .map((item) => item.UserData?.LastPlayedDate)
+    .filter((value): value is string => !!value)
+    .sort();
+  const lastPlayedAt = playedDates[playedDates.length - 1] ?? new Date(0).toISOString();
+  const effectivePosition = allPlayed && totalDuration > 0 ? totalDuration : bookPosition;
+
+  const progress: Progress | null = activeTrack && (effectivePosition > 0 || allPlayed)
+    ? {
+        bookId,
+        trackId: activeTrack.id,
+        positionSeconds: allPlayed ? activeTrack.durationSeconds ?? 0 : activePosition,
+        bookPositionSeconds: effectivePosition,
+        durationSeconds: totalDuration || null,
+        updatedAt: lastPlayedAt,
+        finishedOverride: allPlayed ? true : null
+      }
+    : null;
+  return { progress, allPlayed, effectivePosition, totalDuration };
+}
+
 function mapBook(items: JellyfinItem[]): Book | null {
   const sorted = [...items].sort((a, b) =>
     (a.ParentIndexNumber ?? 0) - (b.ParentIndexNumber ?? 0) ||
@@ -271,41 +317,11 @@ function mapBook(items: JellyfinItem[]): Book | null {
     offset += track.durationSeconds ?? 0;
   });
 
-  const totalDuration = tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
-  const firstUnplayedIndex = sorted.findIndex((item) => !item.UserData?.Played);
-  const positionedIndex = sorted.reduce(
-    (found, item, index) => (item.UserData?.PlaybackPositionTicks ?? 0) > 0 ? index : found,
-    -1
+  const { progress, allPlayed, effectivePosition, totalDuration } = readItemProgress(
+    id,
+    sorted,
+    tracks
   );
-  const activeIndex = positionedIndex >= 0
-    ? positionedIndex
-    : firstUnplayedIndex >= 0
-      ? firstUnplayedIndex
-      : Math.max(0, tracks.length - 1);
-  const activeTrack = tracks[activeIndex];
-  const activePosition = seconds(sorted[activeIndex]?.UserData?.PlaybackPositionTicks) ?? 0;
-  const bookPosition = tracks
-    .slice(0, activeIndex)
-    .reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0) + activePosition;
-  const allPlayed = sorted.every((item) => item.UserData?.Played);
-  const playedDates = sorted
-    .map((item) => item.UserData?.LastPlayedDate)
-    .filter((value): value is string => !!value)
-    .sort();
-  const lastPlayedAt = playedDates[playedDates.length - 1] ?? new Date(0).toISOString();
-  const effectivePosition = allPlayed && totalDuration > 0 ? totalDuration : bookPosition;
-
-  const progress: Progress | null = effectivePosition > 0 || allPlayed
-    ? {
-        bookId: id,
-        trackId: activeTrack.id,
-        positionSeconds: allPlayed ? activeTrack.durationSeconds ?? 0 : activePosition,
-        bookPositionSeconds: effectivePosition,
-        durationSeconds: totalDuration || null,
-        updatedAt: lastPlayedAt,
-        finishedOverride: allPlayed ? true : null
-      }
-    : null;
   progressByBook.set(id, progress);
 
   const author = first.AlbumArtist || first.Artists?.join(", ") || null;
@@ -447,6 +463,46 @@ export async function getJellyfinBooks(baseUrl: string, token: string) {
 
 export function getCachedJellyfinProgress(bookId: string) {
   return progressByBook.get(bookId) ?? null;
+}
+
+/**
+ * The cached map above is only ever refilled by a full library fetch, so a
+ * position another Jellyfin client recorded while this app was backgrounded is
+ * invisible to a warm resume. Re-read just this book's track items so the
+ * foreground adoption path sees the same fresh state an OperaLibre server
+ * would have returned. Any failure leaves the cache untouched.
+ */
+export async function refreshJellyfinProgress(baseUrl: string, token: string, book: Book) {
+  if (book.tracks.length === 0) {
+    return getCachedJellyfinProgress(book.id);
+  }
+  const user = await jellyfinRequest<JellyfinUser>(baseUrl, "/Users/Me", token);
+  if (!user.Id) {
+    throw new Error("Jellyfin did not return a user id.");
+  }
+  const params = new URLSearchParams({
+    userId: user.Id,
+    ids: book.tracks.map((track) => track.id).join(","),
+    enableUserData: "true"
+  });
+  const response = await jellyfinRequest<JellyfinItemsResponse>(
+    baseUrl,
+    `/Items?${params}`,
+    token
+  );
+  const byId = new Map(
+    (response.Items ?? []).flatMap((item) => (item.Id ? [[item.Id, item] as const] : []))
+  );
+  // /Items answers in its own order, and the active-track scan is positional:
+  // read the items back in the book's track order. A partial answer says
+  // nothing about the tracks it omitted, so keep the cached copy instead.
+  const items = book.tracks.map((track) => byId.get(track.id));
+  if (items.some((item) => !item)) {
+    return getCachedJellyfinProgress(book.id);
+  }
+  const { progress } = readItemProgress(book.id, items as JellyfinItem[], book.tracks);
+  progressByBook.set(book.id, progress);
+  return progress;
 }
 
 export async function saveJellyfinProgress(
