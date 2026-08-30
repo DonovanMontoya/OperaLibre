@@ -5620,6 +5620,56 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
 
 html.native-app .native-shell.tab-games .ios-status-veil { background: rgba(18, 12, 8, 0.66); }
 
+/* Landscape iPads have enough width to make the parlour a desk instead of a
+   taller phone screen: game selection stays in a quiet left rail and the
+   active board gets a broad, full-height play surface. The height gate keeps
+   short iPhone landscape layouts on their compact phone treatment. */
+@media (orientation: landscape) and (min-width: 800px) and (min-height: 500px) {
+  html.native-app .games-shell {
+    display: grid;
+    grid-template-columns: minmax(190px, 0.58fr) minmax(0, 1.42fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    column-gap: clamp(20px, 3vw, 48px);
+    padding-top: calc(var(--status-h) + 20px);
+    padding-bottom: 20px;
+  }
+
+  html.native-app .games-head { grid-column: 1; grid-row: 1; }
+  html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
+
+  html.native-app .games-switcher {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: 1fr;
+    align-self: start;
+    margin: 18px 0 0;
+    padding: 5px;
+  }
+
+  html.native-app .games-switcher button {
+    justify-content: flex-start;
+    min-height: 48px;
+    padding-inline: 13px;
+  }
+
+  html.native-app .game-card {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    align-self: stretch;
+  }
+
+  html.native-app .games-privacy {
+    grid-column: 1;
+    grid-row: 3;
+    margin: 0 4px 4px;
+    text-align: left;
+  }
+
+  html.native-app .word-board { width: min(100%, 360px, 82cqh); }
+  html.native-app .word-key { max-width: 48px; min-height: 48px; }
+  html.native-app .word-key.wide { max-width: 72px; }
+}
+
 /* Room for the ribbon when it's showing over the shelf list. */
 html.native-app .native-shell.tab-shelf > .library-pane {
   padding-bottom: 92px;
