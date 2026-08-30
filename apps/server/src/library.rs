@@ -799,7 +799,7 @@ pub(crate) fn parse_library_identities(contents: &str) -> anyhow::Result<LoadedI
 }
 
 fn migrate_legacy_identities(legacy: LegacyIdentityStore) -> LibraryIdentityStore {
-    let books = legacy
+    let books: Vec<BookIdentity> = legacy
         .books
         .into_iter()
         .map(|book| BookIdentity {
@@ -837,6 +837,50 @@ fn migrate_legacy_identities(legacy: LegacyIdentityStore) -> LibraryIdentityStor
         })
         .collect();
 
+    // Seed the shrink baseline so the first scan after an upgrade is gated like
+    // any other. Without it `known` is zero, and a silently partial first scan
+    // — an error-free walk of a half-mounted drive — is committed on the spot,
+    // publishing an incomplete catalogue at exactly the moment the store holds
+    // the most evidence that the library is larger than that.
+    //
+    // The baseline counts only the books the legacy store can still show were
+    // present. Legacy identities were never pruned, so the full list includes
+    // every book ever deleted and would overstate the library, withholding
+    // scans that are perfectly good. The legacy fingerprint cache was rebuilt
+    // from scratch on every scan, so its keys are exactly the track paths the
+    // last successful scan walked: a book with a track in that cache was there,
+    // and one without it either is gone or could not be read. Erring towards
+    // the smaller count keeps the gate conservative in the safe direction.
+    let cached_aliases = legacy
+        .fingerprint_cache
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let present_fingerprints = books
+        .iter()
+        .filter(|book| {
+            book.tracks.iter().any(|track| {
+                track
+                    .paths
+                    .iter()
+                    .any(|path| cached_aliases.contains(path.relative_path.as_str()))
+            })
+        })
+        .map(|book| book.fingerprint.clone())
+        .collect::<Vec<_>>();
+    let mut manifests = BTreeMap::new();
+    if !present_fingerprints.is_empty() {
+        manifests.insert(
+            DEFAULT_ROOT_ID.to_string(),
+            RootManifest {
+                book_fingerprints: present_fingerprints,
+                // Scan zero: the baseline was inherited, not observed under
+                // this format.
+                scan: 0,
+            },
+        );
+    }
+
     let mut fingerprint_cache = BTreeMap::new();
     fingerprint_cache.insert(DEFAULT_ROOT_ID.to_string(), legacy.fingerprint_cache);
 
@@ -845,7 +889,7 @@ fn migrate_legacy_identities(legacy: LegacyIdentityStore) -> LibraryIdentityStor
         books,
         fingerprint_cache,
         scan_counter: 0,
-        manifests: BTreeMap::new(),
+        manifests,
         pending_shrink: BTreeMap::new(),
     }
 }
@@ -1206,15 +1250,23 @@ pub(crate) fn resolve_library_identities(
     // path-derived ID would reproduce the exact ID of whatever used to live
     // there, handing the newcomer its progress and access grants — the very
     // theft the passes above just refused.
+    //
+    // Both taken-ID sets are built once here and updated as IDs are minted.
+    // Rebuilding them per book made a first scan quadratic in the size of the
+    // library, which is precisely the scan that has the most to mint.
+    let mut taken_book_ids = collect_book_ids(&store.books);
+    let mut taken_track_ids = collect_track_ids(&store.books);
     for (position, group) in groups.iter().enumerate() {
         if claimed_by[position].is_some() {
             continue;
         }
         let index = store.books.len();
+        let book_id = mint_unique_id(mint, &taken_book_ids);
+        taken_book_ids.insert(book_id.clone());
         store.books.push(BookIdentity {
             fingerprint: group.book_fingerprint.to_string(),
             fingerprint_history: Vec::new(),
-            book_id: mint_unique_id(mint, &collect_book_ids(&store.books)),
+            book_id,
             paths: vec![IdentityPath::new(group.root_id, group.group_alias)],
             tracks: Vec::new(),
             last_seen_scan: scan,
@@ -1228,7 +1280,6 @@ pub(crate) fn resolve_library_identities(
     let mut outcomes = Vec::with_capacity(groups.len());
     for (position, group) in groups.iter().enumerate() {
         let index = claimed_by[position].expect("every group is claimed or minted above");
-        let known_track_ids = collect_track_ids(&store.books);
         let identity = &mut store.books[index];
         identity.record_fingerprint(group.book_fingerprint);
         identity.last_seen_scan = scan;
@@ -1240,7 +1291,7 @@ pub(crate) fn resolve_library_identities(
             &mut identity.paths,
             IdentityPath::new(group.root_id, group.group_alias),
         );
-        let track_ids = resolve_track_identities(identity, group, mint, &known_track_ids);
+        let track_ids = resolve_track_identities(identity, group, mint, &mut taken_track_ids);
         outcomes.push((identity.book_id.clone(), track_ids));
     }
 
@@ -1280,7 +1331,7 @@ fn resolve_track_identities(
     identity: &mut BookIdentity,
     group: &ScannedGroup<'_>,
     mint: &mut dyn FnMut() -> String,
-    known_track_ids: &HashSet<String>,
+    taken_track_ids: &mut HashSet<String>,
 ) -> Vec<String> {
     let mut used: HashSet<usize> = HashSet::new();
     let mut claimed: Vec<Option<usize>> = vec![None; group.grouped_files.len()];
@@ -1359,7 +1410,6 @@ fn resolve_track_identities(
         path_matches(track, alias) && !scanned.contains(track.fingerprint.as_str())
     });
 
-    let mut taken = known_track_ids.clone();
     let mut track_ids = Vec::with_capacity(group.grouped_files.len());
     for (position, alias) in group.track_aliases.iter().enumerate() {
         let fingerprint = group.track_fingerprints[position].clone();
@@ -1367,8 +1417,8 @@ fn resolve_track_identities(
             Some(index) => index,
             None => {
                 let index = identity.tracks.len();
-                let track_id = mint_unique_id(mint, &taken);
-                taken.insert(track_id.clone());
+                let track_id = mint_unique_id(mint, taken_track_ids);
+                taken_track_ids.insert(track_id.clone());
                 identity.tracks.push(TrackIdentity {
                     fingerprint: fingerprint.clone(),
                     track_id,
@@ -1838,6 +1888,32 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         books.push(book);
     }
 
+    // Reaching here means the scan was trustworthy: a suspect one returned
+    // long before this point. Any run of shrink observations is therefore over.
+    identities.pending_shrink.remove(DEFAULT_ROOT_ID);
+    identities.manifests.insert(
+        DEFAULT_ROOT_ID.to_string(),
+        RootManifest {
+            book_fingerprints: identities
+                .books
+                .iter()
+                .filter(|book| book.last_seen_scan == identities.scan_counter)
+                .map(|book| book.fingerprint.clone())
+                .collect(),
+            scan: identities.scan_counter,
+        },
+    );
+    // Identities are persisted before anything else records the IDs they just
+    // minted. Now that new IDs are random rather than derived from the path,
+    // a rescan after a failed write mints *different* IDs, so a store written
+    // first would keep permanent references to editions the library will never
+    // hand out again. Written in this order, a failure here leaves the works
+    // store with nothing to dangle from, and the retry resolves the same
+    // fingerprints to the same persisted IDs.
+    write_json_atomic(&state.library_identities_file, &identities)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+
     // Resolve the stable work identity after a complete scan. Playback remains
     // keyed by the edition's byte identity; this index is only for history and
     // lets replacement downloads roll up under the same work.
@@ -1866,25 +1942,6 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             works.prune_suggestions(&present);
             Ok(())
         })
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-
-    // Reaching here means the scan was trustworthy: a suspect one returned
-    // long before this point. Any run of shrink observations is therefore over.
-    identities.pending_shrink.remove(DEFAULT_ROOT_ID);
-    identities.manifests.insert(
-        DEFAULT_ROOT_ID.to_string(),
-        RootManifest {
-            book_fingerprints: identities
-                .books
-                .iter()
-                .filter(|book| book.last_seen_scan == identities.scan_counter)
-                .map(|book| book.fingerprint.clone())
-                .collect(),
-            scan: identities.scan_counter,
-        },
-    );
-    write_json_atomic(&state.library_identities_file, &identities)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 

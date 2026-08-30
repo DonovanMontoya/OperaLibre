@@ -2697,6 +2697,96 @@ fn legacy_identity_files_migrate_without_changing_ids() {
     assert_eq!(round_tripped.store.books[0].book_id, "0123456789abcdef");
 }
 
+/// The shrink gate has no baseline until a scan commits one, so without help a
+/// migrated store treats the upgrade scan as a first scan and commits whatever
+/// it finds. That is the one scan where a silently partial walk is most costly:
+/// the store still holds the whole established library.
+#[test]
+fn a_migrated_store_carries_a_shrink_baseline_into_its_first_scan() {
+    let books = (0..100)
+        .map(|index| {
+            serde_json::json!({
+                "fingerprint": format!("book{index}"),
+                "bookId": format!("{index:016x}"),
+                "paths": [format!("Book {index}")],
+                "tracks": [{
+                    "fingerprint": format!("track{index}"),
+                    "trackId": format!("{:016x}", index + 1000),
+                    "paths": [format!("Book {index}/01.m4b")]
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+    // Only the first ninety are still on disk. The other ten are identities of
+    // books deleted long ago, which the pre-versioned format never pruned.
+    let cache = (0..90)
+        .map(|index| {
+            (
+                format!("Book {index}/01.m4b"),
+                serde_json::json!({
+                    "fingerprint": format!("track{index}"),
+                    "size": 42,
+                    "modifiedMs": 7
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let legacy = serde_json::json!({ "books": books, "fingerprintCache": cache }).to_string();
+
+    let store = super::parse_library_identities(&legacy).unwrap().store;
+    let baseline = &store.manifests[super::DEFAULT_ROOT_ID];
+    assert_eq!(
+        baseline.book_fingerprints.len(),
+        90,
+        "the baseline counts the books the legacy cache shows were present, \
+         not every identity ever issued"
+    );
+
+    let root = std::path::Path::new("/library");
+    assert!(
+        !super::assess_scan(&store, super::DEFAULT_ROOT_ID, &book_aliases(3), &[], root).commits(),
+        "an error-free but nearly empty first scan after migrating is withheld"
+    );
+    assert!(
+        super::assess_scan(&store, super::DEFAULT_ROOT_ID, &book_aliases(88), &[], root).commits(),
+        "a first scan that finds the library commits"
+    );
+}
+
+/// A legacy store with nothing in its fingerprint cache — written before the
+/// cache existed, or by a scan that could fingerprint nothing — has no usable
+/// baseline. Inventing one from the unpruned identity list would withhold a
+/// perfectly good scan, so migration leaves the gate open as it was.
+#[test]
+fn a_migrated_store_with_no_cached_evidence_claims_no_baseline() {
+    let legacy = serde_json::json!({
+        "books": [{
+            "fingerprint": "abc123",
+            "bookId": "0123456789abcdef",
+            "paths": ["Dune [B0001]"],
+            "tracks": [{
+                "fingerprint": "def456",
+                "trackId": "fedcba9876543210",
+                "paths": ["Dune [B0001]/01.m4b"]
+            }]
+        }]
+    })
+    .to_string();
+
+    let store = super::parse_library_identities(&legacy).unwrap().store;
+    assert!(store.manifests.is_empty());
+    assert!(
+        super::assess_scan(
+            &store,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(0),
+            &[],
+            std::path::Path::new("/library")
+        )
+        .commits()
+    );
+}
+
 #[test]
 fn a_scan_that_loses_most_of_the_library_is_not_committed() {
     let mut identities = super::LibraryIdentityStore::default();
@@ -2836,6 +2926,53 @@ fn minting_retries_when_an_id_is_already_taken() {
     );
 }
 
+/// The taken-ID sets are built once per scan and updated as IDs are minted,
+/// rather than rebuilt from the store for every book. That is only sound while
+/// the running set stays complete, and a track ID reused across two books would
+/// move a listening position from one book into another.
+#[test]
+fn minting_will_not_reuse_a_track_id_across_books_in_one_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let first = write_book(root.path(), "A", "01.mp3", b"first");
+    let second = write_book(root.path(), "B", "01.mp3", b"second");
+
+    // Book IDs are minted for the whole scan first, then a track ID per book.
+    // The fourth draw repeats the third, which belongs to the other book.
+    let mut issued = 0;
+    let mut mint = move || {
+        issued += 1;
+        match issued {
+            1 => "book-a".to_string(),
+            2 => "book-b".to_string(),
+            3 | 4 => "shared-track".to_string(),
+            _ => format!("track-{issued}"),
+        }
+    };
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let a = IdentityFixture::read("A", std::slice::from_ref(&first));
+    let b = IdentityFixture::read("B", std::slice::from_ref(&second));
+    let groups = [&a, &b]
+        .iter()
+        .map(|fixture| super::ScannedGroup {
+            book_fingerprint: &fixture.book_fingerprint,
+            group_alias: &fixture.alias,
+            root_id: super::DEFAULT_ROOT_ID,
+            grouped_files: &fixture.files,
+            track_fingerprints: &fixture.track_fingerprints,
+            track_aliases: &fixture.track_aliases,
+            duration_seconds: fixture.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+
+    let resolved = super::resolve_library_identities(&mut identities, &groups, &mut mint);
+    assert_eq!(resolved[0].1[0], "shared-track");
+    assert_ne!(
+        resolved[1].1[0], resolved[0].1[0],
+        "a track ID already issued to another book must be retried"
+    );
+}
+
 #[test]
 fn unchanged_tracks_reuse_cached_fingerprints_and_removed_ones_are_pruned() {
     let root = tempfile::tempdir().unwrap();
@@ -2956,6 +3093,51 @@ fn libation_login_output_redacts_urls() {
         super::sanitize_libation_login_output(output),
         "Open this URL:"
     );
+}
+
+/// Book IDs are random now, so a rescan that dies between writing them and
+/// persisting them does not reproduce them: it mints different ones. Anything
+/// that recorded the first set therefore holds references the library will
+/// never hand out again, and the work store never prunes book IDs. Identities
+/// have to be durable before anything downstream is allowed to name them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_identity_write_leaves_nothing_downstream_referring_to_the_lost_ids() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    let book_dir = state.library_root.join("Dune");
+    std::fs::create_dir_all(&book_dir).unwrap();
+    std::fs::copy(root.path().join("template.wav"), book_dir.join("01.wav")).unwrap();
+
+    // Its own directory, so revoking write permission stops the identity write
+    // without touching the database the work store lives in.
+    let identity_dir = root.path().join("data").join("identities");
+    std::fs::create_dir_all(&identity_dir).unwrap();
+    state.library_identities_file = identity_dir.join("library-identities.json");
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let failed = super::rescan_library(&state).await;
+    // Restore before any assertion, so a failure still lets the tempdir clean up.
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        failed.is_err(),
+        "a rescan that cannot persist identities must fail"
+    );
+    assert!(
+        state.works.read().await.works.is_empty(),
+        "no work may reference a book ID that was never persisted"
+    );
+
+    // With the directory writable the retry succeeds, and the IDs it does
+    // persist are the ones the work store ends up holding.
+    super::rescan_library(&state).await.unwrap();
+    let book_id = state.library.read().await.books[0].id.clone();
+    let works = state.works.read().await.clone();
+    assert_eq!(works.works.len(), 1);
+    assert_eq!(works.works[0].book_ids, vec![book_id]);
 }
 
 /// Builds a library holding one real, trailing-`moov` M4B. Returns `None`
