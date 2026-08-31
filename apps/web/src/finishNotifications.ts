@@ -14,6 +14,22 @@ import { LocalNotifications } from "@capacitor/local-notifications";
 const FINISH_CHANNEL = "shared-finishes";
 
 let permissionRequested = false;
+let finishChannelReady: Promise<void> | null = null;
+
+/** Android 8+ drops notifications aimed at a channel that does not exist. */
+function ensureFinishChannel(): Promise<void> {
+  if (Capacitor.getPlatform() !== "android") return Promise.resolve();
+  finishChannelReady ??= LocalNotifications.createChannel({
+    id: FINISH_CHANNEL,
+    name: "Shared reading",
+    description: "Updates when another listener finishes a book"
+  }).catch((error) => {
+    // Let a later banner retry if channel creation failed transiently.
+    finishChannelReady = null;
+    throw error;
+  });
+  return finishChannelReady;
+}
 
 export function finishBannersAvailable(): boolean {
   return Capacitor.isNativePlatform();
@@ -51,6 +67,7 @@ export async function ensureFinishBannerPermission(): Promise<boolean> {
 export async function postFinishBanner(body: string): Promise<void> {
   if (!finishBannersAvailable() || !body) return;
   try {
+    await ensureFinishChannel();
     await LocalNotifications.schedule({
       notifications: [
         {
