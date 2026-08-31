@@ -1762,6 +1762,75 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
     let content_url = files[0]["contentUrl"].as_str().unwrap();
     assert!(content_url.contains("token="));
     assert!((files[1]["startOffset"].as_f64().unwrap() - 10.0).abs() < 0.5);
+    // BookPlayer decodes the expanded item with the native Audiobookshelf
+    // detail model, which requires these file metadata fields and the
+    // item-level libraryFiles array.
+    assert_eq!(item["libraryFiles"].as_array().unwrap().len(), 2);
+    assert_eq!(files[0]["metadata"]["ext"], "wav");
+    assert_eq!(files[0]["metadata"]["path"], "01 Track.wav");
+    assert!(files[0]["metadata"].get("size").is_some());
+
+    // BookPlayer's download flow uses the ABS item-download endpoint rather
+    // than the playback-session endpoint.
+    let download = server
+        .get(&format!("/abs/api/items/{item_id}/download"), &token)
+        .await;
+    assert_eq!(download.status, StatusCode::OK, "{}", download.text());
+    assert_eq!(download.headers[header::CONTENT_TYPE], "application/zip");
+
+    let filter_data = server
+        .get(
+            &format!("/abs/api/libraries/{}/filterdata", super::ABS_LIBRARY_ID),
+            &token,
+        )
+        .await;
+    assert_eq!(filter_data.status, StatusCode::OK, "{}", filter_data.text());
+    let filter_data = filter_data.json();
+    for field in [
+        "authors",
+        "genres",
+        "tags",
+        "series",
+        "narrators",
+        "languages",
+    ] {
+        assert!(
+            filter_data[field].is_array(),
+            "missing filter field {field}"
+        );
+    }
+
+    let search = server
+        .get(
+            &format!(
+                "/abs/api/libraries/{}/search?q=Book%2000",
+                super::ABS_LIBRARY_ID
+            ),
+            &token,
+        )
+        .await;
+    assert_eq!(search.status, StatusCode::OK, "{}", search.text());
+    assert_eq!(search.json()["book"].as_array().unwrap().len(), 1);
+
+    // A genre advertised by filterdata must be usable as a BookPlayer filter.
+    let genre = filter_data["genres"]
+        .as_array()
+        .and_then(|genres| genres.first())
+        .and_then(serde_json::Value::as_str);
+    if let Some(genre) = genre {
+        let encoded = general_purpose::STANDARD.encode(genre);
+        let filtered = server
+            .get(
+                &format!(
+                    "/abs/api/libraries/{}/items?filter=genres.{encoded}",
+                    super::ABS_LIBRARY_ID
+                ),
+                &token,
+            )
+            .await;
+        assert_eq!(filtered.status, StatusCode::OK, "{}", filtered.text());
+        assert!(!filtered.json()["results"].as_array().unwrap().is_empty());
+    }
 
     // Clients configured with `https://server/abs` concatenate that base with
     // the returned path. The composed URL must remain a working, query-token

@@ -103,6 +103,9 @@ pub(crate) struct AbsLibraryItem {
     progress: Option<f64>,
     current_time: Option<f64>,
     is_finished: Option<bool>,
+    /// BookPlayer's detail decoder expects the expanded Audiobookshelf item
+    /// to carry the files at the item level as well as inside `media`.
+    library_files: Vec<AbsLibraryFile>,
     media: AbsMedia,
 }
 
@@ -156,8 +159,19 @@ pub(crate) struct AbsAudioFile {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AbsLibraryFile {
+    ino: String,
+    metadata: AbsFileMetadata,
+    file_type: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AbsFileMetadata {
     filename: String,
+    ext: String,
+    path: String,
+    size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,6 +228,65 @@ pub(crate) struct AbsProgressUpdate {
 pub(crate) struct AbsItemsQuery {
     limit: Option<usize>,
     page: Option<usize>,
+    filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AbsSearchQuery {
+    q: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsFilterData {
+    authors: Vec<AbsNamedEntity>,
+    genres: Vec<String>,
+    tags: Vec<String>,
+    series: Vec<AbsNamedEntity>,
+    narrators: Vec<String>,
+    languages: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AbsNamedEntity {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AbsSearchResponse {
+    book: Vec<AbsSearchResult>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsSearchResult {
+    library_item: AbsLibraryItem,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsCollectionsResponse {
+    results: Vec<AbsCollection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsCollection {
+    id: String,
+    library_id: &'static str,
+    name: String,
+    description: Option<String>,
+    books: Vec<AbsLibraryItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsAuthorResponse {
+    id: String,
+    name: String,
+    library_items: Vec<AbsLibraryItem>,
 }
 
 /// Where a track begins within the whole book, and how long it runs.
@@ -237,6 +310,14 @@ fn book_duration(book: &Book) -> f64 {
     })
 }
 
+fn track_extension(file_name: &str) -> String {
+    FsPath::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn audio_files(book: &Book, media_token: &str) -> Vec<AbsAudioFile> {
     track_offsets(book)
         .into_iter()
@@ -258,6 +339,9 @@ fn audio_files(book: &Book, media_token: &str) -> Vec<AbsAudioFile> {
             mime_type: media_content_type(FsPath::new(&track.file_name)),
             metadata: AbsFileMetadata {
                 filename: track.file_name.clone(),
+                ext: track_extension(&track.file_name),
+                path: track.file_name.clone(),
+                size: 0,
             },
         })
         .collect()
@@ -339,6 +423,23 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
         progress,
         current_time,
         is_finished,
+        library_files: if include_audio_files {
+            book.tracks
+                .iter()
+                .map(|track| AbsLibraryFile {
+                    ino: track.id.clone(),
+                    metadata: AbsFileMetadata {
+                        filename: track.file_name.clone(),
+                        ext: track_extension(&track.file_name),
+                        path: track.file_name.clone(),
+                        size: 0,
+                    },
+                    file_type: "audio",
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         media: AbsMedia {
             id: book.id.clone(),
             metadata: AbsMetadata {
@@ -489,7 +590,24 @@ pub(crate) async fn abs_library_items(
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
-    let visible = books_with_progress(&state, &auth).await?;
+    let mut visible = books_with_progress(&state, &auth).await?;
+    if let Some(filter) = query.filter.as_deref() {
+        let (group, encoded) = filter
+            .split_once('.')
+            .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
+        let value = general_purpose::STANDARD
+            .decode(encoded)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
+        visible.retain(|book| match group {
+            "authors" => book.author.as_deref() == Some(value.as_str()),
+            "series" => book.metadata.series.as_deref() == Some(value.as_str()),
+            "narrators" => book.narrator.as_deref() == Some(value.as_str()),
+            "genres" => book.genres.iter().any(|genre| genre == &value),
+            _ => false,
+        });
+    }
     let total = visible.len();
     let limit = query
         .limit
@@ -510,6 +628,137 @@ pub(crate) async fn abs_library_items(
         total,
         page,
         limit,
+    }))
+}
+
+/// `GET /abs/api/libraries/{id}/filterdata`
+pub(crate) async fn abs_filter_data(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(library_id): Path<String>,
+) -> Result<Json<AbsFilterData>, ApiError> {
+    if library_id != ABS_LIBRARY_ID {
+        return Err(ApiError::not_found("Library not found."));
+    }
+    let books = books_with_progress(&state, &auth).await?;
+    let mut authors = BTreeMap::new();
+    let mut series = BTreeMap::new();
+    let mut narrators = BTreeMap::new();
+    let mut genres = BTreeMap::new();
+    for book in books {
+        if let Some(author) = book.author {
+            authors.insert(author.clone(), author);
+        }
+        if let Some(name) = book.metadata.series {
+            series.insert(name.clone(), name);
+        }
+        if let Some(narrator) = book.narrator {
+            narrators.insert(narrator.clone(), narrator);
+        }
+        for genre in book.genres {
+            genres.insert(genre.clone(), genre);
+        }
+    }
+    Ok(Json(AbsFilterData {
+        authors: authors
+            .into_values()
+            .map(|name| AbsNamedEntity {
+                id: name.clone(),
+                name,
+            })
+            .collect(),
+        genres: genres.into_values().collect(),
+        tags: Vec::new(),
+        series: series
+            .into_values()
+            .map(|name| AbsNamedEntity {
+                id: name.clone(),
+                name,
+            })
+            .collect(),
+        narrators: narrators.into_values().collect(),
+        languages: Vec::new(),
+    }))
+}
+
+/// `GET /abs/api/libraries/{id}/search`
+pub(crate) async fn abs_search(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<SessionToken>,
+    Path(library_id): Path<String>,
+    Query(query): Query<AbsSearchQuery>,
+) -> Result<Json<AbsSearchResponse>, ApiError> {
+    if library_id != ABS_LIBRARY_ID {
+        return Err(ApiError::not_found("Library not found."));
+    }
+    let needle = query.q.trim().to_lowercase();
+    let media_token = media_token_for_session(&session.0);
+    let limit = query.limit.unwrap_or(500);
+    let books = books_with_progress(&state, &auth).await?;
+    let book = books
+        .into_iter()
+        .filter(|book| {
+            book.title.to_lowercase().contains(&needle)
+                || book
+                    .author
+                    .as_deref()
+                    .is_some_and(|author| author.to_lowercase().contains(&needle))
+                || book
+                    .narrator
+                    .as_deref()
+                    .is_some_and(|narrator| narrator.to_lowercase().contains(&needle))
+        })
+        .take(limit)
+        .map(|book| AbsSearchResult {
+            library_item: library_item(&book, &media_token, false),
+        })
+        .collect();
+    Ok(Json(AbsSearchResponse { book }))
+}
+
+/// `GET /abs/api/libraries/{id}/collections`
+pub(crate) async fn abs_collections(
+    Path(library_id): Path<String>,
+) -> Result<Json<AbsCollectionsResponse>, ApiError> {
+    if library_id != ABS_LIBRARY_ID {
+        return Err(ApiError::not_found("Library not found."));
+    }
+    Ok(Json(AbsCollectionsResponse {
+        results: Vec::new(),
+    }))
+}
+
+/// `GET /abs/api/collections/{id}`
+pub(crate) async fn abs_collection(
+    Path(_collection_id): Path<String>,
+) -> Result<Json<AbsCollection>, ApiError> {
+    Err(ApiError::not_found("Collection not found."))
+}
+
+/// `GET /abs/api/authors/{id}?include=items`
+pub(crate) async fn abs_author(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Extension(session): Extension<SessionToken>,
+    Path(author_id): Path<String>,
+) -> Result<Json<AbsAuthorResponse>, ApiError> {
+    let media_token = media_token_for_session(&session.0);
+    let books = books_with_progress(&state, &auth).await?;
+    let books: Vec<_> = books
+        .into_iter()
+        .filter(|book| book.author.as_deref() == Some(author_id.as_str()))
+        .collect();
+    if books.is_empty() {
+        return Err(ApiError::not_found("Author not found."));
+    }
+    Ok(Json(AbsAuthorResponse {
+        id: author_id.clone(),
+        name: author_id,
+        library_items: books
+            .iter()
+            .map(|book| library_item(book, &media_token, false))
+            .collect(),
     }))
 }
 
