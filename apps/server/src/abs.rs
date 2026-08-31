@@ -489,12 +489,7 @@ pub(crate) async fn abs_library_items(
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
-    let library = state.library.read().await;
-    let visible: Vec<&Book> = library
-        .books
-        .iter()
-        .filter(|book| can_access_book(&auth, &book.id))
-        .collect();
+    let visible = books_with_progress(&state, &auth).await?;
     let total = visible.len();
     let limit = query
         .limit
@@ -508,7 +503,7 @@ pub(crate) async fn abs_library_items(
         .take(limit)
         // The listing carries no audio files: a client fetches the item or
         // opens a playback session when it actually wants to play something.
-        .map(|book| library_item(book, &media_token, false))
+        .map(|book| library_item(&book, &media_token, false))
         .collect();
     Ok(Json(AbsLibraryItemsResponse {
         results,
@@ -526,14 +521,18 @@ pub(crate) async fn abs_library_item(
     Path(item_id): Path<String>,
 ) -> Result<Json<AbsLibraryItem>, ApiError> {
     require_book_access(&auth, &item_id)?;
-    let library = state.library.read().await;
-    let book = library
-        .books
-        .iter()
-        .find(|book| book.id == item_id)
-        .ok_or(ApiError::not_found("Library item not found."))?;
+    let book = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .find(|book| book.id == item_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Library item not found."))?
+    };
+    let book = book_with_progress(&state, &auth, book).await?;
     Ok(Json(library_item(
-        book,
+        &book,
         &media_token_for_session(&session.0),
         true,
     )))
