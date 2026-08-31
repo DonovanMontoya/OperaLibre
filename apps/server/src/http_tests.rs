@@ -1741,6 +1741,8 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
         .await
         .json();
     assert_eq!(items["total"], 2);
+    assert_eq!(items["results"][0]["kind"], "book");
+    assert_eq!(items["results"][0]["title"], "Book 00");
     let item_id = items["results"][0]["id"].as_str().unwrap().to_string();
 
     let item = server
@@ -1748,6 +1750,9 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
         .await
         .json();
     assert_eq!(item["mediaType"], "book");
+    assert_eq!(item["kind"], "book");
+    assert_eq!(item["title"], "Book 00");
+    assert_eq!(item["duration"], 20.0);
     let files = item["media"]["audioFiles"].as_array().unwrap();
     assert_eq!(files.len(), 2);
     assert_eq!(files[0]["title"], "01 Track.wav");
