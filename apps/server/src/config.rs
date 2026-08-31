@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Server configuration: deployment modes, transfer limits, and the config
+//! file and environment parsing behind them.
 
 use crate::*;
 
@@ -406,12 +407,6 @@ pub(crate) fn config_bounded_usize(
         );
     }
     Ok(value)
-}
-
-pub(crate) fn download_volume_has_capacity(available: u64, source: u64, reserve: u64) -> bool {
-    source
-        .checked_add(reserve)
-        .is_some_and(|required| available >= required)
 }
 
 pub(crate) fn env_u16_value(key: &str) -> Option<u16> {

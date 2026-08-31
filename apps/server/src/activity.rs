@@ -1,8 +1,13 @@
-//! Extracted from main.rs.
+//! Daily listening totals, streaks, profile stats, and the finish feed.
 
 use crate::*;
 
 const FINISH_FEED_PAGE: usize = 50;
+
+/// Days with less listening than this do not count as active. Streaks and the
+/// per-day average both use it, so a scattering of sub-minute days can neither
+/// extend a streak nor dilute every other day's average.
+const ACTIVE_DAY_MIN_SECONDS: f64 = 30.0;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -342,16 +347,14 @@ pub(crate) async fn profile_stats(
         .find(|(_, seconds)| **seconds > 0.0)
         .map(|(date, _)| date.clone());
 
-    // "Per active day" must divide the same seconds it counts days for,
-    // otherwise a scattering of sub-minute days inflates every other day's
-    // average.
+    // "Per active day" must divide the same seconds it counts days for.
     let active_day_seconds: f64 = user_activity
         .values()
-        .filter(|seconds| **seconds > 30.0)
+        .filter(|seconds| **seconds > ACTIVE_DAY_MIN_SECONDS)
         .sum();
     let days_active = user_activity
         .values()
-        .filter(|seconds| **seconds > 30.0)
+        .filter(|seconds| **seconds > ACTIVE_DAY_MIN_SECONDS)
         .count() as u32;
 
     let avg_daily_minutes = if days_active > 0 {
@@ -406,7 +409,7 @@ pub(crate) fn compute_streaks(activity: &BTreeMap<String, f64>, today: i64) -> (
     let mut active_days: Vec<i64> = activity
         .iter()
         .filter_map(|(date, seconds)| {
-            if *seconds > 30.0 {
+            if *seconds > ACTIVE_DAY_MIN_SECONDS {
                 ymd_to_days(date)
             } else {
                 None
