@@ -88,7 +88,30 @@ pub(crate) struct AbsLibraryItem {
     id: String,
     library_id: &'static str,
     media_type: &'static str,
+    // BookPlayer's current ABS integration reads these summary values from
+    // the item itself before opening the full nested media object.
+    kind: &'static str,
+    title: String,
+    author_name: Option<String>,
+    narrator_name: Option<String>,
+    duration: f64,
+    subtitle: Option<String>,
+    series: Vec<AbsSeriesReference>,
+    added_at: Option<u64>,
+    updated_at: Option<u64>,
+    cover_path: Option<String>,
+    progress: Option<f64>,
+    current_time: Option<f64>,
+    is_finished: Option<bool>,
     media: AbsMedia,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsSeriesReference {
+    id: String,
+    name: String,
+    sequence: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,10 +292,53 @@ fn chapters(book: &Book) -> Vec<AbsChapter> {
 }
 
 fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> AbsLibraryItem {
+    let duration = book_duration(book);
+    let cover_path = book
+        .cover_art_url
+        .as_ref()
+        .map(|_| format!("/api/books/{}/cover?token={media_token}", book.id));
+    let series = book
+        .metadata
+        .series
+        .as_ref()
+        .map(|name| {
+            vec![AbsSeriesReference {
+                id: stable_id(&format!("abs-series:{name}")),
+                name: name.clone(),
+                sequence: book.metadata.series_position.clone(),
+            }]
+        })
+        .unwrap_or_default();
+    let (progress, current_time, is_finished) = book
+        .progress
+        .as_ref()
+        .map(|saved| {
+            (
+                saved.percent_complete.map(|percent| percent / 100.0),
+                Some(saved.book_position_seconds),
+                Some(matches!(saved.status, BookProgressStatus::Finished)),
+            )
+        })
+        .unwrap_or((None, None, None));
     AbsLibraryItem {
         id: book.id.clone(),
         library_id: ABS_LIBRARY_ID,
         media_type: "book",
+        kind: "book",
+        title: book.title.clone(),
+        author_name: book.author.clone(),
+        narrator_name: book.narrator.clone(),
+        duration,
+        subtitle: book.metadata.subtitle.clone(),
+        series,
+        // OperaLibre does not currently retain library-item creation/update
+        // timestamps, so leave these optional ABS fields honest.
+        added_at: None,
+        updated_at: None,
+        cover_path: cover_path.clone(),
+        progress,
+        current_time,
+        is_finished,
         media: AbsMedia {
             id: book.id.clone(),
             metadata: AbsMetadata {
@@ -284,11 +350,8 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
                 asin: book.asin.clone(),
                 genres: book.genres.clone(),
             },
-            cover_path: book
-                .cover_art_url
-                .as_ref()
-                .map(|_| format!("/api/books/{}/cover?token={media_token}", book.id)),
-            duration: book_duration(book),
+            cover_path,
+            duration,
             num_tracks: book.tracks.len(),
             audio_files: if include_audio_files {
                 audio_files(book, media_token)
@@ -426,12 +489,7 @@ pub(crate) async fn abs_library_items(
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
-    let library = state.library.read().await;
-    let visible: Vec<&Book> = library
-        .books
-        .iter()
-        .filter(|book| can_access_book(&auth, &book.id))
-        .collect();
+    let visible = books_with_progress(&state, &auth).await?;
     let total = visible.len();
     let limit = query
         .limit
@@ -445,7 +503,7 @@ pub(crate) async fn abs_library_items(
         .take(limit)
         // The listing carries no audio files: a client fetches the item or
         // opens a playback session when it actually wants to play something.
-        .map(|book| library_item(book, &media_token, false))
+        .map(|book| library_item(&book, &media_token, false))
         .collect();
     Ok(Json(AbsLibraryItemsResponse {
         results,
@@ -463,14 +521,18 @@ pub(crate) async fn abs_library_item(
     Path(item_id): Path<String>,
 ) -> Result<Json<AbsLibraryItem>, ApiError> {
     require_book_access(&auth, &item_id)?;
-    let library = state.library.read().await;
-    let book = library
-        .books
-        .iter()
-        .find(|book| book.id == item_id)
-        .ok_or(ApiError::not_found("Library item not found."))?;
+    let book = {
+        let library = state.library.read().await;
+        library
+            .books
+            .iter()
+            .find(|book| book.id == item_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Library item not found."))?
+    };
+    let book = book_with_progress(&state, &auth, book).await?;
     Ok(Json(library_item(
-        book,
+        &book,
         &media_token_for_session(&session.0),
         true,
     )))

@@ -1741,6 +1741,8 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
         .await
         .json();
     assert_eq!(items["total"], 2);
+    assert_eq!(items["results"][0]["kind"], "book");
+    assert_eq!(items["results"][0]["title"], "Book 00");
     let item_id = items["results"][0]["id"].as_str().unwrap().to_string();
 
     let item = server
@@ -1748,6 +1750,9 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
         .await
         .json();
     assert_eq!(item["mediaType"], "book");
+    assert_eq!(item["kind"], "book");
+    assert_eq!(item["title"], "Book 00");
+    assert_eq!(item["duration"], 20.0);
     let files = item["media"]["audioFiles"].as_array().unwrap();
     assert_eq!(files.len(), 2);
     assert_eq!(files[0]["title"], "01 Track.wav");
@@ -1830,6 +1835,25 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .json();
     assert!((synced["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert!((synced["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+
+    let items = server
+        .get(
+            &format!("/abs/api/libraries/{}/items", super::ABS_LIBRARY_ID),
+            &token,
+        )
+        .await
+        .json();
+    let listed = &items["results"][0];
+    assert!((listed["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+    assert!((listed["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(listed["isFinished"], true);
+
+    let detailed = server
+        .get(&format!("/abs/api/items/{book}"), &token)
+        .await
+        .json();
+    assert!((detailed["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
+    assert!((detailed["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     let before_completion_update = synced["lastUpdate"].as_u64().unwrap();
 
     let session = server
