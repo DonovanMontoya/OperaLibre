@@ -711,13 +711,23 @@ pub(crate) async fn load_library_identities(path: &FsPath) -> anyhow::Result<Lib
             // load: a migration whose promised rollback does not exist is worse
             // than not migrating.
             let backup = path.with_extension("json.pre-v1");
-            if !backup.exists() {
-                fs::write(&backup, &contents).await.map_err(|error| {
-                    anyhow::anyhow!(
-                        "could not back up {} before migrating identities: {error}",
-                        path.display()
-                    )
-                })?;
+            let valid_backup = match fs::read_to_string(&backup).await {
+                Ok(existing) => {
+                    parse_library_identities(&existing).is_ok_and(|loaded| loaded.migrated)
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
+            };
+            if !valid_backup {
+                write_bytes_atomic(&backup, contents.as_bytes())
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "could not back up {} before migrating identities: {}",
+                            path.display(),
+                            error.message
+                        )
+                    })?;
             }
             Ok(store)
         }

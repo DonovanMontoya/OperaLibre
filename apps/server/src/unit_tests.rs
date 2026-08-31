@@ -2697,6 +2697,36 @@ fn legacy_identity_files_migrate_without_changing_ids() {
     assert_eq!(round_tripped.store.books[0].book_id, "0123456789abcdef");
 }
 
+#[tokio::test]
+async fn legacy_identity_migration_creates_and_repairs_its_backup() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("library-identities.json");
+    let backup = root.path().join("library-identities.json.pre-v1");
+    let legacy = serde_json::json!({
+        "books": [{
+            "fingerprint": "abc123",
+            "bookId": "0123456789abcdef",
+            "paths": ["Dune"],
+            "tracks": []
+        }]
+    })
+    .to_string();
+    std::fs::write(&path, &legacy).unwrap();
+
+    super::load_library_identities(&path).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
+
+    std::fs::write(&backup, "{truncated").unwrap();
+    super::load_library_identities(&path).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
+    assert!(
+        std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+    );
+}
+
 /// The shrink gate has no baseline until a scan commits one, so without help a
 /// migrated store treats the upgrade scan as a first scan and commits whatever
 /// it finds. That is the one scan where a silently partial walk is most costly:
