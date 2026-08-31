@@ -190,26 +190,31 @@ function motionDelay(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, reducedMotionQuery?.matches ? 0 : milliseconds));
 }
 
-function readMatchSave(): { board: MatchBoard; score: number } {
+function readMatchSave(): { board: MatchBoard; score: number; bestCascade: number } {
   try {
-    const stored = JSON.parse(localStorage.getItem(MATCH_SAVE_KEY) ?? "null") as { board?: unknown; score?: unknown } | null;
+    const stored = JSON.parse(localStorage.getItem(MATCH_SAVE_KEY) ?? "null") as { board?: unknown; score?: unknown; bestCascade?: unknown } | null;
     const board = stored?.board;
     const validBoard = Array.isArray(board) && board.length === MATCH_SIZE &&
       board.every((row) => Array.isArray(row) && row.length === MATCH_SIZE &&
         row.every((cell) => Number.isInteger(cell) && cell >= 0 && cell < MATCH_KINDS));
+    const bestCascade = typeof stored?.bestCascade === "number" && Number.isFinite(stored.bestCascade) && stored.bestCascade > 0 ? Math.floor(stored.bestCascade) : 0;
     if (validBoard) {
       const score = typeof stored?.score === "number" && Number.isFinite(stored.score) && stored.score > 0 ? Math.floor(stored.score) : 0;
       // A restored board with no legal swap would strand the player; deal a
       // fresh board but let them keep their run.
-      return { board: hasLegalMove(board as MatchBoard) ? (board as MatchBoard) : makeMatchBoard(), score };
+      return { board: hasLegalMove(board as MatchBoard) ? (board as MatchBoard) : makeMatchBoard(), score, bestCascade };
     }
+    // The record survives even a corrupted board — it's an all-time
+    // achievement, not part of the in-progress run.
+    return { board: makeMatchBoard(), score: 0, bestCascade };
   } catch { /* A fresh board is always safe. */ }
-  return { board: makeMatchBoard(), score: 0 };
+  return { board: makeMatchBoard(), score: 0, bestCascade: 0 };
 }
 
 function ChapterMatch() {
   const [board, setBoard] = useState<MatchBoard>(() => readMatchSave().board);
   const [score, setScore] = useState(() => readMatchSave().score);
+  const [bestCascade, setBestCascade] = useState(() => readMatchSave().bestCascade);
   const [selected, setSelected] = useState<MatchCell | null>(null);
   const [message, setMessage] = useState("Tap two neighboring symbols to make a line of three.");
   const [busy, setBusy] = useState(false);
@@ -254,9 +259,9 @@ function ChapterMatch() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(MATCH_SAVE_KEY, JSON.stringify({ board, score }));
+      localStorage.setItem(MATCH_SAVE_KEY, JSON.stringify({ board, score, bestCascade }));
     } catch { /* Keep playing without persistence when storage is unavailable. */ }
-  }, [board, score]);
+  }, [board, score, bestCascade]);
   useEffect(() => () => { actionVersion.current += 1; }, []);
 
   function announce(nextMessage: string) {
@@ -295,6 +300,12 @@ function ChapterMatch() {
       setFalling(new Set());
     }
 
+    // Decide from the value captured for this move, rather than from a state
+    // updater React may defer until the next render. A move stays busy until
+    // its cascade resolves, so no concurrent move can make this stale.
+    const isNewRecord = cascades > bestCascade;
+    if (isNewRecord) setBestCascade(cascades);
+
     if (!hasLegalMove(nextBoard)) {
       // Cascade refills can strand the board; reshuffle so endless play
       // stays endless, and keep the score.
@@ -302,6 +313,9 @@ function ChapterMatch() {
       setBoard(makeMatchBoard());
       setBoardEpoch((value) => value + 1);
       announce("No moves remained — a fresh page is turned.");
+    } else if (isNewRecord && cascades > 1) {
+      haptic("heavy");
+      announce(`New record — a ${cascades} chapter cascade!`);
     } else {
       announce(cascades > 1 ? `A ${cascades} chapter cascade!` : "Chapter cleared.");
     }
@@ -397,6 +411,7 @@ function ChapterMatch() {
       <div><span className="section-label">Endless play</span><h2>Chapter Match</h2></div>
       <button className="game-reset" type="button" onClick={reset} aria-label="Reset Chapter Match"><RotateCcw size={16} /></button>
     </div>
+    <div className="match-record"><span>Best cascade</span><strong>{bestCascade}</strong></div>
     <div className="match-score"><span>{busy ? "Resolving" : "Score"}</span><strong className={scorePulse ? "score-bump" : ""} key={scorePulse}>{score.toLocaleString()}</strong></div>
     <div className="match-board-frame"><div className={`match-board ${busy ? "busy" : ""} ${arriving ? "arriving" : ""}`} role="grid" aria-label="Matching board" aria-busy={busy}>
       {board.map((row, rowIndex) => row.map((kind, colIndex) => {
