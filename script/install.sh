@@ -108,9 +108,12 @@ if [ -n "$LIBATION_PATH" ]; then
 fi
 
 # The script is normally piped into sh, so stdin is the script itself. Prompts
-# and answers use the terminal directly when one is available.
+# and answers use the terminal directly when one is available. `-r`/`-w` on
+# /dev/tty can pass in a session with no controlling terminal (CI, or a
+# non-interactive ssh command), where the first prompt would then die opening
+# it — so probe by actually opening the device.
 INTERACTIVE=0
-if [ "$ASSUME_YES" -eq 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+if [ "$ASSUME_YES" -eq 0 ] && ( : </dev/tty ) 2>/dev/null && ( : >/dev/tty ) 2>/dev/null; then
   INTERACTIVE=1
 fi
 
@@ -250,8 +253,11 @@ if [ -z "$VERSION" ]; then
   [ -n "$VERSION" ] || fail "Could not read the newest release version from GitHub."
 fi
 
+# Download URLs live under the tag exactly as GitHub reports it (which may
+# carry a v prefix); the stripped form is only for display and package names.
+RELEASE_TAG=$VERSION
 VERSION=${VERSION#v}
-BASE_URL="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+BASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
 
 say "Release: ${VERSION}"
 say ""
@@ -426,9 +432,16 @@ mkdir -p audiobooks data
 chmod 700 data 2>/dev/null || true
 
 pid_file="data/operalibre-server.pid"
-if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-  echo "OperaLibre is already running (process $(cat "$pid_file"))."
-  exit 0
+if [ -f "$pid_file" ]; then
+  pid=$(cat "$pid_file")
+  # A PID left behind by a crash can be recycled by the OS, so only treat it
+  # as running when it is actually this installation's server.
+  case "$(ps -p "$pid" -o args= 2>/dev/null)" in
+    *operalibre-server*)
+      echo "OperaLibre is already running (process ${pid})."
+      exit 0
+      ;;
+  esac
 fi
 
 touch data/server.log
@@ -452,20 +465,26 @@ if [ ! -f "$pid_file" ]; then
 fi
 
 pid=$(cat "$pid_file")
+# A PID left behind by a crash can be recycled by the OS. Never signal a
+# process that is not this installation's server.
+case "$(ps -p "$pid" -o args= 2>/dev/null)" in
+  *operalibre-server*) ;;
+  *)
+    echo "OperaLibre is not running."
+    rm -f "$pid_file"
+    exit 0
+    ;;
+esac
+kill "$pid" 2>/dev/null || true
+waited=0
+while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 20 ]; do
+  sleep 1
+  waited=$((waited + 1))
+done
 if kill -0 "$pid" 2>/dev/null; then
-  kill "$pid" 2>/dev/null || true
-  waited=0
-  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 20 ]; do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -9 "$pid" 2>/dev/null || true
-  fi
-  echo "OperaLibre stopped."
-else
-  echo "OperaLibre is not running."
+  kill -9 "$pid" 2>/dev/null || true
 fi
+echo "OperaLibre stopped."
 rm -f "$pid_file"
 STOP_HELPER
 
