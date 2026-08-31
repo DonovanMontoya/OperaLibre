@@ -27,6 +27,17 @@ test("matched Audible descriptions enrich the corresponding local book only", ()
   assert.equal(enriched[1].description, null);
 });
 
+test("catalog descriptions cannot reconstruct HTML from encoded or malformed markup", () => {
+  for (const description of [
+    "&lt;scrip&lt;script&gt;ignored&lt;/script&gt;t&gt;alert(1)&lt;/script&gt;",
+    "&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;"
+  ]) {
+    const catalog = { ...catalogBook, description };
+    const [enriched] = enrichBooksFromLibation([book], [catalog]);
+    assert.doesNotMatch(enriched.description ?? "", /[<>]/);
+  }
+});
+
 test("a real tag or manual description wins over catalog metadata", () => {
   const manual = { ...book, description: "A hand-edited description." };
   assert.equal(enrichBooksFromLibation([manual], [catalogBook])[0], manual);
