@@ -165,6 +165,8 @@ pub(crate) fn build_router(
             put(update_libation_approval),
         )
         .route("/api/me/progress-sharing", put(update_progress_sharing))
+        .route("/api/activity/finishes", get(finish_feed))
+        .route("/api/activity/finishes/seen", post(mark_finish_feed_seen))
         .route("/api/books", get(list_books))
         .route(
             "/api/library/faststart",

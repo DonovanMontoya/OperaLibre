@@ -10089,3 +10089,122 @@ html.native-app .recent-row {
     display: none;
   }
 }
+
+/* Shared reading feed — the bell in the library header, its badge, and the
+   panel it opens. Modelled on .user-menu, which sits beside it. */
+/* Deliberately not a positioning context: the library pane is only ~380px wide
+   and clips its overflow, so a panel hung off this button — which sits in the
+   middle of the header row — runs off one edge or the other whichever side it
+   is anchored to. Leaving this static lets the panel position against the pane
+   itself and span it. */
+.finish-feed-wrap {
+  position: static;
+}
+
+.finish-feed-button {
+  position: relative;
+}
+
+.finish-feed-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--oxblood);
+  color: var(--paper);
+  font: 600 0.62rem/15px "Inter", system-ui, sans-serif;
+  text-align: center;
+}
+
+.finish-feed-panel {
+  position: absolute;
+  /* Clears the header row the bell sits in. Anchored to .library-pane rather
+     than to the button — see .finish-feed-wrap. */
+  top: 84px;
+  left: 1rem;
+  right: 1rem;
+  z-index: 30;
+  background: rgba(255, 250, 235, 0.98);
+  border: 1px solid rgba(26, 20, 16, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 18px 36px rgba(26, 20, 16, 0.18);
+  padding: 0.5rem;
+}
+
+.finish-feed-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0.15rem 0.35rem 0.4rem;
+  border-bottom: 1px solid rgba(26, 20, 16, 0.1);
+}
+
+.finish-feed-panel header strong {
+  font-family: "Fraunces", serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.finish-feed-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0 0;
+  /* Long enough to be worth scrolling, short enough not to cover the shelf. */
+  max-height: min(340px, 50vh);
+  overflow-y: auto;
+}
+
+.finish-feed-panel li button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 0.4rem 0.35rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.finish-feed-panel li button:hover {
+  background: rgba(26, 20, 16, 0.06);
+}
+
+.finish-feed-text {
+  font: 0.85rem/1.35 "Fraunces", serif;
+  color: var(--ink-soft);
+}
+
+/* The one unread marker: a weight change, not a second colour. */
+.finish-feed-panel li.unseen .finish-feed-text {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.finish-feed-when {
+  flex: 0 0 auto;
+  font: 0.7rem/1 "Inter", system-ui, sans-serif;
+  color: var(--ink-faded);
+  white-space: nowrap;
+}
+
+.finish-feed-empty {
+  margin: 0;
+  padding: 0.6rem 0.35rem 0.35rem;
+  font: italic 0.85rem/1.4 "Fraunces", serif;
+  color: var(--ink-faded);
+}
+
+/* The two finish settings sit under the sharing switch they depend on. */
+.settings-toggle-nested {
+  margin-top: 0.85rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid rgba(26, 20, 16, 0.12);
+}

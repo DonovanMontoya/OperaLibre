@@ -717,8 +717,8 @@ pub(crate) fn write_users_rows(
             "INSERT INTO users (
                  id, username, password_hash, is_admin, is_owner,
                  can_approve_libation_requests, libation_access, share_progress,
-                 created_at, restricted
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 announce_finishes, notify_finishes, created_at, restricted
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 user.id,
                 user.username,
@@ -730,6 +730,8 @@ pub(crate) fn write_users_rows(
                     .unwrap_or_default()
                     .trim_matches('"'),
                 user.share_progress,
+                user.announce_finishes,
+                user.notify_finishes,
                 user.created_at,
                 user.allowed_book_ids.is_some(),
             ],
@@ -915,6 +917,8 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
             libation_access: serde_json::from_str(&format!("\"{libation_access}\""))
                 .unwrap_or_default(),
             share_progress: row.get("share_progress")?,
+            announce_finishes: row.get("announce_finishes")?,
+            notify_finishes: row.get("notify_finishes")?,
             created_at: row.get("created_at")?,
         })
     })?;

@@ -7,6 +7,7 @@ import type {
   BookMetadataUpdate,
   BookProgress,
   FaststartStatus,
+  FinishFeed,
   JobCreated,
   JobStatus,
   LibationAccess,
@@ -665,12 +666,51 @@ export async function updateUserBookAccess(userId: string, allowedBookIds: strin
  * from other listeners and hides theirs from this one, so the library must be
  * refetched after a change.
  */
-export async function updateProgressSharing(shareProgress: boolean) {
+export async function updateProgressSharing(
+  shareProgress: boolean,
+  finishes?: { announceFinishes?: boolean; notifyFinishes?: boolean }
+) {
   return request<AuthUser>("/api/me/progress-sharing", {
     method: "PUT",
-    body: JSON.stringify({ shareProgress })
+    body: JSON.stringify({ shareProgress, ...finishes })
   });
 }
+
+/**
+ * The shared "who finished what" feed.
+ *
+ * Backends with no such notion — Jellyfin, demo mode, a device-only library,
+ * an OperaLibre server released before the feed — answer with an empty one
+ * rather than an error, so the bell simply never appears.
+ */
+export async function getFinishFeed(): Promise<FinishFeed> {
+  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+    return EMPTY_FINISH_FEED;
+  }
+  try {
+    return await request<FinishFeed>("/api/activity/finishes");
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return EMPTY_FINISH_FEED;
+    throw error;
+  }
+}
+
+export async function markFinishFeedSeen(eventId: string): Promise<FinishFeed> {
+  if (isDemoMode() || isLocalMode() || getServerType() === "jellyfin") {
+    return EMPTY_FINISH_FEED;
+  }
+  try {
+    return await request<FinishFeed>("/api/activity/finishes/seen", {
+      method: "POST",
+      body: JSON.stringify({ eventId })
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return EMPTY_FINISH_FEED;
+    throw error;
+  }
+}
+
+const EMPTY_FINISH_FEED: FinishFeed = { entries: [], unseenCount: 0, latestId: null };
 
 export async function updateUserLibationAccess(userId: string, libationAccess: LibationAccess) {
   return request<AuthUser>(`/api/users/${encodeURIComponent(userId)}/libation-access`, {

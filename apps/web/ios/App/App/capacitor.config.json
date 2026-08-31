@@ -18,6 +18,7 @@
 		"CAPBrowserPlugin",
 		"FilesystemPlugin",
 		"HapticsPlugin",
+		"LocalNotificationsPlugin",
 		"ScreenOrientationPlugin",
 		"StatusBarPlugin",
 		"FilePickerPlugin"

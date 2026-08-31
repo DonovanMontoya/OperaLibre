@@ -18,7 +18,7 @@ use crate::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Bumped when the schema changes in a way `migrate` has to react to.
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS users (
     can_approve_libation_requests INTEGER NOT NULL,
     libation_access               TEXT NOT NULL,
     share_progress                INTEGER NOT NULL,
+    announce_finishes             INTEGER NOT NULL DEFAULT 1,
+    notify_finishes               INTEGER NOT NULL DEFAULT 1,
     created_at                    TEXT NOT NULL,
     -- NULL means unrestricted. An empty book_access set for a user with
     -- restrictions is meaningfully different from no restrictions at all,
@@ -131,7 +133,15 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
                 "This data directory was written by a newer OperaLibre (schema {version}, this build understands {SCHEMA_VERSION}). Upgrade the server or restore a backup."
             );
         }
-        Some(_) => {}
+        Some(version) => {
+            if version < 2 {
+                connection.execute_batch(
+                    "ALTER TABLE users ADD COLUMN announce_finishes INTEGER NOT NULL DEFAULT 1;
+                     ALTER TABLE users ADD COLUMN notify_finishes INTEGER NOT NULL DEFAULT 1;
+                     UPDATE schema_version SET version = 2;",
+                )?;
+            }
+        }
     }
     Ok(connection)
 }
