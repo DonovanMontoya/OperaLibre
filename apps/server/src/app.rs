@@ -126,6 +126,17 @@ pub(crate) fn build_router(
             "/abs/api/libraries/{library_id}/items",
             get(abs_library_items),
         )
+        .route(
+            "/abs/api/libraries/{library_id}/filterdata",
+            get(abs_filter_data),
+        )
+        .route("/abs/api/libraries/{library_id}/search", get(abs_search))
+        .route(
+            "/abs/api/libraries/{library_id}/collections",
+            get(abs_collections),
+        )
+        .route("/abs/api/collections/{collection_id}", get(abs_collection))
+        .route("/abs/api/authors/{author_id}", get(abs_author))
         .route("/abs/api/items/{item_id}", get(abs_library_item))
         .route("/abs/api/items/{item_id}/cover", get(abs_cover))
         // Some clients concatenate content URLs with the configured `/abs`
@@ -288,6 +299,7 @@ pub(crate) fn build_router(
             "/api/books/{book_id}/download",
             get(download_book).delete(delete_downloaded_book),
         )
+        .route("/abs/api/items/{item_id}/download", get(download_book))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
