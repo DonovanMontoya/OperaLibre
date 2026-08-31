@@ -300,12 +300,11 @@ function ChapterMatch() {
       setFalling(new Set());
     }
 
-    let isNewRecord = false;
-    setBestCascade((value) => {
-      if (cascades <= value) return value;
-      isNewRecord = true;
-      return cascades;
-    });
+    // Decide from the value captured for this move, rather than from a state
+    // updater React may defer until the next render. A move stays busy until
+    // its cascade resolves, so no concurrent move can make this stale.
+    const isNewRecord = cascades > bestCascade;
+    if (isNewRecord) setBestCascade(cascades);
 
     if (!hasLegalMove(nextBoard)) {
       // Cascade refills can strand the board; reshuffle so endless play
