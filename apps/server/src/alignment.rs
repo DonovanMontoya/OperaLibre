@@ -881,6 +881,18 @@ fn normalize_label_text(value: &str) -> String {
     out.trim().to_string()
 }
 
+/// "Chapter 000" is chapter zero, not a parse failure. A digit run too long
+/// for `u32` is no chapter number at all — timestamp- or ISBN-like digits
+/// must not read as chapter zero, or they would out-score a genuine prologue
+/// in the exact-number match.
+fn parse_chapter_number(digits: &str) -> Option<u32> {
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        return Some(0);
+    }
+    significant.parse::<u32>().ok()
+}
+
 pub fn parse_label(value: &str) -> ParsedLabel {
     let lower = value.to_ascii_lowercase();
     let mut number = None;
@@ -888,29 +900,10 @@ pub fn parse_label(value: &str) -> ParsedLabel {
 
     if let Some(found) = lower.find("chapter ") {
         let after = &value[found + "chapter ".len()..];
-        let digits: String = after
-            .trim_start_matches('0')
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        let has_digits = after.chars().any(|c| c.is_ascii_digit())
-            && after
-                .chars()
-                .take_while(|c| *c == '0' || c.is_ascii_digit())
-                .count()
-                > 0;
-        if has_digits {
-            number = if digits.is_empty() {
-                Some(0)
-            } else {
-                digits.parse::<u32>().ok()
-            };
-            let consumed = after
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .map(char::len_utf8)
-                .sum::<usize>();
-            remainder = after[consumed..]
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            number = parse_chapter_number(&digits);
+            remainder = after[digits.len()..]
                 .trim_start()
                 .trim_start_matches(['.', ':', ')', '-', '–', '—'])
                 .trim_start()
@@ -925,11 +918,7 @@ pub fn parse_label(value: &str) -> ParsedLabel {
                 .strip_prefix(['.', ':', ')', '-', '–', '—'])
                 .map(str::trim_start)
             {
-                number = digits
-                    .trim_start_matches('0')
-                    .parse::<u32>()
-                    .ok()
-                    .or(Some(0));
+                number = parse_chapter_number(&digits);
                 remainder = rest.to_string();
             }
         }

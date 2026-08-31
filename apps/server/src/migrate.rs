@@ -279,10 +279,8 @@ fn migration_completed(database_path: &FsPath) -> anyhow::Result<bool> {
 /// Remove a database and its SQLite sidecar files. These paths are generated
 /// from the one explicit database target, never user input.
 fn remove_database_files(path: &FsPath) {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut candidate = path.as_os_str().to_os_string();
-        candidate.push(suffix);
-        let _ = std::fs::remove_file(PathBuf::from(candidate));
+    for candidate in db::sqlite_related_paths(path) {
+        let _ = std::fs::remove_file(candidate);
     }
 }
 

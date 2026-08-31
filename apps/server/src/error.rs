@@ -1,4 +1,4 @@
-//! Extracted from main.rs.
+//! `ApiError`: the status-and-message error every handler returns.
 
 use crate::*;
 
