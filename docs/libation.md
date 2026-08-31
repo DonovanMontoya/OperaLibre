@@ -17,6 +17,8 @@ This integration is entirely optional. If you don't configure it, the relevant U
 
 ## Set it up
 
+The [one-line installer](installing-a-release.md#one-line-install-on-macos-and-linux) can do steps 1 and 2 of the prerequisites for you: it finds an existing Libation or downloads the official release into a `libation` folder inside your OperaLibre installation, then fills in `libation_cli_path`. Continue from step 2 below afterwards.
+
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
 2. Sign in to OperaLibre as an administrator, open **Audible**, and choose **Add account**.
 3. Enter a friendly label, Audible email, and marketplace. Use a short recognizable label such as **Dad** or **UK**; OperaLibre uses it on the account's book badges instead of exposing the full email address. Complete Amazon's sign-in in the external browser, then paste the final browser URL back into OperaLibre. The installed iOS and Android apps use the device's secure browser view; the Audible password is entered only on Amazon's page.

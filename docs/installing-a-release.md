@@ -7,6 +7,76 @@ nav_order: 2
 
 This is the easiest way to use OperaLibre. You do not need Rust, Node.js, Xcode, or programming experience.
 
+## One-line install on macOS and Linux
+
+Open the Terminal app and paste this:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
+```
+
+The installer walks you through the whole setup:
+
+1. It detects whether you are on an Intel or Apple Silicon Mac, or on Intel/AMD or ARM Linux, and picks the matching combined package from the newest release.
+2. It asks where to install OperaLibre. The default is a new `OperaLibre` folder in your home folder.
+3. It asks which folder holds your audiobooks. Press Return to use the folder inside the installation, or type the path of a library you already have.
+4. It asks whether OperaLibre should be reachable only from this computer (`local`) or from phones and other devices on your trusted home network (`lan`).
+5. It downloads the package, checks it against the published `SHA256SUMS.txt` digest, and stops without installing anything if the digest does not match.
+6. It offers to set up the optional Audible import. Answer `n` to skip it — the feature stays hidden and can be turned on later.
+7. It writes your answers into `server.config`, clears the macOS download quarantine, and starts the server in the background.
+
+When it finishes, open the address it prints — usually <http://localhost:4000> — and create the administrator account.
+
+Running the same command again updates an existing installation in place. It stops the running server, replaces the program files, and keeps your `data` folder, `audiobooks` folder, and `server.config` settings.
+
+Useful options, passed after `sh -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh \
+  | sh -s -- --dir ~/OperaLibre --library ~/Audiobooks --mode lan --yes
+```
+
+| Option | What it does |
+| --- | --- |
+| `--dir PATH` | Install into `PATH` instead of `~/OperaLibre` |
+| `--library PATH` | Use `PATH` as the audiobook library folder |
+| `--version VERSION` | Install a specific release, such as `0.3.4` |
+| `--mode local` or `--mode lan` | Choose network access without being asked |
+| `--server-only` | Install the API and media server without the bundled web app |
+| `--libation` | Set up the Audible import without being asked |
+| `--libation-path PATH` | Use the Libation CLI at `PATH` |
+| `--no-libation` | Skip the Audible import question entirely |
+| `--yes` | Accept every default and never ask a question |
+| `--no-start` | Install without starting OperaLibre |
+| `--help` | List all options |
+
+### Setting up the Audible import during install
+
+If you say yes to the Audible import, the installer handles [Libation](https://github.com/rmcrackan/Libation) for you:
+
+- It first looks for a Libation you already have — on `PATH`, in `/Applications/Libation.app` on macOS, or in `/usr/lib/libation` or `/opt/Libation` on Linux — and offers to use it.
+- If there is none, it offers to download the newest official Libation release for your computer and unpack it into a `libation` folder inside your OperaLibre installation. Nothing is installed system-wide and no administrator password is needed, so removing it later means deleting that one folder.
+- You can also type the path of a Libation command-line program yourself, or press Return to skip.
+
+The chosen program is written to `libation_cli_path` in `server.config`. After the server starts, sign in as the administrator, open **Audible**, and choose **Add account**; your Audible password is only ever entered on Amazon's own sign-in page. See [Libation / Audible Import](libation.md) for the rest of the workflow.
+
+Running the installer again never disturbs an Audible import you already configured.
+
+### Headless servers
+
+`--server-only` installs the server package instead of the combined one, for a machine that serves the frontend separately (or not at all):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh \
+  | sh -s -- --server-only --dir /srv/operalibre --library /srv/audiobooks --mode lan --yes
+```
+
+That package has no `Open`/`Stop` launcher, so the installer writes two helper scripts beside the server — `start-operalibre.sh` runs it in the background and records its process ID in `data/operalibre-server.pid`, and `stop-operalibre.sh` stops it. `web_dist_dir` stays blank; point a separately hosted frontend at the API and list its address in `allowed_origins`, or set `web_dist_dir` to a folder holding the frontend release package. To run it as a system service instead, see [Deployment](deployment.md) and the `operalibre.service` unit in the repository.
+
+Re-running the installer on an existing folder keeps whichever package is already there. Installing the other kind requires a different `--dir`.
+
+Windows is not covered by the installer. Follow the manual steps below, which also work on macOS and Linux if you would rather download the package yourself.
+
 ## 1. Download the complete package
 
 Open the [OperaLibre releases page](https://github.com/DonovanMontoya/OperaLibre/releases), choose the newest release, and expand **Assets** if the downloads are hidden.
@@ -133,6 +203,8 @@ Back up these folders from the extracted combined package:
 If `library_root` points somewhere else, back up that audiobook folder instead.
 
 ## Update to a newer release
+
+On macOS and Linux, running the one-line installer again is the simplest update. It stops the server, installs the newest release, and preserves `data`, `audiobooks`, and `server.config`.
 
 OperaLibre checks the latest GitHub release when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
 
