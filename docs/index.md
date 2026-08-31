@@ -10,6 +10,16 @@ A private, self-hosted audiobook streaming server with an installable web reader
 
 OperaLibre can also run as a headless audiobook server. The included React/Vite app is the reference frontend, while the Rust server exposes an HTTP API for custom web, mobile, desktop, or native clients.
 
+## Install in one command
+
+On macOS and Linux, this downloads the newest release for your computer, verifies its published SHA-256 digest, asks a few setup questions, and starts the server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
+```
+
+Windows and manual installs are covered in [Install a Release](installing-a-release.md).
+
 ## Web, Android, and iPhone apps
 
 <p align="center">

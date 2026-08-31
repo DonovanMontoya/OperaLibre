@@ -1,245 +1,101 @@
 # OperaLibre
 
-A private audiobook streaming app with a Rust media server and native Android and iOS frontends. The current build scans a folder of audiobook files, streams tracks with HTTP range requests, and saves playback progress.
+A private, self-hosted audiobook server with web, iPhone, Android, and macOS apps. Point it at a folder of audiobook files and stream them to any of your devices, with per-reader accounts, synced progress, and offline downloads.
 
-OperaLibre is also designed to work as a headless audiobook server. The included React/Vite web app is the reference frontend, but the Rust server exposes an HTTP API that other web, mobile, desktop, or native clients can build against.
-
-If you just want to use it, start with the plain-language [release installation guide](docs/installing-a-release.md), then see [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, Jellyfin, and optional Audible imports.
-
-## Spotlight: import your Audible library
-
-OperaLibre integrates with [Libation](https://github.com/rmcrackan/Libation) so your Audible purchases become first-class citizens of your own library — entirely optional, and hidden until you configure it.
-
-- **Connect Audible accounts from the app.** Administrators add server-wide Audible accounts using Libation's external-browser login; passwords are only ever entered on Amazon's page.
-- **Browse before you liberate.** The full Audible catalog is searchable and filterable by account, with duplicate ownership across accounts kept visible via friendly labels like **Dad** or **UK**.
-- **Download with one click.** Liberating a title runs as a background job, lands in `library_root`, and triggers an automatic rescan — the book simply appears, ready to stream or take offline.
-- **Approval workflow.** Each reader defaults to approval-required downloads; requests are decided by an administrator under **Administration → Requests**.
-- **Rich metadata.** Libation's raw Audible metadata sidecars fill in series, genres, contributors, and ASINs even when the audio tags are thin.
-
-Requires a recent Libation CLI on the same machine; see [Libation / Audible Import](docs/libation.md) for setup, or skip ahead to the [configuration summary](#optional-libation--audible-import).
-
-## Download
-
-The [GitHub releases page](https://github.com/DonovanMontoya/OperaLibre/releases) provides:
-
-- **Combined packages** — the easiest option, with a background launcher that starts the server and opens the web app without keeping a Terminal window open
-- **Server packages** — native server binaries for separate or headless deployments
-- **Frontend package** — static web files for an existing OperaLibre or Jellyfin server
-- **Update packages** — platform-specific, digest-verified bundles consumed by the Administration screen of combined and server-only installations
-
-Release builds are provided for Windows x64, Linux x64 and ARM64, and Intel and Apple Silicon Macs. Combined installations notify administrators about new versions; owners can install verified updates from the app. Each user-facing archive includes a `START-HERE.txt` guide.
-
-For step-by-step installation, first launch, adding books, phone access, backups, and updates, see [Install a Release](docs/installing-a-release.md).
-
-## See it in action
+The backend is a Rust `axum` server that exposes a documented HTTP API; the included React web app is the reference frontend, and other web, mobile, or desktop clients can build against the same server.
 
 <p align="center">
   <img src="docs/assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
   <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
 </p>
 
-The same library and playback experience runs in the browser and in the native Android and iPhone apps.
+## Features
 
-## License
+- **Your files, your library.** Scans a folder of `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff` files with rich tag, chapter, and cover-art extraction.
+- **A full player.** Seekable streaming, playback speed, sleep timer, 15/30-second skips, and OS-level media controls.
+- **Per-reader accounts.** Each reader gets their own progress, listening stats, reading log, and a durable completion history that survives a book being deleted or replaced.
+- **Readalong.** Read an EPUB, PDF, or text companion beside the audio — with sentence-level sync for EPUBs that highlights the narrated sentence and seeks on click.
+- **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
+- **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
+- **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
+- **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.
+- **Try it instantly.** A self-contained on-device demo works without a server, account, or network connection.
 
-This project is source-available for personal and noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+## Install
 
-Commercial use, resale, paid hosting, or inclusion in a paid product requires a separate commercial license from the copyright holder.
+On macOS and Linux, one command downloads the newest release for your computer, verifies its published SHA-256 digest, sets up your audiobook folder, and starts the server:
 
-## What is included
+```bash
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
+```
 
-- Library scanning for `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff`.
-- Long-file streaming with byte-range support for seeking.
-- Book and track browsing.
-- Embedded cover art extraction and `/api/books/:bookId/cover` serving.
-- Rich tag extraction for album/title, subtitle, author, narrator, publisher, dates, genres, language, description, and raw tag fields.
-- Chapter extraction from M4A/M4B/MP4 chapter tracks or chapter lists, MP3 ID3 `CHAP` frames, and multi-file track boundaries.
-- Readalong file detection and inline reading for `.epub`, `.pdf`, `.txt`, `.html`, and `.htm` companion files stored beside an audiobook.
-- Sentence-level readalong sync for EPUB companions: the reader highlights the sentence being narrated, follows page and chapter changes, and seeks the audio when a sentence is clicked. Sync maps come from `.sync.json` sidecars or are generated server-side with an optional [echogarden](https://github.com/echogarden-project/echogarden) install.
-- Playback position sync.
-- Playback speed controls.
-- 15-second rewind and 30-second forward controls.
-- Sleep timer.
-- Library search and sorting.
-- Per-user listening profiles, streaks, and recent-book statistics.
-- A per-reader reading log: listening sessions with times, durations, speed, and client, rolled up into hour-of-day and weekday patterns, session lengths, real per-book listening time, and abandoned-book detection.
-- Durable completion history. Finishing a book is recorded as an immutable event with a snapshot of the edition, so it survives the audiobook being deleted, re-downloaded, or replaced.
-- Work-level book identity, linking different editions, rips, and ISBNs of the same book so a reading history follows the reader across copies. Uncertain matches are queued for an administrator rather than merged silently.
-- On-device audiobook downloads and offline playback in the native mobile apps.
-- Media Session integration for OS-level playback controls where supported.
-- PWA manifest plus Capacitor Android and iPhone apps that reuse the web frontend.
-- A self-contained on-device demo that works without a server, account, or network connection.
+It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you, without a system-wide install or an administrator password. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
 
-## Build and run locally
+For a headless machine, `--server-only` installs the server without the bundled web app and writes background start/stop helper scripts beside it.
 
-You need Node.js 20+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if you do not already have Apple’s command-line developer tools.
+Windows and manual installs use the release packages below.
+
+## Download
+
+Grab a release from the [GitHub releases page](https://github.com/DonovanMontoya/OperaLibre/releases). Builds are provided for Windows x64, Linux x64/ARM64, and Intel and Apple Silicon Macs:
+
+- **Combined packages** — the easiest option: a background launcher starts the server and opens the web app.
+- **Server packages** — native binaries for headless or separate deployments.
+- **Frontend package** — static web files for an existing OperaLibre or Jellyfin server.
+
+Combined installations notify administrators about new versions, and owners can install verified updates from the app. For step-by-step setup, see [Install a Release](docs/installing-a-release.md), then [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, and Audible imports.
+
+An iPhone TestFlight build is also available: https://testflight.apple.com/join/x69Ffa33
+
+## Build and run from source
+
+You need Node.js 20+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if needed.
 
 ```bash
 npm install
 cp server.config.example server.config
-```
-
-Before starting, edit `server.config` and set `library_root` to the full path of the folder containing your audiobook files. Then run:
-
-```bash
+# edit server.config: set library_root to your audiobook folder
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), make the first administrator account, and pick a book.
+Open [http://localhost:5173](http://localhost:5173), create the first administrator account, and pick a book. For a single-address home setup and keeping the server running after a restart, see [Deployment](docs/deployment.md).
 
-For a home setup that runs from one address after building, run `npm run build`, set `web_dist_dir = apps/web/dist` in `server.config`, then start `./apps/server/target/release/operalibre-server` and open [http://localhost:4000](http://localhost:4000). [Deployment](docs/deployment.md) explains how to keep it running after a restart.
+### Native apps
 
-On another device on your network, use your computer's LAN IP and make sure the server is allowed through the firewall. Install the web app from the mobile browser or use one of the included native mobile apps; step-by-step instructions are in [Using OperaLibre](docs/using-operalibre.md#use-it-on-a-phone-or-tablet).
+Each app packages the same React frontend:
 
-The backend is a Rust `axum` service in `apps/server`. The frontend is a React/Vite app in `apps/web`.
+- **Android** (Capacitor, Android 7+): `npm run build:android` produces a debug APK; open in Android Studio with `npm run android:open -w @operalibre/web` for signing and devices.
+- **iPhone** (Capacitor, iOS 15+): `npm run build:ios` produces a simulator build; open in Xcode with `npm run ios:open -w @operalibre/web` for signing and physical phones. Background spoken-audio playback is configured.
+- **macOS** (AppKit/WebKit host): `./script/build_and_run.sh` builds and launches `dist/OperaLibre.app`.
 
-## macOS app
-
-The macOS app is a lightweight AppKit/WebKit host for the same React frontend. Build and launch it with:
-
-```bash
-./script/build_and_run.sh
-```
-
-The script builds the web frontend and Swift executable, stages `dist/OperaLibre.app`, and launches the app. Start the audiobook server separately with `npm run dev:server`; the app's first screen asks for its URL and remembers the server and sign-in token between launches. Plain HTTP is supported for local-network servers; use HTTPS for remote hostnames.
-
-Use `./script/build_and_run.sh --verify` to build, launch, and confirm the app process started. The script also supports `--debug`, `--logs`, and `--telemetry`.
-
-## Android app
-
-The Android app uses Capacitor 8 to package the same React frontend in a native Android 7+ project. With Android Studio, the Android SDK, and JDK 21 installed, build a debug APK from the repository root with:
-
-```bash
-npm run build:android
-```
-
-The APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. To configure signing, run on an emulator or phone, or create a Play Store bundle, use `npm run android:open -w @operalibre/web` and finish the build in Android Studio.
-
-The app supports plain HTTP for local-network and private-overlay OperaLibre or Jellyfin servers. Use HTTPS for public remote servers.
-
-## iPhone app
-
-The iPhone app uses Capacitor 8 to package the same React frontend in a native iOS 15+ Xcode project. A TestFlight build is also available — enroll here: https://testflight.apple.com/join/x69Ffa33
-
-Build the simulator app from the repository root with:
-
-```bash
-npm run build:ios
-```
-
-This rebuilds the frontend, synchronizes it into `apps/web/ios`, and produces an unsigned simulator build under `dist/ios-derived`. To configure signing and run on a physical iPhone, use `npm run ios:open -w @operalibre/web`, select your development team in Xcode, and choose the connected phone.
-
-The app can connect over plain HTTP to local-network and private-overlay addresses, including Tailscale `100.x` addresses, for OperaLibre or Jellyfin servers. Use HTTPS for public remote servers. Its iOS audio session is configured for spoken-audio background playback so an active audiobook can continue while the app is backgrounded or the screen is locked.
-
-## Jellyfin servers
-
-Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
-
-The client supports Jellyfin audiobook listing, multi-file album grouping, cover art, direct audio streaming, and resume-position synchronization. OperaLibre-specific features such as Libation, reader administration, metadata editing, readalong files, and the reader ledger are hidden while connected to Jellyfin.
+The mobile apps support plain HTTP for local-network and private-overlay servers (including Tailscale `100.x` addresses); use HTTPS for public remote servers.
 
 ## Custom frontends
 
-The server owns library scanning, authentication, metadata extraction, cover art, readalong files, progress sync, downloads, and byte-range audio streaming. Frontends can treat it as a standalone API/media server and implement their own browsing, playback, and device UX.
+The server owns scanning, authentication, metadata, cover art, readalong files, progress sync, downloads, and byte-range streaming — frontends can treat it as a standalone media server. Authenticate with `POST /api/auth/login`, send the session token as a bearer header for JSON requests, and append the scoped media token to media URLs. See [docs/api.md](docs/api.md) for the endpoint list and conventions.
 
-- Use `POST /api/auth/login` to obtain a session token and scoped media token.
-- Send the token as `Authorization: Bearer ...` for JSON API requests.
-- Add the media token as `?token=...` for media URLs used directly by `<audio>`, `<img>`, or download links.
-- Stream audio from the `streamUrl` returned by book detail responses; the server supports HTTP range requests for seeking.
-- See [docs/api.md](docs/api.md) for the current endpoint list and response conventions.
+## Documentation
 
-For production deployments, the simplest setup is single-origin: build the web app with `npm run build` and set `web_dist_dir = apps/web/dist` in `server.config` so the Rust server serves both the frontend and the API (a reverse proxy works too). Cross-origin browser requests are restricted to the official OperaLibre app origins by default. If a custom frontend is served from another origin, add each permitted origin to `allowed_origins` in `server.config`.
+- [Install a Release](docs/installing-a-release.md) — plain-language installation guide
+- [Using OperaLibre](docs/using-operalibre.md) — phones, readers, uploads, readalong, Jellyfin, Audible
+- [Configuration](docs/configuration.md) — every `server.config` option
+- [Library Layout](docs/library-layout.md) — how folders, files, and companions are organized
+- [Users](docs/users.md) — accounts, sessions, and administration
+- [Libation / Audible Import](docs/libation.md) — optional Audible integration setup
+- [Deployment](docs/deployment.md) — running it long-term
+- [API Reference](docs/api.md) — for building custom clients
+- [Troubleshooting](docs/troubleshooting.md)
 
-### Development tools
+## Development
 
-This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control, with [JJ-VSC](https://github.com/jujutsu-vcs/jj-vsc) as the recommended VS Code integration. Clone with `jj` so the workspace is ready for that workflow:
+This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control:
 
 ```bash
 jj git clone https://github.com/DonovanMontoya/OperaLibre.git
 ```
 
-## Server config
+The server lives in `apps/server` (Rust/axum) and the frontend in `apps/web` (React/Vite). After changing the frontend, run `npm run sync:android` or `npm run sync:ios` before rebuilding the native apps.
 
-The server reads `server.config` from the repo root by default. It is a plain `key = value` file:
+## License
 
-```config
-deployment_mode = local
-host =
-port = 4000
-max_upload_gib = 20
-max_book_download_gib = 25
-max_concurrent_book_downloads = 1
-download_temp_dir = data/download-temp
-min_download_free_gib = 2
-allowed_origins =
-library_root = /path/to/your/audiobooks
-data_dir = data
-progress_file = data/progress.json
-users_file = data/users.json
-web_dist_dir =
-
-libation_cli_path =
-libation_files_dir =
-libation_auto_refresh_hours = 24
-libation_reader_refreshes_per_hour = 3
-
-alignment_cli_path =
-ffmpeg_path =
-ffprobe_path =
-```
-
-`deployment_mode` accepts `local`, `lan`, or `proxy` and chooses the matching safe bind and cookie behavior. `host` is an optional advanced override. Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server. See [docs/configuration.md](docs/configuration.md) for every option.
-
-## Library layout
-
-Each folder is treated as one book:
-
-```text
-/Audiobooks
-  /Book One
-    01 Opening.mp3
-    02 Chapter 1.mp3
-    Book One.pdf
-  /Book Two.m4b
-  /Book Two.epub
-```
-
-A single audio file directly in the root is treated as its own book.
-
-For readalong mode, place a supported companion file next to the audiobook. Folder-based books use a same-name file when present and otherwise use the first supported document in that book folder. Single-file books in the library root require a same-stem companion file, such as `Book Two.m4b` and `Book Two.epub`.
-
-For sentence-level readalong sync, a book with an EPUB companion can also have a `.sync.json` sync map (same stem rules, e.g. `Book Two.sync.json`) mapping audiobook timestamps to EPUB sentences. Administrators can generate one from the readalong pane when [echogarden](https://github.com/echogarden-project/echogarden) is installed (`npm install -g echogarden`, or set `alignment_cli_path`); generated maps are written to `data_dir/sync/`. See [docs/library-layout.md](docs/library-layout.md) for details.
-
-## Optional Libation / Audible import
-
-The server can use a local Libation CLI installation as an optional acquisition tool. With a recent CLI, administrators can add and reconnect multiple server-wide Audible accounts from the web or installed app using Libation's external-browser login. OperaLibre keeps each managed account in an isolated Libation profile so the catalog can be filtered or sorted by account and duplicate ownership remains visible. It can then scan purchases, liberate a selected title through its owning account, and rescan the local audiobook folder after the download completes.
-
-Set these in `server.config` only if you want the integration:
-
-```config
-libation_cli_path = /path/to/libationcli
-libation_files_dir = /path/to/LibationFiles
-libation_auto_refresh_hours = 24
-libation_reader_refreshes_per_hour = 3
-```
-
-If `libation_cli_path` is omitted, the server looks for `libationcli`, `LibationCli`, or `libationcli.exe` on `PATH`. `libation_files_dir` optionally points at an existing legacy Libation profile; accounts added through OperaLibre are stored under `data_dir/libation-accounts`. The app badges accounts whose authentication or refresh connection has failed. By default the server checks Audible once every 24 hours. Administrators may also refresh at any time, while each reader account may request three refreshes per rolling hour.
-
-## Android and iOS development
-
-The checked-in Android Studio and Xcode projects live in `apps/web/android` and `apps/web/ios`. After changing the React frontend, run `npm run sync:android` or `npm run sync:ios` before building so the native bundle receives the latest web assets.
-
-## Users
-
-The server requires sign-in before any audiobook data is exposed. `local` setup creates the first owner without extra steps. A remote browser in `lan` mode, and every setup request in `proxy` mode, must also enter the one-time 30-minute bootstrap token printed in the server console or `data/server.log`; from then on the home screen is a sign-in form.
-
-- Accounts are stored in `data/users.json` (configurable via `users_file`). Passwords are hashed with Argon2.
-- Playback progress is tracked per user, so each reader has their own bookmarks.
-- Administrators can add or remove readers, and reset any password, from the **Manage readers** menu under the avatar in the library pane.
-- Sessions are stored in `data/sessions.json` and survive server restarts. They expire after 30 days, matching the session cookie lifetime.
-- Streaming, cover art, and zip download requests carry the scoped media token as a query parameter so plain `<audio>`/`<img>` elements stay authenticated without exposing the full session bearer in URLs.
-
-## Next build slices
-
-- Bookmarks, clips, notes, and listening history.
-- Word-level readalong sync (sentence-level sync shipped; the sync map format has room for word granularity).
-- Queue and collections.
+Source-available for personal and noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). Commercial use, resale, paid hosting, or inclusion in a paid product requires a separate commercial license from the copyright holder.
