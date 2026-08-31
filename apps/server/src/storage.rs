@@ -55,6 +55,12 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     path: &FsPath,
     value: &T,
 ) -> Result<(), ApiError> {
+    write_bytes_atomic(path, &serde_json::to_vec_pretty(value)?).await
+}
+
+/// Write bytes to a temporary sibling and rename them into place with the
+/// same durability and permission guarantees as the JSON state writer.
+pub(crate) async fn write_bytes_atomic(path: &FsPath, contents: &[u8]) -> Result<(), ApiError> {
     let created_directories = ensure_parent_directory(path).await?;
     let mut suffix = [0u8; 8];
     rand::rng().fill(&mut suffix);
@@ -71,9 +77,7 @@ pub(crate) async fn write_json_atomic<T: Serialize>(
     #[cfg(unix)]
     options.mode(0o600);
     let mut temp_file = options.open(&temp_path).await?;
-    temp_file
-        .write_all(&serde_json::to_vec_pretty(value)?)
-        .await?;
+    temp_file.write_all(contents).await?;
     // `flush` only drains tokio's userspace buffer. Without `sync_all` the
     // bytes can still be sitting in the page cache when power is lost, and the
     // rename below would then publish a truncated or empty store.
