@@ -6,6 +6,18 @@ OperaLibre is also designed to work as a headless audiobook server. The included
 
 If you just want to use it, start with the plain-language [release installation guide](docs/installing-a-release.md), then see [Using OperaLibre](docs/using-operalibre.md) for phones, reader accounts, uploads, readalong, Jellyfin, and optional Audible imports.
 
+## Spotlight: import your Audible library
+
+OperaLibre integrates with [Libation](https://github.com/rmcrackan/Libation) so your Audible purchases become first-class citizens of your own library — entirely optional, and hidden until you configure it.
+
+- **Connect Audible accounts from the app.** Administrators add server-wide Audible accounts using Libation's external-browser login; passwords are only ever entered on Amazon's page.
+- **Browse before you liberate.** The full Audible catalog is searchable and filterable by account, with duplicate ownership across accounts kept visible via friendly labels like **Dad** or **UK**.
+- **Download with one click.** Liberating a title runs as a background job, lands in `library_root`, and triggers an automatic rescan — the book simply appears, ready to stream or take offline.
+- **Approval workflow.** Each reader defaults to approval-required downloads; requests are decided by an administrator under **Administration → Requests**.
+- **Rich metadata.** Libation's raw Audible metadata sidecars fill in series, genres, contributors, and ASINs even when the audio tags are thin.
+
+Requires a recent Libation CLI on the same machine; see [Libation / Audible Import](docs/libation.md) for setup, or skip ahead to the [configuration summary](#optional-libation--audible-import).
+
 ## Download
 
 The [GitHub releases page](https://github.com/DonovanMontoya/OperaLibre/releases) provides:
@@ -50,6 +62,9 @@ Commercial use, resale, paid hosting, or inclusion in a paid product requires a 
 - Sleep timer.
 - Library search and sorting.
 - Per-user listening profiles, streaks, and recent-book statistics.
+- A per-reader reading log: listening sessions with times, durations, speed, and client, rolled up into hour-of-day and weekday patterns, session lengths, real per-book listening time, and abandoned-book detection.
+- Durable completion history. Finishing a book is recorded as an immutable event with a snapshot of the edition, so it survives the audiobook being deleted, re-downloaded, or replaced.
+- Work-level book identity, linking different editions, rips, and ISBNs of the same book so a reading history follows the reader across copies. Uncertain matches are queued for an administrator rather than merged silently.
 - On-device audiobook downloads and offline playback in the native mobile apps.
 - Media Session integration for OS-level playback controls where supported.
 - PWA manifest plus Capacitor Android and iPhone apps that reuse the web frontend.
@@ -90,16 +105,6 @@ The script builds the web frontend and Swift executable, stages `dist/OperaLibre
 
 Use `./script/build_and_run.sh --verify` to build, launch, and confirm the app process started. The script also supports `--debug`, `--logs`, and `--telemetry`.
 
-## iOS app
-
-The iOS app is currently Testflight Only. Please enroll here: https://testflight.apple.com/join/x69Ffa33
-
-### Jellyfin servers
-
-Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
-
-The client supports Jellyfin audiobook listing, multi-file album grouping, cover art, direct audio streaming, and resume-position synchronization. OperaLibre-specific features such as Libation, reader administration, metadata editing, readalong files, and the reader ledger are hidden while connected to Jellyfin.
-
 ## Android app
 
 The Android app uses Capacitor 8 to package the same React frontend in a native Android 7+ project. With Android Studio, the Android SDK, and JDK 21 installed, build a debug APK from the repository root with:
@@ -114,7 +119,9 @@ The app supports plain HTTP for local-network and private-overlay OperaLibre or 
 
 ## iPhone app
 
-The iPhone app uses Capacitor 8 to package the same React frontend in a native iOS 15+ Xcode project. Build the simulator app from the repository root with:
+The iPhone app uses Capacitor 8 to package the same React frontend in a native iOS 15+ Xcode project. A TestFlight build is also available — enroll here: https://testflight.apple.com/join/x69Ffa33
+
+Build the simulator app from the repository root with:
 
 ```bash
 npm run build:ios
@@ -123,6 +130,12 @@ npm run build:ios
 This rebuilds the frontend, synchronizes it into `apps/web/ios`, and produces an unsigned simulator build under `dist/ios-derived`. To configure signing and run on a physical iPhone, use `npm run ios:open -w @operalibre/web`, select your development team in Xcode, and choose the connected phone.
 
 The app can connect over plain HTTP to local-network and private-overlay addresses, including Tailscale `100.x` addresses, for OperaLibre or Jellyfin servers. Use HTTPS for public remote servers. Its iOS audio session is configured for spoken-audio background playback so an active audiobook can continue while the app is backgrounded or the screen is locked.
+
+## Jellyfin servers
+
+Choose **Jellyfin** on the **Find your library** screen to connect with a normal Jellyfin user account. The default local address is `http://localhost:8096`. Jellyfin's configurable HTTPS port is `8920`, but HTTPS is disabled by default; remote servers should normally use a trusted HTTPS reverse proxy. See the [Jellyfin networking documentation](https://jellyfin.org/docs/general/post-install/networking/).
+
+The client supports Jellyfin audiobook listing, multi-file album grouping, cover art, direct audio streaming, and resume-position synchronization. OperaLibre-specific features such as Libation, reader administration, metadata editing, readalong files, and the reader ledger are hidden while connected to Jellyfin.
 
 ## Custom frontends
 
@@ -157,18 +170,24 @@ max_book_download_gib = 25
 max_concurrent_book_downloads = 1
 download_temp_dir = data/download-temp
 min_download_free_gib = 2
+allowed_origins =
 library_root = /path/to/your/audiobooks
 data_dir = data
 progress_file = data/progress.json
+users_file = data/users.json
+web_dist_dir =
 
 libation_cli_path =
 libation_files_dir =
 libation_auto_refresh_hours = 24
 libation_reader_refreshes_per_hour = 3
+
 alignment_cli_path =
+ffmpeg_path =
+ffprobe_path =
 ```
 
-`deployment_mode` accepts `local`, `lan`, or `proxy` and chooses the matching safe bind and cookie behavior. `host` is an optional advanced override. Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server.
+`deployment_mode` accepts `local`, `lan`, or `proxy` and chooses the matching safe bind and cookie behavior. `host` is an optional advanced override. Relative paths are resolved from the directory containing `server.config`. To use a different config file, set `OPERALIBRE_SERVER_CONFIG=/path/to/server.config` when starting the server. See [docs/configuration.md](docs/configuration.md) for every option.
 
 ## Library layout
 

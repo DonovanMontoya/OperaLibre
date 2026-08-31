@@ -11,6 +11,23 @@
   --spine: #1a1410;
   --spine-deep: #0e0a07;
 
+  /* RGB triples for the translucent tones the theme is built from, so the
+     iOS dark appearance can flip them in one place. --ink-rgb backs the
+     hairlines and tints drawn as transparent ink over paper; the rest are
+     the lifted/frosted light surfaces. Shadows keep literal dark rgba(). */
+  --ink-rgb: 26, 20, 16;
+  --lift-rgb: 255, 252, 244;
+  --lift-soft-rgb: 255, 253, 247;
+  --sheet-rgb: 255, 250, 235;
+  --sheet-deep-rgb: 241, 230, 207;
+  --sheen-rgb: 236, 220, 190;
+  --field-rgb: 255, 255, 255;
+  /* Text sitting on a gold-soft fill: constant, never flips — gold stays
+     mid-tone in both appearances, so its label must stay near-black. */
+  --on-gold: #1a1410;
+  /* Text on an ink-filled control; flips opposite to --ink. */
+  --on-ink: #f1e7d0;
+
   color-scheme: light;
   font-family: "Fraunces", "Times New Roman", serif;
   font-optical-sizing: auto;
@@ -278,7 +295,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .view-toggle button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -339,7 +356,7 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .source-toggle button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -631,7 +648,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .libation-actions button:hover,
 .audible-row button:hover {
-  color: var(--ink);
+  color: var(--on-gold);
   background: var(--gold-soft);
 }
 
@@ -1327,8 +1344,8 @@ img.cover-mark {
   background: linear-gradient(
     180deg,
     transparent,
-    rgba(26, 20, 16, 0.18) 12%,
-    rgba(26, 20, 16, 0.18) 88%,
+    rgba(var(--ink-rgb), 0.18) 12%,
+    rgba(var(--ink-rgb), 0.18) 88%,
     transparent
   );
 }
@@ -1344,7 +1361,7 @@ img.cover-mark {
   text-transform: uppercase;
   color: var(--ink-faded);
   padding-bottom: 18px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.15);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.15);
 }
 
 .folio .dot {
@@ -1441,14 +1458,14 @@ img.large-cover {
   text-transform: uppercase;
   color: var(--ink);
   text-decoration: none;
-  border: 1px solid rgba(26, 20, 16, 0.25);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
   transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
 }
 
 .download-btn:hover,
 .download-btn.active {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   transform: translateY(-1px);
 }
@@ -1545,8 +1562,8 @@ img.large-cover {
   gap: 12px;
   margin-top: 14px;
   padding: 8px 16px 8px 0;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .book-runtime-label {
@@ -1574,7 +1591,7 @@ img.large-cover {
 .metadata-strip span {
   min-height: 28px;
   padding: 7px 10px;
-  border: 1px solid rgba(26, 20, 16, 0.16);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.66rem;
   letter-spacing: 0.12em;
@@ -1602,8 +1619,8 @@ img.large-cover {
   align-items: baseline;
   gap: 8px;
   padding: 7px 11px;
-  border: 1px solid rgba(26, 20, 16, 0.16);
-  background: rgba(26, 20, 16, 0.03);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  background: rgba(var(--ink-rgb), 0.03);
 }
 
 .shared-reader-name {
@@ -1654,7 +1671,7 @@ img.large-cover {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--red);
+  color: var(--oxblood);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.68rem;
   font-weight: 700;
@@ -1674,8 +1691,8 @@ img.large-cover {
   display: grid;
   gap: 14px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
-  background: rgba(255, 252, 244, 0.34);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-rgb), 0.34);
 }
 
 .readalong-header,
@@ -1727,7 +1744,7 @@ img.large-cover {
   height: min(72vh, 780px);
   height: min(72dvh, 780px);
   min-height: 420px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   background: #fffdf7;
 }
 
@@ -1985,7 +2002,7 @@ img.large-cover {
   padding: 32px;
   text-align: center;
   color: var(--ink-faded);
-  border: 1px dashed rgba(26, 20, 16, 0.22);
+  border: 1px dashed rgba(var(--ink-rgb), 0.22);
 }
 
 .readalong-fallback p {
@@ -2012,7 +2029,7 @@ img.large-cover {
   align-items: baseline;
   gap: 16px;
   padding-top: 12px;
-  border-top: 1px solid rgba(26, 20, 16, 0.15);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.15);
 }
 
 .track-line .title {
@@ -2081,8 +2098,8 @@ img.large-cover {
   min-width: 5px;
   height: 100%;
   overflow: hidden;
-  background: rgba(26, 20, 16, 0.13);
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
 }
 
@@ -2123,8 +2140,8 @@ img.large-cover {
   height: 12px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(26, 20, 16, 0.13);
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 .book-progressbar span {
@@ -2146,7 +2163,7 @@ input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.22), rgba(26, 20, 16, 0.22)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.22), rgba(var(--ink-rgb), 0.22)) left center / 100% 2px no-repeat;
   border-radius: 0;
 }
 
@@ -2154,7 +2171,7 @@ input[type="range"]::-moz-range-track {
   height: 4px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 4px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.22), rgba(26, 20, 16, 0.22)) left center / 100% 2px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.22), rgba(var(--ink-rgb), 0.22)) left center / 100% 2px no-repeat;
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -2204,7 +2221,7 @@ input[type="range"]::-moz-range-thumb {
   justify-content: space-between;
   gap: 16px;
   padding-top: 8px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
@@ -2236,8 +2253,8 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   gap: 16px;
   padding: 32px 0 26px;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .book-preview-actions .round-button.primary {
@@ -2289,7 +2306,7 @@ input[type="range"]::-moz-range-thumb {
   width: 58px;
   height: 58px;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   background: transparent;
 }
 
@@ -2334,7 +2351,7 @@ input[type="range"]::-moz-range-thumb {
 .round-button.primary {
   width: 92px;
   height: 92px;
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink);
   box-shadow:
     0 14px 36px -10px rgba(26, 20, 16, 0.5),
@@ -2345,7 +2362,7 @@ input[type="range"]::-moz-range-thumb {
   content: "";
   position: absolute;
   inset: -8px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 50%;
   pointer-events: none;
 }
@@ -2360,8 +2377,8 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   grid-template-columns: 1.5fr 1fr 1fr;
   gap: 0;
-  border-top: 1px solid rgba(26, 20, 16, 0.18);
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 /* The card count is not fixed: book volume belongs to the book rather than to
@@ -2380,7 +2397,7 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   gap: 14px;
   padding: 22px clamp(14px, 2vw, 28px);
-  border-right: 1px solid rgba(26, 20, 16, 0.12);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.12);
   min-width: 0;
 }
 
@@ -2415,7 +2432,7 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.15);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   background: transparent;
   transition: all 0.2s ease;
 }
@@ -2425,7 +2442,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .segmented button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink);
   border-color: var(--ink);
 }
@@ -2474,32 +2491,38 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.04em;
 }
 
-.speed-wheel-shell {
+/* The gain stepper row wears the same shell so the two controls read as one
+   family. */
+.speed-wheel-shell,
+.book-volume-slider-row {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) 38px;
   align-items: center;
   gap: 7px;
 }
 
-.speed-wheel-shell > button {
+.speed-wheel-shell > button,
+.book-volume-slider-row > button {
   display: grid;
   place-items: center;
   min-height: 42px;
   padding: 0;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.16);
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
   border-radius: 999px;
   background: transparent;
   transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
-.speed-wheel-shell > button:hover:not(:disabled) {
+.speed-wheel-shell > button:hover:not(:disabled),
+.book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--oxblood);
   border-color: var(--oxblood);
   transform: translateY(-1px);
 }
 
-.speed-wheel-shell > button:disabled {
+.speed-wheel-shell > button:disabled,
+.book-volume-slider-row > button:disabled {
   cursor: default;
   opacity: 0.32;
 }
@@ -2509,9 +2532,9 @@ input[type="range"]::-moz-range-thumb {
   height: 72px;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(var(--field-rgb), 0.28);
   perspective: 260px;
   touch-action: pan-y;
   cursor: ew-resize;
@@ -2580,7 +2603,7 @@ input[type="range"]::-moz-range-thumb {
 .speed-wheel-value.distance-3 { opacity: 0.18; }
 
 .speed-wheel-value.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   font-size: 1rem;
   font-weight: 600;
   opacity: 1;
@@ -2619,7 +2642,7 @@ input[type="range"]::-moz-range-thumb {
   min-height: 30px;
   padding: 5px 3px;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 5px;
   background: transparent;
   font-family: "JetBrains Mono", monospace;
@@ -2633,7 +2656,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .speed-presets button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   background: var(--ink);
 }
@@ -2647,7 +2670,7 @@ select {
   color: var(--ink);
   background: transparent;
   border: 0;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.3);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.3);
   border-radius: 0;
   appearance: none;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%238b2e1f' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
@@ -2704,8 +2727,13 @@ select:focus {
   letter-spacing: 0.04em;
 }
 
-.book-volume-full > input[type="range"] {
+.book-volume-slider-row > input[type="range"] {
   height: 20px;
+}
+
+/* Keep the end labels under the track rather than under the steppers. */
+.book-volume-full .book-volume-range-labels {
+  margin: 0 45px;
 }
 
 /* The desktop card states its value the way the Nightfall card beside it
@@ -2748,7 +2776,7 @@ select:focus {
   min-height: 30px;
   padding: 5px 3px;
   color: var(--ink-soft);
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 5px;
   background: transparent;
   font-family: "JetBrains Mono", monospace;
@@ -2763,7 +2791,7 @@ select:focus {
 }
 
 .book-volume-presets button.selected {
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
   background: var(--ink);
 }
@@ -2781,7 +2809,7 @@ select:focus {
   gap: 8px;
   margin-top: 20px;
   padding-top: 18px;
-  border-top: 1px solid rgba(26, 20, 16, 0.12);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
 }
 
 .speed-sheet-volume .sleep-sheet-hint {
@@ -2800,7 +2828,7 @@ select:focus {
   justify-content: space-between;
   gap: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
 .track-list-header .title-of-contents {
@@ -2839,7 +2867,7 @@ select:focus {
   align-items: baseline;
   padding: 14px 4px;
   text-align: left;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.2);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.2);
   color: var(--ink);
   position: relative;
   transition: padding 0.3s ease, color 0.3s ease;
@@ -3218,7 +3246,7 @@ select:focus {
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   background: transparent;
   justify-self: start;
   transition: background 0.2s ease, color 0.2s ease;
@@ -3226,7 +3254,7 @@ select:focus {
 
 .library-open-btn:hover {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
 }
 
 .library-scrim {
@@ -3303,8 +3331,8 @@ select:focus {
   }
 
   .control-section {
-    border-right: 1px solid rgba(26, 20, 16, 0.12);
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-right: 1px solid rgba(var(--ink-rgb), 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
   }
 
   .control-section:nth-child(2n) {
@@ -3517,7 +3545,7 @@ select:focus {
 
   .control-section {
     border-right: 0;
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
     padding: 18px 4px;
   }
 
@@ -3697,8 +3725,8 @@ select:focus {
   inset: 0;
   display: grid;
   place-items: center;
-  background: #f1e7d0;
-  color: #1a1410;
+  background: var(--paper);
+  color: var(--ink);
 }
 
 .native-launch-placeholder span {
@@ -3842,7 +3870,7 @@ select:focus {
   margin-top: 5px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.1);
+  background: rgba(var(--ink-rgb), 0.1);
 }
 
 .startup-progress i {
@@ -3889,8 +3917,8 @@ select:focus {
 }
 
 .auth-card {
-  background: rgba(255, 250, 235, 0.94);
-  border: 1px solid rgba(26, 20, 16, 0.15);
+  background: rgba(var(--sheet-rgb), 0.94);
+  border: 1px solid rgba(var(--ink-rgb), 0.15);
   border-radius: 14px;
   padding: 2.25rem 2rem;
   width: min(420px, 100%);
@@ -3923,8 +3951,8 @@ select:focus {
   font: inherit;
   padding: 0.6rem 0.7rem;
   border-radius: 8px;
-  border: 1px solid rgba(26, 20, 16, 0.25);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .auth-card input:focus-visible {
@@ -3944,9 +3972,9 @@ select:focus {
   gap: 0.6rem;
   min-width: 0;
   padding: 0.7rem;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 9px;
-  background: rgba(255, 252, 244, 0.65);
+  background: rgba(var(--lift-rgb), 0.65);
   color: var(--ink-soft);
   text-align: left;
   cursor: pointer;
@@ -4019,8 +4047,8 @@ select:focus {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   padding: 2px 6px;
-  background: rgba(26, 20, 16, 0.06);
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  background: rgba(var(--ink-rgb), 0.06);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   color: var(--ink-soft);
 }
 
@@ -4028,7 +4056,7 @@ select:focus {
   margin-top: 0.4rem;
   background: transparent;
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 999px;
   padding: 0.55rem 1rem;
   font: inherit;
@@ -4039,7 +4067,7 @@ select:focus {
 
 .auth-secondary:hover {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-ink);
   border-color: var(--ink);
 }
 
@@ -4056,7 +4084,7 @@ select:focus {
   content: "";
   height: 1px;
   flex: 1;
-  background: rgba(26, 20, 16, 0.14);
+  background: rgba(var(--ink-rgb), 0.14);
 }
 
 .auth-demo-button {
@@ -4082,7 +4110,7 @@ select:focus {
   gap: 12px;
   flex-wrap: wrap;
   padding-top: 12px;
-  border-top: 1px dotted rgba(26, 20, 16, 0.2);
+  border-top: 1px dotted rgba(var(--ink-rgb), 0.2);
   font-family: "Fraunces", serif;
   font-style: italic;
   font-size: 0.85rem;
@@ -4135,8 +4163,8 @@ select:focus {
   right: 0;
   z-index: 30;
   min-width: 200px;
-  background: rgba(255, 250, 235, 0.98);
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  background: rgba(var(--sheet-rgb), 0.98);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 10px;
   box-shadow: 0 18px 36px rgba(26, 20, 16, 0.18);
   padding: 0.5rem;
@@ -4149,7 +4177,7 @@ select:focus {
   display: flex;
   flex-direction: column;
   padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
   margin-bottom: 0.25rem;
 }
 
@@ -4193,8 +4221,8 @@ select:focus {
 }
 
 .modal-card {
-  background: rgba(255, 250, 235, 0.98);
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  background: rgba(var(--sheet-rgb), 0.98);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 14px;
   padding: 1.5rem 1.5rem 1.75rem;
   width: min(540px, 100%);
@@ -4279,8 +4307,8 @@ select:focus {
 
 .unplayed-confirm-cancel {
   color: var(--ink);
-  border: 1px solid rgba(26, 20, 16, 0.18);
-  background: rgba(255, 253, 247, 0.72);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-soft-rgb), 0.72);
 }
 
 .unplayed-confirm-submit {
@@ -4347,9 +4375,9 @@ select:focus {
 .metadata-edit-form input,
 .metadata-edit-form textarea {
   width: 100%;
-  border: 1px solid rgba(26, 20, 16, 0.2);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
   border-radius: 8px;
-  background: rgba(255, 252, 244, 0.92);
+  background: rgba(var(--lift-rgb), 0.92);
   padding: 0.58rem 0.68rem;
   /* >=16px so iOS doesn't zoom the page when the field is focused. */
   font: 1rem "Fraunces", serif;
@@ -4376,8 +4404,8 @@ select:focus {
 .metadata-edit-actions button {
   padding: 0.55rem 0.9rem;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .metadata-edit-actions button[type="submit"] {
@@ -4412,9 +4440,9 @@ select:focus {
 .upload-audiobook-field input {
   width: 100%;
   padding: 11px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(var(--field-rgb), 0.58);
   color: var(--ink);
   font: 1rem "Fraunces", serif;
 }
@@ -4473,9 +4501,9 @@ select:focus {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.6rem 0.75rem;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(255, 252, 244, 0.8);
+  background: rgba(var(--lift-rgb), 0.8);
 }
 
 .user-list li > div:first-child {
@@ -4498,8 +4526,8 @@ select:focus {
   font: inherit;
   padding: 0.4rem 0.7rem;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
   cursor: pointer;
 }
 
@@ -4529,8 +4557,8 @@ select:focus {
   font: inherit;
   padding: 0.5rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(26, 20, 16, 0.2);
-  background: rgba(255, 252, 244, 0.9);
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  background: rgba(var(--lift-rgb), 0.9);
 }
 
 .add-user-form label.checkbox {
@@ -4670,7 +4698,7 @@ select:focus {
   gap: clamp(28px, 4vw, 56px);
   align-items: end;
   padding-bottom: 28px;
-  border-bottom: 1px solid rgba(26, 20, 16, 0.16);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.16);
 }
 
 .headline-primary {
@@ -4678,7 +4706,7 @@ select:focus {
   flex-direction: column;
   gap: 6px;
   padding-right: clamp(20px, 3vw, 36px);
-  border-right: 1px solid rgba(26, 20, 16, 0.12);
+  border-right: 1px solid rgba(var(--ink-rgb), 0.12);
 }
 
 .headline-value {
@@ -4801,7 +4829,7 @@ select:focus {
   width: 18px;
   height: 18px;
   border-radius: 2px;
-  background: rgba(26, 20, 16, 0.07);
+  background: rgba(var(--ink-rgb), 0.07);
 }
 
 .calendar-weekdays span {
@@ -4858,11 +4886,11 @@ select:focus {
 }
 
 .profile-recent li {
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .profile-recent li:last-child {
-  border-bottom: 1px solid rgba(26, 20, 16, 0.1);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .recent-row {
@@ -4937,7 +4965,7 @@ select:focus {
     padding-right: 0;
     border-right: 0;
     padding-bottom: 20px;
-    border-bottom: 1px solid rgba(26, 20, 16, 0.12);
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.12);
   }
   .headline-secondary {
     grid-template-columns: repeat(2, 1fr);
@@ -5056,7 +5084,10 @@ select:focus {
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
   --status-h: env(safe-area-inset-top);
-  --mini-player-height: 128px;
+  /* Fallback matching the slim transport ribbon (40px cover + 16px padding +
+     border). JavaScript overwrites it with the measured height, but the
+     measurement is 0 while the ribbon is display:none (e.g. Reading tab). */
+  --mini-player-height: 60px;
   /* JavaScript replaces this with visualViewport.height and keeps it current
      through WKWebView's multi-phase rotation. 100vh remains a safe fallback
      for the earliest supported iOS 15 releases, before dvh was available. */
@@ -5365,8 +5396,278 @@ html.native-app .mini-player {
 
 /* Persist playback controls while browsing the shelf; the Reading
    screen already has the full transport, so hide it there. */
-html.native-app .native-shell.tab-shelf .mini-player {
+html.native-app .native-shell.tab-shelf .mini-player,
+html.native-app .native-shell.tab-games .mini-player {
   display: grid;
+}
+
+/* --- Games: quiet, tactile diversions that remain entirely on-device. --- */
+html.native-app .games-shell {
+  position: fixed;
+  inset: 0 0 var(--tabs-h);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: none;
+  padding: calc(var(--status-h) + 14px) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+  color: var(--paper);
+  background:
+    radial-gradient(circle at 85% 8%, rgba(184, 137, 58, 0.16), transparent 28%),
+    linear-gradient(155deg, #21150f, #0f0b08 68%);
+  z-index: 2;
+}
+
+/* The parlour surface runs all the way down behind the floating mini-player;
+   only the content clears it, so no light strip shows through beneath. */
+html.native-app .native-shell.has-mini-player .games-shell {
+  padding-bottom: calc(var(--mini-player-height) + 20px);
+}
+
+html.native-app .games-head { flex: none; }
+html.native-app .games-head h1 { margin: 3px 0 1px; font-size: clamp(1.9rem, 8vw, 2.65rem); }
+html.native-app .games-head p { margin: 0; color: rgba(241, 231, 208, 0.55); }
+
+html.native-app .games-switcher {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 14px 0 10px;
+  padding: 4px;
+  border: 1px solid rgba(217, 181, 116, 0.14);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html.native-app .games-switcher button {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 38px; border-radius: 11px; color: rgba(241, 231, 208, 0.55);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+}
+html.native-app .games-switcher button.active { color: #24150d; background: var(--gold-soft); box-shadow: 0 8px 22px -14px #000; }
+
+html.native-app .game-card {
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  border-radius: 20px;
+  background: rgba(255, 252, 244, 0.055);
+  box-shadow: 0 24px 50px -36px #000;
+}
+html.native-app .match-game { flex: 1 1 auto; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+html.native-app .game-title-row { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; }
+html.native-app .game-title-row h2 { margin: 1px 0 0; font-size: 1.22rem; }
+/* .section-label's ink color is meant for paper surfaces; on the dark card it
+   falls below readable contrast. */
+html.native-app .game-card .section-label { color: rgba(217, 181, 116, 0.78); }
+html.native-app .game-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; color: var(--gold-soft); background: rgba(184, 137, 58, 0.12); }
+html.native-app .game-stat, html.native-app .game-reset { color: rgba(241, 231, 208, 0.55); font: 600 0.72rem "JetBrains Mono", monospace; }
+html.native-app .game-reset { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.06); }
+
+/* On short screens the parlour dressing gives its space to the match board,
+   whose --match-board-min floor (below) needs the room. The word board has no
+   floor — its tiles are display-only; the tappable keys hold 44px on their own. */
+@media (max-height: 700px) {
+  html.native-app .games-head h1 { margin: 0; font-size: 1.4rem; }
+  html.native-app .games-head p { display: none; }
+  html.native-app .games-switcher { margin: 8px 0; }
+  html.native-app .game-card { padding: 10px; }
+}
+
+html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+/* Same trick as the match board: the frame is the flexible row, and the board
+   derives its width from the measured height so it can never overflow. A 5×6
+   board of square tiles is 1.2× taller than wide, hence the 82cqh cap. */
+html.native-app .word-board-frame { min-height: 0; container-type: size; display: grid; place-items: center; }
+/* iOS 15 WebKit lacks container units, so first approximate the frame height
+   from the shell chrome (conservatively — clipping is worse than a small
+   board); modern engines take the exact cqh declarations in @supports. */
+html.native-app .word-board { display: grid; gap: 5px; width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 500px) * .82))); }
+html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, max(120px, calc((var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 500px) * .82))); }
+@supports (width: 1cqh) {
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, 82cqh); }
+}
+html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(241,231,208,.18); border-radius: 9px; color: var(--paper); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
+html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
+html.native-app .word-tile.present { border-color: #b78f46; background: #8b682c; }
+html.native-app .word-tile.absent { border-color: #48423d; background: #38332f; color: rgba(241,231,208,.62); }
+html.native-app .word-keys { display: grid; gap: 6px; margin-top: 10px; }
+html.native-app .word-keys-row { display: flex; justify-content: center; gap: 5px; }
+html.native-app .word-key { flex: 1 1 0; min-width: 0; max-width: 34px; min-height: 44px; border-radius: 8px; border: 1px solid rgba(241,231,208,.12); color: var(--paper); background: rgba(255,255,255,.07); font: 700 .82rem "JetBrains Mono", monospace; }
+html.native-app .word-key.wide { max-width: 56px; flex: 1.6 1 0; font-size: .68rem; }
+html.native-app .word-key:disabled { opacity: .4; }
+html.native-app .word-key.correct { border-color: #72936a; background: #526f4c; }
+html.native-app .word-key.present { border-color: #b78f46; background: #8b682c; }
+html.native-app .word-key.absent { border-color: #3d3833; background: #2c2723; color: rgba(241,231,208,.45); }
+html.native-app .game-message { min-height: 1.2em; margin: 10px 0 2px; text-align: center; color: rgba(241,231,208,.78); font-size: .8rem; }
+
+html.native-app .match-score { display: flex; align-items: baseline; justify-content: space-between; margin: 10px 2px 7px; color: rgba(241,231,208,.62); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; }
+html.native-app .match-score strong { color: var(--gold-soft); font: 700 1.1rem "JetBrains Mono", monospace; letter-spacing: 0; transform-origin: right center; }
+html.native-app .match-score strong.score-bump { animation: match-score-bump .34s cubic-bezier(.2,.85,.35,1.3); }
+/* The frame is the card's flexible row; sizing the board from its measured
+   height (100cqh) keeps the square inside the card on any screen. The floor
+   below aims each of the 7 pieces at --match-piece-min — but the tiers step
+   it down on short screens so the board never spills under the mini-player
+   or off the shell, and min(100%) still wins on very narrow screens. Small
+   pieces stay playable either way: swipe-to-swap needs no tap precision. */
+html.native-app {
+  --match-piece-min: 36px;
+  /* 7 pieces + 6 gaps + the board's own padding. */
+  --match-board-min: calc(7 * var(--match-piece-min) + 6 * 3px + 12px);
+}
+@media (max-height: 700px) { html.native-app { --match-piece-min: 32px; } }
+@media (max-height: 600px) { html.native-app { --match-piece-min: 27px; } }
+html.native-app .match-board-frame { min-height: 0; container-type: size; display: grid; place-items: start center; }
+/* Same iOS 15 fallback strategy as the word board above. */
+html.native-app .match-board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(0, 1fr); width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 440px))); aspect-ratio: 1; gap: 3px; padding: 6px; border-radius: 15px; background: rgba(0,0,0,.22); transition: box-shadow .2s ease, background .2s ease; }
+html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 440px))); }
+@supports (width: 1cqh) {
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, max(var(--match-board-min), 100cqh)); }
+}
+html.native-app .match-board.busy { background: rgba(0,0,0,.28); box-shadow: inset 0 0 22px rgba(184,137,58,.07); }
+/* touch-action: none — a drag on a piece is a swap gesture, never a scroll;
+   without it the browser takes over the pointer stream mid-swipe. */
+html.native-app .match-piece { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; aspect-ratio: 1; border-radius: 9px; color: white; font-size: clamp(.8rem, 4.4vw, 1.25rem); text-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, opacity .16s ease; will-change: transform; touch-action: none; }
+/* Entrance plays only during the board's brief arriving phase; if it lived on
+   the base rule, removing any modifier class would replay it on settled
+   pieces. :where keeps specificity level with the base rule so the modifier
+   animations below still win. */
+html.native-app .match-board:where(.arriving) .match-piece { animation: match-piece-arrive .3s both; animation-delay: var(--match-delay, 0ms); }
+html.native-app .match-piece:active { transform: scale(.9); }
+/* Grows rather than shrinks: the selected piece is the likeliest next touch
+   target, so its visual (and perceived) size shouldn't drop on selection. */
+html.native-app .match-piece.selected { z-index: 2; transform: scale(1.06) rotate(-3deg); box-shadow: 0 0 0 3px var(--paper), 0 0 18px rgba(241,231,208,.28); animation: match-selected-pulse .9s ease-in-out infinite; }
+html.native-app .match-piece.neighbor { box-shadow: inset 0 0 0 2px rgba(241,231,208,.42); filter: brightness(1.12); }
+html.native-app .match-piece.swapping { z-index: 4; animation: match-piece-swap .19s cubic-bezier(.45,0,.2,1) both; }
+html.native-app .match-piece.clearing { z-index: 3; pointer-events: none; animation: match-piece-clear .26s ease-in both; }
+html.native-app .match-piece.clearing::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid rgba(255, 243, 196, 0.85); animation: match-clear-ring .26s ease-out both; }
+html.native-app .match-popup { position: absolute; z-index: 6; transform: translate(-50%, -50%); pointer-events: none; color: #ffe9b0; font: 800 1.02rem "JetBrains Mono", monospace; letter-spacing: -0.02em; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 3px 10px rgba(0, 0, 0, 0.6); animation: match-popup-rise .85s cubic-bezier(.2, .7, .3, 1) both; }
+html.native-app .match-popup.cascade { color: #fff3c4; font-size: 1.22rem; }
+html.native-app .match-piece.falling { animation: match-piece-fall .31s cubic-bezier(.15,.75,.25,1) both; }
+html.native-app .match-piece.invalid { animation: match-piece-invalid .22s ease-in-out; filter: saturate(.55) brightness(.85); }
+html.native-app .match-piece.kind-0 { background: #a94a3d; } html.native-app .match-piece.kind-1 { background: #447f8e; }
+html.native-app .match-piece.kind-2 { background: #9b7732; } html.native-app .match-piece.kind-3 { background: #6c5b91; }
+html.native-app .match-piece.kind-4 { background: #54815e; } html.native-app .match-piece.kind-5 { background: #a24d6a; }
+html.native-app .match-message { display: inline-block; animation: match-message-in .25s ease-out both; }
+
+@keyframes match-piece-arrive {
+  from { opacity: 0; transform: translateY(-8px) scale(.78); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes match-selected-pulse {
+  0%, 100% { transform: scale(1.06) rotate(-3deg); }
+  50% { transform: scale(1.12) rotate(2deg); }
+}
+@keyframes match-piece-swap {
+  from { transform: none; }
+  45% { transform: translate(var(--match-mid-x), var(--match-mid-y)) scale(1.14); filter: brightness(1.3); box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.7); }
+  to { transform: translate(var(--match-x), var(--match-y)); filter: brightness(1); }
+}
+@keyframes match-clear-ring {
+  from { opacity: .9; transform: scale(.7); }
+  to { opacity: 0; transform: scale(1.5); }
+}
+@keyframes match-popup-rise {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(.55); }
+  18% { opacity: 1; transform: translate(-50%, -65%) scale(1.12); }
+  30% { transform: translate(-50%, -75%) scale(1); }
+  72% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -190%) scale(.96); }
+}
+@keyframes match-piece-clear {
+  0% { opacity: 1; transform: scale(1); filter: brightness(1); }
+  45% { opacity: 1; transform: scale(1.22) rotate(7deg); filter: brightness(1.5); }
+  100% { opacity: 0; transform: scale(.15) rotate(-14deg); filter: brightness(1.8); }
+}
+@keyframes match-piece-fall {
+  from { opacity: .15; transform: translateY(-85%) scale(.88); }
+  70% { opacity: 1; transform: translateY(5%) scale(1.03); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes match-piece-invalid {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-4px) rotate(-4deg); }
+  65% { transform: translateX(4px) rotate(4deg); }
+}
+@keyframes match-score-bump {
+  0% { transform: scale(1); color: var(--gold-soft); }
+  45% { transform: scale(1.38) rotate(-3deg); color: #fff3c4; }
+  100% { transform: scale(1); color: var(--gold-soft); }
+}
+@keyframes match-message-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app .match-piece,
+  html.native-app .match-board:where(.arriving) .match-piece,
+  html.native-app .match-piece.selected,
+  html.native-app .match-piece.swapping,
+  html.native-app .match-piece.clearing,
+  html.native-app .match-piece.falling,
+  html.native-app .match-piece.invalid,
+  html.native-app .match-piece.clearing::after,
+  html.native-app .match-popup,
+  html.native-app .match-score strong.score-bump,
+  html.native-app .match-message { animation: none; transition-duration: 0s; }
+}
+html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,231,208,.36); text-align: center; font-size: .66rem; }
+
+html.native-app .native-shell.tab-games .ios-status-veil { background: rgba(18, 12, 8, 0.66); }
+
+/* Landscape iPads have enough width to make the parlour a desk instead of a
+   taller phone screen: game selection stays in a quiet left rail and the
+   active board gets a broad, full-height play surface. The height gate keeps
+   short iPhone landscape layouts on their compact phone treatment. */
+@media (orientation: landscape) and (min-width: 800px) and (min-height: 500px) {
+  html.native-app .games-shell {
+    display: grid;
+    grid-template-columns: minmax(190px, 0.58fr) minmax(0, 1.42fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    column-gap: clamp(20px, 3vw, 48px);
+    padding-top: calc(var(--status-h) + 20px);
+    padding-bottom: 20px;
+  }
+
+  html.native-app .games-head { grid-column: 1; grid-row: 1; }
+  html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
+
+  html.native-app .games-switcher {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: 1fr;
+    align-self: start;
+    margin: 18px 0 0;
+    padding: 5px;
+  }
+
+  html.native-app .games-switcher button {
+    justify-content: flex-start;
+    min-height: 48px;
+    padding-inline: 13px;
+  }
+
+  html.native-app .game-card {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    align-self: stretch;
+  }
+
+  html.native-app .games-privacy {
+    grid-column: 1;
+    grid-row: 3;
+    margin: 0 4px 4px;
+    text-align: left;
+  }
+
+  html.native-app .word-board { width: min(100%, 360px, 82cqh); }
+  html.native-app .word-key { max-width: 48px; min-height: 48px; }
+  html.native-app .word-key.wide { max-width: 72px; }
 }
 
 /* Room for the ribbon when it's showing over the shelf list. */
@@ -5420,7 +5721,7 @@ html.native-app .profile-shell {
 html.native-app {
   --m-radius: 22px;
   --m-radius-sm: 14px;
-  --m-card-light: rgba(255, 252, 244, 0.5);
+  --m-card-light: rgba(var(--lift-rgb), 0.5);
   --m-card-dark: rgba(255, 255, 255, 0.05);
 }
 
@@ -5450,17 +5751,23 @@ html.native-app .spine-tab.active svg {
   transform: translateY(-1px);
 }
 
-/* --- Mini-player becomes a floating rounded card --- */
+/* --- Mini-player becomes a slim floating transport ribbon: cover, titles,
+   and controls only. The scrubber lives on the Reading screen. --- */
 html.native-app .mini-player {
   left: 12px;
   right: 12px;
   bottom: calc(var(--tabs-h) + 8px);
+  /* The base 4-column template reserves a slot for the hidden scrubber above
+     620px wide; collapse it so the transport buttons stay flush right. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   border-radius: 18px;
   border: 1px solid rgba(217, 181, 116, 0.16);
-  padding-left: 12px;
-  padding-right: 12px;
+  padding: 8px 12px;
   box-shadow: 0 20px 34px -18px rgba(0, 0, 0, 0.75);
 }
+
+html.native-app .mini-progress { display: none; }
+html.native-app .mini-cover-button { height: 40px; }
 
 html.native-app .mini-player::before {
   display: none;
@@ -5579,7 +5886,7 @@ html.native-app .heading-actions .download-btn {
   min-width: 0;
   padding: 8px 15px;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   background: var(--m-card-light);
   letter-spacing: 0.08em;
 }
@@ -5609,9 +5916,9 @@ html.native-app .chapter-now {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 12px;
-  background: rgba(255, 253, 247, 0.48);
+  background: rgba(var(--lift-soft-rgb), 0.48);
 }
 
 html.native-app .chapter-now span:first-child {
@@ -5634,7 +5941,7 @@ html.native-app .timeline input[type="range"]::-webkit-slider-runnable-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .timeline input[type="range"]::-moz-range-track {
@@ -5642,7 +5949,7 @@ html.native-app .timeline input[type="range"]::-moz-range-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .timeline input[type="range"]::-webkit-slider-thumb {
@@ -5686,7 +5993,7 @@ html.native-app .round-button.secondary {
   width: 60px;
   height: 60px;
   border: 0;
-  background: rgba(26, 20, 16, 0.06);
+  background: rgba(var(--ink-rgb), 0.06);
   color: var(--ink-soft);
 }
 
@@ -5719,8 +6026,8 @@ html.native-app .native-player-view-now .native-now-playing {
   border: 1px solid rgba(91, 65, 42, 0.14);
   border-radius: 28px;
   background:
-    linear-gradient(155deg, rgba(255, 253, 247, 0.62), rgba(236, 220, 190, 0.34)),
-    rgba(255, 252, 244, 0.32);
+    linear-gradient(155deg, rgba(var(--lift-soft-rgb), 0.62), rgba(var(--sheen-rgb), 0.34)),
+    rgba(var(--lift-rgb), 0.32);
   box-shadow:
     0 24px 52px -36px rgba(39, 24, 14, 0.78),
     inset 0 1px 0 rgba(255, 255, 255, 0.65);
@@ -5758,7 +6065,7 @@ html.native-app .native-player-return {
   padding: 4px 15px 4px 5px;
   border: 1px solid rgba(139, 46, 31, 0.2);
   border-radius: 999px;
-  background: rgba(255, 253, 247, 0.82);
+  background: rgba(var(--lift-soft-rgb), 0.82);
   color: var(--oxblood-deep);
   box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
   font-family: "JetBrains Mono", monospace;
@@ -5885,7 +6192,7 @@ html.native-app .native-now-timeline input[type="range"]::-moz-range-track {
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html.native-app .native-now-timeline input[type="range"]::-webkit-slider-thumb {
@@ -5943,7 +6250,7 @@ html.native-app .native-now-transport .native-now-seek {
   width: 46px;
   height: 52px;
   border-radius: 18px;
-  background: rgba(26, 20, 16, 0.055);
+  background: rgba(var(--ink-rgb), 0.055);
 }
 
 html.native-app .native-now-transport .native-now-seek span {
@@ -5989,10 +6296,10 @@ html.native-app .native-now-utility button {
   justify-content: center;
   gap: 3px;
   padding: 5px 3px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 13px;
   color: var(--ink-soft);
-  background: rgba(255, 253, 247, 0.44);
+  background: rgba(var(--lift-soft-rgb), 0.44);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.5rem;
   letter-spacing: 0.04em;
@@ -6213,8 +6520,8 @@ html:not(.native-app) .native-now-playing {
   border: 1px solid rgba(91, 65, 42, 0.14);
   border-radius: 32px;
   background:
-    linear-gradient(155deg, rgba(255, 253, 247, 0.68), rgba(236, 220, 190, 0.38)),
-    rgba(255, 252, 244, 0.36);
+    linear-gradient(155deg, rgba(var(--lift-soft-rgb), 0.68), rgba(var(--sheen-rgb), 0.38)),
+    rgba(var(--lift-rgb), 0.36);
   box-shadow:
     0 30px 70px -48px rgba(39, 24, 14, 0.88),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -6305,7 +6612,7 @@ html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-r
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-moz-range-track {
@@ -6313,7 +6620,7 @@ html:not(.native-app) .native-now-timeline input[type="range"]::-moz-range-track
   border-radius: 999px;
   background:
     linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
-    linear-gradient(rgba(26, 20, 16, 0.16), rgba(26, 20, 16, 0.16)) left center / 100% 3px no-repeat;
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-thumb {
@@ -6379,7 +6686,7 @@ html:not(.native-app) .native-now-transport .native-now-seek {
   width: 52px;
   height: 56px;
   flex: 0 0 52px;
-  background: rgba(26, 20, 16, 0.055);
+  background: rgba(var(--ink-rgb), 0.055);
 }
 
 html:not(.native-app) .native-now-transport > button:not(.native-now-play):not(:disabled):hover {
@@ -6454,10 +6761,10 @@ html:not(.native-app) .native-now-utility button {
   justify-content: center;
   gap: 4px;
   padding: 6px 4px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 14px;
   color: var(--ink-soft);
-  background: rgba(255, 253, 247, 0.46);
+  background: rgba(var(--lift-soft-rgb), 0.46);
   font: 0.54rem "JetBrains Mono", monospace;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -6467,7 +6774,7 @@ html:not(.native-app) .native-now-utility button {
 html:not(.native-app) .native-now-utility button:hover {
   transform: translateY(-1px);
   border-color: rgba(139, 46, 31, 0.24);
-  background: rgba(255, 253, 247, 0.78);
+  background: rgba(var(--lift-soft-rgb), 0.78);
 }
 
 html:not(.native-app) .native-now-utility button:active {
@@ -6482,7 +6789,7 @@ html:not(.native-app) .web-now-extras {
   gap: 12px;
   margin-top: 8px;
   padding-top: 22px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
   text-align: left;
 }
 
@@ -6492,9 +6799,9 @@ html:not(.native-app) .web-now-panel {
   align-content: start;
   gap: 13px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.09);
+  border: 1px solid rgba(var(--ink-rgb), 0.09);
   border-radius: 18px;
-  background: rgba(255, 253, 247, 0.46);
+  background: rgba(var(--lift-soft-rgb), 0.46);
 }
 
 html:not(.native-app) .web-now-about {
@@ -6586,7 +6893,7 @@ html:not(.native-app) .web-now-progressbar {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.11);
+  background: rgba(var(--ink-rgb), 0.11);
 }
 
 html:not(.native-app) .web-now-progressbar span {
@@ -6601,7 +6908,7 @@ html:not(.native-app) .web-now-facts {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: 11px;
 }
 
@@ -6613,7 +6920,7 @@ html:not(.native-app) .web-now-facts > div {
 }
 
 html:not(.native-app) .web-now-facts > div + div {
-  border-left: 1px solid rgba(26, 20, 16, 0.08);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 html:not(.native-app) .web-now-facts dt {
@@ -6672,7 +6979,7 @@ html:not(.native-app) .web-now-chapter-list button {
   grid-template-columns: 24px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 7px;
-  border-top: 1px solid rgba(26, 20, 16, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
   color: var(--ink-soft);
   text-align: left;
 }
@@ -6713,7 +7020,7 @@ html:not(.native-app) .native-player-return {
   border: 1px solid rgba(139, 46, 31, 0.2);
   border-radius: 999px;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.82);
+  background: rgba(var(--lift-soft-rgb), 0.82);
   box-shadow: 0 8px 20px -15px rgba(44, 24, 15, 0.72);
   font: 600 0.64rem "JetBrains Mono", monospace;
   letter-spacing: 0.06em;
@@ -7103,7 +7410,7 @@ html.native-app .controls-grid {
   grid-template-columns: 1fr;
   gap: 0;
   margin-top: 4px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: var(--m-radius-sm);
   background: var(--m-card-light);
   overflow: hidden;
@@ -7120,7 +7427,7 @@ html.native-app .control-section {
 }
 
 html.native-app .control-section + .control-section {
-  border-top: 1px solid rgba(26, 20, 16, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.08);
 }
 
 html.native-app .segmented {
@@ -7130,7 +7437,7 @@ html.native-app .segmented {
 html.native-app .segmented button {
   min-height: 40px;
   border-radius: 999px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   background: transparent;
 }
 
@@ -7141,7 +7448,7 @@ html.native-app .segmented button.selected {
 }
 
 html.native-app .control-section select {
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 999px;
   padding: 10px 34px 10px 14px;
 }
@@ -7436,13 +7743,13 @@ html.native-app .round-button.secondary:hover {
 html.native-app .download-btn:not(.active):hover {
   background: transparent;
   color: var(--ink);
-  border-color: rgba(26, 20, 16, 0.25);
+  border-color: rgba(var(--ink-rgb), 0.25);
   transform: none;
 }
 
 html.native-app .heading-actions .download-btn:not(.active):hover {
   background: var(--m-card-light);
-  border-color: rgba(26, 20, 16, 0.14);
+  border-color: rgba(var(--ink-rgb), 0.14);
 }
 
 /* The library detail page shares its lower edge with the persistent player.
@@ -7488,8 +7795,8 @@ html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .down
   margin-top: 2px;
   padding: 4px 9px;
   color: var(--ink-faded);
-  background: rgba(26, 20, 16, 0.045);
-  border-color: rgba(26, 20, 16, 0.09);
+  background: rgba(var(--ink-rgb), 0.045);
+  border-color: rgba(var(--ink-rgb), 0.09);
 }
 
 html.native-app .native-shell.tab-shelf.library-book-open .heading-actions .download-btn.device-status svg {
@@ -7633,7 +7940,7 @@ html.native-app .preview-return {
   padding: 6px 12px;
   border: 1px solid rgba(139, 46, 31, 0.12);
   border-radius: 999px;
-  background: rgba(255, 253, 247, 0.42);
+  background: rgba(var(--lift-soft-rgb), 0.42);
   color: var(--oxblood);
   font-family: "JetBrains Mono", monospace;
   font-size: 0.58rem;
@@ -7676,12 +7983,12 @@ html.native-app .chapter-jump-top:active {
 }
 
 html.native-app .segmented button:not(.selected):hover {
-  border-color: rgba(26, 20, 16, 0.12);
+  border-color: rgba(var(--ink-rgb), 0.12);
 }
 
 html.native-app .chapter-segment:not(.active):hover {
-  background: rgba(26, 20, 16, 0.13);
-  border-color: rgba(26, 20, 16, 0.08);
+  background: rgba(var(--ink-rgb), 0.13);
+  border-color: rgba(var(--ink-rgb), 0.08);
 }
 
 html.native-app .libation-actions button:not(:disabled):hover,
@@ -7728,8 +8035,8 @@ html.native-app .source-toggle button:not(.selected):hover {
 
 html.native-app .epub-toolbar button:hover {
   color: var(--ink);
-  background: rgba(255, 252, 244, 0.48);
-  border-color: rgba(26, 20, 16, 0.2);
+  background: rgba(var(--lift-rgb), 0.48);
+  border-color: rgba(var(--ink-rgb), 0.2);
 }
 
 html.native-app .library-search:focus-within {
@@ -7775,7 +8082,7 @@ html.native-app .metadata-editor-card .modal-head {
   z-index: 1;
   margin: 0 -18px;
   padding: 12px 18px;
-  background: rgba(255, 250, 235, 0.98);
+  background: rgba(var(--sheet-rgb), 0.98);
   box-shadow: 0 8px 14px rgba(26, 20, 16, 0.05);
 }
 
@@ -7791,7 +8098,7 @@ html.native-app .modal-card::before {
   width: 40px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
 }
 
 html.native-app .metadata-edit-form input,
@@ -7858,7 +8165,7 @@ html.native-app .user-menu::before {
   width: 40px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.16);
+  background: rgba(var(--ink-rgb), 0.16);
   margin-bottom: 4px;
 }
 
@@ -7901,8 +8208,8 @@ html.native-app .auth-card input {
   min-height: 52px;
   padding: 0.7rem 0.95rem;
   border-radius: 14px;
-  border-color: rgba(26, 20, 16, 0.18);
-  background: rgba(255, 252, 244, 0.75);
+  border-color: rgba(var(--ink-rgb), 0.18);
+  background: rgba(var(--lift-rgb), 0.75);
 }
 
 /* Keep the startup mark centered even though native auth forms begin near the
@@ -8001,7 +8308,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   flex: 0 0 auto;
   border-color: rgba(112, 37, 24, 0.34);
   color: var(--oxblood);
-  background: rgba(255, 252, 244, 0.95);
+  background: rgba(var(--lift-rgb), 0.95);
   box-shadow: 0 10px 24px -16px rgba(26, 20, 16, 0.7);
   cursor: pointer;
 }
@@ -8020,9 +8327,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   display: flex;
   gap: 5px;
   padding: 5px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 12px;
-  background: rgba(255, 252, 244, 0.55);
+  background: rgba(var(--lift-rgb), 0.55);
 }
 
 .admin-nav button {
@@ -8077,7 +8384,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 7px;
   min-height: 38px;
   padding: 8px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 999px;
   color: var(--paper);
   background: var(--oxblood);
@@ -8085,7 +8392,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   text-decoration: none;
   cursor: pointer;
 }
-.admin-update-actions .quiet-button { color: var(--ink); background: rgba(255, 252, 244, 0.9); }
+.admin-update-actions .quiet-button { color: var(--ink); background: rgba(var(--lift-rgb), 0.9); }
 .admin-update-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .admin-metrics {
@@ -8096,9 +8403,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-metrics article,
 .admin-card {
-  border: 1px solid rgba(26, 20, 16, 0.13);
+  border: 1px solid rgba(var(--ink-rgb), 0.13);
   border-radius: 12px;
-  background: rgba(255, 252, 244, 0.72);
+  background: rgba(var(--lift-rgb), 0.72);
   box-shadow: 0 16px 36px -30px rgba(26, 20, 16, 0.55);
 }
 
@@ -8175,14 +8482,14 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 10px;
   min-width: 0;
   padding: 14px;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 10px;
   background: rgba(112, 37, 24, 0.025);
 }
 
 .admin-software-versions > article.update-available {
   border-color: rgba(156, 104, 21, 0.3);
-  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(var(--lift-rgb), 0.72));
 }
 
 .admin-software-version-head {
@@ -8345,7 +8652,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   padding: 14px;
   border: 1px solid rgba(156, 104, 21, 0.3);
   border-radius: 10px;
-  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(255, 252, 244, 0.72));
+  background: linear-gradient(120deg, rgba(184, 137, 58, 0.14), rgba(var(--lift-rgb), 0.72));
 }
 
 .admin-faststart-confirm strong {
@@ -8371,7 +8678,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   display: grid;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid rgba(26, 20, 16, 0.1);
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .admin-faststart-job-state {
@@ -8392,9 +8699,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   margin: 0;
   overflow: auto;
   padding: 10px;
-  border: 1px solid rgba(26, 20, 16, 0.12);
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
   border-radius: 8px;
-  background: rgba(26, 20, 16, 0.035);
+  background: rgba(var(--ink-rgb), 0.035);
   font: 0.68rem/1.5 "JetBrains Mono", monospace;
   color: var(--ink);
   white-space: pre-wrap;
@@ -8413,9 +8720,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 7px;
   min-height: 38px;
   padding: 8px 12px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 999px;
-  background: rgba(255, 252, 244, 0.9);
+  background: rgba(var(--lift-rgb), 0.9);
   color: var(--ink);
   font: 600 0.68rem "JetBrains Mono", monospace;
   cursor: pointer;
@@ -8432,18 +8739,18 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 }
 
 .admin-user-list { display: grid; gap: 10px; margin-top: 18px; }
-.admin-user { border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; overflow: hidden; }
+.admin-user { border: 1px solid rgba(var(--ink-rgb), 0.11); border-radius: 10px; overflow: hidden; }
 .admin-user-head { display: flex; align-items: center; gap: 11px; padding: 12px; }
 .admin-avatar { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: var(--paper); background: var(--oxblood); font: 1.1rem "Instrument Serif", serif; }
 .admin-user-head > div:nth-child(2) { min-width: 0; display: grid; flex: 1; }
 .admin-user-head > div:nth-child(2) span { color: var(--ink-faded); font-size: 0.77rem; }
 .admin-row-actions button { min-height: 32px; padding: 5px 9px; }
 
-.admin-access { padding: 12px; border-top: 1px solid rgba(26, 20, 16, 0.1); background: rgba(112, 37, 24, 0.025); }
-.admin-libation-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-access { padding: 12px; border-top: 1px solid rgba(var(--ink-rgb), 0.1); background: rgba(112, 37, 24, 0.025); }
+.admin-libation-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(var(--ink-rgb), 0.09); }
 .admin-libation-access > span { display: grid; }
 .admin-libation-access small { color: var(--ink-faded); font-size: 0.72rem; }
-.admin-libation-access select { min-width: 190px; padding: 8px 10px; border: 1px solid rgba(26, 20, 16, 0.18); border-radius: 8px; color: var(--ink); background: rgba(255, 252, 244, 0.9); font: 0.78rem "Fraunces", serif; }
+.admin-libation-access select { min-width: 190px; padding: 8px 10px; border: 1px solid rgba(var(--ink-rgb), 0.18); border-radius: 8px; color: var(--ink); background: rgba(var(--lift-rgb), 0.9); font: 0.78rem "Fraunces", serif; }
 .admin-all-access,
 .admin-checkbox { display: flex; align-items: center; gap: 10px; }
 .admin-all-access > span,
@@ -8453,7 +8760,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-all-access input,
 .admin-checkbox input,
 .admin-book-checks input { accent-color: var(--oxblood); }
-.admin-book-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; max-height: 230px; overflow: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(26, 20, 16, 0.09); }
+.admin-book-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; max-height: 230px; overflow: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(var(--ink-rgb), 0.09); }
 .admin-book-checks label { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 0.82rem; }
 .admin-book-checks label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -8465,9 +8772,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   width: 100%;
   min-width: 0;
   padding: 10px 11px;
-  border: 1px solid rgba(26, 20, 16, 0.18);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(var(--field-rgb), 0.58);
   color: var(--ink);
   font: 1rem "Fraunces", serif;
 }
@@ -8475,7 +8782,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-library-list { display: grid; gap: 7px; margin-top: 18px; }
 .admin-request-list { display: grid; gap: 8px; margin-top: 18px; }
-.admin-request { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(26, 20, 16, 0.11); border-radius: 10px; }
+.admin-request { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(var(--ink-rgb), 0.11); border-radius: 10px; }
 .admin-request > div:first-child { display: grid; min-width: 0; }
 .admin-request > div:first-child strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-request > div:first-child span { color: var(--ink-faded); font-size: 0.76rem; }
@@ -8565,7 +8872,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   justify-items: start;
   gap: 14px;
   padding: 18px;
-  border: 1px solid rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(var(--ink-rgb), 0.08);
   border-radius: var(--m-radius-sm);
   background: var(--m-card-light);
 }
@@ -8618,15 +8925,125 @@ html.native-app .admin-shell:not(.admin-overlay) {
 }
 
 .settings-toggle-row strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-family: "Fraunces", serif;
   font-size: 0.95rem;
   font-weight: 500;
   color: var(--ink-soft);
 }
 
+/* iOS appearance option. The shelf and tab bar are already dark; this turns
+   the paper screens into a warm near-black while preserving OperaLibre's
+   oxblood and gold accents. */
+html.native-app.platform-ios.dark-mode {
+  /* --paper deliberately does NOT flip: it doubles as the light-text color on
+     the app's always-dark surfaces (the shelf spine, sheets, tab bar). The
+     paper *screens* are darkened by the background rules below instead. */
+  --paper-deep: #211914;
+  --ink: #f3ead8;
+  --ink-soft: #ddd0bb;
+  --ink-faded: #aa9b86;
+  --oxblood: #c65b49;
+  /* Matches --oxblood: -deep is mostly small label text in the sheets, and
+     the darker red reads as mud on the lifted dark cards. Gradients built
+     from the pair flatten to a solid, which is fine at phone size. */
+  --oxblood-deep: #c65b49;
+  --gold: #c99a4b;
+  --on-ink: #17120f;
+  --m-card-light: rgba(255, 255, 255, 0.055);
+  /* Hairlines/tints flip to translucent cream; the frosted light surfaces
+     become lifted warm darks. Same alphas as light mode throughout. */
+  --ink-rgb: 243, 234, 216;
+  --lift-rgb: 56, 45, 36;
+  --lift-soft-rgb: 62, 50, 40;
+  --sheet-rgb: 34, 27, 22;
+  --sheet-deep-rgb: 28, 22, 17;
+  --sheen-rgb: 74, 60, 46;
+  --field-rgb: 10, 7, 5;
+  color-scheme: dark;
+}
+
+html.native-app.platform-ios.dark-mode body,
+html.native-app.platform-ios.dark-mode .native-shell > .player-pane,
+html.native-app.platform-ios.dark-mode .settings-shell,
+html.native-app.platform-ios.dark-mode .profile-shell,
+html.native-app.platform-ios.dark-mode .profile-page,
+html.native-app.platform-ios.dark-mode .admin-shell:not(.admin-overlay),
+html.native-app.platform-ios.dark-mode .admin-overlay,
+html.native-app.platform-ios.dark-mode .native-launch-placeholder {
+  background-color: #17120f;
+  background-image: none;
+}
+
+html.native-app.platform-ios.dark-mode .native-shell.tab-reading .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-ledger .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-settings .ios-status-veil,
+html.native-app.platform-ios.dark-mode .native-shell.tab-admin .ios-status-veil {
+  background: rgba(23, 18, 15, 0.78);
+}
+
+html.native-app.platform-ios.dark-mode .settings-card,
+html.native-app.platform-ios.dark-mode .chapter-now,
+html.native-app.platform-ios.dark-mode .heading-actions .download-btn,
+html.native-app.platform-ios.dark-mode .round-button.secondary {
+  border-color: rgba(243, 234, 216, 0.1);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch {
+  background: rgba(243, 234, 216, 0.2);
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch > span {
+  background: #f3ead8;
+}
+
+html.native-app.platform-ios.dark-mode .settings-switch[aria-checked="true"] {
+  background: var(--oxblood);
+}
+
+html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
+    linear-gradient(rgba(243, 234, 216, 0.2), rgba(243, 234, 216, 0.2)) left center / 100% 3px no-repeat;
+}
+
 .settings-toggle-row small {
   color: var(--ink-faded);
   font: italic 0.85rem/1.35 "Fraunces", serif;
+}
+
+/* Three-way appearance choice (Light / Dark / System). Wraps under its label
+   on narrow phones rather than squeezing the copy. */
+.settings-appearance-row {
+  flex-wrap: wrap;
+}
+
+.settings-mode-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.05);
+}
+
+.settings-mode-toggle button {
+  min-height: 30px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  font: 500 0.62rem "JetBrains Mono", monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.settings-mode-toggle button.selected {
+  color: var(--on-ink);
+  background: var(--ink);
 }
 
 .settings-switch {
@@ -8637,7 +9054,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.18);
+  background: rgba(var(--ink-rgb), 0.18);
   cursor: pointer;
   transition: background 0.18s ease;
 }
@@ -8709,7 +9126,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 0;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
 .settings-download-row:first-child {
@@ -8762,7 +9179,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
   gap: 12px;
   width: 100%;
   padding: 9px 0;
-  border-bottom: 1px dotted rgba(26, 20, 16, 0.18);
+  border-bottom: 1px dotted rgba(var(--ink-rgb), 0.18);
 }
 
 .server-alias-row > span {
@@ -8785,9 +9202,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .server-alias-form input {
   min-width: 0;
   padding: 9px 10px;
-  border: 1px solid rgba(26, 20, 16, 0.14);
+  border: 1px solid rgba(var(--ink-rgb), 0.14);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--field-rgb), 0.55);
   color: var(--ink);
 }
 
@@ -8915,7 +9332,7 @@ html.native-app .recent-row {
   color: var(--ink);
   background:
     radial-gradient(circle at 88% 4%, rgba(184, 137, 58, 0.2), transparent 32%),
-    linear-gradient(180deg, #fffaf0, #f1e6cf 100%);
+    linear-gradient(180deg, rgb(var(--sheet-rgb)), rgb(var(--sheet-deep-rgb)) 100%);
   box-shadow: 0 -24px 60px -28px rgba(0, 0, 0, 0.72);
   animation: sheet-up 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -8943,8 +9360,8 @@ html.native-app .recent-row {
 .details-sheet-header .icon-button {
   flex: 0 0 auto;
   color: var(--ink-soft);
-  border-color: rgba(26, 20, 16, 0.12);
-  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(var(--ink-rgb), 0.12);
+  background: rgba(var(--field-rgb), 0.5);
 }
 
 .details-sheet-hero {
@@ -9034,7 +9451,7 @@ html.native-app .recent-row {
   height: 5px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(26, 20, 16, 0.12);
+  background: rgba(var(--ink-rgb), 0.12);
 }
 
 .details-sheet-progressbar i {
@@ -9052,9 +9469,9 @@ html.native-app .recent-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: hidden;
-  border: 1px solid rgba(26, 20, 16, 0.1);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
   border-radius: 13px;
-  background: rgba(255, 253, 247, 0.5);
+  background: rgba(var(--lift-soft-rgb), 0.5);
 }
 
 .details-sheet-facts > div {
@@ -9065,7 +9482,7 @@ html.native-app .recent-row {
 }
 
 .details-sheet-facts > div + div {
-  border-left: 1px solid rgba(26, 20, 16, 0.09);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.09);
 }
 
 .details-sheet-facts span {
@@ -9094,7 +9511,7 @@ html.native-app .recent-row {
   border: 1px solid rgba(139, 46, 31, 0.13);
   border-radius: 999px;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.48);
+  background: rgba(var(--lift-soft-rgb), 0.48);
   font: 0.56rem "JetBrains Mono", monospace;
   letter-spacing: 0.05em;
 }
@@ -9115,7 +9532,7 @@ html.native-app .recent-row {
   gap: 8px;
   margin: 16px -2px 0;
   padding: 12px 2px max(2px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(241, 230, 207, 0), #f1e6cf 24%);
+  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 24%);
 }
 
 .details-sheet-actions button {
@@ -9133,13 +9550,13 @@ html.native-app .recent-row {
 
 .details-sheet-actions .details-sheet-completion {
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.7);
+  background: rgba(var(--lift-soft-rgb), 0.7);
 }
 
 .details-sheet-actions .details-sheet-reset {
   grid-column: 1 / -1;
   color: var(--oxblood-deep);
-  background: rgba(255, 253, 247, 0.52);
+  background: rgba(var(--lift-soft-rgb), 0.52);
 }
 
 .details-sheet-actions .details-sheet-full {
@@ -9199,13 +9616,15 @@ html.native-app .recent-row {
   gap: 11px;
 }
 
-.sleep-sheet .speed-wheel-shell > button {
+.sleep-sheet .speed-wheel-shell > button,
+.sleep-sheet .book-volume-slider-row > button {
   color: var(--paper);
   border-color: rgba(241, 231, 208, 0.18);
   background: rgba(255, 255, 255, 0.05);
 }
 
-.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled) {
+.sleep-sheet .speed-wheel-shell > button:hover:not(:disabled),
+.sleep-sheet .book-volume-slider-row > button:hover:not(:disabled) {
   color: var(--gold-soft);
   border-color: rgba(217, 181, 116, 0.7);
 }
@@ -9241,7 +9660,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-wheel-value.selected {
-  color: var(--ink);
+  color: var(--on-gold);
 }
 
 .sleep-sheet .speed-presets button {
@@ -9254,7 +9673,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .speed-presets button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   border-color: var(--gold-soft);
   background: var(--gold-soft);
 }
@@ -9309,7 +9728,7 @@ html.native-app .recent-row {
 }
 
 .sleep-sheet .book-volume-presets button.selected {
-  color: var(--ink);
+  color: var(--on-gold);
   border-color: var(--gold-soft);
   background: var(--gold-soft);
 }
@@ -9322,7 +9741,7 @@ html.native-app .recent-row {
   width: 100%;
   min-height: 46px;
   margin-top: 18px;
-  color: var(--ink);
+  color: var(--on-gold);
   border-radius: 999px;
   background: var(--gold-soft);
   font-family: "JetBrains Mono", monospace;

@@ -41,6 +41,8 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setGain", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getRecoveryState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise)
@@ -98,6 +100,16 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var finishedWhileInactive = false
     private var finishedPositionSeconds: Double?
     private var finishedDurationSeconds: Double?
+    private var sleepTimerRemaining: TimeInterval = 0
+    private var sleepTimerLastTick: TimeInterval?
+    private var sleepTimerFinishedWhileInactive = false
+    private var pendingErrorWhileInactive: String?
+    /// Set when an interruption ended without `.shouldResume` while the app
+    /// was not active. The retained play intent may only auto-resume within a
+    /// short window after this; an old timestamp means iOS meant the missing
+    /// hint — another app owns the audio session now.
+    private static let interruptionResumeGraceSeconds = 30.0
+    private var interruptionEndedWhileInactiveAt: TimeInterval?
 
     deinit {
         tearDownPlayer()
@@ -280,6 +292,26 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc public func setSleepTimer(_ call: CAPPluginCall) {
+        let seconds = max(0, call.getDouble("seconds") ?? 0)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                call.reject("The native audio player is unavailable.")
+                return
+            }
+            self.sleepTimerRemaining = seconds
+            self.syncSleepTimerWithPlaybackState(self.player?.timeControlStatus ?? .paused)
+            self.sleepTimerFinishedWhileInactive = false
+            call.resolve()
+        }
+    }
+
+    @objc public func getSleepTimer(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            call.resolve(["remainingSeconds": self?.sleepTimerRemaining ?? 0])
+        }
+    }
+
     @objc public func seek(_ call: CAPPluginCall) {
         let position = max(0, call.getDouble("positionSeconds") ?? 0)
         DispatchQueue.main.async { [weak self] in
@@ -457,6 +489,14 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             self?.generation += 1
+            // stop() must disarm the sleep timer so it cannot keep counting
+            // into a session that did not arm it (logout, failover, reload).
+            // stop() also runs between track reattachments, so the JS attach
+            // path re-arms the timer with the seconds React still holds;
+            // load() leaves the timer alone for the same reason.
+            self?.sleepTimerRemaining = 0
+            self?.sleepTimerLastTick = nil
+            self?.sleepTimerFinishedWhileInactive = false
             self?.tearDownPlayer()
             call.resolve()
         }
@@ -474,6 +514,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     player === self.player,
                     generation == self.generation
                 else { return }
+                self.syncSleepTimerWithPlaybackState(player.timeControlStatus)
                 self.updateNowPlayingInfo()
             }
         }
@@ -568,6 +609,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             queue: .main
         ) { [weak self] time in
             guard let self, generation == self.generation else { return }
+            self.updateSleepTimer()
             if let position = self.validSeconds(time) {
                 self.lastKnownPosition = position
             }
@@ -791,13 +833,26 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            if self.sleepTimerFinishedWhileInactive {
+                self.sleepTimerFinishedWhileInactive = false
+                self.notifyListeners("sleepTimerEnded", data: [:])
+            }
             self.emitRemoteIntentionalSeek()
             // Some short notification interruptions do not deliver their end
             // callback until the app is active again. Resume the exact native
-            // clock if playback was running before that interruption.
+            // clock if playback was running before that interruption — but
+            // only within the grace window and while nothing else is playing:
+            // an interruption that ended without `.shouldResume` long ago
+            // means another app owns the session now.
             if self.wasPlayingBeforeInterruption && self.shouldAutoplay {
-                self.interruptionIsActive = false
-                self.resumeAfterInterruption()
+                if self.interruptionResumeIsFresh()
+                    && !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                    self.interruptionIsActive = false
+                    self.resumeAfterInterruption()
+                } else {
+                    self.wasPlayingBeforeInterruption = false
+                    self.interruptionEndedWhileInactiveAt = nil
+                }
             }
             if self.finishedWhileInactive {
                 self.persistCheckpoint(
@@ -818,6 +873,14 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.emitTrackChanged()
                 self.emitState()
             }
+            // Deliver a deferred error last: the JS error listener fails over
+            // to web audio and stops listening, so replaying it first would
+            // swallow the events above — and the state emit must correct the
+            // web element's stale clock before the fallback plays from it.
+            if let pendingError = self.pendingErrorWhileInactive {
+                self.pendingErrorWhileInactive = nil
+                self.notifyListeners("error", data: ["message": pendingError])
+            }
         }
         enteredBackgroundObserver = center.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
@@ -837,6 +900,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         switch type {
         case .began:
             interruptionIsActive = true
+            interruptionEndedWhileInactiveAt = nil
             // iOS may have already changed AVPlayer to paused by the time this
             // notification is delivered. The retained play intent is the
             // reliable signal that playback should continue afterward.
@@ -854,7 +918,19 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             if wasPlayingBeforeInterruption && shouldAutoplay && options.contains(.shouldResume) {
                 resumeAfterInterruption()
             } else {
-                wasPlayingBeforeInterruption = false
+                // `shouldResume` is a system hint, and iOS does not include it
+                // for every interruption that finishes while the app remains
+                // inactive. Retain the user's play intent in that case so the
+                // didBecomeActive fallback can restore playback. If the app is
+                // already active, the missing hint remains authoritative. The
+                // timestamp bounds the retention: a latch that is hours old
+                // means the hint was meant, and resuming would hijack whatever
+                // now owns the audio session.
+                if UIApplication.shared.applicationState == .active {
+                    wasPlayingBeforeInterruption = false
+                } else {
+                    interruptionEndedWhileInactiveAt = Date.timeIntervalSinceReferenceDate
+                }
                 persistCheckpoint(force: true)
                 updateNowPlayingInfo()
                 if UIApplication.shared.applicationState == .active { emitState() }
@@ -906,9 +982,15 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    private func interruptionResumeIsFresh() -> Bool {
+        guard let endedAt = interruptionEndedWhileInactiveAt else { return true }
+        return Date.timeIntervalSinceReferenceDate - endedAt <= Self.interruptionResumeGraceSeconds
+    }
+
     private func resumeAfterInterruption() {
         guard !interruptionIsActive, let player else { return }
         wasPlayingBeforeInterruption = false
+        interruptionEndedWhileInactiveAt = nil
         activateAudioSession()
         player.playImmediately(atRate: desiredRate)
         persistCheckpoint(force: true)
@@ -1049,7 +1131,57 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func emitError(_ message: String) {
-        notifyListeners("error", data: ["message": message])
+        // Only `.background` suspends the WKWebView; in `.inactive` (control
+        // center, app switcher, call banner) JS still runs and the web-audio
+        // failover must stay immediate.
+        if UIApplication.shared.applicationState == .background {
+            pendingErrorWhileInactive = message
+        } else {
+            notifyListeners("error", data: ["message": message])
+        }
+    }
+
+    private func updateSleepTimer() {
+        guard sleepTimerRemaining > 0, let player else {
+            sleepTimerLastTick = nil
+            return
+        }
+        guard player.timeControlStatus == .playing else {
+            sleepTimerLastTick = nil
+            return
+        }
+
+        let now = Date.timeIntervalSinceReferenceDate
+        guard let lastTick = sleepTimerLastTick else {
+            sleepTimerLastTick = now
+            return
+        }
+        sleepTimerLastTick = now
+        sleepTimerRemaining = max(0, sleepTimerRemaining - max(0, now - lastTick))
+        guard sleepTimerRemaining == 0 else { return }
+
+        sleepTimerLastTick = nil
+        shouldAutoplay = false
+        // pause() drives the timeControlStatus observation, which republishes
+        // Now Playing info — no explicit updateNowPlayingInfo() needed here.
+        player.pause()
+        persistCheckpoint(force: true)
+        if UIApplication.shared.applicationState == .active {
+            notifyListeners("sleepTimerEnded", data: [:])
+            emitState()
+        } else {
+            sleepTimerFinishedWhileInactive = true
+        }
+    }
+
+    private func syncSleepTimerWithPlaybackState(_ status: AVPlayer.TimeControlStatus) {
+        guard sleepTimerRemaining > 0 else {
+            sleepTimerLastTick = nil
+            return
+        }
+        sleepTimerLastTick = status == .playing
+            ? Date.timeIntervalSinceReferenceDate
+            : nil
     }
 
     private func tearDownPlayer() {
@@ -1094,6 +1226,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         shouldAutoplay = false
         playIntentAt = 0
         wasPlayingBeforeInterruption = false
+        interruptionEndedWhileInactiveAt = nil
         interruptionIsActive = false
         recoveryScopeKey = nil
         recoveryTrackId = nil
@@ -1108,6 +1241,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         finishedWhileInactive = false
         finishedPositionSeconds = nil
         finishedDurationSeconds = nil
+        pendingErrorWhileInactive = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 

@@ -11,6 +11,7 @@ import {
   CloudDownload,
   Download,
   FolderOpen,
+  Gamepad2,
   Gauge,
   Headphones,
   KeyRound,
@@ -24,6 +25,7 @@ import {
   Maximize2,
   Minimize2,
   Minus,
+  Moon,
   Network,
   Pause,
   Pencil,
@@ -53,6 +55,7 @@ import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  adoptableServerProgress,
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
@@ -90,7 +93,10 @@ import {
   createBookGainSync,
   mergeServerBookGains,
   readBookGains,
-  writeBookGains
+  readUnsyncedBookGains,
+  unsyncedBookGainStorageKey,
+  writeBookGains,
+  writeUnsyncedBookGains
 } from "./bookVolume";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
@@ -117,6 +123,7 @@ import {
   getFinishFeed,
   getMe,
   markFinishFeedSeen,
+  getFreshProgress,
   getProgress,
   getServerStorageKey,
   getServerAliases,
@@ -173,7 +180,9 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, openNativeBrowser, selectionHaptic } from "./native";
+import { haptic, openNativeBrowser, selectionHaptic, syncStatusBarStyle } from "./native";
+import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
   disableRotationLock,
@@ -184,10 +193,12 @@ import {
 import {
   attachNativeAudioPlayer,
   getNativeAudioRecovery,
+  getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
   seekNativeAudio,
   setNativeAudioGain,
+  setNativeAudioSleepTimer,
   updateNativeAudioNowPlaying,
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
@@ -218,6 +229,8 @@ import {
   finishedAgoLabel
 } from "./finishFeed";
 import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
+import { GamesPage } from "./GameRoom";
+import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
@@ -244,7 +257,7 @@ const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
-type NativeTab = "shelf" | "reading" | "ledger" | "admin" | "settings";
+type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 type DeviceDownloadActivity = {
   bookId: string;
@@ -316,6 +329,26 @@ function writeStoredBookGains(userId: string, gains: Record<string, number>) {
   }
 }
 
+/** The gain writes the server never received, kept across restarts for retry. */
+function unsyncedBookGainStore(userId: string) {
+  return {
+    read() {
+      try {
+        return readUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId));
+      } catch {
+        return {};
+      }
+    },
+    write(entries: Record<string, number>) {
+      try {
+        writeUnsyncedBookGains(window.localStorage, unsyncedBookGainStorageKey(getServerStorageKey(), userId), entries);
+      } catch {
+        // ignore storage failures
+      }
+    }
+  };
+}
+
 const SPEED_WHEEL_SPACING_PX = 48;
 
 /**
@@ -348,6 +381,17 @@ function BookVolumeControl({
   const maximum = canBoost ? BOOK_GAIN_DB_MAX : 0;
   const position = Math.min(db, maximum);
   const presetOptions = BOOK_GAIN_DB_PRESETS.filter((preset) => preset <= maximum);
+  const sliderDragging = useRef(false);
+
+  // The same tactile grammar as the speed wheel beside it: a drag ticks once
+  // per decibel step, a discrete nudge (stepper button, arrow key) bumps.
+  function change(next: number, source: "drag" | "step") {
+    const bounded = Math.min(maximum, Math.max(BOOK_GAIN_DB_MIN, next));
+    if (bounded === position) return;
+    if (source === "drag") selectionHaptic("change");
+    else haptic("light");
+    onChange(bounded);
+  }
 
   const slider = (
     <input
@@ -358,7 +402,19 @@ function BookVolumeControl({
       step={BOOK_GAIN_DB_STEP}
       value={position}
       aria-valuetext={formatBookGainDb(position)}
-      onChange={(event) => onChange(Number(event.currentTarget.value))}
+      onPointerDown={() => {
+        sliderDragging.current = true;
+        selectionHaptic("start");
+      }}
+      onPointerUp={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onPointerCancel={() => {
+        sliderDragging.current = false;
+        selectionHaptic("end");
+      }}
+      onChange={(event) => change(Number(event.currentTarget.value), sliderDragging.current ? "drag" : "step")}
     />
   );
 
@@ -390,7 +446,25 @@ function BookVolumeControl({
         <output aria-live="polite">{formatBookGainDb(db)}</output>
         <span>{BOOK_GAIN_DB_STEP} dB steps</span>
       </div>
-      {slider}
+      <div className="book-volume-slider-row">
+        <button
+          type="button"
+          aria-label={`Decrease amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position <= BOOK_GAIN_DB_MIN}
+          onClick={() => change(position - BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Minus size={17} />
+        </button>
+        {slider}
+        <button
+          type="button"
+          aria-label={`Increase amplification by ${BOOK_GAIN_DB_STEP} decibel`}
+          disabled={position >= maximum}
+          onClick={() => change(position + BOOK_GAIN_DB_STEP, "step")}
+        >
+          <Plus size={17} />
+        </button>
+      </div>
       <div className="book-volume-range-labels" aria-hidden="true">
         <span>{formatBookGainDb(BOOK_GAIN_DB_MIN)}</span>
         <span>{maximum === 0 ? "Original" : `+${maximum} dB`}</span>
@@ -1742,12 +1816,14 @@ function ScrubSlider({
   ariaLabel,
   max,
   value,
-  onCommit
+  onCommit,
+  onPreview
 }: {
   ariaLabel: string;
   max: number;
   value: number;
   onCommit: (value: number) => void;
+  onPreview?: (value: number | null) => void;
 }) {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const pendingRef = useRef<number | null>(null);
@@ -1761,6 +1837,12 @@ function ScrubSlider({
       pendingRef.current = null;
     }
     setDragValue(null);
+    onPreview?.(null);
+  };
+  const cancel = () => {
+    pendingRef.current = null;
+    setDragValue(null);
+    onPreview?.(null);
   };
   return (
     <input
@@ -1775,9 +1857,12 @@ function ScrubSlider({
         const next = Number(event.currentTarget.value);
         pendingRef.current = next;
         setDragValue(next);
+        onPreview?.(next);
       }}
       onPointerUp={commit}
+      onPointerCancel={cancel}
       onTouchEnd={commit}
+      onTouchCancel={cancel}
       onKeyUp={commit}
       onBlur={commit}
     />
@@ -2184,12 +2269,17 @@ function MainApp({
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
   const native = isNativeApp();
+  const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
   const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
+  const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
+    ios ? readAppearanceMode(window.localStorage) : "light"
+  );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -2197,6 +2287,15 @@ function MainApp({
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+
+  function updateAppearanceMode(mode: AppearanceMode) {
+    if (mode === appearanceMode) return;
+    setAppearanceMode(mode);
+    writeAppearanceMode(window.localStorage, mode);
+    applyAppearanceMode(mode);
+    syncStatusBarStyle(mode);
+    haptic("light");
+  }
 
   useEffect(() => {
     if (!isOperaLibre || demoMode || localMode) {
@@ -2361,6 +2460,11 @@ function MainApp({
   // reply look stale.
   const playbackActionVersionRef = useRef(0);
   const restoredProgressBookId = useRef<string | null>(null);
+  // Tearing a session down (completion, reset) is not a progress mutation and
+  // not a listener action, so neither version above moves. Foreground adoption
+  // still has to notice: a continuation that lands after the session was
+  // cleared would restore the position it just discarded.
+  const playbackSessionVersion = useRef(0);
   // Whether the listener moved playback (play, seek, track change) since the
   // current book was restored. Until then no progress is persisted anywhere:
   // re-stamping the restored — or failed-to-restore — position with a fresh
@@ -2379,6 +2483,7 @@ function MainApp({
   const resumeAutoplayBookIdRef = useRef<string | null>(null);
   const resumeAutoplayPendingRef = useRef(false);
   const resumeReconciliationBookIdRef = useRef<string | null>(null);
+  const foregroundAdoptInFlightRef = useRef(false);
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
   // Authentication can be restored synchronously, but the native destination
@@ -2426,6 +2531,7 @@ function MainApp({
     setPendingSeekState(value);
   };
   const [position, setPosition] = useState(0);
+  const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const nativePlaybackPlayingRef = useRef(false);
@@ -2446,7 +2552,11 @@ function MainApp({
   // every step of a drag, and owns the release of the guard above.
   const gainSyncRef = useRef<ReturnType<typeof createBookGainSync> | null>(null);
   if (!gainSyncRef.current) {
-    gainSyncRef.current = createBookGainSync(setBookVolume, localGainWritesRef.current);
+    gainSyncRef.current = createBookGainSync(
+      setBookVolume,
+      localGainWritesRef.current,
+      unsyncedBookGainStore(currentUser.id)
+    );
   }
   // Read by the native player at load time, which happens before the effect
   // that pushes the gain across.
@@ -2455,6 +2565,10 @@ function MainApp({
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
   const sleepDeadlineRef = useRef<number | null>(null);
+  const sleepRemainingRef = useRef(0);
+  useEffect(() => {
+    sleepRemainingRef.current = sleepRemaining;
+  }, [sleepRemaining]);
   const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2741,6 +2855,7 @@ function MainApp({
   const displayChapterElapsed = activeChapter
     ? Math.max(0, displayBookPosition - activeChapter.startSeconds)
     : displayTrackPosition;
+  const scrubbedElapsed = scrubPreview ?? displayChapterElapsed;
   const chapterDuration = activeChapter
     ? Math.max(1, activeChapter.endSeconds - activeChapter.startSeconds)
     : Math.max(1, sliderMax);
@@ -2958,6 +3073,7 @@ function MainApp({
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);
+      reconcileServerBookGains(serverBooks);
       setIsOffline(false);
       if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
       if (isOperaLibre) {
@@ -3732,7 +3848,12 @@ function MainApp({
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
         queue: () => nativeAudioQueueRef.current,
-        gain: () => playbackGainRef.current
+        gain: () => playbackGainRef.current,
+        sleepTimerSeconds: () => {
+          const deadline = sleepDeadlineRef.current;
+          if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
+          return sleepRemainingRef.current;
+        }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
         if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
@@ -3754,6 +3875,11 @@ function MainApp({
       () => {
         markPlaybackTouched(true);
         void persistProgress();
+      },
+      () => {
+        sleepDeadlineRef.current = null;
+        setSleepMinutes(0);
+        setSleepRemaining(0);
       }
     );
   }, [currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -3803,15 +3929,22 @@ function MainApp({
   // The server's copy is what follows the listener between devices, so a boost
   // set on the phone is already applied the first time the book opens here.
   // Backends with nowhere to store it omit the field entirely and leave the
-  // local mirror alone.
-  useEffect(() => {
+  // local mirror alone. Only genuinely fresh server payloads take part: the
+  // long-lived `books` state keeps whatever volumeGain it arrived with, and
+  // re-merging it after a failed write released nothing would still be safe —
+  // but merging it after every identity change (a progress tick, a pause) is
+  // exactly what used to snap an offline adjustment back mid-chapter.
+  function reconcileServerBookGains(payload: readonly Book[]) {
     setBookGains((existing) => {
-      const merged = mergeServerBookGains(existing, books, localGainWritesRef.current);
+      const merged = mergeServerBookGains(existing, payload, localGainWritesRef.current);
       if (!merged) return existing;
       writeStoredBookGains(currentUser.id, merged);
       return merged;
     });
-  }, [books]);
+    // The server just answered, so anything it missed while unreachable can
+    // land now; a no-op whenever nothing is owed.
+    gainSyncRef.current?.retry();
+  }
 
   useEffect(() => {
     let active = true;
@@ -3933,10 +4066,31 @@ function MainApp({
     }
 
     sleepDeadlineRef.current ??= Date.now() + sleepRemaining * 1000;
+    // The wall-clock deadline cannot see pauses that happen while the WebView
+    // is suspended, so on the native path AVPlayer's playing-time countdown is
+    // authoritative and this deadline only drives the displayed value.
+    const syncFromNative = () => {
+      void getNativeAudioSleepTimer().then((remaining) => {
+        const next = Math.ceil(remaining);
+        if (next > 0) {
+          sleepDeadlineRef.current = Date.now() + next * 1000;
+          setSleepRemaining(next);
+        }
+      }).catch(() => undefined);
+    };
+    if (nativeAudio) syncFromNative();
     const timer = window.setInterval(() => {
       const deadline = sleepDeadlineRef.current;
       if (deadline === null) return;
       const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (next === 0 && nativeAudio) {
+        // Native owns expiry: it pauses AVPlayer and emits sleepTimerEnded,
+        // which clears this state. Zeroing the native timer here would disarm
+        // a countdown that may legitimately still hold minutes after a pause
+        // this clock never saw.
+        syncFromNative();
+        return;
+      }
       setSleepRemaining(next);
       if (next === 0) {
         sleepDeadlineRef.current = null;
@@ -3948,14 +4102,17 @@ function MainApp({
     return () => {
       window.clearInterval(timer);
       const deadline = sleepDeadlineRef.current;
-      if (deadline !== null) {
-        const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        setSleepRemaining(next);
-        if (next === 0) setSleepMinutes(0);
-        sleepDeadlineRef.current = null;
-      }
+      if (deadline === null) return;
+      sleepDeadlineRef.current = null;
+      // On the native path the countdown keeps its true value in AVPlayer and
+      // re-syncs when the effect re-arms; recomputing from the wall clock here
+      // could zero the UI while the native timer still holds minutes.
+      if (nativeAudio) return;
+      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSleepRemaining(next);
+      if (next === 0) setSleepMinutes(0);
     };
-  }, [isPlaying, sleepRemaining > 0]);
+  }, [isPlaying, nativeAudio, sleepRemaining > 0]);
 
   function configureSleepTimer(minutes: number) {
     haptic("light");
@@ -3964,6 +4121,16 @@ function MainApp({
       : null;
     setSleepMinutes(minutes);
     setSleepRemaining(minutes * 60);
+    if (nativeAudio) {
+      void setNativeAudioSleepTimer(minutes * 60).catch((error) => {
+        // Nothing enforces the timer once the WebView is suspended, so
+        // showing it armed after a failed native call would be a lie.
+        sleepDeadlineRef.current = null;
+        setSleepMinutes(0);
+        setSleepRemaining(0);
+        setPlaybackError(errorMessage(error, "The sleep timer could not be configured."));
+      });
+    }
     setNativePlayerSheet(null);
   }
 
@@ -3971,18 +4138,20 @@ function MainApp({
     const saveBeforeLeaving = () => {
       void persistProgress();
     };
-    const saveWhenHidden = () => {
+    const syncWhenVisibilityChanges = () => {
       if (document.visibilityState === "hidden") {
         void persistProgress();
+      } else if (document.visibilityState === "visible") {
+        void adoptNewerServerProgress();
       }
     };
 
     window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", saveWhenHidden);
+    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
 
     return () => {
       window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", saveWhenHidden);
+      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
@@ -4167,9 +4336,74 @@ function MainApp({
     updateBookProgress(book.id, saved);
   }
 
+  /**
+   * Returning to the foreground is the one moment another device's position
+   * can be newer without any local signal — the restore effect runs once per
+   * book and deliberately never re-fires. Adopt the server's copy only while
+   * this session is provably idle: restore finished, playback paused, and no
+   * local save queued or in flight. A moving or unsynced session is always
+   * authoritative and is left completely alone.
+   */
+  async function adoptNewerServerProgress() {
+    const book = playbackBook;
+    const audio = audioRef.current;
+    if (
+      !book ||
+      book.source === "device" ||
+      !currentTrack ||
+      !audio ||
+      restoredProgressBookId.current !== book.id ||
+      resumeReconciliationBookIdRef.current === book.id ||
+      foregroundAdoptInFlightRef.current
+    ) {
+      return;
+    }
+    const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
+    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveInFlight.current) {
+      return;
+    }
+    const actionVersion = playbackActionVersionRef.current;
+    const mutationVersion = progressMutationVersion.current;
+    const sessionVersion = playbackSessionVersion.current;
+    foregroundAdoptInFlightRef.current = true;
+    try {
+      const server = await getFreshProgress(book).catch(() => null);
+      const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
+      if (
+        !server ||
+        restoredProgressBookId.current !== book.id ||
+        playbackActionVersionRef.current !== actionVersion ||
+        progressMutationVersion.current !== mutationVersion ||
+        playbackSessionVersion.current !== sessionVersion
+      ) {
+        return;
+      }
+      const checkpoint = readProgressCheckpoint(
+        window.localStorage,
+        getServerStorageKey(),
+        currentUser.id,
+        book.id
+      );
+      const adopted = adoptableServerProgress(freshestProgress(checkpoint, cached), server);
+      if (!adopted) return;
+      const location = resolveProgressLocation(book.tracks, adopted);
+      if (!location) return;
+      storeCanonicalServerProgress(book, adopted);
+      setCurrentTrackId(location.trackId);
+      setPendingSeek(location);
+      setPosition(location.positionSeconds);
+      setDuration(
+        book.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0
+      );
+    } finally {
+      foregroundAdoptInFlightRef.current = false;
+    }
+  }
+
   function clearPlaybackSession() {
     // Completion owns the durable final position. Prevent pause/teardown
     // events from following it with a stale media-element clock.
+    playbackSessionVersion.current += 1;
     playbackTouchedRef.current = false;
     nativePlaybackPlayingRef.current = false;
     playWhenTrackLoads.current = false;
@@ -5005,14 +5239,13 @@ function MainApp({
       engageGainChain(audioRef.current, gain);
     }
     // Device books exist only on this phone, so there is no server row to sync.
-    // Everything else keeps the local change even if the sync fails; the gain
-    // is already audible and a retry lands with the next adjustment.
     if (book.source !== "device") {
       // Guards the book against a library payload older than this adjustment,
       // and holds it until the server echoes the value back. Clearing the guard
       // when the PUT settles would be too early: a getBooks() issued before the
       // write can still answer after it, carrying the old gain. A write that
-      // never landed releases it instead — see createBookGainSync.
+      // never landed keeps the guard and is re-sent once the server answers
+      // again — see createBookGainSync.
       gainSyncRef.current?.write(book.id, gain);
     }
   }
@@ -5022,6 +5255,7 @@ function MainApp({
   }
 
   function openNativeTab(tab: NativeTab) {
+    if (tab === "games" && !gamesEnabled) return;
     haptic("light");
     // Re-tapping the active Shelf tab is an escape hatch from the Audible
     // catalogue back to the listener's own library.
@@ -5030,6 +5264,13 @@ function MainApp({
     }
     setNativeTab(tab);
     if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
+  }
+
+  function toggleGamesEnabled() {
+    const enabled = !gamesEnabled;
+    writeGamesEnabled(enabled);
+    setGamesEnabled(enabled);
+    if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
   async function refreshLibrary() {
@@ -5046,6 +5287,7 @@ function MainApp({
         ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
         : nextBooks;
       setBooks(visibleBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
@@ -5072,6 +5314,7 @@ function MainApp({
       ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
       : nextBooks;
     setBooks(visibleBooks);
+    reconcileServerBookGains(nextBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
     setPlaybackBookId((existing) => {
       const next = resolveActivePlaybackBookId(visibleBooks, existing);
@@ -5115,6 +5358,7 @@ function MainApp({
       const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
       const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
       setBooks(nextBooks);
+      reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setError(null);
       if (uploadedBook) {
@@ -5383,6 +5627,7 @@ function MainApp({
       setBooks((existing) =>
         existing.map((book) => (book.id === updatedBook.id ? updatedBook : book))
       );
+      reconcileServerBookGains([updatedBook]);
       setMetadataEditOpen(false);
       setMetadataForm(null);
     } catch (error) {
@@ -5502,7 +5747,7 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}`
+          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
@@ -6258,6 +6503,7 @@ function MainApp({
                     ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
                     max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
                     value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+                    onPreview={setScrubPreview}
                     onCommit={(value) => {
                       if (activeChapter) {
                         seekBookPosition(activeChapter.startSeconds + value);
@@ -6267,11 +6513,11 @@ function MainApp({
                     }}
                   />
                   <div className="native-now-time-row">
-                    <span>{activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}</span>
+                    <span>{formatTime(scrubbedElapsed)}</span>
                     <span>
                       {activeChapter
-                        ? `−${formatTime(Math.max(0, chapterDuration - displayChapterElapsed))}`
-                        : `−${formatTime(Math.max(0, sliderMax - displayTrackPosition))}`}
+                        ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
+                        : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
                     </span>
                   </div>
                   {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
@@ -6900,24 +7146,28 @@ function MainApp({
                           />
                         </div>
                       )}
-                      <ScrubSlider
-                        ariaLabel={`Playback position in ${activeChapter.title}`}
-                        max={chapterDuration}
-                        value={Math.min(chapterElapsed, chapterDuration)}
-                        onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
-                      />
                     </>
+                  ) : null}
+                  {activeChapter ? (
+                    <ScrubSlider
+                      ariaLabel={`Playback position in ${activeChapter.title}`}
+                      max={chapterDuration}
+                      value={Math.min(chapterElapsed, chapterDuration)}
+                      onPreview={setScrubPreview}
+                      onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
+                    />
                   ) : (
                     <ScrubSlider
                       ariaLabel="Playback position"
                       max={Math.max(1, sliderMax)}
                       value={Math.min(position, Math.max(1, sliderMax))}
+                      onPreview={setScrubPreview}
                       onCommit={seekTo}
                     />
                   )}
                   <div className="time-row">
                     <span className="elapsed">
-                      {activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}
+                      {formatTime(scrubbedElapsed)}
                     </span>
                     <span>
                       {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
@@ -7128,6 +7378,7 @@ function MainApp({
               ariaLabel="Mini player progress"
               max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
               value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+              onPreview={setScrubPreview}
               onCommit={(nextValue) => {
                 if (activeChapter) {
                   seekBookPosition(activeChapter.startSeconds + nextValue);
@@ -7138,8 +7389,8 @@ function MainApp({
             />
             <span>
               {activeChapter
-                ? `${formatTime(displayChapterElapsed)} / ${formatTime(chapterDuration)}`
-                : `${formatTime(displayTrackPosition)} / ${formatTime(sliderMax)}`}
+                ? `${formatTime(scrubbedElapsed)} / ${formatTime(chapterDuration)}`
+                : `${formatTime(scrubbedElapsed)} / ${formatTime(sliderMax)}`}
             </span>
           </div>
 
@@ -7783,6 +8034,8 @@ function MainApp({
         />
       ) : null}
 
+      {native && gamesEnabled && nativeTab === "games" ? <GamesPage /> : null}
+
       {native && nativeTab === "settings" ? (
         <section className="settings-shell" aria-label="Settings">
           <header className="settings-head">
@@ -7799,9 +8052,29 @@ function MainApp({
             </div>
           </section>
 
-          {rotationLockAvailable ? <section className="settings-card">
+          {ios || rotationLockAvailable ? <section className="settings-card">
             <span className="section-label"><Smartphone size={13} /> Display</span>
-            <div className="settings-toggle-row">
+            {ios ? <div className="settings-toggle-row settings-appearance-row">
+              <span>
+                <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
+                <small>System follows your device's light or dark theme.</small>
+              </span>
+              <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
+                {(["light", "dark", "system"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={appearanceMode === mode}
+                    className={appearanceMode === mode ? "selected" : undefined}
+                    onClick={() => updateAppearanceMode(mode)}
+                  >
+                    {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
+                  </button>
+                ))}
+              </div>
+            </div> : null}
+            {rotationLockAvailable ? <div className="settings-toggle-row">
               <span>
                 <strong>Rotation lock</strong>
                 <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
@@ -7817,9 +8090,29 @@ function MainApp({
               >
                 <span aria-hidden="true" />
               </button>
-            </div>
+            </div> : null}
             {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
           </section> : null}
+
+          <section className="settings-card">
+            <span className="section-label"><Gamepad2 size={13} /> Extras</span>
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Games tab</strong>
+                <small>Shows optional, on-device games in the bottom navigation.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={gamesEnabled}
+                aria-label="Games tab"
+                onClick={toggleGamesEnabled}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+          </section>
 
           {sharedProgressAvailable ? (
             <ProgressSharingCard
@@ -8057,6 +8350,15 @@ function MainApp({
             <Headphones size={20} strokeWidth={1.6} />
             <span>Reading</span>
           </button>
+          {gamesEnabled ? <button
+            type="button"
+            className={`spine-tab ${nativeTab === "games" ? "active" : ""}`}
+            aria-current={nativeTab === "games" ? "page" : undefined}
+            onClick={() => openNativeTab("games")}
+          >
+            <Gamepad2 size={20} strokeWidth={1.6} />
+            <span>Games</span>
+          </button> : null}
           {showLedgerTab ? (
             <button
               type="button"
