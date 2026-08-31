@@ -1804,12 +1804,14 @@ function ScrubSlider({
   ariaLabel,
   max,
   value,
-  onCommit
+  onCommit,
+  onPreview
 }: {
   ariaLabel: string;
   max: number;
   value: number;
   onCommit: (value: number) => void;
+  onPreview?: (value: number | null) => void;
 }) {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const pendingRef = useRef<number | null>(null);
@@ -1823,6 +1825,12 @@ function ScrubSlider({
       pendingRef.current = null;
     }
     setDragValue(null);
+    onPreview?.(null);
+  };
+  const cancel = () => {
+    pendingRef.current = null;
+    setDragValue(null);
+    onPreview?.(null);
   };
   return (
     <input
@@ -1837,9 +1845,12 @@ function ScrubSlider({
         const next = Number(event.currentTarget.value);
         pendingRef.current = next;
         setDragValue(next);
+        onPreview?.(next);
       }}
       onPointerUp={commit}
+      onPointerCancel={cancel}
       onTouchEnd={commit}
+      onTouchCancel={cancel}
       onKeyUp={commit}
       onBlur={commit}
     />
@@ -2428,6 +2439,7 @@ function MainApp({
     setPendingSeekState(value);
   };
   const [position, setPosition] = useState(0);
+  const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const nativePlaybackPlayingRef = useRef(false);
@@ -2751,6 +2763,7 @@ function MainApp({
   const displayChapterElapsed = activeChapter
     ? Math.max(0, displayBookPosition - activeChapter.startSeconds)
     : displayTrackPosition;
+  const scrubbedElapsed = scrubPreview ?? displayChapterElapsed;
   const chapterDuration = activeChapter
     ? Math.max(1, activeChapter.endSeconds - activeChapter.startSeconds)
     : Math.max(1, sliderMax);
@@ -6334,6 +6347,7 @@ function MainApp({
                     ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
                     max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
                     value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+                    onPreview={setScrubPreview}
                     onCommit={(value) => {
                       if (activeChapter) {
                         seekBookPosition(activeChapter.startSeconds + value);
@@ -6343,11 +6357,11 @@ function MainApp({
                     }}
                   />
                   <div className="native-now-time-row">
-                    <span>{activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}</span>
+                    <span>{formatTime(scrubbedElapsed)}</span>
                     <span>
                       {activeChapter
-                        ? `−${formatTime(Math.max(0, chapterDuration - displayChapterElapsed))}`
-                        : `−${formatTime(Math.max(0, sliderMax - displayTrackPosition))}`}
+                        ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
+                        : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
                     </span>
                   </div>
                   {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
@@ -6976,24 +6990,28 @@ function MainApp({
                           />
                         </div>
                       )}
-                      <ScrubSlider
-                        ariaLabel={`Playback position in ${activeChapter.title}`}
-                        max={chapterDuration}
-                        value={Math.min(chapterElapsed, chapterDuration)}
-                        onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
-                      />
                     </>
+                  ) : null}
+                  {activeChapter ? (
+                    <ScrubSlider
+                      ariaLabel={`Playback position in ${activeChapter.title}`}
+                      max={chapterDuration}
+                      value={Math.min(chapterElapsed, chapterDuration)}
+                      onPreview={setScrubPreview}
+                      onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
+                    />
                   ) : (
                     <ScrubSlider
                       ariaLabel="Playback position"
                       max={Math.max(1, sliderMax)}
                       value={Math.min(position, Math.max(1, sliderMax))}
+                      onPreview={setScrubPreview}
                       onCommit={seekTo}
                     />
                   )}
                   <div className="time-row">
                     <span className="elapsed">
-                      {activeChapter ? formatTime(displayChapterElapsed) : formatTime(displayTrackPosition)}
+                      {formatTime(scrubbedElapsed)}
                     </span>
                     <span>
                       {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
@@ -7204,6 +7222,7 @@ function MainApp({
               ariaLabel="Mini player progress"
               max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
               value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+              onPreview={setScrubPreview}
               onCommit={(nextValue) => {
                 if (activeChapter) {
                   seekBookPosition(activeChapter.startSeconds + nextValue);
@@ -7214,8 +7233,8 @@ function MainApp({
             />
             <span>
               {activeChapter
-                ? `${formatTime(displayChapterElapsed)} / ${formatTime(chapterDuration)}`
-                : `${formatTime(displayTrackPosition)} / ${formatTime(sliderMax)}`}
+                ? `${formatTime(scrubbedElapsed)} / ${formatTime(chapterDuration)}`
+                : `${formatTime(scrubbedElapsed)} / ${formatTime(sliderMax)}`}
             </span>
           </div>
 
