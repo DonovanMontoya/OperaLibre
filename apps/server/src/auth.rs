@@ -69,11 +69,19 @@ pub(crate) struct User {
     /// sharing, matching the default for new accounts.
     #[serde(default = "default_share_progress")]
     pub(crate) share_progress: bool,
+    #[serde(default = "default_share_progress", skip_serializing_if = "is_true")]
+    pub(crate) announce_finishes: bool,
+    #[serde(default = "default_share_progress", skip_serializing_if = "is_true")]
+    pub(crate) notify_finishes: bool,
     pub(crate) created_at: String,
 }
 
 pub(crate) fn default_share_progress() -> bool {
     true
+}
+
+pub(crate) fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +95,8 @@ pub(crate) struct UserPublic {
     pub(crate) allowed_book_ids: Option<Vec<String>>,
     pub(crate) libation_access: LibationAccess,
     pub(crate) share_progress: bool,
+    pub(crate) announce_finishes: bool,
+    pub(crate) notify_finishes: bool,
     pub(crate) created_at: String,
 }
 
@@ -106,6 +116,8 @@ impl From<&User> for UserPublic {
                 user.libation_access
             },
             share_progress: user.share_progress,
+            announce_finishes: user.announce_finishes,
+            notify_finishes: user.notify_finishes,
             created_at: user.created_at.clone(),
         }
     }
@@ -150,6 +162,8 @@ pub(crate) struct AuthUser {
     pub(crate) allowed_book_ids: Option<Vec<String>>,
     pub(crate) libation_access: LibationAccess,
     pub(crate) share_progress: bool,
+    pub(crate) announce_finishes: bool,
+    pub(crate) notify_finishes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +185,10 @@ pub(crate) struct UpdateUserRoleRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateProgressSharingRequest {
     pub(crate) share_progress: bool,
+    #[serde(default)]
+    pub(crate) announce_finishes: Option<bool>,
+    #[serde(default)]
+    pub(crate) notify_finishes: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,6 +544,8 @@ pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<Aut
                 user.libation_access
             },
             share_progress: user.share_progress,
+            announce_finishes: user.announce_finishes,
+            notify_finishes: user.notify_finishes,
         })
 }
 
@@ -645,6 +665,8 @@ pub(crate) async fn auth_status(
                     allowed_book_ids: auth.allowed_book_ids,
                     libation_access: auth.libation_access,
                     share_progress: auth.share_progress,
+                    announce_finishes: auth.announce_finishes,
+                    notify_finishes: auth.notify_finishes,
                     created_at: String::new(),
                 }),
                 Some(media_token_for_session(&token)),
@@ -719,6 +741,8 @@ pub(crate) async fn setup_admin(
         allowed_book_ids: None,
         libation_access: LibationAccess::Direct,
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: now_rfc3339ish(),
     };
 
@@ -995,6 +1019,8 @@ pub(crate) async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic>
         allowed_book_ids: auth.allowed_book_ids,
         libation_access: auth.libation_access,
         share_progress: auth.share_progress,
+        announce_finishes: auth.announce_finishes,
+        notify_finishes: auth.notify_finishes,
         created_at: String::new(),
     })
 }
@@ -1013,6 +1039,12 @@ pub(crate) async fn update_progress_sharing(
                 .find(|user| user.id == auth.id)
                 .ok_or(ApiError::not_found("User not found."))?;
             user.share_progress = payload.share_progress;
+            if let Some(value) = payload.announce_finishes {
+                user.announce_finishes = value;
+            }
+            if let Some(value) = payload.notify_finishes {
+                user.notify_finishes = value;
+            }
             Ok(UserPublic::from(&*user))
         })
         .await?;
@@ -1183,6 +1215,8 @@ pub(crate) async fn create_user(
             })
         },
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: now_rfc3339ish(),
     };
     let created = new_user.clone();

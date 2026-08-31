@@ -79,7 +79,9 @@ Frontend installation is available when the server directly serves a versioned w
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `PUT` | `/api/me/progress-sharing` | Turn shared reading activity on or off for the current user with `{ "shareProgress": bool }`. Returns the updated account. |
+| `PUT` | `/api/me/progress-sharing` | Turn shared reading activity on or off for the current user with `{ "shareProgress": bool }`. Optionally carries `announceFinishes` and `notifyFinishes` (both bool); each is left unchanged when omitted, so older clients cannot reset them. Returns the updated account. |
+| `GET` | `/api/activity/finishes` | The shared "who finished what" feed, newest first, capped at 50: `{ entries, unseenCount, latestId }`. Empty unless the caller both shares progress and has `notifyFinishes` on. Excludes the caller's own finishes, anyone not currently announcing, and books the caller cannot access. |
+| `POST` | `/api/activity/finishes/seen` | Mark the feed read up to `{ "eventId": string }` — normally the `latestId` from a prior read. Only ever moves forward. Returns the refreshed feed. |
 
 #### Library
 

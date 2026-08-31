@@ -199,6 +199,8 @@ pub struct ReadingHistory {
     pub sessions: Vec<ReadingSession>,
     #[serde(default)]
     pub completions: Vec<CompletionEvent>,
+    #[serde(default)]
+    pub finish_seen: HashMap<String, String>,
 }
 
 /// Sessions still accumulating, keyed by listener and book. An entry lives here

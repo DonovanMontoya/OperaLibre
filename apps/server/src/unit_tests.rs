@@ -328,6 +328,8 @@ fn book_access_defaults_to_full_library_and_honors_restrictions() {
         allowed_book_ids: None,
         libation_access: super::LibationAccess::Approval,
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
     };
     assert!(can_access_book(&unrestricted, "book-a"));
 
@@ -374,6 +376,8 @@ fn sharing_user(id: &str, share_progress: bool) -> super::User {
         allowed_book_ids: None,
         libation_access: super::LibationAccess::Approval,
         share_progress,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: "0".to_string(),
     }
 }
@@ -389,6 +393,8 @@ fn viewer(id: &str, share_progress: bool) -> AuthUser {
         allowed_book_ids: None,
         libation_access: super::LibationAccess::Approval,
         share_progress,
+        announce_finishes: true,
+        notify_finishes: true,
     }
 }
 
@@ -1560,6 +1566,8 @@ fn admin_user() -> super::AuthUser {
         allowed_book_ids: None,
         libation_access: super::LibationAccess::Direct,
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
     }
 }
 
@@ -1580,6 +1588,8 @@ fn stored_user(id: &str, is_admin: bool, is_owner: bool) -> super::User {
             super::LibationAccess::Approval
         },
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
         created_at: "0".to_string(),
     }
 }
@@ -1595,6 +1605,8 @@ fn approval_reader() -> super::AuthUser {
         allowed_book_ids: None,
         libation_access: super::LibationAccess::Approval,
         share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
     }
 }
 

@@ -2,6 +2,119 @@
 
 use crate::*;
 
+const FINISH_FEED_PAGE: usize = 50;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FinishFeedEntry {
+    id: String,
+    user_id: String,
+    username: String,
+    book_id: String,
+    book_title: String,
+    finished_at: String,
+    unseen: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FinishFeedResponse {
+    entries: Vec<FinishFeedEntry>,
+    unseen_count: usize,
+    latest_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MarkFinishFeedSeenRequest {
+    event_id: String,
+}
+
+pub(crate) async fn finish_feed(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+) -> Result<Json<FinishFeedResponse>, ApiError> {
+    if !auth.share_progress || !auth.notify_finishes {
+        return Ok(Json(FinishFeedResponse {
+            entries: Vec::new(),
+            unseen_count: 0,
+            latest_id: None,
+        }));
+    }
+    let announcers: HashMap<String, String> = state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .filter(|user| user.share_progress && user.announce_finishes && user.id != auth.id)
+        .map(|user| (user.id.clone(), user.username.clone()))
+        .collect();
+    let history = state.reading_history.read().await;
+    let seen_index = history
+        .finish_seen
+        .get(&auth.id)
+        .and_then(|id| history.completions.iter().position(|event| &event.id == id));
+    let mut entries: Vec<_> = history
+        .completions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            let username = announcers.get(&event.user_id)?;
+            if !can_access_book(&auth, &event.book_id) {
+                return None;
+            }
+            Some(FinishFeedEntry {
+                id: event.id.clone(),
+                user_id: event.user_id.clone(),
+                username: username.clone(),
+                book_id: event.book_id.clone(),
+                book_title: event.snapshot.title.clone(),
+                finished_at: (event.finished_at_ms / 1_000).to_string(),
+                unseen: seen_index.is_none_or(|seen| index > seen),
+            })
+        })
+        .collect();
+    entries.reverse();
+    entries.truncate(FINISH_FEED_PAGE);
+    let unseen_count = entries.iter().filter(|entry| entry.unseen).count();
+    let latest_id = entries.first().map(|entry| entry.id.clone());
+    Ok(Json(FinishFeedResponse {
+        entries,
+        unseen_count,
+        latest_id,
+    }))
+}
+
+pub(crate) async fn mark_finish_feed_seen(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(payload): Json<MarkFinishFeedSeenRequest>,
+) -> Result<Json<FinishFeedResponse>, ApiError> {
+    state
+        .reading_history
+        .mutate(|history| {
+            let incoming = history
+                .completions
+                .iter()
+                .position(|event| event.id == payload.event_id);
+            let current = history
+                .finish_seen
+                .get(&auth.id)
+                .and_then(|id| history.completions.iter().position(|event| &event.id == id));
+            if matches!((incoming, current), (Some(next), Some(previous)) if next > previous)
+                || matches!((incoming, current), (Some(_), None))
+            {
+                history
+                    .finish_seen
+                    .insert(auth.id.clone(), payload.event_id.clone());
+            }
+            Ok(())
+        })
+        .await?;
+    finish_feed(State(state), Extension(auth)).await
+}
+
 pub(crate) const ACTIVITY_BASELINE_KEY: &str = "__operalibre_position_baseline__";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
