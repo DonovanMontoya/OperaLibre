@@ -604,6 +604,7 @@ pub(crate) async fn abs_library_items(
             "authors" => book.author.as_deref() == Some(value.as_str()),
             "series" => book.metadata.series.as_deref() == Some(value.as_str()),
             "narrators" => book.narrator.as_deref() == Some(value.as_str()),
+            "genres" => book.genres.iter().any(|genre| genre == &value),
             _ => false,
         });
     }
