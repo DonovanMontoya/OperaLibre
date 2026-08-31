@@ -1,4 +1,58 @@
 //! Extracted from main.rs.
+//!
+//! # Book identity
+//!
+//! Playback progress, per-book settings, metadata overrides and per-user access
+//! grants are all keyed by `book_id`, so which book an identity attaches to
+//! decides who can reach what. Identities are resolved once per scan by
+//! [`resolve_library_identities`], which matches the whole scan at once rather
+//! than group by group: matching one at a time makes the outcome depend on
+//! where a folder sorts in the walk, and lets an early book consume an identity
+//! belonging to a later one.
+//!
+//! Evidence is ranked. A book's current content fingerprint is the strongest
+//! signal, a previously recorded fingerprint is weaker, and a remembered path
+//! is weakest of all — paths get recycled, and identities are never pruned. A
+//! claim is granted only when it is unambiguous in both directions: the scanned
+//! book has exactly one candidate identity, and that identity is a candidate
+//! for exactly one scanned book. Anything else mints a new identity, because a
+//! wrong match moves a listener's position and their access to a book they were
+//! never granted.
+//!
+//! ## What the path tier is, and is not
+//!
+//! The weakest tier exists for one real case: a faststart remux rewrites a
+//! file's bytes in place, leaving the path unchanged and every fingerprint
+//! stale. Without it, routine maintenance would detach every book it touched.
+//!
+//! It is guarded by staleness, by the identity being absent from the rest of
+//! the scan, and by the book's shape — track count, and total runtime within
+//! [`LAYOUT_DURATION_TOLERANCE`] (1%, or two seconds, whichever is larger). A
+//! container rewrite preserves both exactly; unrelated content almost never
+//! matches either.
+//!
+//! The runtime half of that guard is not always available. An identity
+//! migrated from the pre-versioned format has never recorded a duration, and
+//! neither has one whose files carry no readable duration tag, so until one
+//! successful scan supplies it the tier is guarded by track count alone. The
+//! reverse case is closed deliberately: once a duration *is* known, a scan that
+//! cannot produce one fails the guard rather than falling back to the count,
+//! because unreadable tags are exactly what a replacement looks like.
+//!
+//! Those guards make accidental misattribution unlikely. They are **not** an
+//! authorization boundary. Content that arrives at a book's path, within the
+//! staleness window, with the same track count and a runtime inside that
+//! tolerance, will inherit that book's identity — and with it the progress and
+//! access grants attached to it. Nothing available at this tier distinguishes
+//! that from the remux it is meant to serve.
+//!
+//! Treat path-tier continuity as best effort. Anyone who can write to the
+//! library directory is already trusted with its contents: the fingerprint
+//! itself covers only the file's size and its first and last 64 KiB, and the
+//! cache that avoids recomputing it trusts size and mtime. Closing this
+//! properly needs evidence from outside the scan — authenticating the volume a
+//! root lives on, or carrying provenance from the conversion that rewrote the
+//! file.
 
 use crate::*;
 
@@ -56,15 +110,101 @@ pub(crate) struct CachedCover {
     pub(crate) len: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LibraryIdentityStore {
+    /// Bumped when the on-disk shape changes. Absent means the pre-versioned
+    /// format, which `migrate_legacy_identities` rewrites on load.
+    #[serde(default)]
+    pub(crate) version: u32,
     #[serde(default)]
     pub(crate) books: Vec<BookIdentity>,
-    /// Track fingerprints keyed by library-relative path, so a rescan only
-    /// re-reads files whose size or modification time actually changed.
+    /// Track fingerprints keyed by root and then by root-relative path, so a
+    /// rescan only re-reads files whose size or modification time changed.
+    /// Nesting by root keeps two roots that share a relative path from
+    /// colliding in the cache.
     #[serde(default)]
-    pub(crate) fingerprint_cache: BTreeMap<String, CachedFingerprint>,
+    pub(crate) fingerprint_cache: BTreeMap<String, BTreeMap<String, CachedFingerprint>>,
+    /// Monotonic scan counter. Identities carry the value of the scan that last
+    /// saw them, which is what makes a long-dead identity ineligible for the
+    /// path tier.
+    #[serde(default)]
+    pub(crate) scan_counter: u64,
+    /// The set of book fingerprints committed by the last wholly successful
+    /// scan of each root. Adoption and sanity checks compare against this
+    /// rather than against every identity ever recorded.
+    #[serde(default)]
+    pub(crate) manifests: BTreeMap<String, RootManifest>,
+    /// A shrunken scan result seen but not yet accepted, per root. A drive that
+    /// really did lose books reports the same reduced count every time, so the
+    /// gate lets it through once it has been confirmed rather than stranding
+    /// the library forever.
+    #[serde(default)]
+    pub(crate) pending_shrink: BTreeMap<String, PendingShrink>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingShrink {
+    pub(crate) book_count: usize,
+    /// Digest of the book locations the shrunken scan actually found. A count
+    /// alone would let a mount that returns a different twenty books each time
+    /// confirm a reduction it never demonstrated.
+    #[serde(default)]
+    pub(crate) signature: String,
+    pub(crate) observations: u32,
+}
+
+/// How many consecutive scans must agree on a shrunken library before it is
+/// accepted. Three consecutive identical results is a deliberate change or a
+/// genuinely lost drive; a flapping mount does not produce it.
+pub(crate) const SHRINK_CONFIRMATIONS: u32 = 3;
+
+/// The reserved root ID for a single-root install. Every alias migrated from
+/// the pre-versioned format is stamped with it.
+pub(crate) const DEFAULT_ROOT_ID: &str = "default";
+
+/// The current on-disk identity format.
+pub(crate) const IDENTITY_FORMAT_VERSION: u32 = 1;
+
+/// How many historical book fingerprints an identity remembers. A remux
+/// rewrites every track, so without history a remux plus a rename would leave
+/// no evidence at all; a short window covers that without unbounded growth.
+const MAX_FINGERPRINT_HISTORY: usize = 8;
+
+/// How far a book's runtime may drift and still be taken for the same
+/// recording. A container rewrite preserves duration exactly; this only
+/// absorbs rounding in how different muxers report it.
+const LAYOUT_DURATION_TOLERANCE: f64 = 0.01;
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RootManifest {
+    #[serde(default)]
+    pub(crate) book_fingerprints: Vec<String>,
+    #[serde(default)]
+    pub(crate) scan: u64,
+}
+
+/// A path recorded against the root that owns it.
+///
+/// A bare relative path is ambiguous the moment a second root exists: two
+/// drives can each hold `Dune/01.m4b`. Pairing the path with its root is what
+/// keeps one root's aliases from matching another's books.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IdentityPath {
+    pub(crate) root_id: String,
+    pub(crate) relative_path: String,
+}
+
+impl IdentityPath {
+    pub(crate) fn new(root_id: &str, relative_path: &str) -> Self {
+        Self {
+            root_id: root_id.to_string(),
+            relative_path: relative_path.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,24 +215,69 @@ pub(crate) struct CachedFingerprint {
     pub(crate) modified_ms: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookIdentity {
     pub(crate) fingerprint: String,
+    /// Recent previous fingerprints, newest last, excluding the current one.
+    /// Kept so an in-place rewrite does not erase the evidence that identifies
+    /// the book, and so a theft cannot destroy its victim's history.
+    #[serde(default)]
+    pub(crate) fingerprint_history: Vec<String>,
     pub(crate) book_id: String,
     #[serde(default)]
-    pub(crate) paths: Vec<String>,
+    pub(crate) paths: Vec<IdentityPath>,
     #[serde(default)]
     pub(crate) tracks: Vec<TrackIdentity>,
+    /// The scan counter value when this identity was last matched.
+    #[serde(default)]
+    pub(crate) last_seen_scan: u64,
+    /// The book's shape when last seen. A container rewrite preserves both, so
+    /// they are what distinguish a remux from unrelated content arriving at
+    /// the same path. Zero and `None` mean "not yet recorded" — a migrated
+    /// identity has neither until its first scan under this format.
+    #[serde(default)]
+    pub(crate) track_count: usize,
+    #[serde(default)]
+    pub(crate) duration_seconds: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl BookIdentity {
+    /// True when `fingerprint` is the current digest or one of the remembered
+    /// previous ones.
+    pub(crate) fn matches_fingerprint(&self, fingerprint: &str) -> bool {
+        self.fingerprint == fingerprint
+            || self
+                .fingerprint_history
+                .iter()
+                .any(|candidate| candidate == fingerprint)
+    }
+
+    /// Record a new current fingerprint, retiring the previous one into
+    /// history rather than overwriting it.
+    pub(crate) fn record_fingerprint(&mut self, fingerprint: &str) {
+        if self.fingerprint == fingerprint {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.fingerprint, fingerprint.to_string());
+        self.fingerprint_history
+            .retain(|candidate| candidate != &previous && candidate != fingerprint);
+        self.fingerprint_history.push(previous);
+        let excess = self
+            .fingerprint_history
+            .len()
+            .saturating_sub(MAX_FINGERPRINT_HISTORY);
+        self.fingerprint_history.drain(..excess);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TrackIdentity {
     pub(crate) fingerprint: String,
     pub(crate) track_id: String,
     #[serde(default)]
-    pub(crate) paths: Vec<String>,
+    pub(crate) paths: Vec<IdentityPath>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -516,11 +701,206 @@ pub(crate) fn apply_book_metadata_override(
 
 pub(crate) async fn load_library_identities(path: &FsPath) -> anyhow::Result<LibraryIdentityStore> {
     match fs::read_to_string(path).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(LibraryIdentityStore::default())
+        Ok(contents) => {
+            let LoadedIdentities { store, migrated } = parse_library_identities(&contents)?;
+            if !migrated {
+                return Ok(store);
+            }
+            // The store is about to be rewritten in a shape older builds cannot
+            // read, so keep the one they can. Failing to write it aborts the
+            // load: a migration whose promised rollback does not exist is worse
+            // than not migrating.
+            let backup = path.with_extension("json.pre-v1");
+            let valid_backup = match fs::read_to_string(&backup).await {
+                Ok(existing) => {
+                    parse_library_identities(&existing).is_ok_and(|loaded| loaded.migrated)
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
+            };
+            if !valid_backup {
+                write_bytes_atomic(&backup, contents.as_bytes())
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "could not back up {} before migrating identities: {}",
+                            path.display(),
+                            error.message
+                        )
+                    })?;
+            }
+            Ok(store)
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(LibraryIdentityStore {
+            version: IDENTITY_FORMAT_VERSION,
+            ..Default::default()
+        }),
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The pre-versioned on-disk shape: bare relative path strings and a flat
+/// fingerprint cache.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyIdentityStore {
+    #[serde(default)]
+    books: Vec<LegacyBookIdentity>,
+    #[serde(default)]
+    fingerprint_cache: BTreeMap<String, CachedFingerprint>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyBookIdentity {
+    fingerprint: String,
+    book_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    tracks: Vec<LegacyTrackIdentity>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyTrackIdentity {
+    fingerprint: String,
+    track_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+/// Parse either format. The absence of `version` is what marks the old one;
+/// every existing install has no such field.
+///
+/// Migration preserves every issued `bookId` and `trackId` byte for byte —
+/// progress, settings and access grants are keyed by them, so reminting here
+/// would detach all three.
+pub(crate) struct LoadedIdentities {
+    pub(crate) store: LibraryIdentityStore,
+    /// True when the file on disk was in the pre-versioned shape, so the
+    /// caller knows a backup is owed before it is overwritten.
+    pub(crate) migrated: bool,
+}
+
+pub(crate) fn parse_library_identities(contents: &str) -> anyhow::Result<LoadedIdentities> {
+    let value: serde_json::Value = serde_json::from_str(contents)?;
+    let versioned = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if versioned >= 1 {
+        if versioned > u64::from(IDENTITY_FORMAT_VERSION) {
+            anyhow::bail!(
+                "library-identities.json was written by a newer OperaLibre (format {versioned}, this build understands {IDENTITY_FORMAT_VERSION})."
+            );
+        }
+        return Ok(LoadedIdentities {
+            store: serde_json::from_value(value)?,
+            migrated: false,
+        });
+    }
+
+    let legacy: LegacyIdentityStore = serde_json::from_value(value)?;
+    Ok(LoadedIdentities {
+        store: migrate_legacy_identities(legacy),
+        migrated: true,
+    })
+}
+
+fn migrate_legacy_identities(legacy: LegacyIdentityStore) -> LibraryIdentityStore {
+    let books: Vec<BookIdentity> = legacy
+        .books
+        .into_iter()
+        .map(|book| BookIdentity {
+            fingerprint: book.fingerprint,
+            fingerprint_history: Vec::new(),
+            book_id: book.book_id,
+            paths: book
+                .paths
+                .iter()
+                .map(|path| IdentityPath::new(DEFAULT_ROOT_ID, path))
+                .collect(),
+            tracks: book
+                .tracks
+                .into_iter()
+                .map(|track| TrackIdentity {
+                    fingerprint: track.fingerprint,
+                    track_id: track.track_id,
+                    paths: track
+                        .paths
+                        .iter()
+                        .map(|path| IdentityPath::new(DEFAULT_ROOT_ID, path))
+                        .collect(),
+                })
+                .collect(),
+            // Legacy identities have never been stamped. Zero is a deliberate
+            // "never seen under this format": it holds them out of the
+            // path-only tier until one successful scan has confirmed where
+            // they actually are. The cost is that a book rewritten in place
+            // *between* the upgrade and the first scan gets a new identity;
+            // the alternative is trusting an unverified path on the one scan
+            // with the least evidence behind it.
+            last_seen_scan: 0,
+            track_count: 0,
+            duration_seconds: None,
+        })
+        .collect();
+
+    // Seed the shrink baseline so the first scan after an upgrade is gated like
+    // any other. Without it `known` is zero, and a silently partial first scan
+    // — an error-free walk of a half-mounted drive — is committed on the spot,
+    // publishing an incomplete catalogue at exactly the moment the store holds
+    // the most evidence that the library is larger than that.
+    //
+    // The baseline counts only the books the legacy store can still show were
+    // present. Legacy identities were never pruned, so the full list includes
+    // every book ever deleted and would overstate the library, withholding
+    // scans that are perfectly good. The legacy fingerprint cache was rebuilt
+    // from scratch on every scan, so its keys are exactly the track paths the
+    // last successful scan walked: a book with a track in that cache was there,
+    // and one without it either is gone or could not be read. Erring towards
+    // the smaller count keeps the gate conservative in the safe direction.
+    let cached_aliases = legacy
+        .fingerprint_cache
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let present_fingerprints = books
+        .iter()
+        .filter(|book| {
+            book.tracks.iter().any(|track| {
+                track
+                    .paths
+                    .iter()
+                    .any(|path| cached_aliases.contains(path.relative_path.as_str()))
+            })
+        })
+        .map(|book| book.fingerprint.clone())
+        .collect::<Vec<_>>();
+    let mut manifests = BTreeMap::new();
+    if !present_fingerprints.is_empty() {
+        manifests.insert(
+            DEFAULT_ROOT_ID.to_string(),
+            RootManifest {
+                book_fingerprints: present_fingerprints,
+                // Scan zero: the baseline was inherited, not observed under
+                // this format.
+                scan: 0,
+            },
+        );
+    }
+
+    let mut fingerprint_cache = BTreeMap::new();
+    fingerprint_cache.insert(DEFAULT_ROOT_ID.to_string(), legacy.fingerprint_cache);
+
+    LibraryIdentityStore {
+        version: IDENTITY_FORMAT_VERSION,
+        books,
+        fingerprint_cache,
+        scan_counter: 0,
+        manifests,
+        pending_shrink: BTreeMap::new(),
     }
 }
 
@@ -531,15 +911,29 @@ pub(crate) fn library_identity_path(root: &FsPath, path: &FsPath) -> String {
         .replace('\\', "/")
 }
 
-pub(crate) fn remember_identity_path(paths: &mut Vec<String>, path: &str) {
+/// Remember where an identity has been seen, most recent last.
+///
+/// A path already known is moved to the end rather than left in place, so the
+/// eviction below drops genuinely stale aliases instead of the one the book
+/// currently lives at.
+pub(crate) fn remember_identity_path(paths: &mut Vec<IdentityPath>, path: IdentityPath) {
     const MAX_IDENTITY_PATH_ALIASES: usize = 32;
-    if paths.iter().any(|candidate| candidate == path) {
-        return;
-    }
-    paths.push(path.to_string());
-    if paths.len() > MAX_IDENTITY_PATH_ALIASES {
-        paths.remove(0);
-    }
+    paths.retain(|candidate| candidate != &path);
+    paths.push(path);
+    let excess = paths.len().saturating_sub(MAX_IDENTITY_PATH_ALIASES);
+    paths.drain(..excess);
+}
+
+/// A fresh 128-bit identity ID.
+///
+/// Deliberately not derived from the path: `stable_id` is deterministic, so a
+/// path-derived mint reproduces the ID of whatever previously occupied that
+/// location, and the new book inherits its progress and access grants.
+pub(crate) fn mint_identity_id() -> String {
+    use rand::RngExt;
+    let mut bytes = [0_u8; 16];
+    rand::rng().fill(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(crate) fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String> {
@@ -660,102 +1054,571 @@ pub(crate) fn book_identity_fingerprint(track_fingerprints: &[String]) -> String
     hex_digest(hasher.finalize())
 }
 
-pub(crate) struct LibraryIdentityCandidate<'a> {
+/// How many scans an identity may go unseen before its remembered paths stop
+/// being accepted as evidence on their own. Content evidence never expires;
+/// only the path claim does, because paths get recycled and identities are
+/// never pruned.
+pub(crate) const PATH_TIER_STALE_AFTER_SCANS: u64 = 3;
+
+/// One scanned book, before it has been matched to a stored identity.
+pub(crate) struct ScannedGroup<'a> {
     pub(crate) book_fingerprint: &'a str,
     pub(crate) group_alias: &'a str,
-    pub(crate) group_key: &'a FsPath,
-    pub(crate) library_root: &'a FsPath,
+    pub(crate) root_id: &'a str,
     pub(crate) grouped_files: &'a [PathBuf],
     pub(crate) track_fingerprints: &'a [String],
+    pub(crate) track_aliases: &'a [String],
+    /// Total runtime, where the tags carried one.
+    pub(crate) duration_seconds: Option<f64>,
 }
 
-pub(crate) fn resolve_library_identity(
+/// Resolve every scanned group against the stored identities at once.
+///
+/// The previous implementation walked groups in scan order and took the first
+/// unused identity matching either the path or the fingerprint. That is
+/// order-dependent: a book processed early can consume an identity that
+/// belongs to one processed later, and a recycled path can claim an identity
+/// outright. Resolving globally removes the ordering, and the three passes
+/// below only ever act on evidence that is unambiguous.
+///
+/// Returns one `(book_id, track_ids)` per input group, in input order.
+pub(crate) fn resolve_library_identities(
     store: &mut LibraryIdentityStore,
-    used_books: &mut HashSet<usize>,
-    candidate: LibraryIdentityCandidate<'_>,
-) -> (String, Vec<String>) {
-    let LibraryIdentityCandidate {
-        book_fingerprint,
-        group_alias,
-        group_key,
-        library_root,
-        grouped_files,
-        track_fingerprints,
-    } = candidate;
-    let identity_index = store
-        .books
+    groups: &[ScannedGroup<'_>],
+    mint: &mut dyn FnMut() -> String,
+) -> Vec<(String, Vec<String>)> {
+    let scan = store.scan_counter.saturating_add(1);
+    let mut claimed_by: Vec<Option<usize>> = vec![None; groups.len()];
+    let mut used: HashSet<usize> = HashSet::new();
+
+    // The fingerprints present anywhere in this scan. Pass 3 uses this to
+    // refuse a path-only claim whose identity is demonstrably alive elsewhere.
+    let scanned_fingerprints: HashSet<&str> = groups
         .iter()
-        .enumerate()
-        .find(|(index, identity)| {
-            !used_books.contains(index) && identity.paths.iter().any(|path| path == group_alias)
-        })
-        .or_else(|| {
-            store.books.iter().enumerate().find(|(index, identity)| {
-                !used_books.contains(index) && identity.fingerprint == book_fingerprint
-            })
-        })
-        .map(|(index, _)| index)
-        .unwrap_or_else(|| {
-            let index = store.books.len();
-            store.books.push(BookIdentity {
-                fingerprint: book_fingerprint.to_string(),
-                book_id: stable_id(&group_key.to_string_lossy()),
-                paths: vec![group_alias.to_string()],
-                tracks: Vec::new(),
-            });
-            index
-        });
-    used_books.insert(identity_index);
+        .map(|group| group.book_fingerprint)
+        .collect::<HashSet<_>>();
 
-    let identity = &mut store.books[identity_index];
-    identity.fingerprint = book_fingerprint.to_string();
-    remember_identity_path(&mut identity.paths, group_alias);
-
-    let mut used_tracks = HashSet::new();
-    let mut track_ids = Vec::with_capacity(grouped_files.len());
-    for (file_path, fingerprint) in grouped_files.iter().zip(track_fingerprints) {
-        let alias = library_identity_path(library_root, file_path);
-        let track_index = identity
-            .tracks
+    let path_matches = |identity: &BookIdentity, group: &ScannedGroup<'_>| {
+        identity
+            .paths
             .iter()
-            .enumerate()
-            .find(|(index, track)| {
-                !used_tracks.contains(index) && track.paths.iter().any(|path| path == &alias)
-            })
-            .or_else(|| {
-                identity.tracks.iter().enumerate().find(|(index, track)| {
-                    !used_tracks.contains(index) && track.fingerprint == *fingerprint
-                })
-            })
-            .map(|(index, _)| index)
-            .unwrap_or_else(|| {
-                let index = identity.tracks.len();
-                identity.tracks.push(TrackIdentity {
-                    fingerprint: fingerprint.clone(),
-                    track_id: stable_id(&file_path.to_string_lossy()),
-                    paths: vec![alias.clone()],
-                });
-                index
-            });
-        used_tracks.insert(track_index);
-        let track = &mut identity.tracks[track_index];
-        track.fingerprint = fingerprint.clone();
-        remember_identity_path(&mut track.paths, &alias);
-        track_ids.push(track.track_id.clone());
+            .any(|path| path.root_id == group.root_id && path.relative_path == group.group_alias)
+    };
+
+    // An identity whose *current* digest is still unaccounted for in this scan
+    // is alive somewhere the resolver has not placed yet, so weaker evidence
+    // pointing at it from elsewhere is a stale alias or an old copy.
+    //
+    // Groups already claimed are excluded deliberately. Two byte-identical
+    // copies share a digest, so a bare "does this digest appear anywhere" test
+    // would report both identities as alive whenever either copy is present,
+    // and close the later tiers against a copy that was genuinely remuxed.
+    let current_is_present = |identity: &BookIdentity, claimed_by: &[Option<usize>]| {
+        groups.iter().enumerate().any(|(position, group)| {
+            claimed_by[position].is_none() && group.book_fingerprint == identity.fingerprint
+        })
+    };
+
+    // A book's shape: how many tracks it has and how long it runs. A faststart
+    // remux preserves both exactly (`-c copy` rewrites the container, not the
+    // audio); an unrelated book replacing it at the same path almost never
+    // matches either. This is what keeps the path-only tier from treating
+    // every same-path replacement as a remux.
+    let layout_matches = |identity: &BookIdentity, group: &ScannedGroup<'_>| {
+        if identity.track_count != 0 && identity.track_count != group.grouped_files.len() {
+            return false;
+        }
+        match (identity.duration_seconds, group.duration_seconds) {
+            (Some(known), Some(found)) => {
+                let tolerance = (known.abs() * LAYOUT_DURATION_TOLERANCE).max(2.0);
+                (known - found).abs() <= tolerance
+            }
+            // The identity knows how long this book is and the scan cannot say.
+            // Unreadable tags are exactly what a replacement looks like, so the
+            // tier closes rather than taking the path's word for it.
+            (Some(_), None) => false,
+            // A migrated identity has never recorded a duration. Track count
+            // alone still has to agree, and the next scan records the rest.
+            (None, _) => true,
+        }
+    };
+
+    // Claim only edges that are unambiguous in BOTH directions: the group must
+    // have exactly one candidate identity, and that identity must be proposed
+    // by exactly one group. Checking only the first direction leaves the
+    // outcome dependent on which group is visited first, which is the ordering
+    // bug this resolver exists to remove.
+    let claim_pass =
+        |claimed_by: &mut Vec<Option<usize>>,
+         used: &mut HashSet<usize>,
+         eligible: &dyn Fn(&BookIdentity, &ScannedGroup<'_>) -> bool| {
+            let mut proposals: Vec<Vec<usize>> = Vec::with_capacity(groups.len());
+            for (position, group) in groups.iter().enumerate() {
+                if claimed_by[position].is_some() {
+                    proposals.push(Vec::new());
+                    continue;
+                }
+                proposals.push(
+                    store
+                        .books
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, identity)| {
+                            !used.contains(index) && eligible(identity, group)
+                        })
+                        .map(|(index, _)| index)
+                        .collect(),
+                );
+            }
+
+            // How many groups an identity is a candidate for — counting every
+            // edge, not just the groups that happen to have a single candidate.
+            // An identity wanted by one certain group and one uncertain group
+            // is still contested, and handing it to the certain one is a guess.
+            let mut proposal_count: HashMap<usize, usize> = HashMap::new();
+            for candidates in &proposals {
+                for index in candidates {
+                    *proposal_count.entry(*index).or_insert(0) += 1;
+                }
+            }
+
+            for (position, candidates) in proposals.iter().enumerate() {
+                if let [only] = candidates[..]
+                    && proposal_count.get(&only).copied().unwrap_or(0) == 1
+                    && !used.contains(&only)
+                {
+                    claimed_by[position] = Some(only);
+                    used.insert(only);
+                }
+            }
+        };
+
+    // Pass 1 — remembered path and the identity's *current* digest agree. The
+    // steady state, and the only tier that can separate two byte-identical
+    // copies, because their paths are the only thing that differs.
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        path_matches(identity, group) && identity.fingerprint == group.book_fingerprint
+    });
+
+    // Pass 2 — the current digest alone, when exactly one identity carries it.
+    // Carries an ordinary move or rename.
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        identity.fingerprint == group.book_fingerprint
+    });
+
+    // Pass 3 — a historical digest, and only for an identity whose current
+    // digest is nowhere in this scan. Without that guard an old copy left at a
+    // stale alias could out-claim the live book, since it matches history at a
+    // remembered path while the real book matches neither.
+    let snapshot = claimed_by.clone();
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        !current_is_present(identity, &snapshot)
+            && identity.matches_fingerprint(group.book_fingerprint)
+            && path_matches(identity, group)
+    });
+
+    // Pass 4 — a historical digest carried by exactly one identity, path
+    // unknown. Recovers a book that was both rewritten and moved.
+    let snapshot = claimed_by.clone();
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        !current_is_present(identity, &snapshot)
+            && identity.matches_fingerprint(group.book_fingerprint)
+    });
+
+    // Pass 5 — the remembered path alone. This is what carries a book whose
+    // bytes changed underneath it: the normal outcome of a faststart remux.
+    //
+    // Three guards narrow it. None of the identity's digests may appear
+    // anywhere in this scan, because if one does the identity is alive
+    // elsewhere and this path has been recycled. The identity must have been
+    // seen recently, because a long-dead identity's remembered path is exactly
+    // what a new book at a reused location collides with. And the book's shape
+    // must still match, which is what separates a remux from a replacement.
+    let snapshot_p5 = claimed_by.clone();
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        if !path_matches(identity, group) {
+            return false;
+        }
+        if current_is_present(identity, &snapshot_p5)
+            || identity
+                .fingerprint_history
+                .iter()
+                .any(|candidate| scanned_fingerprints.contains(candidate.as_str()))
+        {
+            return false;
+        }
+        if identity.last_seen_scan == 0
+            || scan.saturating_sub(identity.last_seen_scan) > PATH_TIER_STALE_AFTER_SCANS
+        {
+            return false;
+        }
+        layout_matches(identity, group)
+    });
+
+    // Anything still unclaimed is a book this library has not seen before, and
+    // gets a fresh opaque ID. It must never be derived from the path: a
+    // path-derived ID would reproduce the exact ID of whatever used to live
+    // there, handing the newcomer its progress and access grants — the very
+    // theft the passes above just refused.
+    //
+    // Both taken-ID sets are built once here and updated as IDs are minted.
+    // Rebuilding them per book made a first scan quadratic in the size of the
+    // library, which is precisely the scan that has the most to mint.
+    let mut taken_book_ids = collect_book_ids(&store.books);
+    let mut taken_track_ids = collect_track_ids(&store.books);
+    for (position, group) in groups.iter().enumerate() {
+        if claimed_by[position].is_some() {
+            continue;
+        }
+        let index = store.books.len();
+        let book_id = mint_unique_id(mint, &taken_book_ids);
+        taken_book_ids.insert(book_id.clone());
+        store.books.push(BookIdentity {
+            fingerprint: group.book_fingerprint.to_string(),
+            fingerprint_history: Vec::new(),
+            book_id,
+            paths: vec![IdentityPath::new(group.root_id, group.group_alias)],
+            tracks: Vec::new(),
+            last_seen_scan: scan,
+            track_count: group.grouped_files.len(),
+            duration_seconds: group.duration_seconds,
+        });
+        claimed_by[position] = Some(index);
+        used.insert(index);
     }
 
-    (identity.book_id.clone(), track_ids)
+    let mut outcomes = Vec::with_capacity(groups.len());
+    for (position, group) in groups.iter().enumerate() {
+        let index = claimed_by[position].expect("every group is claimed or minted above");
+        let identity = &mut store.books[index];
+        identity.record_fingerprint(group.book_fingerprint);
+        identity.last_seen_scan = scan;
+        identity.track_count = group.grouped_files.len();
+        if group.duration_seconds.is_some() {
+            identity.duration_seconds = group.duration_seconds;
+        }
+        remember_identity_path(
+            &mut identity.paths,
+            IdentityPath::new(group.root_id, group.group_alias),
+        );
+        let track_ids = resolve_track_identities(identity, group, mint, &mut taken_track_ids);
+        outcomes.push((identity.book_id.clone(), track_ids));
+    }
+
+    store.scan_counter = scan;
+    outcomes
+}
+
+fn collect_book_ids(books: &[BookIdentity]) -> HashSet<String> {
+    books.iter().map(|book| book.book_id.clone()).collect()
+}
+
+fn collect_track_ids(books: &[BookIdentity]) -> HashSet<String> {
+    books
+        .iter()
+        .flat_map(|book| book.tracks.iter().map(|track| track.track_id.clone()))
+        .collect()
+}
+
+/// Draw IDs until one is unused. A 128-bit ID makes a collision
+/// vanishingly unlikely, but an injected generator in tests can force one, and
+/// silently reusing an ID would transfer progress.
+fn mint_unique_id(mint: &mut dyn FnMut() -> String, taken: &HashSet<String>) -> String {
+    for _ in 0..64 {
+        let candidate = mint();
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+    }
+    panic!("could not mint a unique identity ID after 64 attempts");
+}
+
+/// Match a book's tracks the same way, scoped to the one identity.
+///
+/// Track IDs are stored on progress rows, so a track claimed by the wrong file
+/// moves a listening position within the book.
+fn resolve_track_identities(
+    identity: &mut BookIdentity,
+    group: &ScannedGroup<'_>,
+    mint: &mut dyn FnMut() -> String,
+    taken_track_ids: &mut HashSet<String>,
+) -> Vec<String> {
+    let mut used: HashSet<usize> = HashSet::new();
+    let mut claimed: Vec<Option<usize>> = vec![None; group.grouped_files.len()];
+
+    let scanned: HashSet<&str> = group
+        .track_fingerprints
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    let path_matches = |track: &TrackIdentity, alias: &str| {
+        track
+            .paths
+            .iter()
+            .any(|path| path.root_id == group.root_id && path.relative_path == alias)
+    };
+
+    // The same bidirectional rule the book passes use. Track ids are stored on
+    // progress rows, so a track claimed by the wrong file moves a listening
+    // position within the book — and two files sharing a fingerprint inside one
+    // book is ordinary (silence, an intro sting, a duplicated chapter).
+    let claim_track_pass =
+        |claimed: &mut Vec<Option<usize>>,
+         used: &mut HashSet<usize>,
+         eligible: &dyn Fn(&TrackIdentity, usize, &str) -> bool| {
+            let mut proposals: Vec<Vec<usize>> = Vec::with_capacity(group.track_aliases.len());
+            for (position, alias) in group.track_aliases.iter().enumerate() {
+                if claimed[position].is_some() {
+                    proposals.push(Vec::new());
+                    continue;
+                }
+                proposals.push(
+                    identity
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, track)| {
+                            !used.contains(index) && eligible(track, position, alias)
+                        })
+                        .map(|(index, _)| index)
+                        .collect(),
+                );
+            }
+
+            let mut proposal_count: HashMap<usize, usize> = HashMap::new();
+            for candidates in &proposals {
+                for index in candidates {
+                    *proposal_count.entry(*index).or_insert(0) += 1;
+                }
+            }
+
+            for (position, candidates) in proposals.iter().enumerate() {
+                if let [only] = candidates[..]
+                    && proposal_count.get(&only).copied().unwrap_or(0) == 1
+                    && !used.contains(&only)
+                {
+                    claimed[position] = Some(only);
+                    used.insert(only);
+                }
+            }
+        };
+
+    // Pass 1 — path and fingerprint agree.
+    claim_track_pass(&mut claimed, &mut used, &|track, position, alias| {
+        path_matches(track, alias) && track.fingerprint == group.track_fingerprints[position]
+    });
+
+    // Pass 2 — a fingerprint carried by exactly one track.
+    claim_track_pass(&mut claimed, &mut used, &|track, position, _alias| {
+        track.fingerprint == group.track_fingerprints[position]
+    });
+
+    // Pass 3 — the remembered path, for a track whose stored fingerprint is
+    // gone from this book: the per-file shape of an in-place rewrite.
+    claim_track_pass(&mut claimed, &mut used, &|track, _position, alias| {
+        path_matches(track, alias) && !scanned.contains(track.fingerprint.as_str())
+    });
+
+    let mut track_ids = Vec::with_capacity(group.grouped_files.len());
+    for (position, alias) in group.track_aliases.iter().enumerate() {
+        let fingerprint = group.track_fingerprints[position].clone();
+        let index = match claimed[position] {
+            Some(index) => index,
+            None => {
+                let index = identity.tracks.len();
+                let track_id = mint_unique_id(mint, taken_track_ids);
+                taken_track_ids.insert(track_id.clone());
+                identity.tracks.push(TrackIdentity {
+                    fingerprint: fingerprint.clone(),
+                    track_id,
+                    paths: vec![IdentityPath::new(group.root_id, alias)],
+                });
+                index
+            }
+        };
+        let track = &mut identity.tracks[index];
+        track.fingerprint = fingerprint;
+        remember_identity_path(&mut track.paths, IdentityPath::new(group.root_id, alias));
+        track_ids.push(track.track_id.clone());
+    }
+    track_ids
+}
+
+/// A scan may drop to this fraction of the previously committed book count
+/// before it is treated as suspect. Real libraries lose a book at a time; a
+/// half-mounted or half-copied one loses most of them at once.
+pub(crate) const SCAN_SHRINK_FLOOR: f64 = 0.5;
+
+/// The outcome of judging a completed walk.
+pub(crate) enum ScanVerdict {
+    /// Trustworthy: resolve against the stored identities and persist.
+    Commit,
+    /// Suspect: leave stored identities untouched. The shrink observation is
+    /// still recorded so a genuine reduction can be confirmed over successive
+    /// scans, carrying both the count and which books were seen.
+    Withhold {
+        record_shrink: Option<(usize, String)>,
+    },
+}
+
+impl ScanVerdict {
+    #[cfg(test)]
+    pub(crate) fn commits(&self) -> bool {
+        matches!(self, ScanVerdict::Commit)
+    }
+}
+
+/// Decide whether a completed walk is trustworthy enough to rewrite identities.
+///
+/// A traversal error is never trusted. A scan that lost most of the library is
+/// withheld the first time and accepted once repeated, so a real deletion is
+/// not permanently mistaken for a mount failure.
+/// Identify a scan by the set of book locations it found, order-independently.
+pub(crate) fn scan_signature(aliases: &[String]) -> String {
+    let mut sorted = aliases.to_vec();
+    sorted.sort();
+    let mut hasher = Sha256::new();
+    for alias in sorted {
+        hasher.update((alias.len() as u64).to_le_bytes());
+        hasher.update(alias.as_bytes());
+    }
+    hex_digest(hasher.finalize())
+}
+
+pub(crate) fn assess_scan(
+    identities: &LibraryIdentityStore,
+    root_id: &str,
+    scanned_aliases: &[String],
+    walk_errors: &[String],
+    root: &FsPath,
+) -> ScanVerdict {
+    let scanned_books = scanned_aliases.len();
+    if !walk_errors.is_empty() {
+        tracing::warn!(
+            "library scan hit {} traversal error(s); identities left unchanged. First: {}",
+            walk_errors.len(),
+            walk_errors[0]
+        );
+        // A failed traversal says nothing about the library's real size, so it
+        // must not count towards confirming a shrink.
+        return ScanVerdict::Withhold {
+            record_shrink: None,
+        };
+    }
+
+    let known = identities
+        .manifests
+        .get(root_id)
+        .map(|manifest| manifest.book_fingerprints.len())
+        .unwrap_or(0);
+    if known == 0 {
+        // Nothing committed yet: a first scan, or a library that has always
+        // been empty. There is no baseline to be suspicious against.
+        return ScanVerdict::Commit;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = scanned_books as f64 / known as f64;
+    if scanned_books > 0 && ratio >= SCAN_SHRINK_FLOOR {
+        return ScanVerdict::Commit;
+    }
+
+    // The same reduced result, seen repeatedly, is the library's real size.
+    // "Same" means the same books, not merely the same number of them.
+    let signature = scan_signature(scanned_aliases);
+    let confirmations = identities
+        .pending_shrink
+        .get(root_id)
+        .filter(|pending| pending.signature == signature)
+        .map(|pending| pending.observations)
+        .unwrap_or(0);
+    if confirmations + 1 >= SHRINK_CONFIRMATIONS {
+        tracing::warn!(
+            "library scan at {} found {scanned_books} books, down from {known}, for {} consecutive scans; accepting the reduction.",
+            root.display(),
+            confirmations + 1
+        );
+        return ScanVerdict::Commit;
+    }
+
+    tracing::warn!(
+        "library scan at {} found {scanned_books} books, down from {known}; identities left unchanged (confirmation {} of {SHRINK_CONFIRMATIONS}).",
+        root.display(),
+        confirmations + 1
+    );
+    ScanVerdict::Withhold {
+        record_shrink: Some((scanned_books, signature)),
+    }
 }
 
 pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
     let scan_root = state.library_root.clone();
-    let groups = tokio::task::spawn_blocking(move || {
-        let files = walk_audio_files(&scan_root);
-        group_files_into_books(&scan_root, files)
+    let (groups, walk_errors) = tokio::task::spawn_blocking(move || {
+        let walk = walk_audio_files_checked(&scan_root);
+        (group_files_into_books(&scan_root, walk.files), walk.errors)
     })
     .await?;
     let mut identities = load_library_identities(&state.library_identities_file).await?;
+
+    // A scan that could not read part of the library is not evidence that the
+    // library shrank. Committing identity changes on top of it is what turns a
+    // transient mount or permission problem into permanently detached progress,
+    // so the catalogue is left exactly as it is.
+    // A scan that could not be trusted stops here, before anything derived from
+    // it can reach the catalogue. Resolving it against a scratch copy and
+    // publishing the result would hand listeners book and track ids that exist
+    // only for this scan, and progress written against those is unrecoverable.
+    // The previously published library stays up instead.
+    //
+    // At startup there is no previously published library, so a suspect first
+    // scan leaves the catalogue empty until something triggers another one — a
+    // restart, an upload, a download, a faststart job, or the administrative
+    // rescan endpoint. Recovery is on the next scan, not on the drive
+    // reappearing. That is the intended trade: an empty library is visibly
+    // wrong and one rescan away from correct, whereas a library rebuilt from a
+    // half-mounted directory looks right and quietly detaches everything it
+    // could not see.
+    let scanned_aliases = groups
+        .iter()
+        .map(|(group_key, _)| library_identity_path(&state.library_root, group_key))
+        .collect::<Vec<_>>();
+    if let ScanVerdict::Withhold { record_shrink } = assess_scan(
+        &identities,
+        DEFAULT_ROOT_ID,
+        &scanned_aliases,
+        &walk_errors,
+        state.library_root.as_path(),
+    ) {
+        match record_shrink {
+            Some((book_count, signature)) => {
+                let pending = identities
+                    .pending_shrink
+                    .entry(DEFAULT_ROOT_ID.to_string())
+                    .or_default();
+                if pending.signature == signature {
+                    pending.observations = pending.observations.saturating_add(1);
+                } else {
+                    pending.book_count = book_count;
+                    pending.signature = signature;
+                    pending.observations = 1;
+                }
+            }
+            // A traversal failure breaks the run. "Three consecutive scans"
+            // has to mean three scans that actually observed the library,
+            // otherwise a drive flapping between readable and unreadable
+            // eventually confirms a reduction it never demonstrated.
+            None => {
+                identities.pending_shrink.remove(DEFAULT_ROOT_ID);
+            }
+        }
+        // Only the observation is written; identities are untouched.
+        write_json_atomic(&state.library_identities_file, &identities)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        return Ok(());
+    }
 
     // Every track is fingerprinted up front on a blocking task: the reads are
     // synchronous and a large library would otherwise stall a runtime worker
@@ -766,7 +1629,11 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .collect::<Vec<_>>();
     let metadata_files = scanned_files.clone();
     let library_root = state.library_root.clone();
-    let cached_fingerprints = std::mem::take(&mut identities.fingerprint_cache);
+    let cached_fingerprints = identities
+        .fingerprint_cache
+        .remove(DEFAULT_ROOT_ID)
+        .unwrap_or_default();
+
     let fingerprint_task = tokio::task::spawn_blocking(move || {
         fingerprint_tracks(&library_root, &scanned_files, cached_fingerprints)
     });
@@ -785,9 +1652,10 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     });
     let (track_fingerprints_by_path, fingerprint_cache) = fingerprint_task.await?;
     let mut metadata_by_path = metadata_task.await?;
-    identities.fingerprint_cache = fingerprint_cache;
+    identities
+        .fingerprint_cache
+        .insert(DEFAULT_ROOT_ID.to_string(), fingerprint_cache);
 
-    let mut used_book_identities = HashSet::new();
     let metadata_overrides = state.metadata_overrides.read().await.clone();
     let mut track_paths = HashMap::new();
     let mut book_paths = HashMap::new();
@@ -796,30 +1664,86 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut extracted_covers: Vec<(String, EmbeddedImage)> = Vec::new();
     let mut books = Vec::new();
 
-    for (group_key, grouped_files) in groups {
-        let track_fingerprints = grouped_files
-            .iter()
-            .map(|path| {
-                track_fingerprints_by_path
-                    .get(path)
-                    .cloned()
-                    .unwrap_or_else(|| path_identity_fingerprint(path))
-            })
-            .collect::<Vec<_>>();
-        let book_fingerprint = book_identity_fingerprint(&track_fingerprints);
-        let group_alias = library_identity_path(&state.library_root, &group_key);
-        let (book_id, track_ids) = resolve_library_identity(
-            &mut identities,
-            &mut used_book_identities,
-            LibraryIdentityCandidate {
-                book_fingerprint: &book_fingerprint,
-                group_alias: &group_alias,
-                group_key: &group_key,
-                library_root: &state.library_root,
-                grouped_files: &grouped_files,
-                track_fingerprints: &track_fingerprints,
-            },
-        );
+    // Stage one: describe every scanned book. Resolution needs to see the whole
+    // scan before it decides anything, so nothing is matched inside this loop.
+    struct PreparedGroup {
+        group_key: PathBuf,
+        grouped_files: Vec<PathBuf>,
+        track_fingerprints: Vec<String>,
+        track_aliases: Vec<String>,
+        book_fingerprint: String,
+        group_alias: String,
+        duration_seconds: Option<f64>,
+    }
+
+    let prepared = groups
+        .into_iter()
+        .map(|(group_key, grouped_files)| {
+            let track_fingerprints = grouped_files
+                .iter()
+                .map(|path| {
+                    track_fingerprints_by_path
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_else(|| path_identity_fingerprint(path))
+                })
+                .collect::<Vec<_>>();
+            let track_aliases = grouped_files
+                .iter()
+                .map(|path| library_identity_path(&state.library_root, path))
+                .collect::<Vec<_>>();
+            // Summed from the tags read above. A book whose files carry no
+            // duration simply has none, and the layout guard falls back to
+            // track count alone.
+            let duration_seconds = grouped_files
+                .iter()
+                .try_fold(0.0_f64, |total, path| {
+                    metadata_by_path
+                        .get(path)
+                        .and_then(|metadata| metadata.duration_seconds)
+                        .map(|duration| total + duration)
+                })
+                .filter(|total| *total > 0.0);
+            PreparedGroup {
+                book_fingerprint: book_identity_fingerprint(&track_fingerprints),
+                group_alias: library_identity_path(&state.library_root, &group_key),
+                duration_seconds,
+                group_key,
+                grouped_files,
+                track_fingerprints,
+                track_aliases,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // Stage two: resolve the whole scan at once, so no book's position in the
+    // walk can decide which identity it gets.
+    let scanned_groups = prepared
+        .iter()
+        .map(|group| ScannedGroup {
+            book_fingerprint: &group.book_fingerprint,
+            group_alias: &group.group_alias,
+            root_id: DEFAULT_ROOT_ID,
+            grouped_files: &group.grouped_files,
+            track_fingerprints: &group.track_fingerprints,
+            track_aliases: &group.track_aliases,
+            duration_seconds: group.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+
+    let resolved = resolve_library_identities(
+        &mut identities,
+        &scanned_groups,
+        &mut (mint_identity_id as fn() -> String),
+    );
+
+    for (position, group) in prepared.into_iter().enumerate() {
+        let PreparedGroup {
+            group_key,
+            grouped_files,
+            ..
+        } = group;
+        let (book_id, track_ids) = resolved[position].clone();
         book_paths.insert(book_id.clone(), group_key.clone());
         let mut metadata = grouped_files
             .iter()
@@ -974,6 +1898,32 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         books.push(book);
     }
 
+    // Reaching here means the scan was trustworthy: a suspect one returned
+    // long before this point. Any run of shrink observations is therefore over.
+    identities.pending_shrink.remove(DEFAULT_ROOT_ID);
+    identities.manifests.insert(
+        DEFAULT_ROOT_ID.to_string(),
+        RootManifest {
+            book_fingerprints: identities
+                .books
+                .iter()
+                .filter(|book| book.last_seen_scan == identities.scan_counter)
+                .map(|book| book.fingerprint.clone())
+                .collect(),
+            scan: identities.scan_counter,
+        },
+    );
+    // Identities are persisted before anything else records the IDs they just
+    // minted. Now that new IDs are random rather than derived from the path,
+    // a rescan after a failed write mints *different* IDs, so a store written
+    // first would keep permanent references to editions the library will never
+    // hand out again. Written in this order, a failure here leaves the works
+    // store with nothing to dangle from, and the retry resolves the same
+    // fingerprints to the same persisted IDs.
+    write_json_atomic(&state.library_identities_file, &identities)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+
     // Resolve the stable work identity after a complete scan. Playback remains
     // keyed by the edition's byte identity; this index is only for history and
     // lets replacement downloads roll up under the same work.
@@ -1002,10 +1952,6 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             works.prune_suggestions(&present);
             Ok(())
         })
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-
-    write_json_atomic(&state.library_identities_file, &identities)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
@@ -1240,7 +2186,19 @@ pub(crate) fn is_supported_audio_file(path: &FsPath) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
+/// A completed walk, and whether any part of it failed.
+///
+/// A traversal error used to be indistinguishable from an empty directory,
+/// which meant an unreadable or half-mounted library looked exactly like a
+/// library whose books had been deleted. Identity resolution must not run on
+/// that, so the failure is carried out rather than dropped.
+pub(crate) struct AudioWalk {
+    pub(crate) files: Vec<PathBuf>,
+    pub(crate) errors: Vec<String>,
+}
+
+pub(crate) fn walk_audio_files_checked(root: &FsPath) -> AudioWalk {
+    let mut errors = Vec::new();
     let mut files = WalkDir::new(root)
         .into_iter()
         .filter_entry(|entry| {
@@ -1251,7 +2209,13 @@ pub(crate) fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
                     .to_string_lossy()
                     .starts_with(UPLOAD_STAGING_PREFIX)
         })
-        .filter_map(Result::ok)
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                errors.push(error.to_string());
+                None
+            }
+        })
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
         // A conversion in flight writes a temporary remux beside the book. It
@@ -1270,7 +2234,7 @@ pub(crate) fn walk_audio_files(root: &FsPath) -> Vec<PathBuf> {
         .collect::<Vec<_>>();
 
     files.sort_by_key(|a| natural_path_key(a));
-    files
+    AudioWalk { files, errors }
 }
 
 pub(crate) fn group_files_into_books(

@@ -6,7 +6,7 @@ use super::{
     if_none_match_matches, is_supported_audio_file, libation_cover_art_url, media_content_type,
     normalize_asin, normalize_guessed_asin, parse_origin_list, parse_range,
     progress_write_is_stale, progress_write_is_suspect_reset,
-    progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files,
+    progress_write_is_unintentional_regression, sanitize_filename, walk_audio_files_checked,
 };
 
 #[test]
@@ -578,7 +578,7 @@ fn library_scan_ignores_incomplete_upload_staging_folders() {
     std::fs::write(complete.join("book.m4b"), b"complete").unwrap();
     std::fs::write(staging.join("partial.m4b"), b"partial").unwrap();
 
-    let files = walk_audio_files(root.path());
+    let files = walk_audio_files_checked(root.path()).files;
     assert_eq!(files, vec![complete.join("book.m4b")]);
 }
 
@@ -601,7 +601,7 @@ fn library_scan_ignores_faststart_work_files() {
     )
     .unwrap();
 
-    let files = walk_audio_files(root.path());
+    let files = walk_audio_files_checked(root.path()).files;
     assert_eq!(files, vec![book.join("book.m4b")]);
 }
 
@@ -2353,54 +2353,127 @@ async fn atomic_write_replaces_existing_store_without_truncating() {
     assert_eq!(reread, serde_json::json!({ "a": 1 }));
 }
 
+/// One book, described the way the scanner describes it.
+struct IdentityFixture {
+    alias: String,
+    files: Vec<std::path::PathBuf>,
+    track_fingerprints: Vec<String>,
+    track_aliases: Vec<String>,
+    book_fingerprint: String,
+    duration_seconds: Option<f64>,
+}
+
+impl IdentityFixture {
+    fn read(alias: &str, files: &[std::path::PathBuf]) -> Self {
+        let track_fingerprints = files
+            .iter()
+            .map(|path| super::file_identity_fingerprint(path).unwrap())
+            .collect::<Vec<_>>();
+        let track_aliases = files
+            .iter()
+            .map(|path| format!("{alias}/{}", path.file_name().unwrap().to_string_lossy()))
+            .collect::<Vec<_>>();
+        Self {
+            alias: alias.to_string(),
+            files: files.to_vec(),
+            book_fingerprint: super::book_identity_fingerprint(&track_fingerprints),
+            track_fingerprints,
+            track_aliases,
+            duration_seconds: None,
+        }
+    }
+
+    /// The same book, with a known runtime. The layout guard only has
+    /// something to compare once a duration has been recorded.
+    fn with_duration(mut self, duration_seconds: f64) -> Self {
+        self.duration_seconds = Some(duration_seconds);
+        self
+    }
+}
+
+/// Resolve a whole scan, the way `rescan_library` does.
+fn resolve_scan(
+    identities: &mut super::LibraryIdentityStore,
+    fixtures: &[IdentityFixture],
+) -> Vec<(String, Vec<String>)> {
+    let groups = fixtures
+        .iter()
+        .map(|fixture| super::ScannedGroup {
+            book_fingerprint: &fixture.book_fingerprint,
+            group_alias: &fixture.alias,
+            root_id: super::DEFAULT_ROOT_ID,
+            grouped_files: &fixture.files,
+            track_fingerprints: &fixture.track_fingerprints,
+            track_aliases: &fixture.track_aliases,
+            duration_seconds: fixture.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+    super::resolve_library_identities(
+        identities,
+        &groups,
+        &mut (super::mint_identity_id as fn() -> String),
+    )
+}
+
+/// N distinct book locations, for exercising the scan gate.
+fn book_aliases(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("Book {index}")).collect()
+}
+
+fn write_book(
+    root: &std::path::Path,
+    folder: &str,
+    name: &str,
+    bytes: &[u8],
+) -> std::path::PathBuf {
+    let dir = root.join(folder);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(name);
+    std::fs::write(&file, bytes).unwrap();
+    file
+}
+
 #[test]
 fn library_identity_survives_folder_and_track_renames() {
     let root = tempfile::tempdir().unwrap();
-    let first_folder = root.path().join("Old Book Name");
-    std::fs::create_dir_all(&first_folder).unwrap();
-    let first_track = first_folder.join("01 old name.mp3");
-    std::fs::write(&first_track, b"stable audiobook bytes").unwrap();
+    let first_track = write_book(
+        root.path(),
+        "Old Book Name",
+        "01 old name.mp3",
+        b"stable audiobook bytes",
+    );
 
-    let fingerprint = super::file_identity_fingerprint(&first_track).unwrap();
-    let book_fingerprint = super::book_identity_fingerprint(std::slice::from_ref(&fingerprint));
     let mut identities = super::LibraryIdentityStore::default();
-    let mut used = std::collections::HashSet::new();
-    let (first_book_id, first_track_ids) = super::resolve_library_identity(
+    let before = resolve_scan(
         &mut identities,
-        &mut used,
-        super::LibraryIdentityCandidate {
-            book_fingerprint: &book_fingerprint,
-            group_alias: "Old Book Name",
-            group_key: &first_folder,
-            library_root: root.path(),
-            grouped_files: std::slice::from_ref(&first_track),
-            track_fingerprints: std::slice::from_ref(&fingerprint),
-        },
+        &[IdentityFixture::read(
+            "Old Book Name",
+            std::slice::from_ref(&first_track),
+        )],
     );
 
-    let second_folder = root.path().join("New Book Name");
-    std::fs::rename(&first_folder, &second_folder).unwrap();
-    let renamed_track = second_folder.join("01 new name.mp3");
-    std::fs::rename(second_folder.join("01 old name.mp3"), &renamed_track).unwrap();
-    let renamed_fingerprint = super::file_identity_fingerprint(&renamed_track).unwrap();
-    let renamed_book_fingerprint =
-        super::book_identity_fingerprint(std::slice::from_ref(&renamed_fingerprint));
-    let mut used = std::collections::HashSet::new();
-    let (second_book_id, second_track_ids) = super::resolve_library_identity(
+    std::fs::rename(
+        root.path().join("Old Book Name"),
+        root.path().join("New Book Name"),
+    )
+    .unwrap();
+    let renamed = root.path().join("New Book Name").join("01 new name.mp3");
+    std::fs::rename(
+        root.path().join("New Book Name").join("01 old name.mp3"),
+        &renamed,
+    )
+    .unwrap();
+
+    let after = resolve_scan(
         &mut identities,
-        &mut used,
-        super::LibraryIdentityCandidate {
-            book_fingerprint: &renamed_book_fingerprint,
-            group_alias: "New Book Name",
-            group_key: &second_folder,
-            library_root: root.path(),
-            grouped_files: std::slice::from_ref(&renamed_track),
-            track_fingerprints: std::slice::from_ref(&renamed_fingerprint),
-        },
+        &[IdentityFixture::read(
+            "New Book Name",
+            std::slice::from_ref(&renamed),
+        )],
     );
 
-    assert_eq!(second_book_id, first_book_id);
-    assert_eq!(second_track_ids, first_track_ids);
+    assert_eq!(after[0].0, before[0].0, "book id must survive a rename");
+    assert_eq!(after[0].1, before[0].1, "track ids must survive a rename");
 }
 
 /// Faststart conversion rewrites a track's bytes at the same path, so the
@@ -2409,37 +2482,537 @@ fn library_identity_survives_folder_and_track_renames() {
 #[test]
 fn library_identity_survives_a_rewritten_track_at_the_same_path() {
     let root = tempfile::tempdir().unwrap();
-    let folder = root.path().join("Book");
-    std::fs::create_dir_all(&folder).unwrap();
-    let track = folder.join("01.m4b");
-    std::fs::write(&track, b"trailing moov layout").unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"trailing moov layout");
 
-    let resolve = |identities: &mut super::LibraryIdentityStore| {
-        let fingerprint = super::file_identity_fingerprint(&track).unwrap();
-        let book_fingerprint = super::book_identity_fingerprint(std::slice::from_ref(&fingerprint));
-        let mut used = std::collections::HashSet::new();
-        super::resolve_library_identity(
-            identities,
-            &mut used,
-            super::LibraryIdentityCandidate {
-                book_fingerprint: &book_fingerprint,
-                group_alias: "Book",
-                group_key: &folder,
-                library_root: root.path(),
-                grouped_files: std::slice::from_ref(&track),
-                track_fingerprints: std::slice::from_ref(&fingerprint),
-            },
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track))],
+    );
+
+    std::fs::write(&track, b"faststart layout, different bytes and length").unwrap();
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track))],
+    );
+
+    assert_eq!(after[0].0, before[0].0);
+    assert_eq!(after[0].1, before[0].1);
+}
+
+/// The reported bug. Rename a book, drop unrelated content at the path it used
+/// to occupy, and the newcomer must not inherit the original's identity —
+/// progress, settings and access grants all hang off that id.
+#[test]
+fn a_recycled_path_does_not_steal_a_book_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let original = write_book(root.path(), "Old Book", "01.mp3", b"the original recording");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Old Book",
+            std::slice::from_ref(&original),
+        )],
+    );
+    let original_book_id = before[0].0.clone();
+    let original_track_ids = before[0].1.clone();
+
+    // The original moves to a name that sorts after the intruder, which is the
+    // ordering that made the old resolver hand over the identity.
+    std::fs::rename(root.path().join("Old Book"), root.path().join("Zebra Book")).unwrap();
+    let moved = root.path().join("Zebra Book").join("01.mp3");
+    let intruder = write_book(
+        root.path(),
+        "Old Book",
+        "01.mp3",
+        b"a completely different audiobook",
+    );
+
+    let after = resolve_scan(
+        &mut identities,
+        &[
+            IdentityFixture::read("Old Book", std::slice::from_ref(&intruder)),
+            IdentityFixture::read("Zebra Book", std::slice::from_ref(&moved)),
+        ],
+    );
+
+    let (intruder_book_id, intruder_track_ids) = after[0].clone();
+    let (moved_book_id, moved_track_ids) = after[1].clone();
+
+    assert_eq!(
+        moved_book_id, original_book_id,
+        "the renamed book keeps its identity"
+    );
+    assert_eq!(moved_track_ids, original_track_ids);
+    assert_ne!(
+        intruder_book_id, original_book_id,
+        "unrelated content at a recycled path must not inherit the book id"
+    );
+    assert_ne!(
+        intruder_track_ids, original_track_ids,
+        "unrelated content at a recycled path must not inherit track ids"
+    );
+}
+
+/// Rejecting the stale identity is not enough on its own. Minting used to
+/// derive the id from the path, so the newcomer was handed the exact id the
+/// resolver had just refused it.
+#[test]
+fn a_rejected_identity_is_not_reminted_from_the_path() {
+    let root = tempfile::tempdir().unwrap();
+    let original = write_book(root.path(), "Book", "01.mp3", b"first recording");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            std::slice::from_ref(&original),
+        )],
+    );
+    let original_book_id = before[0].0.clone();
+
+    // Age the identity past the path tier, then put different content at the
+    // same path. The only tier that could match is the path one, and it is now
+    // closed, so this must mint rather than reuse.
+    identities.scan_counter += super::PATH_TIER_STALE_AFTER_SCANS + 5;
+    std::fs::write(&original, b"an entirely different recording").unwrap();
+
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            std::slice::from_ref(&original),
+        )],
+    );
+
+    assert_ne!(
+        after[0].0, original_book_id,
+        "a freshly minted identity must not reproduce the id of the path's previous occupant"
+    );
+}
+
+/// Two byte-identical copies produce the same book fingerprint by
+/// construction, so only their paths tell them apart. Matching on fingerprint
+/// alone would let them trade identities from one scan to the next.
+#[test]
+fn identical_duplicate_books_keep_separate_identities() {
+    let root = tempfile::tempdir().unwrap();
+    let main = write_book(root.path(), "Dune", "01.m4b", b"identical bytes");
+    let backup = write_book(root.path(), "Backup/Dune", "01.m4b", b"identical bytes");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let first = resolve_scan(
+        &mut identities,
+        &[
+            IdentityFixture::read("Dune", std::slice::from_ref(&main)),
+            IdentityFixture::read("Backup/Dune", std::slice::from_ref(&backup)),
+        ],
+    );
+    assert_ne!(first[0].0, first[1].0, "duplicates start as separate books");
+
+    for _ in 0..3 {
+        let again = resolve_scan(
+            &mut identities,
+            &[
+                IdentityFixture::read("Dune", std::slice::from_ref(&main)),
+                IdentityFixture::read("Backup/Dune", std::slice::from_ref(&backup)),
+            ],
+        );
+        assert_eq!(again[0].0, first[0].0, "the main copy keeps its id");
+        assert_eq!(again[1].0, first[1].0, "the backup keeps its id");
+    }
+}
+
+/// A book that genuinely moves, with no duplicate to confuse it, is carried by
+/// the fingerprint tier alone.
+#[test]
+fn a_uniquely_fingerprinted_book_survives_a_move() {
+    let root = tempfile::tempdir().unwrap();
+    let before_path = write_book(root.path(), "Loose", "01.mp3", b"unique recording");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Loose",
+            std::slice::from_ref(&before_path),
+        )],
+    );
+
+    std::fs::create_dir_all(root.path().join("Author/Title")).unwrap();
+    let after_path = root.path().join("Author/Title/01.mp3");
+    std::fs::rename(&before_path, &after_path).unwrap();
+
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Author/Title",
+            std::slice::from_ref(&after_path),
+        )],
+    );
+    assert_eq!(after[0].0, before[0].0);
+    assert_eq!(after[0].1, before[0].1);
+}
+
+/// Identity ids are what progress and access grants hang off, so a format
+/// migration that changed them would silently detach every listener's history.
+#[test]
+fn legacy_identity_files_migrate_without_changing_ids() {
+    let legacy = serde_json::json!({
+        "books": [{
+            "fingerprint": "abc123",
+            "bookId": "0123456789abcdef",
+            "paths": ["Dune [B0001]"],
+            "tracks": [{
+                "fingerprint": "def456",
+                "trackId": "fedcba9876543210",
+                "paths": ["Dune [B0001]/01.m4b"]
+            }]
+        }],
+        "fingerprintCache": {
+            "Dune [B0001]/01.m4b": { "fingerprint": "def456", "size": 42, "modifiedMs": 7 }
+        }
+    })
+    .to_string();
+
+    let loaded = super::parse_library_identities(&legacy).unwrap();
+    assert!(
+        loaded.migrated,
+        "a pre-versioned file is reported as migrated"
+    );
+    let store = loaded.store;
+
+    assert_eq!(store.version, super::IDENTITY_FORMAT_VERSION);
+    assert_eq!(store.books[0].book_id, "0123456789abcdef");
+    assert_eq!(store.books[0].tracks[0].track_id, "fedcba9876543210");
+    assert_eq!(store.books[0].paths[0].root_id, super::DEFAULT_ROOT_ID);
+    assert_eq!(store.books[0].paths[0].relative_path, "Dune [B0001]");
+    assert_eq!(
+        store.books[0].tracks[0].paths[0].relative_path,
+        "Dune [B0001]/01.m4b"
+    );
+    assert_eq!(
+        store.fingerprint_cache[super::DEFAULT_ROOT_ID]["Dune [B0001]/01.m4b"].size,
+        42
+    );
+
+    // A migrated store round-trips as the current format.
+    let round_tripped =
+        super::parse_library_identities(&serde_json::to_string(&store).unwrap()).unwrap();
+    assert!(
+        !round_tripped.migrated,
+        "an already-versioned file is not migrated again"
+    );
+    assert_eq!(round_tripped.store.books[0].book_id, "0123456789abcdef");
+}
+
+#[tokio::test]
+async fn legacy_identity_migration_creates_and_repairs_its_backup() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("library-identities.json");
+    let backup = root.path().join("library-identities.json.pre-v1");
+    let legacy = serde_json::json!({
+        "books": [{
+            "fingerprint": "abc123",
+            "bookId": "0123456789abcdef",
+            "paths": ["Dune"],
+            "tracks": []
+        }]
+    })
+    .to_string();
+    std::fs::write(&path, &legacy).unwrap();
+
+    super::load_library_identities(&path).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
+
+    std::fs::write(&backup, "{truncated").unwrap();
+    super::load_library_identities(&path).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
+    assert!(
+        std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+    );
+}
+
+/// The shrink gate has no baseline until a scan commits one, so without help a
+/// migrated store treats the upgrade scan as a first scan and commits whatever
+/// it finds. That is the one scan where a silently partial walk is most costly:
+/// the store still holds the whole established library.
+#[test]
+fn a_migrated_store_carries_a_shrink_baseline_into_its_first_scan() {
+    let books = (0..100)
+        .map(|index| {
+            serde_json::json!({
+                "fingerprint": format!("book{index}"),
+                "bookId": format!("{index:016x}"),
+                "paths": [format!("Book {index}")],
+                "tracks": [{
+                    "fingerprint": format!("track{index}"),
+                    "trackId": format!("{:016x}", index + 1000),
+                    "paths": [format!("Book {index}/01.m4b")]
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+    // Only the first ninety are still on disk. The other ten are identities of
+    // books deleted long ago, which the pre-versioned format never pruned.
+    let cache = (0..90)
+        .map(|index| {
+            (
+                format!("Book {index}/01.m4b"),
+                serde_json::json!({
+                    "fingerprint": format!("track{index}"),
+                    "size": 42,
+                    "modifiedMs": 7
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let legacy = serde_json::json!({ "books": books, "fingerprintCache": cache }).to_string();
+
+    let store = super::parse_library_identities(&legacy).unwrap().store;
+    let baseline = &store.manifests[super::DEFAULT_ROOT_ID];
+    assert_eq!(
+        baseline.book_fingerprints.len(),
+        90,
+        "the baseline counts the books the legacy cache shows were present, \
+         not every identity ever issued"
+    );
+
+    let root = std::path::Path::new("/library");
+    assert!(
+        !super::assess_scan(&store, super::DEFAULT_ROOT_ID, &book_aliases(3), &[], root).commits(),
+        "an error-free but nearly empty first scan after migrating is withheld"
+    );
+    assert!(
+        super::assess_scan(&store, super::DEFAULT_ROOT_ID, &book_aliases(88), &[], root).commits(),
+        "a first scan that finds the library commits"
+    );
+}
+
+/// A legacy store with nothing in its fingerprint cache — written before the
+/// cache existed, or by a scan that could fingerprint nothing — has no usable
+/// baseline. Inventing one from the unpruned identity list would withhold a
+/// perfectly good scan, so migration leaves the gate open as it was.
+#[test]
+fn a_migrated_store_with_no_cached_evidence_claims_no_baseline() {
+    let legacy = serde_json::json!({
+        "books": [{
+            "fingerprint": "abc123",
+            "bookId": "0123456789abcdef",
+            "paths": ["Dune [B0001]"],
+            "tracks": [{
+                "fingerprint": "def456",
+                "trackId": "fedcba9876543210",
+                "paths": ["Dune [B0001]/01.m4b"]
+            }]
+        }]
+    })
+    .to_string();
+
+    let store = super::parse_library_identities(&legacy).unwrap().store;
+    assert!(store.manifests.is_empty());
+    assert!(
+        super::assess_scan(
+            &store,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(0),
+            &[],
+            std::path::Path::new("/library")
         )
+        .commits()
+    );
+}
+
+#[test]
+fn a_scan_that_loses_most_of_the_library_is_not_committed() {
+    let mut identities = super::LibraryIdentityStore::default();
+    identities.manifests.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::RootManifest {
+            book_fingerprints: (0..100).map(|index| format!("fp{index}")).collect(),
+            scan: 1,
+        },
+    );
+    let root = std::path::Path::new("/library");
+
+    assert!(
+        !super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(0),
+            &[],
+            root
+        )
+        .commits(),
+        "an empty scan against a known-populated library is suspect"
+    );
+    assert!(
+        !super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(10),
+            &[],
+            root
+        )
+        .commits(),
+        "losing 90% of the library in one scan is suspect"
+    );
+    assert!(
+        super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(96),
+            &[],
+            root
+        )
+        .commits(),
+        "ordinary churn still commits"
+    );
+    assert!(
+        !super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(100),
+            &["permission denied".to_string()],
+            root
+        )
+        .commits(),
+        "a traversal error is never committed, however complete the result looks"
+    );
+}
+
+#[test]
+fn a_first_scan_commits_even_though_it_has_no_baseline() {
+    let identities = super::LibraryIdentityStore::default();
+    assert!(
+        super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(0),
+            &[],
+            std::path::Path::new("/library")
+        )
+        .commits()
+    );
+}
+
+#[test]
+fn fingerprint_history_retires_the_previous_digest_instead_of_erasing_it() {
+    let mut identity = super::BookIdentity {
+        fingerprint: "one".to_string(),
+        fingerprint_history: Vec::new(),
+        book_id: "book".to_string(),
+        paths: Vec::new(),
+        tracks: Vec::new(),
+        last_seen_scan: 1,
+        track_count: 1,
+        duration_seconds: None,
+    };
+
+    identity.record_fingerprint("two");
+    assert!(identity.matches_fingerprint("two"));
+    assert!(
+        identity.matches_fingerprint("one"),
+        "the previous digest is still evidence of this book"
+    );
+
+    // Re-recording an existing digest must not grow history without bound.
+    for _ in 0..50 {
+        identity.record_fingerprint("two");
+    }
+    assert!(identity.fingerprint_history.len() <= 8);
+}
+
+#[test]
+fn minting_retries_when_an_id_is_already_taken() {
+    let root = tempfile::tempdir().unwrap();
+    let first = write_book(root.path(), "A", "01.mp3", b"first");
+    let second = write_book(root.path(), "B", "01.mp3", b"second");
+
+    // A generator that hands out the same id twice before yielding a fresh one.
+    let mut issued = 0;
+    let mut mint = move || {
+        issued += 1;
+        match issued {
+            1 | 2 => "collide".to_string(),
+            _ => format!("unique-{issued}"),
+        }
     };
 
     let mut identities = super::LibraryIdentityStore::default();
-    let (book_id, track_ids) = resolve(&mut identities);
+    let a = IdentityFixture::read("A", std::slice::from_ref(&first));
+    let b = IdentityFixture::read("B", std::slice::from_ref(&second));
+    let groups = [&a, &b]
+        .iter()
+        .map(|fixture| super::ScannedGroup {
+            book_fingerprint: &fixture.book_fingerprint,
+            group_alias: &fixture.alias,
+            root_id: super::DEFAULT_ROOT_ID,
+            grouped_files: &fixture.files,
+            track_fingerprints: &fixture.track_fingerprints,
+            track_aliases: &fixture.track_aliases,
+            duration_seconds: fixture.duration_seconds,
+        })
+        .collect::<Vec<_>>();
 
-    std::fs::write(&track, b"faststart layout, different bytes and length").unwrap();
-    let (converted_book_id, converted_track_ids) = resolve(&mut identities);
+    let resolved = super::resolve_library_identities(&mut identities, &groups, &mut mint);
+    assert_ne!(
+        resolved[0].0, resolved[1].0,
+        "a collision must be retried, never silently reused"
+    );
+}
 
-    assert_eq!(converted_book_id, book_id);
-    assert_eq!(converted_track_ids, track_ids);
+/// The taken-ID sets are built once per scan and updated as IDs are minted,
+/// rather than rebuilt from the store for every book. That is only sound while
+/// the running set stays complete, and a track ID reused across two books would
+/// move a listening position from one book into another.
+#[test]
+fn minting_will_not_reuse_a_track_id_across_books_in_one_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let first = write_book(root.path(), "A", "01.mp3", b"first");
+    let second = write_book(root.path(), "B", "01.mp3", b"second");
+
+    // Book IDs are minted for the whole scan first, then a track ID per book.
+    // The fourth draw repeats the third, which belongs to the other book.
+    let mut issued = 0;
+    let mut mint = move || {
+        issued += 1;
+        match issued {
+            1 => "book-a".to_string(),
+            2 => "book-b".to_string(),
+            3 | 4 => "shared-track".to_string(),
+            _ => format!("track-{issued}"),
+        }
+    };
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let a = IdentityFixture::read("A", std::slice::from_ref(&first));
+    let b = IdentityFixture::read("B", std::slice::from_ref(&second));
+    let groups = [&a, &b]
+        .iter()
+        .map(|fixture| super::ScannedGroup {
+            book_fingerprint: &fixture.book_fingerprint,
+            group_alias: &fixture.alias,
+            root_id: super::DEFAULT_ROOT_ID,
+            grouped_files: &fixture.files,
+            track_fingerprints: &fixture.track_fingerprints,
+            track_aliases: &fixture.track_aliases,
+            duration_seconds: fixture.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+
+    let resolved = super::resolve_library_identities(&mut identities, &groups, &mut mint);
+    assert_eq!(resolved[0].1[0], "shared-track");
+    assert_ne!(
+        resolved[1].1[0], resolved[0].1[0],
+        "a track ID already issued to another book must be retried"
+    );
 }
 
 #[test]
@@ -2562,6 +3135,51 @@ fn libation_login_output_redacts_urls() {
         super::sanitize_libation_login_output(output),
         "Open this URL:"
     );
+}
+
+/// Book IDs are random now, so a rescan that dies between writing them and
+/// persisting them does not reproduce them: it mints different ones. Anything
+/// that recorded the first set therefore holds references the library will
+/// never hand out again, and the work store never prunes book IDs. Identities
+/// have to be durable before anything downstream is allowed to name them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_identity_write_leaves_nothing_downstream_referring_to_the_lost_ids() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    let book_dir = state.library_root.join("Dune");
+    std::fs::create_dir_all(&book_dir).unwrap();
+    std::fs::copy(root.path().join("template.wav"), book_dir.join("01.wav")).unwrap();
+
+    // Its own directory, so revoking write permission stops the identity write
+    // without touching the database the work store lives in.
+    let identity_dir = root.path().join("data").join("identities");
+    std::fs::create_dir_all(&identity_dir).unwrap();
+    state.library_identities_file = identity_dir.join("library-identities.json");
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let failed = super::rescan_library(&state).await;
+    // Restore before any assertion, so a failure still lets the tempdir clean up.
+    std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        failed.is_err(),
+        "a rescan that cannot persist identities must fail"
+    );
+    assert!(
+        state.works.read().await.works.is_empty(),
+        "no work may reference a book ID that was never persisted"
+    );
+
+    // With the directory writable the retry succeeds, and the IDs it does
+    // persist are the ones the work store ends up holding.
+    super::rescan_library(&state).await.unwrap();
+    let book_id = state.library.read().await.books[0].id.clone();
+    let works = state.works.read().await.clone();
+    assert_eq!(works.works.len(), 1);
+    assert_eq!(works.works[0].book_ids, vec![book_id]);
 }
 
 /// Builds a library holding one real, trailing-`moov` M4B. Returns `None`
@@ -3540,4 +4158,626 @@ fn rfc3339_formats_an_instant_a_feed_reader_will_accept() {
     // Last second of a day, and the first of the next.
     assert_eq!(super::rfc3339_utc(86_399), "1970-01-01T23:59:59Z");
     assert_eq!(super::rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
+}
+
+/// An old copy left behind at a stale alias matches the identity's *history*.
+/// The live book matches its current fingerprint. Current evidence has to win,
+/// or the identity — and the progress and grants hanging off it — follows the
+/// abandoned copy.
+#[test]
+fn a_current_fingerprint_outranks_a_historical_one() {
+    for reversed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let original = write_book(root.path(), "A", "01.mp3", b"first pressing");
+
+        let mut identities = super::LibraryIdentityStore::default();
+        let before = resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("A", std::slice::from_ref(&original))],
+        );
+        let book_id = before[0].0.clone();
+
+        // The book is rewritten in place, so its old digest becomes history.
+        std::fs::write(&original, b"second pressing, different bytes").unwrap();
+        resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("A", std::slice::from_ref(&original))],
+        );
+
+        // Now it moves to B, and a copy of the ORIGINAL bytes reappears at A.
+        std::fs::create_dir_all(root.path().join("B")).unwrap();
+        let moved = root.path().join("B/01.mp3");
+        std::fs::rename(&original, &moved).unwrap();
+        let stale = write_book(root.path(), "A", "01.mp3", b"first pressing");
+
+        let stale_fixture = IdentityFixture::read("A", std::slice::from_ref(&stale));
+        let live_fixture = IdentityFixture::read("B", std::slice::from_ref(&moved));
+        let scan = if reversed {
+            vec![live_fixture, stale_fixture]
+        } else {
+            vec![stale_fixture, live_fixture]
+        };
+        let after = resolve_scan(&mut identities, &scan);
+        let (live, stale_out) = if reversed {
+            (&after[0], &after[1])
+        } else {
+            (&after[1], &after[0])
+        };
+
+        assert_eq!(
+            live.0, book_id,
+            "the live book keeps the identity (reversed = {reversed})"
+        );
+        assert_ne!(
+            stale_out.0, book_id,
+            "an old copy at a stale alias must not claim it (reversed = {reversed})"
+        );
+    }
+}
+
+/// One stored identity, two scanned books that both match it. Neither may
+/// claim it, and the result must not depend on which is scanned first.
+#[test]
+fn an_identity_claimed_by_two_groups_goes_to_neither() {
+    let root = tempfile::tempdir().unwrap();
+    let original = write_book(root.path(), "Book", "01.mp3", b"shared bytes");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            std::slice::from_ref(&original),
+        )],
+    );
+    let book_id = before[0].0.clone();
+
+    // A second, byte-identical copy appears elsewhere. Both now match the one
+    // stored identity by fingerprint, and neither sits at its remembered path.
+    let copy = write_book(root.path(), "Elsewhere", "01.mp3", b"shared bytes");
+    std::fs::create_dir_all(root.path().join("Moved")).unwrap();
+    let moved = root.path().join("Moved/01.mp3");
+    std::fs::rename(&original, &moved).unwrap();
+
+    let mut forward = identities.clone();
+    let a = resolve_scan(
+        &mut forward,
+        &[
+            IdentityFixture::read("Elsewhere", std::slice::from_ref(&copy)),
+            IdentityFixture::read("Moved", std::slice::from_ref(&moved)),
+        ],
+    );
+    let mut backward = identities.clone();
+    let b = resolve_scan(
+        &mut backward,
+        &[
+            IdentityFixture::read("Moved", std::slice::from_ref(&moved)),
+            IdentityFixture::read("Elsewhere", std::slice::from_ref(&copy)),
+        ],
+    );
+
+    let claimed_forward = a.iter().filter(|(id, _)| id == &book_id).count();
+    let claimed_backward = b.iter().filter(|(id, _)| id == &book_id).count();
+    assert_eq!(
+        claimed_forward, claimed_backward,
+        "scan order must not decide who gets an ambiguous identity"
+    );
+    assert_eq!(
+        claimed_forward, 0,
+        "an identity two books both claim is given to neither"
+    );
+}
+
+/// The staleness boundary on the path-only tier, isolated from minting.
+#[test]
+fn the_path_tier_closes_once_an_identity_goes_stale() {
+    let run = |age: u64| {
+        let root = tempfile::tempdir().unwrap();
+        let track = write_book(root.path(), "Book", "01.m4b", b"original container");
+        let mut identities = super::LibraryIdentityStore::default();
+        let before = resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+        );
+
+        identities.scan_counter += age;
+        std::fs::write(&track, b"remuxed container, same audio, other bytes").unwrap();
+        let after = resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+        );
+        (before[0].0.clone(), after[0].0.clone())
+    };
+
+    let (before, after) = run(super::PATH_TIER_STALE_AFTER_SCANS - 1);
+    assert_eq!(before, after, "a recently seen identity still carries");
+
+    let (before, after) = run(super::PATH_TIER_STALE_AFTER_SCANS + 1);
+    assert_ne!(before, after, "a stale identity no longer claims by path");
+}
+
+/// A faststart remux preserves duration exactly; a different book at the same
+/// path does not. That is what separates the two cases the path-only tier
+/// otherwise cannot tell apart.
+#[test]
+fn the_path_tier_rejects_a_replacement_with_a_different_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"original container");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+
+    // Same path, same filename, different bytes — but eleven hours instead of
+    // one. This is a replacement, not a remux.
+    std::fs::write(&track, b"an entirely different audiobook").unwrap();
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(39_600.0)],
+    );
+    assert_ne!(
+        after[0].0, before[0].0,
+        "content of a different length must not inherit the identity"
+    );
+
+    // The remux case, by contrast, is carried.
+    let root = tempfile::tempdir().unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"trailing moov");
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+    std::fs::write(&track, b"leading moov, different bytes entirely").unwrap();
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+    assert_eq!(
+        after[0].0, before[0].0,
+        "a remux keeps its duration, and its identity"
+    );
+}
+
+/// A library that really did shrink must not be stranded. The gate withholds
+/// the first observations and accepts the reduction once it is confirmed.
+#[test]
+fn a_repeated_shrink_is_eventually_accepted() {
+    let mut identities = super::LibraryIdentityStore::default();
+    identities.manifests.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::RootManifest {
+            book_fingerprints: (0..100).map(|index| format!("fp{index}")).collect(),
+            scan: 1,
+        },
+    );
+    let root = std::path::Path::new("/library");
+
+    for observation in 1..super::SHRINK_CONFIRMATIONS {
+        let verdict = super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(20),
+            &[],
+            root,
+        );
+        assert!(!verdict.commits(), "observation {observation} is withheld");
+        match verdict {
+            super::ScanVerdict::Withhold {
+                record_shrink: Some((count, signature)),
+            } => {
+                let pending = identities
+                    .pending_shrink
+                    .entry(super::DEFAULT_ROOT_ID.to_string())
+                    .or_default();
+                pending.book_count = count;
+                pending.signature = signature;
+                pending.observations += 1;
+            }
+            _ => panic!("a shrink must be recorded so it can be confirmed"),
+        }
+    }
+
+    assert!(
+        super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(20),
+            &[],
+            root
+        )
+        .commits(),
+        "a consistently reported reduction is accepted rather than stranding the library"
+    );
+
+    // A different count restarts the count: a flapping mount never confirms.
+    assert!(
+        !super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(5),
+            &[],
+            root
+        )
+        .commits(),
+        "a different reduced count is not a confirmation of the previous one"
+    );
+}
+
+/// A traversal failure says nothing about how big the library is, so it must
+/// never count towards confirming a shrink.
+#[test]
+fn a_traversal_failure_does_not_confirm_a_shrink() {
+    let mut identities = super::LibraryIdentityStore::default();
+    identities.manifests.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::RootManifest {
+            book_fingerprints: (0..100).map(|index| format!("fp{index}")).collect(),
+            scan: 1,
+        },
+    );
+    identities.pending_shrink.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::PendingShrink {
+            book_count: 20,
+            signature: super::scan_signature(&book_aliases(20)),
+            observations: super::SHRINK_CONFIRMATIONS - 1,
+        },
+    );
+
+    let verdict = super::assess_scan(
+        &identities,
+        super::DEFAULT_ROOT_ID,
+        &book_aliases(20),
+        &["I/O error".to_string()],
+        std::path::Path::new("/library"),
+    );
+    assert!(!verdict.commits());
+    assert!(
+        matches!(
+            verdict,
+            super::ScanVerdict::Withhold {
+                record_shrink: None
+            }
+        ),
+        "an errored scan must not be counted as evidence of the library's size"
+    );
+}
+
+/// Two files inside one book can share a fingerprint — an intro sting, a
+/// silent gap, a duplicated chapter. Track ids sit on progress rows, so a
+/// stored track id going to the wrong file moves a saved position within the
+/// book.
+///
+/// The graph here is deliberately asymmetric: the first file has exactly one
+/// candidate track, the second has two, and the single candidate is shared. A
+/// symmetric graph does not distinguish the resolvers — both refuse it — so it
+/// has to be this shape to guard the bug. Granting the certain claim would
+/// consume the shared track and cascade the second file onto the remaining
+/// one, which is precisely the order-dependent behaviour being prevented.
+#[test]
+fn a_track_two_files_can_claim_is_not_given_to_the_certain_one() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("Book");
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("01.mp3");
+    let second = dir.join("02.mp3");
+    // Byte-identical, so both files carry one fingerprint.
+    std::fs::write(&first, b"identical chapter bytes").unwrap();
+    std::fs::write(&second, b"identical chapter bytes").unwrap();
+    let shared_fingerprint = super::file_identity_fingerprint(&first).unwrap();
+
+    // T1 has lived at both aliases; T2 only at the second. So "Book/01.mp3"
+    // has one candidate and "Book/02.mp3" has two, with T1 in both.
+    let track_one = super::TrackIdentity {
+        fingerprint: shared_fingerprint.clone(),
+        track_id: "track-one".to_string(),
+        paths: vec![
+            super::IdentityPath::new(super::DEFAULT_ROOT_ID, "Book/01.mp3"),
+            super::IdentityPath::new(super::DEFAULT_ROOT_ID, "Book/02.mp3"),
+        ],
+    };
+    let track_two = super::TrackIdentity {
+        fingerprint: shared_fingerprint.clone(),
+        track_id: "track-two".to_string(),
+        paths: vec![super::IdentityPath::new(
+            super::DEFAULT_ROOT_ID,
+            "Book/02.mp3",
+        )],
+    };
+
+    let fixture = IdentityFixture::read("Book", &[first.clone(), second.clone()]);
+    let mut identities = super::LibraryIdentityStore {
+        version: super::IDENTITY_FORMAT_VERSION,
+        ..Default::default()
+    };
+    identities.books.push(super::BookIdentity {
+        fingerprint: fixture.book_fingerprint.clone(),
+        fingerprint_history: Vec::new(),
+        book_id: "the-book".to_string(),
+        paths: vec![super::IdentityPath::new(super::DEFAULT_ROOT_ID, "Book")],
+        tracks: vec![track_one, track_two],
+        last_seen_scan: 1,
+        track_count: 2,
+        duration_seconds: None,
+    });
+    identities.scan_counter = 1;
+
+    let resolved = resolve_scan(&mut identities, std::slice::from_ref(&fixture));
+    let (book_id, track_ids) = resolved[0].clone();
+    assert_eq!(book_id, "the-book", "the book itself still resolves");
+
+    assert!(
+        !track_ids.contains(&"track-one".to_string()),
+        "a track two files can equally claim must not be granted to whichever asked first"
+    );
+    assert!(
+        !track_ids.contains(&"track-two".to_string()),
+        "and the cascade that would follow from granting it must not happen either"
+    );
+    assert_ne!(track_ids[0], track_ids[1], "two files, two distinct ids");
+}
+
+/// Two byte-identical books share a digest. Remuxing one of them must not be
+/// blocked just because its twin still carries the original fingerprint.
+#[test]
+fn remuxing_one_of_two_identical_copies_keeps_its_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let main = write_book(root.path(), "Dune", "01.m4b", b"identical bytes");
+    let backup = write_book(root.path(), "Backup/Dune", "01.m4b", b"identical bytes");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[
+            IdentityFixture::read("Dune", std::slice::from_ref(&main)).with_duration(3600.0),
+            IdentityFixture::read("Backup/Dune", std::slice::from_ref(&backup))
+                .with_duration(3600.0),
+        ],
+    );
+
+    // Only the main copy is remuxed. Its bytes change; the backup's do not.
+    std::fs::write(&main, b"faststart layout, same audio, other bytes").unwrap();
+    let after = resolve_scan(
+        &mut identities,
+        &[
+            IdentityFixture::read("Dune", std::slice::from_ref(&main)).with_duration(3600.0),
+            IdentityFixture::read("Backup/Dune", std::slice::from_ref(&backup))
+                .with_duration(3600.0),
+        ],
+    );
+
+    assert_eq!(
+        after[0].0, before[0].0,
+        "the remuxed copy keeps its identity even though its twin still holds the old digest"
+    );
+    assert_eq!(after[1].0, before[1].0, "the untouched copy is unaffected");
+}
+
+/// Unreadable tags look exactly like a replacement. Once a book's runtime is
+/// known, a scan that cannot produce one must not be waved through the
+/// path-only tier.
+#[test]
+fn the_path_tier_closes_when_a_known_duration_goes_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"original container");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+
+    std::fs::write(&track, b"different content, unreadable tags").unwrap();
+    let after = resolve_scan(
+        &mut identities,
+        // No duration this time.
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track))],
+    );
+    assert_ne!(
+        after[0].0, before[0].0,
+        "a known duration that cannot be confirmed closes the path tier"
+    );
+}
+
+/// "Three consecutive scans" has to mean three scans that actually saw the
+/// library. A drive alternating between readable and unreadable must never
+/// accumulate its way to confirming a reduction it never demonstrated.
+#[test]
+fn a_traversal_error_interrupts_a_shrink_run() {
+    let mut identities = super::LibraryIdentityStore::default();
+    identities.manifests.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::RootManifest {
+            book_fingerprints: (0..100).map(|index| format!("fp{index}")).collect(),
+            scan: 1,
+        },
+    );
+    identities.pending_shrink.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::PendingShrink {
+            book_count: 20,
+            signature: super::scan_signature(&book_aliases(20)),
+            observations: super::SHRINK_CONFIRMATIONS - 1,
+        },
+    );
+    let root = std::path::Path::new("/library");
+
+    // The errored scan clears the run rather than leaving it standing.
+    let verdict = super::assess_scan(
+        &identities,
+        super::DEFAULT_ROOT_ID,
+        &book_aliases(20),
+        &["I/O error".to_string()],
+        root,
+    );
+    assert!(matches!(
+        verdict,
+        super::ScanVerdict::Withhold {
+            record_shrink: None
+        }
+    ));
+    identities.pending_shrink.remove(super::DEFAULT_ROOT_ID);
+
+    assert!(
+        !super::assess_scan(
+            &identities,
+            super::DEFAULT_ROOT_ID,
+            &book_aliases(20),
+            &[],
+            root
+        )
+        .commits(),
+        "after an interruption the run starts again rather than completing"
+    );
+}
+
+/// An identity wanted by one certain group and one uncertain group is still
+/// contested. Counting only the certain group's claim would hand it over on
+/// evidence that is not actually exclusive.
+///
+/// The store is built by hand because the shape needed — one identity
+/// remembering two aliases, a second identity sharing one of them and the same
+/// digest — takes several scans to arrive at through the filesystem and is
+/// clearer stated directly.
+#[test]
+fn an_identity_two_groups_can_claim_is_not_given_to_the_certain_one() {
+    let shared = "shared-digest".to_string();
+    let mut identities = super::LibraryIdentityStore {
+        version: super::IDENTITY_FORMAT_VERSION,
+        ..Default::default()
+    };
+    // I1 has lived at both aliases, so it is a candidate at either.
+    identities.books.push(super::BookIdentity {
+        fingerprint: shared.clone(),
+        fingerprint_history: Vec::new(),
+        book_id: "identity-one".to_string(),
+        paths: vec![
+            super::IdentityPath::new(super::DEFAULT_ROOT_ID, "X"),
+            super::IdentityPath::new(super::DEFAULT_ROOT_ID, "Y"),
+        ],
+        tracks: Vec::new(),
+        last_seen_scan: 1,
+        track_count: 1,
+        duration_seconds: Some(3600.0),
+    });
+    // I2 sits at Y with the same digest, so Y has two candidates while X has one.
+    identities.books.push(super::BookIdentity {
+        fingerprint: shared.clone(),
+        fingerprint_history: Vec::new(),
+        book_id: "identity-two".to_string(),
+        paths: vec![super::IdentityPath::new(super::DEFAULT_ROOT_ID, "Y")],
+        tracks: Vec::new(),
+        last_seen_scan: 1,
+        track_count: 1,
+        duration_seconds: Some(3600.0),
+    });
+    identities.scan_counter = 1;
+
+    let root = tempfile::tempdir().unwrap();
+    let x_file = write_book(root.path(), "X", "01.mp3", b"x");
+    let y_file = write_book(root.path(), "Y", "01.mp3", b"y");
+
+    let mut at_x = IdentityFixture::read("X", std::slice::from_ref(&x_file));
+    at_x.book_fingerprint = shared.clone();
+    let mut at_y = IdentityFixture::read("Y", std::slice::from_ref(&y_file));
+    at_y.book_fingerprint = shared.clone();
+
+    let groups = [&at_x, &at_y]
+        .iter()
+        .map(|fixture| super::ScannedGroup {
+            book_fingerprint: &fixture.book_fingerprint,
+            group_alias: &fixture.alias,
+            root_id: super::DEFAULT_ROOT_ID,
+            grouped_files: &fixture.files,
+            track_fingerprints: &fixture.track_fingerprints,
+            track_aliases: &fixture.track_aliases,
+            duration_seconds: fixture.duration_seconds,
+        })
+        .collect::<Vec<_>>();
+
+    let resolved = super::resolve_library_identities(
+        &mut identities,
+        &groups,
+        &mut (super::mint_identity_id as fn() -> String),
+    );
+
+    // X's only candidate is I1 — but I1 is equally a candidate at Y, so the
+    // claim is not exclusive and must not be granted on that basis.
+    assert_ne!(
+        resolved[0].0, "identity-one",
+        "an identity another group can also claim is still contested"
+    );
+    assert_ne!(
+        resolved[1].0, "identity-one",
+        "and the contested identity goes to neither group"
+    );
+}
+
+/// A mount returning a different twenty books each time has not demonstrated
+/// anything about the library's real size, however many times it does it.
+/// Confirmation compares which books were found, not how many.
+#[test]
+fn a_shrink_confirms_only_when_the_same_books_are_found() {
+    let mut identities = super::LibraryIdentityStore::default();
+    identities.manifests.insert(
+        super::DEFAULT_ROOT_ID.to_string(),
+        super::RootManifest {
+            book_fingerprints: (0..100).map(|index| format!("fp{index}")).collect(),
+            scan: 1,
+        },
+    );
+    let root = std::path::Path::new("/library");
+
+    // Twenty books, but a different twenty every time.
+    for round in 0..(super::SHRINK_CONFIRMATIONS + 2) {
+        let aliases = (0..20)
+            .map(|index| format!("Book {}", index + round * 20))
+            .collect::<Vec<_>>();
+        let verdict = super::assess_scan(&identities, super::DEFAULT_ROOT_ID, &aliases, &[], root);
+        assert!(
+            !verdict.commits(),
+            "a different set of books each time never confirms (round {round})"
+        );
+        if let super::ScanVerdict::Withhold {
+            record_shrink: Some((count, signature)),
+        } = verdict
+        {
+            let pending = identities
+                .pending_shrink
+                .entry(super::DEFAULT_ROOT_ID.to_string())
+                .or_default();
+            pending.book_count = count;
+            pending.signature = signature;
+            pending.observations += 1;
+        }
+    }
+
+    // The same twenty, repeated, does confirm.
+    let steady = book_aliases(20);
+    for _ in 0..super::SHRINK_CONFIRMATIONS.saturating_sub(1) {
+        let verdict = super::assess_scan(&identities, super::DEFAULT_ROOT_ID, &steady, &[], root);
+        if let super::ScanVerdict::Withhold {
+            record_shrink: Some((count, signature)),
+        } = verdict
+        {
+            let pending = identities
+                .pending_shrink
+                .entry(super::DEFAULT_ROOT_ID.to_string())
+                .or_default();
+            if pending.signature == signature {
+                pending.observations += 1;
+            } else {
+                pending.book_count = count;
+                pending.signature = signature;
+                pending.observations = 1;
+            }
+        }
+    }
+    assert!(
+        super::assess_scan(&identities, super::DEFAULT_ROOT_ID, &steady, &[], root).commits(),
+        "a stable reduced library is eventually accepted"
+    );
 }
