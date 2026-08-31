@@ -1812,6 +1812,26 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
     assert_eq!(search.status, StatusCode::OK, "{}", search.text());
     assert_eq!(search.json()["book"].as_array().unwrap().len(), 1);
 
+    // A genre advertised by filterdata must be usable as a BookPlayer filter.
+    let genre = filter_data["genres"]
+        .as_array()
+        .and_then(|genres| genres.first())
+        .and_then(serde_json::Value::as_str);
+    if let Some(genre) = genre {
+        let encoded = general_purpose::STANDARD.encode(genre);
+        let filtered = server
+            .get(
+                &format!(
+                    "/abs/api/libraries/{}/items?filter=genres.{encoded}",
+                    super::ABS_LIBRARY_ID
+                ),
+                &token,
+            )
+            .await;
+        assert_eq!(filtered.status, StatusCode::OK, "{}", filtered.text());
+        assert!(!filtered.json()["results"].as_array().unwrap().is_empty());
+    }
+
     // Clients configured with `https://server/abs` concatenate that base with
     // the returned path. The composed URL must remain a working, query-token
     // authenticated stream without an Authorization header.
