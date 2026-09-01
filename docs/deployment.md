@@ -7,6 +7,8 @@ nav_order: 10
 
 The dev stack runs Vite and Rust side-by-side. In production you typically want a single port, supervised process, and the server fronted by either nothing (LAN only) or a reverse proxy (TLS, remote access).
 
+For a release package rather than a source build, the [one-line installer](installing-a-release.md#one-line-install-on-macos-and-linux) sets up a combined or `--server-only` installation with background start/stop helpers; this page covers running your own build and the system-service and reverse-proxy layers on top.
+
 ## Build artifacts
 
 ```bash
@@ -31,7 +33,7 @@ You can also omit the bundled web app and run OperaLibre as a headless API/media
   operalibre-server          # the release binary
   web/                       # contents of apps/web/dist/
   server.config             # your config
-  data/                     # progress.json, users.json
+  data/                     # operalibre.db, sync maps, cover cache
 ```
 
 After building, create that layout by copying the release binary and the *contents* of `apps/web/dist/` into `web/`. Keep `server.config` and `data/` outside the source checkout so updates do not touch your accounts or progress.
@@ -266,7 +268,7 @@ In Xcode, select your development team and an attached iPhone, then press Run. F
 
 ## Backups
 
-Back up `data_dir` (default `./data/`). That covers user accounts, per-reader progress, and the durable identity map that keeps books connected to their history when library folders are moved or renamed. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
+Back up `data_dir` (default `./data/`). Its SQLite database (`operalibre.db`) holds user accounts, per-reader progress, the reading log, and the durable identity map that keeps books connected to their history when library folders are moved or renamed. Back up `library_root` with your usual file backups as well; administrators can add new library folders through the web uploader.
 
 ## Updating
 
@@ -277,4 +279,4 @@ npm run build
 # restart the service
 ```
 
-The Rust binary picks up format changes automatically on next startup. The `data/` files use forward-compatible JSON.
+The Rust binary picks up format changes automatically on next startup, migrating the `data/` directory in place when needed (older JSON state is imported into the SQLite database with a backup left in `data/backup-pre-sqlite/`).

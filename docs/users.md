@@ -11,18 +11,13 @@ The server requires sign-in before any audiobook data is served. Accounts, sessi
 
 The first browser to load the app sees a one-time setup form that creates the initial owner account. `local` setup needs no extra credential and rejects remote setup. In `lan` mode, another device must enter the random bootstrap token printed in the server console or `data/server.log`; in `proxy` mode every setup request requires it, which remains safe even if forwarded client headers are misconfigured. The token expires after 30 minutes, is consumed after setup, and is never saved to the account store. After that, the home screen is a standard sign-in form. There is no way to skip auth — even the library list is gated.
 
-If you ever delete `users.json`, the server returns to first-run mode on the next request.
+If the server starts with no accounts at all — a brand-new `data` directory — it returns to first-run mode.
 
 ## Storage
 
-| Item | Where | Format |
-| --- | --- | --- |
-| Accounts | `data/users.json` (configurable via `users_file`) | JSON, passwords hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2) |
-| Progress | `data/progress.json` (configurable via `progress_file`) | JSON, keyed per user and per book |
-| Per-book settings | `data/book-settings.json` | JSON, keyed per user and per book; currently the per-book volume gain |
-| Sessions | `data/sessions.json` | JSON, random opaque tokens |
+Accounts, sessions, progress, per-book settings, and the reading log all live in one SQLite database, `data/operalibre.db`. Passwords are hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2); session tokens are random opaque strings. Installations upgraded from an older release had their `users.json`, `progress.json`, and sibling JSON files imported into the database once, with the originals left in place (and copied to `data/backup-pre-sqlite/`) as a rollback path — they are never read again after the import.
 
-Sessions are persisted to disk, so restarting the server does not sign anyone out. Each session expires 30 days after sign-in.
+Sessions are persisted, so restarting the server does not sign anyone out. Each session expires 30 days after sign-in.
 
 ## Roles
 
@@ -59,16 +54,18 @@ The web app exchanges a username + password for a session token. The token is se
 
 Tokens are random opaque strings. Sessions end on logout, account deletion, or 30 days after sign-in.
 
-Failed sign-ins are rate limited per username: after 5 consecutive failures, further attempts for that username are rejected for 60 seconds.
+Failed sign-ins are rate limited: after 5 consecutive failures for a username (or 25 from one address), further attempts are rejected for 60 seconds.
 
 ## Resetting a forgotten admin password
 
-Accounts are plain JSON on disk, so a lost admin password is recoverable:
+The server owner — the person with shell access to the machine — can recover a lost owner password through the JSON export path:
 
 1. Stop the server.
-2. Open `data/users.json` and delete the offending user object — or delete the whole file to return to first-run setup.
-3. Restart the server.
+2. From the installation folder, run `./operalibre-server --export-json`. This writes the database contents out as JSON files in the `data` folder and exits.
+3. Move `data/operalibre.db` (and any `operalibre.db-wal`/`operalibre.db-shm` files) out of the way.
+4. Open `data/users.json` and delete the offending user object — or delete the exported JSON files entirely to return to first-run setup.
+5. Restart the server. It re-imports the edited JSON files into a fresh database.
 
-If you delete just one user, an authorized administrator can create them again with a new password. The server will not allow the final owner to be deleted or demoted. If you delete the file, restart the server and complete setup again. Remote setup follows the same one-time-token rule.
+If you delete just one user, an authorized administrator can create them again with a new password. The server will not allow the final owner to be deleted or demoted. If you removed everything, complete first-run setup again; remote setup follows the same one-time-token rule.
 
 > Avoid hand-editing the password hash. Argon2 hashes include parameters and salts; let the server generate them.

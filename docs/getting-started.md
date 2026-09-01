@@ -27,7 +27,7 @@ Use the following steps if you want to develop OperaLibre or build it yourself i
 
 | Tool | Version | Used for |
 | --- | --- | --- |
-| [Rust](https://rustup.rs/) | stable (1.75+) | Building and running the server |
+| [Rust](https://rustup.rs/) | stable (1.85+, edition 2024) | Building and running the server |
 | [Node.js](https://nodejs.org/) | 20 LTS or newer | Building and serving `apps/web` |
 | npm | bundled with Node | Workspace + dev scripts |
 | A folder of audiobooks | — | The library the server will scan |

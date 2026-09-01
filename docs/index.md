@@ -29,7 +29,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 
 ## Features at a glance
 
-- **Streams almost anything** — `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
+- **Streams almost anything** — `.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
 - **Real seeking** — HTTP range requests, so scrubbing works on huge `.m4b` files
 - **Rich metadata** — title/subtitle, author, narrator, publisher, dates, genres, language, description, embedded cover art
 - **Chapters** — M4A/M4B/MP4 chapter tracks, MP3 ID3 `CHAP` frames, and multi-file track boundaries
@@ -38,6 +38,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
 - **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone
+- **Third-party clients** — an Audiobookshelf-compatible API for apps like BookPlayer, plus an OPDS catalog
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 
 ## Documentation
@@ -65,7 +66,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
                                             ▼
                               ┌──────────────────────────┐
                               │  library_root/           │
-                              │  data/ (users, progress) │
+                              │  data/ (SQLite database) │
                               │  Libation CLI (optional) │
                               └──────────────────────────┘
 ```
