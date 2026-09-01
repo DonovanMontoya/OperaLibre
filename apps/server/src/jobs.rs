@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! The in-memory background job table: creation, deduplication, progress and
+//! completion updates, and the admin endpoints that watch it.
 
 use crate::*;
 
@@ -70,7 +71,7 @@ pub(crate) async fn create_job(state: &AppState, kind: &str) -> String {
         .0
 }
 
-pub(crate) async fn create_libation_job(
+pub(crate) async fn create_queued_job(
     state: &AppState,
     kind: &str,
     target_id: Option<String>,
@@ -124,6 +125,33 @@ pub(crate) const JOB_LIST_OUTPUT_BYTES: usize = 4 * 1024;
 
 pub(crate) fn is_active_job(job: &JobStatus) -> bool {
     matches!(job.status.as_str(), "queued" | "running")
+}
+
+/// The newest queued or running job of `kind`, if any.
+pub(crate) fn active_job_id(jobs: &HashMap<String, JobStatus>, kind: &str) -> Option<String> {
+    jobs.values()
+        .filter(|job| job.kind == kind && is_active_job(job))
+        .max_by_key(|job| job_started_timestamp(job))
+        .map(|job| job.id.clone())
+}
+
+/// Waits for a job to leave the queue: `true` once it completed, `false` once
+/// it failed. A job missing from the table counts as failed — it can only
+/// disappear by being pruned, and active jobs are never pruned.
+pub(crate) async fn await_job_outcome(state: &AppState, job_id: &str) -> bool {
+    loop {
+        let status = state
+            .jobs
+            .read()
+            .await
+            .get(job_id)
+            .map(|job| job.status.clone());
+        match status.as_deref() {
+            Some("completed") => return true,
+            Some("failed") | None => return false,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
 }
 
 pub(crate) fn next_job_timestamp(jobs: &HashMap<String, JobStatus>) -> u64 {

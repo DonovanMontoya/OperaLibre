@@ -288,12 +288,7 @@ impl UpdateManager {
             .data_dir
             .join("updates")
             .join(format!("staging-{}-{platform}", status.latest_version));
-        match fs::remove_dir_all(&staging_dir).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        fs::create_dir_all(&staging_dir).await?;
+        reset_dir(&staging_dir).await?;
 
         let archive_path = self
             .download_verified_asset(
@@ -313,12 +308,7 @@ impl UpdateManager {
         validate_update_package(&package_root, &status.latest_version, platform).await?;
         make_package_executables(&package_root).await?;
 
-        let updater_name = if cfg!(windows) {
-            "operalibre-updater.exe"
-        } else {
-            "operalibre-updater"
-        };
-        let updater_path = package_root.join(updater_name);
+        let updater_path = package_root.join(exe_name("operalibre-updater"));
         let log_path = self.data_dir.join("update.log");
         let stdout = OpenOptions::new()
             .create(true)
@@ -373,12 +363,7 @@ impl UpdateManager {
             .data_dir
             .join("updates")
             .join(format!("frontend-staging-{}", status.latest_version));
-        match fs::remove_dir_all(&staging_dir).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        fs::create_dir_all(&staging_dir).await?;
+        reset_dir(&staging_dir).await?;
 
         let archive_path = self
             .download_verified_asset(
@@ -567,22 +552,7 @@ fn validated_update_asset<'a>(
     platform: &str,
 ) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
     let asset = find_update_asset(release, version, platform)?;
-    let digest = asset
-        .digest
-        .as_deref()
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| anyhow!("The release update package has no valid SHA-256 digest."))?;
-    if asset.size == 0 || asset.size > MAX_UPDATE_PACKAGE_BYTES {
-        bail!("The release update package has an invalid size.");
-    }
-    if !asset
-        .browser_download_url
-        .starts_with(RELEASE_DOWNLOAD_PREFIX)
-    {
-        bail!("The release update package has an untrusted download URL.");
-    }
-    Ok((asset, digest))
+    check_release_asset(asset, MAX_UPDATE_PACKAGE_BYTES, "release update package")
 }
 
 fn validated_frontend_asset<'a>(
@@ -595,20 +565,51 @@ fn validated_frontend_asset<'a>(
         .iter()
         .find(|asset| asset.name == name)
         .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
+    check_release_asset(asset, MAX_FRONTEND_PACKAGE_BYTES, "frontend package")
+}
+
+/// Clears whatever a previous, possibly interrupted attempt left in `dir` and
+/// recreates it empty.
+async fn reset_dir(dir: &Path) -> anyhow::Result<()> {
+    match fs::remove_dir_all(dir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::create_dir_all(dir).await?;
+    Ok(())
+}
+
+/// `base` with the platform's executable suffix.
+fn exe_name(base: &str) -> String {
+    if cfg!(windows) {
+        format!("{base}.exe")
+    } else {
+        base.to_string()
+    }
+}
+
+/// The digest, size, and origin checks every release asset must pass before a
+/// byte of it is downloaded.
+fn check_release_asset<'a>(
+    asset: &'a GithubReleaseAsset,
+    max_bytes: u64,
+    label: &str,
+) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
     let digest = asset
         .digest
         .as_deref()
         .and_then(|digest| digest.strip_prefix("sha256:"))
         .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| anyhow!("The frontend package has no valid SHA-256 digest."))?;
-    if asset.size == 0 || asset.size > MAX_FRONTEND_PACKAGE_BYTES {
-        bail!("The frontend package has an invalid size.");
+        .ok_or_else(|| anyhow!("The {label} has no valid SHA-256 digest."))?;
+    if asset.size == 0 || asset.size > max_bytes {
+        bail!("The {label} has an invalid size.");
     }
     if !asset
         .browser_download_url
         .starts_with(RELEASE_DOWNLOAD_PREFIX)
     {
-        bail!("The frontend package has an untrusted download URL.");
+        bail!("The {label} has an untrusted download URL.");
     }
     Ok((asset, digest))
 }
@@ -722,18 +723,8 @@ async fn validate_update_package(root: &Path, version: &str, platform: &str) -> 
     {
         bail!("The update package metadata does not match this release.");
     }
-    let server_name = if cfg!(windows) {
-        "operalibre-server.exe"
-    } else {
-        "operalibre-server"
-    };
-    let updater_name = if cfg!(windows) {
-        "operalibre-updater.exe"
-    } else {
-        "operalibre-updater"
-    };
-    if !root.join(server_name).is_file()
-        || !root.join(updater_name).is_file()
+    if !root.join(exe_name("operalibre-server")).is_file()
+        || !root.join(exe_name("operalibre-updater")).is_file()
         || !root.join("web/index.html").is_file()
         || !root.join("VERSION.txt").is_file()
     {

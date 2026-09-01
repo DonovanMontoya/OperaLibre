@@ -9,9 +9,11 @@ pub(crate) struct WorkLinkRequest {
     pub(crate) work_id: String,
 }
 
-pub(crate) struct ListeningCheckpoint<'a> {
-    pub(crate) previous: Option<&'a Progress>,
-    pub(crate) intentional_seek: bool,
+pub(crate) struct ListeningCheckpoint {
+    /// Seconds of validated listening this checkpoint contributed, already
+    /// computed by the caller's plausibility gate so the gate and the recorded
+    /// value can never disagree.
+    pub(crate) listened_seconds: f64,
     pub(crate) tz_offset_minutes: i64,
     pub(crate) speed: Option<f64>,
     pub(crate) client: Option<String>,
@@ -22,26 +24,19 @@ pub(crate) async fn record_listening(
     user_id: &str,
     book: &Book,
     saved: &Progress,
-    checkpoint: ListeningCheckpoint<'_>,
+    checkpoint: ListeningCheckpoint,
 ) {
-    let listened_seconds =
-        plausible_listened_delta(checkpoint.previous, saved, checkpoint.intentional_seek);
-    if listened_seconds <= 0.0 {
+    if checkpoint.listened_seconds <= 0.0 {
         return;
     }
-    let work_id = state
-        .works
-        .read()
-        .await
-        .work_for_book(&book.id)
-        .map(|work| work.id.clone());
+    let work_id = current_work_id(state, &book.id).await;
     let outcome = state.open_sessions.lock().await.record(
         Checkpoint {
             user_id: user_id.to_string(),
             book_id: book.id.clone(),
             work_id,
             at_ms: progress_timestamp_millis(&saved.updated_at),
-            listened_seconds,
+            listened_seconds: checkpoint.listened_seconds,
             position_seconds: saved.book_position_seconds,
             speed: checkpoint.speed,
             client: checkpoint.client,
@@ -54,6 +49,16 @@ pub(crate) async fn record_listening(
         return;
     };
     persist_sessions(state, sessions).await;
+}
+
+/// The work this book is currently an edition of, if any.
+async fn current_work_id(state: &AppState, book_id: &str) -> Option<String> {
+    state
+        .works
+        .read()
+        .await
+        .work_for_book(book_id)
+        .map(|work| work.id.clone())
 }
 
 /// Replace a flushed revision instead of retaining every cumulative snapshot
@@ -113,12 +118,7 @@ pub(crate) async fn record_completion(
     source: CompletionSource,
     tz_offset_minutes: i64,
 ) {
-    let work_id = state
-        .works
-        .read()
-        .await
-        .work_for_book(&book.id)
-        .map(|work| work.id.clone());
+    let work_id = current_work_id(state, &book.id).await;
     let snapshot = EditionSnapshot {
         title: book.title.clone(),
         author: book.author.clone(),
@@ -166,9 +166,7 @@ pub(crate) async fn reading_log_sessions(
     let sessions = compact_sessions(history.sessions.clone())
         .into_iter()
         .map(|mut session| {
-            if let Some(work_id) = work_ids.get(&session.book_id) {
-                session.work_id = Some(work_id.clone());
-            }
+            overlay_work_id(&work_ids, &session.book_id, &mut session.work_id);
             session
         })
         .collect::<Vec<_>>();
@@ -194,9 +192,7 @@ pub(crate) async fn reading_log_completions(
         .iter()
         .cloned()
         .map(|mut completion| {
-            if let Some(work_id) = work_ids.get(&completion.book_id) {
-                completion.work_id = Some(work_id.clone());
-            }
+            overlay_work_id(&work_ids, &completion.book_id, &mut completion.work_id);
             completion
         })
         .collect::<Vec<_>>();
@@ -208,6 +204,19 @@ pub(crate) async fn reading_log_completions(
         |row| row.finished_on.as_str(),
         |row| row.finished_at_ms,
     ))
+}
+
+/// Read paths resolve a row's work through the live works store rather than
+/// trusting the id frozen onto it, so an administrator linking two editions
+/// merges the history those editions already accumulated.
+fn overlay_work_id(
+    work_ids: &HashMap<String, String>,
+    book_id: &str,
+    work_id: &mut Option<String>,
+) {
+    if let Some(current) = work_ids.get(book_id) {
+        *work_id = Some(current.clone());
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -255,18 +264,10 @@ pub(crate) async fn link_work_edition(
     Extension(auth): Extension<AuthUser>,
     Json(request): Json<WorkLinkRequest>,
 ) -> Result<Json<WorkStore>, ApiError> {
-    require_admin(&auth)?;
-    state
-        .works
-        .mutate(|works| {
-            if works.link_manually(&request.book_id, &request.work_id) {
-                Ok(())
-            } else {
-                Err(ApiError::not_found("Work not found"))
-            }
-        })
-        .await?;
-    Ok(Json(state.works.read().await.clone()))
+    decide_work_link(&state, &auth, |works| {
+        works.link_manually(&request.book_id, &request.work_id)
+    })
+    .await
 }
 
 pub(crate) async fn reject_work_suggestion(
@@ -274,11 +275,24 @@ pub(crate) async fn reject_work_suggestion(
     Extension(auth): Extension<AuthUser>,
     Json(request): Json<WorkLinkRequest>,
 ) -> Result<Json<WorkStore>, ApiError> {
-    require_admin(&auth)?;
+    decide_work_link(&state, &auth, |works| {
+        works.reject_suggestion(&request.book_id, &request.work_id)
+    })
+    .await
+}
+
+/// Both work-link decisions: apply an administrator's verdict to the store and
+/// return the updated store, or 404 when the verdict named nothing.
+async fn decide_work_link(
+    state: &AppState,
+    auth: &AuthUser,
+    decision: impl FnOnce(&mut WorkStore) -> bool,
+) -> Result<Json<WorkStore>, ApiError> {
+    require_admin(auth)?;
     state
         .works
         .mutate(|works| {
-            if works.reject_suggestion(&request.book_id, &request.work_id) {
+            if decision(works) {
                 Ok(())
             } else {
                 Err(ApiError::not_found("Work not found"))
