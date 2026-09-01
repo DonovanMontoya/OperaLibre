@@ -193,6 +193,10 @@ pub(crate) fn secure_database_files(_path: &FsPath) {}
 #[derive(Clone, Debug)]
 pub(crate) struct Database {
     connection: Arc<std::sync::Mutex<Connection>>,
+    /// Ordinary reads and writes share this gate. Administrative restore takes
+    /// it exclusively so no state write can be drafted against the old caches
+    /// and committed after the replacement database is installed.
+    state_gate: Arc<RwLock<()>>,
 }
 
 impl Database {
@@ -201,11 +205,30 @@ impl Database {
         secure_database_files(path);
         Ok(Self {
             connection: Arc::new(std::sync::Mutex::new(connection)),
+            state_gate: Arc::new(RwLock::new(())),
         })
+    }
+
+    pub(crate) async fn state_read_guard(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.state_gate.clone().read_owned().await
+    }
+
+    pub(crate) async fn quiesce_state(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.state_gate.clone().write_owned().await
     }
 
     /// Run a query on a blocking task.
     pub(crate) async fn call<T, F>(&self, work: F) -> Result<T, ApiError>
+    where
+        F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let _state_guard = self.state_read_guard().await;
+        self.call_while_guarded(work).await
+    }
+
+    /// Run a query while the caller already holds a state gate guard.
+    pub(crate) async fn call_while_guarded<T, F>(&self, work: F) -> Result<T, ApiError>
     where
         F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
         T: Send + 'static,
@@ -228,7 +251,17 @@ impl Database {
         F: FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<T> + Send + 'static,
         T: Send + 'static,
     {
-        self.call(move |connection| {
+        let _state_guard = self.state_read_guard().await;
+        self.transaction_while_guarded(work).await
+    }
+
+    /// Run a transaction while the caller already holds a state gate guard.
+    pub(crate) async fn transaction_while_guarded<T, F>(&self, work: F) -> Result<T, ApiError>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.call_while_guarded(move |connection| {
             let transaction = connection.transaction()?;
             let outcome = work(&transaction)?;
             transaction.commit()?;
