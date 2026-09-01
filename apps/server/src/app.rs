@@ -74,6 +74,8 @@ pub(crate) struct AppState {
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
+    /// Serializes backup snapshots and destructive restores.
+    pub(crate) backup_lock: Arc<Mutex<()>>,
 }
 
 /// Assemble the full application router.
@@ -282,6 +284,12 @@ pub(crate) fn build_router(
     // timeout that dropped the future mid-install would leave the flag set and
     // every later install refused as already in progress until a restart.
     let long_running_routes = Router::new()
+        .route(
+            "/api/admin/backup",
+            get(export_server_backup)
+                .post(import_server_backup)
+                .layer(DefaultBodyLimit::max(MAX_BACKUP_BODY_BYTES)),
+        )
         .route(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
