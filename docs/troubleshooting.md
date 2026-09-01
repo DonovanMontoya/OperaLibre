@@ -60,8 +60,8 @@ The combined package runs in the background. Closing the browser does not stop i
 
 ## Cover art doesn't show up
 
-- Verify the audio file actually has embedded art (Mp3Tag or `ffprobe` will tell you).
-- As a fallback, drop a `cover.jpg` or `cover.png` next to the tracks.
+- Verify the audio file actually has embedded art (Mp3Tag or `ffprobe` will tell you). Covers come from the embedded tags only — a loose `cover.jpg` beside the tracks is not read.
+- If the art is missing, embed it with a tag editor and choose **Rescan library**.
 - Hard-refresh the browser; covers are cached by the browser.
 
 ## Readalong companion isn't matched
@@ -93,7 +93,7 @@ See [Libation troubleshooting](libation.md#troubleshooting).
 
 ## Everyone was signed out
 
-Sessions are stored in `data/sessions.json` and survive restarts, but they expire 30 days after sign-in. If everyone was signed out at once, check whether `sessions.json` was deleted or the `data` directory changed.
+Sessions are stored in the server database (`data/operalibre.db`) and survive restarts, but they expire 30 days after sign-in. If everyone was signed out at once, check whether the database was deleted or the `data` directory changed.
 
 ## CORS errors in the browser console
 
@@ -101,7 +101,7 @@ The easiest fix is to serve the built web app from OperaLibre itself by setting 
 
 ## Where are the logs?
 
-The server logs to stdout/stderr. With `systemd`:
+Release installations started with the Open launcher or the installer's helper scripts write to `data/server.log` inside the installation folder. When you run the binary yourself, the server logs to stdout/stderr. With `systemd`:
 
 ```bash
 journalctl -u operalibre -f
@@ -119,7 +119,7 @@ With `launchd`, route logs in the plist:
 Useful info to include:
 
 - Operating system and architecture
-- Output of `operalibre-server --version` (or the commit hash you built from)
+- The installed version — shown under **Administration → Overview** and in the installation's `VERSION.txt` (or the commit hash you built from)
 - Relevant `server.config` (redact paths if needed)
 - The first few hundred lines of server output around the failure
 - A minimal example of the library layout that triggers the bug
