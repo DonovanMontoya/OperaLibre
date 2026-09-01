@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Streaming audiobook upload into a staged library folder, published by
+//! rename only once the whole upload has been validated.
 
 use crate::*;
 
@@ -18,38 +19,32 @@ pub(crate) async fn upload_audiobook(
     let staging_path = state.library_root.join(staging_name);
     fs::create_dir(&staging_path).await?;
 
-    let result =
-        receive_audiobook_upload(&staging_path, &mut multipart, state.max_upload_bytes).await;
-    let book_name = match result {
-        Ok(book_name) => book_name,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging_path).await;
-            return Err(error);
-        }
-    };
-
-    let destination = state.library_root.join(&book_name);
-    match fs::try_exists(&destination).await {
-        Ok(false) => {}
-        Ok(true) => {
-            let _ = fs::remove_dir_all(&staging_path).await;
-            return Err(ApiError::conflict(format!(
-                "A library folder named '{book_name}' already exists. Choose another book name."
-            )));
-        }
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging_path).await;
-            return Err(error.into());
-        }
-    }
-
-    if let Err(error) = fs::rename(&staging_path, &destination).await {
+    if let Err(error) = stage_and_publish_upload(&state, &staging_path, &mut multipart).await {
         let _ = fs::remove_dir_all(&staging_path).await;
-        return Err(error.into());
+        return Err(error);
     }
 
     rescan_library(&state).await?;
     Ok(Json(books_with_progress(&state, &auth).await?))
+}
+
+/// Receive the upload into the staging directory and move it into place under
+/// its book name. The caller owns removing the staging directory on failure.
+async fn stage_and_publish_upload(
+    state: &AppState,
+    staging_path: &FsPath,
+    multipart: &mut Multipart,
+) -> Result<(), ApiError> {
+    let book_name =
+        receive_audiobook_upload(staging_path, multipart, state.max_upload_bytes).await?;
+    let destination = state.library_root.join(&book_name);
+    if fs::try_exists(&destination).await? {
+        return Err(ApiError::conflict(format!(
+            "A library folder named '{book_name}' already exists. Choose another book name."
+        )));
+    }
+    fs::rename(staging_path, &destination).await?;
+    Ok(())
 }
 
 pub(crate) async fn receive_audiobook_upload(

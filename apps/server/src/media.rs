@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Serving the audio: track streaming with range support, readalong
+//! companions, cover art, and whole-book archive downloads.
 
 use crate::*;
 
@@ -66,11 +67,7 @@ pub(crate) async fn get_reading_file(
     require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         let reading_file = book
             .reading_file
             .as_ref()
@@ -119,11 +116,7 @@ pub(crate) async fn stream_track(
     require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         book.tracks
             .iter()
             .find(|candidate| candidate.id == track_id)
@@ -291,6 +284,14 @@ pub(crate) fn range_not_satisfiable_response(file_size: u64) -> Result<Response,
         .body(Body::empty())?)
 }
 
+/// Whether the download volume can hold `source` bytes of archive while
+/// keeping `reserve` bytes free.
+pub(crate) fn download_volume_has_capacity(available: u64, source: u64, reserve: u64) -> bool {
+    source
+        .checked_add(reserve)
+        .is_some_and(|required| available >= required)
+}
+
 pub(crate) async fn download_book(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -311,11 +312,7 @@ pub(crate) async fn download_book(
     let min_download_free_bytes = state.min_download_free_bytes;
     let (book_title, tracks) = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         let tracks: Vec<(String, PathBuf)> = book
             .tracks
             .iter()
@@ -350,10 +347,7 @@ pub(crate) async fn download_book(
         Ok::<_, anyhow::Error>((tracks, source_bytes))
     })
     .await
-    .map_err(|error| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: error.to_string(),
-    })??;
+    .map_err(|error| ApiError::internal(error.to_string()))??;
     if let Some(limit) = max_book_download_bytes
         && source_bytes > limit
     {
@@ -400,10 +394,7 @@ pub(crate) async fn download_book(
             Ok((path, download_permit))
         })
         .await
-        .map_err(|error| ApiError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: error.to_string(),
-        })??;
+        .map_err(|error| ApiError::internal(error.to_string()))??;
 
     let file = fs::File::open(&zip_path).await?;
     let metadata = file.metadata().await?;

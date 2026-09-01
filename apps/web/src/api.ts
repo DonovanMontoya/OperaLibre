@@ -781,7 +781,14 @@ export async function setBookCompletion(
   }
   return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
     method: "PUT",
-    body: JSON.stringify({ finished, ...finalProgress })
+    body: JSON.stringify({
+      finished,
+      ...finalProgress,
+      // Only the player reaching the end creates a dated completion. The
+      // manual button sends status alone, because it says nothing about when
+      // the book was actually read.
+      ...(finalProgress ? { tzOffsetMinutes: tzOffsetMinutes() } : {})
+    })
   });
 }
 

@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Accounts and sessions: password hashing, sign-in and its throttles,
+//! cookies, CSRF enforcement, and per-user permissions.
 
 use crate::*;
 
@@ -102,23 +103,28 @@ pub(crate) struct UserPublic {
 
 impl From<&User> for UserPublic {
     fn from(user: &User) -> Self {
+        let mut public = UserPublic::from(AuthUser::from(user));
+        public.created_at = user.created_at.clone();
+        public
+    }
+}
+
+impl From<AuthUser> for UserPublic {
+    /// A session does not carry the account's creation time, so it is empty
+    /// here; the `&User` conversion, which has the stored record, fills it in.
+    fn from(auth: AuthUser) -> Self {
         Self {
-            id: user.id.clone(),
-            username: user.username.clone(),
-            is_admin: user.is_admin || user.is_owner,
-            is_owner: user.is_owner,
-            can_approve_libation_requests: user.is_owner
-                || (user.is_admin && user.can_approve_libation_requests),
-            allowed_book_ids: user.allowed_book_ids.clone(),
-            libation_access: if user.is_owner {
-                LibationAccess::Direct
-            } else {
-                user.libation_access
-            },
-            share_progress: user.share_progress,
-            announce_finishes: user.announce_finishes,
-            notify_finishes: user.notify_finishes,
-            created_at: user.created_at.clone(),
+            id: auth.id,
+            username: auth.username,
+            is_admin: auth.is_admin,
+            is_owner: auth.is_owner,
+            can_approve_libation_requests: auth.can_approve_libation_requests,
+            allowed_book_ids: auth.allowed_book_ids,
+            libation_access: auth.libation_access,
+            share_progress: auth.share_progress,
+            announce_finishes: auth.announce_finishes,
+            notify_finishes: auth.notify_finishes,
+            created_at: String::new(),
         }
     }
 }
@@ -164,6 +170,31 @@ pub(crate) struct AuthUser {
     pub(crate) share_progress: bool,
     pub(crate) announce_finishes: bool,
     pub(crate) notify_finishes: bool,
+}
+
+impl From<&User> for AuthUser {
+    /// The one place stored account flags become effective permissions: an
+    /// owner is always an administrator, always approves Libation requests,
+    /// and always has direct Libation access, whatever the stored flags say.
+    fn from(user: &User) -> Self {
+        Self {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin || user.is_owner,
+            is_owner: user.is_owner,
+            can_approve_libation_requests: user.is_owner
+                || (user.is_admin && user.can_approve_libation_requests),
+            allowed_book_ids: user.allowed_book_ids.clone(),
+            libation_access: if user.is_owner {
+                LibationAccess::Direct
+            } else {
+                user.libation_access
+            },
+            share_progress: user.share_progress,
+            announce_finishes: user.announce_finishes,
+            notify_finishes: user.notify_finishes,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -309,19 +340,28 @@ pub(crate) fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-pub(crate) async fn hash_password_async(
+/// Run one Argon2 operation on the blocking pool, holding a password-worker
+/// permit for its duration so a burst of sign-ins cannot monopolise the pool.
+async fn run_password_task<T: Send + 'static>(
     state: &AppState,
-    password: String,
-) -> Result<String, ApiError> {
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ApiError> {
     let _permit = state
         .password_task_slots
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
-    tokio::task::spawn_blocking(move || hash_password(&password))
+    tokio::task::spawn_blocking(work)
         .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))?
+        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+}
+
+pub(crate) async fn hash_password_async(
+    state: &AppState,
+    password: String,
+) -> Result<String, ApiError> {
+    run_password_task(state, move || hash_password(&password)).await?
 }
 
 pub(crate) async fn verify_password_async(
@@ -329,30 +369,17 @@ pub(crate) async fn verify_password_async(
     password: String,
     hash: String,
 ) -> Result<bool, ApiError> {
-    let _permit = state
-        .password_task_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
-    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
-        .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+    run_password_task(state, move || verify_password(&password, &hash)).await
 }
 
 pub(crate) async fn verify_dummy_password_async(
     state: &AppState,
     password: String,
 ) -> Result<bool, ApiError> {
-    let _permit = state
-        .password_task_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::internal("Password worker pool is unavailable."))?;
-    tokio::task::spawn_blocking(move || verify_password(&password, &DUMMY_PASSWORD_HASH))
-        .await
-        .map_err(|error| ApiError::internal(format!("Password worker failed: {error}")))
+    run_password_task(state, move || {
+        verify_password(&password, &DUMMY_PASSWORD_HASH)
+    })
+    .await
 }
 
 pub(crate) fn generate_session_token() -> String {
@@ -530,23 +557,7 @@ pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<Aut
         .users
         .iter()
         .find(|user| user.id == session.user_id)
-        .map(|user| AuthUser {
-            id: user.id.clone(),
-            username: user.username.clone(),
-            is_admin: user.is_admin || user.is_owner,
-            is_owner: user.is_owner,
-            can_approve_libation_requests: user.is_owner
-                || (user.is_admin && user.can_approve_libation_requests),
-            allowed_book_ids: user.allowed_book_ids.clone(),
-            libation_access: if user.is_owner {
-                LibationAccess::Direct
-            } else {
-                user.libation_access
-            },
-            share_progress: user.share_progress,
-            announce_finishes: user.announce_finishes,
-            notify_finishes: user.notify_finishes,
-        })
+        .map(AuthUser::from)
 }
 
 pub(crate) async fn resolve_media_session(
@@ -656,19 +667,7 @@ pub(crate) async fn auth_status(
     let (user, media_token) = if let Some(token) = token_from_headers(&headers) {
         match resolve_session(&state, &token).await {
             Some(auth) => (
-                Some(UserPublic {
-                    id: auth.id,
-                    username: auth.username,
-                    is_admin: auth.is_admin,
-                    is_owner: auth.is_owner,
-                    can_approve_libation_requests: auth.can_approve_libation_requests,
-                    allowed_book_ids: auth.allowed_book_ids,
-                    libation_access: auth.libation_access,
-                    share_progress: auth.share_progress,
-                    announce_finishes: auth.announce_finishes,
-                    notify_finishes: auth.notify_finishes,
-                    created_at: String::new(),
-                }),
+                Some(UserPublic::from(auth)),
                 Some(media_token_for_session(&token)),
             ),
             None => (None, None),
@@ -732,7 +731,7 @@ pub(crate) async fn setup_admin(
     validate_password(&payload.password)?;
 
     let new_user = User {
-        id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
+        id: stable_id(&format!("user:{}:{}", username, now_unix_string())),
         username,
         password_hash: hash_password_async(&state, payload.password.clone()).await?,
         is_admin: true,
@@ -743,7 +742,7 @@ pub(crate) async fn setup_admin(
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
-        created_at: now_rfc3339ish(),
+        created_at: now_unix_string(),
     };
 
     state
@@ -761,25 +760,7 @@ pub(crate) async fn setup_admin(
     state.setup_token.lock().await.take();
 
     let token = create_session(&state, &new_user.id).await?;
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(
-            &token,
-            state.deployment_mode.secure_cookies(),
-        ))
-        .map_err(|error| ApiError::internal(format!("Invalid session cookie: {error}")))?,
-    );
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert("pragma", HeaderValue::from_static("no-cache"));
-    Ok((
-        headers,
-        Json(LoginResponse {
-            media_token: media_token_for_session(&token),
-            token,
-            user: UserPublic::from(&new_user),
-        }),
-    ))
+    session_login_response(&state, token, &new_user)
 }
 
 pub(crate) async fn login(
@@ -790,6 +771,16 @@ pub(crate) async fn login(
 ) -> Result<impl IntoResponse, ApiError> {
     let (user, token) =
         authenticate_and_open_session(&state, peer_address, &headers, payload).await?;
+    session_login_response(&state, token, &user)
+}
+
+/// The response every sign-in path returns: the session cookie, no-store
+/// caching, and the token pair a client needs for API and media requests.
+fn session_login_response(
+    state: &AppState,
+    token: String,
+    user: &User,
+) -> Result<(HeaderMap, Json<LoginResponse>), ApiError> {
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
@@ -806,7 +797,7 @@ pub(crate) async fn login(
         Json(LoginResponse {
             media_token: media_token_for_session(&token),
             token,
-            user: UserPublic::from(&user),
+            user: UserPublic::from(user),
         }),
     ))
 }
@@ -946,31 +937,27 @@ pub(crate) fn prune_sessions_for_new_session(
     now_seconds: u64,
 ) {
     sessions.retain(|_, session| !session.is_expired(now_seconds));
+    evict_oldest_sessions(sessions, MAX_SESSIONS_PER_USER, |session| {
+        session.user_id == user_id
+    });
+    evict_oldest_sessions(sessions, MAX_SESSIONS_TOTAL, |_| true);
+}
 
-    let mut user_sessions = sessions
+/// Make room for one incoming session: evict the oldest matching sessions
+/// until fewer than `limit` remain.
+fn evict_oldest_sessions(
+    sessions: &mut HashMap<String, Session>,
+    limit: usize,
+    matches: impl Fn(&Session) -> bool,
+) {
+    let mut candidates = sessions
         .iter()
-        .filter(|(_, session)| session.user_id == user_id)
+        .filter(|(_, session)| matches(session))
         .map(|(token, session)| (token.clone(), session.created_at))
         .collect::<Vec<_>>();
-    user_sessions.sort_by_key(|(_, created_at)| *created_at);
-    let remove_for_user = user_sessions
-        .len()
-        .saturating_add(1)
-        .saturating_sub(MAX_SESSIONS_PER_USER);
-    for (token, _) in user_sessions.into_iter().take(remove_for_user) {
-        sessions.remove(&token);
-    }
-
-    let mut all_sessions = sessions
-        .iter()
-        .map(|(token, session)| (token.clone(), session.created_at))
-        .collect::<Vec<_>>();
-    all_sessions.sort_by_key(|(_, created_at)| *created_at);
-    let remove_total = all_sessions
-        .len()
-        .saturating_add(1)
-        .saturating_sub(MAX_SESSIONS_TOTAL);
-    for (token, _) in all_sessions.into_iter().take(remove_total) {
+    candidates.sort_by_key(|(_, created_at)| *created_at);
+    let excess = candidates.len().saturating_add(1).saturating_sub(limit);
+    for (token, _) in candidates.into_iter().take(excess) {
         sessions.remove(&token);
     }
 }
@@ -1010,19 +997,7 @@ pub(crate) async fn logout(
 }
 
 pub(crate) async fn me(Extension(auth): Extension<AuthUser>) -> Json<UserPublic> {
-    Json(UserPublic {
-        id: auth.id,
-        username: auth.username,
-        is_admin: auth.is_admin,
-        is_owner: auth.is_owner,
-        can_approve_libation_requests: auth.can_approve_libation_requests,
-        allowed_book_ids: auth.allowed_book_ids,
-        libation_access: auth.libation_access,
-        share_progress: auth.share_progress,
-        announce_finishes: auth.announce_finishes,
-        notify_finishes: auth.notify_finishes,
-        created_at: String::new(),
-    })
+    Json(UserPublic::from(auth))
 }
 
 pub(crate) async fn update_progress_sharing(
@@ -1189,7 +1164,7 @@ pub(crate) async fn create_user(
 
     let password_hash = hash_password_async(&state, payload.password.clone()).await?;
     let new_user = User {
-        id: stable_id(&format!("user:{}:{}", username, now_rfc3339ish())),
+        id: stable_id(&format!("user:{}:{}", username, now_unix_string())),
         username,
         password_hash,
         is_admin,
@@ -1217,7 +1192,7 @@ pub(crate) async fn create_user(
         share_progress: true,
         announce_finishes: true,
         notify_finishes: true,
-        created_at: now_rfc3339ish(),
+        created_at: now_unix_string(),
     };
     let created = new_user.clone();
     state
@@ -1281,6 +1256,9 @@ pub(crate) async fn delete_user(
 
     state.progress.remove_user(&user_id).await?;
     state.book_settings.remove_user(&user_id).await?;
+    // Dropped before the history purge, so a flush of the buffered sessions
+    // cannot re-persist the account between the two steps.
+    state.open_sessions.lock().await.forget_user(&user_id);
     state
         .reading_history
         .mutate(|history| {
