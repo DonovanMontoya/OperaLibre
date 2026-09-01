@@ -3386,7 +3386,7 @@ fn reading_log_metadata_is_parsed_and_sanitized() {
 }
 
 #[test]
-fn manual_completion_timezone_is_parsed() {
+fn playback_completion_timezone_is_parsed() {
     let update: super::CompletionUpdate = serde_json::from_value(serde_json::json!({
         "finished": true,
         "tzOffsetMinutes": -240

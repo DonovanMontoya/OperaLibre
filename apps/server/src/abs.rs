@@ -881,11 +881,10 @@ pub(crate) async fn abs_update_progress(
             tz_offset_minutes: None,
             speed: None,
             client: Some("audiobookshelf"),
-            completion_source: if finished == Some(true) {
-                CompletionSource::Marked
-            } else {
-                CompletionSource::Reached
-            },
+            // A completion-only PATCH is a status choice, not evidence that
+            // the listener read the book today. Position-bearing updates can
+            // still record a natural crossing into finished.
+            completion_source: requested_book_position.map(|_| CompletionSource::Reached),
         },
     )
     .await;

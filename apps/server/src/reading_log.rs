@@ -158,7 +158,9 @@ pub struct EditionSnapshot {
 pub enum CompletionSource {
     /// The listener reached the end and the server derived it.
     Reached,
-    /// The listener marked the book finished themselves.
+    /// A legacy event created when marking a book finished also implied it was
+    /// finished that day. Kept so existing history remains readable; new
+    /// status-only changes do not create completion events.
     Marked,
 }
 
