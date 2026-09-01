@@ -66,6 +66,7 @@ mod activity;
 mod alignment;
 mod app;
 mod auth;
+mod backup;
 mod config;
 mod db;
 mod error;
@@ -95,6 +96,7 @@ use abs::*;
 use activity::*;
 use app::*;
 use auth::*;
+use backup::*;
 use config::*;
 use db::*;
 use error::*;
@@ -382,6 +384,7 @@ fn build_app_state(
         )?,
         sync_dir: config.data_dir.join("sync"),
         covers_dir: config.data_dir.join("covers"),
+        database: database.clone(),
         database_path,
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(
@@ -441,5 +444,6 @@ fn build_app_state(
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         upload_lock: Arc::new(Mutex::new(())),
+        backup_lock: Arc::new(Mutex::new(())),
     })
 }
