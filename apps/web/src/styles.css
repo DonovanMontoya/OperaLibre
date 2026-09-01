@@ -2952,6 +2952,91 @@ select:focus {
   border-color: rgba(241, 231, 208, 0.28);
 }
 
+/* --------- Connect-a-server pitch on the local shelf --------- */
+.connect-server-card {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(217, 181, 116, 0.22);
+  background: rgba(217, 181, 116, 0.06);
+}
+
+.connect-server-card .section-label {
+  color: var(--gold-soft);
+}
+
+.connect-server-card p {
+  margin: 0;
+  font-family: "Fraunces", serif;
+  font-style: italic;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  color: rgba(241, 231, 208, 0.68);
+}
+
+.connect-server-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.connect-server-guide {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: "Fraunces", serif;
+  font-style: italic;
+  font-size: 0.88rem;
+  color: var(--gold-soft);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.connect-server-guide:hover {
+  color: var(--paper);
+}
+
+.connect-server-card .download-btn {
+  color: var(--paper);
+  border-color: rgba(241, 231, 208, 0.28);
+}
+
+/* The shelf is always dark, so the paper-surface hover/press recolors from
+   .download-btn:hover and the native transparent-hover override would paint
+   these buttons ink-on-dark — invisible, and iOS keeps :hover stuck after a
+   tap. Keep the cream treatment with a subtle lift instead. */
+.device-empty-state .download-btn:hover,
+.device-empty-state .download-btn:active,
+.connect-server-card .download-btn:hover,
+.connect-server-card .download-btn:active,
+html.native-app .device-empty-state .download-btn:not(.active):hover,
+html.native-app .connect-server-card .download-btn:not(.active):hover {
+  background: rgba(241, 231, 208, 0.14);
+  color: var(--paper);
+  border-color: rgba(241, 231, 208, 0.45);
+}
+
+.connect-server-dismiss {
+  padding: 4px 0;
+  border: none;
+  background: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(241, 231, 208, 0.5);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.connect-server-dismiss:hover {
+  color: rgba(241, 231, 208, 0.8);
+}
+
 .empty-player {
   align-self: center;
   justify-self: center;

@@ -10,6 +10,7 @@ import {
   Cloud,
   CloudDownload,
   Download,
+  ExternalLink,
   FolderOpen,
   Gamepad2,
   Gauge,
@@ -133,6 +134,7 @@ import {
   getStoredMediaToken,
   getStoredToken,
   hasUserConfiguredServer,
+  SERVER_SETUP_GUIDE_URL,
   isNetworkError,
   isLocalMode,
   enterLocalMode,
@@ -2034,7 +2036,18 @@ type AuthState =
 function initialAuthState(): AuthState {
   if (isDemoMode()) return { phase: "ready", user: DEMO_USER };
   if (isLocalMode()) return { phase: "ready", user: DEVICE_USER };
-  if (!hasUserConfiguredServer()) return { phase: "server" };
+  if (!hasUserConfiguredServer()) {
+    // A phone with no server configured opens straight into the on-device
+    // library rather than gating on server setup: someone who installs the
+    // app before their server exists can still listen, and connecting stays
+    // one tap away on the shelf and in settings. The mode must be persisted
+    // before MainApp renders because it reads isLocalMode() directly.
+    if (isNativeApp()) {
+      enterLocalMode();
+      return { phase: "ready", user: DEVICE_USER };
+    }
+    return { phase: "server" };
+  }
 
   // A native launch should not sit behind a network timeout. This is the same
   // cached identity used for offline mode; checkAuth validates it in the
@@ -2072,6 +2085,11 @@ export default function App() {
       return;
     }
     if (!hasUserConfiguredServer()) {
+      if (isNativeApp()) {
+        enterLocalMode();
+        setAuthState({ phase: "ready", user: DEVICE_USER });
+        return;
+      }
       setAuthState({ phase: "server" });
       return;
     }
@@ -2254,6 +2272,13 @@ const UPLOAD_FILE_ACCEPT = [
   "audio/*"
 ].join(",");
 
+/**
+ * Remembers that the reader waved off the shelf's connect-a-server card. Kept
+ * separate from the server keys in api.ts: it describes the pitch, not the
+ * connection, and must survive entering and leaving local mode.
+ */
+const CONNECT_PROMPT_DISMISSED_KEY = "operalibre.connectPromptDismissed";
+
 function MainApp({
   currentUser,
   onCurrentUserChanged,
@@ -2283,6 +2308,9 @@ function MainApp({
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
+  const [connectPromptDismissed, setConnectPromptDismissed] = useState(
+    () => window.localStorage.getItem(CONNECT_PROMPT_DISMISSED_KEY) === "true"
+  );
   const [aliasName, setAliasName] = useState("");
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
@@ -6251,11 +6279,53 @@ function MainApp({
 
         {librarySource === "local" ? (
           <>
+            {localMode && !connectPromptDismissed && !hasUserConfiguredServer() ? (
+              <section className="connect-server-card" aria-label="Connect a server">
+                <span className="section-label"><Network size={13} /> Listening from this device</span>
+                <p>
+                  Everything here stays on this device — no server or account needed.
+                  When your OperaLibre or Jellyfin server is ready, connect it to
+                  stream a shared library and sync your progress.
+                </p>
+                <a
+                  className="connect-server-guide"
+                  href={SERVER_SETUP_GUIDE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink size={12} aria-hidden="true" />
+                  <span>New to OperaLibre? Read the server setup guide</span>
+                </a>
+                <div className="connect-server-actions">
+                  <button
+                    type="button"
+                    className="download-btn"
+                    onClick={() => {
+                      pausePlayback(audioRef.current);
+                      onConnectServer();
+                    }}
+                  >
+                    <Network size={13} />
+                    <span>Connect a server</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="connect-server-dismiss"
+                    onClick={() => {
+                      window.localStorage.setItem(CONNECT_PROMPT_DISMISSED_KEY, "true");
+                      setConnectPromptDismissed(true);
+                    }}
+                  >
+                    Maybe later
+                  </button>
+                </div>
+              </section>
+            ) : null}
             {isLoading ? <div className="empty-state">Loading library…</div> : null}
             {error ? <div className="empty-state error">{error}</div> : null}
             {!isLoading && !error && books.length === 0 ? (
               <div className="empty-state device-empty-state">
-                <span>{localMode ? "Your on-device shelf is empty." : "No audiobooks found in the configured library folder."}</span>
+                <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : "No audiobooks found in the configured library folder."}</span>
                 {native ? (
                   <button type="button" className="download-btn" onClick={() => void importFromDevice()}>
                     <FolderOpen size={14} /> Choose audiobook files
