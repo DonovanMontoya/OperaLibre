@@ -11,13 +11,14 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 
 ## Features
 
-- **Your files, your library.** Scans a folder of `.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff` files with rich tag, chapter, and cover-art extraction.
+- **Your files, your library.** Scans a folder of `.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff` files with rich tag, chapter, and cover-art extraction.
 - **A full player.** Seekable streaming, playback speed, sleep timer, 15/30-second skips, and OS-level media controls.
 - **Per-reader accounts.** Each reader gets their own progress, listening stats, reading log, and a durable completion history that survives a book being deleted or replaced.
 - **Readalong.** Read an EPUB, PDF, or text companion beside the audio — with sentence-level sync for EPUBs that highlights the narrated sentence and seeks on click.
 - **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
 - **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
+- **Works with other audiobook apps.** The server speaks an Audiobookshelf-compatible API, so clients such as BookPlayer can connect with a normal account, and publishes an OPDS catalog for generic reading apps.
 - **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.
 - **Try it instantly.** A self-contained on-device demo works without a server, account, or network connection.
 
