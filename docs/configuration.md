@@ -5,7 +5,7 @@ nav_order: 4
 
 # Configuration
 
-The server is configured by a plain text file named `server.config` at the repository root. All settings live here — there is no separate database, environment-variable-driven config, or admin UI for these values.
+The server is configured by a plain text file named `server.config` at the repository root. All settings live here — there is no admin UI for these values. Every key also has an environment-variable fallback (listed [below](#environment-variables)); the config file always wins when both are set.
 
 ## File location
 
@@ -35,7 +35,9 @@ min_download_free_gib = 2
 library_root = /path/to/audiobooks
 ```
 
-Strings are not quoted. Trailing whitespace is trimmed.
+Whitespace around keys and values is trimmed, and a value wrapped in matching single or double quotes has the quotes stripped. Keys are case-insensitive and accept `-` in place of `_` (`max-upload-gib` works). An empty value is treated as unset, so `host =` falls back to the profile default.
+
+An unknown key is a **startup error**, not a warning — a typo or a setting from a different version stops the server with a message naming the line.
 
 ## Full example
 
@@ -52,10 +54,13 @@ max_concurrent_book_downloads = 1
 download_temp_dir = data/download-temp
 min_download_free_gib = 2
 
+# Extra trusted cross-origin frontends (comma-separated).
+allowed_origins =
+
 # Folder containing your audiobook files.
 library_root = /Users/you/Audiobooks
 
-# Server data files.
+# Server data directory and legacy JSON import paths.
 data_dir = data
 progress_file = data/progress.json
 users_file = data/users.json
@@ -71,6 +76,10 @@ libation_reader_refreshes_per_hour = 3
 
 # Optional EPUB narration alignment.
 alignment_cli_path =
+
+# Optional MP4 faststart conversion.
+ffmpeg_path =
+ffprobe_path =
 ```
 
 ## Reference
@@ -80,7 +89,7 @@ alignment_cli_path =
 | Key | Default | Description |
 | --- | --- | --- |
 | `deployment_mode` | `local` | `local` binds to loopback with HTTPS-grade cookies; `lan` listens on all interfaces and permits plain-HTTP cookies for a trusted LAN/VPN; `proxy` binds to loopback and expects a same-machine HTTPS reverse proxy. |
-| `host` | chosen by profile | Optional advanced bind override. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
+| `host` | chosen by profile | Optional advanced bind override. Must be a numeric IP address, not a hostname. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
 | `port` | `4000` | TCP port the API listens on. |
 | `allowed_origins` | *(empty)* | Comma-separated list of trusted custom frontend origins, e.g. `https://reader.example.com`. These origins receive credentialed CORS access and may make cookie-authenticated changes, so do not list sites you do not control. Same-origin requests and the official app origins need no configuration. |
 
@@ -100,27 +109,23 @@ When nginx is used, its `client_max_body_size` is an additional upload ceiling. 
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `library_root` | *(required)* | Absolute path to the folder containing your audiobook files. The scanner reads from this folder; nothing is written into it. See [Library Layout](library-layout.md). |
+| `library_root` | *(required)* | Absolute path to the folder containing your audiobook files. The scanner reads from this folder; nothing is written into it. See [Library Layout](library-layout.md). The key `audiobook_library` is accepted as a legacy alias. |
 
-### Data files
+### Data directory
 
-The server keeps a small amount of state on disk: user accounts, listening progress, generated readalong sync maps, and any cached job output.
+The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), cached cover art (`covers/`), the server log and PID file written by the launcher, and `update-backups/` from in-app updates. On Unix, everything in it is kept readable only by the account running the server.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `data_dir` | `data` | Directory used as the working area for cached data and background jobs. Created if missing. |
-| `progress_file` | `data/progress.json` | JSON file storing per-user playback positions. |
-| `users_file` | `data/users.json` | JSON file storing accounts and Argon2 password hashes. |
-| `activity_file` | `data/activity.json` | Per-reader daily listening totals, used for streaks. Kept for ever; about thirty bytes per reader per day. |
-| `reading_log_retention_days` | `1095` | How long to keep full listening sessions. `0` keeps them for ever. Completions are never aged out. |
-| `reading_log_max_rows` | `200000` | Backstop ceiling on session rows, oldest dropped first. Roughly 66 MB. Accepts 1,000 to 500,000. |
-| `completion_log_max_rows` | `50000` | Backstop ceiling on completion rows. Roughly 25 MB. Accepts 1,000 to 500,000. |
+| `data_dir` | `data` | Directory holding the database and the server's working files. Created if missing. |
+| `progress_file` | `data/progress.json` | Legacy JSON path for playback positions, used once to import an older installation. |
+| `users_file` | `data/users.json` | Legacy JSON path for accounts, used once to import an older installation. |
+| `activity_file` | `data/activity.json` | Legacy JSON path for daily listening totals, used once to import an older installation. |
+| `metadata_overrides_file` | `data/metadata-overrides.json` | Legacy JSON path for saved metadata edits, used once to import an older installation. |
 
-`data_dir` also holds files the server names itself, including `reading-log.jsonl` (per-reader listening sessions), `completions.jsonl` (an immutable record of every book finished, with a snapshot of the book as it was at the time), and `works.json` (the index linking different editions of the same book). All three are created on demand and, on Unix, kept readable only by the account running the server.
+The three `*_file` keys and their siblings matter only when upgrading an installation that predates the database: on first start the server copies the JSON files into `data/backup-pre-sqlite/`, imports them into `operalibre.db` in a single transaction, and never reads them again. The originals are left in place as the rollback path. Running the binary with `--export-json` writes the database contents back out in the original JSON layout and exits, which is also the supported way to inspect or hand-edit server state: export, remove `operalibre.db`, edit the JSON, and restart to re-import.
 
-The logs tidy themselves: a maintenance pass at startup and every six hours collapses superseded rows, applies the retention settings above, and drops work records that hold no reading history. A reader who listens three hours a day, every day, costs about 300 KB of session log per year. `GET /api/storage` reports the current figures, and `POST /api/storage/maintenance` runs the pass on demand.
-
-Back up `data_dir` to preserve progress, reading history, and accounts. `completions.jsonl` in particular is the only record of a book that has since been deleted from the library.
+Back up `data_dir` to preserve progress, reading history, and accounts. The completion records in the database are the only history of a book that has since been deleted from the library.
 
 ### Web app
 
@@ -147,15 +152,40 @@ Leave this blank to search `PATH` for echogarden. When echogarden is unavailable
 | --- | --- | --- |
 | `alignment_cli_path` | *(empty)* | Path to the echogarden CLI. Administrators can use it to generate sentence-level EPUB narration sync maps from the readalong pane. |
 
+### Optional MP4 faststart conversion
+
+MP4-family files written without a leading `moov` index start playing slowly over a network. Administrators can remux them in place from **Administration → Downloaded books**; the control needs ffmpeg, and uses ffprobe to verify each converted file before it replaces the original. Leave both blank to search `PATH`; without ffmpeg the control simply reports itself unavailable.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `ffmpeg_path` | *(empty)* | Path to the ffmpeg binary used for faststart conversion. |
+| `ffprobe_path` | *(empty)* | Path to the ffprobe binary used to verify converted files. |
+
 ## Environment variables
 
-| Variable | Used by | Description |
-| --- | --- | --- |
-| `OPERALIBRE_SERVER_CONFIG` | server | Override the path to `server.config`. |
-| `OPERALIBRE_DEPLOYMENT_MODE` | server | Override the deployment profile with `local`, `lan`, or `proxy`. |
-| `OPERALIBRE_DOWNLOAD_TEMP_DIR` | server | Override the ZIP-download staging directory. |
-| `OPERALIBRE_ALIGNMENT_CLI_PATH` | server | Override the path to the echogarden CLI. |
-| `VITE_API_BASE` | web | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
+Every config key has an environment-variable fallback. A value in `server.config` always takes precedence; the variable is read only when the key is absent or empty.
+
+| Variable | Description |
+| --- | --- |
+| `OPERALIBRE_SERVER_CONFIG` | Path to the config file itself. When set, a missing file is a startup error (the default `./server.config` is allowed to be absent). |
+| `OPERALIBRE_DEPLOYMENT_MODE` | Fallback for `deployment_mode`. |
+| `HOST`, `PORT` | Fallbacks for `host` and `port`. |
+| `OPERALIBRE_LIBRARY` | Fallback for `library_root`. |
+| `OPERALIBRE_DATA_DIR` | Fallback for `data_dir`. |
+| `OPERALIBRE_PROGRESS_FILE`, `OPERALIBRE_USERS_FILE`, `OPERALIBRE_ACTIVITY_FILE`, `OPERALIBRE_METADATA_OVERRIDES_FILE` | Fallbacks for the legacy import paths. |
+| `OPERALIBRE_DOWNLOAD_TEMP_DIR` | Fallback for `download_temp_dir`. |
+| `OPERALIBRE_ALLOWED_ORIGINS` | Fallback for `allowed_origins`. |
+| `OPERALIBRE_WEB_DIST_DIR` | Fallback for `web_dist_dir`. |
+| `OPERALIBRE_ALIGNMENT_CLI_PATH` | Fallback for `alignment_cli_path`. |
+| `OPERALIBRE_FFMPEG_PATH`, `OPERALIBRE_FFPROBE_PATH` | Fallbacks for `ffmpeg_path` and `ffprobe_path`. |
+| `LIBATION_CLI_PATH`, `LIBATION_FILES_DIR` | Fallbacks for `libation_cli_path` and `libation_files_dir` (note: no `OPERALIBRE_` prefix). |
+| `RUST_LOG` | Log filter; defaults to `operalibre_server=info,tower_http=info`. |
+
+The web app has one build-time variable:
+
+| Variable | Description |
+| --- | --- |
+| `VITE_API_BASE` | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
 
 `VITE_API_BASE` is read at **build time** by Vite. Set it before running `npm run build`:
 
