@@ -8535,6 +8535,20 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   gap: 16px;
 }
 
+.admin-backup-card {
+  margin-top: 14px;
+}
+
+.admin-backup-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.admin-backup-input {
+  display: none;
+}
+
 .admin-software-head {
   display: flex;
   align-items: flex-end;
@@ -8912,6 +8926,8 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-update-actions { width: 100%; }
   .admin-update-actions button, .admin-update-actions a { flex: 1; }
   .admin-software-head { align-items: stretch; flex-direction: column; }
+  .admin-backup-actions { width: 100%; }
+  .admin-backup-actions button { flex: 1; }
   .admin-software-actions button { width: 100%; }
   .admin-software-versions { grid-template-columns: 1fr; }
   .admin-user-head { align-items: flex-start; flex-wrap: wrap; }

@@ -253,6 +253,15 @@ fn session_key(user_id: &str, book_id: &str) -> String {
 }
 
 impl OpenSessions {
+    /// Current substantive rows for a point-in-time backup. This does not
+    /// close the live sitting; the normal debounce can continue afterwards.
+    pub fn backup_rows(&self) -> Vec<ReadingSession> {
+        self.sessions
+            .values()
+            .map(|open| open.session.clone())
+            .filter(ReadingSession::is_substantive)
+            .collect()
+    }
     /// Folds one checkpoint into the open session for this listener and book,
     /// starting a new session when the gap is too long.
     ///
