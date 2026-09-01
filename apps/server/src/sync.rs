@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Sync maps: serving and generating the text-to-audio alignment a readalong
+//! client follows.
 
 use crate::*;
 
@@ -11,11 +12,7 @@ pub(crate) async fn get_sync_map(
     require_book_access(&auth, &book_id)?;
     let file_path = {
         let library = state.library.read().await;
-        library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        library.book(&book_id)?;
         library
             .sync_paths
             .get(&book_id)
@@ -56,11 +53,7 @@ pub(crate) async fn generate_sync_map(
 
     let (epub_path, tracks, book_title) = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         let reading_file = book
             .reading_file
             .as_ref()
@@ -296,7 +289,7 @@ pub(crate) async fn run_sync_generation(
     let sync_map = alignment::SyncMap {
         version: alignment::SYNC_MAP_VERSION,
         generator: Some("echogarden".to_string()),
-        generated_at: Some(now_rfc3339ish()),
+        generated_at: Some(now_unix_string()),
         fragments,
     };
     fs::create_dir_all(&state.sync_dir).await?;

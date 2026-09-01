@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Playback-progress checkpoints: validation rules, storage decisions, and the
+//! per-book summaries the library serves.
 
 use crate::*;
 
@@ -131,8 +132,9 @@ pub(crate) struct CompletionUpdate {
     pub(crate) book_position_seconds: Option<f64>,
     pub(crate) duration_seconds: Option<f64>,
     /// The reader's offset from UTC in minutes, with the same semantics as a
-    /// progress checkpoint. Completion dates are immutable, so use the
-    /// listener's calendar day at the time it is recorded.
+    /// progress checkpoint. This is used only when the request carries the
+    /// final playback position; a status-only "mark finished" request does
+    /// not claim that the book was read today.
     pub(crate) tz_offset_minutes: Option<i32>,
 }
 
@@ -146,16 +148,7 @@ pub(crate) async fn update_book_volume(
     Json(payload): Json<BookVolumeUpdate>,
 ) -> Result<Json<Book>, ApiError> {
     require_book_access(&auth, &book_id)?;
-
-    let book = {
-        let library = state.library.read().await;
-        library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .cloned()
-            .ok_or(ApiError::not_found("Book not found"))?
-    };
+    let book = state.library.read().await.book(&book_id)?.clone();
 
     let gain = clamp_book_volume_gain(payload.volume_gain);
     state
@@ -290,11 +283,7 @@ pub(crate) async fn update_progress(
     // blocking task, and so the library lock is not held across the write.
     let (book, track) = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         let track = book
             .tracks
             .iter()
@@ -332,7 +321,7 @@ pub(crate) async fn update_progress(
             tz_offset_minutes: update.tz_offset_minutes,
             speed: update.speed,
             client: update.client.as_deref(),
-            completion_source: CompletionSource::Reached,
+            completion_source: Some(CompletionSource::Reached),
         },
     )
     .await;
@@ -349,7 +338,9 @@ pub(crate) struct ProgressBookkeeping<'a> {
     pub(crate) tz_offset_minutes: Option<i32>,
     pub(crate) speed: Option<f64>,
     pub(crate) client: Option<&'a str>,
-    pub(crate) completion_source: CompletionSource,
+    /// `None` for a status-only update. A dated completion needs evidence from
+    /// a playback position instead of being inferred from "mark finished".
+    pub(crate) completion_source: Option<CompletionSource>,
 }
 
 pub(crate) async fn record_progress_bookkeeping(
@@ -370,8 +361,7 @@ pub(crate) async fn record_progress_bookkeeping(
             book,
             saved,
             ListeningCheckpoint {
-                previous,
-                intentional_seek: bookkeeping.intentional_seek,
+                listened_seconds: listened_delta,
                 tz_offset_minutes,
                 speed: sanitized_playback_speed(bookkeeping.speed),
                 client: sanitized_client_name(bookkeeping.client),
@@ -380,21 +370,13 @@ pub(crate) async fn record_progress_bookkeeping(
         .await;
     }
 
-    let was_finished = previous
-        .map(|progress| {
-            summarize_book_progress(book, progress).status == BookProgressStatus::Finished
-        })
-        .unwrap_or(false);
-    if !was_finished && summarize_book_progress(book, saved).status == BookProgressStatus::Finished
+    let was_finished =
+        previous.is_some_and(|progress| playback_position_is_finished(book, progress));
+    if let Some(source) = bookkeeping.completion_source
+        && !was_finished
+        && playback_position_is_finished(book, saved)
     {
-        record_completion(
-            state,
-            &auth.id,
-            book,
-            bookkeeping.completion_source,
-            tz_offset_minutes,
-        )
-        .await;
+        record_completion(state, &auth.id, book, source, tz_offset_minutes).await;
     }
 }
 
@@ -405,15 +387,7 @@ pub(crate) async fn update_book_completion(
     Json(update): Json<CompletionUpdate>,
 ) -> Result<Json<BookProgress>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let book = state
-        .library
-        .read()
-        .await
-        .books
-        .iter()
-        .find(|candidate| candidate.id == book_id)
-        .cloned()
-        .ok_or(ApiError::not_found("Book not found"))?;
+    let book = state.library.read().await.book(&book_id)?.clone();
     let first_track = book
         .tracks
         .first()
@@ -438,6 +412,10 @@ pub(crate) async fn update_book_completion(
             ));
         }
     };
+    // The player includes a final position when playback reaches the end. A
+    // manual button press intentionally omits it, because changing library
+    // status does not tell us which day the listener actually finished.
+    let records_completion = final_position.is_some();
 
     let now_millis = unix_now_millis();
     // Marking a book finished or unfinished is an explicit instruction, so it
@@ -451,15 +429,9 @@ pub(crate) async fn update_book_completion(
             let book = decision_book;
             let update = decision_update;
             let next_timestamp = next_progress_timestamp(previous, now_millis);
-            let mut saved = previous.cloned().unwrap_or_else(|| Progress {
-                book_id: book.id.clone(),
-                track_id: first_track.id.clone(),
-                position_seconds: 0.0,
-                book_position_seconds: 0.0,
-                duration_seconds: first_track.duration_seconds,
-                updated_at: next_timestamp.clone(),
-                finished_override: None,
-            });
+            let mut saved = previous
+                .cloned()
+                .unwrap_or_else(|| fresh_progress(&book, &first_track, previous, now_millis));
             if let Some((track, position_seconds)) = final_position {
                 saved.track_id = track.id.clone();
                 saved.position_seconds = position_seconds;
@@ -483,16 +455,13 @@ pub(crate) async fn update_book_completion(
     let summary = summarize_book_progress(&book, &saved);
     let was_finished = previous
         .as_ref()
-        .map(|progress| {
-            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
-        })
-        .unwrap_or(false);
-    if update.finished && !was_finished {
+        .is_some_and(|progress| playback_position_is_finished(&book, progress));
+    if records_completion && update.finished && !was_finished {
         record_completion(
             &state,
             &auth.id,
             &book,
-            CompletionSource::Marked,
+            CompletionSource::Reached,
             sanitized_tz_offset_minutes(update.tz_offset_minutes),
         )
         .await;
@@ -673,6 +642,16 @@ pub(crate) fn summarize_book_progress(book: &Book, progress: &Progress) -> BookP
     }
 }
 
+/// Whether playback itself has reached the book's finished range. Explicit
+/// status choices are deliberately ignored: a manual mark must neither create
+/// a dated completion nor suppress one when the listener later reaches the
+/// end for real.
+pub(crate) fn playback_position_is_finished(book: &Book, progress: &Progress) -> bool {
+    let mut position_only = progress.clone();
+    position_only.finished_override = None;
+    summarize_book_progress(book, &position_only).status == BookProgressStatus::Finished
+}
+
 /// The furthest point a stored checkpoint reached, clamped to the book's real
 /// duration. A raw `book_position_seconds` is only as trustworthy as the client
 /// that reported it — when a book's track durations are unknown the server has
@@ -844,6 +823,26 @@ pub(crate) fn progress_timestamp_millis(value: &str) -> u64 {
         numeric.floor() as u64
     } else {
         (numeric * 1000.0).floor() as u64
+    }
+}
+
+/// The position for a book nobody has played yet: parked at the start of its
+/// first track. Native and Audiobookshelf completion writes both start from
+/// this, so the two clients can never initialize progress differently.
+pub(crate) fn fresh_progress(
+    book: &Book,
+    first_track: &Track,
+    previous: Option<&Progress>,
+    now_millis: u64,
+) -> Progress {
+    Progress {
+        book_id: book.id.clone(),
+        track_id: first_track.id.clone(),
+        position_seconds: 0.0,
+        book_position_seconds: 0.0,
+        duration_seconds: first_track.duration_seconds,
+        updated_at: next_progress_timestamp(previous, now_millis),
+        finished_override: None,
     }
 }
 

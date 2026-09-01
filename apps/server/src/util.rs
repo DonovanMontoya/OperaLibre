@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Small shared helpers: timestamps, hashing and ids, filename sanitising,
+//! and HTTP range parsing.
 
 use crate::*;
 
@@ -120,11 +121,10 @@ pub(crate) fn unix_now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// Despite the name, this is unix seconds as a string: it is what the stores
-/// have always written, and their timestamps are compared, not displayed.
-/// Anything that has to hand a timestamp to another program wants
-/// [`rfc3339_utc`] instead.
-pub(crate) fn now_rfc3339ish() -> String {
+/// Unix seconds as a string: it is what the stores have always written, and
+/// their timestamps are compared, not displayed. Anything that has to hand a
+/// timestamp to another program wants [`rfc3339_utc`] instead.
+pub(crate) fn now_unix_string() -> String {
     unix_now_seconds().to_string()
 }
 

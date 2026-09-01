@@ -15,6 +15,8 @@
 //! that OperaLibre has no concept of is answered with the most honest empty
 //! value rather than an invention.
 
+use std::collections::BTreeSet;
+
 use crate::*;
 
 /// The single library OperaLibre presents. The server has one library root,
@@ -641,44 +643,36 @@ pub(crate) async fn abs_filter_data(
         return Err(ApiError::not_found("Library not found."));
     }
     let books = books_with_progress(&state, &auth).await?;
-    let mut authors = BTreeMap::new();
-    let mut series = BTreeMap::new();
-    let mut narrators = BTreeMap::new();
-    let mut genres = BTreeMap::new();
+    let mut authors = BTreeSet::new();
+    let mut series = BTreeSet::new();
+    let mut narrators = BTreeSet::new();
+    let mut genres = BTreeSet::new();
     for book in books {
-        if let Some(author) = book.author {
-            authors.insert(author.clone(), author);
-        }
-        if let Some(name) = book.metadata.series {
-            series.insert(name.clone(), name);
-        }
-        if let Some(narrator) = book.narrator {
-            narrators.insert(narrator.clone(), narrator);
-        }
-        for genre in book.genres {
-            genres.insert(genre.clone(), genre);
-        }
+        authors.extend(book.author);
+        series.extend(book.metadata.series);
+        narrators.extend(book.narrator);
+        genres.extend(book.genres);
     }
     Ok(Json(AbsFilterData {
-        authors: authors
-            .into_values()
-            .map(|name| AbsNamedEntity {
-                id: name.clone(),
-                name,
-            })
-            .collect(),
-        genres: genres.into_values().collect(),
+        authors: named_entities(authors),
+        genres: genres.into_iter().collect(),
         tags: Vec::new(),
-        series: series
-            .into_values()
-            .map(|name| AbsNamedEntity {
-                id: name.clone(),
-                name,
-            })
-            .collect(),
-        narrators: narrators.into_values().collect(),
+        series: named_entities(series),
+        narrators: narrators.into_iter().collect(),
         languages: Vec::new(),
     }))
+}
+
+/// Audiobookshelf models authors and series as entities with their own ids;
+/// OperaLibre only has names, so the name doubles as the id.
+fn named_entities(names: BTreeSet<String>) -> Vec<AbsNamedEntity> {
+    names
+        .into_iter()
+        .map(|name| AbsNamedEntity {
+            id: name.clone(),
+            name,
+        })
+        .collect()
 }
 
 /// `GET /abs/api/libraries/{id}/search`
@@ -862,66 +856,15 @@ pub(crate) async fn abs_update_progress(
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &item_id, move |previous| {
-            let explicit_restart = abs_checkpoint_is_restart(
+            decide_abs_progress_write(
                 &decision_book,
                 previous,
                 requested_book_position,
                 finished,
-            );
-            let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position
-            {
-                let (track, track_position) = track_at_book_position(&decision_book, book_position);
-                let checkpoint = ProgressUpdate {
-                    track_id: track.id.clone(),
-                    position_seconds: track_position,
-                    book_position_seconds: Some(book_position),
-                    duration_seconds: track.duration_seconds,
-                    updated_at_ms: last_update,
-                    intentional_regression: explicit_restart,
-                    intentional_seek: explicit_restart,
-                    tz_offset_minutes: None,
-                    speed: None,
-                    client: Some("audiobookshelf".to_string()),
-                };
-                match decide_progress_write(
-                    &decision_book,
-                    &track,
-                    previous,
-                    &checkpoint,
-                    now_millis,
-                ) {
-                    ProgressDecision::Keep => return ProgressDecision::Keep,
-                    ProgressDecision::Store {
-                        saved,
-                        backup_previous,
-                    } => (saved, backup_previous),
-                }
-            } else {
-                // PATCH semantics: a completion-only request must not erase a
-                // position the client deliberately omitted.
-                (
-                    previous.cloned().unwrap_or_else(|| Progress {
-                        book_id: decision_book.id.clone(),
-                        track_id: first_track.id.clone(),
-                        position_seconds: 0.0,
-                        book_position_seconds: 0.0,
-                        duration_seconds: first_track.duration_seconds,
-                        updated_at: next_progress_timestamp(previous, now_millis),
-                        finished_override: None,
-                    }),
-                    false,
-                )
-            };
-            if let Some(finished) = finished {
-                saved.finished_override = Some(finished);
-                // A completion-only PATCH is still a new media-progress
-                // revision. Clients use lastUpdate to choose the newest copy.
-                saved.updated_at = next_progress_timestamp(previous, now_millis);
-            }
-            ProgressDecision::Store {
-                saved,
-                backup_previous,
-            }
+                last_update,
+                &first_track,
+                now_millis,
+            )
         })
         .await?;
 
@@ -938,16 +881,72 @@ pub(crate) async fn abs_update_progress(
             tz_offset_minutes: None,
             speed: None,
             client: Some("audiobookshelf"),
-            completion_source: if finished == Some(true) {
-                CompletionSource::Marked
-            } else {
-                CompletionSource::Reached
-            },
+            // A completion-only PATCH is a status choice, not evidence that
+            // the listener read the book today. Position-bearing updates can
+            // still record a natural crossing into finished.
+            completion_source: requested_book_position.map(|_| CompletionSource::Reached),
         },
     )
     .await;
 
     Ok(Json(serde_json::to_value(media_progress(&book, &saved))?))
+}
+
+/// What one Audiobookshelf progress PATCH should do, decided without touching
+/// storage — the compatibility layer's counterpart to `decide_progress_write`,
+/// which it defers to whenever the request carries a position.
+fn decide_abs_progress_write(
+    book: &Book,
+    previous: Option<&Progress>,
+    requested_book_position: Option<f64>,
+    finished: Option<bool>,
+    last_update: Option<u64>,
+    first_track: &Track,
+    now_millis: u64,
+) -> ProgressDecision {
+    let explicit_restart =
+        abs_checkpoint_is_restart(book, previous, requested_book_position, finished);
+    let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position {
+        let (track, track_position) = track_at_book_position(book, book_position);
+        let checkpoint = ProgressUpdate {
+            track_id: track.id.clone(),
+            position_seconds: track_position,
+            book_position_seconds: Some(book_position),
+            duration_seconds: track.duration_seconds,
+            updated_at_ms: last_update,
+            intentional_regression: explicit_restart,
+            intentional_seek: explicit_restart,
+            tz_offset_minutes: None,
+            speed: None,
+            client: Some("audiobookshelf".to_string()),
+        };
+        match decide_progress_write(book, &track, previous, &checkpoint, now_millis) {
+            ProgressDecision::Keep => return ProgressDecision::Keep,
+            ProgressDecision::Store {
+                saved,
+                backup_previous,
+            } => (saved, backup_previous),
+        }
+    } else {
+        // PATCH semantics: a completion-only request must not erase a
+        // position the client deliberately omitted.
+        (
+            previous
+                .cloned()
+                .unwrap_or_else(|| fresh_progress(book, first_track, previous, now_millis)),
+            false,
+        )
+    };
+    if let Some(finished) = finished {
+        saved.finished_override = Some(finished);
+        // A completion-only PATCH is still a new media-progress revision.
+        // Clients use lastUpdate to choose the newest copy.
+        saved.updated_at = next_progress_timestamp(previous, now_millis);
+    }
+    ProgressDecision::Store {
+        saved,
+        backup_previous,
+    }
 }
 
 fn abs_checkpoint_is_restart(
