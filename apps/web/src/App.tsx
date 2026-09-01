@@ -6099,9 +6099,11 @@ function MainApp({
                   ))}
                 </select>
               </label>
-              <button type="button" className="quiet-button" onClick={() => openLibationAccountForm()} disabled={!libationStatus?.enabled}>
-                <Plus size={13} /> Add account
-              </button>
+              {!native ? (
+                <button type="button" className="quiet-button" onClick={() => openLibationAccountForm()} disabled={!libationStatus?.enabled}>
+                  <Plus size={13} /> Add account
+                </button>
+              ) : null}
             </div>
 
             {libationStatus?.accounts.length ? (
@@ -6119,7 +6121,7 @@ function MainApp({
                       </small>
                       {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
                     </span>
-                    {account.managed ? (
+                    {!native && account.managed ? (
                       <span className="account-list-actions">
                         <button type="button" onClick={() => openLibationAccountForm(account)} disabled={libationAccountBusyId !== null}>
                           <KeyRound size={12} /> {account.authenticated ? "Reconnect" : "Sign in"}
