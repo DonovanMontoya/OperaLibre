@@ -300,14 +300,14 @@ async fn apply_startup_data_migrations(
 /// Startup step: on a server with no accounts yet, mint the one-time token that
 /// authorises the first-run setup form, and log it for the operator to copy.
 fn mint_setup_token(config: &ServerConfig, users: &UsersStore) -> Option<SetupToken> {
-    if !users.users.is_empty() || !config.deployment_mode.allows_remote_setup() {
+    if !users.users.is_empty() || !config.deployment_mode.setup_token_required() {
         return None;
     }
     let token = generate_session_token();
     tracing::warn!(
         bootstrap_token = %token,
         valid_for_minutes = SETUP_TOKEN_LIFETIME_SECONDS / 60,
-        "first-run remote setup is enabled; enter this one-time token in the setup form"
+        "first-run setup is enabled; enter this one-time token in the setup form"
     );
     Some(SetupToken::new(&token, unix_now_seconds()))
 }
