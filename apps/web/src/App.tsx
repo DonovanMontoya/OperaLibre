@@ -109,9 +109,6 @@ import {
   activateServerAlias,
   addServerAlias,
   clearServerUrl,
-  completeLibationAccountLogin,
-  cancelLibationAccountLogin,
-  deleteLibationAccount,
   generateSyncMap,
   getAlignmentStatus,
   getAuthStatus,
@@ -159,7 +156,6 @@ import {
   setStoredToken,
   setUnauthorizedHandler,
   syncLibationLibrary,
-  startLibationAccountLogin,
   uploadAudiobook,
   updateBookMetadata
 } from "./api";
@@ -182,7 +178,7 @@ import {
 } from "./offline";
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, openNativeBrowser, selectionHaptic, syncStatusBarStyle } from "./native";
+import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
 import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
@@ -243,9 +239,7 @@ import type {
   FinishFeed,
   JobStatus,
   LibationBook,
-  LibationAccount,
   LibationDownloadRequest,
-  LibationLoginStarted,
   LibationStatus,
   SyncFragment,
   SyncMap,
@@ -2632,15 +2626,6 @@ function MainApp({
   const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
   const [libationRefreshPending, setLibationRefreshPending] = useState(false);
   const [audibleAccountFilter, setAudibleAccountFilter] = useState("all");
-  const [libationAccountFormOpen, setLibationAccountFormOpen] = useState(false);
-  const [libationAccountLabel, setLibationAccountLabel] = useState("");
-  const [libationAccountId, setLibationAccountId] = useState("");
-  const [libationAccountLocale, setLibationAccountLocale] = useState("us");
-  const [libationReconnectProfileId, setLibationReconnectProfileId] = useState<string | null>(null);
-  const [libationLoginFlow, setLibationLoginFlow] = useState<LibationLoginStarted | null>(null);
-  const [libationLoginResponseUrl, setLibationLoginResponseUrl] = useState("");
-  const [libationLoginBusy, setLibationLoginBusy] = useState(false);
-  const [libationAccountBusyId, setLibationAccountBusyId] = useState<string | null>(null);
   const libationMessage = formatLibationMessage(libationStatus);
   const brokenLibationAccounts = libationStatus?.accounts.filter((account) => !account.authenticated) ?? [];
   const pendingLibationJobs = libationJobs.filter(isPendingJob);
@@ -2777,6 +2762,17 @@ function MainApp({
     }
     return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [audibleAccountLabels, libationBooks]);
+
+  // Accounts come and go in Libation, so a filter pinned to a departed account
+  // would quietly show an empty library under a select that reads "All accounts".
+  useEffect(() => {
+    if (audibleAccountFilter === "all") return;
+    const known = (libationStatus?.accounts ?? []).some((account) => account.id === audibleAccountFilter)
+      || audibleProfiles.some((profile) => profile.id === audibleAccountFilter);
+    if (!known && (libationStatus || audibleProfiles.length > 0)) {
+      setAudibleAccountFilter("all");
+    }
+  }, [audibleAccountFilter, audibleProfiles, libationStatus]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -5413,114 +5409,6 @@ function MainApp({
     setLibationJobs(next);
   }
 
-  function openLibationAccountForm(account?: LibationAccount) {
-    setLibationReconnectProfileId(account?.managed ? account.id : null);
-    setLibationAccountLabel(account?.name || "");
-    setLibationAccountId(account?.accountId || "");
-    setLibationAccountLocale(account?.locale || "us");
-    setLibationLoginFlow(null);
-    setLibationLoginResponseUrl("");
-    setLibationError(null);
-    setLibationAccountFormOpen(true);
-  }
-
-  async function beginLibationAccountLogin(event: React.FormEvent) {
-    event.preventDefault();
-    if (!libationAccountLabel.trim() || !libationAccountId.trim()) {
-      setLibationError("Enter an account label and Audible email.");
-      return;
-    }
-    const loginWindow = isNativeApp() ? null : window.open("about:blank", "_blank");
-    setLibationLoginBusy(true);
-    setLibationError(null);
-    try {
-      const started = await startLibationAccountLogin({
-        ...(libationReconnectProfileId ? { profileId: libationReconnectProfileId } : {}),
-        label: libationAccountLabel.trim(),
-        accountId: libationAccountId.trim(),
-        locale: libationAccountLocale
-      });
-      setLibationLoginFlow(started);
-      if (isNativeApp()) {
-        try {
-          await openNativeBrowser(started.loginUrl);
-        } catch {
-          setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
-        }
-      } else if (loginWindow) {
-        loginWindow.opener = null;
-        loginWindow.location.replace(started.loginUrl);
-      } else {
-        setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
-      }
-    } catch (error) {
-      loginWindow?.close();
-      setLibationError(errorMessage(error, "The Audible sign-in could not be started."));
-    } finally {
-      setLibationLoginBusy(false);
-    }
-  }
-
-  async function finishLibationAccountLogin(event: React.FormEvent) {
-    event.preventDefault();
-    if (!libationLoginFlow || !libationLoginResponseUrl.trim()) {
-      setLibationError("Paste the final URL from the Audible browser window.");
-      return;
-    }
-    setLibationLoginBusy(true);
-    setLibationError(null);
-    try {
-      const status = await completeLibationAccountLogin(
-        libationLoginFlow.sessionId,
-        libationLoginResponseUrl.trim()
-      );
-      setLibationStatus(status);
-      setAudibleAccountFilter(libationLoginFlow.profileId);
-      setLibationAccountFormOpen(false);
-      setLibationLoginFlow(null);
-      setLibationLoginResponseUrl("");
-      setLibationBooksLoaded(false);
-      await loadLibationBooks(false);
-    } catch (error) {
-      setLibationError(errorMessage(error, "Audible could not finish signing in."));
-    } finally {
-      setLibationLoginBusy(false);
-    }
-  }
-
-  async function closeLibationAccountForm() {
-    if (libationLoginFlow) {
-      try {
-        await cancelLibationAccountLogin(libationLoginFlow.sessionId);
-      } catch {
-        // The server also expires abandoned sign-in sessions automatically.
-      }
-    }
-    setLibationAccountFormOpen(false);
-    setLibationLoginFlow(null);
-    setLibationLoginResponseUrl("");
-  }
-
-  async function removeLibationAccount(account: LibationAccount) {
-    if (!account.managed || !window.confirm(`Remove ${account.name || account.accountId} from this server? Its Libation credentials and account-specific catalog will be deleted.`)) {
-      return;
-    }
-    setLibationAccountBusyId(account.id);
-    setLibationError(null);
-    try {
-      await deleteLibationAccount(account.id);
-      if (audibleAccountFilter === account.id) {
-        setAudibleAccountFilter("all");
-      }
-      await loadLibationStatus();
-      await loadLibationBooks(false);
-    } catch (error) {
-      setLibationError(errorMessage(error, `Could not remove ${account.name || "the Audible account"}.`));
-    } finally {
-      setLibationAccountBusyId(null);
-    }
-  }
-
   async function startLibationSync() {
     setLibationError(null);
     setLibationRefreshPending(true);
@@ -6089,6 +5977,8 @@ function MainApp({
 
             {libationMessage ? <p>{libationMessage}</p> : null}
 
+            <p>Audible accounts are added and reconnected in Libation.</p>
+
             <div className="libation-account-toolbar">
               <label>
                 <span>Browsing</span>
@@ -6099,9 +5989,6 @@ function MainApp({
                   ))}
                 </select>
               </label>
-              <button type="button" className="quiet-button" onClick={() => openLibationAccountForm()} disabled={!libationStatus?.enabled}>
-                <Plus size={13} /> Add account
-              </button>
             </div>
 
             {libationStatus?.accounts.length ? (
@@ -6119,47 +6006,8 @@ function MainApp({
                       </small>
                       {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
                     </span>
-                    {account.managed ? (
-                      <span className="account-list-actions">
-                        <button type="button" onClick={() => openLibationAccountForm(account)} disabled={libationAccountBusyId !== null}>
-                          <KeyRound size={12} /> {account.authenticated ? "Reconnect" : "Sign in"}
-                        </button>
-                        {currentUser.isOwner ? (
-                          <button type="button" className="danger" aria-label={`Remove ${account.name || account.accountId}`} onClick={() => void removeLibationAccount(account)} disabled={libationAccountBusyId !== null}>
-                            {libationAccountBusyId === account.id ? <LoaderCircle size={12} className="spin-icon" /> : <Trash2 size={12} />}
-                          </button>
-                        ) : null}
-                      </span>
-                    ) : null}
                   </article>
                 ))}
-              </div>
-            ) : null}
-
-            {libationAccountFormOpen ? (
-              <div className="libation-login-card">
-                <div className="libation-login-head">
-                  <div>
-                    <strong>{libationReconnectProfileId ? "Reconnect Audible account" : "Add Audible account"}</strong>
-                    <small>Amazon handles your password and verification in the browser.</small>
-                  </div>
-                  <button type="button" aria-label="Close Audible sign-in" onClick={() => void closeLibationAccountForm()}><X size={14} /></button>
-                </div>
-                {!libationLoginFlow ? (
-                  <form onSubmit={(event) => void beginLibationAccountLogin(event)}>
-                    <label><span>Account label</span><input value={libationAccountLabel} maxLength={80} placeholder="Family account" onChange={(event) => setLibationAccountLabel(event.currentTarget.value)} /></label>
-                    <label><span>Audible email</span><input type="email" value={libationAccountId} maxLength={320} autoCapitalize="none" autoCorrect="off" placeholder="reader@example.com" onChange={(event) => setLibationAccountId(event.currentTarget.value)} /></label>
-                    <label><span>Marketplace</span><select value={libationAccountLocale} onChange={(event) => setLibationAccountLocale(event.currentTarget.value)}>{["us", "uk", "ca", "de", "fr", "au", "jp", "in", "es"].map((locale) => <option key={locale} value={locale}>{locale.toUpperCase()}</option>)}</select></label>
-                    <button type="submit" disabled={libationLoginBusy}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <KeyRound size={13} />} Start secure sign-in</button>
-                  </form>
-                ) : (
-                  <form onSubmit={(event) => void finishLibationAccountLogin(event)}>
-                    <p>Finish signing in with Audible, copy the complete final URL from the browser address bar, then paste it here.</p>
-                    <a className="libation-login-link" href={libationLoginFlow.loginUrl} target="_blank" rel="noreferrer"><Cloud size={13} /> Open Audible sign-in</a>
-                    <label><span>Final browser URL</span><textarea value={libationLoginResponseUrl} rows={3} autoCapitalize="none" autoCorrect="off" placeholder="https://www.amazon.com/ap/maplanding?..." onChange={(event) => setLibationLoginResponseUrl(event.currentTarget.value)} /></label>
-                    <button type="submit" disabled={libationLoginBusy || !libationLoginResponseUrl.trim()}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <CircleCheck size={13} />} Complete sign-in</button>
-                  </form>
-                )}
               </div>
             ) : null}
 
