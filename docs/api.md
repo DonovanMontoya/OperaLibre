@@ -98,7 +98,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |
 | `PUT` | `/api/books/{book_id}/progress` | Save playback progress for the current user and book. |
-| `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }` and preserve position; natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position and status are stored atomically. |
+| `PUT` | `/api/books/{book_id}/completion` | Mark the book finished or unfinished for the current user. Manual changes use `{ "finished": true }`, preserve position, and do not invent a dated reading-history event. Natural completion also sends `trackId`, `positionSeconds`, `bookPositionSeconds`, and `durationSeconds` so the final position, status, and actual completion are stored atomically. |
 | `PUT` | `/api/books/{book_id}/volume` | Set the current user's playback gain for the book. Body `{ "volumeGain": number }`, a linear multiplier clamped to `0.5`–`16.0`. Returns the updated book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
@@ -175,7 +175,7 @@ SQLite holds one row per **session** — a continuous stretch of listening, coal
 
 Seconds listened come from the same validated forward position movement the daily activity totals use: deliberate seeks contribute nothing, and movement is capped against elapsed wall-clock time. Scrubbing to the end of a book is not listening to it.
 
-SQLite also holds one immutable row per book finished, recorded on the **crossing** into finished so a client re-sending the same state cannot log a book twice, while a genuine re-read logs a second time. Each row carries an `EditionSnapshot` — title, author, narrator, runtime, ASIN, ISBN, publisher, series, genres — copied out of the library at the moment of completion. That snapshot is what makes a completion durable: it stays readable after the audio is deleted, re-downloaded in another encoding, or replaced by a different edition.
+SQLite also holds one immutable row per book that playback carries across the **crossing** into finished, so a client re-sending the same state cannot log a book twice while a genuine re-read logs a second time. Merely marking a book finished changes its library status without assigning today's date to an older or unknown reading. Each row carries an `EditionSnapshot` — title, author, narrator, runtime, ASIN, ISBN, publisher, series, genres — copied out of the library at the moment of completion. That snapshot is what makes a completion durable: it stays readable after the audio is deleted, re-downloaded in another encoding, or replaced by a different edition.
 
 `speed` and `client` are optional on `PUT /api/books/{book_id}/progress` and, when valid, are retained with the session that reported them.
 
