@@ -1,4 +1,6 @@
-//! Extracted from main.rs.
+//! Durable state: private-file primitives, the SQLite-backed stores (progress,
+//! sessions, activity, and the write-through document caches), and the
+//! startup snapshot that loads them back into memory.
 
 use crate::*;
 
@@ -360,23 +362,7 @@ impl ProgressStore {
         &self,
         window_ms: u64,
     ) -> Result<HashSet<String>, ApiError> {
-        let now_ms = unix_now_millis();
-        self.db
-            .call(move |connection| {
-                let mut statement =
-                    connection.prepare("SELECT book_id, updated_at FROM progress")?;
-                let rows = statement.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                let mut active = HashSet::new();
-                for row in rows {
-                    let (book_id, updated_at) = row?;
-                    if now_ms.saturating_sub(progress_timestamp_millis(&updated_at)) <= window_ms {
-                        active.insert(book_id);
-                    }
-                }
-                Ok(active)
-            })
+        self.active_ids_within("SELECT book_id, updated_at FROM progress", window_ms)
             .await
     }
 
@@ -385,19 +371,30 @@ impl ProgressStore {
         &self,
         window_ms: u64,
     ) -> Result<HashSet<String>, ApiError> {
+        self.active_ids_within("SELECT user_id, updated_at FROM progress", window_ms)
+            .await
+    }
+
+    /// Distinct values of a query's first column, over progress rows updated
+    /// within the last `window_ms`. The query stays a static string so the
+    /// SQL remains greppable; only the row scan is shared.
+    async fn active_ids_within(
+        &self,
+        query: &'static str,
+        window_ms: u64,
+    ) -> Result<HashSet<String>, ApiError> {
         let now_ms = unix_now_millis();
         self.db
             .call(move |connection| {
-                let mut statement =
-                    connection.prepare("SELECT user_id, updated_at FROM progress")?;
+                let mut statement = connection.prepare(query)?;
                 let rows = statement.query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?;
                 let mut active = HashSet::new();
                 for row in rows {
-                    let (user_id, updated_at) = row?;
+                    let (value, updated_at) = row?;
                     if now_ms.saturating_sub(progress_timestamp_millis(&updated_at)) <= window_ms {
-                        active.insert(user_id);
+                        active.insert(value);
                     }
                 }
                 Ok(active)
@@ -453,7 +450,7 @@ impl ProgressStore {
                                 params![
                                     user_id,
                                     book_id,
-                                    now_rfc3339ish(),
+                                    now_unix_string(),
                                     serde_json::to_string(previous).unwrap_or_default(),
                                 ],
                             )?;

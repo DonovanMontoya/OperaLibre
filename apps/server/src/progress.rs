@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Playback-progress checkpoints: validation rules, storage decisions, and the
+//! per-book summaries the library serves.
 
 use crate::*;
 
@@ -146,16 +147,7 @@ pub(crate) async fn update_book_volume(
     Json(payload): Json<BookVolumeUpdate>,
 ) -> Result<Json<Book>, ApiError> {
     require_book_access(&auth, &book_id)?;
-
-    let book = {
-        let library = state.library.read().await;
-        library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .cloned()
-            .ok_or(ApiError::not_found("Book not found"))?
-    };
+    let book = state.library.read().await.book(&book_id)?.clone();
 
     let gain = clamp_book_volume_gain(payload.volume_gain);
     state
@@ -290,11 +282,7 @@ pub(crate) async fn update_progress(
     // blocking task, and so the library lock is not held across the write.
     let (book, track) = {
         let library = state.library.read().await;
-        let book = library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .ok_or(ApiError::not_found("Book not found"))?;
+        let book = library.book(&book_id)?;
         let track = book
             .tracks
             .iter()
@@ -370,8 +358,7 @@ pub(crate) async fn record_progress_bookkeeping(
             book,
             saved,
             ListeningCheckpoint {
-                previous,
-                intentional_seek: bookkeeping.intentional_seek,
+                listened_seconds: listened_delta,
                 tz_offset_minutes,
                 speed: sanitized_playback_speed(bookkeeping.speed),
                 client: sanitized_client_name(bookkeeping.client),
@@ -405,15 +392,7 @@ pub(crate) async fn update_book_completion(
     Json(update): Json<CompletionUpdate>,
 ) -> Result<Json<BookProgress>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let book = state
-        .library
-        .read()
-        .await
-        .books
-        .iter()
-        .find(|candidate| candidate.id == book_id)
-        .cloned()
-        .ok_or(ApiError::not_found("Book not found"))?;
+    let book = state.library.read().await.book(&book_id)?.clone();
     let first_track = book
         .tracks
         .first()
@@ -451,15 +430,9 @@ pub(crate) async fn update_book_completion(
             let book = decision_book;
             let update = decision_update;
             let next_timestamp = next_progress_timestamp(previous, now_millis);
-            let mut saved = previous.cloned().unwrap_or_else(|| Progress {
-                book_id: book.id.clone(),
-                track_id: first_track.id.clone(),
-                position_seconds: 0.0,
-                book_position_seconds: 0.0,
-                duration_seconds: first_track.duration_seconds,
-                updated_at: next_timestamp.clone(),
-                finished_override: None,
-            });
+            let mut saved = previous
+                .cloned()
+                .unwrap_or_else(|| fresh_progress(&book, &first_track, previous, now_millis));
             if let Some((track, position_seconds)) = final_position {
                 saved.track_id = track.id.clone();
                 saved.position_seconds = position_seconds;
@@ -844,6 +817,26 @@ pub(crate) fn progress_timestamp_millis(value: &str) -> u64 {
         numeric.floor() as u64
     } else {
         (numeric * 1000.0).floor() as u64
+    }
+}
+
+/// The position for a book nobody has played yet: parked at the start of its
+/// first track. Native and Audiobookshelf completion writes both start from
+/// this, so the two clients can never initialize progress differently.
+pub(crate) fn fresh_progress(
+    book: &Book,
+    first_track: &Track,
+    previous: Option<&Progress>,
+    now_millis: u64,
+) -> Progress {
+    Progress {
+        book_id: book.id.clone(),
+        track_id: first_track.id.clone(),
+        position_seconds: 0.0,
+        book_position_seconds: 0.0,
+        duration_seconds: first_track.duration_seconds,
+        updated_at: next_progress_timestamp(previous, now_millis),
+        finished_override: None,
     }
 }
 

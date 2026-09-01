@@ -28,8 +28,6 @@
 //! worth a human glance, so it is suggested and not merged.
 
 use std::collections::{HashMap, HashSet};
-use std::io;
-use std::path::Path as FsPath;
 
 use serde::{Deserialize, Serialize};
 
@@ -37,79 +35,79 @@ use serde::{Deserialize, Serialize};
 /// Editions of one recording vary by a few minutes of front and back matter;
 /// an abridgement is shorter by a third or more. Fifteen percent sits in the
 /// empty space between those.
-pub const DURATION_TOLERANCE: f64 = 0.15;
+pub(crate) const DURATION_TOLERANCE: f64 = 0.15;
 
 /// A book, as distinct from any particular recording of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Work {
-    pub id: String,
+pub(crate) struct Work {
+    pub(crate) id: String,
     /// Display title and author, taken from the first edition seen and left
     /// alone afterwards so a badly tagged import cannot rename the work.
-    pub title: String,
+    pub(crate) title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
+    pub(crate) author: Option<String>,
     #[serde(default)]
-    pub asins: Vec<String>,
+    pub(crate) asins: Vec<String>,
     #[serde(default)]
-    pub isbns: Vec<String>,
+    pub(crate) isbns: Vec<String>,
     /// Normalized `title|author` keys this work is known by. More than one
     /// accumulates when editions disagree about punctuation or subtitles.
     #[serde(default)]
-    pub keys: Vec<String>,
+    pub(crate) keys: Vec<String>,
     /// Representative runtime, used for the fuzzy tier. Holds the longest
     /// edition seen: an unabridged recording is the better reference point,
     /// since a shorter one is what the tolerance is meant to catch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_seconds: Option<f64>,
+    pub(crate) duration_seconds: Option<f64>,
     /// Every edition ever linked, including ones no longer on disk. Never
     /// pruned — a deleted book is the whole reason this record exists.
     #[serde(default)]
-    pub book_ids: Vec<String>,
+    pub(crate) book_ids: Vec<String>,
     /// Editions an administrator attached by hand. Checked before anything else
     /// and never overridden by a heuristic.
     #[serde(default)]
-    pub manual_book_ids: Vec<String>,
+    pub(crate) manual_book_ids: Vec<String>,
     /// Editions an administrator detached. A book listed here is never
     /// re-linked to this work by any tier, so a rejected suggestion stays
     /// rejected across rescans.
     #[serde(default)]
-    pub excluded_book_ids: Vec<String>,
-    pub created_at_ms: u64,
+    pub(crate) excluded_book_ids: Vec<String>,
+    pub(crate) created_at_ms: u64,
 }
 
 /// A match that was close enough to notice and not close enough to act on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkSuggestion {
-    pub book_id: String,
-    pub work_id: String,
-    pub book_title: String,
-    pub work_title: String,
+pub(crate) struct WorkSuggestion {
+    pub(crate) book_id: String,
+    pub(crate) work_id: String,
+    pub(crate) book_title: String,
+    pub(crate) work_title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub book_duration_seconds: Option<f64>,
+    pub(crate) book_duration_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_duration_seconds: Option<f64>,
-    pub reason: String,
-    pub created_at_ms: u64,
+    pub(crate) work_duration_seconds: Option<f64>,
+    pub(crate) reason: String,
+    pub(crate) created_at_ms: u64,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkStore {
+pub(crate) struct WorkStore {
     #[serde(default)]
-    pub works: Vec<Work>,
+    pub(crate) works: Vec<Work>,
     /// Uncertain matches awaiting an administrator. Rebuilt on each scan, so a
     /// suggestion disappears once its book does.
     #[serde(default)]
-    pub suggestions: Vec<WorkSuggestion>,
+    pub(crate) suggestions: Vec<WorkSuggestion>,
 }
 
 /// Which tier claimed an edition, so the caller can log it and the admin UI can
 /// explain itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum MatchTier {
+pub(crate) enum MatchTier {
     Manual,
     Asin,
     Isbn,
@@ -119,20 +117,20 @@ pub enum MatchTier {
 
 /// What the scanner knows about one edition when it asks for a work.
 #[derive(Debug, Clone, Default)]
-pub struct EditionCandidate {
-    pub book_id: String,
-    pub title: String,
-    pub author: Option<String>,
-    pub asin: Option<String>,
-    pub isbn: Option<String>,
-    pub duration_seconds: Option<f64>,
+pub(crate) struct EditionCandidate {
+    pub(crate) book_id: String,
+    pub(crate) title: String,
+    pub(crate) author: Option<String>,
+    pub(crate) asin: Option<String>,
+    pub(crate) isbn: Option<String>,
+    pub(crate) duration_seconds: Option<f64>,
 }
 
 /// Strips case, punctuation, and articles so two spellings of a title compare
 /// equal. Deliberately the same shape of normalization the Libation matcher
 /// uses, extended with leading-article removal because "The Odyssey" and
 /// "Odyssey" are one book.
-pub fn normalize_key(value: &str) -> String {
+pub(crate) fn normalize_key(value: &str) -> String {
     let cleaned = value
         .to_lowercase()
         .chars()
@@ -156,7 +154,7 @@ pub fn normalize_key(value: &str) -> String {
 
 /// The `title|author` key a work is looked up by. Author is included because
 /// title alone collides constantly — every catalog has a dozen *Persuasion*s.
-pub fn work_key(title: &str, author: Option<&str>) -> String {
+pub(crate) fn work_key(title: &str, author: Option<&str>) -> String {
     let title = normalize_key(title);
     match author {
         Some(author) if !normalize_key(author).is_empty() => {
@@ -171,7 +169,7 @@ pub fn work_key(title: &str, author: Option<&str>) -> String {
 /// An unknown duration on either side is not evidence of a match. Returning
 /// `false` there sends the pair to the suggestion queue instead of merging on
 /// title and author alone.
-pub fn durations_agree(left: Option<f64>, right: Option<f64>) -> bool {
+pub(crate) fn durations_agree(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) if left > 0.0 && right > 0.0 => {
             let longer = left.max(right);
@@ -188,7 +186,7 @@ impl WorkStore {
     /// half-matches, a suggestion is recorded and the edition still gets its
     /// own work: an unmerged history is recoverable, a wrongly merged one is
     /// not.
-    pub fn resolve(
+    pub(crate) fn resolve(
         &mut self,
         candidate: &EditionCandidate,
         now_ms: u64,
@@ -196,7 +194,11 @@ impl WorkStore {
     ) -> (String, MatchTier) {
         // A scan sees the same byte-identity again on every run. Preserve its
         // existing work before metadata heuristics so unknown or edited tags
-        // cannot mint a duplicate work for the same edition.
+        // cannot mint a duplicate work for the same edition. `Manual` here
+        // means "a settled link was honoured", whichever tier originally made
+        // it — the tiers distinguish how fresh evidence was weighed, and a
+        // link being re-seen is the same non-decision as one an administrator
+        // pinned.
         if let Some(index) = self
             .works
             .iter()
@@ -347,7 +349,7 @@ impl WorkStore {
 
     /// Attaches an edition to a work by hand, detaching it from any other and
     /// clearing the suggestion that prompted the decision.
-    pub fn link_manually(&mut self, book_id: &str, work_id: &str) -> bool {
+    pub(crate) fn link_manually(&mut self, book_id: &str, work_id: &str) -> bool {
         if !self.works.iter().any(|work| work.id == work_id) {
             return false;
         }
@@ -371,7 +373,7 @@ impl WorkStore {
 
     /// Rejects a suggested link for good. The exclusion is permanent so a
     /// rescan does not re-ask a question already answered.
-    pub fn reject_suggestion(&mut self, book_id: &str, work_id: &str) -> bool {
+    pub(crate) fn reject_suggestion(&mut self, book_id: &str, work_id: &str) -> bool {
         let Some(work) = self.works.iter_mut().find(|work| work.id == work_id) else {
             return false;
         };
@@ -385,7 +387,7 @@ impl WorkStore {
     }
 
     /// The work an edition belongs to, if any.
-    pub fn work_for_book(&self, book_id: &str) -> Option<&Work> {
+    pub(crate) fn work_for_book(&self, book_id: &str) -> Option<&Work> {
         self.works
             .iter()
             .find(|work| work.book_ids.iter().any(|id| id == book_id))
@@ -396,8 +398,7 @@ impl WorkStore {
     /// Read paths resolve through this rather than trusting the work id frozen
     /// onto an old log row, so an administrator linking two editions merges the
     /// history those editions already accumulated.
-    #[allow(dead_code)]
-    pub fn book_to_work(&self) -> HashMap<String, String> {
+    pub(crate) fn book_to_work(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         for work in self.works.iter() {
             for book_id in work.book_ids.iter() {
@@ -417,8 +418,11 @@ impl WorkStore {
     /// before anybody played it.
     ///
     /// Returns how many were removed.
+    // No scan calls this yet: pruning needs the listening-history sets, which
+    // the scan does not load. Kept, with its tests, as the agreed policy for
+    // when it does.
     #[allow(dead_code)]
-    pub fn prune_unused(
+    pub(crate) fn prune_unused(
         &mut self,
         present_book_ids: &HashSet<String>,
         book_ids_with_history: &HashSet<String>,
@@ -452,24 +456,9 @@ impl WorkStore {
 
     /// Drops suggestions naming books that are no longer in the library, so the
     /// admin queue reflects what is actually on disk.
-    pub fn prune_suggestions(&mut self, present_book_ids: &HashSet<String>) {
+    pub(crate) fn prune_suggestions(&mut self, present_book_ids: &HashSet<String>) {
         self.suggestions
             .retain(|suggestion| present_book_ids.contains(&suggestion.book_id));
-    }
-}
-
-#[allow(dead_code)]
-pub async fn load_works(path: &FsPath) -> io::Result<WorkStore> {
-    match tokio::fs::read_to_string(path).await {
-        Ok(contents) => Ok(serde_json::from_str(&contents).unwrap_or_else(|error| {
-            // A work store is a derived index: every link it holds can be
-            // rebuilt by the next scan. Losing it costs suggestions and manual
-            // decisions, which is bad, but it must never take the server down.
-            tracing::warn!("could not parse the work store, starting a new one: {error}");
-            WorkStore::default()
-        })),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(WorkStore::default()),
-        Err(error) => Err(error),
     }
 }
 
