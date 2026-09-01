@@ -1231,9 +1231,9 @@ fn deployment_profiles_choose_safe_defaults() {
             .secure_cookies()
     );
     assert!(!super::DeploymentMode::Lan.secure_cookies());
-    assert!(super::DeploymentMode::Proxy.setup_token_required(false));
-    assert!(super::DeploymentMode::Lan.setup_token_required(true));
-    assert!(!super::DeploymentMode::Lan.setup_token_required(false));
+    assert!(super::DeploymentMode::Proxy.setup_token_required());
+    assert!(!super::DeploymentMode::Lan.setup_token_required());
+    assert!(!super::DeploymentMode::Local.setup_token_required());
     assert!(super::DeploymentMode::parse("public").is_err());
 
     let (legacy_mode, legacy_host) =
@@ -1697,6 +1697,31 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
 
     assert!(result.is_ok());
     assert!(state.setup_token.lock().await.is_none());
+    assert!(state.users.read().await.users[0].is_owner);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lan_remote_first_run_setup_needs_no_token() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    state.deployment_mode = super::DeploymentMode::Lan;
+    let mut headers = super::HeaderMap::new();
+    headers.insert("x-forwarded-for", "192.168.1.20".parse().unwrap());
+
+    let result = super::setup_admin(
+        super::State(state.clone()),
+        super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
+        headers,
+        super::Json(super::SetupRequest {
+            username: "lan-owner".to_string(),
+            password: "a-secure-password".to_string(),
+            setup_token: None,
+        }),
+    )
+    .await;
+
+    assert!(result.is_ok());
     assert!(state.users.read().await.users[0].is_owner);
 }
 
