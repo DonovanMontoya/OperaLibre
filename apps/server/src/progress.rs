@@ -131,8 +131,9 @@ pub(crate) struct CompletionUpdate {
     pub(crate) book_position_seconds: Option<f64>,
     pub(crate) duration_seconds: Option<f64>,
     /// The reader's offset from UTC in minutes, with the same semantics as a
-    /// progress checkpoint. Completion dates are immutable, so use the
-    /// listener's calendar day at the time it is recorded.
+    /// progress checkpoint. This is used only when the request carries the
+    /// final playback position; a status-only "mark finished" request does
+    /// not claim that the book was read today.
     pub(crate) tz_offset_minutes: Option<i32>,
 }
 
@@ -332,7 +333,7 @@ pub(crate) async fn update_progress(
             tz_offset_minutes: update.tz_offset_minutes,
             speed: update.speed,
             client: update.client.as_deref(),
-            completion_source: CompletionSource::Reached,
+            completion_source: Some(CompletionSource::Reached),
         },
     )
     .await;
@@ -349,7 +350,9 @@ pub(crate) struct ProgressBookkeeping<'a> {
     pub(crate) tz_offset_minutes: Option<i32>,
     pub(crate) speed: Option<f64>,
     pub(crate) client: Option<&'a str>,
-    pub(crate) completion_source: CompletionSource,
+    /// `None` for a status-only update. A dated completion needs evidence from
+    /// a playback position instead of being inferred from "mark finished".
+    pub(crate) completion_source: Option<CompletionSource>,
 }
 
 pub(crate) async fn record_progress_bookkeeping(
@@ -385,16 +388,11 @@ pub(crate) async fn record_progress_bookkeeping(
             summarize_book_progress(book, progress).status == BookProgressStatus::Finished
         })
         .unwrap_or(false);
-    if !was_finished && summarize_book_progress(book, saved).status == BookProgressStatus::Finished
+    if let Some(source) = bookkeeping.completion_source
+        && !was_finished
+        && summarize_book_progress(book, saved).status == BookProgressStatus::Finished
     {
-        record_completion(
-            state,
-            &auth.id,
-            book,
-            bookkeeping.completion_source,
-            tz_offset_minutes,
-        )
-        .await;
+        record_completion(state, &auth.id, book, source, tz_offset_minutes).await;
     }
 }
 
@@ -438,6 +436,10 @@ pub(crate) async fn update_book_completion(
             ));
         }
     };
+    // The player includes a final position when playback reaches the end. A
+    // manual button press intentionally omits it, because changing library
+    // status does not tell us which day the listener actually finished.
+    let records_completion = final_position.is_some();
 
     let now_millis = unix_now_millis();
     // Marking a book finished or unfinished is an explicit instruction, so it
@@ -487,12 +489,12 @@ pub(crate) async fn update_book_completion(
             summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
         })
         .unwrap_or(false);
-    if update.finished && !was_finished {
+    if records_completion && update.finished && !was_finished {
         record_completion(
             &state,
             &auth.id,
             &book,
-            CompletionSource::Marked,
+            CompletionSource::Reached,
             sanitized_tz_offset_minutes(update.tz_offset_minutes),
         )
         .await;
