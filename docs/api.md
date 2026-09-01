@@ -13,7 +13,7 @@ The included React/Vite app is one client for this API. Custom web, mobile, desk
 
 ## Authentication
 
-The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, stream, and download endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
+The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, stream, download, and OPDS endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
 
 ### Public endpoints
 
@@ -35,6 +35,7 @@ The web app obtains a session token and a separate scoped media token via `POST 
 | `GET` | `/api/profile/stats` | Listening stats for the current user. |
 | `GET` | `/api/profile/sessions` | The caller's own reading sessions, newest first. Accepts `limit` (default 200, max 1000) and `since=YYYY-MM-DD`. |
 | `GET` | `/api/profile/completions` | The caller's own completion history, newest first, with a frozen snapshot of each book as it was when finished. Same query parameters. |
+| `GET` | `/api/metrics` | Operational counts — books, tracks, users, sessions, database size. Owner only. |
 
 #### Works
 
@@ -69,7 +70,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/users` | List accounts and their role/Libation permissions. |
 | `POST` | `/api/users` | Create an account. Creating an admin or owner requires an owner. |
 | `DELETE` | `/api/users/{user_id}` | Delete an account. Admin/owner targets require an owner; the final owner is protected. |
-| `POST` | `/api/users/{user_id}/password` | Reset a password. Admin/owner targets require an owner. |
+| `POST` | `/api/users/{user_id}/password` | Reset a password. Any user may change their own; admin/owner targets require an owner. |
 | `PUT` | `/api/users/{user_id}/book-access` | Set a reader's allowed book IDs. Send `{ "allowedBookIds": null }` for the full library or an array for a restricted shelf. |
 | `PUT` | `/api/users/{user_id}/role` | Set owner/admin/reader status. Owner only. |
 | `PUT` | `/api/users/{user_id}/libation-access` | Set direct or approval-required Libation access. Admin targets require an owner. |
@@ -87,9 +88,10 @@ Frontend installation is available when the server directly serves a versioned w
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/books` | List books the current user is allowed to access. Administrators always receive the full library. |
+| `GET` | `/api/books` | List books the current user is allowed to access, cursor-paged (the next cursor is returned in the `x-next-cursor` response header, with an `ETag` for caching). Administrators always receive the full library. |
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
-| `GET` | `/api/books/{book_id}/cover` | Cover art image (extracted from tags or sidecar). |
+| `PUT` | `/api/books/{book_id}/metadata` | Save metadata overrides for a book. Admin only. Overrides win over embedded tags and Libation sidecar metadata. |
+| `GET` | `/api/books/{book_id}/cover` | Cover art image, extracted from the audio files' embedded tags. |
 | `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`), if one is matched or generated. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
@@ -167,7 +169,11 @@ Progress responses may include `finishedOverride`. `true` or `false` records the
 
 #### Per-book volume
 
-### The reading log
+Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book) and follows the listener to every client they sign in from. Every book in `/api/books` carries the caller's own `volumeGain`; `1.0` means the file's own level and is what an untuned book reports.
+
+Applying it is the client's job, and above unity it needs an engine that can exceed the media element's ceiling — a Web Audio gain node, or the platform's own mixer. A client that cannot do that should still honour gains below `1.0`.
+
+#### The reading log
 
 Playback progress answers "where am I in this book" and is overwritten on every checkpoint. The reading log answers "what did this reader actually do" and keeps one current row per listening session.
 
@@ -179,15 +185,11 @@ SQLite also holds one immutable row per book that playback carries across the **
 
 `speed` and `client` are optional on `PUT /api/books/{book_id}/progress` and, when valid, are retained with the session that reported them.
 
-### Works
+#### Works
 
 Book identity is byte identity: a re-encode, a different rip, or another edition is a different book, which is the right answer for playback and the wrong one for a reading history. A **work** sits above those editions and collects them, so a history follows the reader across re-downloads and replacements. Progress stays keyed by book; a work is a view, never a replacement.
 
 Editions are matched to works in tiers: an administrator's manual link, then an exact ASIN, then an exact ISBN, then a normalized title and author whose runtimes agree within 15%. A title and author that agree while the runtimes do not — an abridgement, a dramatization, a missing duration — becomes a **suggestion** for an administrator rather than a silent merge. Manual links and rejections are permanent and survive rescans.
-
-Audiobooks are mastered at very different levels, so `volumeGain` is a per-listener, per-book correction rather than a device setting: it is stored beside progress (keyed by user and book, in `book-settings.json`) and follows the listener to every client they sign in from. Every book in `/api/books` carries the caller's own `volumeGain`; `1.0` means the file's own level and is what an untuned book reports.
-
-Applying it is the client's job, and above unity it needs an engine that can exceed the media element's ceiling — a Web Audio gain node, or the platform's own mixer. A client that cannot do that should still honour gains below `1.0`.
 
 #### Libation (optional)
 
@@ -200,6 +202,7 @@ Applying it is the client's job, and above unity it needs an engine that can exc
 | `PUT` | `/api/libation/accounts/{profile_id}` | Rename a managed Audible account. Admin only. |
 | `DELETE` | `/api/libation/accounts/{profile_id}` | Remove a managed account and its isolated Libation profile. Owner only. |
 | `GET` | `/api/libation/books` | Audible library known to Libation. |
+| `GET` | `/api/libation/covers/{picture_id}` | Audible cover-art proxy. Accepts the media token. |
 | `POST` | `/api/libation/sync` | Refresh Libation's library scan. Authenticated readers may call it; non-administrators are subject to the configured per-account hourly limit. |
 | `POST` | `/api/libation/books/{asin}/liberate` | Download one title. Admin or directly permitted reader. |
 | `POST` | `/api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download one title through the selected Audible account. Admin or directly permitted reader. |
@@ -212,6 +215,41 @@ Applying it is the client's job, and above unity it needs an engine that can exc
 | `GET` | `/api/jobs/{job_id}` | Poll a background job (e.g., liberation download). |
 
 Libation status, managed-account changes, refresh, download-all, and jobs require an administrator. Account removal requires an owner. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. Account-aware requests include `profileId` so duplicate ASINs owned by multiple Audible accounts remain distinct. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
+
+## OPDS
+
+The server publishes an [OPDS](https://opds.io/) catalog so generic reading apps can browse and download the library:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/opds` | Navigation-feed root. |
+| `GET` | `/api/opds/books` | Acquisition feed, one entry per book with per-track download links. |
+
+Both feeds authenticate with the media token as a `?token=` query parameter (HTTP Basic is not supported), so the catalog URL to paste into an OPDS client is `http://server:4000/api/opds?token=...`.
+
+## Audiobookshelf-compatible API (`/abs`)
+
+The server also speaks a subset of the [Audiobookshelf](https://www.audiobookshelf.org/) API under the `/abs` prefix, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. Point the client at `http://server:4000/abs` and sign in with a normal OperaLibre account.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/abs/status` | Server status for client validation. Public. |
+| `GET` | `/abs/ping` | Connectivity check. Public. |
+| `POST` | `/abs/login` | Sign in; returns an Audiobookshelf-shaped user object and the default library id. Public. |
+| `GET` | `/abs/api/me` | The current user with media progress and token. |
+| `GET` | `/abs/api/libraries` | The single synthetic library. |
+| `GET` | `/abs/api/libraries/{library_id}/items` | Paged, filterable library items (author, series, narrator, and genre filters are supported). |
+| `GET` | `/abs/api/libraries/{library_id}/filterdata` | Author, series, narrator, and genre facets. |
+| `GET` | `/abs/api/libraries/{library_id}/search` | Search books. |
+| `GET` | `/abs/api/libraries/{library_id}/collections` | Always empty; collections are not supported. |
+| `GET` | `/abs/api/authors/{author_id}` | An author with their items. |
+| `GET` | `/abs/api/items/{item_id}` | One library item. |
+| `GET` | `/abs/api/items/{item_id}/cover` | Cover art. |
+| `GET`/`POST` | `/abs/api/items/{item_id}/play` | Open a playback session with the resume position. |
+| `GET`/`PATCH` | `/abs/api/me/progress/{item_id}` | Read or write media progress; synced with native OperaLibre progress. |
+| `GET` | `/abs/api/items/{item_id}/download` | Download the item archive. |
+
+Cover and stream URLs are also mirrored at `/abs/api/books/{book_id}/cover` and `/abs/api/books/{book_id}/tracks/{track_id}/stream` (media token accepted), because some clients resolve content URLs against the `/abs` base while others resolve against the origin. Book-access restrictions apply exactly as on the native API.
 
 ## Conventions
 

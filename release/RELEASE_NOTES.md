@@ -1,5 +1,15 @@
 ## Downloads
 
+### The easy way (macOS and Linux)
+
+One command downloads the right package for your computer, verifies its SHA-256 digest, walks you through setup, and starts the server — and updates an existing installation in place when run again:
+
+```
+curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
+```
+
+Add `| sh -s -- --help` to see its options, including `--server-only` for headless machines.
+
 ### Which file should I download?
 
 - **Most people:** download a `combined` package for your computer. It includes the server and web app, starts in the background, and opens in your browser without leaving a Terminal window open.

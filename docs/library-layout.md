@@ -19,7 +19,6 @@ A folder under `library_root` becomes one book. All supported audio files inside
     01 - An Unexpected Party.mp3
     02 - Roast Mutton.mp3
     03 - A Short Rest.mp3
-    cover.jpg            # optional, embedded art is also used
     The Hobbit.pdf       # optional readalong companion
 ```
 
@@ -35,9 +34,9 @@ A standalone audio file directly inside `library_root` is its own book. This is 
 
 ## Supported audio formats
 
-`.mp3`, `.m4b`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
+`.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
 
-Everything else is ignored by the scanner.
+Extensions are matched case-insensitively. Everything else is ignored by the scanner.
 
 ## Chapter detection
 
@@ -51,11 +50,7 @@ If a single `.m4b` has internal chapters, those win. If not, you get one chapter
 
 ## Cover art
 
-The server pulls cover art in this order of preference:
-
-1. Art embedded in the audio file's tags.
-2. A `cover.jpg` / `cover.png` next to the tracks.
-3. Nothing — the UI falls back to a generic tile.
+Cover art comes from the artwork embedded in the audio files' tags; the server extracts it during a scan and caches it under `data/covers/`. A book with no embedded art falls back to a generic tile in the UI, so add the artwork with a tag editor (Mp3Tag, Kid3, or similar) and rescan. Loose image files such as `cover.jpg` beside the tracks are not read.
 
 Covers are served from `/api/books/:bookId/cover`.
 

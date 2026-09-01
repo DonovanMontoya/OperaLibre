@@ -95,11 +95,13 @@ if [ -z "$KIND" ] && [ "${OPERALIBRE_SERVER_ONLY:-}" = 1 ]; then
 fi
 KIND_REQUESTED=$KIND
 
-if [ -n "$LIBATION_PATH" ] && [ "$LIBATION_CHOICE" != no ]; then
+# --no-libation wins over a path that came from the environment or an earlier
+# option: skipping the Audible import must never fail the run over a Libation
+# that has since moved or been removed.
+if [ "$LIBATION_CHOICE" = no ]; then
+  LIBATION_PATH=""
+elif [ -n "$LIBATION_PATH" ]; then
   LIBATION_CHOICE=yes
-fi
-
-if [ -n "$LIBATION_PATH" ]; then
   case "$LIBATION_PATH" in
     "~"|"~/"*) LIBATION_PATH="${HOME}${LIBATION_PATH#\~}" ;;
   esac
@@ -284,8 +286,20 @@ if [ -f "${INSTALL_DIR}/operalibre-server" ]; then
     say "Found an existing OperaLibre installation in ${INSTALL_DIR}."
   fi
   # Keep the kind that is already installed unless it was named explicitly, so
-  # a plain re-run never swaps a headless server for the bundled web app.
-  if [ -d "${INSTALL_DIR}/web" ]; then
+  # a plain re-run never swaps a headless server for the bundled web app. The
+  # launcher and the start helper come from the package itself, so they are the
+  # reliable signals; a `web` folder can also be one a server-only operator
+  # points web_dist_dir at, so it only decides when nothing else does.
+  if [ "$os" = macos ]; then
+    installed_launcher="${INSTALL_DIR}/Open OperaLibre.app"
+  else
+    installed_launcher="${INSTALL_DIR}/open-operalibre"
+  fi
+  if [ -e "$installed_launcher" ]; then
+    installed_kind=combined
+  elif [ -f "${INSTALL_DIR}/start-operalibre.sh" ] || [ -f "${INSTALL_DIR}/start.sh" ]; then
+    installed_kind=server
+  elif [ -d "${INSTALL_DIR}/web" ]; then
     installed_kind=combined
   else
     installed_kind=server
@@ -493,11 +507,26 @@ fi
 
 set_config() {
   # set_config KEY VALUE
+  #
+  # The server lowercases config keys and reads `-` as `_`, so `library-root`
+  # and `LIBRARY_ROOT` name the same setting as `library_root`. Match every
+  # spelling and keep a single line for the key, otherwise a rewritten file
+  # would carry two entries that disagree.
   config="${INSTALL_DIR}/server.config"
   [ -f "$config" ] || return 0
   CONFIG_KEY=$1 CONFIG_VALUE=$2 awk '
-    BEGIN { key = ENVIRON["CONFIG_KEY"]; value = ENVIRON["CONFIG_VALUE"]; written = 0 }
-    written == 0 && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { print key " = " value; written = 1; next }
+    BEGIN {
+      key = ENVIRON["CONFIG_KEY"]
+      value = ENVIRON["CONFIG_VALUE"]
+      pattern = key
+      gsub(/[-_]/, "[-_]", pattern)
+      pattern = "^[[:space:]]*" pattern "[[:space:]]*="
+      written = 0
+    }
+    tolower($0) ~ pattern {
+      if (written == 0) { print key " = " value; written = 1 }
+      next
+    }
     { print }
     END { if (written == 0) print key " = " value }
   ' "$config" >"${config}.new" && mv "${config}.new" "$config"
