@@ -384,6 +384,7 @@ fn build_app_state(
         )?,
         sync_dir: config.data_dir.join("sync"),
         covers_dir: config.data_dir.join("covers"),
+        database: database.clone(),
         database_path,
         library: Arc::new(RwLock::new(LibraryState::default())),
         metadata_overrides: Arc::new(MetadataOverrides::new(

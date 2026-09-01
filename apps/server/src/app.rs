@@ -28,6 +28,9 @@ pub(crate) struct AppState {
     pub(crate) sync_dir: PathBuf,
     /// Where cover art extracted during the scan is kept.
     pub(crate) covers_dir: PathBuf,
+    /// Shared database handle whose state gate quiesces every writer during a
+    /// destructive administrative restore.
+    pub(crate) database: Database,
     /// Where the database lives, for the metrics route to size.
     pub(crate) database_path: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,

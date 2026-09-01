@@ -92,6 +92,7 @@ impl TestServer {
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             covers_dir: data_dir.join("covers"),
+            database: database.clone(),
             database_path: data_dir.join("operalibre.db"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(

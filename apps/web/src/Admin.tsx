@@ -26,6 +26,7 @@ import {
   decideLibationRequest,
   downloadServerBackup,
   getFaststartStatus,
+  getBooks,
   getFrontendUpdateStatus,
   getJob,
   getUpdateStatus,
@@ -225,7 +226,14 @@ export function AdminPanel({
         return;
       }
       await refreshUsers();
-      if (!restored.warning) await onRescan();
+      if (!restored.warning) {
+        try {
+          onBooksChanged(await getBooks());
+        } catch {
+          setNotice(`${summary} The restored data is active, but this page could not reload the refreshed library. Reopen OperaLibre to refresh it.`);
+          return;
+        }
+      }
       setNotice(restored.warning ? `${summary} ${restored.warning}` : summary);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not restore the server backup.");
