@@ -1,4 +1,4 @@
-import { BookOpen, FolderOpen, Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { BookOpen, ExternalLink, FolderOpen, Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   ApiError,
@@ -8,6 +8,7 @@ import {
   defaultServerUrl,
   getServerUrl,
   getServerType,
+  SERVER_SETUP_GUIDE_URL,
   isNativeApp,
   listUsers,
   login,
@@ -135,13 +136,20 @@ export function ServerSetup({
           )}
         </p>
 
+        <p className="auth-server-meta">
+          Don&rsquo;t have a server yet?{" "}
+          <a className="auth-linklike" href={SERVER_SETUP_GUIDE_URL} target="_blank" rel="noreferrer">
+            Read the setup guide <ExternalLink size={11} aria-hidden="true" />
+          </a>
+        </p>
+
         {error ? <p className="auth-error">{error}</p> : null}
 
         <button type="submit" className="auth-submit" disabled={busy}>
           {busy ? "Testing…" : "Test & connect"}
         </button>
 
-        {onLocal ? (
+        {onLocal && !onCancel ? (
           <>
             <div className="auth-demo-separator"><span>or</span></div>
             <button type="button" className="auth-secondary auth-demo-button" onClick={onLocal} disabled={busy}>
@@ -168,7 +176,7 @@ export function ServerSetup({
 
         {onCancel ? (
           <button type="button" className="auth-secondary" onClick={onCancel} disabled={busy}>
-            Cancel
+            Not now — keep listening from this device
           </button>
         ) : null}
       </form>
