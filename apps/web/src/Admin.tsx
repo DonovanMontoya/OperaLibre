@@ -4,6 +4,7 @@ import {
   Check,
   CloudDownload,
   Database,
+  Download,
   ExternalLink,
   Gauge,
   KeyRound,
@@ -23,7 +24,9 @@ import {
   deleteDownloadedBook,
   deleteUser,
   decideLibationRequest,
+  downloadServerBackup,
   getFaststartStatus,
+  getBooks,
   getFrontendUpdateStatus,
   getJob,
   getUpdateStatus,
@@ -33,6 +36,7 @@ import {
   listLibationRequests,
   listUsers,
   mediaUrl,
+  restoreServerBackup,
   startFaststartConversion,
   updateUserBookAccess,
   updateUserLibationApproval,
@@ -103,6 +107,8 @@ export function AdminPanel({
   const [faststartConfirming, setFaststartConfirming] = useState(false);
   const [faststartJob, setFaststartJob] = useState<JobStatus | null>(null);
   const [faststartError, setFaststartError] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshUsers() {
     setLoading(true);
@@ -174,6 +180,65 @@ export function AdminPanel({
       );
     } finally {
       setFaststartChecking(false);
+    }
+  }
+
+  async function handleBackupExport() {
+    setBackupBusy("export");
+    setError(null);
+    setNotice(null);
+    try {
+      const { blob, filename } = await downloadServerBackup();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setNotice("Server backup downloaded. Store it somewhere private; it contains account credentials and session data.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not export the server backup.");
+    } finally {
+      setBackupBusy(null);
+    }
+  }
+
+  async function handleBackupImport(file: File) {
+    if (backupInputRef.current) backupInputRef.current.value = "";
+    const confirmed = window.confirm(
+      `Restore ${file.name}?\n\nThis replaces accounts, reading logs, listening progress, permissions, metadata, work links, and other server-owned data. Audiobook files and server.config are not changed. OperaLibre will save the current data as a safety backup first.`
+    );
+    if (!confirmed) return;
+    const typed = window.prompt(`Type RESTORE to replace this server's data from ${file.name}.`);
+    if (typed !== "RESTORE") return;
+
+    setBackupBusy("import");
+    setError(null);
+    setNotice(null);
+    try {
+      const restored = await restoreServerBackup(file);
+      const summary = `Backup restored: ${restored.accounts} accounts, ${restored.progressRecords} progress records, ${restored.readingSessions} reading sessions, and ${restored.completions} completions. The previous state is saved as ${restored.safetyBackup}.`;
+      if (!restored.sessionRetained) {
+        window.alert(`${summary}\n\nThe restored backup has different sign-in sessions. Sign in with an account from the backup to continue.`);
+        window.location.reload();
+        return;
+      }
+      await refreshUsers();
+      if (!restored.warning) {
+        try {
+          onBooksChanged(await getBooks());
+        } catch {
+          setNotice(`${summary} The restored data is active, but this page could not reload the refreshed library. Reopen OperaLibre to refresh it.`);
+          return;
+        }
+      }
+      setNotice(restored.warning ? `${summary} ${restored.warning}` : summary);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not restore the server backup.");
+    } finally {
+      setBackupBusy(null);
     }
   }
 
@@ -558,6 +623,52 @@ export function AdminPanel({
               </button>
             </div>
           </section>
+
+          {currentUser.isOwner ? (
+            <section className="admin-card admin-backup-card">
+              <div className="admin-software-head">
+                <div className="admin-software-copy">
+                  <span className="section-label"><Database size={13} /> Server backup</span>
+                  <h2>Export or restore server data</h2>
+                  <p>
+                    Back up accounts, permissions, reading logs, listening progress, per-book settings,
+                    metadata, work links, Libation records, and stable library IDs. Audiobook files and
+                    <code>server.config</code> are not included; Libation accounts may need to be reconnected
+                    after moving to another server. Backup files contain sensitive account data.
+                  </p>
+                </div>
+                <div className="admin-backup-actions">
+                  <button
+                    type="button"
+                    disabled={backupBusy !== null}
+                    onClick={() => void handleBackupExport()}
+                  >
+                    {backupBusy === "export" ? <LoaderCircle size={15} className="spin-icon" /> : <Download size={15} />}
+                    {backupBusy === "export" ? "Exporting…" : "Export backup"}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={backupBusy !== null}
+                    onClick={() => backupInputRef.current?.click()}
+                  >
+                    {backupBusy === "import" ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
+                    {backupBusy === "import" ? "Restoring…" : "Restore backup"}
+                  </button>
+                  <input
+                    ref={backupInputRef}
+                    className="admin-backup-input"
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      if (file) void handleBackupImport(file);
+                    }}
+                  />
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           <section className="admin-card admin-software-card">
             <div className="admin-software-head">

@@ -28,6 +28,9 @@ pub(crate) struct AppState {
     pub(crate) sync_dir: PathBuf,
     /// Where cover art extracted during the scan is kept.
     pub(crate) covers_dir: PathBuf,
+    /// Shared database handle whose state gate quiesces every writer during a
+    /// destructive administrative restore.
+    pub(crate) database: Database,
     /// Where the database lives, for the metrics route to size.
     pub(crate) database_path: PathBuf,
     pub(crate) library: Arc<RwLock<LibraryState>>,
@@ -74,6 +77,8 @@ pub(crate) struct AppState {
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
+    /// Serializes backup snapshots and destructive restores.
+    pub(crate) backup_lock: Arc<Mutex<()>>,
 }
 
 /// Assemble the full application router.
@@ -282,6 +287,12 @@ pub(crate) fn build_router(
     // timeout that dropped the future mid-install would leave the flag set and
     // every later install refused as already in progress until a restart.
     let long_running_routes = Router::new()
+        .route(
+            "/api/admin/backup",
+            get(export_server_backup)
+                .post(import_server_backup)
+                .layer(DefaultBodyLimit::max(MAX_BACKUP_BODY_BYTES)),
+        )
         .route(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),

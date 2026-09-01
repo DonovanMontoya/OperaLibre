@@ -1486,6 +1486,7 @@ exit 0
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
         covers_dir: data_dir.join("covers"),
+        database: database.clone(),
         database_path: data_dir.join("operalibre.db"),
         library: super::Arc::new(super::RwLock::new(super::LibraryState::default())),
         metadata_overrides: super::Arc::new(super::MetadataOverrides::new(
@@ -1551,6 +1552,7 @@ exit 0
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
         upload_lock: super::Arc::new(super::Mutex::new(())),
+        backup_lock: super::Arc::new(super::Mutex::new(())),
     };
     (state, log_path)
 }
@@ -4147,6 +4149,54 @@ async fn overlapping_session_mutations_keep_the_media_index_current() {
             "a committed session's media token was missing from the index"
         );
     }
+}
+
+/// A restore adopts replacement caches while holding the database state gate.
+/// A mutation that arrived during that window must draft from the replacement,
+/// not commit a clone of the pre-restore cache after the database swap.
+#[tokio::test]
+async fn administrative_restore_quiesces_cached_store_mutations() {
+    let root = tempfile::tempdir().unwrap();
+    let database = super::Database::open(&root.path().join("operalibre.db")).unwrap();
+    let store = std::sync::Arc::new(super::CachedStore::new(
+        database.clone(),
+        super::StoreShape::Document("restore-gate-test"),
+        std::collections::HashMap::from([("old".to_string(), "state".to_string())]),
+    ));
+
+    let restore_guard = database.quiesce_state().await;
+    let mut mutation = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .mutate(|draft| {
+                    draft.insert("new".to_string(), "write".to_string());
+                    Ok(())
+                })
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut mutation)
+            .await
+            .is_err(),
+        "a cached mutation passed the exclusive restore gate"
+    );
+
+    store
+        .adopt_restored(std::collections::HashMap::from([(
+            "restored".to_string(),
+            "state".to_string(),
+        )]))
+        .await;
+    drop(restore_guard);
+    mutation.await.unwrap().unwrap();
+
+    let cached = store.read().await;
+    assert!(!cached.contains_key("old"));
+    assert_eq!(cached.get("restored").map(String::as_str), Some("state"));
+    assert_eq!(cached.get("new").map(String::as_str), Some("write"));
 }
 
 /// Atom requires a real RFC 3339 instant in `<updated>`; the server's own

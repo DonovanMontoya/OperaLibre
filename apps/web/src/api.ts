@@ -65,6 +65,13 @@ const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
+
+/**
+ * The docs-site page (built from docs/getting-started.md in the repo) that
+ * explains what an OperaLibre server is and how to stand one up. Shown to
+ * readers who reached the app before they have a server.
+ */
+export const SERVER_SETUP_GUIDE_URL = "https://donovanmontoya.github.io/OperaLibre/getting-started.html";
 const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
@@ -608,6 +615,68 @@ export async function installFrontendUpdate() {
     { method: "POST" },
     10 * 60_000
   );
+}
+
+export type ServerRestoreResult = {
+  restoredAt: string;
+  safetyBackup: string;
+  accounts: number;
+  progressRecords: number;
+  readingSessions: number;
+  completions: number;
+  sessionRetained: boolean;
+  warning?: string;
+};
+
+function authenticatedHeaders(headers?: HeadersInit) {
+  const result = new Headers(headers);
+  const token = getStoredToken();
+  if (token) result.set("Authorization", `Bearer ${token}`);
+  return result;
+}
+
+export async function downloadServerBackup(): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
+    headers: authenticatedHeaders(),
+    cache: "no-store",
+    credentials: usesNativeCredentialStorage() ? "omit" : "include"
+  }, 5 * 60_000);
+  if (!response.ok) {
+    let message = `Backup export failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body?.message === "string") message = body.message;
+    } catch {
+      // Keep the HTTP fallback when the server did not return JSON.
+    }
+    throw new ApiError(message, response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1]
+    ?? `operalibre-backup-${Date.now()}.json`;
+  return { blob: await response.blob(), filename };
+}
+
+export async function restoreServerBackup(file: File): Promise<ServerRestoreResult> {
+  const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
+    method: "POST",
+    headers: authenticatedHeaders({ "Content-Type": "application/json" }),
+    body: file,
+    cache: "no-store",
+    credentials: usesNativeCredentialStorage() ? "omit" : "include"
+  }, 5 * 60_000);
+  if (response.status === 401 && unauthorizedHandler) unauthorizedHandler();
+  if (!response.ok) {
+    let message = `Backup restore failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body?.message === "string") message = body.message;
+    } catch {
+      // Keep the HTTP fallback when the server did not return JSON.
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.json() as Promise<ServerRestoreResult>;
 }
 
 export async function listUsers() {

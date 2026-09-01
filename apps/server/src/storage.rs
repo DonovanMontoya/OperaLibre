@@ -647,23 +647,38 @@ impl<T: Serialize + Clone + Send + Sync + 'static> CachedStore<T> {
         self.value.read().await
     }
 
+    /// Adopt a value already committed by the administrative restore path.
+    /// Restore writes all stores in one database transaction, so persisting
+    /// each cache again here would split that atomic replacement back apart.
+    pub(crate) async fn adopt_restored(&self, restored: T) {
+        *self.value.write().await = restored;
+    }
+
     pub(crate) async fn mutate<R, F>(&self, change: F) -> Result<R, ApiError>
+    where
+        F: FnOnce(&mut T) -> Result<R, ApiError>,
+    {
+        let _state_guard = self.db.state_read_guard().await;
+        self.mutate_while_guarded(change).await
+    }
+
+    async fn mutate_while_guarded<R, F>(&self, change: F) -> Result<R, ApiError>
     where
         F: FnOnce(&mut T) -> Result<R, ApiError>,
     {
         let mut value = self.value.write().await;
         let mut draft = value.clone();
         let outcome = change(&mut draft)?;
-        self.persist(&draft).await?;
+        self.persist_while_guarded(&draft).await?;
         *value = draft;
         Ok(outcome)
     }
 
-    async fn persist(&self, draft: &T) -> Result<(), ApiError> {
+    async fn persist_while_guarded(&self, draft: &T) -> Result<(), ApiError> {
         let payload = serde_json::to_string(draft)?;
         let shape = self.persist;
         self.db
-            .transaction(move |transaction| {
+            .transaction_while_guarded(move |transaction| {
                 match shape {
                     StoreShape::Document(name) => write_document(transaction, name, &payload)?,
                     StoreShape::Users => {
@@ -835,8 +850,12 @@ impl SessionStore {
     where
         F: FnOnce(&mut HashMap<String, Session>) -> Result<R, ApiError>,
     {
+        // Always take the global gate before the session-specific gate. The
+        // restore path holds the global gate while adopting the rebuilt index,
+        // so the reverse order could deadlock a sign-in against a restore.
+        let _state_guard = self.inner.db.state_read_guard().await;
         let _gate = self.mutate_gate.lock().await;
-        let outcome = self.inner.mutate(change).await?;
+        let outcome = self.inner.mutate_while_guarded(change).await?;
         // Rebuilt rather than patched: sessions change on sign-in and sign-out
         // only, the map is capped, and a rebuild cannot drift from the truth.
         // The gate keeps the read-and-publish step from interleaving with
@@ -855,6 +874,13 @@ impl SessionStore {
         // keys with an early-exiting equality, so this cannot restore a
         // timing guarantee. It costs nothing and keeps the match explicit.
         constant_time_eq(stored.as_bytes(), media_token.as_bytes()).then(|| session_token.clone())
+    }
+
+    pub(crate) async fn adopt_restored(&self, restored: HashMap<String, Session>) {
+        let _gate = self.mutate_gate.lock().await;
+        let rebuilt = media_token_index(&restored);
+        self.inner.adopt_restored(restored).await;
+        *self.by_media_token.write().await = rebuilt;
     }
 }
 /// Per-listener daily listening totals.
