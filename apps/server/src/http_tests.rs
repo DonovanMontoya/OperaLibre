@@ -92,6 +92,7 @@ impl TestServer {
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
             covers_dir: data_dir.join("covers"),
+            database: database.clone(),
             database_path: data_dir.join("operalibre.db"),
             library: Arc::new(RwLock::new(LibraryState::default())),
             metadata_overrides: Arc::new(MetadataOverrides::new(
@@ -151,6 +152,7 @@ impl TestServer {
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             upload_lock: Arc::new(Mutex::new(())),
+            backup_lock: Arc::new(Mutex::new(())),
         };
 
         rescan_library(&state).await.unwrap();
@@ -2165,6 +2167,116 @@ async fn missing_audiobookshelf_progress_is_not_found() {
         "{}",
         response.text()
     );
+}
+
+#[tokio::test]
+async fn only_an_owner_can_export_server_backups() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+
+    let denied = server.get("/api/admin/backup", &reader).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text());
+
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
+    assert_eq!(exported.header(header::CONTENT_TYPE), "application/json");
+    assert!(
+        exported
+            .header(header::CONTENT_DISPOSITION)
+            .contains("operalibre-backup-")
+    );
+    assert_eq!(exported.json()["kind"], "operalibre-server-backup");
+}
+
+#[tokio::test]
+async fn restoring_a_backup_replaces_progress_accounts_and_reading_history() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let _reader = server.add_reader(&owner, "kept-reader").await;
+    let (book, _) = server.first_book_and_track(&owner).await;
+
+    let positioned = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &owner,
+            serde_json::json!({ "currentTime": 14.0, "duration": 20.0 }),
+        )
+        .await;
+    assert_eq!(positioned.status, StatusCode::OK, "{}", positioned.text());
+    let finished = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &owner,
+            serde_json::json!({ "isFinished": true }),
+        )
+        .await;
+    assert_eq!(finished.status, StatusCode::OK, "{}", finished.text());
+
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
+    let backup_body = exported.body.clone();
+
+    let added_later = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "not-in-backup",
+                "password": "reader-password-1234",
+                "isAdmin": false
+            }),
+        )
+        .await;
+    assert_eq!(added_later.status, StatusCode::OK, "{}", added_later.text());
+    let moved = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &owner,
+            serde_json::json!({ "currentTime": 18.0, "isFinished": false }),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text());
+
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(backup_body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    assert_eq!(restored.json()["accounts"], 2);
+    assert_eq!(restored.json()["completions"], 1);
+    assert_eq!(restored.json()["sessionRetained"], true);
+
+    let users = server.get("/api/users", &owner).await.json();
+    let names = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|user| user["username"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains(&"kept-reader"));
+    assert!(!names.contains(&"not-in-backup"));
+
+    let progress = server
+        .get(&format!("/abs/api/me/progress/{book}"), &owner)
+        .await
+        .json();
+    assert!((progress["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+    assert_eq!(progress["isFinished"], true);
+    let completions = server.get("/api/profile/completions", &owner).await.json();
+    assert_eq!(completions.as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
