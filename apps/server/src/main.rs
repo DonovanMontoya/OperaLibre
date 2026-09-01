@@ -299,8 +299,18 @@ async fn apply_startup_data_migrations(
 
 /// Startup step: on a server with no accounts yet, mint the one-time token that
 /// authorises the first-run setup form, and log it for the operator to copy.
+/// Modes that need no token still warn that the server sits unclaimed, since
+/// setup stays open to the network until an owner account exists.
 fn mint_setup_token(config: &ServerConfig, users: &UsersStore) -> Option<SetupToken> {
-    if !users.users.is_empty() || !config.deployment_mode.setup_token_required() {
+    if !users.users.is_empty() {
+        return None;
+    }
+    if !config.deployment_mode.setup_token_required() {
+        if config.deployment_mode.allows_remote_setup() {
+            tracing::warn!(
+                "no accounts exist yet; first-run setup is open to the network until an owner is created"
+            );
+        }
         return None;
     }
     let token = generate_session_token();
