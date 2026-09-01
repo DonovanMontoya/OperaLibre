@@ -65,6 +65,13 @@ const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
+
+/**
+ * The docs-site page (built from docs/getting-started.md in the repo) that
+ * explains what an OperaLibre server is and how to stand one up. Shown to
+ * readers who reached the app before they have a server.
+ */
+export const SERVER_SETUP_GUIDE_URL = "https://donovanmontoya.github.io/OperaLibre/getting-started.html";
 const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
@@ -774,7 +781,14 @@ export async function setBookCompletion(
   }
   return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
     method: "PUT",
-    body: JSON.stringify({ finished, ...finalProgress })
+    body: JSON.stringify({
+      finished,
+      ...finalProgress,
+      // Only the player reaching the end creates a dated completion. The
+      // manual button sends status alone, because it says nothing about when
+      // the book was actually read.
+      ...(finalProgress ? { tzOffsetMinutes: tzOffsetMinutes() } : {})
+    })
   });
 }
 
