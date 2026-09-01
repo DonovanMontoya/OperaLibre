@@ -383,14 +383,11 @@ pub(crate) async fn record_progress_bookkeeping(
         .await;
     }
 
-    let was_finished = previous
-        .map(|progress| {
-            summarize_book_progress(book, progress).status == BookProgressStatus::Finished
-        })
-        .unwrap_or(false);
+    let was_finished =
+        previous.is_some_and(|progress| playback_position_is_finished(book, progress));
     if let Some(source) = bookkeeping.completion_source
         && !was_finished
-        && summarize_book_progress(book, saved).status == BookProgressStatus::Finished
+        && playback_position_is_finished(book, saved)
     {
         record_completion(state, &auth.id, book, source, tz_offset_minutes).await;
     }
@@ -485,10 +482,7 @@ pub(crate) async fn update_book_completion(
     let summary = summarize_book_progress(&book, &saved);
     let was_finished = previous
         .as_ref()
-        .map(|progress| {
-            summarize_book_progress(&book, progress).status == BookProgressStatus::Finished
-        })
-        .unwrap_or(false);
+        .is_some_and(|progress| playback_position_is_finished(&book, progress));
     if records_completion && update.finished && !was_finished {
         record_completion(
             &state,
@@ -673,6 +667,16 @@ pub(crate) fn summarize_book_progress(book: &Book, progress: &Progress) -> BookP
         percent_complete,
         updated_at: enriched.updated_at,
     }
+}
+
+/// Whether playback itself has reached the book's finished range. Explicit
+/// status choices are deliberately ignored: a manual mark must neither create
+/// a dated completion nor suppress one when the listener later reaches the
+/// end for real.
+pub(crate) fn playback_position_is_finished(book: &Book, progress: &Progress) -> bool {
+    let mut position_only = progress.clone();
+    position_only.finished_override = None;
+    summarize_book_progress(book, &position_only).status == BookProgressStatus::Finished
 }
 
 /// The furthest point a stored checkpoint reached, clamped to the book's real
