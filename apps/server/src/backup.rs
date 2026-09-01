@@ -81,6 +81,7 @@ pub(crate) async fn export_server_backup(
     _: OwnerUser,
 ) -> Result<Response, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
+    let _state_guard = state.database.quiesce_state().await;
     let backup = build_backup(&state).await?;
     let contents = serde_json::to_vec_pretty(&backup)?;
     let filename = format!("operalibre-backup-{}.json", unix_now_seconds());
@@ -103,12 +104,19 @@ pub(crate) async fn import_server_backup(
 ) -> Result<Json<RestoreResult>, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
     validate_backup_header(&backup)?;
+    let state_guard = state.database.quiesce_state().await;
 
     // A restore should include the useful tail of a sitting that is still in
     // memory, and its safety copy should as well. The live sitting itself is
     // cleared only after the replacement commits.
     let before = build_backup(&state).await?;
-    let safety_name = format!("pre-restore-{}.operalibre-backup.json", unix_now_seconds());
+    let mut safety_suffix = [0u8; 8];
+    rand::rng().fill(&mut safety_suffix);
+    let safety_name = format!(
+        "pre-restore-{}-{:016x}.operalibre-backup.json",
+        unix_now_seconds(),
+        u64::from_le_bytes(safety_suffix)
+    );
     let safety_dir = state
         .database_path
         .parent()
@@ -153,6 +161,7 @@ pub(crate) async fn import_server_backup(
     adopt_snapshot(&state, snapshot).await;
     *state.open_sessions.lock().await = OpenSessions::default();
     state.libation_login_sessions.lock().await.clear();
+    drop(state_guard);
 
     // The data restore is already complete at this point. A temporarily
     // unavailable library must not turn that success into a misleading 500;
