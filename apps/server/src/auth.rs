@@ -680,8 +680,7 @@ pub(crate) async fn auth_status(
         [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         Json(AuthStatus {
             setup_required,
-            setup_token_required: setup_required
-                && state.deployment_mode.setup_token_required(),
+            setup_token_required: setup_required && state.deployment_mode.setup_token_required(),
             setup_local_only: setup_required
                 && remote_client
                 && !state.deployment_mode.allows_remote_setup(),

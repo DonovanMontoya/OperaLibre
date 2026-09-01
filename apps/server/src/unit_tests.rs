@@ -1696,9 +1696,13 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
         super::unix_now_seconds(),
     ));
 
-    let result =
-        attempt_forwarded_setup(&state, "203.0.113.9", "remote-owner", Some("one-time-secret"))
-            .await;
+    let result = attempt_forwarded_setup(
+        &state,
+        "203.0.113.9",
+        "remote-owner",
+        Some("one-time-secret"),
+    )
+    .await;
 
     assert!(result.is_ok());
     assert!(state.setup_token.lock().await.is_none());
