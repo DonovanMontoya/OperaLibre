@@ -101,6 +101,16 @@ pub(crate) struct LibraryState {
     pub(crate) cover_art: HashMap<String, CachedCover>,
 }
 
+impl LibraryState {
+    /// The catalogue entry for `book_id`, or the 404 every book route returns.
+    pub(crate) fn book(&self, book_id: &str) -> Result<&Book, ApiError> {
+        self.books
+            .iter()
+            .find(|candidate| candidate.id == book_id)
+            .ok_or(ApiError::not_found("Book not found"))
+    }
+}
+
 /// An extracted cover on disk.
 #[derive(Debug, Clone)]
 pub(crate) struct CachedCover {
@@ -516,15 +526,7 @@ pub(crate) async fn get_book(
     Path(book_id): Path<String>,
 ) -> Result<Json<Book>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let book = {
-        let library = state.library.read().await;
-        library
-            .books
-            .iter()
-            .find(|candidate| candidate.id == book_id)
-            .cloned()
-            .ok_or(ApiError::not_found("Book not found"))?
-    };
+    let book = state.library.read().await.book(&book_id)?.clone();
     Ok(Json(book_with_progress(&state, &auth, book).await?))
 }
 
@@ -535,16 +537,7 @@ pub(crate) async fn update_book_metadata(
     Json(payload): Json<BookMetadataUpdate>,
 ) -> Result<Json<Book>, ApiError> {
     let metadata_override = metadata_override_from_update(payload)?;
-    {
-        let library = state.library.read().await;
-        if !library
-            .books
-            .iter()
-            .any(|candidate| candidate.id == book_id)
-        {
-            return Err(ApiError::not_found("Book not found"));
-        }
-    }
+    state.library.read().await.book(&book_id)?;
 
     state
         .metadata_overrides
@@ -965,16 +958,16 @@ pub(crate) fn path_identity_fingerprint(path: &FsPath) -> String {
     format!("path:{}", stable_id(&path.to_string_lossy()))
 }
 
+/// One file's scan result: where it is, how the identity store names it, its
+/// fingerprint, and the size and mtime the cache is keyed on.
+type ScannedFingerprint = (PathBuf, String, String, Option<(u64, u64)>);
+
 /// Fingerprints every track in the library once per scan, reusing the stored
 /// digest whenever a file's size and modification time are unchanged. Reading
 /// 128 KB per track on every rescan is the dominant cost on large libraries,
 /// so the steady state here is one stat per file.
 ///
 /// Blocking: run this on a blocking task, not on a runtime worker.
-/// One file's scan result: where it is, how the identity store names it, its
-/// fingerprint, and the size and mtime the cache is keyed on.
-type ScannedFingerprint = (PathBuf, String, String, Option<(u64, u64)>);
-
 pub(crate) fn fingerprint_tracks(
     library_root: &FsPath,
     files: &[PathBuf],
@@ -1072,14 +1065,47 @@ pub(crate) struct ScannedGroup<'a> {
     pub(crate) duration_seconds: Option<f64>,
 }
 
+/// Claims only edges that are unambiguous in BOTH directions: the position
+/// must have exactly one candidate, and that candidate must be proposed by
+/// exactly one position. Checking only the first direction leaves the outcome
+/// dependent on which position is visited first, which is the ordering bug
+/// the identity resolver exists to remove.
+///
+/// The count covers every edge, not just positions that happen to have a
+/// single candidate: a candidate wanted by one certain position and one
+/// uncertain position is still contested, and handing it to the certain one
+/// is a guess.
+fn claim_unambiguous_edges(
+    proposals: &[Vec<usize>],
+    claimed: &mut [Option<usize>],
+    used: &mut HashSet<usize>,
+) {
+    let mut proposal_count: HashMap<usize, usize> = HashMap::new();
+    for candidates in proposals {
+        for index in candidates {
+            *proposal_count.entry(*index).or_insert(0) += 1;
+        }
+    }
+
+    for (position, candidates) in proposals.iter().enumerate() {
+        if let [only] = candidates[..]
+            && proposal_count.get(&only).copied().unwrap_or(0) == 1
+            && !used.contains(&only)
+        {
+            claimed[position] = Some(only);
+            used.insert(only);
+        }
+    }
+}
+
 /// Resolve every scanned group against the stored identities at once.
 ///
 /// The previous implementation walked groups in scan order and took the first
 /// unused identity matching either the path or the fingerprint. That is
 /// order-dependent: a book processed early can consume an identity that
 /// belongs to one processed later, and a recycled path can claim an identity
-/// outright. Resolving globally removes the ordering, and the three passes
-/// below only ever act on evidence that is unambiguous.
+/// outright. Resolving globally removes the ordering, and the passes below
+/// only ever act on evidence that is unambiguous.
 ///
 /// Returns one `(book_id, track_ids)` per input group, in input order.
 pub(crate) fn resolve_library_identities(
@@ -1143,11 +1169,8 @@ pub(crate) fn resolve_library_identities(
         }
     };
 
-    // Claim only edges that are unambiguous in BOTH directions: the group must
-    // have exactly one candidate identity, and that identity must be proposed
-    // by exactly one group. Checking only the first direction leaves the
-    // outcome dependent on which group is visited first, which is the ordering
-    // bug this resolver exists to remove.
+    // One tier: collect each unclaimed group's candidate identities under this
+    // tier's eligibility rule, then let the shared bidirectional claim decide.
     let claim_pass =
         |claimed_by: &mut Vec<Option<usize>>,
          used: &mut HashSet<usize>,
@@ -1170,27 +1193,7 @@ pub(crate) fn resolve_library_identities(
                         .collect(),
                 );
             }
-
-            // How many groups an identity is a candidate for — counting every
-            // edge, not just the groups that happen to have a single candidate.
-            // An identity wanted by one certain group and one uncertain group
-            // is still contested, and handing it to the certain one is a guess.
-            let mut proposal_count: HashMap<usize, usize> = HashMap::new();
-            for candidates in &proposals {
-                for index in candidates {
-                    *proposal_count.entry(*index).or_insert(0) += 1;
-                }
-            }
-
-            for (position, candidates) in proposals.iter().enumerate() {
-                if let [only] = candidates[..]
-                    && proposal_count.get(&only).copied().unwrap_or(0) == 1
-                    && !used.contains(&only)
-                {
-                    claimed_by[position] = Some(only);
-                    used.insert(only);
-                }
-            }
+            claim_unambiguous_edges(&proposals, claimed_by, used);
         };
 
     // Pass 1 — remembered path and the identity's *current* digest agree. The
@@ -1385,23 +1388,7 @@ fn resolve_track_identities(
                         .collect(),
                 );
             }
-
-            let mut proposal_count: HashMap<usize, usize> = HashMap::new();
-            for candidates in &proposals {
-                for index in candidates {
-                    *proposal_count.entry(*index).or_insert(0) += 1;
-                }
-            }
-
-            for (position, candidates) in proposals.iter().enumerate() {
-                if let [only] = candidates[..]
-                    && proposal_count.get(&only).copied().unwrap_or(0) == 1
-                    && !used.contains(&only)
-                {
-                    claimed[position] = Some(only);
-                    used.insert(only);
-                }
-            }
+            claim_unambiguous_edges(&proposals, claimed, used);
         };
 
     // Pass 1 — path and fingerprint agree.
@@ -1552,6 +1539,37 @@ pub(crate) fn assess_scan(
     }
 }
 
+/// Records what a withheld scan observed, without touching identities.
+///
+/// A matching observation extends the current run; a different shrink starts a
+/// new one. A traversal failure breaks the run: "three consecutive scans" has
+/// to mean three scans that actually observed the library, otherwise a drive
+/// flapping between readable and unreadable eventually confirms a reduction it
+/// never demonstrated.
+fn note_shrink_observation(
+    identities: &mut LibraryIdentityStore,
+    record_shrink: Option<(usize, String)>,
+) {
+    match record_shrink {
+        Some((book_count, signature)) => {
+            let pending = identities
+                .pending_shrink
+                .entry(DEFAULT_ROOT_ID.to_string())
+                .or_default();
+            if pending.signature == signature {
+                pending.observations = pending.observations.saturating_add(1);
+            } else {
+                pending.book_count = book_count;
+                pending.signature = signature;
+                pending.observations = 1;
+            }
+        }
+        None => {
+            identities.pending_shrink.remove(DEFAULT_ROOT_ID);
+        }
+    }
+}
+
 pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
     let scan_root = state.library_root.clone();
@@ -1563,11 +1581,8 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut identities = load_library_identities(&state.library_identities_file).await?;
 
     // A scan that could not read part of the library is not evidence that the
-    // library shrank. Committing identity changes on top of it is what turns a
-    // transient mount or permission problem into permanently detached progress,
-    // so the catalogue is left exactly as it is.
-    // A scan that could not be trusted stops here, before anything derived from
-    // it can reach the catalogue. Resolving it against a scratch copy and
+    // library shrank, so an untrusted scan stops here, before anything derived
+    // from it can reach the catalogue. Resolving it against a scratch copy and
     // publishing the result would hand listeners book and track ids that exist
     // only for this scan, and progress written against those is unrecoverable.
     // The previously published library stays up instead.
@@ -1591,28 +1606,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         &walk_errors,
         state.library_root.as_path(),
     ) {
-        match record_shrink {
-            Some((book_count, signature)) => {
-                let pending = identities
-                    .pending_shrink
-                    .entry(DEFAULT_ROOT_ID.to_string())
-                    .or_default();
-                if pending.signature == signature {
-                    pending.observations = pending.observations.saturating_add(1);
-                } else {
-                    pending.book_count = book_count;
-                    pending.signature = signature;
-                    pending.observations = 1;
-                }
-            }
-            // A traversal failure breaks the run. "Three consecutive scans"
-            // has to mean three scans that actually observed the library,
-            // otherwise a drive flapping between readable and unreadable
-            // eventually confirms a reduction it never demonstrated.
-            None => {
-                identities.pending_shrink.remove(DEFAULT_ROOT_ID);
-            }
-        }
+        note_shrink_observation(&mut identities, record_shrink);
         // Only the observation is written; identities are untouched.
         write_json_atomic(&state.library_identities_file, &identities)
             .await
@@ -1750,78 +1744,17 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .map(|file_path| metadata_by_path.remove(file_path).unwrap_or_default())
             .collect::<Vec<_>>();
 
-        let tracks = grouped_files
-            .iter()
-            .enumerate()
-            .map(|(index, file_path)| {
-                let track_id = track_ids[index].clone();
-                track_paths.insert(track_id.clone(), file_path.clone());
-                let chapters = metadata[index]
-                    .chapters
-                    .iter()
-                    .map(|chapter| Chapter {
-                        id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
-                        title: chapter.title.clone(),
-                        track_id: track_id.clone(),
-                        track_index: index,
-                        start_seconds: chapter.start_seconds,
-                        end_seconds: chapter.end_seconds,
-                        source: chapter.source.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                Track {
-                    id: track_id.clone(),
-                    title: metadata[index]
-                        .title
-                        .as_deref()
-                        .map(clean_imported_title)
-                        .unwrap_or_else(|| {
-                            file_path
-                                .file_stem()
-                                .and_then(|name| name.to_str())
-                                .map(clean_imported_title)
-                                .unwrap_or_else(|| "Untitled track".to_string())
-                        }),
-                    file_name: file_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("track")
-                        .to_string(),
-                    index,
-                    duration_seconds: metadata[index].duration_seconds,
-                    stream_url: format!("/api/books/{book_id}/tracks/{track_id}/stream"),
-                    chapters,
-                    metadata: metadata[index].summary.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
+        let tracks = build_tracks(&book_id, &grouped_files, &track_ids, &metadata);
+        for (track, file_path) in tracks.iter().zip(&grouped_files) {
+            track_paths.insert(track.id.clone(), file_path.clone());
+        }
 
         let duration_seconds = tracks
             .iter()
             .map(|track| track.duration_seconds)
             .try_fold(0.0, |sum, duration| duration.map(|value| sum + value));
 
-        let raw_title = if grouped_files.len() == 1 {
-            metadata[0]
-                .summary
-                .album
-                .clone()
-                .or(metadata[0].title.clone())
-                .unwrap_or_else(|| {
-                    grouped_files[0]
-                        .file_stem()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("Untitled book")
-                        .to_string()
-                })
-        } else {
-            group_key
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Untitled book")
-                .to_string()
-        };
-        let mut title = clean_imported_title(&raw_title);
+        let mut title = book_title_for_group(&group_key, &grouped_files, &metadata);
 
         let cover_art_url = metadata
             .iter()
@@ -1924,9 +1857,120 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
-    // Resolve the stable work identity after a complete scan. Playback remains
-    // keyed by the edition's byte identity; this index is only for history and
-    // lets replacement downloads roll up under the same work.
+    resolve_book_works(state, &books).await?;
+
+    // Cover extraction touches the disk for every book with art, so it runs
+    // before the lock is taken: holding the library write guard through it
+    // would stall every route that reads the library, including media
+    // streaming, for the length of the pass.
+    let covers_dir = state.covers_dir.clone();
+    let (cover_art, stale_covers) =
+        tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
+            .await
+            .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
+
+    {
+        let mut library = state.library.write().await;
+        library.books = books;
+        library.book_paths = book_paths;
+        library.track_paths = track_paths;
+        library.reading_paths = reading_paths;
+        library.sync_paths = sync_paths;
+        library.cover_art = cover_art;
+    }
+    // Only now is the published library done with these.
+    remove_stale_covers(&stale_covers);
+    Ok(())
+}
+
+/// Builds one book's track list, in walk order, from the tags read during the
+/// scan.
+fn build_tracks(
+    book_id: &str,
+    grouped_files: &[PathBuf],
+    track_ids: &[String],
+    metadata: &[TrackMetadata],
+) -> Vec<Track> {
+    grouped_files
+        .iter()
+        .enumerate()
+        .map(|(index, file_path)| {
+            let track_id = track_ids[index].clone();
+            let chapters = metadata[index]
+                .chapters
+                .iter()
+                .map(|chapter| Chapter {
+                    id: stable_id(&format!("{track_id}:{}", chapter.start_seconds)),
+                    title: chapter.title.clone(),
+                    track_id: track_id.clone(),
+                    track_index: index,
+                    start_seconds: chapter.start_seconds,
+                    end_seconds: chapter.end_seconds,
+                    source: chapter.source.clone(),
+                })
+                .collect::<Vec<_>>();
+            Track {
+                id: track_id.clone(),
+                title: metadata[index]
+                    .title
+                    .as_deref()
+                    .map(clean_imported_title)
+                    .unwrap_or_else(|| {
+                        file_path
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .map(clean_imported_title)
+                            .unwrap_or_else(|| "Untitled track".to_string())
+                    }),
+                file_name: file_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("track")
+                    .to_string(),
+                index,
+                duration_seconds: metadata[index].duration_seconds,
+                stream_url: format!("/api/books/{book_id}/tracks/{track_id}/stream"),
+                chapters,
+                metadata: metadata[index].summary.clone(),
+            }
+        })
+        .collect()
+}
+
+/// The book's display title before sidecar and user overrides: album or track
+/// tag for a single-file book, folder name for a grouped one.
+fn book_title_for_group(
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    metadata: &[TrackMetadata],
+) -> String {
+    let raw_title = if grouped_files.len() == 1 {
+        metadata[0]
+            .summary
+            .album
+            .clone()
+            .or(metadata[0].title.clone())
+            .unwrap_or_else(|| {
+                grouped_files[0]
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Untitled book")
+                    .to_string()
+            })
+    } else {
+        group_key
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Untitled book")
+            .to_string()
+    };
+    clean_imported_title(&raw_title)
+}
+
+/// Resolves the stable work identity after a complete scan. Playback remains
+/// keyed by the edition's byte identity; this index is only for history and
+/// lets replacement downloads roll up under the same work.
+async fn resolve_book_works(state: &AppState, books: &[Book]) -> anyhow::Result<()> {
     let editions = books
         .iter()
         .map(|book| EditionCandidate {
@@ -1953,35 +1997,69 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             Ok(())
         })
         .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-
-    // Cover extraction touches the disk for every book with art, so it runs
-    // before the lock is taken: holding the library write guard through it
-    // would stall every route that reads the library, including media
-    // streaming, for the length of the pass.
-    let covers_dir = state.covers_dir.clone();
-    let (cover_art, stale_covers) =
-        tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
-            .await
-            .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
-
-    {
-        let mut library = state.library.write().await;
-        library.books = books;
-        library.book_paths = book_paths;
-        library.track_paths = track_paths;
-        library.reading_paths = reading_paths;
-        library.sync_paths = sync_paths;
-        library.cover_art = cover_art;
-    }
-    // Only now is the published library done with these.
-    remove_stale_covers(&stale_covers);
-    Ok(())
+        .map_err(|error| anyhow::anyhow!(error.message))
 }
 
 pub(crate) struct DiscoveredSyncFile {
     pub(crate) file: SyncFile,
     pub(crate) path: PathBuf,
+}
+
+/// Picks the companion file beside a book that best matches it.
+///
+/// Readalong documents and sync-map sidecars are matched the same way: files
+/// in the book's own directory (depth one, natural order) are matched by
+/// normalized stem against the folder name, the book title, and every audio
+/// file's stem. A folder book falls back to its first candidate even without
+/// a name match — a folder holds one book, so an unmatched name there is
+/// still unambiguous.
+fn find_companion_file(
+    group_key: &FsPath,
+    grouped_files: &[PathBuf],
+    book_title: &str,
+    is_candidate: impl Fn(&FsPath) -> bool,
+    match_stem: impl Fn(&FsPath) -> Option<String>,
+) -> Option<PathBuf> {
+    let is_folder_book = group_key.is_dir();
+    let search_dir = if is_folder_book {
+        group_key.to_path_buf()
+    } else {
+        group_key.parent()?.to_path_buf()
+    };
+    let audio_stems = grouped_files
+        .iter()
+        .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
+        .map(normalize_match_key)
+        .collect::<Vec<_>>();
+    let group_stem = group_key
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(normalize_match_key);
+    let title_key = normalize_match_key(book_title);
+
+    let mut candidates = WalkDir::new(&search_dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| is_candidate(path))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|a| natural_path_key(a));
+
+    candidates
+        .iter()
+        .find(|path| {
+            let Some(stem) = match_stem(path) else {
+                return false;
+            };
+            let stem_key = normalize_match_key(&stem);
+            Some(&stem_key) == group_stem.as_ref()
+                || stem_key == title_key
+                || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
+        })
+        .or_else(|| is_folder_book.then(|| candidates.first()).flatten())
+        .cloned()
 }
 
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
@@ -1995,67 +2073,39 @@ pub(crate) fn find_sync_file(
     sync_dir: &FsPath,
 ) -> Option<DiscoveredSyncFile> {
     let url = format!("/api/books/{book_id}/sync");
-    let is_folder_book = group_key.is_dir();
-    let search_dir = if is_folder_book {
-        Some(group_key.to_path_buf())
-    } else {
-        group_key.parent().map(FsPath::to_path_buf)
-    };
-
-    if let Some(search_dir) = search_dir {
-        let audio_stems = grouped_files
-            .iter()
-            .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
-            .map(normalize_match_key)
-            .collect::<Vec<_>>();
-        let group_stem = group_key
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .map(normalize_match_key);
-        let title_key = normalize_match_key(book_title);
-
-        let mut candidates = WalkDir::new(&search_dir)
-            .max_depth(1)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.into_path())
-            .filter(|path| {
-                path.file_name()
+    let sidecar = find_companion_file(
+        group_key,
+        grouped_files,
+        book_title,
+        |path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(has_sync_sidecar_suffix)
+                .unwrap_or(false)
+        },
+        // `.sync.json` is a two-part suffix, so `file_stem` would leave
+        // `.sync` behind; strip the full suffix by length instead. The slice
+        // is safe because `has_sync_sidecar_suffix` already checked length
+        // and the character boundary.
+        |path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
+        },
+    );
+    if let Some(selected) = sidecar {
+        return Some(DiscoveredSyncFile {
+            file: SyncFile {
+                file_name: selected
+                    .file_name()
                     .and_then(|name| name.to_str())
-                    .map(has_sync_sidecar_suffix)
-                    .unwrap_or(false)
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|a| natural_path_key(a));
-
-        let selected = candidates
-            .iter()
-            .find(|path| {
-                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                    return false;
-                };
-                let stem = &name[..name.len() - SYNC_SIDECAR_SUFFIX.len()];
-                let stem_key = normalize_match_key(stem);
-                Some(&stem_key) == group_stem.as_ref()
-                    || stem_key == title_key
-                    || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
-            })
-            .or_else(|| is_folder_book.then(|| candidates.first()).flatten());
-        if let Some(selected) = selected {
-            return Some(DiscoveredSyncFile {
-                path: selected.clone(),
-                file: SyncFile {
-                    file_name: selected
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("sync.json")
-                        .to_string(),
-                    source: "sidecar".to_string(),
-                    url,
-                },
-            });
-        }
+                    .unwrap_or("sync.json")
+                    .to_string(),
+                source: "sidecar".to_string(),
+                url,
+            },
+            path: selected,
+        });
     }
 
     let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
@@ -2091,51 +2141,24 @@ pub(crate) struct DiscoveredReadingFile {
     pub(crate) path: PathBuf,
 }
 
+/// Finds the readalong document for a book among the files beside it.
 pub(crate) fn find_reading_file(
     book_id: &str,
     group_key: &FsPath,
     grouped_files: &[PathBuf],
     book_title: &str,
 ) -> Option<DiscoveredReadingFile> {
-    let is_folder_book = group_key.is_dir();
-    let search_dir = if is_folder_book {
-        group_key.to_path_buf()
-    } else {
-        group_key.parent()?.to_path_buf()
-    };
-    let audio_stems = grouped_files
-        .iter()
-        .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
-        .map(normalize_match_key)
-        .collect::<Vec<_>>();
-    let group_stem = group_key
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .map(normalize_match_key);
-    let title_key = normalize_match_key(book_title);
-
-    let mut candidates = WalkDir::new(&search_dir)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .filter(|path| is_supported_reading_file(path))
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|a| natural_path_key(a));
-
-    let selected = candidates
-        .iter()
-        .find(|path| {
-            let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
-                return false;
-            };
-            let stem_key = normalize_match_key(stem);
-            Some(&stem_key) == group_stem.as_ref()
-                || stem_key == title_key
-                || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
-        })
-        .or_else(|| is_folder_book.then(|| candidates.first()).flatten())?;
+    let selected = find_companion_file(
+        group_key,
+        grouped_files,
+        book_title,
+        is_supported_reading_file,
+        |path| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        },
+    )?;
 
     let extension = selected
         .extension()
@@ -2148,12 +2171,12 @@ pub(crate) fn find_reading_file(
         .unwrap_or("readalong")
         .to_string();
     let id = stable_id(&selected.to_string_lossy());
-    let content_type = mime_guess::from_path(selected)
+    let content_type = mime_guess::from_path(&selected)
         .first_or_octet_stream()
         .to_string();
 
     Some(DiscoveredReadingFile {
-        path: selected.clone(),
+        path: selected,
         file: ReadingFile {
             id,
             file_name,
@@ -2221,16 +2244,7 @@ pub(crate) fn walk_audio_files_checked(root: &FsPath) -> AudioWalk {
         // A conversion in flight writes a temporary remux beside the book. It
         // carries the book's extension, so it has to be excluded by name.
         .filter(|path| !faststart::is_work_file(path))
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| {
-                    AUDIO_EXTENSIONS
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-                })
-                .unwrap_or(false)
-        })
+        .filter(|path| is_supported_audio_file(path))
         .collect::<Vec<_>>();
 
     files.sort_by_key(|a| natural_path_key(a));
@@ -2645,16 +2659,10 @@ pub(crate) fn read_mp4_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
     };
 
     let chapter_track = tag.chapter_track();
-    let chapter_list = tag.chapter_list();
-    let source = if !chapter_track.is_empty() {
-        "mp4-chapter-track"
+    let (chapters, source) = if chapter_track.is_empty() {
+        (tag.chapter_list(), "mp4-chapter-list")
     } else {
-        "mp4-chapter-list"
-    };
-    let chapters = if !chapter_track.is_empty() {
-        chapter_track
-    } else {
-        chapter_list
+        (chapter_track, "mp4-chapter-track")
     };
 
     chapters
