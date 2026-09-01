@@ -630,6 +630,74 @@ async fn save_position(
 }
 
 #[tokio::test]
+async fn marking_finished_changes_status_without_inventing_a_read_date() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let library = server.get("/api/books", &token).await.json();
+    let book = &library.as_array().unwrap()[0];
+    let book_id = book["id"].as_str().unwrap();
+    let final_track = book["tracks"].as_array().unwrap().last().unwrap();
+    let final_track_id = final_track["id"].as_str().unwrap();
+    let final_track_duration = final_track["durationSeconds"].as_f64().unwrap();
+    let book_duration = book["durationSeconds"].as_f64().unwrap();
+
+    let marked = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book_id}/completion"),
+            &token,
+            serde_json::json!({ "finished": true, "tzOffsetMinutes": -240 }),
+        )
+        .await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.text());
+    assert_eq!(marked.json()["status"], "finished");
+    assert_eq!(
+        server
+            .get("/api/profile/completions", &token)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "a status-only change was presented as a completion today"
+    );
+    assert_eq!(
+        server.get("/api/profile/stats", &token).await.json()["booksFinished"],
+        1,
+        "the library status itself should still change"
+    );
+
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book_id}/completion"),
+            &token,
+            serde_json::json!({ "finished": false }),
+        )
+        .await;
+    let reached = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book_id}/completion"),
+            &token,
+            serde_json::json!({
+                "finished": true,
+                "trackId": final_track_id,
+                "positionSeconds": final_track_duration,
+                "bookPositionSeconds": book_duration,
+                "durationSeconds": final_track_duration,
+                "tzOffsetMinutes": -240
+            }),
+        )
+        .await;
+    assert_eq!(reached.status, StatusCode::OK, "{}", reached.text());
+    let completions = server.get("/api/profile/completions", &token).await.json();
+    assert_eq!(completions.as_array().unwrap().len(), 1);
+    assert_eq!(completions[0]["source"], "reached");
+}
+
+#[tokio::test]
 async fn a_forward_position_is_saved_and_read_back() {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
@@ -2007,6 +2075,33 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
     assert_eq!(completions.as_array().unwrap().len(), 1);
     let metrics = server.get("/api/metrics", &token).await.json();
     assert_eq!(metrics["listeningNow"], 1);
+}
+
+#[tokio::test]
+async fn an_audiobookshelf_completion_only_update_does_not_invent_a_read_date() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let marked = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "isFinished": true }),
+        )
+        .await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.text());
+    assert_eq!(marked.json()["isFinished"], true);
+    assert!(
+        server
+            .get("/api/profile/completions", &token)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
