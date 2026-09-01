@@ -647,6 +647,13 @@ impl<T: Serialize + Clone + Send + Sync + 'static> CachedStore<T> {
         self.value.read().await
     }
 
+    /// Adopt a value already committed by the administrative restore path.
+    /// Restore writes all stores in one database transaction, so persisting
+    /// each cache again here would split that atomic replacement back apart.
+    pub(crate) async fn adopt_restored(&self, restored: T) {
+        *self.value.write().await = restored;
+    }
+
     pub(crate) async fn mutate<R, F>(&self, change: F) -> Result<R, ApiError>
     where
         F: FnOnce(&mut T) -> Result<R, ApiError>,
@@ -855,6 +862,13 @@ impl SessionStore {
         // keys with an early-exiting equality, so this cannot restore a
         // timing guarantee. It costs nothing and keeps the match explicit.
         constant_time_eq(stored.as_bytes(), media_token.as_bytes()).then(|| session_token.clone())
+    }
+
+    pub(crate) async fn adopt_restored(&self, restored: HashMap<String, Session>) {
+        let _gate = self.mutate_gate.lock().await;
+        let rebuilt = media_token_index(&restored);
+        self.inner.adopt_restored(restored).await;
+        *self.by_media_token.write().await = rebuilt;
     }
 }
 /// Per-listener daily listening totals.
