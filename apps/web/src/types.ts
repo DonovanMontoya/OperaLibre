@@ -349,7 +349,7 @@ export type ServerType = "operalibre" | "jellyfin";
 
 export type AuthStatus = {
   setupRequired: boolean;
-  /** Newer OperaLibre servers require a one-time console token for remote setup. */
+  /** True when the server requires the one-time console token for setup (`proxy` deployments). */
   setupTokenRequired?: boolean;
   /** True when this client must complete setup from the server machine instead. */
   setupLocalOnly?: boolean;
