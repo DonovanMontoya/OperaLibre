@@ -633,6 +633,22 @@ async fn save_position(
 async fn marking_finished_changes_status_without_inventing_a_read_date() {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
+    // Keep the fixture above the server's 30-second natural-finish window so
+    // position zero is unambiguously not finished.
+    for track in 3..=6 {
+        std::fs::write(
+            server
+                .library_root
+                .join("Book 00")
+                .join(format!("{track:02} Track.wav")),
+            fixture_wav(),
+        )
+        .unwrap();
+    }
+    let rescan = server
+        .send_json("POST", "/api/library/rescan", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(rescan.status, StatusCode::OK, "{}", rescan.text());
     let library = server.get("/api/books", &token).await.json();
     let book = &library.as_array().unwrap()[0];
     let book_id = book["id"].as_str().unwrap();
@@ -668,14 +684,8 @@ async fn marking_finished_changes_status_without_inventing_a_read_date() {
         "the library status itself should still change"
     );
 
-    server
-        .send_json(
-            "PUT",
-            &format!("/api/books/{book_id}/completion"),
-            &token,
-            serde_json::json!({ "finished": false }),
-        )
-        .await;
+    // Reaching the end later must record the real completion even though the
+    // prior status-only override still says finished.
     let reached = server
         .send_json(
             "PUT",
@@ -2081,6 +2091,20 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
 async fn an_audiobookshelf_completion_only_update_does_not_invent_a_read_date() {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
+    for track in 3..=6 {
+        std::fs::write(
+            server
+                .library_root
+                .join("Book 00")
+                .join(format!("{track:02} Track.wav")),
+            fixture_wav(),
+        )
+        .unwrap();
+    }
+    let rescan = server
+        .send_json("POST", "/api/library/rescan", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(rescan.status, StatusCode::OK, "{}", rescan.text());
     let (book, _) = server.first_book_and_track(&token).await;
 
     let marked = server
@@ -2101,6 +2125,27 @@ async fn an_audiobookshelf_completion_only_update_does_not_invent_a_read_date() 
             .as_array()
             .unwrap()
             .is_empty()
+    );
+
+    let reached = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 60.0 }),
+        )
+        .await;
+    assert_eq!(reached.status, StatusCode::OK, "{}", reached.text());
+    assert_eq!(
+        server
+            .get("/api/profile/completions", &token)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the later position-based completion was suppressed by the manual mark"
     );
 }
 
