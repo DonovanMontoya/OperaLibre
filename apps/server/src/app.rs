@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! The shared `AppState`, the application router, and the operational
+//! endpoints that describe the server itself.
 
 use crate::*;
 
@@ -542,21 +543,16 @@ pub(crate) async fn metrics(
         active_sessions,
         listening_now,
         running_jobs,
-        database_bytes: directory_bytes(&state.database_path),
+        database_bytes: database_bytes(&state.database_path),
         covers_bytes: directory_size(&state.covers_dir),
         library_root: state.library_root.display().to_string(),
     }))
 }
 
-/// One file's size, plus its write-ahead log if it has one.
-fn directory_bytes(path: &FsPath) -> u64 {
-    ["", "-wal", "-shm"]
-        .iter()
-        .filter_map(|suffix| {
-            let mut candidate = path.as_os_str().to_os_string();
-            candidate.push(suffix);
-            std::fs::metadata(PathBuf::from(candidate)).ok()
-        })
+/// The database file's size, plus its write-ahead log if it has one.
+fn database_bytes(path: &FsPath) -> u64 {
+    sqlite_related_paths(path)
+        .filter_map(|candidate| std::fs::metadata(candidate).ok())
         .map(|metadata| metadata.len())
         .sum()
 }

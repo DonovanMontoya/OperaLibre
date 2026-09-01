@@ -1,4 +1,5 @@
-//! Extracted from main.rs.
+//! Admin endpoints for faststart optimization: surveying which MP4s still
+//! carry a trailing `moov` and running the conversion as a background job.
 
 use crate::*;
 
@@ -96,14 +97,7 @@ pub(crate) async fn faststart_status(
     let mut books = books.into_values().collect::<Vec<_>>();
     books.sort_by(|a, b| a.title.cmp(&b.title));
 
-    let active_job_id = state
-        .jobs
-        .read()
-        .await
-        .values()
-        .filter(|job| job.kind == FASTSTART_JOB_KIND && is_active_job(job))
-        .max_by_key(|job| job_started_timestamp(job))
-        .map(|job| job.id.clone());
+    let active_job_id = active_job_id(&*state.jobs.read().await, FASTSTART_JOB_KIND);
 
     Ok(Json(FaststartStatusResponse {
         enabled: state.faststart_tools.is_some(),
@@ -141,20 +135,11 @@ pub(crate) async fn start_faststart_conversion(
         ));
     }
     if let Some(book_id) = payload.book_id.as_deref() {
-        let library = state.library.read().await;
-        if !library.books.iter().any(|book| book.id == book_id) {
-            return Err(ApiError::not_found("Book not found"));
-        }
+        state.library.read().await.book(book_id)?;
     }
 
-    let (job_id, created) = create_job_with_state(
-        &state,
-        FASTSTART_JOB_KIND,
-        payload.book_id.clone(),
-        "queued",
-        true,
-    )
-    .await;
+    let (job_id, created) =
+        create_queued_job(&state, FASTSTART_JOB_KIND, payload.book_id.clone()).await;
     if created {
         spawn_faststart_job(state, job_id.clone(), payload);
     }

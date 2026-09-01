@@ -160,13 +160,21 @@ pub(crate) fn open_existing(path: &FsPath) -> anyhow::Result<Connection> {
     open(path)
 }
 
+/// A database path plus the `-wal` and `-shm` sidecars SQLite may keep beside
+/// it. Anything that sizes, secures, or removes a database must cover all
+/// three.
+pub(crate) fn sqlite_related_paths(path: &FsPath) -> impl Iterator<Item = PathBuf> + '_ {
+    ["", "-wal", "-shm"].into_iter().map(move |suffix| {
+        let mut candidate = path.as_os_str().to_os_string();
+        candidate.push(suffix);
+        PathBuf::from(candidate)
+    })
+}
+
 #[cfg(unix)]
 pub(crate) fn secure_database_files(path: &FsPath) {
     use std::os::unix::fs::PermissionsExt;
-    for suffix in ["", "-wal", "-shm"] {
-        let mut candidate = path.as_os_str().to_os_string();
-        candidate.push(suffix);
-        let candidate = PathBuf::from(candidate);
+    for candidate in sqlite_related_paths(path) {
         if candidate.exists() {
             let _ = std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600));
         }
