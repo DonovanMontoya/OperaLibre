@@ -28,7 +28,7 @@ You can add books in either of these ways:
 1. **Copy files into the library folder.** Put them in the folder chosen as `library_root`, then choose **Rescan library** from the administrator controls. Follow [Library Layout](library-layout.md) for the expected folder and filename patterns.
 2. **Upload through the app.** An administrator can choose **Upload audiobook** in the library header, enter the book name, select one audio file (such as an M4B) or every track for a multi-file book, then upload. The app puts it in a new library folder and rescans automatically.
 
-Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Add a cover image and readalong file by copying them into the book’s folder afterward, then rescan.
+Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art comes from the artwork embedded in the audio files' tags; add a readalong file by copying it into the book’s folder afterward, then rescan.
 
 ## Add people and recover access
 
@@ -69,6 +69,12 @@ The repository includes a native Android 7+ app. Building it requires Android St
 
 For a directly installable development build, run `npm run build:android`; the APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. Configure release signing in Android Studio before distributing the app. Private-network HTTP is supported; public servers should use HTTPS.
 
+### Use another audiobook app
+
+The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre filters, and resume position all sync with the reader's OperaLibre progress.
+
+There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
+
 ## Readalong and sentence highlighting
 
 To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Select a book and open the **Readalong** control in the player.
@@ -86,6 +92,10 @@ Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside
 Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. An owner or administrator can then open **Audible → Add account** in the browser or installed app, complete Audible sign-in in the external browser (a secure Safari view on iOS), and add additional server-wide accounts the same way. Give each account a short label such as **Dad** or **UK**; that label appears on its books instead of the Audible email address. The catalog can be filtered or sorted by account, and duplicate titles remain visible in **All accounts**.
 
 Add the Libation CLI path to `server.config`, restart OperaLibre, and use the **Audible** area in the library to manage accounts, refresh purchases, and choose **Download** for a book. `libation_files_dir` is needed only when retaining an existing desktop-managed profile. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+
+## Games
+
+The installed iPhone and Android apps include an optional games tab with small on-device diversions — a daily word puzzle and a match-three board. It is hidden by default; turn it on in **Settings**, and it appears in the bottom navigation. The games run entirely on the device and send nothing to the server.
 
 ## Check for application updates
 

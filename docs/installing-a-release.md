@@ -50,6 +50,8 @@ curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/scri
 | `--no-start` | Install without starting OperaLibre |
 | `--help` | List all options |
 
+The environment variables `OPERALIBRE_DIR`, `OPERALIBRE_LIBRARY`, `OPERALIBRE_VERSION`, `OPERALIBRE_MODE`, `OPERALIBRE_LIBATION_PATH`, and `OPERALIBRE_SERVER_ONLY=1` set the same values as the matching options, which is convenient for scripted installs.
+
 ### Setting up the Audible import during install
 
 If you say yes to the Audible import, the installer handles [Libation](https://github.com/rmcrackan/Libation) for you:
@@ -227,5 +229,3 @@ Custom source deployments and system services still show the available version a
 7. Keep the old folder until you know the update works.
 
 Do not extract an update directly over a running installation. Keeping the old folder makes it easy to go back.
-
-The first release that introduces in-app updating must itself be installed manually. Later combined-package releases can be installed from Administration.
