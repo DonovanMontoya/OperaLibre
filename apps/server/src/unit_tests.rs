@@ -4894,6 +4894,60 @@ async fn an_expired_libation_sign_in_releases_the_job_lock() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn an_expired_libation_sign_in_does_not_block_account_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(super::ManagedLibationAccount {
+                id: "profile-1".to_string(),
+                label: "Family".to_string(),
+                account_id: "reader@example.com".to_string(),
+                locale: "us".to_string(),
+                added_by: "admin".to_string(),
+                added_at: super::now_unix_string(),
+                connection_state: "signing_in".to_string(),
+                authenticated: false,
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let (response_sender, _response_receiver) = std::sync::mpsc::channel::<String>();
+    let (_completion_sender, completion) =
+        tokio::sync::oneshot::channel::<Result<String, String>>();
+    let job_guard = state.libation_job_lock.clone().lock_owned().await;
+    state.libation_login_sessions.lock().await.insert(
+        "expired-session".to_string(),
+        super::PendingLibationLogin {
+            profile_id: "profile-1".to_string(),
+            expires_at: super::unix_now_seconds().saturating_sub(1),
+            response_sender,
+            completion,
+            _job_guard: job_guard,
+        },
+    );
+
+    let response = super::delete_libation_account(
+        super::State(state.clone()),
+        super::OwnerUser,
+        super::Path("profile-1".to_string()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response, super::StatusCode::NO_CONTENT);
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+    assert!(state.libation_accounts.read().await.accounts.is_empty());
+}
+
 #[test]
 fn audible_response_urls_reject_control_characters() {
     assert!(
@@ -4919,16 +4973,17 @@ fn audible_response_urls_reject_control_characters() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn repeated_libation_listings_reuse_one_export() {
+async fn concurrent_libation_listings_reuse_one_export() {
     let root = tempfile::tempdir().unwrap();
     let (state, log_path) = fake_libation_state(root.path());
 
-    for _ in 0..3 {
-        let _ =
-            super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
-                .await
-                .unwrap();
-    }
+    let first =
+        super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()));
+    let second =
+        super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()));
+    let (first, second) = tokio::join!(first, second);
+    let _ = first.unwrap();
+    let _ = second.unwrap();
     let exports = std::fs::read_to_string(&log_path)
         .unwrap()
         .lines()
