@@ -1157,12 +1157,15 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         };
     }
 
-    let prefix = lower.find("chapter ").map(|at| (at, "chapter ".len())).or_else(|| {
-        ["ch. ", "ch "]
-            .iter()
-            .find(|prefix| lower.starts_with(*prefix))
-            .map(|prefix| (0, prefix.len()))
-    });
+    let prefix = lower
+        .find("chapter ")
+        .map(|at| (at, "chapter ".len()))
+        .or_else(|| {
+            ["ch. ", "ch "]
+                .iter()
+                .find(|prefix| lower.starts_with(*prefix))
+                .map(|prefix| (0, prefix.len()))
+        });
     if let Some((found, prefix_len)) = prefix {
         let after = &value[found + prefix_len..];
         if let Some((parsed, consumed)) = parse_number_token(after) {
@@ -1177,10 +1180,7 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         let trimmed = value.trim_start();
         if let Some((parsed, consumed)) = parse_number_token(trimmed) {
             let rest = trimmed[consumed..].trim_start();
-            if let Some(rest) = rest
-                .strip_prefix(LABEL_SEPARATORS)
-                .map(str::trim_start)
-            {
+            if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
                 number = Some(parsed);
                 remainder = rest.to_string();
             }
@@ -1211,17 +1211,15 @@ fn find_series_number(value: &str) -> Option<(String, u32, usize, usize)> {
         }
         let letters = index - letters_start;
         let at_boundary = letters_start == 0 || !bytes[letters_start - 1].is_ascii_alphanumeric();
-        if (1..=3).contains(&letters)
-            && at_boundary
-            && index < bytes.len()
-            && bytes[index] == b'-'
+        if (1..=3).contains(&letters) && at_boundary && index < bytes.len() && bytes[index] == b'-'
         {
             let digits_start = index + 1;
             let mut digits_end = digits_start;
             while digits_end < bytes.len() && bytes[digits_end].is_ascii_digit() {
                 digits_end += 1;
             }
-            let ends_cleanly = digits_end == bytes.len() || !bytes[digits_end].is_ascii_alphanumeric();
+            let ends_cleanly =
+                digits_end == bytes.len() || !bytes[digits_end].is_ascii_alphanumeric();
             if digits_end > digits_start
                 && ends_cleanly
                 && let Some(number) = parse_chapter_number(&value[digits_start..digits_end])
@@ -1662,7 +1660,8 @@ impl ReadingModel {
 /// Gaussian elimination with partial pivoting; `None` for a singular system.
 fn solve_4x4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
     for column in 0..4 {
-        let pivot = (column..4).max_by(|x, y| a[*x][column].abs().total_cmp(&a[*y][column].abs()))?;
+        let pivot =
+            (column..4).max_by(|x, y| a[*x][column].abs().total_cmp(&a[*y][column].abs()))?;
         if a[pivot][column].abs() < 1e-12 {
             return None;
         }
@@ -1899,7 +1898,8 @@ pub fn estimate_sync_map(
                 .sum();
             let mut cursor = start;
             for sentence in slice {
-                let duration = (end - start) * plan.model.seconds(&sentence_features(sentence)) / total;
+                let duration =
+                    (end - start) * plan.model.seconds(&sentence_features(sentence)) / total;
                 fragments.push(SyncFragment {
                     start_seconds: round_millis(cursor),
                     end_seconds: round_millis(cursor + duration),
@@ -2277,7 +2277,10 @@ mod tests {
     /// Publishers and narrators spell chapter numbers every way there is.
     #[test]
     fn parse_label_reads_spelled_out_and_roman_numbers() {
-        assert_eq!(parse_label("Chapter Twelve: The Long Road").number, Some(12));
+        assert_eq!(
+            parse_label("Chapter Twelve: The Long Road").number,
+            Some(12)
+        );
         assert_eq!(parse_label("Chapter twenty-two").number, Some(22));
         assert_eq!(parse_label("Chapter Twenty Two - Owls").number, Some(22));
         assert_eq!(parse_label("Chapter Twenty Two - Owls").key, "owls");
@@ -2311,7 +2314,10 @@ mod tests {
         let chapter_three = parse_label("3. Momentum");
         assert_eq!(chapter_three.series, "");
         assert_eq!(label_match_score(&spoken, &chapter_three), 0);
-        assert_eq!(parse_label("Part 1: United - Chapter 003: Momentum").number, Some(3));
+        assert_eq!(
+            parse_label("Part 1: United - Chapter 003: Momentum").number,
+            Some(3)
+        );
         assert_eq!(parse_label("Track-01").number, None);
     }
 
@@ -2319,10 +2325,16 @@ mod tests {
     /// order of the audio is the order of the book.
     #[test]
     fn labels_align_in_order_across_repeated_titles() {
-        let targets = ["Interlude", "Chapter 2", "Interlude", "Chapter 4", "Interlude"]
-            .iter()
-            .map(|title| parse_label(title))
-            .collect::<Vec<_>>();
+        let targets = [
+            "Interlude",
+            "Chapter 2",
+            "Interlude",
+            "Chapter 4",
+            "Interlude",
+        ]
+        .iter()
+        .map(|title| parse_label(title))
+        .collect::<Vec<_>>();
         let items = [
             "Title Page",
             "Interlude",
@@ -2344,10 +2356,16 @@ mod tests {
     /// contents, but the book still has exactly that many chapters.
     #[test]
     fn unnamed_tracks_fall_back_to_matching_by_position() {
-        let targets = ["Opening Credits", "Track 01", "Track 02", "Track 03", "End Credits"]
-            .iter()
-            .map(|title| parse_label(title))
-            .collect::<Vec<_>>();
+        let targets = [
+            "Opening Credits",
+            "Track 01",
+            "Track 02",
+            "Track 03",
+            "End Credits",
+        ]
+        .iter()
+        .map(|title| parse_label(title))
+        .collect::<Vec<_>>();
         let items = ["Cover", "Copyright", "The Meadow", "The River", "The Sea"]
             .iter()
             .map(|title| parse_label(title))
@@ -2568,7 +2586,9 @@ mod tests {
         // paragraph length, and how much of them is dialogue.
         let mut seed: u64 = 12345;
         let mut next = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) % 1000) as f64 / 1000.0
         };
         let samples = (0..60)
@@ -2584,8 +2604,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let fitted = ReadingModel::fit(&samples);
-        assert!((fitted.char_seconds - truth.char_seconds).abs() < 0.01, "{fitted:?}");
-        assert!((fitted.paragraph_seconds - truth.paragraph_seconds).abs() < 0.6, "{fitted:?}");
+        assert!(
+            (fitted.char_seconds - truth.char_seconds).abs() < 0.01,
+            "{fitted:?}"
+        );
+        assert!(
+            (fitted.paragraph_seconds - truth.paragraph_seconds).abs() < 0.6,
+            "{fitted:?}"
+        );
         assert!(fitted.dialogue_char_seconds < 0.0, "{fitted:?}");
         assert_eq!(ReadingModel::fit(&samples[..3]), ReadingModel::default());
     }

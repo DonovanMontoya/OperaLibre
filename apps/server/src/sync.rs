@@ -10,12 +10,16 @@ pub(crate) async fn get_sync_map(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let (aligned_path, estimate) = {
+    let (book_id, aligned_path, estimate) = {
         let library = state.library.read().await;
         let book = library.book(&book_id)?;
+        let book_id = sync_file_book_id(&book.id)?;
         match library.sync_paths.get(&book_id).cloned() {
-            Some(path) => (Some(path), None),
-            None => (None, estimate_input(&library, book)),
+            Some(path) => (book_id, Some(path), None),
+            None => {
+                let estimate = estimate_input(&library, book);
+                (book_id, None, estimate)
+            }
         }
     };
     let file_path = match (aligned_path, estimate) {
@@ -84,6 +88,21 @@ fn estimate_input(library: &LibraryState, book: &Book) -> Option<EstimateInput> 
 /// The file name carries a fingerprint of the EPUB and the chapter list, so
 /// a stale estimate is simply never found again; older ones for the book are
 /// removed once the new one is written.
+/// The id a book's files under the sync directory are named after: the
+/// library's own copy, never the request path as written, and only ever a
+/// plain token (the scan mints hex ids), so it cannot name anything but the
+/// book's files inside that directory.
+pub(crate) fn sync_file_book_id(id: &str) -> Result<String, ApiError> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(ApiError::internal("The book id cannot name a sync file."));
+    }
+    Ok(id.to_string())
+}
+
 /// Where a book's listener-placed sync anchors live.
 fn manual_anchors_path(state: &AppState, book_id: &str) -> PathBuf {
     state.sync_dir.join(format!("{book_id}.anchors.json"))
@@ -133,14 +152,22 @@ pub(crate) async fn add_sync_anchor(
     Json(request): Json<SyncAnchorRequest>,
 ) -> Result<Json<SyncAnchorSummary>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let text = request.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = request
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if text.is_empty() || request.href.trim().is_empty() || text.len() > 4_000 {
-        return Err(ApiError::bad_request("A sync anchor needs the sentence and its document."));
+        return Err(ApiError::bad_request(
+            "A sync anchor needs the sentence and its document.",
+        ));
     }
     if !request.seconds.is_finite() || request.seconds < 0.0 {
-        return Err(ApiError::bad_request("A sync anchor needs a position in the book."));
+        return Err(ApiError::bad_request(
+            "A sync anchor needs a position in the book.",
+        ));
     }
-    {
+    let book_id = {
         let library = state.library.read().await;
         let book = library.book(&book_id)?;
         if library.sync_paths.contains_key(&book_id) {
@@ -151,7 +178,8 @@ pub(crate) async fn add_sync_anchor(
         if estimate_input(&library, book).is_none() {
             return Err(ApiError::bad_request("This book has no EPUB to sync."));
         }
-    }
+        sync_file_book_id(&book.id)?
+    };
     let path = manual_anchors_path(&state, &book_id);
     let mut anchors = read_manual_anchors(&path).await;
     anchors.retain(|anchor| !(anchor.href == request.href && anchor.text == text));
@@ -164,9 +192,9 @@ pub(crate) async fn add_sync_anchor(
         let excess = anchors.len() - MAX_MANUAL_ANCHORS;
         anchors.drain(..excess);
     }
-    fs::create_dir_all(&state.sync_dir)
-        .await
-        .map_err(|error| ApiError::internal(format!("Could not create the sync directory: {error}")))?;
+    fs::create_dir_all(&state.sync_dir).await.map_err(|error| {
+        ApiError::internal(format!("Could not create the sync directory: {error}"))
+    })?;
     let anchor_count = anchors.len();
     write_json_atomic(&path, &ManualAnchorStore { anchors }).await?;
     remove_estimates(&state, &book_id).await;
@@ -180,15 +208,17 @@ pub(crate) async fn clear_sync_anchors(
     _: AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<SyncAnchorSummary>, ApiError> {
-    {
+    let book_id = {
         let library = state.library.read().await;
-        library.book(&book_id)?;
-    }
+        sync_file_book_id(&library.book(&book_id)?.id)?
+    };
     let path = manual_anchors_path(&state, &book_id);
     if let Err(error) = fs::remove_file(&path).await
         && error.kind() != io::ErrorKind::NotFound
     {
-        return Err(ApiError::internal(format!("Could not clear the sync anchors: {error}")));
+        return Err(ApiError::internal(format!(
+            "Could not clear the sync anchors: {error}"
+        )));
     }
     remove_estimates(&state, &book_id).await;
     Ok(Json(SyncAnchorSummary { anchor_count: 0 }))
@@ -227,7 +257,12 @@ async fn ensure_estimated_sync_map(
     let chapter_key = input
         .chapters
         .iter()
-        .map(|chapter| format!("{}@{:.3}-{:.3}", chapter.title, chapter.start_seconds, chapter.end_seconds))
+        .map(|chapter| {
+            format!(
+                "{}@{:.3}-{:.3}",
+                chapter.title, chapter.start_seconds, chapter.end_seconds
+            )
+        })
         .collect::<Vec<_>>()
         .join("|");
     let anchor_key = serde_json::to_string(manual_anchors).unwrap_or_default();
@@ -255,15 +290,20 @@ async fn ensure_estimated_sync_map(
     let map = tokio::task::spawn_blocking(move || {
         let epub = alignment::parse_epub(&epub_bytes)
             .map_err(|error| format!("The EPUB could not be parsed: {error}"))?;
-        alignment::estimate_sync_map(&epub, &input.chapters, input.book_duration_seconds, &anchors)
+        alignment::estimate_sync_map(
+            &epub,
+            &input.chapters,
+            input.book_duration_seconds,
+            &anchors,
+        )
     })
     .await
     .map_err(|error| ApiError::internal(format!("Sync estimate failed: {error}")))?
     .map_err(|message| ApiError::not_found(format!("No sync map could be estimated: {message}")))?;
 
-    fs::create_dir_all(&state.sync_dir)
-        .await
-        .map_err(|error| ApiError::internal(format!("Could not create the sync directory: {error}")))?;
+    fs::create_dir_all(&state.sync_dir).await.map_err(|error| {
+        ApiError::internal(format!("Could not create the sync directory: {error}"))
+    })?;
     write_sync_map(&path, &map).await?;
 
     // Sweep estimates for this book that carried an older fingerprint.

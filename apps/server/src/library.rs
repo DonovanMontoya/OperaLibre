@@ -60,7 +60,6 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 
-
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
 /// Marks a sync map the server interpolated rather than aligned:
 /// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
@@ -2201,7 +2200,6 @@ pub(crate) fn has_sync_sidecar_suffix(name: &str) -> bool {
         && name.is_char_boundary(name.len() - SYNC_SIDECAR_SUFFIX.len())
         && name[name.len() - SYNC_SIDECAR_SUFFIX.len()..].eq_ignore_ascii_case(SYNC_SIDECAR_SUFFIX)
 }
-
 
 pub(crate) fn is_supported_audio_file(path: &FsPath) -> bool {
     path.extension()

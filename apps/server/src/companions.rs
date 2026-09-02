@@ -212,9 +212,7 @@ pub(crate) fn analyze_document(path: &FsPath) -> DocumentAnalysis {
         "epub" => analyze_epub(&bytes),
         "pdf" => analyze_pdf(&bytes),
         "html" | "htm" => DocumentAnalysis {
-            text_characters: count_text(&alignment::html_to_text(&String::from_utf8_lossy(
-                &bytes,
-            ))),
+            text_characters: count_text(&alignment::html_to_text(&String::from_utf8_lossy(&bytes))),
             image_count: count_html_images(&String::from_utf8_lossy(&bytes)),
             page_count: None,
             unreadable: false,
@@ -457,7 +455,9 @@ pub(crate) fn describe(
 /// The companion that read-along follows: the first book-kind document,
 /// preferring the format that can be synced. Falls back to an unreadable
 /// document rather than a picture supplement.
-pub(crate) fn primary_reading_file<'a>(companions: &'a [CompanionFile]) -> Option<&'a CompanionFile> {
+pub(crate) fn primary_reading_file<'a>(
+    companions: &'a [CompanionFile],
+) -> Option<&'a CompanionFile> {
     const PREFERENCE: &[&str] = &["epub", "html", "htm", "txt", "pdf"];
     let mut books = companions
         .iter()
@@ -583,7 +583,10 @@ mod tests {
             classify(&analysis(480_000, 0), "pdf", ten_hours),
             CompanionKind::Book
         );
-        assert_eq!(classify(&analysis(25_000, 0), "txt", None), CompanionKind::Book);
+        assert_eq!(
+            classify(&analysis(25_000, 0), "txt", None),
+            CompanionKind::Book
+        );
     }
 
     /// A picture book narrated in four minutes carries little text, and that
@@ -608,7 +611,10 @@ mod tests {
             unreadable: true,
             ..Default::default()
         };
-        assert_eq!(classify(&unreadable, "pdf", Some(3600.0)), CompanionKind::Book);
+        assert_eq!(
+            classify(&unreadable, "pdf", Some(3600.0)),
+            CompanionKind::Book
+        );
     }
 
     #[test]
@@ -641,7 +647,10 @@ mod tests {
             make("epub", CompanionKind::Book),
         ];
         assert_eq!(primary_reading_file(&companions).unwrap().extension, "epub");
-        let only_extras = vec![make("pdf", CompanionKind::Supplement), make("jpg", CompanionKind::Image)];
+        let only_extras = vec![
+            make("pdf", CompanionKind::Supplement),
+            make("jpg", CompanionKind::Image),
+        ];
         assert!(primary_reading_file(&only_extras).is_none());
     }
 
@@ -660,5 +669,4 @@ mod tests {
         assert_eq!(analysis.image_count, 0);
         assert!(analysis.text_characters > 60, "{analysis:?}");
     }
-
 }
