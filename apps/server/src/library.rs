@@ -60,9 +60,13 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 
-pub(crate) const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
 
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
+/// Marks a sync map the server interpolated rather than aligned:
+/// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
+/// fingerprint covers the EPUB and the chapter list, so a changed companion
+/// or re-chaptered audio produces a fresh estimate.
+pub(crate) const ESTIMATED_SYNC_INFIX: &str = ".estimate";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -92,7 +96,12 @@ pub(crate) struct LibraryState {
     /// for a grouped book. Used by the admin-only local-copy deletion route.
     pub(crate) book_paths: HashMap<String, PathBuf>,
     pub(crate) track_paths: HashMap<String, PathBuf>,
+    /// Companion file paths keyed by companion id (the primary reading file
+    /// shares its companion's id).
     pub(crate) reading_paths: HashMap<String, PathBuf>,
+    /// What each companion document held the last time it was opened, so a
+    /// rescan re-reads only documents that changed.
+    pub(crate) companion_analyses: AnalysisCache,
     /// Sync map file paths keyed by book id.
     pub(crate) sync_paths: HashMap<String, PathBuf>,
     /// Cover art, extracted to disk during the scan. Holding every embedded
@@ -317,7 +326,12 @@ pub(crate) struct Book {
     pub(crate) genres: Vec<String>,
     pub(crate) published_date: Option<String>,
     pub(crate) asin: Option<String>,
+    /// The companion read-along follows: the primary book-kind document
+    /// among `companions`, if any.
     pub(crate) reading_file: Option<ReadingFile>,
+    /// Every document and picture found beside the audio, each classified as
+    /// the book's text, a picture supplement, or a loose image.
+    pub(crate) companions: Vec<CompanionFile>,
     pub(crate) sync_file: Option<SyncFile>,
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) metadata: MetadataSummary,
@@ -349,7 +363,9 @@ pub(crate) struct ReadingFile {
 pub(crate) struct SyncFile {
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
-    /// by the alignment job into the server's data directory.
+    /// by the alignment job into the server's data directory, `estimated`
+    /// when the server interpolates one from the EPUB and the chapter list
+    /// on request.
     pub(crate) source: String,
     pub(crate) url: String,
 }
@@ -1657,6 +1673,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut sync_paths = HashMap::new();
     let mut extracted_covers: Vec<(String, EmbeddedImage)> = Vec::new();
     let mut books = Vec::new();
+    let mut pending_companions: Vec<(usize, Vec<PathBuf>)> = Vec::new();
 
     // Stage one: describe every scanned book. Resolution needs to see the whole
     // scan before it decides anything, so nothing is matched inside this loop.
@@ -1789,10 +1806,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
         }
-        let reading_file = find_reading_file(&book_id, &group_key, &grouped_files, &title);
-        if let Some(reading_file) = reading_file.as_ref() {
-            reading_paths.insert(reading_file.file.id.clone(), reading_file.path.clone());
-        }
+        let companion_candidates = discover_candidates(&group_key, &grouped_files, &title);
         let sync_file = find_sync_file(
             &book_id,
             &group_key,
@@ -1816,7 +1830,8 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             genres: metadata_summary.genres.clone(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
-            reading_file: reading_file.map(|reading_file| reading_file.file),
+            reading_file: None,
+            companions: Vec::new(),
             sync_file: sync_file.map(|sync_file| sync_file.file),
             chapters: book_chapters,
             metadata: metadata_summary,
@@ -1828,7 +1843,57 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
         }
+        pending_companions.push((books.len(), companion_candidates));
         books.push(book);
+    }
+
+    // Companion documents are opened to tell the book's text from a picture
+    // supplement. That reads every EPUB and PDF beside the audio, so it runs
+    // once over the whole scan on the blocking pool, with the previous scan's
+    // answers as a cache so an unchanged file is never opened twice.
+    let previous_analyses = state.library.read().await.companion_analyses.clone();
+    let candidate_paths = pending_companions
+        .iter()
+        .flat_map(|(_, paths)| paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let companion_analyses =
+        tokio::task::spawn_blocking(move || analyze_all(&candidate_paths, &previous_analyses))
+            .await?;
+    for (book_index, candidates) in pending_companions {
+        let book = &mut books[book_index];
+        let described = describe(
+            &book.id,
+            &candidates,
+            &companion_analyses,
+            book.duration_seconds,
+        );
+        for (companion, path) in &described {
+            reading_paths.insert(companion.id.clone(), path.clone());
+        }
+        book.companions = described
+            .into_iter()
+            .map(|(companion, _)| companion)
+            .collect();
+        book.reading_file = primary_reading_file(&book.companions).map(|companion| ReadingFile {
+            id: companion.id.clone(),
+            file_name: companion.file_name.clone(),
+            extension: companion.extension.clone(),
+            content_type: companion.content_type.clone(),
+            url: format!("/api/books/{}/readalong", book.id),
+        });
+        // An EPUB can always be followed approximately: the sync route
+        // estimates a map from the chapter list when nothing better exists.
+        let has_epub_text = book
+            .reading_file
+            .as_ref()
+            .is_some_and(|reading_file| reading_file.extension == "epub");
+        if book.sync_file.is_none() && has_epub_text {
+            book.sync_file = Some(SyncFile {
+                file_name: format!("{}{ESTIMATED_SYNC_INFIX}{SYNC_SIDECAR_SUFFIX}", book.id),
+                source: "estimated".to_string(),
+                url: format!("/api/books/{}/sync", book.id),
+            });
+        }
     }
 
     // Reaching here means the scan was trustworthy: a suspect one returned
@@ -1875,6 +1940,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         library.book_paths = book_paths;
         library.track_paths = track_paths;
         library.reading_paths = reading_paths;
+        library.companion_analyses = companion_analyses;
         library.sync_paths = sync_paths;
         library.cover_art = cover_art;
     }
@@ -2005,14 +2071,14 @@ pub(crate) struct DiscoveredSyncFile {
     pub(crate) path: PathBuf,
 }
 
-/// Picks the companion file beside a book that best matches it.
+/// Picks the sidecar file beside a book that best matches it.
 ///
-/// Readalong documents and sync-map sidecars are matched the same way: files
-/// in the book's own directory (depth one, natural order) are matched by
-/// normalized stem against the folder name, the book title, and every audio
-/// file's stem. A folder book falls back to its first candidate even without
-/// a name match — a folder holds one book, so an unmatched name there is
-/// still unambiguous.
+/// Files in the book's own directory (depth one, natural order) are matched
+/// by normalized stem against the folder name, the book title, and every
+/// audio file's stem. A folder book falls back to its first candidate even
+/// without a name match — a folder holds one book, so an unmatched name there
+/// is still unambiguous. Reading companions are discovered separately (see
+/// `companions`), since a folder may legitimately hold several of them.
 fn find_companion_file(
     group_key: &FsPath,
     grouped_files: &[PathBuf],
@@ -2136,67 +2202,6 @@ pub(crate) fn has_sync_sidecar_suffix(name: &str) -> bool {
         && name[name.len() - SYNC_SIDECAR_SUFFIX.len()..].eq_ignore_ascii_case(SYNC_SIDECAR_SUFFIX)
 }
 
-pub(crate) struct DiscoveredReadingFile {
-    pub(crate) file: ReadingFile,
-    pub(crate) path: PathBuf,
-}
-
-/// Finds the readalong document for a book among the files beside it.
-pub(crate) fn find_reading_file(
-    book_id: &str,
-    group_key: &FsPath,
-    grouped_files: &[PathBuf],
-    book_title: &str,
-) -> Option<DiscoveredReadingFile> {
-    let selected = find_companion_file(
-        group_key,
-        grouped_files,
-        book_title,
-        is_supported_reading_file,
-        |path| {
-            path.file_stem()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        },
-    )?;
-
-    let extension = selected
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let file_name = selected
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("readalong")
-        .to_string();
-    let id = stable_id(&selected.to_string_lossy());
-    let content_type = mime_guess::from_path(&selected)
-        .first_or_octet_stream()
-        .to_string();
-
-    Some(DiscoveredReadingFile {
-        path: selected,
-        file: ReadingFile {
-            id,
-            file_name,
-            extension,
-            content_type,
-            url: format!("/api/books/{book_id}/readalong"),
-        },
-    })
-}
-
-pub(crate) fn is_supported_reading_file(path: &FsPath) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            READING_EXTENSIONS
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-        })
-        .unwrap_or(false)
-}
 
 pub(crate) fn is_supported_audio_file(path: &FsPath) -> bool {
     path.extension()

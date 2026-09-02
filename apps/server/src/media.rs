@@ -78,7 +78,39 @@ pub(crate) async fn get_reading_file(
             .cloned()
             .ok_or(ApiError::not_found("Readalong path not found"))?
     };
+    serve_companion_document(&state, &file_path, headers).await
+}
 
+/// Any companion beside the book — the text, a picture supplement, or a
+/// loose image — by the id the book response gave it.
+pub(crate) async fn get_companion_file(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path((book_id, companion_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let file_path = {
+        let library = state.library.read().await;
+        let book = library.book(&book_id)?;
+        book.companions
+            .iter()
+            .find(|companion| companion.id == companion_id)
+            .ok_or(ApiError::not_found("Companion file not found"))?;
+        library
+            .reading_paths
+            .get(&companion_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Companion path not found"))?
+    };
+    serve_companion_document(&state, &file_path, headers).await
+}
+
+async fn serve_companion_document(
+    state: &AppState,
+    file_path: &FsPath,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let isolate_html = file_path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -86,7 +118,7 @@ pub(crate) async fn get_reading_file(
             extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
         });
     let mut response =
-        serve_file_response(&file_path, &[&state.library_root], headers, None).await?;
+        serve_file_response(file_path, &[&state.library_root], headers, None).await?;
     // Companion files come from the audiobook library, not the application
     // bundle, so no readalong type may be re-interpreted as active content —
     // a .txt sniffed as HTML is exactly what this prevents.

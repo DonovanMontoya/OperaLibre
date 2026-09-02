@@ -305,6 +305,25 @@ impl TestServer {
         .await
     }
 
+    /// Drops companion files into the first book's folder and rescans.
+    async fn add_companions_to_first_book(&self, token: &str, files: &[(&str, Vec<u8>)]) {
+        let folder = self.library_root.join("Book 00");
+        for (name, bytes) in files {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        let response = self
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/rescan")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    }
+
     /// The first book and its first track, as the API reports them.
     async fn first_book_and_track(&self, token: &str) -> (String, String) {
         let books = self.get("/api/books", token).await;
@@ -2335,4 +2354,161 @@ async fn the_compatibility_layer_requires_a_session() {
             .await;
         assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{uri}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Companions and read-along sync
+// ---------------------------------------------------------------------------
+
+/// An Audible download often lands a picture PDF beside the audio. The book
+/// response must call the EPUB the book and the PDF a supplement, serve both,
+/// and offer an estimated sync map for the EPUB without any aligner.
+#[tokio::test]
+async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_map() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let long_text = "<h1>Chapter 1</h1>".to_string()
+        + &"<p>The meadow was quiet in the early morning light, and the bees drifted between the flowers.</p>".repeat(60);
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[
+                (
+                    "Book 00.epub",
+                    alignment::build_test_epub_with_text(
+                        &long_text,
+                        "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                    ),
+                ),
+                (
+                    "Book 00 - Maps.pdf",
+                    companions::build_test_pdf(&[companions::PdfPage::Image; 4]),
+                ),
+                ("map-of-the-north.png", vec![0x89, b'P', b'N', b'G']),
+                ("cover.jpg", vec![0xff, 0xd8]),
+            ],
+        )
+        .await;
+
+    let books = server.get("/api/books", &token).await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    let books = books.json();
+    let book = books
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|book| book["title"] == "Book 00")
+        .expect("the fixture book");
+    let book_id = book["id"].as_str().unwrap();
+
+    let companions = book["companions"].as_array().unwrap();
+    let kinds = companions
+        .iter()
+        .map(|companion| {
+            (
+                companion["fileName"].as_str().unwrap().to_string(),
+                companion["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            ("Book 00 - Maps.pdf".to_string(), "supplement".to_string()),
+            ("Book 00.epub".to_string(), "book".to_string()),
+            ("map-of-the-north.png".to_string(), "image".to_string()),
+        ],
+        "cover art is not a companion, and the PDF of pictures is not the book"
+    );
+    let pdf = &companions[0];
+    assert_eq!(pdf["pageCount"], 4);
+    assert_eq!(pdf["imageCount"], 4);
+    assert_eq!(pdf["textCharacters"], 0);
+    assert_eq!(book["readingFile"]["extension"], "epub");
+    assert_eq!(book["syncFile"]["source"], "estimated");
+
+    let pdf_id = pdf["id"].as_str().unwrap();
+    let response = server
+        .get(&format!("/api/books/{book_id}/companions/{pdf_id}"), &token)
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.header(header::CONTENT_TYPE), "application/pdf");
+    assert_eq!(response.header(header::HeaderName::from_static("x-content-type-options")), "nosniff");
+    let missing = server
+        .get(&format!("/api/books/{book_id}/companions/nope"), &token)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    let readalong = server.get(&format!("/api/books/{book_id}/readalong"), &token).await;
+    assert_eq!(readalong.status, StatusCode::OK);
+    assert_eq!(readalong.header(header::CONTENT_TYPE), "application/epub+zip");
+
+    let sync = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    assert_eq!(sync.status, StatusCode::OK, "{}", sync.text());
+    let map = sync.json();
+    assert_eq!(map["precision"], "estimated");
+    assert_eq!(map["version"], alignment::SYNC_MAP_VERSION);
+    let fragments = map["fragments"].as_array().unwrap();
+    assert!(fragments.len() > 60, "one fragment per sentence: {}", fragments.len());
+    assert_eq!(fragments[0]["text"], "Chapter 1");
+    assert_eq!(fragments[0]["href"], "text/ch1.xhtml");
+    let last = fragments.last().unwrap();
+    assert!(last["endSeconds"].as_f64().unwrap() > 0.0);
+
+    // The estimate is kept, and a second request serves the same file.
+    let again = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body, sync.body);
+
+    // A long book's map runs to megabytes of sentence text; a client that
+    // accepts gzip gets it compressed, and only on this route.
+    let compressed = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book_id}/sync"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(compressed.status, StatusCode::OK);
+    assert_eq!(compressed.header(header::CONTENT_ENCODING), "gzip");
+    assert!(compressed.body.len() < sync.body.len() / 2, "{} vs {}", compressed.body.len(), sync.body.len());
+    let readalong_compressed = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book_id}/readalong"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(readalong_compressed.status, StatusCode::OK);
+    assert_eq!(readalong_compressed.header(header::CONTENT_ENCODING), "");
+}
+
+/// A book whose only companion is a picture PDF has nothing to read along
+/// with: no reading file, no sync map, but the supplement is still listed.
+#[tokio::test]
+async fn a_supplement_alone_is_not_offered_as_the_book() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[(
+                "Book 00.pdf",
+                companions::build_test_pdf(&[companions::PdfPage::Image; 3]),
+            )],
+        )
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+    let book = server.get(&format!("/api/books/{book_id}"), &token).await.json();
+    assert!(book["readingFile"].is_null(), "{book}");
+    assert!(book["syncFile"].is_null(), "{book}");
+    assert_eq!(book["companions"][0]["kind"], "supplement");
+    let sync = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    assert_eq!(sync.status, StatusCode::NOT_FOUND);
 }
