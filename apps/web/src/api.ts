@@ -483,6 +483,21 @@ export function isNetworkError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 502 || error.status === 503 || error.status === 504);
 }
 
+// The server is up but has not published its catalogue yet: it answers
+// listings with 503 and a `Retry-After` while the startup scan runs. Check
+// this before `isNetworkError`, which counts every 503 as unreachable; a
+// proxy's own 503 carries no `Retry-After`, so it still reads as offline.
+export function isServerNotReadyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 503 && error.retryAfterSeconds !== undefined;
+}
+
+function retryAfterSeconds(response: Response): number | undefined {
+  const value = response.headers.get("Retry-After");
+  if (value === null) return undefined;
+  const seconds = Number(value.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
 type RequestOptions = RequestInit & {
   // Leave the session alone on a 401: the request checks a password the user
   // typed, so a wrong one is an answer to show, not a sign the session ended.
@@ -526,7 +541,7 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
     } catch {
       // ignore
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, retryAfterSeconds(response));
   }
 
   if (response.status === 204) {

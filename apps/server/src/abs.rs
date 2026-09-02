@@ -923,6 +923,10 @@ pub(crate) const ABS_INTENTIONAL_REWIND_MAX_SECONDS: f64 = 1800.0;
 /// a stale one is a replay whatever distance it covers — and only one that
 /// lands past the near-zero band, so a client that failed to restore and
 /// reports the start of the book still meets the suspect-reset rule.
+///
+/// A client that sends no `lastUpdate` cannot be told fresh from stale and
+/// is taken at its word: the half-hour ceiling bounds what a replayed
+/// checkpoint from such a client can undo of progress made elsewhere.
 pub(crate) fn abs_write_is_intentional_rewind(
     previous: Option<&Progress>,
     book_position: f64,

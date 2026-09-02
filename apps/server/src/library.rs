@@ -1654,13 +1654,13 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     // The previously published library stays up instead.
     //
     // At startup there is no previously published library, so a suspect first
-    // scan leaves the catalogue empty until something triggers another one — a
-    // restart, an upload, a download, a faststart job, or the administrative
-    // rescan endpoint. Recovery is on the next scan, not on the drive
-    // reappearing. That is the intended trade: an empty library is visibly
-    // wrong and one rescan away from correct, whereas a library rebuilt from a
-    // half-mounted directory looks right and quietly detaches everything it
-    // could not see.
+    // scan leaves the catalogue unpublished until another scan lands — the
+    // startup task retries on a backoff, and an upload, a download, a
+    // faststart job, or the administrative rescan endpoint runs one sooner.
+    // Recovery is on the next scan, not on the drive reappearing. That is the
+    // intended trade: an unpublished library is visibly wrong and one rescan
+    // away from correct, whereas a library rebuilt from a half-mounted
+    // directory looks right and quietly detaches everything it could not see.
     let scanned_aliases = groups
         .iter()
         .map(|(group_key, _)| library_identity_path(&state.library_root, group_key))
@@ -3071,58 +3071,73 @@ impl CoverSource for ScannedCover {
     }
 }
 
-fn write_covers<T: CoverSource>(
+fn write_covers<T: CoverSource + Send>(
     covers_dir: &FsPath,
     extracted: Vec<(String, T)>,
 ) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
+    use rayon::prelude::*;
+
     create_private_directory(covers_dir)?;
+
+    // Every book's cover is its own file, so the misses — each a read-back of
+    // the track plus a write — run across the pool like the scan pass that
+    // found them, instead of one after another on this thread. On a first
+    // scan every cover is a miss.
+    let written = extracted
+        .into_par_iter()
+        .map(|(book_id, input)| -> anyhow::Result<Option<(String, String, CachedCover)>> {
+            let file_name = format!("{}.cover", sanitize_filename(&book_id));
+            let path = covers_dir.join(&file_name);
+
+            let unchanged = std::fs::metadata(&path)
+                .ok()
+                .is_some_and(|metadata| metadata.len() == input.len())
+                && std::fs::read(&path)
+                    .ok()
+                    .is_some_and(|existing| bytes_etag(&existing) == input.etag());
+            let (mime_type, etag, len) = if unchanged {
+                (
+                    input.mime_type().to_string(),
+                    input.etag().to_string(),
+                    input.len(),
+                )
+            } else {
+                let Some(image) = input.into_image() else {
+                    // The picture the scan saw is gone from the track. The
+                    // route answers 404 until the next scan, which stops
+                    // advertising it.
+                    tracing::warn!(book_id = %book_id, "cover art disappeared before it could be cached");
+                    return Ok(None);
+                };
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since_epoch| since_epoch.as_nanos())
+                    .unwrap_or(0);
+                let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
+                std::fs::write(&temp_path, &image.data)?;
+                replace_file_blocking(&temp_path, &path).map_err(|error| {
+                    anyhow::anyhow!("could not publish cover {file_name}: {error}")
+                })?;
+                (image.mime_type, image.etag, image.data.len() as u64)
+            };
+            Ok(Some((
+                book_id,
+                file_name,
+                CachedCover {
+                    mime_type,
+                    etag,
+                    len,
+                    path,
+                },
+            )))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
     let mut cached = HashMap::new();
     let mut keep = HashSet::new();
-
-    for (book_id, input) in extracted {
-        let file_name = format!("{}.cover", sanitize_filename(&book_id));
-        let path = covers_dir.join(&file_name);
-
-        let unchanged = std::fs::metadata(&path)
-            .ok()
-            .is_some_and(|metadata| metadata.len() == input.len())
-            && std::fs::read(&path)
-                .ok()
-                .is_some_and(|existing| bytes_etag(&existing) == input.etag());
-        let (mime_type, etag, len) = if unchanged {
-            (
-                input.mime_type().to_string(),
-                input.etag().to_string(),
-                input.len(),
-            )
-        } else {
-            let Some(image) = input.into_image() else {
-                // The picture the scan saw is gone from the track. The route
-                // answers 404 until the next scan, which stops advertising it.
-                tracing::warn!(book_id = %book_id, "cover art disappeared before it could be cached");
-                continue;
-            };
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since_epoch| since_epoch.as_nanos())
-                .unwrap_or(0);
-            let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
-            std::fs::write(&temp_path, &image.data)?;
-            replace_file_blocking(&temp_path, &path)
-                .map_err(|error| anyhow::anyhow!("could not publish cover {file_name}: {error}"))?;
-            (image.mime_type, image.etag, image.data.len() as u64)
-        };
+    for (book_id, file_name, cover) in written.into_iter().flatten() {
         keep.insert(file_name);
-
-        cached.insert(
-            book_id,
-            CachedCover {
-                mime_type,
-                etag,
-                len,
-                path,
-            },
-        );
+        cached.insert(book_id, cover);
     }
 
     // Covers for books that have left the library.

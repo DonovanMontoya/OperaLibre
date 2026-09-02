@@ -3,18 +3,8 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { markNativePlatform, syncStatusBarStyle } from "./native";
 import { applyStoredRotationLock } from "./rotationLock";
-import { applyStoredAppearance, readAppearanceMode, watchSystemAppearance } from "./appearance";
+import { applyStoredAppearance, readStoredAppearanceMode, watchSystemAppearance } from "./appearance";
 import "./styles.css";
-
-// Merely touching window.localStorage throws when site data is blocked; the
-// status bar just keeps the system appearance then.
-function readStoredAppearanceMode() {
-  try {
-    return readAppearanceMode(window.localStorage);
-  } catch {
-    return "system" as const;
-  }
-}
 
 markNativePlatform();
 applyStoredAppearance();

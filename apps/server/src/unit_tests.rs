@@ -5697,27 +5697,6 @@ fn account_lockouts_are_keyed_by_address_and_name() {
 }
 
 #[test]
-fn lan_mode_ignores_forwarded_addresses() {
-    let mut headers = super::HeaderMap::new();
-    headers.insert("x-forwarded-for", "203.0.113.8".parse().unwrap());
-    let loopback: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
-    let forwarded: std::net::IpAddr = "203.0.113.8".parse().unwrap();
-
-    assert_eq!(
-        super::client_ip_for_mode(super::DeploymentMode::Lan, loopback, &headers),
-        loopback.ip()
-    );
-    assert_eq!(
-        super::client_ip_for_mode(super::DeploymentMode::Proxy, loopback, &headers),
-        forwarded
-    );
-    assert_eq!(
-        super::client_ip_for_mode(super::DeploymentMode::Local, loopback, &headers),
-        forwarded
-    );
-}
-
-#[test]
 fn head_requests_may_carry_a_query_token_on_media_routes() {
     use super::Method;
 

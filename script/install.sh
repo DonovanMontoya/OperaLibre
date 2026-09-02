@@ -360,11 +360,18 @@ fi
 
 WORK_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t operalibre)
 STAGE_DIR=""
+BACKUP_DIR=""
 cleanup() {
   rm -rf "$WORK_DIR"
   [ -z "$STAGE_DIR" ] || rm -rf "$STAGE_DIR"
+  # Only ever empty by now: a swap that parked files in it either finished
+  # and removed it, or put them back before failing. Never delete contents.
+  [ -z "$BACKUP_DIR" ] || rmdir "$BACKUP_DIR" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# A signal ends the run through the EXIT trap. Running cleanup from the
+# signal trap alone would resume the script with its work folders gone.
+trap 'exit 130' INT TERM
 
 say ""
 say "Downloading ${ARCHIVE}..."
@@ -563,6 +570,9 @@ if [ "$UPGRADE" -eq 1 ]; then
     [ -e "${INSTALL_DIR}/${1}" ] || return 0
     mv "${INSTALL_DIR}/${1}" "${BACKUP_DIR}/${1}" || restore_previous "$1"
   }
+  # The renames take moments. A signal in the middle would end the run with
+  # the old files parked beside half of the new ones, so it waits for them.
+  trap '' INT TERM
   # The new package may not ship these, so they cannot wait for a staged
   # entry of the same name to replace them.
   move_aside web
@@ -576,8 +586,10 @@ if [ "$UPGRADE" -eq 1 ]; then
     printf '%s\n' "$name" >>"$MOVED_IN_LIST"
   done
   rm -rf "$BACKUP_DIR"
+  BACKUP_DIR=""
   rmdir "$STAGE_DIR" 2>/dev/null || true
   STAGE_DIR=""
+  trap 'exit 130' INT TERM
 else
   say "Installing OperaLibre ${VERSION} into ${INSTALL_DIR}..."
   mkdir -p "$INSTALL_DIR"

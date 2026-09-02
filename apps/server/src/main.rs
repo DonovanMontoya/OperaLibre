@@ -187,8 +187,8 @@ async fn main() -> anyhow::Result<()> {
     // takes minutes, and a listener that only appears afterwards looks to the
     // launcher, a health check, and the operator like a server that failed to
     // start. The catalogue is empty and `/api/health` reports `scanning`
-    // until the scan lands, and a scan that fails is logged, not fatal — the
-    // next rescan, from any trigger, is the recovery.
+    // until the scan lands. A scan that fails is logged, not fatal: the task
+    // retries it on a backoff, and any other trigger's rescan counts too.
     start_startup_scan(state.clone()).await;
     schedule_automatic_libation_refresh(state.clone());
     schedule_reading_session_sweeper(state.clone());
@@ -239,8 +239,20 @@ fn sweep_leftover_transfers(config: &ServerConfig) {
     }
 }
 
+/// How long the startup scan waits before its first retry, doubling each
+/// time up to the ceiling. A library on a drive that mounts after boot, or a
+/// scan withheld as suspect, publishes on the retry that finds it whole.
+const STARTUP_SCAN_RETRY_INITIAL: Duration = Duration::from_secs(15);
+const STARTUP_SCAN_RETRY_CEILING: Duration = Duration::from_secs(10 * 60);
+
 /// Startup step: run the first library scan alongside the listener rather
 /// than in front of it.
+///
+/// A scan that fails or is withheld is reported (`/api/health` says
+/// `catalogueError`, listings answer 503) and retried on a backoff until one
+/// publishes. Before the listener came up ahead of the scan, a failed first
+/// scan exited the process and the service manager's restart policy retried
+/// it; a process that stays up to serve has to retry for itself.
 async fn start_startup_scan(state: AppState) {
     // Flagged before the task is spawned, so a health check racing the
     // scheduler never sees an empty catalogue reported as final.
@@ -250,18 +262,48 @@ async fn start_startup_scan(state: AppState) {
         library.catalogue_error = false;
     }
     tokio::spawn(async move {
-        match rescan_library(&state).await {
-            Ok(()) => {
-                let library = state.library.read().await;
-                tracing::info!(books = library.books.len(), "initial library scan complete");
+        let mut shutdown = state.shutdown.subscribe();
+        let mut delay = STARTUP_SCAN_RETRY_INITIAL;
+        loop {
+            match rescan_library(&state).await {
+                Ok(()) => {
+                    let library = state.library.read().await;
+                    if library.catalogue_ready {
+                        tracing::info!(
+                            books = library.books.len(),
+                            "initial library scan complete"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "initial library scan was withheld as suspect; retrying in {}s",
+                            delay.as_secs()
+                        );
+                    }
+                }
+                Err(error) => tracing::error!(
+                    "initial library scan failed; retrying in {}s: {error:#}",
+                    delay.as_secs()
+                ),
             }
-            Err(error) => tracing::error!(
-                "initial library scan failed; the library stays empty until the next rescan: {error:#}"
-            ),
+            {
+                let mut library = state.library.write().await;
+                library.startup_scan_pending = false;
+                library.catalogue_error = !library.catalogue_ready;
+                if library.catalogue_ready {
+                    return;
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = shutdown.recv() => return,
+            }
+            // Another trigger (an upload, a job, the rescan route) may have
+            // published in the meantime.
+            if state.library.read().await.catalogue_ready {
+                return;
+            }
+            delay = (delay * 2).min(STARTUP_SCAN_RETRY_CEILING);
         }
-        let mut library = state.library.write().await;
-        library.startup_scan_pending = false;
-        library.catalogue_error = !library.catalogue_ready;
     });
 }
 

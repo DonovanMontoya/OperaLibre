@@ -36,14 +36,16 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 # Only the state and library folders are writable; the binary, config, and
-# web bundle stay read-only to the service. Both folders must exist before
-# the first start. Add download_temp_dir here if server.config moves it
-# outside the data folder.
-ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks
+# web bundle stay read-only to the service. The data and audiobooks folders
+# must exist before the first start. `library` is the server's default
+# library_root when server.config leaves it unset (the leading `-` skips it
+# when absent); uploads, Libation downloads, and remuxes write there. Add
+# download_temp_dir here if server.config moves it outside the data folder.
+ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks -/srv/OperaLibre/library
 # The read-only install folder disables the in-app updater (Update server
 # and Update frontend on the Administration page). To allow in-app updates,
 # also grant the install folder, at the cost of that protection:
-#ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks /srv/OperaLibre
+#ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks -/srv/OperaLibre/library /srv/OperaLibre
 TasksMax=256
 LimitNOFILE=65536
 

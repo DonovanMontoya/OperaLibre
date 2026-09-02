@@ -486,26 +486,16 @@ pub(crate) fn expired_session_cookie(secure: bool) -> String {
     format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0{secure_attribute}; HttpOnly; SameSite=Lax")
 }
 
-/// The address a request came from, as the deployment mode understands it.
+/// The address a request came from, in every deployment mode.
 ///
-/// In proxy mode the listener only ever hears from the reverse proxy on the
-/// same machine, so the address it forwarded is the client. A LAN listener
-/// talks to clients directly and has no proxy to trust, so a forwarded header
-/// there is whatever the client chose to send and is ignored. A local
-/// listener keeps honouring the header: a same-machine proxy in front of a
-/// loopback port is exactly what it describes, and a forged value can only
-/// make a caller look *more* remote, which fails closed for local-only setup.
-pub(crate) fn client_ip_for_mode(
-    deployment_mode: DeploymentMode,
-    peer_address: SocketAddr,
-    headers: &HeaderMap,
-) -> IpAddr {
-    match deployment_mode {
-        DeploymentMode::Lan => peer_address.ip(),
-        DeploymentMode::Local | DeploymentMode::Proxy => request_client_ip(peer_address, headers),
-    }
-}
-
+/// A forwarded header is trusted from a loopback peer only: that is a
+/// same-machine reverse proxy in front of the port, which is exactly what the
+/// header describes, in proxy mode and in a local or LAN listener that an
+/// operator has put nginx in front of alike. A client reaching a LAN port
+/// directly is never on loopback, so whatever it sends in the header is
+/// ignored and its own address counts. A forged value from loopback can only
+/// make a caller look *more* remote, which fails closed for local-only setup
+/// and for the per-address login throttle.
 pub(crate) fn request_client_ip(peer_address: SocketAddr, headers: &HeaderMap) -> IpAddr {
     if !peer_address.ip().is_loopback() {
         return peer_address.ip();
@@ -693,8 +683,7 @@ pub(crate) async fn auth_status(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let setup_required = state.users.read().await.users.is_empty();
-    let remote_client =
-        !client_ip_for_mode(state.deployment_mode, peer_address, &headers).is_loopback();
+    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
     let (user, media_token) = if let Some(token) = token_from_headers(&headers) {
         match resolve_session(&state, &token).await {
             Some(auth) => (
@@ -728,8 +717,7 @@ pub(crate) async fn setup_admin(
     headers: HeaderMap,
     Json(payload): Json<SetupRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let remote_client =
-        !client_ip_for_mode(state.deployment_mode, peer_address, &headers).is_loopback();
+    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
     if remote_client && !state.deployment_mode.allows_remote_setup() {
         return Err(ApiError::forbidden(
             "First-run setup must be completed from the server itself in local mode.",
@@ -846,7 +834,7 @@ pub(crate) async fn authenticate_and_open_session(
     payload: LoginRequest,
 ) -> Result<(User, String), ApiError> {
     let username = normalize_username(&payload.username);
-    let client_ip = client_ip_for_mode(state.deployment_mode, peer_address, headers);
+    let client_ip = request_client_ip(peer_address, headers);
     let throttle_keys = LoginThrottleKeys::new(client_ip, &username);
     {
         let mut attempts = state.login_attempts.lock().await;
