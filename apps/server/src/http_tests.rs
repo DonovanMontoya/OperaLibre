@@ -2433,30 +2433,46 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
         .await;
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(response.header(header::CONTENT_TYPE), "application/pdf");
-    assert_eq!(response.header(header::HeaderName::from_static("x-content-type-options")), "nosniff");
+    assert_eq!(
+        response.header(header::HeaderName::from_static("x-content-type-options")),
+        "nosniff"
+    );
     let missing = server
         .get(&format!("/api/books/{book_id}/companions/nope"), &token)
         .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 
-    let readalong = server.get(&format!("/api/books/{book_id}/readalong"), &token).await;
+    let readalong = server
+        .get(&format!("/api/books/{book_id}/readalong"), &token)
+        .await;
     assert_eq!(readalong.status, StatusCode::OK);
-    assert_eq!(readalong.header(header::CONTENT_TYPE), "application/epub+zip");
+    assert_eq!(
+        readalong.header(header::CONTENT_TYPE),
+        "application/epub+zip"
+    );
 
-    let sync = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    let sync = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
     assert_eq!(sync.status, StatusCode::OK, "{}", sync.text());
     let map = sync.json();
     assert_eq!(map["precision"], "estimated");
     assert_eq!(map["version"], alignment::SYNC_MAP_VERSION);
     let fragments = map["fragments"].as_array().unwrap();
-    assert!(fragments.len() > 60, "one fragment per sentence: {}", fragments.len());
+    assert!(
+        fragments.len() > 60,
+        "one fragment per sentence: {}",
+        fragments.len()
+    );
     assert_eq!(fragments[0]["text"], "Chapter 1");
     assert_eq!(fragments[0]["href"], "text/ch1.xhtml");
     let last = fragments.last().unwrap();
     assert!(last["endSeconds"].as_f64().unwrap() > 0.0);
 
     // The estimate is kept, and a second request serves the same file.
-    let again = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    let again = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
     assert_eq!(again.status, StatusCode::OK);
     assert_eq!(again.body, sync.body);
 
@@ -2474,7 +2490,12 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
         .await;
     assert_eq!(compressed.status, StatusCode::OK);
     assert_eq!(compressed.header(header::CONTENT_ENCODING), "gzip");
-    assert!(compressed.body.len() < sync.body.len() / 2, "{} vs {}", compressed.body.len(), sync.body.len());
+    assert!(
+        compressed.body.len() < sync.body.len() / 2,
+        "{} vs {}",
+        compressed.body.len(),
+        sync.body.len()
+    );
     let readalong_compressed = server
         .send(
             Request::builder()
@@ -2505,10 +2526,15 @@ async fn a_supplement_alone_is_not_offered_as_the_book() {
         )
         .await;
     let (book_id, _) = server.first_book_and_track(&token).await;
-    let book = server.get(&format!("/api/books/{book_id}"), &token).await.json();
+    let book = server
+        .get(&format!("/api/books/{book_id}"), &token)
+        .await
+        .json();
     assert!(book["readingFile"].is_null(), "{book}");
     assert!(book["syncFile"].is_null(), "{book}");
     assert_eq!(book["companions"][0]["kind"], "supplement");
-    let sync = server.get(&format!("/api/books/{book_id}/sync"), &token).await;
+    let sync = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
     assert_eq!(sync.status, StatusCode::NOT_FOUND);
 }

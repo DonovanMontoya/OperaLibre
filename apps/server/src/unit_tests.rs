@@ -1336,7 +1336,10 @@ fn query_tokens_are_limited_to_read_only_media_routes() {
         &Method::GET,
         "/api/books/book/companions/file"
     ));
-    assert!(super::query_token_allowed(&Method::GET, "/api/books/book/sync"));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/api/books/book/sync"
+    ));
     assert!(!super::query_token_allowed(
         &Method::POST,
         "/api/books/book/sync/anchors"
@@ -4860,9 +4863,17 @@ fn inspect_real_book() {
     let audio_path = std::env::var("OPERALIBRE_INSPECT_AUDIO").expect("OPERALIBRE_INSPECT_AUDIO");
     let metadata = super::read_track_metadata(FsPath::new(&audio_path));
     let duration = metadata.duration_seconds.unwrap_or(0.0);
-    println!("audio: {:?} duration {:.0}s chapters {}", metadata.title, duration, metadata.chapters.len());
+    println!(
+        "audio: {:?} duration {:.0}s chapters {}",
+        metadata.title,
+        duration,
+        metadata.chapters.len()
+    );
     for chapter in metadata.chapters.iter().take(120) {
-        println!("  audio chapter {:>9.1}s  {}", chapter.start_seconds, chapter.title);
+        println!(
+            "  audio chapter {:>9.1}s  {}",
+            chapter.start_seconds, chapter.title
+        );
     }
     let epub_bytes = std::fs::read(&epub_path).unwrap();
     let analysis = super::analyze_epub(&epub_bytes);
@@ -4871,7 +4882,11 @@ fn inspect_real_book() {
         super::classify(&analysis, "epub", Some(duration))
     );
     let epub = alignment::parse_epub(&epub_bytes).unwrap();
-    println!("epub sections {} toc {}", epub.sections.len(), epub.toc.len());
+    println!(
+        "epub sections {} toc {}",
+        epub.sections.len(),
+        epub.toc.len()
+    );
     for entry in epub.toc.iter().take(160) {
         println!("  toc [{:>3}] {}", entry.spine_index, entry.title);
     }
@@ -4884,7 +4899,12 @@ fn inspect_real_book() {
             start_seconds: chapter.start_seconds,
             end_seconds: chapter
                 .end_seconds
-                .or_else(|| metadata.chapters.get(index + 1).map(|next| next.start_seconds))
+                .or_else(|| {
+                    metadata
+                        .chapters
+                        .get(index + 1)
+                        .map(|next| next.start_seconds)
+                })
                 .unwrap_or(duration),
         })
         .collect::<Vec<_>>();
@@ -4903,23 +4923,44 @@ fn inspect_real_book() {
         match item {
             Some(item) => {
                 matched_count += 1;
-                println!("  match  {:<40} -> {}", chapters[index].title, epub.toc[*item].title);
+                println!(
+                    "  match  {:<40} -> {}",
+                    chapters[index].title, epub.toc[*item].title
+                );
             }
             None => println!("  unmatched {}", chapters[index].title),
         }
     }
-    println!("matched {matched_count} of {} audio chapters", chapters.len());
+    println!(
+        "matched {matched_count} of {} audio chapters",
+        chapters.len()
+    );
     let plan = alignment::plan_estimate(&epub, &chapters, duration);
     println!("fitted model {:?}", plan.model);
     let default_model = alignment::ReadingModel::default();
     let mut worst = Vec::new();
     for (anchor, sentences) in plan.anchors.iter() {
         let span = anchor.end_seconds - anchor.start_seconds;
-        let predicted: f64 = sentences.iter().map(|s| plan.model.seconds(&alignment::sentence_features_for_test(s))).sum();
-        let baseline: f64 = sentences.iter().map(|s| default_model.seconds(&alignment::sentence_features_for_test(s))).sum();
-        worst.push(((predicted - span) / span * 100.0, (baseline - span) / span * 100.0, span));
+        let predicted: f64 = sentences
+            .iter()
+            .map(|s| {
+                plan.model
+                    .seconds(&alignment::sentence_features_for_test(s))
+            })
+            .sum();
+        let baseline: f64 = sentences
+            .iter()
+            .map(|s| default_model.seconds(&alignment::sentence_features_for_test(s)))
+            .sum();
+        worst.push((
+            (predicted - span) / span * 100.0,
+            (baseline - span) / span * 100.0,
+            span,
+        ));
     }
-    let mean_abs = |pick: fn(&(f64, f64, f64)) -> f64| worst.iter().map(|w| pick(w).abs()).sum::<f64>() / worst.len() as f64;
+    let mean_abs = |pick: fn(&(f64, f64, f64)) -> f64| {
+        worst.iter().map(|w| pick(w).abs()).sum::<f64>() / worst.len() as f64
+    };
     println!(
         "chapter length error: fitted mean {:.1}% (default {:.1}%) over {} chapters",
         mean_abs(|w| w.0),
@@ -4941,6 +4982,21 @@ fn inspect_real_book() {
             fragment.start_seconds,
             fragment.href,
             fragment.text.chars().take(70).collect::<String>()
+        );
+    }
+}
+
+#[test]
+fn sync_files_are_only_named_after_plain_book_ids() {
+    assert_eq!(
+        crate::sync::sync_file_book_id("a1f092a9b8796c43").unwrap(),
+        "a1f092a9b8796c43"
+    );
+    assert!(crate::sync::sync_file_book_id("book-1_2").is_ok());
+    for bad in ["", "../etc/passwd", "a/b", "a\\b", "id.json", "id name"] {
+        assert!(
+            crate::sync::sync_file_book_id(bad).is_err(),
+            "{bad:?} was accepted"
         );
     }
 }
