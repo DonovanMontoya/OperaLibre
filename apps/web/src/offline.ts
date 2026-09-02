@@ -511,7 +511,7 @@ export async function loadCompanionBytes(
   url: string,
   signal?: AbortSignal
 ): Promise<ArrayBuffer> {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     await migrateLegacyBookDirectory(book);
     const path = companionFilePath(book, companion);
     return revalidatedCompanion(url, async () => {
@@ -536,7 +536,7 @@ export async function loadCompanionBytes(
 /** The sync map stored with a downloaded book, for reading with no server. */
 export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
   try {
-    if (isNative()) {
+    if (Capacitor.isNativePlatform()) {
       await migrateLegacyBookDirectory(book);
       const url = await nativeFileUrl(syncMapFilePath(book));
       return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
