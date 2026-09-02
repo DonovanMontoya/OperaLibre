@@ -7,9 +7,19 @@ pub(crate) const SESSION_COOKIE_NAME: &str = "operalibre_session";
 
 pub(crate) const SESSION_COOKIE_MAX_AGE_SECONDS: u64 = 60 * 60 * 24 * 30;
 
+/// Failures from one address against one username before that pair is
+/// locked: the fast lock a legitimate user trips by mistyping.
 pub(crate) const LOGIN_MAX_FAILURES: u32 = 5;
 
+/// Failures from one address across every username before the address is
+/// locked: catches an attacker walking a list of names.
 pub(crate) const LOGIN_IP_MAX_FAILURES: u32 = 25;
+
+/// Failures against one username from every address before the account is
+/// locked: the ceiling on guessing spread across many addresses. Looser than
+/// the per-address lock so a stranger cannot cheaply deny a victim from one
+/// address, but still bounding how many guesses one account absorbs a minute.
+pub(crate) const LOGIN_ACCOUNT_MAX_FAILURES: u32 = 50;
 
 pub(crate) const LOGIN_LOCKOUT_SECONDS: u64 = 60;
 
@@ -476,6 +486,26 @@ pub(crate) fn expired_session_cookie(secure: bool) -> String {
     format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0{secure_attribute}; HttpOnly; SameSite=Lax")
 }
 
+/// The address a request came from, as the deployment mode understands it.
+///
+/// In proxy mode the listener only ever hears from the reverse proxy on the
+/// same machine, so the address it forwarded is the client. A LAN listener
+/// talks to clients directly and has no proxy to trust, so a forwarded header
+/// there is whatever the client chose to send and is ignored. A local
+/// listener keeps honouring the header: a same-machine proxy in front of a
+/// loopback port is exactly what it describes, and a forged value can only
+/// make a caller look *more* remote, which fails closed for local-only setup.
+pub(crate) fn client_ip_for_mode(
+    deployment_mode: DeploymentMode,
+    peer_address: SocketAddr,
+    headers: &HeaderMap,
+) -> IpAddr {
+    match deployment_mode {
+        DeploymentMode::Lan => peer_address.ip(),
+        DeploymentMode::Local | DeploymentMode::Proxy => request_client_ip(peer_address, headers),
+    }
+}
+
 pub(crate) fn request_client_ip(peer_address: SocketAddr, headers: &HeaderMap) -> IpAddr {
     if !peer_address.ip().is_loopback() {
         return peer_address.ip();
@@ -493,7 +523,7 @@ pub(crate) fn request_client_ip(peer_address: SocketAddr, headers: &HeaderMap) -
 }
 
 pub(crate) fn query_token_allowed(method: &Method, path: &str) -> bool {
-    if method != Method::GET {
+    if method != Method::GET && method != Method::HEAD {
         return false;
     }
     let segments: Vec<_> = path.trim_matches('/').split('/').collect();
@@ -663,7 +693,8 @@ pub(crate) async fn auth_status(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let setup_required = state.users.read().await.users.is_empty();
-    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
+    let remote_client =
+        !client_ip_for_mode(state.deployment_mode, peer_address, &headers).is_loopback();
     let (user, media_token) = if let Some(token) = token_from_headers(&headers) {
         match resolve_session(&state, &token).await {
             Some(auth) => (
@@ -697,7 +728,8 @@ pub(crate) async fn setup_admin(
     headers: HeaderMap,
     Json(payload): Json<SetupRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let remote_client = !request_client_ip(peer_address, &headers).is_loopback();
+    let remote_client =
+        !client_ip_for_mode(state.deployment_mode, peer_address, &headers).is_loopback();
     if remote_client && !state.deployment_mode.allows_remote_setup() {
         return Err(ApiError::forbidden(
             "First-run setup must be completed from the server itself in local mode.",
@@ -814,19 +846,13 @@ pub(crate) async fn authenticate_and_open_session(
     payload: LoginRequest,
 ) -> Result<(User, String), ApiError> {
     let username = normalize_username(&payload.username);
-    let throttle_key = login_throttle_key(&username);
-    let ip_throttle_key = login_ip_throttle_key(request_client_ip(peer_address, headers));
+    let client_ip = client_ip_for_mode(state.deployment_mode, peer_address, headers);
+    let throttle_keys = LoginThrottleKeys::new(client_ip, &username);
     {
         let mut attempts = state.login_attempts.lock().await;
         let now = unix_now_seconds();
         attempts.retain(|_, throttle| !throttle.is_stale(now));
-        if attempts
-            .get(&throttle_key)
-            .is_some_and(|throttle| throttle.is_locked(now, LOGIN_MAX_FAILURES))
-            || attempts
-                .get(&ip_throttle_key)
-                .is_some_and(|throttle| throttle.is_locked(now, LOGIN_IP_MAX_FAILURES))
-        {
+        if throttle_keys.is_locked(&attempts, now) {
             return Err(ApiError::too_many_requests(
                 "Too many failed sign-in attempts. Try again in a minute.",
             ));
@@ -835,7 +861,7 @@ pub(crate) async fn authenticate_and_open_session(
 
     if payload.password.chars().count() > MAX_PASSWORD_CHARS {
         let _ = verify_dummy_password_async(state, "oversized-password".to_string()).await?;
-        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
 
@@ -852,16 +878,17 @@ pub(crate) async fn authenticate_and_open_session(
         // Burn the same time as a real verification so response timing does
         // not reveal whether the username exists.
         let _ = verify_dummy_password_async(state, payload.password).await?;
-        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     };
     if !verify_password_async(state, payload.password, user.password_hash.clone()).await? {
-        record_login_failures(state, [&throttle_key, &ip_throttle_key]).await;
+        record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
     let mut attempts = state.login_attempts.lock().await;
-    attempts.remove(&throttle_key);
-    attempts.remove(&ip_throttle_key);
+    for throttle_key in throttle_keys.all() {
+        attempts.remove(throttle_key);
+    }
     drop(attempts);
 
     let token = create_session(state, &user.id).await?;
@@ -882,8 +909,68 @@ pub(crate) fn login_throttle_key(username: &str) -> String {
     )
 }
 
+/// The account lock is keyed by the address attempting it as well as the
+/// name. Keyed by name alone, anyone who knew a username could keep that
+/// account locked with a handful of bad passwords a minute; the per-address
+/// counter below still catches an attacker walking many names.
+pub(crate) fn login_account_throttle_key(client_ip: IpAddr, username: &str) -> String {
+    format!("ip:{client_ip}:{}", login_throttle_key(username))
+}
+
 pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
     format!("ip:{client_ip}")
+}
+
+/// The three counters one sign-in attempt is checked against, layered so
+/// that no single one is both tight and abusable:
+///
+/// - `account`, (address, username), locks at [`LOGIN_MAX_FAILURES`]: the
+///   fast lock. Keyed by address too, a stranger who knows a username cannot
+///   deny its owner from somewhere else.
+/// - `ip`, address alone, locks at [`LOGIN_IP_MAX_FAILURES`]: an attacker
+///   walking many names from one address.
+/// - `username`, name alone, locks at [`LOGIN_ACCOUNT_MAX_FAILURES`]: the
+///   ceiling across addresses. Without it, guessing spread over many
+///   addresses would face no bound per account at all.
+///
+/// A failure counts against all three; a sign-in is refused if any is over
+/// its limit; a success clears all three.
+pub(crate) struct LoginThrottleKeys {
+    pub(crate) account: String,
+    pub(crate) ip: String,
+    pub(crate) username: String,
+}
+
+impl LoginThrottleKeys {
+    pub(crate) fn new(client_ip: IpAddr, username: &str) -> Self {
+        Self {
+            account: login_account_throttle_key(client_ip, username),
+            ip: login_ip_throttle_key(client_ip),
+            username: login_throttle_key(username),
+        }
+    }
+
+    pub(crate) fn all(&self) -> [&String; 3] {
+        [&self.account, &self.ip, &self.username]
+    }
+
+    pub(crate) fn is_locked(
+        &self,
+        attempts: &HashMap<String, LoginThrottle>,
+        now_seconds: u64,
+    ) -> bool {
+        [
+            (&self.account, LOGIN_MAX_FAILURES),
+            (&self.ip, LOGIN_IP_MAX_FAILURES),
+            (&self.username, LOGIN_ACCOUNT_MAX_FAILURES),
+        ]
+        .into_iter()
+        .any(|(key, max_failures)| {
+            attempts
+                .get(key)
+                .is_some_and(|throttle| throttle.is_locked(now_seconds, max_failures))
+        })
+    }
 }
 
 pub(crate) async fn record_login_failures<'a>(
@@ -1156,6 +1243,14 @@ pub(crate) async fn create_user(
     if is_admin && !auth.is_owner {
         return Err(ApiError::forbidden(
             "Only an owner can create an administrator or owner account.",
+        ));
+    }
+    // Direct Libation access is an owner's grant, the same as it is on the
+    // dedicated route: an administrator cannot mint a reader who downloads
+    // without approval.
+    if !auth.is_owner && payload.libation_access == Some(LibationAccess::Direct) {
+        return Err(ApiError::forbidden(
+            "Only an owner can grant direct Libation access.",
         ));
     }
     let username = normalize_username(&payload.username);
@@ -1434,6 +1529,7 @@ pub(crate) async fn update_user_role(
             }
 
             let user = &mut users.users[target_index];
+            let was_admin = user.is_admin;
             user.is_owner = payload.is_owner;
             user.is_admin = payload.is_admin || payload.is_owner;
             if user.is_owner {
@@ -1444,6 +1540,12 @@ pub(crate) async fn update_user_role(
                 user.allowed_book_ids = None;
             } else {
                 user.can_approve_libation_requests = false;
+                // Administrators download directly by default. Leaving the
+                // tier gives that up too, rather than carrying it into a
+                // reader account nobody explicitly granted it to.
+                if was_admin {
+                    user.libation_access = LibationAccess::Approval;
+                }
             }
             Ok(UserPublic::from(&*user))
         })

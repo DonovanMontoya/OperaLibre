@@ -4831,3 +4831,992 @@ fn a_shrink_confirms_only_when_the_same_books_are_found() {
         "a stable reduced library is eventually accepted"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_expired_libation_sign_in_releases_the_job_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    state
+        .libation_accounts
+        .mutate(|store| {
+            store.accounts.push(super::ManagedLibationAccount {
+                id: "profile-1".to_string(),
+                label: "Family".to_string(),
+                account_id: "reader@example.com".to_string(),
+                locale: "us".to_string(),
+                added_by: "admin".to_string(),
+                added_at: super::now_unix_string(),
+                connection_state: "signing_in".to_string(),
+                authenticated: false,
+                last_successful_auth: None,
+                last_successful_refresh: None,
+                last_error: None,
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    // A sign-in that was abandoned in the browser: its session parks the
+    // job lock and its deadline has already passed.
+    let (response_sender, _response_receiver) = std::sync::mpsc::channel::<String>();
+    let (_completion_sender, completion) =
+        tokio::sync::oneshot::channel::<Result<String, String>>();
+    let job_guard = state.libation_job_lock.clone().lock_owned().await;
+    state.libation_login_sessions.lock().await.insert(
+        "session-1".to_string(),
+        super::PendingLibationLogin {
+            profile_id: "profile-1".to_string(),
+            expires_at: super::unix_now_seconds().saturating_sub(1),
+            response_sender,
+            completion,
+            _job_guard: job_guard,
+        },
+    );
+    assert!(
+        state.libation_job_lock.try_lock().is_err(),
+        "the parked session must hold the job lock"
+    );
+
+    super::prune_expired_libation_login_sessions(&state).await;
+
+    assert!(state.libation_login_sessions.lock().await.is_empty());
+    assert!(
+        state.libation_job_lock.try_lock().is_ok(),
+        "pruning an expired session must release the job lock"
+    );
+    let account = state.libation_accounts.read().await.accounts[0].clone();
+    assert_eq!(account.connection_state, "needs_sign_in");
+    assert_eq!(
+        account.last_error.as_deref(),
+        Some("The Audible sign-in session expired.")
+    );
+}
+
+#[test]
+fn audible_response_urls_reject_control_characters() {
+    assert!(
+        super::validate_libation_response_url(
+            "https://www.amazon.com/ap/maplanding?openid=example\r\nscan"
+        )
+        .is_err()
+    );
+    assert!(
+        super::validate_libation_response_url(
+            "https://www.amazon.com/ap/maplanding?openid=\u{1b}[2J"
+        )
+        .is_err()
+    );
+    assert_eq!(
+        super::validate_libation_response_url(
+            "https://www.amazon.com/ap/maplanding?openid=example"
+        )
+        .unwrap(),
+        "https://www.amazon.com/ap/maplanding?openid=example"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn repeated_libation_listings_reuse_one_export() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, log_path) = fake_libation_state(root.path());
+
+    for _ in 0..3 {
+        let _ =
+            super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
+                .await
+                .unwrap();
+    }
+    let exports = std::fs::read_to_string(&log_path)
+        .unwrap()
+        .lines()
+        .filter(|line| *line == "start export")
+        .count();
+    assert_eq!(exports, 1, "each listing ran the export again");
+
+    // A finished job changes what Libation would report, so the next
+    // listing must go back to the CLI.
+    super::invalidate_libation_export_cache().await;
+    let _ = super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
+        .await
+        .unwrap();
+    let exports = std::fs::read_to_string(&log_path)
+        .unwrap()
+        .lines()
+        .filter(|line| *line == "start export")
+        .count();
+    assert_eq!(exports, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Client clocks, corrected into the server's domain
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_client_running_behind_the_server_is_not_refused_as_a_replay() {
+    // The stored revision is server-issued; the client's clock is ten minutes
+    // behind it. It records a position "now" by its own clock and sends it
+    // at once. With `sentAtMs` the skew is measured and removed.
+    let now = super::unix_now_millis();
+    let previous = stored_at(100.0, 1_000);
+    let client_now = now - 600_000;
+    let mut update = decision_update(160.0);
+    update.updated_at_ms =
+        super::server_domain_timestamp_ms(Some(client_now), Some(client_now), now);
+    assert_eq!(update.updated_at_ms, Some(now));
+    assert_eq!(
+        decided_position(Some(&previous), &update),
+        Some(160.0),
+        "a skewed clock locked the client out of its own book"
+    );
+}
+
+#[test]
+fn without_a_send_time_a_client_running_behind_is_still_refused() {
+    // Documents the legacy behaviour: nothing to correct with, so the raw
+    // client timestamp is compared and looks ten minutes stale.
+    let now = super::unix_now_millis();
+    let previous = stored_at(100.0, 1_000);
+    let client_now = now - 600_000;
+    let mut update = decision_update(160.0);
+    update.updated_at_ms = super::server_domain_timestamp_ms(Some(client_now), None, now);
+    assert_eq!(update.updated_at_ms, Some(client_now));
+    assert_eq!(decided_position(Some(&previous), &update), None);
+}
+
+#[test]
+fn a_genuine_replay_is_still_refused_after_clock_correction() {
+    // An offline queue flushing: recorded an hour before it was sent. The
+    // correction removes skew, not age, so the stored newer row wins.
+    let now = super::unix_now_millis();
+    let previous = stored_at(300.0, 1_000);
+    let sent_at = now - 200_000;
+    let mut update = decision_update(10.0);
+    update.updated_at_ms =
+        super::server_domain_timestamp_ms(Some(sent_at - 3_600_000), Some(sent_at), now);
+    assert_eq!(update.updated_at_ms, Some(now - 3_600_000));
+    assert_eq!(decided_position(Some(&previous), &update), None);
+}
+
+#[test]
+fn a_client_running_ahead_cannot_lock_other_devices_out() {
+    let now = super::unix_now_millis();
+    let book = decision_book();
+    // Ten minutes ahead, and reporting a position it "recorded" later than it
+    // sent it. Whatever it claims, the stored revision is server-issued.
+    let mut ahead = decision_update(120.0);
+    ahead.updated_at_ms =
+        super::server_domain_timestamp_ms(Some(now + 660_000), Some(now + 600_000), now);
+    let saved = match super::decide_progress_write(&book, &book.tracks[0], None, &ahead, now) {
+        super::ProgressDecision::Store { saved, .. } => saved,
+        super::ProgressDecision::Keep => panic!("a first position must be stored"),
+    };
+    assert_eq!(saved.updated_at, now.to_string());
+
+    // A second device with an honest clock and no send time carries on.
+    let mut honest = decision_update(150.0);
+    honest.updated_at_ms = Some(now + 5);
+    assert_eq!(decided_position(Some(&saved), &honest), Some(150.0));
+}
+
+#[test]
+fn clock_correction_never_goes_below_zero() {
+    assert_eq!(
+        super::server_domain_timestamp_ms(Some(1_000), Some(5_000_000), 10),
+        Some(0)
+    );
+    assert_eq!(super::server_domain_timestamp_ms(None, Some(5), 10), None);
+}
+
+#[test]
+fn a_progress_checkpoint_parses_its_send_time_alongside_the_update() {
+    let checkpoint: super::ProgressCheckpoint = serde_json::from_value(serde_json::json!({
+        "trackId": "t1",
+        "positionSeconds": 12,
+        "updatedAtMs": 1_750_000_000_000u64,
+        "sentAtMs": 1_750_000_000_500u64,
+        "intentionalSeek": true
+    }))
+    .unwrap();
+    assert_eq!(checkpoint.update.track_id, "t1");
+    assert_eq!(checkpoint.update.position_seconds, 12.0);
+    assert_eq!(checkpoint.update.updated_at_ms, Some(1_750_000_000_000));
+    assert_eq!(checkpoint.sent_at_ms, Some(1_750_000_000_500));
+    assert!(checkpoint.update.intentional_seek);
+    assert!(!checkpoint.update.intentional_regression);
+
+    let legacy: super::ProgressCheckpoint = serde_json::from_value(serde_json::json!({
+        "trackId": "t1",
+        "positionSeconds": 12.5
+    }))
+    .unwrap();
+    assert_eq!(legacy.sent_at_ms, None);
+    assert_eq!(legacy.update.updated_at_ms, None);
+}
+
+// ---------------------------------------------------------------------------
+// Completion writes keep a rollback copy on a large drop
+// ---------------------------------------------------------------------------
+
+fn completion_update(finished: bool, position_seconds: Option<f64>) -> super::CompletionUpdate {
+    super::CompletionUpdate {
+        finished,
+        track_id: position_seconds.map(|_| "t1".to_string()),
+        position_seconds,
+        book_position_seconds: position_seconds,
+        duration_seconds: Some(600.0),
+        tz_offset_minutes: None,
+    }
+}
+
+#[test]
+fn a_completion_write_that_drops_far_back_keeps_the_previous_position() {
+    let book = decision_book();
+    let previous = stored_at(500.0, 5_000);
+    let now = super::unix_now_millis();
+    let update = completion_update(false, Some(10.0));
+    match super::decide_completion_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &update,
+        Some((&book.tracks[0], 10.0)),
+        now,
+    ) {
+        super::ProgressDecision::Store {
+            saved,
+            backup_previous,
+        } => {
+            // Explicit instruction: the position is taken as given...
+            assert_eq!(saved.book_position_seconds, 10.0);
+            assert_eq!(saved.finished_override, Some(false));
+            // ...and the place it replaced is kept for recovery.
+            assert!(backup_previous, "a 490 s drop was not backed up");
+        }
+        super::ProgressDecision::Keep => panic!("a completion write was refused"),
+    }
+}
+
+#[test]
+fn a_completion_write_near_the_stored_position_keeps_no_copy() {
+    let book = decision_book();
+    let previous = stored_at(500.0, 5_000);
+    let now = super::unix_now_millis();
+    let update = completion_update(true, Some(590.0));
+    match super::decide_completion_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &update,
+        Some((&book.tracks[0], 590.0)),
+        now,
+    ) {
+        super::ProgressDecision::Store {
+            saved,
+            backup_previous,
+        } => {
+            assert_eq!(saved.book_position_seconds, 590.0);
+            assert_eq!(saved.finished_override, Some(true));
+            assert!(!backup_previous);
+        }
+        super::ProgressDecision::Keep => panic!("a completion write was refused"),
+    }
+}
+
+#[test]
+fn a_status_only_completion_leaves_the_position_and_keeps_no_copy() {
+    let book = decision_book();
+    let previous = stored_at(500.0, 5_000);
+    let now = super::unix_now_millis();
+    let update = completion_update(true, None);
+    match super::decide_completion_write(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &update,
+        None,
+        now,
+    ) {
+        super::ProgressDecision::Store {
+            saved,
+            backup_previous,
+        } => {
+            assert_eq!(saved.book_position_seconds, 500.0);
+            assert_eq!(saved.updated_at, previous.updated_at);
+            assert_eq!(saved.finished_override, Some(true));
+            assert!(!backup_previous);
+        }
+        super::ProgressDecision::Keep => panic!("a completion write was refused"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audiobookshelf positions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn abs_positions_are_only_clamped_against_a_known_duration() {
+    assert_eq!(super::clamp_abs_book_position(1_500.0, 1_200.0), 1_200.0);
+    assert_eq!(super::clamp_abs_book_position(-5.0, 1_200.0), 0.0);
+    // No track carries a duration: the position must be taken as reported,
+    // not pinned to the start of the book.
+    assert_eq!(super::clamp_abs_book_position(1_500.0, 0.0), 1_500.0);
+    assert_eq!(super::clamp_abs_book_position(-5.0, 0.0), 0.0);
+}
+
+fn abs_decision_book() -> super::Book {
+    book_with_tracks(
+        Some(7_200.0),
+        vec![
+            track_with_duration("t1", 0, Some(3_600.0)),
+            track_with_duration("t2", 1, Some(3_600.0)),
+        ],
+    )
+}
+
+/// The whole-book position an Audiobookshelf PATCH would store, or `None`
+/// when the stored one is kept.
+fn abs_decided_position(
+    previous: Option<&super::Progress>,
+    current_time: f64,
+    last_update: Option<u64>,
+) -> Option<f64> {
+    let book = abs_decision_book();
+    match super::decide_abs_progress_write(
+        &book,
+        previous,
+        Some(current_time),
+        None,
+        last_update,
+        &book.tracks[0],
+        super::unix_now_millis(),
+    ) {
+        super::ProgressDecision::Keep => None,
+        super::ProgressDecision::Store { saved, .. } => Some(saved.book_position_seconds),
+    }
+}
+
+#[test]
+fn an_abs_client_may_rewind_ten_minutes_without_a_seek_flag() {
+    let previous = stored_at(3_000.0, 5_000);
+    assert_eq!(
+        abs_decided_position(Some(&previous), 2_400.0, None),
+        Some(2_400.0)
+    );
+    // With a fresh timestamp as well.
+    assert_eq!(
+        abs_decided_position(Some(&previous), 2_400.0, Some(super::unix_now_millis())),
+        Some(2_400.0)
+    );
+}
+
+#[test]
+fn an_abs_rewind_past_the_ceiling_is_still_refused() {
+    let previous = stored_at(5_000.0, 5_000);
+    assert_eq!(abs_decided_position(Some(&previous), 3_000.0, None), None);
+    // Just inside the ceiling is accepted.
+    assert_eq!(
+        abs_decided_position(Some(&previous), 3_300.0, None),
+        Some(3_300.0)
+    );
+}
+
+#[test]
+fn an_abs_client_that_failed_to_restore_still_cannot_reset_the_book() {
+    // Near zero over five minutes of progress is the suspect-reset signature,
+    // and a rewind that small would otherwise be inside the ceiling.
+    let previous = stored_at(400.0, 5_000);
+    assert_eq!(abs_decided_position(Some(&previous), 10.0, None), None);
+    assert_eq!(
+        abs_decided_position(Some(&previous), 10.0, Some(super::unix_now_millis())),
+        None
+    );
+}
+
+#[test]
+fn a_stale_abs_rewind_is_still_refused() {
+    let previous = stored_at(3_000.0, 1_000);
+    let an_hour_ago = super::unix_now_millis().saturating_sub(3_600_000);
+    assert_eq!(
+        abs_decided_position(Some(&previous), 2_400.0, Some(an_hour_ago)),
+        None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The database and the legacy JSON files
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_fresh_database_is_not_rebuilt_from_json_files_that_appear_later() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    let database_path = data_dir.join("operalibre.db");
+
+    // A fresh install: the database is opened for serving with no JSON files
+    // anywhere near it.
+    drop(super::Database::open(&database_path).unwrap());
+
+    // Later, legacy files turn up beside it — an old data directory copied
+    // in, say. They must not read as an interrupted import.
+    let layout = legacy_data_dir(root.path());
+    super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+
+    let connection = super::db::open(&database_path).unwrap();
+    let progress: i64 = connection
+        .query_row("SELECT COUNT(*) FROM progress", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        progress, 0,
+        "the live database was replaced by an import of the JSON files"
+    );
+}
+
+fn schema_v1_database(path: &std::path::Path, with_first_column: bool) {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (1);
+             CREATE TABLE users (
+                 id TEXT PRIMARY KEY,
+                 username TEXT NOT NULL,
+                 password_hash TEXT NOT NULL,
+                 is_admin INTEGER NOT NULL,
+                 is_owner INTEGER NOT NULL,
+                 can_approve_libation_requests INTEGER NOT NULL,
+                 libation_access TEXT NOT NULL,
+                 share_progress INTEGER NOT NULL,
+                 created_at TEXT NOT NULL,
+                 restricted INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+    if with_first_column {
+        connection
+            .execute_batch(
+                "ALTER TABLE users ADD COLUMN announce_finishes INTEGER NOT NULL DEFAULT 1;",
+            )
+            .unwrap();
+    }
+}
+
+fn user_columns(connection: &rusqlite::Connection) -> Vec<String> {
+    let mut statement = connection.prepare("PRAGMA table_info(users)").unwrap();
+    statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[test]
+fn the_v1_schema_upgrade_can_run_twice_and_from_a_half_applied_state() {
+    for half_applied in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("operalibre.db");
+        schema_v1_database(&database_path, half_applied);
+
+        for _ in 0..2 {
+            let connection = super::db::open(&database_path).unwrap();
+            let version: i64 = connection
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+            let columns = user_columns(&connection);
+            for column in ["announce_finishes", "notify_finishes"] {
+                assert_eq!(
+                    columns.iter().filter(|name| *name == column).count(),
+                    1,
+                    "half_applied={half_applied}: {columns:?}"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic writes leave nothing behind
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_failed_atomic_write_removes_its_temporary_file() {
+    let root = tempfile::tempdir().unwrap();
+    // The destination is a directory with something in it, so the rename
+    // cannot succeed.
+    let destination = root.path().join("store.json");
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(destination.join("occupied"), b"x").unwrap();
+
+    assert!(
+        super::write_bytes_atomic(&destination, b"contents")
+            .await
+            .is_err()
+    );
+    let leftovers = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Background jobs that stop reporting
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_job_whose_task_panics_is_marked_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let job_id = super::create_job(&state, "test-job").await;
+
+    let task = tokio::spawn(super::run_job(state.clone(), job_id.clone(), async {
+        panic!("the job's task fell over");
+    }));
+    assert!(task.await.is_err());
+
+    // The guard reports from a task of its own; the waiter sees it land.
+    assert!(
+        !super::await_job_outcome_within(&state, &job_id, std::time::Duration::from_secs(5)).await
+    );
+    let job = state.jobs.read().await.get(&job_id).cloned().unwrap();
+    assert_eq!(job.status, "failed");
+    assert!(job.finished_at.is_some());
+    assert!(job.error.is_some());
+
+    // And the dead job no longer pins deduplicated requests to it.
+    let (next_id, created) = super::create_queued_job(&state, "test-job", None).await;
+    assert!(created);
+    assert_ne!(next_id, job_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_job_that_ends_without_reporting_is_marked_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let job_id = super::create_job(&state, "test-job").await;
+    super::run_job(state.clone(), job_id.clone(), async {}).await;
+    let job = state.jobs.read().await.get(&job_id).cloned().unwrap();
+    assert_eq!(job.status, "failed");
+
+    // A job that did report keeps its result.
+    let job_id = super::create_job(&state, "test-job").await;
+    let reporting_state = state.clone();
+    let reporting_id = job_id.clone();
+    super::run_job(state.clone(), job_id.clone(), async move {
+        super::update_job_finished(&reporting_state, &reporting_id, "completed", Some(0), None)
+            .await;
+    })
+    .await;
+    let job = state.jobs.read().await.get(&job_id).cloned().unwrap();
+    assert_eq!(job.status, "completed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn waiting_on_a_job_gives_up_at_the_ceiling() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let job_id = super::create_job(&state, "test-job").await;
+    let started = std::time::Instant::now();
+    assert!(
+        !super::await_job_outcome_within(&state, &job_id, std::time::Duration::from_millis(250))
+            .await
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_millis(250));
+}
+
+// ---------------------------------------------------------------------------
+// Activity rows are written one at a time
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recording_activity_updates_one_row_and_the_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    // Seed another listener through the whole-store path so the targeted
+    // write can be seen to leave them alone.
+    state
+        .activity
+        .mutate(|activity| {
+            activity
+                .by_user
+                .entry("other".to_string())
+                .or_default()
+                .insert("2026-01-01".to_string(), 42.0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    super::record_activity(&state, "reader", 30.0, 0).await;
+    super::record_activity(&state, "reader", 45.5, 0).await;
+
+    let today = super::today_ymd(0);
+    let cached = state.activity.read().await.clone();
+    assert_eq!(cached.by_user["reader"][&today], 75.5);
+    assert_eq!(cached.by_user["other"]["2026-01-01"], 42.0);
+
+    let stored = state
+        .database
+        .call(|connection| {
+            super::read_activity_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored.by_user["reader"][&today], 75.5);
+    assert_eq!(stored.by_user["reader"].len(), 1);
+    assert_eq!(stored.by_user["other"]["2026-01-01"], 42.0);
+}
+
+// ---------------------------------------------------------------------------
+// Review sweep: ranges, covers, throttles, origins, and startup sweeps
+// ---------------------------------------------------------------------------
+
+#[test]
+fn byte_ranges_distinguish_ignorable_headers_from_unsatisfiable_ones() {
+    use super::ByteRange;
+
+    assert_eq!(
+        super::parse_byte_range("bytes=0-99", 1000),
+        ByteRange::Satisfiable(0, 99)
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=-100", 1000),
+        ByteRange::Satisfiable(900, 999)
+    );
+    // Outside the file: refused with 416.
+    assert_eq!(
+        super::parse_byte_range("bytes=1000-", 1000),
+        ByteRange::Unsatisfiable
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=-0", 1000),
+        ByteRange::Unsatisfiable
+    );
+    // Not something this server serves: ignored, full body with 200.
+    assert_eq!(
+        super::parse_byte_range("items=0-99", 1000),
+        ByteRange::Unsupported
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=0-1,5-6", 1000),
+        ByteRange::Unsupported
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=abc-def", 1000),
+        ByteRange::Unsupported
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=5-2", 1000),
+        ByteRange::Unsupported
+    );
+}
+
+#[test]
+fn byte_ranges_on_an_empty_file_do_not_underflow() {
+    use super::ByteRange;
+
+    assert_eq!(
+        super::parse_byte_range("bytes=0-", 0),
+        ByteRange::Unsatisfiable
+    );
+    assert_eq!(
+        super::parse_byte_range("bytes=-1", 0),
+        ByteRange::Unsatisfiable
+    );
+    assert_eq!(
+        super::parse_byte_range("items=0-", 0),
+        ByteRange::Unsupported
+    );
+}
+
+#[test]
+fn cover_art_is_only_served_under_an_image_type() {
+    assert_eq!(
+        super::cover_art_content_type(Some("image/jpeg")),
+        "image/jpeg"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("image/jpg")),
+        "image/jpeg"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("IMAGE/PNG")),
+        "image/png"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("image/webp; charset=binary")),
+        "image/webp"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("image/gif")),
+        "image/gif"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("image/bmp")),
+        "image/bmp"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("text/html")),
+        "application/octet-stream"
+    );
+    assert_eq!(
+        super::cover_art_content_type(Some("image/svg+xml")),
+        "application/octet-stream"
+    );
+    assert_eq!(
+        super::cover_art_content_type(None),
+        "application/octet-stream"
+    );
+}
+
+#[test]
+fn leftover_download_archives_are_swept_at_startup() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    std::fs::write(dir.join("operalibre-abc123.zip"), b"partial").unwrap();
+    std::fs::write(dir.join("operalibre-def456.zip"), b"partial").unwrap();
+    std::fs::write(dir.join("unrelated.zip"), b"keep").unwrap();
+    std::fs::write(dir.join("operalibre-notes.txt"), b"keep").unwrap();
+    std::fs::create_dir(dir.join("operalibre-folder.zip")).unwrap();
+
+    assert_eq!(super::sweep_download_temp_dir(dir).unwrap(), 2);
+
+    assert!(!dir.join("operalibre-abc123.zip").exists());
+    assert!(!dir.join("operalibre-def456.zip").exists());
+    assert!(dir.join("unrelated.zip").exists());
+    assert!(dir.join("operalibre-notes.txt").exists());
+    assert!(dir.join("operalibre-folder.zip").is_dir());
+    assert_eq!(super::sweep_download_temp_dir(dir).unwrap(), 0);
+}
+
+#[test]
+fn leftover_upload_staging_folders_are_swept_at_startup() {
+    let root = tempfile::tempdir().unwrap();
+    let library = root.path().join("library");
+    std::fs::create_dir_all(library.join(".operalibre-upload-abc")).unwrap();
+    std::fs::write(
+        library.join(".operalibre-upload-abc").join("01.mp3"),
+        b"partial",
+    )
+    .unwrap();
+    std::fs::create_dir_all(library.join("A Real Book")).unwrap();
+    std::fs::write(library.join(".operalibre-upload-file"), b"not a dir").unwrap();
+
+    assert_eq!(super::sweep_upload_staging_dirs(&library).unwrap(), 1);
+    assert!(!library.join(".operalibre-upload-abc").exists());
+    assert!(library.join("A Real Book").is_dir());
+    assert!(library.join(".operalibre-upload-file").is_file());
+
+    // A library root that does not exist yet simply has nothing to sweep.
+    assert_eq!(
+        super::sweep_upload_staging_dirs(&root.path().join("missing")).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn account_lockouts_are_keyed_by_address_and_name() {
+    let alice: std::net::IpAddr = "203.0.113.5".parse().unwrap();
+    let mallory: std::net::IpAddr = "198.51.100.7".parse().unwrap();
+    assert_ne!(
+        super::login_account_throttle_key(alice, "reader"),
+        super::login_account_throttle_key(mallory, "reader")
+    );
+    assert_eq!(
+        super::login_account_throttle_key(alice, "Reader"),
+        super::login_account_throttle_key(alice, "reader")
+    );
+    assert_ne!(
+        super::login_account_throttle_key(alice, "reader"),
+        super::login_ip_throttle_key(alice)
+    );
+}
+
+#[test]
+fn lan_mode_ignores_forwarded_addresses() {
+    let mut headers = super::HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.8".parse().unwrap());
+    let loopback: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
+    let forwarded: std::net::IpAddr = "203.0.113.8".parse().unwrap();
+
+    assert_eq!(
+        super::client_ip_for_mode(super::DeploymentMode::Lan, loopback, &headers),
+        loopback.ip()
+    );
+    assert_eq!(
+        super::client_ip_for_mode(super::DeploymentMode::Proxy, loopback, &headers),
+        forwarded
+    );
+    assert_eq!(
+        super::client_ip_for_mode(super::DeploymentMode::Local, loopback, &headers),
+        forwarded
+    );
+}
+
+#[test]
+fn head_requests_may_carry_a_query_token_on_media_routes() {
+    use super::Method;
+
+    assert!(super::query_token_allowed(
+        &Method::HEAD,
+        "/api/books/book/tracks/track/stream"
+    ));
+    assert!(super::query_token_allowed(
+        &Method::HEAD,
+        "/api/books/book/cover"
+    ));
+    assert!(!super::query_token_allowed(&Method::HEAD, "/api/users"));
+    assert!(!super::query_token_allowed(
+        &Method::POST,
+        "/api/books/book/tracks/track/stream"
+    ));
+}
+
+#[test]
+fn download_filenames_carry_an_encoded_form_beside_the_ascii_one() {
+    let disposition = super::download_content_disposition("Les Misérables");
+    assert_eq!(
+        disposition,
+        "attachment; filename=\"Les Mis_rables.zip\"; filename*=UTF-8''Les%20Mis%C3%A9rables.zip"
+    );
+    assert_eq!(super::rfc8187_encode("plain-name_1.0"), "plain-name_1.0");
+    assert_eq!(super::rfc8187_encode("a b"), "a%20b");
+}
+
+#[test]
+fn a_newer_identities_file_is_a_distinct_error() {
+    let contents = serde_json::json!({ "version": 99, "books": [] }).to_string();
+    let error = super::parse_library_identities(&contents).unwrap_err();
+    assert!(
+        error.downcast_ref::<super::NewerIdentityFormat>().is_some(),
+        "{error}"
+    );
+    assert!(error.to_string().contains("newer OperaLibre"));
+
+    let garbage = super::parse_library_identities("{not json").unwrap_err();
+    assert!(
+        garbage
+            .downcast_ref::<super::NewerIdentityFormat>()
+            .is_none()
+    );
+}
+
+#[test]
+fn allowed_origins_are_validated_and_normalized_once() {
+    let normalized = super::normalize_allowed_origins(vec![
+        "HTTPS://Reader.Example.NET".to_string(),
+        "http://b.example:5173/".to_string(),
+        "https://reader.example.net".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        normalized,
+        vec![
+            "https://reader.example.net".to_string(),
+            "http://b.example:5173".to_string()
+        ]
+    );
+
+    assert!(super::normalize_allowed_origins(vec!["reader.example".to_string()]).is_err());
+    assert!(
+        super::normalize_allowed_origins(vec!["https://reader.example/app".to_string()]).is_err()
+    );
+    assert!(
+        super::normalize_allowed_origins(vec!["https://reader.example?x=1".to_string()]).is_err()
+    );
+    assert!(
+        super::normalize_allowed_origins(Vec::new())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn malformed_port_environment_values_are_errors() {
+    // Serialised through a process-wide variable; the key is unique to this
+    // test so no other test observes it.
+    const KEY: &str = "OPERALIBRE_TEST_PORT_PARSE";
+    // SAFETY: the tests in this module do not read this variable
+    // concurrently, and it is removed again before the test returns.
+    unsafe { std::env::set_var(KEY, "eighty") };
+    assert!(super::env_u16_value(KEY).is_err());
+    unsafe { std::env::set_var(KEY, "8080") };
+    assert_eq!(super::env_u16_value(KEY).unwrap(), Some(8080));
+    unsafe { std::env::remove_var(KEY) };
+    assert_eq!(super::env_u16_value(KEY).unwrap(), None);
+}
+
+/// Failures count against three counters at once. The (address, username)
+/// pair locks fast, so a handful of bad passwords from one address cannot
+/// deny the account's owner from anywhere else; the username alone locks
+/// only after many more, so guessing spread across many addresses still
+/// meets a ceiling.
+#[cfg(unix)]
+#[tokio::test]
+async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let now = super::unix_now_seconds();
+
+    // Six failures from one address lock only that address's pair.
+    let alice = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+    let bob = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+    let alice_on_victim = super::LoginThrottleKeys::new(alice, "victim");
+    for _ in 0..=super::LOGIN_MAX_FAILURES {
+        super::record_login_failures(&state, alice_on_victim.all()).await;
+    }
+    {
+        let attempts = state.login_attempts.lock().await;
+        assert!(alice_on_victim.is_locked(&attempts, now));
+        assert!(!super::LoginThrottleKeys::new(bob, "victim").is_locked(&attempts, now));
+        assert!(!super::LoginThrottleKeys::new(alice, "other").is_locked(&attempts, now));
+    }
+
+    // Fifty failures from fifty addresses lock the username for a fifty-first.
+    let stranger = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 51));
+    let stranger_on_target = super::LoginThrottleKeys::new(stranger, "target");
+    for host in 1..=super::LOGIN_ACCOUNT_MAX_FAILURES {
+        {
+            let attempts = state.login_attempts.lock().await;
+            assert!(
+                !stranger_on_target.is_locked(&attempts, now),
+                "locked after {} failures",
+                host - 1
+            );
+        }
+        let address = IpAddr::V4(Ipv4Addr::new(10, 0, 0, host as u8));
+        let keys = super::LoginThrottleKeys::new(address, "target");
+        super::record_login_failures(&state, keys.all()).await;
+    }
+    {
+        let attempts = state.login_attempts.lock().await;
+        assert!(stranger_on_target.is_locked(&attempts, now));
+        assert!(!super::LoginThrottleKeys::new(stranger, "other").is_locked(&attempts, now));
+    }
+
+    // The refusal is what the sign-in handler answers with, before it does
+    // any password work.
+    let refused = super::authenticate_and_open_session(
+        &state,
+        SocketAddr::new(stranger, 40_000),
+        &super::HeaderMap::new(),
+        super::LoginRequest {
+            username: "target".to_string(),
+            password: "whatever-password-1234".to_string(),
+        },
+    )
+    .await
+    .expect_err("the username ceiling refuses the sign-in");
+    assert_eq!(refused.status, super::StatusCode::TOO_MANY_REQUESTS);
+}

@@ -373,6 +373,12 @@ impl WorkStore {
 
     /// Rejects a suggested link for good. The exclusion is permanent so a
     /// rescan does not re-ask a question already answered.
+    ///
+    /// The edition is detached as well as excluded. A rejection can name a
+    /// work the edition was already linked to by a heuristic, and an exclusion
+    /// alone would have left that link standing — the very thing being
+    /// refused. Once detached, the next scan gives the edition a work of its
+    /// own, since every tier honours the exclusion.
     pub(crate) fn reject_suggestion(&mut self, book_id: &str, work_id: &str) -> bool {
         let Some(work) = self.works.iter_mut().find(|work| work.id == work_id) else {
             return false;
@@ -381,6 +387,7 @@ impl WorkStore {
             work.excluded_book_ids.push(book_id.to_string());
         }
         work.manual_book_ids.retain(|id| id != book_id);
+        work.book_ids.retain(|id| id != book_id);
         self.suggestions
             .retain(|suggestion| !(suggestion.book_id == book_id && suggestion.work_id == work_id));
         true
@@ -607,6 +614,42 @@ mod tests {
         );
         assert_eq!(resolved, full);
         assert_eq!(tier, MatchTier::Manual);
+    }
+
+    #[test]
+    fn rejecting_an_edition_a_heuristic_linked_detaches_it() {
+        let mut store = WorkStore::default();
+        let mut next_id = ids();
+        let (work, _) = store.resolve(
+            &edition("book-1", "The Odyssey", "Homer", Some(46_920.0)),
+            0,
+            &mut next_id,
+        );
+        let (joined, tier) = store.resolve(
+            &edition("book-2", "The Odyssey", "Homer", Some(46_000.0)),
+            1_000,
+            &mut next_id,
+        );
+        assert_eq!(joined, work);
+        assert_eq!(tier, MatchTier::TitleAuthorDuration);
+
+        assert!(store.reject_suggestion("book-2", &work));
+        assert!(
+            store.work_for_book("book-2").is_none(),
+            "a rejected edition stayed linked to the work"
+        );
+        assert_eq!(store.book_to_work().get("book-1"), Some(&work));
+
+        // The next scan gives the edition a work of its own instead of
+        // re-linking it, and the exclusion survives.
+        let (own, tier) = store.resolve(
+            &edition("book-2", "The Odyssey", "Homer", Some(46_000.0)),
+            2_000,
+            &mut next_id,
+        );
+        assert_ne!(own, work);
+        assert_eq!(tier, MatchTier::New);
+        assert!(store.suggestions.is_empty());
     }
 
     #[test]
