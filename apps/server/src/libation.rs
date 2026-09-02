@@ -613,6 +613,10 @@ pub(crate) async fn delete_libation_account(
     _: OwnerUser,
     Path(profile_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // An expired browser flow still parks the global Libation job lock until
+    // it is removed. Clear those before deciding that a sign-in blocks this
+    // deletion, rather than waiting for the scheduled cleanup task to run.
+    prune_expired_libation_login_sessions(&state).await;
     {
         let sessions = state.libation_login_sessions.lock().await;
         if sessions
@@ -639,7 +643,6 @@ pub(crate) async fn delete_libation_account(
             "Resolve pending download requests for this Audible account before removing it.",
         ));
     }
-    prune_expired_libation_login_sessions(&state).await;
     let _libation_guard = state.libation_job_lock.lock().await;
     state
         .libation_accounts
@@ -1224,6 +1227,14 @@ pub(crate) async fn list_libation_books(
         prune_expired_libation_login_sessions(&state).await;
         let _libation_guard = state.libation_job_lock.lock().await;
         for profile in uncached {
+            // Another listing may have filled this profile's cache while this
+            // request waited for the CLI lock. Use that result instead of
+            // serializing the same expensive export again.
+            if let Some(cached) = cached_libation_export(&profile).await {
+                profile_labels.extend(cached.labels);
+                books.extend(cached.books);
+                continue;
+            }
             let mut labels = HashMap::new();
             if profile.managed {
                 labels.insert(profile.id.clone(), profile.name.clone());
