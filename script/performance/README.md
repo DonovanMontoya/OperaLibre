@@ -25,7 +25,7 @@ The Rust fixture creates two small real WAV files per book in a temporary direct
 
 Results are under `output/performance/runs/<label>/` (gitignored):
 
-- `run.json`: source revision, environment/tool versions, workload, check status, completion marker.
+- `run.json`: source revision (Jujutsu, falling back to Git), environment/tool versions, workload, check status, completion marker. The runner fails if neither revision command succeeds; unavailable optional tools are recorded as `null`.
 - `browser-results.json`: browser measurements and assertions; failure screenshots/traces in `browser/`.
 - `server.json`: warmed samples, median/p95 handler time and full response sizes.
 - `ios/*.xcresult`: native XCTest results, CPU/wall-clock/memory measurements.

@@ -17,6 +17,7 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - run: node --test script/performance/run.test.mjs
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:perf -- --label ci
