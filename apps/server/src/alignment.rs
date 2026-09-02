@@ -1669,8 +1669,9 @@ fn solve_4x4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
         b.swap(column, pivot);
         for row in column + 1..4 {
             let factor = a[row][column] / a[column][column];
-            for k in column..4 {
-                a[row][k] -= factor * a[column][k];
+            let pivot_row = a[column];
+            for (k, value) in a[row].iter_mut().enumerate().skip(column) {
+                *value -= factor * pivot_row[k];
             }
             b[row] -= factor * b[column];
         }
@@ -1883,7 +1884,7 @@ pub fn estimate_sync_map(
                 pins.push((index, seconds));
             }
         }
-        pins.sort_by(|a, b| a.0.cmp(&b.0));
+        pins.sort_by_key(|pin| pin.0);
         manual_used += pins.len();
         let mut boundaries: Vec<(usize, f64)> = vec![(0, anchor.start_seconds)];
         boundaries.extend(pins);

@@ -455,9 +455,7 @@ pub(crate) fn describe(
 /// The companion that read-along follows: the first book-kind document,
 /// preferring the format that can be synced. Falls back to an unreadable
 /// document rather than a picture supplement.
-pub(crate) fn primary_reading_file<'a>(
-    companions: &'a [CompanionFile],
-) -> Option<&'a CompanionFile> {
+pub(crate) fn primary_reading_file(companions: &[CompanionFile]) -> Option<&CompanionFile> {
     const PREFERENCE: &[&str] = &["epub", "html", "htm", "txt", "pdf"];
     let mut books = companions
         .iter()
