@@ -110,8 +110,17 @@ func backgroundOfflineMediaRoot() throws -> URL {
     guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
         throw BackgroundDownloadPolicyError.invalidDestination
     }
-    let root = documents.appendingPathComponent("offline-media", isDirectory: true)
+    var root = documents.appendingPathComponent("offline-media", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // Offline copies can be re-downloaded from the server, so keep gigabytes
+    // of audio out of the iCloud and iTunes backups of Documents.
+    var resourceValues = URLResourceValues()
+    resourceValues.isExcludedFromBackup = true
+    do {
+        try root.setResourceValues(resourceValues)
+    } catch {
+        NSLog("Unable to exclude offline media from backups: %@", error.localizedDescription)
+    }
     return root.resolvingSymlinksInPath().standardizedFileURL
 }
 

@@ -20,6 +20,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// Bumped when the schema changes in a way `migrate` has to react to.
 pub(crate) const SCHEMA_VERSION: i64 = 2;
 
+/// Marks a database that is the authority over any legacy JSON files beside
+/// it: either it finished importing them, or it never had any to import.
+pub(crate) const JSON_IMPORT_COMPLETE_DOCUMENT: &str = "json-import-complete";
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -107,7 +111,7 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let connection = Connection::open(path)?;
+    let mut connection = Connection::open(path)?;
     // WAL is what stops readers blocking on the writer, which is the whole
     // point of moving off a single rewritten file. NORMAL is the matching
     // durability setting: a crash can lose the last transaction, a power cut
@@ -135,15 +139,54 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
         }
         Some(version) => {
             if version < 2 {
-                connection.execute_batch(
-                    "ALTER TABLE users ADD COLUMN announce_finishes INTEGER NOT NULL DEFAULT 1;
-                     ALTER TABLE users ADD COLUMN notify_finishes INTEGER NOT NULL DEFAULT 1;
-                     UPDATE schema_version SET version = 2;",
-                )?;
+                upgrade_v1_to_v2(&mut connection)?;
             }
         }
     }
     Ok(connection)
+}
+
+/// Adds the finish-notification columns.
+///
+/// One transaction, so a crash cannot leave the columns present with the
+/// version still at 1 — and each column is checked for first, so a database
+/// an older build did leave that way still comes through cleanly instead of
+/// failing on a duplicate column at every start.
+fn upgrade_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
+    let transaction = connection.transaction()?;
+    for column in ["announce_finishes", "notify_finishes"] {
+        if !table_has_column(&transaction, "users", column)? {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE users ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1;"
+            ))?;
+        }
+    }
+    transaction.execute("UPDATE schema_version SET version = 2", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Record that this database, not any JSON file beside it, is the authority.
+///
+/// The import writes the marker itself, but a database created fresh never
+/// went through an import and so never carried one. Without it, JSON files
+/// appearing later — an old backup copied in, say — read as an interrupted
+/// import, and the live database was deleted and rebuilt from them. By the
+/// time a database is opened for serving, the import has already had its
+/// turn, so there is nothing left that the marker could suppress.
+pub(crate) fn mark_json_import_complete(connection: &Connection) -> rusqlite::Result<()> {
+    write_document(connection, JSON_IMPORT_COMPLETE_DOCUMENT, "true")
 }
 
 /// Open an already-initialized database without creating a new file.
@@ -202,6 +245,7 @@ pub(crate) struct Database {
 impl Database {
     pub(crate) fn open(path: &FsPath) -> anyhow::Result<Self> {
         let connection = open(path)?;
+        mark_json_import_complete(&connection)?;
         secure_database_files(path);
         Ok(Self {
             connection: Arc::new(std::sync::Mutex::new(connection)),

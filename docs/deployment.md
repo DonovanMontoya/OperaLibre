@@ -87,7 +87,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/opt/operalibre
+# Only the state and library folders are writable; add download_temp_dir
+# here if server.config moves it outside the data folder.
+ReadWritePaths=/opt/operalibre/data /opt/operalibre/audiobooks
 
 [Install]
 WantedBy=multi-user.target
@@ -103,7 +105,9 @@ sudo systemctl enable --now operalibre.service
 sudo journalctl -u operalibre -f
 ```
 
-The checked-in `operalibre.service` applies the same hardening to the repository's `/srv/OperaLibre` layout. Adjust `WorkingDirectory`, `ExecStart`, `ReadWritePaths`, and the config path together if your installation lives elsewhere. Optional Libation files must be placed somewhere readable by the dedicated account; do not grant the service access to a personal home directory.
+The checked-in `operalibre.service` applies the same hardening to the repository's `/srv/OperaLibre` layout. Adjust `WorkingDirectory`, `ExecStart`, `ReadWritePaths`, and the config path together if your installation lives elsewhere. `ReadWritePaths` names only the data directory and the audiobook library — the binary, `server.config`, and the web bundle stay read-only to the service, which is what stops an exploited server from rewriting its own program. Both listed folders must exist before the first start, and a `download_temp_dir` outside the data directory has to be added to the list. Optional Libation files must be placed somewhere readable by the dedicated account; do not grant the service access to a personal home directory.
+
+The same read-only install folder disables the in-app updater: **Update server** and **Update frontend** on the Administration page report that the installation is not writable and point at `ReadWritePaths`. That is the trade-off — under the hardened unit, updates are made by replacing the files as root (or by re-running the one-line installer) and restarting the service. To keep in-app updates instead, add the install folder to the list, as in the commented-out line in the unit (`ReadWritePaths=/opt/operalibre/data /opt/operalibre/audiobooks /opt/operalibre` for the layout above), accepting that a compromised server could then rewrite its own program.
 
 ## launchd (macOS)
 
@@ -149,6 +153,8 @@ The server then serves the frontend at `/` and the API at `/api/...` from the sa
 
 The checked-in `operalibre-nginx.conf` is the production template. It includes HTTP-to-HTTPS redirection, TLS-only public service, login throttling, connection and body limits, query-string-safe access logs, security headers, long media timeouts, and a larger request allowance only for the authenticated uploader. Replace `books.example.com` and its certificate paths, then test the nginx configuration before reloading it.
 
+Two routes need their own `location` blocks, and the template has both. The Audiobookshelf-compatible API used by third-party apps lives under `/abs/`, outside `/api/`, so a proxy that only forwards `/api/` sends those requests to the web app instead of the server. Restoring a backup posts the whole archive to `/api/admin/backup`, which the server accepts up to 256 MiB; the general `/api/` ceiling of `2m` would reject it, so that path gets a `client_max_body_size 256m` block of its own.
+
 The template's uploader ceiling is `20g`, matching the default `max_upload_gib = 20`. If you change one, change the other. ZIP download limits, concurrency, staging location, and free-space reserve are enforced by the Rust server through `max_book_download_gib`, `max_concurrent_book_downloads`, `download_temp_dir`, and `min_download_free_gib`.
 
 Use this server profile behind the proxy:
@@ -191,7 +197,29 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 
+  location = /api/admin/backup {
+    client_max_body_size 256m;
+    proxy_request_buffering off;
+    proxy_pass http://127.0.0.1:4000;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
   location /api/ {
+    client_max_body_size 2m;
+    proxy_pass http://127.0.0.1:4000;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Range $http_range;
+    proxy_buffering off;
+  }
+
+  # Audiobookshelf-compatible API; same settings as /api/.
+  location /abs/ {
     client_max_body_size 2m;
     proxy_pass http://127.0.0.1:4000;
     proxy_http_version 1.1;

@@ -312,6 +312,18 @@ fn book_duration(book: &Book) -> f64 {
     })
 }
 
+/// Clamp a requested whole-book position to the book's length, when the
+/// length is known. A book whose tracks carry no durations reports zero, and
+/// clamping against that pinned every listener to the start of it.
+pub(crate) fn clamp_abs_book_position(position: f64, duration: f64) -> f64 {
+    let position = position.max(0.0);
+    if duration > 0.0 {
+        position.min(duration)
+    } else {
+        position
+    }
+}
+
 fn track_extension(file_name: &str) -> String {
     FsPath::new(file_name)
         .extension()
@@ -468,6 +480,9 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
 
 fn media_progress(book: &Book, progress: &Progress) -> AbsMediaProgress {
     let duration = book_duration(book);
+    // Older rows may carry only a track offset; the native read path derives
+    // the whole-book position from it, and this one must report the same.
+    let progress = &enrich_progress(book, progress);
     let current_time = progress.book_position_seconds;
     AbsMediaProgress {
         id: format!("{}-{}", ABS_LIBRARY_ID, book.id),
@@ -592,6 +607,7 @@ pub(crate) async fn abs_library_items(
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
+    ensure_startup_scan_finished(&state).await?;
     let mut visible = books_with_progress(&state, &auth).await?;
     if let Some(filter) = query.filter.as_deref() {
         let (group, encoded) = filter
@@ -642,6 +658,7 @@ pub(crate) async fn abs_filter_data(
     if library_id != ABS_LIBRARY_ID {
         return Err(ApiError::not_found("Library not found."));
     }
+    ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let mut authors = BTreeSet::new();
     let mut series = BTreeSet::new();
@@ -689,6 +706,7 @@ pub(crate) async fn abs_search(
     let needle = query.q.trim().to_lowercase();
     let media_token = media_token_for_session(&session.0);
     let limit = query.limit.unwrap_or(500);
+    ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let book = books
         .into_iter()
@@ -738,6 +756,7 @@ pub(crate) async fn abs_author(
     Path(author_id): Path<String>,
 ) -> Result<Json<AbsAuthorResponse>, ApiError> {
     let media_token = media_token_for_session(&session.0);
+    ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let books: Vec<_> = books
         .into_iter()
@@ -799,7 +818,7 @@ pub(crate) async fn abs_play(
 
     let current_time = saved
         .as_ref()
-        .map(|progress| progress.book_position_seconds)
+        .map(|progress| enrich_progress(book, progress).book_position_seconds)
         .unwrap_or(0.0);
     Ok(Json(AbsPlaybackSession {
         id: stable_id(&format!("abs-session:{}:{}", auth.id, item_id)),
@@ -840,7 +859,7 @@ pub(crate) async fn abs_update_progress(
         let book_position = update
             .current_time
             .or_else(|| update.progress.map(|fraction| fraction * duration))
-            .map(|position| position.clamp(0.0, duration.max(0.0)));
+            .map(|position| clamp_abs_book_position(position, duration));
         let first_track = book
             .tracks
             .first()
@@ -892,10 +911,45 @@ pub(crate) async fn abs_update_progress(
     Ok(Json(serde_json::to_value(media_progress(&book, &saved))?))
 }
 
+/// How far back an Audiobookshelf client may move a position and still be
+/// taken at its word. Those clients send no seek flag, so without this every
+/// rewind past the jitter slack read as a late checkpoint and was refused.
+/// Half an hour covers going back over a chapter; a larger drop is more
+/// likely a device syncing a much earlier sitting, and is still refused.
+pub(crate) const ABS_INTENTIONAL_REWIND_MAX_SECONDS: f64 = 1800.0;
+
+/// Whether a backward Audiobookshelf write reads as a listener rewinding
+/// rather than a client that lost its place. Only a fresh write qualifies —
+/// a stale one is a replay whatever distance it covers — and only one that
+/// lands past the near-zero band, so a client that failed to restore and
+/// reports the start of the book still meets the suspect-reset rule.
+pub(crate) fn abs_write_is_intentional_rewind(
+    previous: Option<&Progress>,
+    book_position: f64,
+    last_update: Option<u64>,
+    now_millis: u64,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    let regression = previous.book_position_seconds - book_position;
+    if regression <= 0.0
+        || regression >= ABS_INTENTIONAL_REWIND_MAX_SECONDS
+        || book_position < PROGRESS_NEAR_ZERO_SECONDS
+    {
+        return false;
+    }
+    let now_seconds = now_millis as f64 / 1000.0;
+    let stale = last_update.is_some_and(|ms| {
+        progress_write_is_stale(&previous.updated_at, (ms as f64 / 1000.0).min(now_seconds))
+    });
+    !stale
+}
+
 /// What one Audiobookshelf progress PATCH should do, decided without touching
 /// storage — the compatibility layer's counterpart to `decide_progress_write`,
 /// which it defers to whenever the request carries a position.
-fn decide_abs_progress_write(
+pub(crate) fn decide_abs_progress_write(
     book: &Book,
     previous: Option<&Progress>,
     requested_book_position: Option<f64>,
@@ -908,6 +962,8 @@ fn decide_abs_progress_write(
         abs_checkpoint_is_restart(book, previous, requested_book_position, finished);
     let (mut saved, backup_previous) = if let Some(book_position) = requested_book_position {
         let (track, track_position) = track_at_book_position(book, book_position);
+        let intentional_rewind =
+            abs_write_is_intentional_rewind(previous, book_position, last_update, now_millis);
         let checkpoint = ProgressUpdate {
             track_id: track.id.clone(),
             position_seconds: track_position,
@@ -915,7 +971,7 @@ fn decide_abs_progress_write(
             duration_seconds: track.duration_seconds,
             updated_at_ms: last_update,
             intentional_regression: explicit_restart,
-            intentional_seek: explicit_restart,
+            intentional_seek: explicit_restart || intentional_rewind,
             tz_offset_minutes: None,
             speed: None,
             client: Some("audiobookshelf".to_string()),

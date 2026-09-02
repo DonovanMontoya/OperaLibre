@@ -35,7 +35,15 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadWritePaths=/srv/OperaLibre
+# Only the state and library folders are writable; the binary, config, and
+# web bundle stay read-only to the service. Both folders must exist before
+# the first start. Add download_temp_dir here if server.config moves it
+# outside the data folder.
+ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks
+# The read-only install folder disables the in-app updater (Update server
+# and Update frontend on the Administration page). To allow in-app updates,
+# also grant the install folder, at the cost of that protection:
+#ReadWritePaths=/srv/OperaLibre/data /srv/OperaLibre/audiobooks /srv/OperaLibre
 TasksMax=256
 LimitNOFILE=65536
 
