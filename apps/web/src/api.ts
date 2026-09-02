@@ -16,7 +16,6 @@ import type {
   LibationBook,
   LibationDownloadRequest,
   LibationStatus,
-  LibationLoginStarted,
   LoginResponse,
   ProfileStats,
   Progress,
@@ -113,13 +112,9 @@ export function defaultServerUrl(serverType: ServerType) {
   return window.location.origin;
 }
 
-export function isNativeApp(): boolean {
-  return Capacitor.isNativePlatform();
-}
-
 // The macOS shell is a plain, desktop-sized WKWebView, not a Capacitor
 // runtime — it should keep the regular desktop layout, so it must NOT be
-// folded into isNativeApp() (that also switches the app into the mobile
+// treated as a Capacitor app (that also switches the app into the mobile
 // single-pane / bottom-tab-bar UI built for phone-sized Capacitor builds).
 // It does need the same credential handling as Capacitor apps though: the
 // shell serves the SPA from a local origin (127.0.0.1) that's different from
@@ -129,20 +124,16 @@ export function isNativeApp(): boolean {
 // storage functions below delete any persisted auth token on every launch.
 function usesNativeCredentialStorage(): boolean {
   const isMacShell = typeof window !== "undefined" && window.__OPERALIBRE_NATIVE_SHELL__ === true;
-  return isNativeApp() || isMacShell;
+  return Capacitor.isNativePlatform() || isMacShell;
 }
 
 function isLoopbackServerUrl(value: string): boolean {
   try {
-    const hostname = new URL(normalizeServerUrl(value)).hostname.toLowerCase();
+    const hostname = new URL(normalizeServerAddress(value)).hostname.toLowerCase();
     return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
   } catch {
     return false;
   }
-}
-
-function normalizeServerUrl(value: string): string {
-  return normalizeServerAddress(value);
 }
 
 export type ServerAlias = {
@@ -174,7 +165,7 @@ export function addServerAlias(name: string, rawUrl: string): ServerAlias {
   const trimmedName = name.trim();
   const url = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawUrl)
-    : normalizeServerUrl(rawUrl);
+    : normalizeServerAddress(rawUrl);
   if (!trimmedName) throw new Error("Alias name is required.");
   if (!url) throw new Error("Alias URL is required.");
   const aliases = getServerAliases();
@@ -214,14 +205,14 @@ export async function reconnectUsingServerAliases(): Promise<boolean> {
     return false;
   }
 
-  const activeUrl = normalizeServerUrl(getServerUrl()).toLowerCase();
+  const activeUrl = normalizeServerAddress(getServerUrl()).toLowerCase();
   const candidates = [
     { id: "primary", name: "Original address", url: getServerIdentityUrl() },
     ...getServerAliases()
   ];
   const attemptedUrls = new Set<string>();
   for (const alias of candidates) {
-    const aliasUrl = normalizeServerUrl(alias.url).toLowerCase();
+    const aliasUrl = normalizeServerAddress(alias.url).toLowerCase();
     if (!aliasUrl || attemptedUrls.has(aliasUrl)) {
       continue;
     }
@@ -318,7 +309,7 @@ export function hasUserConfiguredServer(): boolean {
 export function setServerUrl(rawValue: string) {
   const value = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
-    : normalizeServerUrl(rawValue);
+    : normalizeServerAddress(rawValue);
   storedServerUrl = value;
   if (typeof window === "undefined") {
     return;
@@ -331,11 +322,11 @@ export function setServerUrl(rawValue: string) {
 }
 
 export function setServerConnection(serverType: ServerType, rawValue: string) {
-  const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerUrl(rawValue);
+  const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerAddress(rawValue);
   setServerType(serverType);
   setServerUrl(rawValue);
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerUrl(rawValue));
+    window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerAddress(rawValue));
     if (changed) storeServerAliases([]);
   }
   if (changed) {
@@ -362,7 +353,7 @@ function currentApiBase(): string {
 export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
   const base = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
-    : normalizeServerUrl(rawValue);
+    : normalizeServerAddress(rawValue);
   if (!base) {
     throw new Error("Server URL is required.");
   }
@@ -1055,44 +1046,6 @@ export async function requestLibationBook(asin: string, title: string, profileId
     `/api/libation/requests/${encodeURIComponent(asin)}`,
     { method: "POST", body: JSON.stringify({ title, profileId }) }
   );
-}
-
-export async function startLibationAccountLogin(input: {
-  profileId?: string;
-  label: string;
-  accountId: string;
-  locale: string;
-}) {
-  return request<LibationLoginStarted>("/api/libation/accounts/login/start", {
-    method: "POST",
-    body: JSON.stringify(input)
-  });
-}
-
-export async function completeLibationAccountLogin(sessionId: string, responseUrl: string) {
-  return request<LibationStatus>(
-    `/api/libation/accounts/login/${encodeURIComponent(sessionId)}/complete`,
-    { method: "POST", body: JSON.stringify({ responseUrl }) }
-  );
-}
-
-export async function cancelLibationAccountLogin(sessionId: string) {
-  return request<void>(`/api/libation/accounts/login/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE"
-  });
-}
-
-export async function updateLibationAccount(profileId: string, label: string) {
-  return request<LibationStatus>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, {
-    method: "PUT",
-    body: JSON.stringify({ label })
-  });
-}
-
-export async function deleteLibationAccount(profileId: string) {
-  return request<void>(`/api/libation/accounts/${encodeURIComponent(profileId)}`, {
-    method: "DELETE"
-  });
 }
 
 export async function decideLibationRequest(requestId: string, approved: boolean) {

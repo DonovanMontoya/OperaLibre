@@ -31,10 +31,6 @@ function ensureFinishChannel(): Promise<void> {
   return finishChannelReady;
 }
 
-export function finishBannersAvailable(): boolean {
-  return Capacitor.isNativePlatform();
-}
-
 /**
  * Ask once per session, and only when there is something to show.
  *
@@ -43,7 +39,7 @@ export function finishBannersAvailable(): boolean {
  * decline. Returns whether banners may be posted.
  */
 export async function ensureFinishBannerPermission(): Promise<boolean> {
-  if (!finishBannersAvailable()) return false;
+  if (!Capacitor.isNativePlatform()) return false;
   try {
     const current = await LocalNotifications.checkPermissions();
     if (current.display === "granted") return true;
@@ -65,7 +61,7 @@ export async function ensureFinishBannerPermission(): Promise<boolean> {
  * first, so this never stacks.
  */
 export async function postFinishBanner(body: string): Promise<void> {
-  if (!finishBannersAvailable() || !body) return;
+  if (!Capacitor.isNativePlatform() || !body) return;
   try {
     await ensureFinishChannel();
     await LocalNotifications.schedule({

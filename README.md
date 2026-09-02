@@ -89,6 +89,10 @@ The server owns scanning, authentication, metadata, cover art, readalong files, 
 
 ## Development
 
+For repeatable web, server, and native iOS checks and before/after measurements, see the
+[performance test suite](script/performance/README.md). Run `npm run test:perf` for the portable suite
+or `npm run test:perf:all` on a Mac with Xcode and an iOS Simulator runtime.
+
 This project uses [Jujutsu](https://jujutsu-vcs.github.io/) (`jj`) for version control:
 
 ```bash

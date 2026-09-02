@@ -23,8 +23,6 @@ const MEDIA_DIRECTORY = Directory.Data;
 
 type StoredMedia = { key: string; blob: Blob };
 
-const isNative = () => Capacitor.isNativePlatform();
-
 let databasePromise: Promise<IDBDatabase> | null = null;
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -151,7 +149,7 @@ export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">) {
 }
 
 export async function cancelBookOfflineDownload(book: Pick<Book, "id">) {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     await cancelBackgroundBookDownload(backgroundDownloadJobId(book));
   }
 }
@@ -244,7 +242,7 @@ async function nativeFileUrl(path: string) {
 // IndexedDB; clear them once so they stop wasting WebView storage.
 let legacyMediaCleared = false;
 async function clearLegacyMediaBlobs() {
-  if (!isNative() || legacyMediaCleared) return;
+  if (!Capacitor.isNativePlatform() || legacyMediaCleared) return;
   legacyMediaCleared = true;
   try {
     const db = await openDatabase();
@@ -311,7 +309,7 @@ export function getCachedProgress(userId: string, bookId: string) {
 
 export async function isBookDownloaded(book: Book) {
   if (!book.tracks.length) return false;
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     if (book.tracks.every((track) => track.localFilePath)) {
       return (await Promise.all(book.tracks.map((track) => fileExists(track.localFilePath!)))).every(Boolean);
     }
@@ -339,7 +337,7 @@ export async function downloadBookForOffline(
   signal?: AbortSignal
 ) {
   const total = book.tracks.length;
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
     const files: BackgroundDownloadFile[] = await Promise.all(book.tracks.map(async (track) => ({
@@ -397,7 +395,7 @@ export async function downloadBookForOffline(
 }
 
 export async function removeBookDownload(book: Book) {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     await migrateLegacyBookDirectory(book);
     await Filesystem.rmdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(
       () => undefined
@@ -419,7 +417,7 @@ export async function removeBookDownload(book: Book) {
  * revoke. `releaseOfflineMediaUrl` handles both.
  */
 export async function getOfflineTrackUrl(book: Book, track: Track): Promise<string | null> {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     if (track.localFilePath) return nativeFileUrl(track.localFilePath);
     await migrateLegacyBookDirectory(book);
     return nativeFileUrl(await resolveTrackFilePath(book, track));
@@ -429,7 +427,7 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
 }
 
 export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     // A book imported from the device picker keeps the cover its own tags
     // carried; there is no server copy to fall back to.
     if (book.localCoverPath) return nativeFileUrl(book.localCoverPath);

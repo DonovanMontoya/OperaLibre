@@ -77,10 +77,6 @@ export function bookGainToDb(gain: number) {
   return normalizeBookGainDb(gainToDb(normalizeBookGain(gain)));
 }
 
-export function isBoosted(gain: number) {
-  return normalizeBookGain(gain) > BOOK_GAIN_DEFAULT;
-}
-
 export function formatBookGainDb(db: number) {
   const normalized = normalizeBookGainDb(db);
   if (normalized === 0) return "Original";
