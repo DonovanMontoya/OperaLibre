@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import {
   AlertCircle,
   ArrowDown,
@@ -203,7 +204,6 @@ import {
   releaseOfflineMediaUrl,
   removeBookDownload
 } from "./offline";
-import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
 import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
@@ -1974,7 +1974,7 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
     let active = true;
     let resolvedUrl: string | null = null;
     setLoadFailed(false);
-    if (isNativeApp()) {
+    if (Capacitor.isNativePlatform()) {
       void getOfflineCoverUrl(book).then((url) => {
         resolvedUrl = url;
         if (active) {
@@ -2111,7 +2111,7 @@ function initialAuthState(): AuthState {
     // app before their server exists can still listen, and connecting stays
     // one tap away on the shelf and in settings. The mode must be persisted
     // before MainApp renders because it reads isLocalMode() directly.
-    if (isNativeApp()) {
+    if (Capacitor.isNativePlatform()) {
       enterLocalMode();
       return { phase: "ready", user: DEVICE_USER };
     }
@@ -2125,7 +2125,7 @@ function initialAuthState(): AuthState {
   // shelf must wait for its query-safe media credential before it renders
   // remote artwork. This matters on the first launch after upgrading from a
   // build that only persisted the full session token.
-  const cachedUser = isNativeApp() && getStoredToken() && getStoredMediaToken()
+  const cachedUser = Capacitor.isNativePlatform() && getStoredToken() && getStoredMediaToken()
     ? getOfflineUser()
     : null;
   return cachedUser
@@ -2240,7 +2240,7 @@ export default function App() {
       return;
     }
     if (!hasUserConfiguredServer()) {
-      if (isNativeApp()) {
+      if (Capacitor.isNativePlatform()) {
         enterLocalMode();
         setAuthState({ phase: "ready", user: DEVICE_USER });
         return;
@@ -2316,7 +2316,7 @@ export default function App() {
   }, []);
 
   if (authState.phase === "loading") {
-    if (isNativeApp()) return <NativeLaunchPlaceholder />;
+    if (Capacitor.isNativePlatform()) return <NativeLaunchPlaceholder />;
     return (
       <main className="auth-shell startup-shell">
         <div className="startup-loader" role="status" aria-live="polite" aria-label="Opening OperaLibre">
@@ -2347,7 +2347,7 @@ export default function App() {
           enterDemoMode();
           setAuthState({ phase: "ready", user: DEMO_USER });
         }}
-        onLocal={isNativeApp() ? () => {
+        onLocal={Capacitor.isNativePlatform() ? () => {
           enterLocalMode();
           setAuthState({ phase: "ready", user: DEVICE_USER });
         } : undefined}
@@ -2451,7 +2451,7 @@ function MainApp({
   const isOperaLibre = getServerType() === "operalibre";
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
-  const native = isNativeApp();
+  const native = Capacitor.isNativePlatform();
   const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
@@ -3534,7 +3534,7 @@ function MainApp({
     if (!libationBooks.length) return;
     setBooks((current) => {
       const enriched = enrichBooksFromLibation(current, libationBooks);
-      if (enriched !== current && isNativeApp()) {
+      if (enriched !== current && Capacitor.isNativePlatform()) {
         void cacheLibrary(
           currentUser.id,
           enriched.filter((book) => book.source !== "device")
@@ -3545,7 +3545,7 @@ function MainApp({
   }, [currentUser.id, libationBooks]);
 
   useEffect(() => {
-    if (!isNativeApp() || !books.length) return;
+    if (!Capacitor.isNativePlatform() || !books.length) return;
     void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
     // Keyed on ids: re-statting every downloaded file each time a progress
@@ -3557,7 +3557,7 @@ function MainApp({
   // idempotent, so this also supplies file metadata needed to recover jobs
   // created by older builds without duplicating their URLSession tasks.
   useEffect(() => {
-    if (!isNativeApp() || !books.length) return;
+    if (!Capacitor.isNativePlatform() || !books.length) return;
     let cancelled = false;
     void Promise.all(books.map(async (book) => {
       const status = await getBookBackgroundDownloadStatus(book).catch(() => null);
@@ -3579,7 +3579,7 @@ function MainApp({
     let active = true;
     let resolvedUrl: string | null = null;
     setOfflineSource(null);
-    if (isNativeApp() && playbackBook && currentTrack) {
+    if (Capacitor.isNativePlatform() && playbackBook && currentTrack) {
       const trackId = currentTrack.id;
       void getOfflineTrackUrl(playbackBook, currentTrack)
         .catch(() => null)
@@ -5032,7 +5032,7 @@ function MainApp({
         const next = existing.map((candidate) =>
           candidate.id === book.id ? { ...candidate, progress: summary } : candidate
         );
-        if (isNativeApp()) {
+        if (Capacitor.isNativePlatform()) {
           void cacheLibrary(
             currentUser.id,
             next.filter((candidate) => candidate.source !== "device")
@@ -7558,7 +7558,7 @@ function MainApp({
                         <CircleCheck size={13} />
                         <span>On device</span>
                       </span>
-                    ) : isNativeApp() ? (
+                    ) : Capacitor.isNativePlatform() ? (
                       <button
                         className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
                           selectedDownload ? "downloading" : ""
@@ -7603,7 +7603,7 @@ function MainApp({
                         <span>Download</span>
                       </a>
                     ) : null}
-                    {isNativeApp() && downloadStatus?.bookId === selectedBook.id ? (
+                    {Capacitor.isNativePlatform() && downloadStatus?.bookId === selectedBook.id ? (
                       <span className="download-status">{downloadStatus.message}</span>
                     ) : null}
                     {playbackError ? <span className="download-status">{playbackError}</span> : null}

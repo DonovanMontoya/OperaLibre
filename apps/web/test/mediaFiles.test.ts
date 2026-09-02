@@ -3,8 +3,7 @@ import test from "node:test";
 import {
   fileExtension,
   isSupportedAudioFileName,
-  storedMediaExtension,
-  storedMediaExtensionChanged
+  storedMediaExtension
 } from "../src/mediaFiles.ts";
 
 test("file extensions are read off the name and lowercased", () => {
@@ -21,7 +20,6 @@ test("m4b is stored as m4a so iOS can type it", () => {
   // type, so a stored audiobook is served as application/octet-stream.
   assert.equal(storedMediaExtension("m4b"), "m4a");
   assert.equal(storedMediaExtension("M4B"), "m4a");
-  assert.ok(storedMediaExtensionChanged("m4b"));
 });
 
 test("audiobook files are recognised by name, whatever iOS calls their type", () => {
@@ -38,6 +36,5 @@ test("audiobook files are recognised by name, whatever iOS calls their type", ()
 test("every other audio extension is stored unchanged", () => {
   for (const extension of ["m4a", "mp3", "mp4", "flac", "wav", "ogg", "opus", "aac", "aiff"]) {
     assert.equal(storedMediaExtension(extension), extension);
-    assert.ok(!storedMediaExtensionChanged(extension));
   }
 });

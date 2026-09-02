@@ -352,12 +352,3 @@ export function getDemoProfileStats(): ProfileStats {
     }))
   };
 }
-
-export function demoContentIsSelfContained() {
-  return DEMO_BOOKS.every((book) =>
-    book.coverArtUrl?.startsWith(DEMO_MEDIA_PREFIX) &&
-    book.tracks.every((track) => track.streamUrl.startsWith(DEMO_MEDIA_PREFIX)) &&
-    (!book.readingFile || book.readingFile.url.startsWith(DEMO_MEDIA_PREFIX)) &&
-    !book.asin
-  );
-}

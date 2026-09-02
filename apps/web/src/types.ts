@@ -262,13 +262,6 @@ export type LibationDownloadRequest = {
   jobId: string | null;
 };
 
-export type LibationLoginStarted = {
-  sessionId: string;
-  profileId: string;
-  loginUrl: string;
-  expiresAt: number;
-};
-
 export type JobStatus = {
   id: string;
   kind: string;
