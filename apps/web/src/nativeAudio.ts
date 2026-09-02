@@ -90,7 +90,13 @@ interface NativeAudioPlugin {
     }>;
   }): Promise<void>;
   getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
-  stop(): Promise<void>;
+  /**
+   * Tears the player down. `releaseSession` (default true) also gives up the
+   * audio session so other apps' audio can resume; the attach cleanup passes
+   * false because a track change re-attaches moments later and a released
+   * session would hand the lock screen to whatever was playing before.
+   */
+  stop(options?: { releaseSession?: boolean }): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "ended", listener: (state: Partial<NativeAudioState>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "sleepTimerEnded", listener: () => void): Promise<PluginListenerHandle>;
@@ -123,6 +129,16 @@ export function setNativeAudioGain(gain: number) {
 
 export function usesNativeAudioPlayer() {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
+}
+
+/**
+ * Gives the audio session up once the player has closed for good. The
+ * attach cleanup never releases it (a track change re-attaches at once), so
+ * the app calls this when a session ends with nothing to follow.
+ */
+export function releaseNativeAudioSession() {
+  if (!usesNativeAudioPlayer()) return Promise.resolve();
+  return NativeAudio.stop({ releaseSession: true }).catch(() => undefined);
 }
 
 export function updateNativeAudioNowPlaying(options: {
@@ -292,7 +308,7 @@ export function attachNativeAudioPlayer(
   const volumeChange = () => safely(NativeAudio.setVolume({ volume: audio.volume }));
   const emptied = () => {
     nativeStateSynchronizer.clear();
-    safely(NativeAudio.stop());
+    safely(NativeAudio.stop({ releaseSession: false }));
   };
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
@@ -419,6 +435,9 @@ export function attachNativeAudioPlayer(
     if (!fellBack) audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();
-    void NativeAudio.stop().catch(() => undefined);
+    // Keep the audio session: this cleanup runs on every track change, and
+    // the next attach is moments away. App.tsx releases it when the player
+    // closes with nothing to follow.
+    void NativeAudio.stop({ releaseSession: false }).catch(() => undefined);
   };
 }

@@ -737,6 +737,15 @@ pub(crate) async fn prune_expired_libation_login_sessions(state: &AppState) {
     }
 }
 
+/// Takes the global Libation job lock, first releasing any expired sign-in
+/// that still parks it. The expiry task frees it within about a second of
+/// the deadline on its own; this closes the gap before that task runs, so a
+/// job never waits behind a sign-in the listener abandoned.
+pub(crate) async fn acquire_libation_job_lock(state: &AppState) -> tokio::sync::MutexGuard<'_, ()> {
+    prune_expired_libation_login_sessions(state).await;
+    state.libation_job_lock.lock().await
+}
+
 /// Removes one sign-in session once its deadline passes, if the browser flow
 /// never completed or cancelled it first.
 pub(crate) fn schedule_libation_login_session_expiry(
@@ -927,8 +936,7 @@ pub(crate) async fn libation_status(
     State(state): State<AppState>,
     _: AdminUser,
 ) -> Result<Json<LibationStatus>, ApiError> {
-    prune_expired_libation_login_sessions(&state).await;
-    let _libation_guard = state.libation_job_lock.lock().await;
+    let _libation_guard = acquire_libation_job_lock(&state).await;
     Ok(Json(read_libation_status(&state).await))
 }
 
@@ -1224,8 +1232,7 @@ pub(crate) async fn list_libation_books(
         }
     }
     if !uncached.is_empty() {
-        prune_expired_libation_login_sessions(&state).await;
-        let _libation_guard = state.libation_job_lock.lock().await;
+        let _libation_guard = acquire_libation_job_lock(&state).await;
         for profile in uncached {
             // Another listing may have filled this profile's cache while this
             // request waited for the CLI lock. Use that result instead of
@@ -1600,8 +1607,7 @@ pub(crate) async fn active_libation_sync_job(state: &AppState) -> Option<String>
 
 pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
-        prune_expired_libation_login_sessions(&state).await;
-        let _libation_guard = state.libation_job_lock.lock().await;
+        let _libation_guard = acquire_libation_job_lock(&state).await;
         update_job_running(&state, &job_id).await;
         update_job_output(&state, &job_id, "Starting Libation library scan.\n").await;
         let profiles = all_libation_profiles(&state).await;
@@ -1855,8 +1861,7 @@ async fn run_libation_liberate_job(
     profile: LibationProfile,
     asin: String,
 ) {
-    prune_expired_libation_login_sessions(&state).await;
-    let _libation_guard = state.libation_job_lock.lock().await;
+    let _libation_guard = acquire_libation_job_lock(&state).await;
     update_job_running(&state, &job_id).await;
     update_job_output(
         &state,
@@ -2021,8 +2026,7 @@ pub(crate) async fn liberate_all_libation_books(
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
-        prune_expired_libation_login_sessions(&state_for_job).await;
-        let _libation_guard = state_for_job.libation_job_lock.lock().await;
+        let _libation_guard = acquire_libation_job_lock(&state_for_job).await;
         update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,

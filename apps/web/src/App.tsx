@@ -136,6 +136,7 @@ import {
   hasUserConfiguredServer,
   SERVER_SETUP_GUIDE_URL,
   isNetworkError,
+  isServerNotReadyError,
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
@@ -183,7 +184,7 @@ import {
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
-import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
@@ -198,6 +199,7 @@ import {
   getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
+  releaseNativeAudioSession,
   seekNativeAudio,
   setNativeAudioGain,
   setNativeAudioSleepTimer,
@@ -785,12 +787,8 @@ function readStoredSortMode(source: LibrarySource): SortMode {
     legacySortModeMigrated = true;
     migrateLegacySortMode();
   }
-  let stored: string | null = null;
-  try {
-    stored = window.localStorage.getItem(sortModeStorageKey(source));
-  } catch {
-    // Storage unavailable — the shelf opens on the default sort.
-  }
+  // Storage unavailable reads as null — the shelf opens on the default sort.
+  const stored = readStoredValue(sortModeStorageKey(source));
   const isValid = SORT_OPTIONS.some((option) => option.value === stored)
     && isSortModeSupported(source, stored as SortMode);
   return isValid ? (stored as SortMode) : "title";
@@ -2339,14 +2337,9 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
-  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() => {
-    if (!ios) return "light";
-    try {
-      return readAppearanceMode(window.localStorage);
-    } catch {
-      return "system";
-    }
-  });
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
+    ios ? readStoredAppearanceMode() : "light"
+  );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
@@ -2723,6 +2716,15 @@ function MainApp({
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
   const libraryRequestGenerationRef = useRef(0);
+  // A listing refused while the server's startup scan runs is asked for
+  // again after its Retry-After; the timer and the latest loader live in
+  // refs so a scheduled retry always runs the current one and a fresh load
+  // (mount, refresh, sign-in) cancels whatever was pending.
+  const libraryRetryTimerRef = useRef<number | null>(null);
+  const loadBooksRef = useRef<() => Promise<void>>(async () => undefined);
+  // Set once native playback has attached, so the effect that sees the
+  // player closed can tell that from the app's first render.
+  const nativeAudioAttachedRef = useRef(false);
   const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
@@ -3083,6 +3085,10 @@ function MainApp({
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
+    if (libraryRetryTimerRef.current !== null) {
+      window.clearTimeout(libraryRetryTimerRef.current);
+      libraryRetryTimerRef.current = null;
+    }
     setIsLoading(true);
     setError(null);
     if (native) {
@@ -3242,14 +3248,27 @@ function MainApp({
           })
           .catch(() => undefined);
       }
-    } catch {
+    } catch (loadError) {
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
         : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      setIsOffline(true);
       applyLoadedBooks(cached, true);
+      if (isServerNotReadyError(loadError)) {
+        // The server answered: it is up, its startup scan just has not
+        // published a catalogue yet. Keep the cached shelf without muting
+        // anything, and ask again when it said to.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
+        libraryRetryTimerRef.current = window.setTimeout(() => {
+          libraryRetryTimerRef.current = null;
+          void loadBooksRef.current();
+        }, delayMs);
+        return;
+      }
+      setIsOffline(true);
       if (cached.length) {
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
@@ -3259,6 +3278,23 @@ function MainApp({
       if (isCurrentRequest()) setIsLoading(false);
     }
   }, [currentUser.id, isOperaLibre, localMode, native]);
+  loadBooksRef.current = loadBooks;
+
+  useEffect(
+    () => () => {
+      if (libraryRetryTimerRef.current !== null) {
+        window.clearTimeout(libraryRetryTimerRef.current);
+        libraryRetryTimerRef.current = null;
+      }
+      // Signing out unmounts the player with its session still held (the
+      // attach cleanup keeps it for the next track); nothing follows now.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!libationBooks.length) return;
@@ -4001,7 +4037,20 @@ function MainApp({
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!nativeAudio || !audio || !playbackBook || !currentTrack) return;
+    if (!nativeAudio) return;
+    if (!audio || !playbackBook || !currentTrack) {
+      // The player closed. The attach cleanup keeps the audio session so a
+      // track change does not hand audio to other apps between chapters;
+      // nothing follows this time, so give the session up. Skipped on the
+      // app's first render, where a WebView reload may have left native
+      // audio playing that React is about to pick back up.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+      return;
+    }
+    nativeAudioAttachedRef.current = true;
     return attachNativeAudioPlayer(
       audio,
       (message) => setPlaybackError(message),
@@ -5657,14 +5706,27 @@ function MainApp({
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
+      // As in loadBooks: a listing that calls the playing book finished must
+      // not pull the session out from under the listener.
+      const isPlayingNow = nativeAudio
+        ? nativePlaybackPlayingRef.current
+        : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) =>
         resolveActivePlaybackBookId(
           visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId")
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          isPlayingNow
         )
       );
       setError(null);
     } catch (refreshError) {
+      if (isServerNotReadyError(refreshError)) {
+        // Up but still scanning: loadBooks keeps asking until it publishes.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        void loadBooks();
+        return;
+      }
       // A rescan rejected by a reachable server is not "offline" — only
       // mute non-downloaded books when the server can't be reached at all.
       setIsOffline(isNetworkError(refreshError));

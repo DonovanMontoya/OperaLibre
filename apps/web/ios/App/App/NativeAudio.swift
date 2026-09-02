@@ -487,6 +487,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func stop(_ call: CAPPluginCall) {
+        // The attach cleanup passes false: it runs on every track change and
+        // the next load() follows at once, so releasing the session there
+        // would hand audio back to other apps between every two chapters.
+        let releaseSession = call.getBool("releaseSession") ?? true
         DispatchQueue.main.async { [weak self] in
             self?.generation += 1
             // stop() must disarm the sleep timer so it cannot keep counting
@@ -498,7 +502,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.sleepTimerLastTick = nil
             self?.sleepTimerFinishedWhileInactive = false
             self?.tearDownPlayer()
-            self?.deactivateAudioSession()
+            if releaseSession {
+                self?.deactivateAudioSession()
+            }
             call.resolve()
         }
     }

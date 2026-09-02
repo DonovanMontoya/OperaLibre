@@ -828,7 +828,10 @@ export function AdminPanel({
                               onChange={(event) => void saveLibationAccess(user, event.currentTarget.value as LibationAccess)}
                             >
                               <option value="approval">Approval required</option>
-                              <option value="direct">Allow direct downloads</option>
+                              {/* Granting direct access is owner-only on the server. */}
+                              <option value="direct" disabled={!currentUser.isOwner}>
+                                {currentUser.isOwner ? "Allow direct downloads" : "Allow direct downloads (owner only)"}
+                              </option>
                             </select>
                           </div>
                           ) : null}

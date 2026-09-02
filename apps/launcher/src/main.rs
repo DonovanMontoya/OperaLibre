@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -156,57 +156,15 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
     secure_directory(&data_dir)?;
 
     let port = configured_port(&root.join("server.config")).unwrap_or(4000);
-    match server_readiness(port) {
-        ServerReadiness::Ready => {
-            if open_when_ready {
-                open_browser(port)?;
-            }
-            return Ok(StartOutcome::Ready);
-        }
-        ServerReadiness::Unavailable => {
-            return Err(format!(
-                "The server is running, but its library could not be loaded. Open {} for details.",
-                server_log_path(root).display()
-            ));
-        }
-        ServerReadiness::Starting => {
-            let deadline = Instant::now() + STARTUP_CEILING;
-            while Instant::now() < deadline {
-                match server_readiness(port) {
-                    ServerReadiness::Ready => {
-                        if open_when_ready {
-                            open_browser(port)?;
-                        }
-                        return Ok(StartOutcome::Ready);
-                    }
-                    ServerReadiness::Unavailable => {
-                        return Err(format!(
-                            "The server is running, but its library could not be loaded. Open {} for details.",
-                            server_log_path(root).display()
-                        ));
-                    }
-                    ServerReadiness::Absent => break,
-                    ServerReadiness::Starting => thread::sleep(Duration::from_millis(300)),
-                }
-            }
-            match server_readiness(port) {
-                ServerReadiness::Absent => {}
-                ServerReadiness::Unavailable => {
-                    return Err(format!(
-                        "The server is running, but its library could not be loaded. Open {} for details.",
-                        server_log_path(root).display()
-                    ));
-                }
-                ServerReadiness::Ready => {
-                    if open_when_ready {
-                        open_browser(port)?;
-                    }
-                    return Ok(StartOutcome::Ready);
-                }
-                ServerReadiness::Starting => return Ok(StartOutcome::StillStarting),
-            }
-        }
-        ServerReadiness::Absent => {}
+    let log_path = data_dir.join("server.log");
+
+    // A server already up, or still coming up from an earlier start, is
+    // waited on rather than started twice. One that goes away meanwhile
+    // (`None`) gets a fresh start below.
+    if !matches!(server_readiness(port), ServerReadiness::Absent)
+        && let Some(outcome) = wait_for_readiness(port, open_when_ready, &log_path, None)?
+    {
+        return Ok(outcome);
     }
 
     let server_name = if cfg!(target_os = "windows") {
@@ -221,7 +179,6 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         ));
     }
 
-    let log_path = data_dir.join("server.log");
     let mut log_options = OpenOptions::new();
     log_options.create(true).append(true);
     #[cfg(unix)]
@@ -253,46 +210,66 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .map_err(|error| format!("Could not save the server process ID: {error}"))?;
     secure_file(&pid_path)?;
 
-    // Keep polling for as long as the process is alive: the listener comes up
-    // before a large first scan has published its catalogue. An exit or an
-    // explicitly failed catalogue is reported as soon as it happens.
+    let outcome = wait_for_readiness(port, open_when_ready, &log_path, Some(&mut child))?
+        .expect("a started server is polled until it settles, never given up on");
+    if outcome == StartOutcome::StillStarting {
+        append_log(
+            root,
+            "the server is still starting after the launcher's wait; leaving it running",
+        );
+    }
+    Ok(outcome)
+}
+
+/// Polls the server until it is ready, has failed, or the startup ceiling
+/// passes: the listener comes up before a large first scan has published its
+/// catalogue, so a `Starting` answer is waited on. `child` is the process
+/// this launcher started, if any; its exit is reported as soon as it
+/// happens. Without one, a server that stops answering yields `None` so the
+/// caller can start its own.
+fn wait_for_readiness(
+    port: u16,
+    open_when_ready: bool,
+    log_path: &Path,
+    mut child: Option<&mut Child>,
+) -> Result<Option<StartOutcome>, String> {
     let deadline = Instant::now() + STARTUP_CEILING;
-    while Instant::now() < deadline {
+    loop {
         match server_readiness(port) {
             ServerReadiness::Ready => {
                 if open_when_ready {
                     open_browser(port)?;
                 }
-                return Ok(StartOutcome::Ready);
+                return Ok(Some(StartOutcome::Ready));
             }
             ServerReadiness::Unavailable => {
                 return Err(format!(
-                    "The server started, but its library could not be loaded. Open {} for details.",
+                    "The server is running, but its library could not be loaded. Open {} for details.",
                     log_path.display()
                 ));
             }
+            ServerReadiness::Absent if child.is_none() => return Ok(None),
             ServerReadiness::Absent | ServerReadiness::Starting => {}
         }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "The server exited during startup ({status}). Open {} for details.",
-                    log_path.display()
-                ));
+        if let Some(child) = &mut child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "The server exited during startup ({status}). Open {} for details.",
+                        log_path.display()
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(format!("Could not check on the server process: {error}"));
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(format!("Could not check on the server process: {error}"));
-            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(Some(StartOutcome::StillStarting));
         }
         thread::sleep(Duration::from_millis(300));
     }
-
-    append_log(
-        root,
-        "the server is still starting after the launcher's wait; leaving it running",
-    );
-    Ok(StartOutcome::StillStarting)
 }
 
 #[cfg(unix)]
