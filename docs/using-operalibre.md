@@ -75,17 +75,33 @@ The server also speaks an Audiobookshelf-compatible API, so audiobook apps with 
 
 There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
 
-## Readalong and sentence highlighting
+## Read along with the ebook
 
-To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Select a book and open the **Readalong** control in the player.
+Read along is a **beta feature and is off by default.** Turn it on per device under **Settings → Extras → Read along** in the phone and tablet apps, or from the account menu (**Read along: On/Off**) in the browser. With it off, none of the read-along controls appear.
 
-For sentence highlighting, the companion must be an EPUB and the book needs a sync map. An administrator can either put a matching `.sync.json` file beside the book or set up automatic generation:
+To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books that have one show a **Read along** tag in the library, and their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
+
+With an EPUB, the reader follows the audio:
+
+- The narrated sentence is highlighted and the page turns with the narration. With a precise sync map the narrated word is marked inside the sentence too.
+- Tap any sentence to play from there.
+- Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target button in the reader, or the **Follow** control), and the marker snaps to the narrated sentence again.
+- With approximate sync, the marker can drift within a long chapter. Choose **Sync here**, then tap the sentence the narrator is reading: the server keeps that anchor with the book and re-times the sentences around it for every listener. One or two taps in a long chapter keep it close. An administrator can clear the adjustments from the reader.
+- Themes, text size, and a full-screen focus mode are in the reader's toolbar. Arrow keys and swipes turn pages.
+
+On the phone and tablet apps the ebook opens as a full-screen reader of its own, over whatever you were doing, and closing it puts you back there. It reads like a paper book: tap the left or right edge of the page to turn it, swipe if you prefer, and tap a sentence in the middle to play from there. A tap on an empty part of the page hides the bars for distraction-free reading and brings them back. The title bar holds the follow toggle, the **Contents** sheet (chapters and any other companion files), and the **Appearance** sheet (theme, text size, **Sync here**, **Improve sync**). The theme starts on **auto**, which turns the page dark whenever the app is in its dark look (the system theme, or the appearance chosen in Settings on the phone); pick **paper**, **sepia**, or **night** to fix it. Under the page a strip shows the sync state and the page within the chapter, and holds the full player so you never have to leave the book: play/pause, skip back and forward, and buttons for speed, the sleep timer, and the chapter list that open over the page. When the book isn't the one playing, a **Listen while you read** button starts it instead. Full-screen focus mode on the web uses the same layout.
+
+Every EPUB can be followed straight away: with nothing else installed, the server times the text from the audiobook's chapter list, which the reader labels *Approximate sync* — close enough to keep the page and paragraph in step, but the marker can run a few lines ahead or behind. The narrator's pace is learned from the book itself: with enough chapters, how long this narrator spends per character, per sentence, per paragraph, and on dialogue is fitted from the chapters' known lengths. For sentence and word precision an administrator can either put a matching `.sync.json` file beside the book or set up automatic alignment:
 
 1. Install [echogarden](https://github.com/echogarden-project/echogarden) on the server machine: `npm install -g echogarden`.
 2. Restart OperaLibre. If `echogarden` is not on the server’s PATH, set `alignment_cli_path` in `server.config` to its full path instead.
-3. Open the book’s readalong pane and select **Sync**. Wait for the job to complete, then play the book.
+3. Open the book’s reader and select **Improve sync**. Wait for the job to complete, then play the book.
 
-Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside the book takes priority. Sync quality is best when the audio track names correspond to the EPUB chapter titles.
+Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside the book takes priority. Alignment works best when the audio chapter or track names correspond to the EPUB chapter titles, in any spelling (`Chapter 3`, `Chapter Three`, `III.`).
+
+### Extras: maps, illustrations, and supplements
+
+Audible titles often come with a PDF of maps or illustrations rather than the book's text. OperaLibre opens each companion during a scan and tells the two apart, so a picture PDF is offered as **Extras** instead of being presented as the book. A book can have both: the reader pane then shows tabs for the ebook, each supplement, and a gallery of any loose pictures in the book's folder (in the phone reader these are listed under **Other files** in the Contents sheet). A book with only extras shows a **View extras** invitation in place of the reader.
 
 ## Import Audible books with Libation (optional)
 

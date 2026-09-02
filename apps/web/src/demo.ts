@@ -60,6 +60,17 @@ const DEMO_BOOKS: Book[] = [
       contentType: "text/html",
       url: "/demo/readalong/lantern-atlas.html"
     },
+    companions: [
+      {
+        id: "demo-lantern-notes",
+        fileName: "The Lantern Atlas — Field Notes.html",
+        extension: "html",
+        contentType: "text/html",
+        url: "/demo/readalong/lantern-atlas.html",
+        kind: "book",
+        sizeBytes: 0
+      }
+    ],
     syncFile: null,
     chapters: [
       { id: "demo-lantern-c1", title: "The Brass Door", trackId: "demo-lantern-t1", trackIndex: 0, startSeconds: 0, endSeconds: 12, source: "demo" },

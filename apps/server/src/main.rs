@@ -54,6 +54,7 @@ use tokio::{
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
+    compression::CompressionLayer,
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
     timeout::TimeoutLayer,
@@ -67,6 +68,7 @@ mod alignment;
 mod app;
 mod auth;
 mod backup;
+mod companions;
 mod config;
 mod db;
 mod error;
@@ -97,6 +99,7 @@ use activity::*;
 use app::*;
 use auth::*;
 use backup::*;
+use companions::*;
 use config::*;
 use db::*;
 use error::*;

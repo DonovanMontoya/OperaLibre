@@ -13,7 +13,7 @@ The included React/Vite app is one client for this API. Custom web, mobile, desk
 
 ## Authentication
 
-The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, stream, download, and OPDS endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
+The web app obtains a session token and a separate scoped media token via `POST /api/auth/login`. Send the session token in `Authorization: Bearer ...` for API requests. Read-only cover, readalong, companion, sync-map, stream, download, and OPDS endpoints accept the media token as a `?token=` query parameter so plain `<audio>` and `<img>` elements work without exposing a full API bearer token in URLs. `GET /api/auth/status` returns the current session's media token when authenticated.
 
 ### Public endpoints
 
@@ -92,9 +92,12 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
 | `PUT` | `/api/books/{book_id}/metadata` | Save metadata overrides for a book. Admin only. Overrides win over embedded tags and Libation sidecar metadata. |
 | `GET` | `/api/books/{book_id}/cover` | Cover art image, extracted from the audio files' embedded tags. |
-| `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
-| `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`), if one is matched or generated. |
-| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/books/{book_id}/readalong` | The book's text companion (the `book`-kind entry of `companions`), if there is one. |
+| `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
+| `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves a sidecar or generated map when one exists; otherwise, for a book with an EPUB companion, estimates one from the chapter list on first request and caches it. |
+| `POST` | `/api/books/{book_id}/sync/anchors` | Add a listener-placed sync anchor to an estimated map: `{ "href": ..., "text": ..., "seconds": ... }` says the sentence `text` in spine document `href` is being narrated at book position `seconds`. Kept with the book under `data_dir/sync`; the estimate is rebuilt through every anchor on the next request. Returns `{ "anchorCount": n }`. Rejected for books that already have an aligned map. |
+| `DELETE` | `/api/books/{book_id}/sync/anchors` | Drop every listener-placed anchor on the book. Admin only. |
+| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether an alignment CLI was found: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
@@ -126,24 +129,49 @@ Audio tracks are streamed with HTTP range requests for seeking. The exact track 
 
 Book responses carry a `sharedProgress` array describing what the *other* accounts on the server have done with the book — `userId`, `username`, `status` (`inProgress` or `finished`), `percentComplete`, and `updatedAt`. Sharing is reciprocal and controlled by each account's `shareProgress` flag, which defaults to on: an account that has turned sharing off is omitted from everyone else's `sharedProgress` and receives an empty array itself. Books nobody else has started omit the field entirely.
 
-Books that have a sync map expose a `syncFile` object (`fileName`, `source` of `sidecar` or `generated`, and `url`). The sync map itself is JSON:
+#### Companions
+
+Every document and picture found beside a book's audio is listed in the book's `companions` array, each classified by what it holds rather than by its extension:
 
 ```json
 {
-  "version": 1,
+  "id": "3f9c…",
+  "fileName": "The Hobbit - Maps.pdf",
+  "extension": "pdf",
+  "contentType": "application/pdf",
+  "url": "/api/books/{book_id}/companions/3f9c…",
+  "kind": "supplement",
+  "sizeBytes": 8123456,
+  "pageCount": 12,
+  "imageCount": 14,
+  "textCharacters": 380
+}
+```
+
+`kind` is `book` for the text the narrator reads, `supplement` for a document that is mostly pictures (an Audible PDF of maps or illustrations), or `image` for a loose picture file. The judgement compares the document's text against the amount a narration of the book's length implies, so a picture book's short EPUB is still the book and a captioned atlas beside a ten-hour audiobook is not. `unreadable: true` marks a document that could not be opened; it is offered as the book rather than hidden. The counts are present for documents only; PDF counts are sampled and scaled. `readingFile` remains the primary `book`-kind companion (EPUB preferred) for older clients.
+
+#### Sync maps
+
+Books that can be followed expose a `syncFile` object (`fileName`, `source`, and `url`). `source` is `sidecar` for a `.sync.json` beside the book, `generated` for one produced by the alignment job, or `estimated` for a book with an EPUB companion and neither of those — the sync route interpolates a map from the chapter list on first request. The sync map itself is JSON:
+
+```json
+{
+  "version": 2,
   "generator": "echogarden",
+  "precision": "sentence",
   "fragments": [
     {
       "startSeconds": 1.15,
       "endSeconds": 2.74,
       "href": "text/ch1.xhtml",
-      "text": "The meadow was quiet in the early morning light."
+      "text": "The meadow was quiet in the early morning light.",
+      "words": [[1.15, 1.31, 0, 3], [1.31, 1.72, 4, 6]]
     }
   ]
 }
 ```
 
-`startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document.
+`startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document. `words` (optional) times each word as `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside `text`. `precision` is `sentence` for a forced alignment and `estimated` for an interpolation; an estimate also carries `anchorCount`, the number of audio chapters that were pinned to a table-of-contents entry (zero means one whole-book guess, which drifts more), and `manualAnchorCount`, the number of listener-placed anchors it was timed through. Version 1 maps, which carried sentences only, are still accepted.
 
 Progress updates use JSON with the current track and timing fields:
 

@@ -503,6 +503,8 @@ pub(crate) fn query_token_allowed(method: &Method, path: &str) -> bool {
             | ["api", "opds", "books"]
             | ["api", "books", _, "cover"]
             | ["api", "books", _, "readalong"]
+            | ["api", "books", _, "companions", _]
+            | ["api", "books", _, "sync"]
             | ["api", "books", _, "download"]
             | ["api", "books", _, "tracks", _, "stream"]
             | ["abs", "api", "books", _, "cover"]

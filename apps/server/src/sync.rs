@@ -10,14 +10,21 @@ pub(crate) async fn get_sync_map(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let file_path = {
+    let (aligned_path, estimate) = {
         let library = state.library.read().await;
-        library.book(&book_id)?;
-        library
-            .sync_paths
-            .get(&book_id)
-            .cloned()
-            .ok_or(ApiError::not_found("Sync map not found"))?
+        let book = library.book(&book_id)?;
+        match library.sync_paths.get(&book_id).cloned() {
+            Some(path) => (Some(path), None),
+            None => (None, estimate_input(&library, book)),
+        }
+    };
+    let file_path = match (aligned_path, estimate) {
+        (Some(path), _) => path,
+        (None, Some(input)) => {
+            let anchors = read_manual_anchors(&manual_anchors_path(&state, &book_id)).await;
+            ensure_estimated_sync_map(&state, &book_id, input, &anchors).await?
+        }
+        (None, None) => return Err(ApiError::not_found("Sync map not found")),
     };
 
     serve_file_response(
@@ -27,6 +34,251 @@ pub(crate) async fn get_sync_map(
         None,
     )
     .await
+}
+
+/// What an estimate is built from: the EPUB text and the audio's chapters.
+pub(crate) struct EstimateInput {
+    pub(crate) epub_path: PathBuf,
+    pub(crate) chapters: Vec<alignment::AudioChapter>,
+    pub(crate) book_duration_seconds: f64,
+}
+
+fn estimate_input(library: &LibraryState, book: &Book) -> Option<EstimateInput> {
+    let reading_file = book
+        .reading_file
+        .as_ref()
+        .filter(|reading_file| reading_file.extension == "epub")?;
+    let epub_path = library.reading_paths.get(&reading_file.id).cloned()?;
+    let book_duration_seconds = book
+        .duration_seconds
+        .or_else(|| {
+            book.tracks
+                .iter()
+                .map(|track| track.duration_seconds)
+                .try_fold(0.0, |sum, duration| duration.map(|value| sum + value))
+        })
+        .unwrap_or(0.0);
+    let chapters = book
+        .chapters
+        .iter()
+        .enumerate()
+        .map(|(index, chapter)| alignment::AudioChapter {
+            title: chapter.title.clone(),
+            start_seconds: chapter.start_seconds,
+            end_seconds: chapter
+                .end_seconds
+                .or_else(|| book.chapters.get(index + 1).map(|next| next.start_seconds))
+                .unwrap_or(book_duration_seconds)
+                .max(chapter.start_seconds),
+        })
+        .collect();
+    Some(EstimateInput {
+        epub_path,
+        chapters,
+        book_duration_seconds,
+    })
+}
+
+/// Returns the on-disk estimate for this book, building it on first use.
+///
+/// The file name carries a fingerprint of the EPUB and the chapter list, so
+/// a stale estimate is simply never found again; older ones for the book are
+/// removed once the new one is written.
+/// Where a book's listener-placed sync anchors live.
+fn manual_anchors_path(state: &AppState, book_id: &str) -> PathBuf {
+    state.sync_dir.join(format!("{book_id}.anchors.json"))
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualAnchorStore {
+    #[serde(default)]
+    anchors: Vec<alignment::ManualAnchor>,
+}
+
+async fn read_manual_anchors(path: &FsPath) -> Vec<alignment::ManualAnchor> {
+    match fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice::<ManualAnchorStore>(&bytes)
+            .map(|store| store.anchors)
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// More anchors than this is a listener tapping every sentence; the newest
+/// are kept.
+const MAX_MANUAL_ANCHORS: usize = 400;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncAnchorRequest {
+    pub(crate) href: String,
+    pub(crate) text: String,
+    pub(crate) seconds: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncAnchorSummary {
+    pub(crate) anchor_count: usize,
+}
+
+/// "The narrator is reading this sentence right now." Kept with the book,
+/// so the estimate is re-timed through it for every listener; the cached
+/// estimate is dropped and rebuilt on the next request.
+pub(crate) async fn add_sync_anchor(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(book_id): Path<String>,
+    Json(request): Json<SyncAnchorRequest>,
+) -> Result<Json<SyncAnchorSummary>, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let text = request.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() || request.href.trim().is_empty() || text.len() > 4_000 {
+        return Err(ApiError::bad_request("A sync anchor needs the sentence and its document."));
+    }
+    if !request.seconds.is_finite() || request.seconds < 0.0 {
+        return Err(ApiError::bad_request("A sync anchor needs a position in the book."));
+    }
+    {
+        let library = state.library.read().await;
+        let book = library.book(&book_id)?;
+        if library.sync_paths.contains_key(&book_id) {
+            return Err(ApiError::bad_request(
+                "This book already has an aligned sync map; anchors only adjust estimates.",
+            ));
+        }
+        if estimate_input(&library, book).is_none() {
+            return Err(ApiError::bad_request("This book has no EPUB to sync."));
+        }
+    }
+    let path = manual_anchors_path(&state, &book_id);
+    let mut anchors = read_manual_anchors(&path).await;
+    anchors.retain(|anchor| !(anchor.href == request.href && anchor.text == text));
+    anchors.push(alignment::ManualAnchor {
+        href: request.href.trim().to_string(),
+        text,
+        seconds: request.seconds,
+    });
+    if anchors.len() > MAX_MANUAL_ANCHORS {
+        let excess = anchors.len() - MAX_MANUAL_ANCHORS;
+        anchors.drain(..excess);
+    }
+    fs::create_dir_all(&state.sync_dir)
+        .await
+        .map_err(|error| ApiError::internal(format!("Could not create the sync directory: {error}")))?;
+    let anchor_count = anchors.len();
+    write_json_atomic(&path, &ManualAnchorStore { anchors }).await?;
+    remove_estimates(&state, &book_id).await;
+    Ok(Json(SyncAnchorSummary { anchor_count }))
+}
+
+/// Drops every listener-placed anchor for the book. Admin only, since the
+/// anchors are shared by everyone who reads it.
+pub(crate) async fn clear_sync_anchors(
+    State(state): State<AppState>,
+    _: AdminUser,
+    Path(book_id): Path<String>,
+) -> Result<Json<SyncAnchorSummary>, ApiError> {
+    {
+        let library = state.library.read().await;
+        library.book(&book_id)?;
+    }
+    let path = manual_anchors_path(&state, &book_id);
+    if let Err(error) = fs::remove_file(&path).await
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(ApiError::internal(format!("Could not clear the sync anchors: {error}")));
+    }
+    remove_estimates(&state, &book_id).await;
+    Ok(Json(SyncAnchorSummary { anchor_count: 0 }))
+}
+
+async fn remove_estimates(state: &AppState, book_id: &str) {
+    let prefix = format!("{book_id}{ESTIMATED_SYNC_INFIX}-");
+    if let Ok(mut entries) = fs::read_dir(&state.sync_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                let _ = fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+}
+
+async fn ensure_estimated_sync_map(
+    state: &AppState,
+    book_id: &str,
+    input: EstimateInput,
+    manual_anchors: &[alignment::ManualAnchor],
+) -> Result<PathBuf, ApiError> {
+    let metadata = fs::metadata(&input.epub_path)
+        .await
+        .map_err(|_| ApiError::not_found("Readalong path not found"))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let chapter_key = input
+        .chapters
+        .iter()
+        .map(|chapter| format!("{}@{:.3}-{:.3}", chapter.title, chapter.start_seconds, chapter.end_seconds))
+        .collect::<Vec<_>>()
+        .join("|");
+    let anchor_key = serde_json::to_string(manual_anchors).unwrap_or_default();
+    let fingerprint = stable_id(&format!(
+        "{}|{}|{}|{:.3}|{}|{}|v{}",
+        input.epub_path.to_string_lossy(),
+        metadata.len(),
+        modified,
+        input.book_duration_seconds,
+        chapter_key,
+        anchor_key,
+        alignment::SYNC_MAP_VERSION
+    ));
+    let prefix = format!("{book_id}{ESTIMATED_SYNC_INFIX}-");
+    let file_name = format!("{prefix}{fingerprint}{SYNC_SIDECAR_SUFFIX}");
+    let path = state.sync_dir.join(&file_name);
+    if fs::metadata(&path).await.is_ok() {
+        return Ok(path);
+    }
+
+    let epub_bytes = fs::read(&input.epub_path)
+        .await
+        .map_err(|error| ApiError::internal(format!("Could not read the EPUB: {error}")))?;
+    let anchors = manual_anchors.to_vec();
+    let map = tokio::task::spawn_blocking(move || {
+        let epub = alignment::parse_epub(&epub_bytes)
+            .map_err(|error| format!("The EPUB could not be parsed: {error}"))?;
+        alignment::estimate_sync_map(&epub, &input.chapters, input.book_duration_seconds, &anchors)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Sync estimate failed: {error}")))?
+    .map_err(|message| ApiError::not_found(format!("No sync map could be estimated: {message}")))?;
+
+    fs::create_dir_all(&state.sync_dir)
+        .await
+        .map_err(|error| ApiError::internal(format!("Could not create the sync directory: {error}")))?;
+    write_sync_map(&path, &map).await?;
+
+    // Sweep estimates for this book that carried an older fingerprint.
+    if let Ok(mut entries) = fs::read_dir(&state.sync_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with(&prefix) && name != file_name {
+                let _ = fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+    Ok(path)
 }
 
 pub(crate) async fn alignment_status(
@@ -114,7 +366,7 @@ pub(crate) async fn generate_sync_map(
                 update_job_output(
                     &state_for_job,
                     &job_id_for_task,
-                    &format!("Wrote sync map with {fragment_count} sentences.\n"),
+                    &format!("Wrote sync map with {fragment_count} sentences and word timings.\n"),
                 )
                 .await;
                 if let Err(error) = rescan_library(&state_for_job).await {
@@ -192,8 +444,22 @@ pub(crate) async fn run_sync_generation(
             .iter()
             .map(|track| track.title.clone())
             .collect::<Vec<_>>();
-        alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
-            .map_err(|message| anyhow::anyhow!(message))?
+        let scopes = alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
+            .map_err(|message| anyhow::anyhow!(message))?;
+        for (index, track) in tracks.iter().enumerate() {
+            if !scopes.iter().any(|scope| scope.track_index == index) {
+                update_job_output(
+                    state,
+                    job_id,
+                    &format!(
+                        "Skipping `{}`: it matches no chapter in the EPUB's table of contents.\n",
+                        track.title
+                    ),
+                )
+                .await;
+            }
+        }
+        scopes
     };
 
     let mut track_start_seconds = vec![0.0f64; tracks.len()];
@@ -290,17 +556,29 @@ pub(crate) async fn run_sync_generation(
         version: alignment::SYNC_MAP_VERSION,
         generator: Some("echogarden".to_string()),
         generated_at: Some(now_unix_string()),
+        precision: Some(alignment::PRECISION_SENTENCE.to_string()),
+        anchor_count: None,
+        manual_anchor_count: None,
         fragments,
     };
     fs::create_dir_all(&state.sync_dir).await?;
     let sync_path = state
         .sync_dir
         .join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    write_json_atomic(&sync_path, &sync_map)
+    write_sync_map(&sync_path, &sync_map)
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
 
     Ok(fragment_count)
+}
+
+/// Sync maps name every sentence of a book, so they are written compactly:
+/// pretty-printing a long title's map adds a third to several megabytes
+/// that every reader downloads.
+async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<(), ApiError> {
+    let bytes = serde_json::to_vec(map)
+        .map_err(|error| ApiError::internal(format!("Could not encode the sync map: {error}")))?;
+    write_bytes_atomic(path, &bytes).await
 }
 
 #[derive(Debug, Clone)]
