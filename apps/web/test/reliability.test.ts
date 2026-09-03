@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   adoptableServerProgress,
   deviceBookMatchesServer,
+  endedShortOfTrack,
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
@@ -13,6 +14,7 @@ import {
   resolveBookId,
   resolveProgressLocation,
   serverStorageKey,
+  shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
   splitRoundedHours,
   summarizeBookProgress,
@@ -106,6 +108,51 @@ test("only an unfinished playable book restores an active playback session", () 
   assert.equal(resolveActivePlaybackBookId(shelf, "empty"), null);
   assert.equal(resolveActivePlaybackBookId(shelf, "missing"), null);
   assert.equal(resolveActivePlaybackBookId(shelf, null), null);
+});
+
+test("a listing that calls the playing book finished does not end a running session", () => {
+  const shelf = [
+    { id: "finished", tracks: [{}], progress: { status: "finished" } },
+    { id: "empty", tracks: [], progress: { status: "inProgress" } }
+  ];
+
+  // Audio is running: only the book's disappearance can end the session.
+  assert.equal(resolveActivePlaybackBookId(shelf, "finished", true), "finished");
+  assert.equal(resolveActivePlaybackBookId(shelf, "missing", true), null);
+  assert.equal(resolveActivePlaybackBookId(shelf, "empty", true), null);
+  // Paused: the finished status is honoured as before.
+  assert.equal(resolveActivePlaybackBookId(shelf, "finished", false), null);
+});
+
+test("only a seek to the start or behind the server's position lifts the reset guard", () => {
+  // A forward tap must not arm the guard for whatever clock is saved next.
+  assert.equal(shouldFlagIntentionalRegression(1030, 1000), false);
+  assert.equal(shouldFlagIntentionalRegression(1000, 1000), false);
+  // A deliberate rewind behind the acknowledged server copy does.
+  assert.equal(shouldFlagIntentionalRegression(400, 1000), true);
+  // So does any jump to the very start, even with no server copy known.
+  assert.equal(shouldFlagIntentionalRegression(0, null), true);
+  assert.equal(shouldFlagIntentionalRegression(30, undefined), true);
+  // A mid-book seek with no acknowledged position needs only intentionalSeek.
+  assert.equal(shouldFlagIntentionalRegression(500, null), false);
+  // No recorded seek target: nothing to lift.
+  assert.equal(shouldFlagIntentionalRegression(undefined, 1000), false);
+  assert.equal(shouldFlagIntentionalRegression(Number.NaN, 1000), false);
+});
+
+test("an ended event well short of the element's own duration is a truncated stream", () => {
+  assert.equal(endedShortOfTrack(3540, 3600), false);
+  assert.equal(endedShortOfTrack(3600, 3600), false);
+  assert.equal(endedShortOfTrack(1200, 3600), true);
+  // An element that never learned its length (or lost it) is taken at its
+  // word — the catalogue's tag estimate is never consulted, so a VBR MP3
+  // whose tags overstate the length by minutes still advances.
+  assert.equal(endedShortOfTrack(3540, Number.NaN), false);
+  assert.equal(endedShortOfTrack(3540, Number.POSITIVE_INFINITY), false);
+  assert.equal(endedShortOfTrack(1200, null), false);
+  assert.equal(endedShortOfTrack(1200, undefined), false);
+  assert.equal(endedShortOfTrack(1200, 0), false);
+  assert.equal(endedShortOfTrack(Number.NaN, 3600), false);
 });
 
 test("device books reconcile only with equivalent server books", () => {

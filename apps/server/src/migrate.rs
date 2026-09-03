@@ -11,9 +11,6 @@
 
 use crate::*;
 
-/// Marks a database which has finished importing the legacy JSON layout.
-const JSON_IMPORT_COMPLETE_DOCUMENT: &str = "json-import-complete";
-
 /// The JSON files an installation may have, and the store each one feeds.
 pub(crate) struct JsonLayout {
     pub(crate) progress: PathBuf,
@@ -224,6 +221,7 @@ pub(crate) fn migrate_if_needed(
     layout: &JsonLayout,
 ) -> anyhow::Result<()> {
     if database_path.exists() && migration_completed(database_path)? {
+        warn_about_newer_json(database_path, layout);
         return Ok(());
     }
     if !layout.any_present() {
@@ -274,6 +272,40 @@ pub(crate) fn migrate_if_needed(
 fn migration_completed(database_path: &FsPath) -> anyhow::Result<bool> {
     let connection = db::open_existing(database_path)?;
     Ok(db::read_document(&connection, JSON_IMPORT_COMPLETE_DOCUMENT)?.as_deref() == Some("true"))
+}
+
+/// A JSON file written after the database is not picked up on its own. It is
+/// most likely what an `--export-json` rollback leaves once the newer build is
+/// installed again, and importing it would discard every position saved in
+/// the database since. Say so, name the files, and leave the call to a person.
+fn warn_about_newer_json(database_path: &FsPath, layout: &JsonLayout) {
+    // WAL mode writes land in the sidecar first, so the newest of the three
+    // files is when the database last changed.
+    let Some(database_modified) = db::sqlite_related_paths(database_path)
+        .filter_map(|path| modified_time(&path))
+        .max()
+    else {
+        return;
+    };
+    let newer = [&layout.progress, &layout.users]
+        .into_iter()
+        .filter(|path| modified_time(path).is_some_and(|modified| modified > database_modified))
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    if newer.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        "{} newer than the database at {} and ignored: once an import has completed the \
+         database is the authority. To start from the JSON files instead, stop the server, \
+         move the database and its -wal and -shm files aside, and start it again.",
+        newer.join(" and "),
+        database_path.display()
+    );
+}
+
+fn modified_time(path: &FsPath) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Remove a database and its SQLite sidecar files. These paths are generated

@@ -211,7 +211,7 @@ pub(crate) async fn recently_active_book_ids(
 }
 
 pub(crate) fn spawn_faststart_job(state: AppState, job_id: String, request: FaststartRequest) {
-    tokio::spawn(async move {
+    tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
         // One conversion at a time: these rewrite files under the library
         // root, and a queued second job should wait rather than interleave.
         let _guard = state.faststart_lock.lock().await;
@@ -237,7 +237,7 @@ pub(crate) fn spawn_faststart_job(state: AppState, job_id: String, request: Fast
                 update_job_finished(&state, &job_id, "failed", None, Some(error.to_string())).await;
             }
         }
-    });
+    }));
 }
 
 #[derive(Debug, Default)]
