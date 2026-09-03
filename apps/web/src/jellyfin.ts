@@ -1,4 +1,5 @@
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
+import { ApiError } from "./apiError.ts";
 import { summarizeBookProgress } from "./reliability.ts";
 
 const CLIENT_NAME = "OperaLibre";
@@ -131,7 +132,9 @@ async function jellyfinRequest<T>(
     } catch {
       // Jellyfin may return an empty body for authentication failures.
     }
-    throw new Error(message);
+    // Carry the status so callers can tell a rejected session (401/403) from
+    // a server that answered but is unwell (5xx).
+    throw new ApiError(message, response.status);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -230,10 +233,17 @@ function groupKey(item: JellyfinItem) {
 function readItemProgress(bookId: string, items: JellyfinItem[], tracks: Track[]) {
   const totalDuration = tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0);
   const firstUnplayedIndex = items.findIndex((item) => !item.UserData?.Played);
-  const positionedIndex = items.reduce(
-    (found, item, index) => (item.UserData?.PlaybackPositionTicks ?? 0) > 0 ? index : found,
-    -1
-  );
+  // Jellyfin keeps a position on every track that was ever stopped mid-way, so
+  // after a rewind to an earlier track the later one still carries its old
+  // position. The listener is on whichever positioned track was played most
+  // recently; only when no dates are known does the last positioned track win.
+  const positionedIndex = items.reduce((found, item, index) => {
+    if ((item.UserData?.PlaybackPositionTicks ?? 0) <= 0) return found;
+    if (found < 0) return index;
+    const foundDate = items[found].UserData?.LastPlayedDate ?? "";
+    const date = item.UserData?.LastPlayedDate ?? "";
+    return date >= foundDate ? index : found;
+  }, -1);
   const activeIndex = positionedIndex >= 0
     ? positionedIndex
     : firstUnplayedIndex >= 0
@@ -470,13 +480,20 @@ export function getCachedJellyfinProgress(bookId: string) {
  * position another Jellyfin client recorded while this app was backgrounded is
  * invisible to a warm resume. Re-read just this book's track items so the
  * foreground adoption path sees the same fresh state an OperaLibre server
- * would have returned. Any failure leaves the cache untouched.
+ * would have returned. Any failure leaves the cache untouched. `timeoutMs`
+ * is one budget across both round trips, not a cap on each.
  */
-export async function refreshJellyfinProgress(baseUrl: string, token: string, book: Book) {
+export async function refreshJellyfinProgress(
+  baseUrl: string,
+  token: string,
+  book: Book,
+  timeoutMs?: number
+) {
   if (book.tracks.length === 0) {
     return getCachedJellyfinProgress(book.id);
   }
-  const user = await jellyfinRequest<JellyfinUser>(baseUrl, "/Users/Me", token);
+  const signal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+  const user = await jellyfinRequest<JellyfinUser>(baseUrl, "/Users/Me", token, { signal });
   if (!user.Id) {
     throw new Error("Jellyfin did not return a user id.");
   }
@@ -488,7 +505,8 @@ export async function refreshJellyfinProgress(baseUrl: string, token: string, bo
   const response = await jellyfinRequest<JellyfinItemsResponse>(
     baseUrl,
     `/Items?${params}`,
-    token
+    token,
+    { signal }
   );
   const byId = new Map(
     (response.Items ?? []).flatMap((item) => (item.Id ? [[item.Id, item] as const] : []))

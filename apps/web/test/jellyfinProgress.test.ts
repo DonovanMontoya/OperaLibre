@@ -124,3 +124,41 @@ test("a partial answer leaves the cached position alone", async () => {
     (globalThis as Record<string, unknown>).fetch = previousFetch;
   }
 });
+
+test("a rewind to an earlier track is not undone by a later track's stale position", async () => {
+  // The listener was 1400s into track 2, then jumped back into track 1.
+  // Jellyfin still holds track 2's old position, but track 1 was played later.
+  state[0] = { positionSeconds: 500, played: false, lastPlayedAt: "2026-08-27T10:00:00.000Z" };
+  state[1] = { positionSeconds: 1400, played: false, lastPlayedAt: "2026-08-27T09:23:20.000Z" };
+
+  const books = await getJellyfinBooks("https://jellyfin.example", "token");
+  const book = books[0];
+  const refreshed = await refreshJellyfinProgress("https://jellyfin.example", "token", book);
+  assert.equal(refreshed?.trackId, "t1");
+  assert.equal(refreshed?.positionSeconds, 500);
+  assert.equal(refreshed?.bookPositionSeconds, 500);
+  assert.equal(getCachedJellyfinProgress(book.id)?.trackId, "t1");
+});
+
+test("without played dates the last positioned track still wins", async () => {
+  state[0] = { positionSeconds: 500, played: false, lastPlayedAt: null };
+  state[1] = { positionSeconds: 1400, played: false, lastPlayedAt: null };
+
+  const books = await getJellyfinBooks("https://jellyfin.example", "token");
+  const refreshed = await refreshJellyfinProgress("https://jellyfin.example", "token", books[0]);
+  assert.equal(refreshed?.trackId, "t2");
+  assert.equal(refreshed?.bookPositionSeconds, 5000);
+});
+
+test("a Jellyfin error carries its HTTP status", async () => {
+  const previousFetch = globalThis.fetch;
+  (globalThis as Record<string, unknown>).fetch = async () => new Response("", { status: 503 });
+  try {
+    await assert.rejects(
+      getJellyfinBooks("https://jellyfin.example", "token"),
+      (error: unknown) => (error as { status?: number }).status === 503
+    );
+  } finally {
+    (globalThis as Record<string, unknown>).fetch = previousFetch;
+  }
+});

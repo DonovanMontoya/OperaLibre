@@ -353,10 +353,13 @@ pub(crate) fn build_router(
         .layer(
             cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
-                // Browser clients need to read these to walk a paged listing
-                // and issue conditional requests; neither is CORS-safelisted.
+                // Browser clients need to read these to walk a paged listing,
+                // issue conditional requests, and tell a startup-scan 503
+                // (which carries Retry-After) from a proxy's; none is
+                // CORS-safelisted.
                 .expose_headers([
                     axum::http::header::ETAG,
+                    axum::http::header::RETRY_AFTER,
                     axum::http::HeaderName::from_static("x-next-cursor"),
                 ])
                 .allow_credentials(true),
@@ -372,7 +375,10 @@ pub(crate) fn build_router(
                 )
             }),
         )
-        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            state.deployment_mode,
+            security_headers,
+        ))
         .with_state(state))
 }
 
@@ -380,14 +386,27 @@ pub(crate) async fn api_not_found() -> ApiError {
     ApiError::not_found("Unknown API route")
 }
 
-pub(crate) async fn security_headers(request: Request, next: Next) -> Response {
+pub(crate) async fn security_headers(
+    State(deployment_mode): State<DeploymentMode>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    for (name, value) in [
-        (
+    // HSTS is only meaningful behind the TLS proxy. A LAN listener is plain
+    // HTTP by design, and pinning it would strand every browser that had
+    // seen the header on a hostname it can no longer reach over HTTPS. The
+    // policy covers this host alone: what else lives under the domain is not
+    // this server's to decide.
+    if deployment_mode == DeploymentMode::Proxy
+        && !headers.contains_key("strict-transport-security")
+    {
+        headers.insert(
             "strict-transport-security",
-            "max-age=63072000; includeSubDomains",
-        ),
+            HeaderValue::from_static("max-age=63072000"),
+        );
+    }
+    for (name, value) in [
         ("x-content-type-options", "nosniff"),
         ("x-frame-options", "SAMEORIGIN"),
         ("referrer-policy", "no-referrer"),
@@ -411,8 +430,24 @@ pub(crate) async fn security_headers(request: Request, next: Next) -> Response {
     response
 }
 
-pub(crate) async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true }))
+/// Liveness, plus whether the catalogue is still being built: the listener
+/// is up before the first scan finishes, and a scan may be running at any
+/// time after that.
+pub(crate) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let library = state.library.read().await;
+    let startup_scan_pending = library.startup_scan_pending;
+    let catalogue_ready = library.catalogue_ready;
+    let catalogue_error = library.catalogue_error;
+    drop(library);
+    // The lock is held for exactly the length of a scan, so failing to take
+    // it is the signal; the guard is released again at once.
+    let scan_running = state.rescan_lock.try_lock().is_err();
+    Json(serde_json::json!({
+        "ok": true,
+        "scanning": startup_scan_pending || scan_running,
+        "ready": catalogue_ready,
+        "catalogueError": catalogue_error,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -544,6 +579,15 @@ pub(crate) async fn metrics(
         .listener_ids_active_within(5 * 60 * 1_000)
         .await?
         .len();
+    // Sizing the database and the cover directory is synchronous disk work,
+    // and the covers directory holds one file per book.
+    let database_path = state.database_path.clone();
+    let covers_dir = state.covers_dir.clone();
+    let (database_bytes, covers_bytes) = tokio::task::spawn_blocking(move || {
+        (database_bytes(&database_path), directory_size(&covers_dir))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not size server storage: {error}")))?;
 
     Ok(Json(ServerMetrics {
         version: env!("CARGO_PKG_VERSION"),
@@ -554,8 +598,8 @@ pub(crate) async fn metrics(
         active_sessions,
         listening_now,
         running_jobs,
-        database_bytes: database_bytes(&state.database_path),
-        covers_bytes: directory_size(&state.covers_dir),
+        database_bytes,
+        covers_bytes,
         library_root: state.library_root.display().to_string(),
     }))
 }

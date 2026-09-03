@@ -57,8 +57,10 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import {
   adoptableServerProgress,
+  endedShortOfTrack,
   freshestProgress,
   isSuspectProgressReset,
+  PROGRESS_RESET_GUARD_SECONDS,
   progressAfterSave,
   progressFromBookSummary,
   progressTimestamp,
@@ -66,6 +68,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
+  shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
   summarizeBookProgress,
   writeProgressCheckpoint
@@ -133,6 +136,7 @@ import {
   hasUserConfiguredServer,
   SERVER_SETUP_GUIDE_URL,
   isNetworkError,
+  isServerNotReadyError,
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
@@ -166,6 +170,7 @@ import {
   cacheProgress,
   cancelBookOfflineDownload,
   downloadBookForOffline,
+  forgetOfflineUser,
   getBookBackgroundDownloadStatus,
   getCachedLibrary,
   getCachedProgress,
@@ -179,7 +184,7 @@ import {
 import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
-import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
@@ -194,6 +199,7 @@ import {
   getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
+  releaseNativeAudioSession,
   seekNativeAudio,
   setNativeAudioGain,
   setNativeAudioSleepTimer,
@@ -271,6 +277,11 @@ type QueuedProgressSave = {
   progress: Progress;
   isPaused: boolean;
   intentionalSeekGeneration: number;
+  // Whether the seek behind that generation also went backwards far enough to
+  // need the server's near-zero reset guard lifted (see
+  // shouldFlagIntentionalRegression). Decided when the save is queued, from
+  // the seek's own target rather than from whatever the clock reads later.
+  intentionalRegression: boolean;
 };
 
 function audioSourceMatches(audio: HTMLAudioElement, source: string) {
@@ -691,6 +702,14 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
+// The API client's own timeout is generous (30 s); a startup-critical read
+// that is allowed to fall back to a local copy should not wait that long.
+// Before "Begin this reading" trusts a stale listing summary, the server gets
+// this long to say whether the book is actually well under way elsewhere.
+const START_OVER_PROGRESS_CHECK_MS = 2_500;
+// The restore effect's own /progress reads; local copies cover the wait.
+const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
+
 type SortMode = "title" | "author" | "series" | "genre" | "progress" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
@@ -768,7 +787,8 @@ function readStoredSortMode(source: LibrarySource): SortMode {
     legacySortModeMigrated = true;
     migrateLegacySortMode();
   }
-  const stored = window.localStorage.getItem(sortModeStorageKey(source));
+  // Storage unavailable reads as null — the shelf opens on the default sort.
+  const stored = readStoredValue(sortModeStorageKey(source));
   const isValid = SORT_OPTIONS.some((option) => option.value === stored)
     && isSortModeSupported(source, stored as SortMode);
   return isValid ? (stored as SortMode) : "title";
@@ -1043,6 +1063,24 @@ function readStoredBookId(userId: string, field: "selectedBookId" | "playbackBoo
   }
 }
 
+// Merely touching window.localStorage throws when site data is blocked, and
+// setItem throws under quota pressure; neither should take the app down.
+function readStoredValue(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredValue(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore storage failures
+  }
+}
+
 function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId", bookId: string | null) {
   try {
     const key = storedStateKey(userId, field);
@@ -1298,11 +1336,11 @@ function EpubReadalong({
   const [isReady, setIsReady] = useState(false);
   const [follow, setFollow] = useState(true);
   const [readerTheme, setReaderTheme] = useState<ReaderTheme>(() => {
-    const stored = window.localStorage.getItem("operalibre.readerTheme");
+    const stored = readStoredValue("operalibre.readerTheme");
     return stored === "sepia" || stored === "night" ? stored : "paper";
   });
   const [fontScale, setFontScale] = useState(() => {
-    const stored = Number(window.localStorage.getItem("operalibre.readerFontScale"));
+    const stored = Number(readStoredValue("operalibre.readerFontScale"));
     return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
   });
   const [focusMode, setFocusMode] = useState(false);
@@ -1486,14 +1524,14 @@ function EpubReadalong({
   }, [url]);
 
   useEffect(() => {
-    window.localStorage.setItem("operalibre.readerTheme", readerTheme);
+    writeStoredValue("operalibre.readerTheme", readerTheme);
     if (isReady) {
       renditionRef.current?.themes.select(`operalibre-${readerTheme}`);
     }
   }, [isReady, readerTheme]);
 
   useEffect(() => {
-    window.localStorage.setItem("operalibre.readerFontScale", String(fontScale));
+    writeStoredValue("operalibre.readerFontScale", String(fontScale));
     if (isReady) {
       renditionRef.current?.themes.fontSize(`${fontScale}%`);
     }
@@ -2240,6 +2278,9 @@ export default function App() {
           // ignore
         }
         setStoredToken(null);
+        // Otherwise checkAuth's offline fallback signs the account straight
+        // back in the next time the server cannot be reached.
+        forgetOfflineUser();
         if (leavingDemo) {
           exitDemoMode();
           setAuthState({ phase: "server" });
@@ -2297,13 +2338,13 @@ function MainApp({
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
-    ios ? readAppearanceMode(window.localStorage) : "light"
+    ios ? readStoredAppearanceMode() : "light"
   );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
   const [connectPromptDismissed, setConnectPromptDismissed] = useState(
-    () => window.localStorage.getItem(CONNECT_PROMPT_DISMISSED_KEY) === "true"
+    () => readStoredValue(CONNECT_PROMPT_DISMISSED_KEY) === "true"
   );
   const [aliasName, setAliasName] = useState("");
   const [aliasUrl, setAliasUrl] = useState("");
@@ -2472,7 +2513,7 @@ function MainApp({
   const bookDetailsSwipeStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
-  const progressSaveInFlight = useRef(false);
+  const progressSaveDrainPromiseRef = useRef<Promise<void> | null>(null);
   const progressSaveAbortController = useRef<AbortController | null>(null);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
@@ -2498,6 +2539,19 @@ function MainApp({
   // intentional without permanently disabling reset protection afterward.
   const intentionalSeekGenerationRef = useRef<Map<string, number>>(new Map());
   const acknowledgedSeekGenerationRef = useRef<Map<string, number>>(new Map());
+  // The whole-book position each book's latest deliberate seek aimed at, and
+  // the position the server last acknowledged for it. Together they decide
+  // whether a seek needs the server's reset guard lifted — a forward tap must
+  // not hand that authority to whatever stale clock gets persisted next.
+  const intentionalSeekTargetRef = useRef<Map<string, number>>(new Map());
+  const acknowledgedServerPositionRef = useRef<Map<string, number>>(new Map());
+  // Set by startPlayback for an automatic Shelf-Resume start, consumed by the
+  // element's `play` event. That event cannot tell an automatic start from a
+  // listener's tap, and treating the automatic one as a listener action bumped
+  // playbackActionVersionRef — after which the restore effect dropped the
+  // /progress reply whenever it landed after loadedmetadata, and the stale
+  // optimistic position kept playing.
+  const autoResumePlayEventPendingRef = useRef(false);
   const explicitSessionStartBookIdRef = useRef<string | null>(null);
   // A shelf Resume is a request to play the *restored* position. Autoplay is
   // therefore armed by the restore effect rather than by the click, so it can
@@ -2543,6 +2597,8 @@ function MainApp({
   const [playbackBookId, setPlaybackBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "playbackBookId")
   );
+  const playbackBookIdRef = useRef(playbackBookId);
+  playbackBookIdRef.current = playbackBookId;
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeekState] = useState<PendingSeek | null>(null);
   // Mirrored in a ref so persistProgress (called from pagehide/visibility
@@ -2660,6 +2716,15 @@ function MainApp({
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
   const libraryRequestGenerationRef = useRef(0);
+  // A listing refused while the server's startup scan runs is asked for
+  // again after its Retry-After; the timer and the latest loader live in
+  // refs so a scheduled retry always runs the current one and a fresh load
+  // (mount, refresh, sign-in) cancels whatever was pending.
+  const libraryRetryTimerRef = useRef<number | null>(null);
+  const loadBooksRef = useRef<() => Promise<void>>(async () => undefined);
+  // Set once native playback has attached, so the effect that sees the
+  // player closed can tell that from the app's first render.
+  const nativeAudioAttachedRef = useRef(false);
   const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
@@ -2680,7 +2745,7 @@ function MainApp({
 
   function selectSortMode(mode: SortMode) {
     setSortMode(mode);
-    window.localStorage.setItem(sortModeStorageKey(librarySource), mode);
+    writeStoredValue(sortModeStorageKey(librarySource), mode);
   }
 
   const visibleBooks = useMemo(() => {
@@ -2799,15 +2864,44 @@ function MainApp({
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
 
+  // The best position this device knows for a book without asking the
+  // server: the synchronous checkpoint, backstopped by the listing summary,
+  // distrusting a near-zero checkpoint the same way the restore effect does.
+  function lastKnownProgressFor(book: Book): Progress | null {
+    const checkpoint = readProgressCheckpoint(
+      window.localStorage,
+      getServerStorageKey(),
+      currentUser.id,
+      book.id
+    );
+    const listed = progressFromBookSummary(book.id, book.progress);
+    return isSuspectProgressReset(checkpoint, listed)
+      ? listed
+      : freshestProgress(checkpoint, listed);
+  }
+
   const currentTrack = useMemo(() => {
     if (!playbackBook) {
       return null;
     }
-    return (
-      playbackBook.tracks.find((track) => track.id === currentTrackId) ??
-      playbackBook.tracks[0] ??
-      null
-    );
+    const saved = playbackBook.tracks.find((track) => track.id === currentTrackId);
+    if (saved) return saved;
+    if (currentTrackId) {
+      // The track id vanished from the book (a rescan renumbered its files).
+      // Falling back to the first track would remount the element at 0:00
+      // with no pending seek and let the next tick persist that. Resolve the
+      // whole-book offset instead; the effect below stages the matching seek.
+      const location = resolveProgressLocation(
+        playbackBook.tracks,
+        lastKnownProgressFor(playbackBook)
+      );
+      const resolved = location
+        ? playbackBook.tracks.find((track) => track.id === location.trackId)
+        : null;
+      if (resolved) return resolved;
+    }
+    return playbackBook.tracks[0] ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackId, playbackBook]);
 
   const activeTrackIndex = currentTrackIndex(playbackBook, currentTrack);
@@ -2818,6 +2912,39 @@ function MainApp({
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
+  const playbackTrackIdsKey = useMemo(
+    () => playbackBook?.tracks.map((track) => track.id).join("|") ?? "",
+    [playbackBook]
+  );
+  // Commit the currentTrack fallback resolution once per track-list change:
+  // point the saved track id at the resolved track and queue its position as
+  // a pending seek, so the remounted element restores it instead of starting
+  // at 0:00. Only for a book already restored — while a restore is still
+  // running it owns the track id and the pending seek.
+  useEffect(() => {
+    if (
+      !playbackBook ||
+      !currentTrackId ||
+      restoredProgressBookId.current !== playbackBook.id ||
+      playbackBook.tracks.some((track) => track.id === currentTrackId)
+    ) {
+      return;
+    }
+    const location = resolveProgressLocation(
+      playbackBook.tracks,
+      lastKnownProgressFor(playbackBook)
+    );
+    if (!location) return;
+    const wasPlaying = nativeAudio ? nativePlaybackPlayingRef.current : isPlaying;
+    setCurrentTrackId(location.trackId);
+    setPendingSeek(location);
+    setPosition(location.positionSeconds);
+    setDuration(
+      playbackBook.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0
+    );
+    playWhenTrackLoads.current = wasPlaying;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbackBookKey, playbackTrackIdsKey, currentTrackId]);
   const administrableBooks = useMemo(
     () => books.filter((book) => book.source !== "device"),
     [books]
@@ -2958,6 +3085,10 @@ function MainApp({
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
+    if (libraryRetryTimerRef.current !== null) {
+      window.clearTimeout(libraryRetryTimerRef.current);
+      libraryRetryTimerRef.current = null;
+    }
     setIsLoading(true);
     setError(null);
     if (native) {
@@ -2971,9 +3102,14 @@ function MainApp({
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
+      // A background refresh that lists the playing book as finished must not
+      // pull the session out from under the listener; only its absence can.
+      const isPlayingNow = nativeAudio
+        ? nativePlaybackPlayingRef.current
+        : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) => {
         const preferred = existing ?? readStoredBookId(currentUser.id, "playbackBookId");
-        const next = resolveActivePlaybackBookId(nextBooks, preferred);
+        const next = resolveActivePlaybackBookId(nextBooks, preferred, isPlayingNow);
         const preferredIsPresent = !!preferred && nextBooks.some((book) => book.id === preferred);
         // A device-only first paint may not contain the stored server book.
         // Wait for the cached/live shelf before deciding that session vanished.
@@ -3112,14 +3248,27 @@ function MainApp({
           })
           .catch(() => undefined);
       }
-    } catch {
+    } catch (loadError) {
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
         : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      setIsOffline(true);
       applyLoadedBooks(cached, true);
+      if (isServerNotReadyError(loadError)) {
+        // The server answered: it is up, its startup scan just has not
+        // published a catalogue yet. Keep the cached shelf without muting
+        // anything, and ask again when it said to.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
+        libraryRetryTimerRef.current = window.setTimeout(() => {
+          libraryRetryTimerRef.current = null;
+          void loadBooksRef.current();
+        }, delayMs);
+        return;
+      }
+      setIsOffline(true);
       if (cached.length) {
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
@@ -3129,6 +3278,23 @@ function MainApp({
       if (isCurrentRequest()) setIsLoading(false);
     }
   }, [currentUser.id, isOperaLibre, localMode, native]);
+  loadBooksRef.current = loadBooks;
+
+  useEffect(
+    () => () => {
+      if (libraryRetryTimerRef.current !== null) {
+        window.clearTimeout(libraryRetryTimerRef.current);
+        libraryRetryTimerRef.current = null;
+      }
+      // Signing out unmounts the player with its session still held (the
+      // attach cleanup keeps it for the next track); nothing follows now.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!libationBooks.length) return;
@@ -3763,9 +3929,12 @@ function MainApp({
       // One failed fetch must not strand this device on a stale or empty
       // copy — that is how a second device ends up at 0:00 and later pushes
       // it over real progress. Retry briefly before reconciling.
+      // Each attempt is capped well below the client's 30 s default: local
+      // copies cover the wait, and no server checkpoint is queued until the
+      // window closes, so a long one is listening that goes unsynced.
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          server = await getProgress(playbackBook.id);
+          server = await getProgress(playbackBook.id, RESTORE_PROGRESS_TIMEOUT_MS);
           serverReachable = true;
           break;
         } catch {
@@ -3786,6 +3955,12 @@ function MainApp({
         return;
       }
       const lastKnownServer = server ?? listed;
+      if (lastKnownServer) {
+        acknowledgedServerPositionRef.current.set(
+          playbackBook.id,
+          lastKnownServer.bookPositionSeconds
+        );
+      }
       const suspectLocalReset = isSuspectProgressReset(freshestLocal, lastKnownServer);
       const localIsNewer =
         !!freshestLocal &&
@@ -3862,7 +4037,20 @@ function MainApp({
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!nativeAudio || !audio || !playbackBook || !currentTrack) return;
+    if (!nativeAudio) return;
+    if (!audio || !playbackBook || !currentTrack) {
+      // The player closed. The attach cleanup keeps the audio session so a
+      // track change does not hand audio to other apps between chapters;
+      // nothing follows this time, so give the session up. Skipped on the
+      // app's first render, where a WebView reload may have left native
+      // audio playing that React is about to pick back up.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+      return;
+    }
+    nativeAudioAttachedRef.current = true;
     return attachNativeAudioPlayer(
       audio,
       (message) => setPlaybackError(message),
@@ -3880,12 +4068,12 @@ function MainApp({
         }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
-        if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
+        if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;
         // getNativeAudioRecovery already participated in startup
         // reconciliation. A paused trackChanged event emitted while AVPlayer
         // rebuilds its queue is not a listener action and must not overwrite
         // the restored checkpoint or make the player oscillate.
-        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return;
+        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return false;
         markPlaybackTouched();
         nativePlaybackPlayingRef.current = nativeIsPlaying;
         playWhenTrackLoads.current = nativeIsPlaying;
@@ -3895,9 +4083,24 @@ function MainApp({
         setPosition(positionSeconds);
         setDuration(playbackBook.tracks.find((track) => track.id === trackId)?.durationSeconds ?? 0);
         scheduleStartupReveal();
+        return true;
       },
       () => {
-        markPlaybackTouched(true);
+        // The native side has already moved the control clock to the seek.
+        // While a pending seek is still queued for this track it would win
+        // at loadedmetadata, so retarget it rather than let the lock-screen
+        // seek be undone.
+        const nativePosition = Math.max(0, audio.currentTime);
+        markPlaybackTouched(
+          true,
+          undefined,
+          true,
+          trackOffsetSeconds(playbackBook, activeTrackIndex) + nativePosition
+        );
+        if (pendingSeekRef.current?.trackId === currentTrack.id) {
+          setPendingSeek({ trackId: currentTrack.id, positionSeconds: nativePosition });
+          setPosition(nativePosition);
+        }
         void persistProgress();
       },
       () => {
@@ -4033,20 +4236,6 @@ function MainApp({
           ]
         : undefined
     });
-    navigator.mediaSession.setActionHandler("play", () => startPlayback(audioRef.current));
-    navigator.mediaSession.setActionHandler("pause", () => pausePlayback(audioRef.current));
-    navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
-    navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
-    navigator.mediaSession.setActionHandler("previoustrack", restartOrPreviousChapter);
-    navigator.mediaSession.setActionHandler("nexttrack", nextChapter);
-    navigator.mediaSession.setActionHandler("seekto", (details) => {
-      if (details.seekTime === undefined) return;
-      if (activeChapter) {
-        seekBookPosition(activeChapter.startSeconds + details.seekTime);
-      } else {
-        seekTo(details.seekTime);
-      }
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeChapter?.id,
@@ -4056,6 +4245,65 @@ function MainApp({
     nativeAudio,
     playbackBookKey
   ]);
+
+  // Lock-screen and hardware-key handlers are registered once and delegate
+  // through this ref, which every render refreshes. Registering the handlers
+  // themselves was keyed on the chapter and track, so between re-registrations
+  // they held closures from an earlier render: "previous" saw a chapter
+  // elapsed of 0 and never restarted the chapter, and "play" engaged the
+  // gain chain with a stale gain.
+  const mediaSessionHandlersRef = useRef({
+    startPlayback,
+    pausePlayback,
+    seekBy,
+    seekTo,
+    seekBookPosition,
+    restartOrPreviousChapter,
+    nextChapter,
+    activeChapter
+  });
+  mediaSessionHandlersRef.current = {
+    startPlayback,
+    pausePlayback,
+    seekBy,
+    seekTo,
+    seekBookPosition,
+    restartOrPreviousChapter,
+    nextChapter,
+    activeChapter
+  };
+
+  useEffect(() => {
+    if (nativeAudio || !("mediaSession" in navigator)) return;
+    const handlers = mediaSessionHandlersRef;
+    const session = navigator.mediaSession;
+    session.setActionHandler("play", () => handlers.current.startPlayback(audioRef.current));
+    session.setActionHandler("pause", () => handlers.current.pausePlayback(audioRef.current));
+    session.setActionHandler("seekbackward", () => handlers.current.seekBy(-15));
+    session.setActionHandler("seekforward", () => handlers.current.seekBy(30));
+    session.setActionHandler("previoustrack", () => handlers.current.restartOrPreviousChapter());
+    session.setActionHandler("nexttrack", () => handlers.current.nextChapter());
+    session.setActionHandler("seekto", (details) => {
+      if (details.seekTime === undefined) return;
+      const { activeChapter: chapter, seekBookPosition: seekBook, seekTo: seek } = handlers.current;
+      if (chapter) {
+        seekBook(chapter.startSeconds + details.seekTime);
+      } else {
+        seek(details.seekTime);
+      }
+    });
+    return () => {
+      for (const action of [
+        "play", "pause", "seekbackward", "seekforward", "previoustrack", "nexttrack", "seekto"
+      ] as MediaSessionAction[]) {
+        try {
+          session.setActionHandler(action, null);
+        } catch {
+          // An action the browser does not know cannot have been registered.
+        }
+      }
+    };
+  }, [nativeAudio]);
 
   useEffect(() => {
     if (nativeAudio || !("mediaSession" in navigator) || !currentTrack) return;
@@ -4179,23 +4427,31 @@ function MainApp({
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
-  function persistProgress() {
+  function persistProgress(): Promise<void> {
     if (
       !playbackBook ||
       restoredProgressBookId.current !== playbackBook.id ||
       !currentTrack ||
-      !audioRef.current ||
-      resumeReconciliationBookIdRef.current === playbackBook.id
+      !audioRef.current
     ) {
-      return;
+      return Promise.resolve();
     }
+    // A shelf Resume plays the optimistic local copy while the server's is
+    // still being fetched. Until that reconciliation settles, nothing goes
+    // to the server: the position being played may be about to be replaced
+    // by a fresher copy, and a push would make it look like the newest. The
+    // local checkpoint is still kept — the window can span several retries
+    // when the server is slow, and listening during it must survive a kill.
+    // It does not advance progressMutationVersion, so the reconciled copy
+    // still applies when it lands.
+    const reconciling = resumeReconciliationBookIdRef.current === playbackBook.id;
     // Nothing moved playback since this book was restored: there is nothing
     // new to save, and writing the restored position back with a fresh
     // timestamp would let a device whose restore silently failed outrank —
     // and then erase — real progress recorded elsewhere. Opening a book and
     // closing it again must write nothing.
     if (!playbackTouchedRef.current) {
-      return;
+      return Promise.resolve();
     }
 
     // While a seek is queued the media element does not reflect the real
@@ -4205,7 +4461,7 @@ function MainApp({
     // server's only copy.
     const pending = pendingSeekRef.current;
     if (pending && pending.trackId !== currentTrack.id) {
-      return;
+      return Promise.resolve();
     }
     const trackPosition = pending
       ? Math.max(0, pending.positionSeconds)
@@ -4223,7 +4479,7 @@ function MainApp({
       updatedAt: new Date().toISOString(),
       finishedOverride: playbackBook.progress?.finishedOverride ?? null
     };
-    progressMutationVersion.current += 1;
+    if (!reconciling) progressMutationVersion.current += 1;
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
     void cacheProgress(currentUser.id, localProgress).catch(() => undefined);
     if (playbackBook.deviceBookId) {
@@ -4232,8 +4488,8 @@ function MainApp({
       if (deviceTrack) saveDeviceProgress(playbackBook.deviceBookId, { ...localProgress, bookId: playbackBook.deviceBookId, trackId: deviceTrack.id });
     }
     updateBookProgress(playbackBook.id, localProgress);
-    if (playbackBook.source === "device") {
-      return;
+    if (playbackBook.source === "device" || reconciling) {
+      return Promise.resolve();
     }
 
     const existingQueued = queuedProgressSaves.current.get(playbackBook.id);
@@ -4241,21 +4497,31 @@ function MainApp({
       existingQueued?.intentionalSeekGeneration ?? 0,
       intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0
     );
+    // Lifting the server's reset guard is decided by where the seek went,
+    // not by the position being saved now: a +30 s tap must not turn a stale
+    // near-zero clock persisted after it into the authoritative copy.
+    const intentionalRegression =
+      (existingQueued?.intentionalRegression ?? false) ||
+      shouldFlagIntentionalRegression(
+        intentionalSeekTargetRef.current.get(playbackBook.id),
+        acknowledgedServerPositionRef.current.get(playbackBook.id)
+      );
     queuedProgressSaves.current.set(playbackBook.id, {
       bookId: playbackBook.id,
       progress: localProgress,
       isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
-      intentionalSeekGeneration
+      intentionalSeekGeneration,
+      intentionalRegression
     });
-    void flushProgressSaveQueue();
+    return flushProgressSaveQueue();
   }
 
-  async function flushProgressSaveQueue() {
-    if (progressSaveInFlight.current) {
-      return;
+  function flushProgressSaveQueue(): Promise<void> {
+    const existingDrain = progressSaveDrainPromiseRef.current;
+    if (existingDrain) {
+      return existingDrain;
     }
-    progressSaveInFlight.current = true;
-    try {
+    const drain = (async () => {
       // A slow request must not cause a newer position to be discarded. Each
       // in-flight save is followed by the most recent checkpoint queued while
       // it was running.
@@ -4277,14 +4543,18 @@ function MainApp({
             {
               isPaused: entry.isPaused,
               intentionalRegression:
-                entry.intentionalSeekGeneration
-                > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
+                entry.intentionalRegression
+                && entry.intentionalSeekGeneration
+                  > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               intentionalSeek:
                 entry.intentionalSeekGeneration
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               signal: abortController.signal
             }
           );
+          // Whatever the server answered is now its position — the copy a
+          // later rewind is measured against.
+          acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);
           acknowledgedSeekGenerationRef.current.set(
             entry.bookId,
             Math.max(
@@ -4315,12 +4585,16 @@ function MainApp({
           }
         }
       }
-    } finally {
-      progressSaveInFlight.current = false;
-      if (queuedProgressSaves.current.size > 0) {
-        void flushProgressSaveQueue();
+    })().finally(() => {
+      if (progressSaveDrainPromiseRef.current === drain) {
+        progressSaveDrainPromiseRef.current = null;
+        if (queuedProgressSaves.current.size > 0) {
+          void flushProgressSaveQueue();
+        }
       }
-    }
+    });
+    progressSaveDrainPromiseRef.current = drain;
+    return drain;
   }
 
   function updateBookProgress(bookId: string, saved: Progress) {
@@ -4338,6 +4612,7 @@ function MainApp({
   }
 
   function storeCanonicalServerProgress(book: Book, saved: Progress) {
+    acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
     writeProgressCheckpoint(
       window.localStorage,
       getServerStorageKey(),
@@ -4383,7 +4658,7 @@ function MainApp({
       return;
     }
     const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
-    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveInFlight.current) {
+    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
       return;
     }
     const actionVersion = playbackActionVersionRef.current;
@@ -4465,9 +4740,7 @@ function MainApp({
         queuedProgressSaves.current.delete(book.id);
         if (playbackBookId === book.id) pausePlayback(audioRef.current);
         progressSaveAbortController.current?.abort();
-        while (progressSaveInFlight.current) {
-          await new Promise((resolve) => window.setTimeout(resolve, 25));
-        }
+        await progressSaveDrainPromiseRef.current;
         queuedProgressSaves.current.delete(book.id);
       }
       const completedProgress: Progress | null = finalProgress
@@ -4684,7 +4957,16 @@ function MainApp({
     if (!window.confirm(`Remove the downloaded copy of ${book.title} from this device? Your listening progress will be kept.`)) return;
     const removingActiveSource = playbackBook?.id === book.id && !!currentTrack && !!audioRef.current;
     const resumeTrack = removingActiveSource ? currentTrack : null;
-    const resumePosition = removingActiveSource ? Math.max(0, audioRef.current!.currentTime) : 0;
+    // A seek still queued for this track is the real position; the element
+    // reads 0 until its metadata loads, and staging that would replace it.
+    const resumePosition = removingActiveSource
+      ? Math.max(
+          0,
+          pendingSeekRef.current?.trackId === currentTrack!.id
+            ? pendingSeekRef.current.positionSeconds
+            : audioRef.current!.currentTime
+        )
+      : 0;
     const resumePlayback = removingActiveSource
       ? nativeAudio ? nativePlaybackPlayingRef.current : !audioRef.current!.paused
       : false;
@@ -4737,10 +5019,14 @@ function MainApp({
   // book: playbackBook still points at the previous book (or nothing) until
   // the state update lands, and marking the wrong book leaves the jump
   // unflagged — the server would then bill the skipped hours as listening.
+  //
+  // A deliberate seek also records the whole-book position it aimed at, which
+  // is what decides whether its saves may lift the server's reset guard.
   function markPlaybackTouched(
     deliberateSeek = false,
     seekBookId?: string,
-    interruptRestore = true
+    interruptRestore = true,
+    seekTargetBookPosition?: number
   ) {
     playbackTouchedRef.current = true;
     if (interruptRestore) {
@@ -4756,7 +5042,18 @@ function MainApp({
         bookId,
         (intentionalSeekGenerationRef.current.get(bookId) ?? 0) + 1
       );
+      if (seekTargetBookPosition !== undefined && Number.isFinite(seekTargetBookPosition)) {
+        intentionalSeekTargetRef.current.set(bookId, Math.max(0, seekTargetBookPosition));
+      } else {
+        intentionalSeekTargetRef.current.delete(bookId);
+      }
     }
+  }
+
+  /** The whole-book position a track-relative seek on the playing book lands at. */
+  function seekTargetInPlaybackBook(trackPosition: number) {
+    if (!playbackBook) return undefined;
+    return trackOffsetSeconds(playbackBook, activeTrackIndex) + Math.max(0, trackPosition);
   }
 
   function gainChain() {
@@ -4772,7 +5069,12 @@ function MainApp({
    * outside one starts suspended, and a suspended context makes a routed
    * element silent rather than loud.
    */
-  function engageGainChain(audio: HTMLAudioElement | null | undefined, gain = playbackGain) {
+  function engageGainChain(
+    audio: HTMLAudioElement | null | undefined,
+    // Read from the ref, not the render: this runs from lock-screen handlers
+    // and media events whose closures can predate the current gain.
+    gain = playbackGainRef.current
+  ) {
     if (!audio || nativeAudio) return;
     if (!gainChain().isAttachedTo(audio)) {
       if (gain <= BOOK_GAIN_DEFAULT) return;
@@ -4801,12 +5103,19 @@ function MainApp({
   ) {
     if (!audio) return;
     markPlaybackTouched(false, undefined, interruptRestore);
+    // Let the element's `play` event tell an automatic Shelf-Resume start
+    // apart from a listener's tap. A rejected start clears it again so the
+    // next play event — a real tap — counts as one.
+    autoResumePlayEventPendingRef.current = !interruptRestore;
     engageGainChain(audio);
     if (!nativeAudio) {
-      safePlay(audio);
+      audio.play().catch(() => {
+        autoResumePlayEventPendingRef.current = false;
+      });
       return;
     }
     void playNativeAudio().catch((error) => {
+      autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
       audio.muted = false;
       setNativeAudioFailed(true);
@@ -4899,27 +5208,44 @@ function MainApp({
       return;
     }
     haptic("light");
-    markPlaybackTouched(true);
-    const nextPosition = setPlaybackPosition(audio, audio.currentTime + delta);
-    setPosition(nextPosition);
-    void persistProgress();
+    // While a seek is still queued the element reads 0 (metadata pending);
+    // the queued target is the real position, so move that instead.
+    const pending = pendingSeekRef.current;
+    const base = pending && pending.trackId === currentTrack?.id
+      ? pending.positionSeconds
+      : audio.currentTime;
+    seekTo(base + delta);
   }
 
   function seekTo(value: number) {
-    if (!audioRef.current) {
+    const audio = audioRef.current;
+    if (!audio) {
       return;
     }
-    markPlaybackTouched(true);
-    const nextPosition = setPlaybackPosition(audioRef.current, value);
+    const pending = pendingSeekRef.current;
+    if (pending && currentTrack && pending.trackId === currentTrack.id) {
+      const nextPosition = Math.max(
+        0,
+        Math.min(value, currentTrack.durationSeconds ?? value)
+      );
+      markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(nextPosition));
+      setPendingSeek({ trackId: currentTrack.id, positionSeconds: nextPosition });
+      setPosition(nextPosition);
+      void persistProgress();
+      return;
+    }
+    const clamped = Math.max(0, Math.min(value, audio.duration || value));
+    markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(clamped));
+    const nextPosition = setPlaybackPosition(audio, value);
     setPosition(nextPosition);
     void persistProgress();
   }
 
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
-    markPlaybackTouched(true, book.id);
-    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
+    markPlaybackTouched(true, book.id, true, clampedValue);
+    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     let offset = 0;
     let targetTrack: Track | undefined = book.tracks[0];
 
@@ -5068,7 +5394,15 @@ function MainApp({
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
-    markPlaybackTouched(true, selectedBook?.id ?? playbackBook?.id);
+    const targetBook = selectedBook ?? playbackBook;
+    markPlaybackTouched(
+      true,
+      targetBook?.id,
+      true,
+      targetBook
+        ? trackOffsetSeconds(targetBook, targetBook.tracks.findIndex((candidate) => candidate.id === track.id))
+        : undefined
+    );
     if (selectedBook && playbackBook?.id !== selectedBook.id) {
       explicitSessionStartBookIdRef.current = selectedBook.id;
     }
@@ -5106,12 +5440,49 @@ function MainApp({
    * resume instead hands the book to that effect, which reconciles the native,
    * checkpoint, cached, listed and server copies before seeking.
    */
-  function playSelectedBook(book: Book) {
+  async function playSelectedBook(book: Book) {
     if (!shouldResumeSavedPosition(book.progress)) {
+      // The listing summary can lag the server (a cached shelf, a session on
+      // another device since the last refresh). Before "Begin this reading"
+      // writes a near-zero position with a deliberate seek attached — which
+      // the server would honour — ask for the live copy, briefly. Offline or
+      // unanswered, the summary stands as before.
+      const inProgressElsewhere = await freshProgressBeforeStartingOver(book);
+      if (inProgressElsewhere) {
+        updateBookProgress(book.id, inProgressElsewhere);
+        resumeSelectedBook(book);
+        return;
+      }
       // "Read it again" on a finished book, or one never opened: track one.
       if (book.tracks[0]) selectTrack(book.tracks[0]);
       return;
     }
+    resumeSelectedBook(book);
+  }
+
+  async function freshProgressBeforeStartingOver(book: Book): Promise<Progress | null> {
+    if (
+      book.source === "device" ||
+      localMode ||
+      isOffline ||
+      book.progress?.status === "finished"
+    ) {
+      return null;
+    }
+    try {
+      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
+      if (!server) return null;
+      const summary = summarizeBookProgress(book, server);
+      return summary?.status === "inProgress"
+        && server.bookPositionSeconds > PROGRESS_RESET_GUARD_SECONDS
+        ? server
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resumeSelectedBook(book: Book) {
     setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
@@ -5180,6 +5551,25 @@ function MainApp({
   }
 
   function playNextTrack() {
+    // `ended` also fires when a stream is cut short (a truncated response, a
+    // proxy giving up). Advancing on that — or finishing the book on its last
+    // track — would file unheard time as listened. Stop where the clock is.
+    // Only the element's own duration is trusted here: the catalogue's tag
+    // estimate can run minutes long and would stop every track "early".
+    const endedAudio = audioRef.current;
+    if (
+      endedAudio &&
+      currentTrack &&
+      endedShortOfTrack(endedAudio.currentTime, endedAudio.duration)
+    ) {
+      playWhenTrackLoads.current = false;
+      wantsAutoplayRef.current = false;
+      pausePlayback(endedAudio);
+      setIsPlaying(false);
+      void persistProgress();
+      setPlaybackError("Playback stopped early; the file may be incomplete.");
+      return;
+    }
     if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
       playWhenTrackLoads.current = false;
       setIsPlaying(false);
@@ -5316,14 +5706,27 @@ function MainApp({
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
+      // As in loadBooks: a listing that calls the playing book finished must
+      // not pull the session out from under the listener.
+      const isPlayingNow = nativeAudio
+        ? nativePlaybackPlayingRef.current
+        : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) =>
         resolveActivePlaybackBookId(
           visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId")
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          isPlayingNow
         )
       );
       setError(null);
     } catch (refreshError) {
+      if (isServerNotReadyError(refreshError)) {
+        // Up but still scanning: loadBooks keeps asking until it publishes.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        void loadBooks();
+        return;
+      }
       // A rescan rejected by a reachable server is not "offline" — only
       // mute non-downloaded books when the server can't be reached at all.
       setIsOffline(isNetworkError(refreshError));
@@ -5340,17 +5743,28 @@ function MainApp({
     setBooks(visibleBooks);
     reconcileServerBookGains(nextBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
-    setPlaybackBookId((existing) => {
-      const next = resolveActivePlaybackBookId(visibleBooks, existing);
-      if (existing && !next) {
-        pausePlayback(audioRef.current);
-        setCurrentTrackId(null);
-        setPosition(0);
-        if (native) setNativeTab("shelf");
-      }
-      return next;
-    });
+    // Decided outside the state updater: updaters can run more than once and
+    // must stay pure, and the teardown below has to save first.
+    const isPlayingNow = nativeAudio
+      ? nativePlaybackPlayingRef.current
+      : !!audioRef.current && !audioRef.current.paused;
+    const currentPlaybackBookId = playbackBookIdRef.current;
+    const nextPlaybackBookId = resolveActivePlaybackBookId(visibleBooks, currentPlaybackBookId, isPlayingNow);
+    if (currentPlaybackBookId && !nextPlaybackBookId) {
+      pausePlayback(audioRef.current);
+      setCurrentTrackId(null);
+      setPosition(0);
+      if (native) setNativeTab("shelf");
+    }
+    playbackBookIdRef.current = nextPlaybackBookId;
+    setPlaybackBookId(nextPlaybackBookId);
     if (libationBooksLoaded) void loadLibationBooks();
+  }
+
+  async function prepareForAdminLibraryMutation() {
+    pausePlayback(audioRef.current);
+    await persistProgress();
+    await flushProgressSaveQueue();
   }
 
   function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
@@ -5687,13 +6101,35 @@ function MainApp({
                 : "This audio track could not be loaded.";
           setIsPlaying(false);
           setPlaybackError(message);
+          // The element keeps paused=false after a media error, so the
+          // toggle read "playing" and needed two taps. On iOS the element is
+          // only the control clock and its own errors say nothing about
+          // AVPlayer, so it is left alone there.
+          const failed = audioRef.current;
+          if (!nativeAudio && failed && !failed.paused) {
+            // If metadata never arrived the clock reads 0; stage the shown
+            // position so the pause save carries something coherent.
+            if (
+              failed.readyState < HTMLMediaElement.HAVE_METADATA &&
+              !pendingSeekRef.current &&
+              currentTrackKey
+            ) {
+              setPendingSeek({ trackId: currentTrackKey, positionSeconds: position });
+            }
+            failed.pause();
+          }
         }}
         onTimeUpdate={onTimeUpdate}
         onPlay={() => {
           // Playback can also start natively (lock screen, CarPlay) without
           // going through startPlayback; real listening must always count as
-          // touched or its progress would never be persisted.
-          markPlaybackTouched();
+          // touched or its progress would never be persisted. Only the
+          // automatic Shelf-Resume start (flagged by startPlayback) is kept
+          // from counting as a listener action, so a /progress reply that
+          // lands after loadedmetadata can still correct the position.
+          const automaticResume = autoResumePlayEventPendingRef.current;
+          autoResumePlayEventPendingRef.current = false;
+          markPlaybackTouched(false, undefined, !automaticResume);
           engageGainChain(audioRef.current);
           if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
@@ -5709,6 +6145,9 @@ function MainApp({
           }
         }}
         onPause={() => {
+          // Anything that plays after a pause is a fresh action, never the
+          // automatic resume that flag was armed for.
+          autoResumePlayEventPendingRef.current = false;
           if (nativeAudio) nativePlaybackPlayingRef.current = false;
           setIsPlaying(false);
           void persistProgress();
@@ -6160,7 +6599,7 @@ function MainApp({
                     type="button"
                     className="connect-server-dismiss"
                     onClick={() => {
-                      window.localStorage.setItem(CONNECT_PROMPT_DISMISSED_KEY, "true");
+                      writeStoredValue(CONNECT_PROMPT_DISMISSED_KEY, "true");
                       setConnectPromptDismissed(true);
                     }}
                   >
@@ -7109,7 +7548,7 @@ function MainApp({
                     type="button"
                     className="preview-primary"
                     aria-label={`Play ${selectedBook.title}`}
-                    onClick={() => playSelectedBook(selectedBook)}
+                    onClick={() => void playSelectedBook(selectedBook)}
                   >
                     <span className="preview-primary-icon"><Play size={19} fill="currentColor" /></span>
                     <span>
@@ -7130,7 +7569,7 @@ function MainApp({
                       type="button"
                       className="round-button primary"
                       aria-label={`Play ${selectedBook.title}`}
-                      onClick={() => playSelectedBook(selectedBook)}
+                      onClick={() => void playSelectedBook(selectedBook)}
                     >
                       <Play size={30} fill="currentColor" />
                     </button>
@@ -7858,6 +8297,7 @@ function MainApp({
             setUploadModalOpen(true);
           }}
           onRescan={refreshLibrary}
+          onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
@@ -8239,6 +8679,7 @@ function MainApp({
           books={administrableBooks}
           onUpload={() => setUploadModalOpen(true)}
           onRescan={refreshLibrary}
+          onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);

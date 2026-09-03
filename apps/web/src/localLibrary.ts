@@ -426,6 +426,8 @@ export async function importAudiobookFromDevice(
   );
   const tracks: Track[] = [];
   const tagsByTrack: (AudioFileTags | null)[] = [];
+  const discardCopiedFiles = () =>
+    Filesystem.rmdir({ path: directory, directory: Directory.Data, recursive: true }).catch(() => undefined);
   try {
     for (const [index, file] of files.entries()) {
       const ext = storedMediaExtension(extension(file.name) || "m4a");
@@ -460,7 +462,7 @@ export async function importAudiobookFromDevice(
       onProgress?.(index + 1, files.length);
     }
   } catch (error) {
-    await Filesystem.rmdir({ path: directory, directory: Directory.Data, recursive: true }).catch(() => undefined);
+    await discardCopiedFiles();
     throw error;
   }
 
@@ -496,9 +498,16 @@ export async function importAudiobookFromDevice(
     source: "device",
     deviceBookId: id
   };
-  await importStep("The imported book could not be saved", async () =>
-    writeJson(LIBRARY_KEY, [...storedBooks(), book])
-  );
+  // Without an index entry the copied files are orphans nothing can list or
+  // delete, so a failed index write rolls the copy back too.
+  try {
+    await importStep("The imported book could not be saved", async () =>
+      writeJson(LIBRARY_KEY, [...storedBooks(), book])
+    );
+  } catch (error) {
+    await discardCopiedFiles();
+    throw error;
+  }
   return book;
 }
 

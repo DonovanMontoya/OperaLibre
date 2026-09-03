@@ -284,9 +284,9 @@ With SQLite in place these become straightforward.
   sessions, scan duration, in-flight streams, DB size, last update check. No
   Prometheus dependency needed unless it is later wanted.
 - **Nginx log scrubbing.** Media tokens ride in query strings by design, and
-  the server's own tracing spans already drop them, but
-  `operalibre-nginx.conf` will log them by default. Ship a `log_format` that
-  strips `?token=`, and note the reason in `docs/deployment.md`.
+  the server's own tracing spans drop them. `operalibre-nginx.conf` already
+  shipped a `log_format` that logs `$uri` rather than `$request_uri`, so no
+  change was needed (see C12 below); `docs/deployment.md` notes the reason.
 
 ---
 
