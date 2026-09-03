@@ -153,6 +153,18 @@ confirm() {
   esac
 }
 
+# OperaLibre needs no privileges, and a server running as root turns any
+# media-parser bug into a system compromise. Warn, and in a terminal ask.
+if [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
+  say "Warning: you are running the installer as root. OperaLibre does not need" >&2
+  say "administrator rights. Install it as the user who will run it, or run it" >&2
+  say "under a dedicated account with the operalibre.service systemd unit:" >&2
+  say "  https://donovanmontoya.github.io/OperaLibre/deployment.html" >&2
+  if [ "$INTERACTIVE" -eq 1 ]; then
+    confirm "Continue as root anyway?" n || fail "Run the installer as a regular user."
+  fi
+fi
+
 expand_home() {
   case "$1" in
     "~") printf '%s' "$HOME" ;;
@@ -347,10 +359,19 @@ fi
 # --- Download and verify ----------------------------------------------------
 
 WORK_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t operalibre)
+STAGE_DIR=""
+BACKUP_DIR=""
 cleanup() {
   rm -rf "$WORK_DIR"
+  [ -z "$STAGE_DIR" ] || rm -rf "$STAGE_DIR"
+  # Only ever empty by now: a swap that parked files in it either finished
+  # and removed it, or put them back before failing. Never delete contents.
+  [ -z "$BACKUP_DIR" ] || rmdir "$BACKUP_DIR" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# A signal ends the run through the EXIT trap. Running cleanup from the
+# signal trap alone would resume the script with its work folders gone.
+trap 'exit 130' INT TERM
 
 say ""
 say "Downloading ${ARCHIVE}..."
@@ -376,6 +397,91 @@ STAGED="${WORK_DIR}/extract/${PACKAGE}"
 [ -d "$STAGED" ] || fail "The downloaded package has an unexpected layout."
 
 # --- Install ----------------------------------------------------------------
+
+config_value() {
+  # config_value KEY — the value of KEY in the installed server.config, if any.
+  #
+  # The server lowercases keys, reads `-` as `_`, trims whitespace, and strips
+  # one pair of matching quotes, so `Data-Dir = "state"` names the same folder
+  # as `data_dir = state`. Match the same spellings here, or a custom port or
+  # data folder would be missed and the running-server check would look in
+  # the wrong place. Self-check: `data_dir = "state"`, `Data-Dir = state`,
+  # `port = '4123'` and `Port=4123` must all resolve to their bare values.
+  config="${INSTALL_DIR}/server.config"
+  [ -f "$config" ] || return 0
+  CONFIG_KEY=$1 awk '
+    BEGIN {
+      pattern = ENVIRON["CONFIG_KEY"]
+      gsub(/[-_]/, "[-_]", pattern)
+      pattern = "^[[:space:]]*" pattern "[[:space:]]*="
+    }
+    tolower($0) ~ pattern {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if (length(value) >= 2 && first == last && (first == "\"" || first == "\047"))
+        value = substr(value, 2, length(value) - 2)
+      print value
+      exit
+    }
+  ' "$config"
+}
+
+configured_port() {
+  port_value=$(config_value port | sed -n 's/^\([0-9][0-9]*\).*/\1/p')
+  printf '%s' "${port_value:-4000}"
+}
+
+configured_data_dir() {
+  # The server resolves a relative data_dir against the folder holding
+  # server.config, which is the installation folder.
+  data_value=$(config_value data_dir)
+  case "$data_value" in
+    "") printf '%s' "${INSTALL_DIR}/data" ;;
+    /*) printf '%s' "$data_value" ;;
+    *) printf '%s' "${INSTALL_DIR}/${data_value}" ;;
+  esac
+}
+
+server_answers() {
+  # Ask the API, not "/": a server-only install has no web app to serve
+  # there, so a 404 would look like a server that never started.
+  if [ "$DOWNLOADER" = curl ]; then
+    curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null
+  else
+    wget -q -O /dev/null --timeout=2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null
+  fi
+}
+
+server_process_is_running() {
+  # A PID left behind by a crash can be recycled by the OS, so only a process
+  # that is actually this installation's server counts.
+  server_pid_file="$(configured_data_dir)/operalibre-server.pid"
+  [ -f "$server_pid_file" ] || return 1
+  server_pid=$(cat "$server_pid_file" 2>/dev/null || true)
+  [ -n "$server_pid" ] || return 1
+  case "$(ps -p "$server_pid" -o args= 2>/dev/null)" in
+    *operalibre-server*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+wait_for_server_exit() {
+  # The stop launcher asks the server to shut down and returns once it has
+  # gone, but guard against an older launcher, or a server started by hand,
+  # before replacing the files under a process that may still be running.
+  waited=0
+  while [ "$waited" -lt 30 ]; do
+    if ! server_process_is_running && ! server_answers; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
 
 launcher_path() {
   # launcher_path DIR open|stop
@@ -405,23 +511,85 @@ launcher_path() {
 }
 
 if [ "$UPGRADE" -eq 1 ]; then
+  PORT=$(configured_port)
   stop_launcher=$(launcher_path "$INSTALL_DIR" stop)
   if [ -x "$stop_launcher" ]; then
     say "Stopping the running server..."
     "$stop_launcher" >/dev/null 2>&1 || true
   fi
+  if server_process_is_running || server_answers; then
+    say "Waiting for the server to finish shutting down..."
+    wait_for_server_exit ||
+      fail "The server is still running. Stop it, then run the installer again. Nothing was changed."
+  fi
+
+  # Copy the new files beside the installation first, so a copy that fails
+  # part-way leaves the old version intact, then swap them in with renames.
   say "Installing OperaLibre ${VERSION}..."
-  rm -rf "${INSTALL_DIR}/web" \
-    "${INSTALL_DIR}/Open OperaLibre.app" \
-    "${INSTALL_DIR}/Stop OperaLibre.app"
+  STAGE_DIR="${INSTALL_DIR}/.staged-$$"
+  BACKUP_DIR="${INSTALL_DIR}/.previous-$$"
+  rm -rf "$STAGE_DIR" "$BACKUP_DIR"
+  mkdir -p "$STAGE_DIR" "$BACKUP_DIR"
   for entry in "$STAGED"/* "$STAGED"/.[!.]*; do
     [ -e "$entry" ] || continue
     name=$(basename "$entry")
     case "$name" in
       data|audiobooks|server.config) continue ;;
     esac
-    cp -R "$entry" "${INSTALL_DIR}/${name}"
+    cp -R "$entry" "${STAGE_DIR}/${name}" ||
+      fail "Could not copy ${name} into ${INSTALL_DIR}. The existing installation was left unchanged."
   done
+
+  # Existing entries are parked in BACKUP_DIR rather than deleted before their
+  # replacements move in, so a rename that fails part-way can put the previous
+  # version back and leave the new files where they can be inspected.
+  MOVED_IN_LIST="${WORK_DIR}/moved-in"
+  : >"$MOVED_IN_LIST"
+  restore_previous() {
+    # restore_previous NAME — undo the swap after NAME could not be moved.
+    while IFS= read -r moved; do
+      [ -n "$moved" ] || continue
+      mv "${INSTALL_DIR}/${moved}" "${STAGE_DIR}/${moved}" 2>/dev/null || true
+    done <"$MOVED_IN_LIST"
+    restored="The previous version was restored"
+    for previous in "$BACKUP_DIR"/* "$BACKUP_DIR"/.[!.]*; do
+      [ -e "$previous" ] || continue
+      previous_name=$(basename "$previous")
+      rm -rf "${INSTALL_DIR:?}/${previous_name}"
+      mv "$previous" "${INSTALL_DIR}/${previous_name}" ||
+        restored="Some previous files could not be put back and remain in ${BACKUP_DIR}"
+    done
+    rmdir "$BACKUP_DIR" 2>/dev/null || true
+    # Blank STAGE_DIR so the EXIT trap leaves the staged files in place.
+    staged_files=$STAGE_DIR
+    STAGE_DIR=""
+    fail "Could not move ${1} into place. ${restored}; the new files remain in ${staged_files}."
+  }
+  move_aside() {
+    # move_aside NAME — park the installed NAME in BACKUP_DIR, if present.
+    [ -e "${INSTALL_DIR}/${1}" ] || return 0
+    mv "${INSTALL_DIR}/${1}" "${BACKUP_DIR}/${1}" || restore_previous "$1"
+  }
+  # The renames take moments. A signal in the middle would end the run with
+  # the old files parked beside half of the new ones, so it waits for them.
+  trap '' INT TERM
+  # The new package may not ship these, so they cannot wait for a staged
+  # entry of the same name to replace them.
+  move_aside web
+  move_aside "Open OperaLibre.app"
+  move_aside "Stop OperaLibre.app"
+  for entry in "$STAGE_DIR"/* "$STAGE_DIR"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=$(basename "$entry")
+    move_aside "$name"
+    mv "$entry" "${INSTALL_DIR}/${name}" || restore_previous "$name"
+    printf '%s\n' "$name" >>"$MOVED_IN_LIST"
+  done
+  rm -rf "$BACKUP_DIR"
+  BACKUP_DIR=""
+  rmdir "$STAGE_DIR" 2>/dev/null || true
+  STAGE_DIR=""
+  trap 'exit 130' INT TERM
 else
   say "Installing OperaLibre ${VERSION} into ${INSTALL_DIR}..."
   mkdir -p "$INSTALL_DIR"
@@ -744,9 +912,7 @@ if [ "$LIBATION_CHOICE" != no ]; then
   fi
 fi
 
-PORT=$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-  "${INSTALL_DIR}/server.config" 2>/dev/null | head -n 1)
-[ -n "$PORT" ] || PORT=4000
+PORT=$(configured_port)
 
 # --- Start ------------------------------------------------------------------
 
@@ -761,13 +927,7 @@ if [ "$START_AFTER_INSTALL" -eq 1 ]; then
   "$open_launcher" >/dev/null 2>&1 || true
   waited=0
   while [ "$waited" -lt 30 ]; do
-    # Ask the API, not "/": a server-only install has no web app to serve
-    # there, so a 404 would look like a server that never started.
-    if [ "$DOWNLOADER" = curl ]; then
-      curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null && started=1 && break
-    else
-      wget -q -O /dev/null --timeout=2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null && started=1 && break
-    fi
+    server_answers && started=1 && break
     sleep 1
     waited=$((waited + 1))
   done
@@ -787,7 +947,7 @@ if [ "$started" -eq 1 ]; then
   fi
 elif [ "$START_AFTER_INSTALL" -eq 1 ]; then
   say "OperaLibre was installed, but the server did not answer on port ${PORT}."
-  say "Check ${INSTALL_DIR}/data/server.log, then start it again with:"
+  say "Check $(configured_data_dir)/server.log, then start it again with:"
   say "  \"${open_launcher}\""
 else
   say "Start OperaLibre when you are ready with:"

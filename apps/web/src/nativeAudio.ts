@@ -1,10 +1,16 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
-import { NativeAudioStateSynchronizer } from "./nativeAudioState";
+import {
+  NativeAudioStateSynchronizer,
+  refreshDeclinedTrackChange,
+  type NativeAudioTrackChange
+} from "./nativeAudioState";
 
 type NativeAudioState = {
   positionSeconds: number;
   durationSeconds: number;
   isPlaying: boolean;
+  /** The queue track the clock belongs to, once the native side reports it. */
+  trackId?: string;
 };
 
 export type NativeAudioRecoveryState = {
@@ -84,7 +90,13 @@ interface NativeAudioPlugin {
     }>;
   }): Promise<void>;
   getRecoveryState(options: { scopeKey: string }): Promise<Partial<NativeAudioRecoveryState>>;
-  stop(): Promise<void>;
+  /**
+   * Tears the player down. `releaseSession` (default true) also gives up the
+   * audio session so other apps' audio can resume; the attach cleanup passes
+   * false because a track change re-attaches moments later and a released
+   * session would hand the lock screen to whatever was playing before.
+   */
+  stop(options?: { releaseSession?: boolean }): Promise<void>;
   addListener(eventName: "state", listener: (state: NativeAudioState) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "ended", listener: (state: Partial<NativeAudioState>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "sleepTimerEnded", listener: () => void): Promise<PluginListenerHandle>;
@@ -117,6 +129,16 @@ export function setNativeAudioGain(gain: number) {
 
 export function usesNativeAudioPlayer() {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
+}
+
+/**
+ * Gives the audio session up once the player has closed for good. The
+ * attach cleanup never releases it (a track change re-attaches at once), so
+ * the app calls this when a session ends with nothing to follow.
+ */
+export function releaseNativeAudioSession() {
+  if (!usesNativeAudioPlayer()) return Promise.resolve();
+  return NativeAudio.stop({ releaseSession: true }).catch(() => undefined);
 }
 
 export function updateNativeAudioNowPlaying(options: {
@@ -185,12 +207,13 @@ export function attachNativeAudioPlayer(
   onError: (message: string) => void,
   onFallback: () => void,
   recovery: NativeAudioRecoveryIdentity,
+  /** Returns false when React declined the change and still owns this track. */
   onTrackChanged: (
     trackId: string,
     positionSeconds: number,
     bookPositionSeconds: number,
     isPlaying: boolean
-  ) => void,
+  ) => boolean | void,
   onIntentionalSeek: () => void,
   onSleepTimerEnded: () => void
 ) {
@@ -200,8 +223,35 @@ export function attachNativeAudioPlayer(
   let endedFromNative = false;
   let nativeIsPlaying = false;
   let fellBack = false;
+  // The queue track AVPlayer is on, as far as this attachment knows. After an
+  // accepted trackChanged, React remounts the media element and re-attaches
+  // for the new track; until then this element still represents the previous
+  // file, and a trailing `state` tick from the new one must not seek it.
+  let activeNativeTrackId = recovery.trackId;
+  // The last trackChanged React declined. Swift has already moved its
+  // recovery track to that item and stamps every state payload with it, so
+  // until React accepts the change every tick would be dropped below and the
+  // UI clock would freeze while native audio plays on. Nothing re-emits
+  // trackChanged when startup becomes ready; the tick re-offers it instead.
+  let declinedTrackChange: NativeAudioTrackChange | null = null;
   const listenerHandles: PluginListenerHandle[] = [];
   const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio);
+
+  const offerTrackChange = (change: NativeAudioTrackChange) => {
+    const accepted = onTrackChanged(
+      change.trackId,
+      change.positionSeconds,
+      change.bookPositionSeconds,
+      change.isPlaying
+    ) !== false;
+    if (accepted) {
+      activeNativeTrackId = change.trackId;
+      declinedTrackChange = null;
+    } else {
+      declinedTrackChange = change;
+    }
+    return accepted;
+  };
 
   const failOverToWebAudio = (message: string) => {
     if (disposed || fellBack) return;
@@ -258,7 +308,7 @@ export function attachNativeAudioPlayer(
   const volumeChange = () => safely(NativeAudio.setVolume({ volume: audio.volume }));
   const emptied = () => {
     nativeStateSynchronizer.clear();
-    safely(NativeAudio.stop());
+    safely(NativeAudio.stop({ releaseSession: false }));
   };
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
@@ -281,6 +331,25 @@ export function attachNativeAudioPlayer(
 
   void NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack) return;
+    // A clock for another queue track belongs to the element React is about
+    // to mount for it, not to this one. Prefer the payload's own track id;
+    // fall back to the last accepted trackChanged when the native side does
+    // not report one.
+    if (typeof state.trackId === "string" && state.trackId) {
+      if (state.trackId !== recovery.trackId) {
+        // Re-offer a declined change with this tick's live clock. Whether or
+        // not React takes it now, the tick itself is still dropped: on
+        // acceptance React remounts the element for that track, and seeking
+        // this one to the new track's clock would let the synthetic
+        // timeupdate persist the old track at the wrong position.
+        if (declinedTrackChange?.trackId === state.trackId) {
+          offerTrackChange(refreshDeclinedTrackChange(declinedTrackChange, state));
+        }
+        return;
+      }
+    } else if (activeNativeTrackId !== recovery.trackId) {
+      return;
+    }
     // AVPlayer remains the only running decoder. Reflect its state through
     // synthetic media events so React's existing UI stays current without
     // starting or stopping the muted HTML decoder during app transitions.
@@ -313,12 +382,12 @@ export function attachNativeAudioPlayer(
 
   void NativeAudio.addListener("trackChanged", (event) => {
     if (disposed || fellBack || !event.trackId || event.trackId === recovery.trackId) return;
-    onTrackChanged(
-      event.trackId,
-      event.positionSeconds,
-      event.bookPositionSeconds,
-      event.isPlaying
-    );
+    offerTrackChange({
+      trackId: event.trackId,
+      positionSeconds: event.positionSeconds,
+      bookPositionSeconds: event.bookPositionSeconds,
+      isPlaying: event.isPlaying
+    });
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
@@ -366,6 +435,9 @@ export function attachNativeAudioPlayer(
     if (!fellBack) audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();
-    void NativeAudio.stop().catch(() => undefined);
+    // Keep the audio session: this cleanup runs on every track change, and
+    // the next attach is moments away. App.tsx releases it when the player
+    // closes with nothing to follow.
+    void NativeAudio.stop({ releaseSession: false }).catch(() => undefined);
   };
 }

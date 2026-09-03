@@ -33,7 +33,7 @@ test("an install that never picked a look follows the app", () => {
 test("a fixed look stays fixed", () => {
   for (const choice of ["paper", "sepia", "night"] as const) {
     const storage = memoryStorage();
-    writeReaderThemeChoice(storage, choice);
+    writeReaderThemeChoice(choice, storage);
     assert.equal(readReaderThemeChoice(storage), choice);
     assert.equal(resolveReaderTheme(choice, true), choice);
     assert.equal(resolveReaderTheme(choice, false), choice);
@@ -62,7 +62,7 @@ test("a storage that throws still yields a usable choice", () => {
     setItem: () => { throw new Error("blocked"); }
   };
   assert.equal(readReaderThemeChoice(broken), "auto");
-  assert.doesNotThrow(() => writeReaderThemeChoice(broken, "night"));
+  assert.doesNotThrow(() => writeReaderThemeChoice("night", broken));
 });
 
 test("each look sets the page, ink, and link colours as overrides", () => {

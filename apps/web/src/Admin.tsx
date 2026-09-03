@@ -75,6 +75,7 @@ export function AdminPanel({
   onUpload,
   onRescan,
   onOpenBook,
+  onBeforeLibraryMutation,
   onBooksChanged
 }: {
   currentUser: AuthUser;
@@ -83,6 +84,7 @@ export function AdminPanel({
   onUpload: () => void;
   onRescan: () => Promise<void>;
   onOpenBook?: (bookId: string) => void;
+  onBeforeLibraryMutation: () => Promise<void>;
   onBooksChanged: (books: Book[]) => void;
 }) {
   const [section, setSection] = useState<AdminSection>("overview");
@@ -196,7 +198,9 @@ export function AdminPanel({
       document.body.append(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      // The click only queues the download; revoking the URL right away can
+      // cancel it in browsers that start the fetch asynchronously.
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setNotice("Server backup downloaded. Store it somewhere private; it contains account credentials and session data.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not export the server backup.");
@@ -218,6 +222,7 @@ export function AdminPanel({
     setError(null);
     setNotice(null);
     try {
+      await onBeforeLibraryMutation();
       const restored = await restoreServerBackup(file);
       const summary = `Backup restored: ${restored.accounts} accounts, ${restored.progressRecords} progress records, ${restored.readingSessions} reading sessions, and ${restored.completions} completions. The previous state is saved as ${restored.safetyBackup}.`;
       if (!restored.sessionRetained) {
@@ -446,6 +451,7 @@ export function AdminPanel({
     setError(null);
     setNotice(null);
     try {
+      await onBeforeLibraryMutation();
       const nextBooks = await deleteDownloadedBook(book.id);
       onBooksChanged(nextBooks);
       setNotice(`${book.title} was removed from this server. It remains available to redownload from Libation.`);
@@ -822,7 +828,10 @@ export function AdminPanel({
                               onChange={(event) => void saveLibationAccess(user, event.currentTarget.value as LibationAccess)}
                             >
                               <option value="approval">Approval required</option>
-                              <option value="direct">Allow direct downloads</option>
+                              {/* Granting direct access is owner-only on the server. */}
+                              <option value="direct" disabled={!currentUser.isOwner}>
+                                {currentUser.isOwner ? "Allow direct downloads" : "Allow direct downloads (owner only)"}
+                              </option>
                             </select>
                           </div>
                           ) : null}

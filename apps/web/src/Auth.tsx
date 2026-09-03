@@ -1,22 +1,17 @@
-import { BookOpen, ExternalLink, FolderOpen, Globe, LogIn, Network, ShieldCheck, UserPlus, Users, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BookOpen, ExternalLink, FolderOpen, Globe, LogIn, Network, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 import {
-  ApiError,
-  changePassword,
-  createUser,
-  deleteUser,
   defaultServerUrl,
   getServerUrl,
   getServerType,
   SERVER_SETUP_GUIDE_URL,
   isNativeApp,
-  listUsers,
   login,
   pingServer,
   setServerConnection,
   setupAdmin
 } from "./api";
-import type { AuthUser, LoginResponse, ServerType } from "./types";
+import type { LoginResponse, ServerType } from "./types";
 
 type AuthMode = "setup" | "login";
 
@@ -183,7 +178,6 @@ export function ServerSetup({
     </main>
   );
 }
-
 export function AuthGate({
   mode,
   onAuthenticated,
@@ -327,174 +321,5 @@ export function AuthGate({
         ) : null}
       </form>
     </main>
-  );
-}
-
-export function UserManagementModal({
-  currentUser,
-  onClose
-}: {
-  currentUser: AuthUser;
-  onClose: () => void;
-}) {
-  const [users, setUsers] = useState<AuthUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const [newUsername, setNewUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newIsAdmin, setNewIsAdmin] = useState(false);
-  const [creating, setCreating] = useState(false);
-
-  async function refresh() {
-    setLoading(true);
-    setError(null);
-    try {
-      const list = await listUsers();
-      setUsers(list);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load users.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void refresh();
-  }, []);
-
-  async function handleCreate(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setCreating(true);
-    try {
-      await createUser(newUsername, newPassword, newIsAdmin);
-      setNewUsername("");
-      setNewPassword("");
-      setNewIsAdmin(false);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create user.");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function handleDelete(user: AuthUser) {
-    if (!window.confirm(`Delete user ${user.username}? Their progress will be removed.`)) {
-      return;
-    }
-    setError(null);
-    try {
-      await deleteUser(user.id);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete user.");
-    }
-  }
-
-  async function handleResetPassword(user: AuthUser) {
-    const next = window.prompt(`New password for ${user.username} (min 12 chars):`);
-    if (!next) {
-      return;
-    }
-    setError(null);
-    try {
-      await changePassword(user.id, next);
-    } catch (err) {
-      const message =
-        err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Failed.";
-      setError(message);
-    }
-  }
-
-  return (
-    <div className="modal-scrim" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-head">
-          <span className="eyebrow">
-            <Users size={13} /> Manage readers
-          </span>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <h2>Readers</h2>
-
-        {error ? <p className="auth-error">{error}</p> : null}
-
-        {loading ? (
-          <p>Loading…</p>
-        ) : (
-          <ul className="user-list">
-            {users.map((user) => (
-              <li key={user.id}>
-                <div>
-                  <strong>{user.username}</strong>
-                  <span>
-                    {user.isAdmin ? "Administrator" : "Reader"}
-                    {user.id === currentUser.id ? " · you" : ""}
-                  </span>
-                </div>
-                <div className="user-actions">
-                  <button type="button" onClick={() => void handleResetPassword(user)}>
-                    Reset password
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete(user)}
-                    disabled={user.id === currentUser.id}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <h3>
-          <UserPlus size={14} /> Add reader
-        </h3>
-        <form className="add-user-form" onSubmit={handleCreate}>
-          <label>
-            <span>Username</span>
-            <input
-              value={newUsername}
-              onChange={(event) => setNewUsername(event.currentTarget.value)}
-              required
-            />
-          </label>
-          <label>
-            <span>Password</span>
-            <input
-              type="password"
-              value={newPassword}
-              minLength={12}
-              maxLength={1024}
-              onChange={(event) => setNewPassword(event.currentTarget.value)}
-              required
-            />
-          </label>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={newIsAdmin}
-              onChange={(event) => setNewIsAdmin(event.currentTarget.checked)}
-            />
-            <span>Administrator</span>
-          </label>
-          <button type="submit" disabled={creating}>
-            {creating ? "Adding…" : "Add reader"}
-          </button>
-        </form>
-      </div>
-    </div>
   );
 }
