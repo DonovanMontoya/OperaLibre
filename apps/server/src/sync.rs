@@ -3,6 +3,17 @@
 
 use crate::*;
 
+pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
+
+/// The longest one aligner run may take before the job is failed and the
+/// process killed. Alignment is slow on a long chapter, so this is a ceiling
+/// against a hung CLI, not a budget.
+pub(crate) const ALIGNMENT_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Alignment loads a speech model per run and pins a core for the duration.
+/// One book at a time keeps a second request from doubling both.
+static ALIGNMENT_LOCK: Mutex<()> = Mutex::const_new(());
+
 pub(crate) async fn get_sync_map(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -380,10 +391,16 @@ pub(crate) async fn generate_sync_map(
         return Err(ApiError::bad_request("This book has no audio tracks."));
     }
 
-    let job_id = create_job(&state, "sync-generate").await;
+    let (job_id, created) =
+        create_queued_job(&state, SYNC_GENERATE_JOB_KIND, Some(book_id.clone())).await;
+    if !created {
+        return Ok(Json(JobCreated { job_id }));
+    }
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
-    tokio::spawn(async move {
+    tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
+        let _alignment_guard = ALIGNMENT_LOCK.lock().await;
+        update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,
             &job_id_for_task,
@@ -436,7 +453,7 @@ pub(crate) async fn generate_sync_map(
                 .await;
             }
         }
-    });
+    }));
 
     Ok(Json(JobCreated { job_id }))
 }
@@ -541,15 +558,28 @@ pub(crate) async fn run_sync_generation(
         )
         .await;
 
-        let output = Command::new(cli_path)
-            .arg("align")
-            .arg(&track.path)
-            .arg(&transcript_path)
-            .arg(&output_path)
-            .arg("--overwrite")
-            .output()
-            .await
-            .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
+        // `kill_on_drop` lets the timeout (and a cancelled job) take the
+        // aligner down with it; `temp_dir` is removed on every return path.
+        let output = tokio::time::timeout(
+            ALIGNMENT_COMMAND_TIMEOUT,
+            Command::new(cli_path)
+                .arg("align")
+                .arg(&track.path)
+                .arg(&transcript_path)
+                .arg(&output_path)
+                .arg("--overwrite")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Alignment of `{}` was stopped after {} hours without finishing.",
+                track.title,
+                ALIGNMENT_COMMAND_TIMEOUT.as_secs() / 3600
+            )
+        })?
+        .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let tail = stderr

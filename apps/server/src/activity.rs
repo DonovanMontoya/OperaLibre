@@ -231,16 +231,11 @@ pub(crate) async fn record_activity(
     tz_offset_minutes: i64,
 ) {
     let today = today_ymd(tz_offset_minutes);
-    // Keep mutation and persistence under one lock. Otherwise two snapshots can
+    // Mutation and persistence stay under one lock. Otherwise two totals can
     // be written in reverse order and an older activity total can win on disk.
     let stored = state
         .activity
-        .mutate(|activity| {
-            let user_activity = activity.by_user.entry(user_id.to_string()).or_default();
-            let entry = user_activity.entry(today).or_insert(0.0);
-            *entry += delta_seconds;
-            Ok(())
-        })
+        .add_seconds(user_id, &today, delta_seconds)
         .await;
     if let Err(error) = stored {
         // The increment is dropped rather than kept only in memory: listening

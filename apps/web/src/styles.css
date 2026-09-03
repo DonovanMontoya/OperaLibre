@@ -5287,94 +5287,6 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   font-size: 0.68rem;
 }
 
-.user-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.user-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid rgba(var(--ink-rgb), 0.12);
-  border-radius: 8px;
-  background: rgba(var(--lift-rgb), 0.8);
-}
-
-.user-list li > div:first-child {
-  display: flex;
-  flex-direction: column;
-}
-
-.user-list li > div:first-child span {
-  font-size: 0.8rem;
-  color: var(--ink-faded);
-}
-
-.user-actions {
-  display: flex;
-  gap: 0.4rem;
-}
-
-.user-actions button,
-.add-user-form button {
-  font: inherit;
-  padding: 0.4rem 0.7rem;
-  border-radius: 999px;
-  border: 1px solid rgba(var(--ink-rgb), 0.2);
-  background: rgba(var(--lift-rgb), 0.9);
-  cursor: pointer;
-}
-
-.user-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.add-user-form {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem 0.75rem;
-  align-items: end;
-}
-
-.add-user-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  /* Let grid columns shrink below the input's intrinsic width. */
-  min-width: 0;
-}
-
-.add-user-form input {
-  min-width: 0;
-  font: inherit;
-  padding: 0.5rem 0.6rem;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--ink-rgb), 0.2);
-  background: rgba(var(--lift-rgb), 0.9);
-}
-
-.add-user-form label.checkbox {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.add-user-form button[type="submit"] {
-  grid-column: 1 / -1;
-  background: var(--oxblood);
-  color: var(--paper);
-  border-color: transparent;
-}
-
 .audible-row.is-local {
   opacity: 0.78;
 }
@@ -8997,8 +8909,7 @@ html.native-app .modal-card::before {
 }
 
 html.native-app .metadata-edit-form input,
-html.native-app .metadata-edit-form textarea,
-html.native-app .add-user-form input {
+html.native-app .metadata-edit-form textarea {
   min-height: 48px;
   border-radius: 12px;
 }
@@ -9010,19 +8921,6 @@ html.native-app .metadata-edit-form textarea {
 html.native-app .metadata-edit-actions button {
   min-height: 50px;
   border-radius: 999px;
-}
-
-html.native-app .user-list li {
-  border-radius: 12px;
-}
-
-html.native-app .user-actions button,
-html.native-app .add-user-form button {
-  min-height: 40px;
-}
-
-html.native-app .add-user-form {
-  grid-template-columns: 1fr;
 }
 
 /* --- Account menu as a bottom action sheet --- */

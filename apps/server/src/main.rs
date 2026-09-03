@@ -126,10 +126,7 @@ async fn main() -> anyhow::Result<()> {
     let config = ServerConfig::load()?;
     log_startup_configuration(&config);
 
-    // Auto-update eligibility checks compare this marker against the running
-    // process, so record it even when the release launcher did not start us
-    // (server-only packages start via start.sh / start.cmd).
-    record_server_pid(&config.data_dir)?;
+    create_private_directory(&config.data_dir)?;
     create_private_directory(&config.download_temp_dir)?;
     secure_existing_state_files(&config).await?;
 
@@ -160,10 +157,6 @@ async fn main() -> anyhow::Result<()> {
         libation_accounts_root,
     )?;
 
-    rescan_library(&state).await?;
-    schedule_automatic_libation_refresh(state.clone());
-    schedule_reading_session_sweeper(state.clone());
-
     let app = build_router(
         state.clone(),
         config.web_dist_dir.as_deref(),
@@ -181,33 +174,196 @@ async fn main() -> anyhow::Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!("server listening on http://{address}");
-    axum::serve(
+
+    // Only the process holding the port is the server. A second start by
+    // mistake fails at the bind above, so nothing below it can overwrite the
+    // live server's pid marker or delete the uploads and update download it
+    // has in flight.
+    //
+    // Auto-update eligibility checks compare this marker against the running
+    // process, so record it even when the release launcher did not start us
+    // (server-only packages start via start.sh / start.cmd).
+    record_server_pid(&config.data_dir)?;
+    sweep_leftover_transfers(&config);
+
+    // The port is open before the library is: a first scan of a large library
+    // takes minutes, and a listener that only appears afterwards looks to the
+    // launcher, a health check, and the operator like a server that failed to
+    // start. The catalogue is empty and `/api/health` reports `scanning`
+    // until the scan lands. A scan that fails is logged, not fatal: the task
+    // retries it on a backoff, and any other trigger's rescan counts too.
+    start_startup_scan(state.clone()).await;
+    schedule_automatic_libation_refresh(state.clone());
+    schedule_reading_session_sweeper(state.clone());
+
+    let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
+    let shutdown = state.shutdown.subscribe();
+    let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(state.shutdown.subscribe()))
-    .await?;
+    .with_graceful_shutdown(async move {
+        let reason = shutdown_signal(shutdown).await;
+        let _ = shutdown_reason_sender.send(reason);
+    });
+    serve_until_shutdown(serve, shutdown_reason).await?;
     drain_reading_sessions(&state).await;
 
     Ok(())
 }
 
-async fn shutdown_signal(mut shutdown: broadcast::Receiver<()>) {
+/// Startup step: remove what an earlier process left behind mid-transfer —
+/// archives in the download directory and staging folders in the library —
+/// since the guards that would have deleted them died with it.
+fn sweep_leftover_transfers(config: &ServerConfig) {
+    match sweep_download_temp_dir(&config.download_temp_dir) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(
+            removed,
+            "removed leftover download archives from {}",
+            config.download_temp_dir.display()
+        ),
+        Err(error) => tracing::warn!(
+            "could not sweep leftover download archives in {}: {error}",
+            config.download_temp_dir.display()
+        ),
+    }
+    match sweep_upload_staging_dirs(&config.library_root) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(
+            removed,
+            "removed leftover upload staging folders from {}",
+            config.library_root.display()
+        ),
+        Err(error) => tracing::warn!(
+            "could not sweep leftover upload staging folders in {}: {error}",
+            config.library_root.display()
+        ),
+    }
+}
+
+/// How long the startup scan waits before its first retry, doubling each
+/// time up to the ceiling. A library on a drive that mounts after boot, or a
+/// scan withheld as suspect, publishes on the retry that finds it whole.
+const STARTUP_SCAN_RETRY_INITIAL: Duration = Duration::from_secs(15);
+const STARTUP_SCAN_RETRY_CEILING: Duration = Duration::from_secs(10 * 60);
+
+/// Startup step: run the first library scan alongside the listener rather
+/// than in front of it.
+///
+/// A scan that fails or is withheld is reported (`/api/health` says
+/// `catalogueError`, listings answer 503) and retried on a backoff until one
+/// publishes. Before the listener came up ahead of the scan, a failed first
+/// scan exited the process and the service manager's restart policy retried
+/// it; a process that stays up to serve has to retry for itself.
+async fn start_startup_scan(state: AppState) {
+    // Flagged before the task is spawned, so a health check racing the
+    // scheduler never sees an empty catalogue reported as final.
+    {
+        let mut library = state.library.write().await;
+        library.startup_scan_pending = true;
+        library.catalogue_error = false;
+    }
+    tokio::spawn(async move {
+        let mut shutdown = state.shutdown.subscribe();
+        let mut delay = STARTUP_SCAN_RETRY_INITIAL;
+        loop {
+            match rescan_library(&state).await {
+                Ok(()) => {
+                    let library = state.library.read().await;
+                    if library.catalogue_ready {
+                        tracing::info!(
+                            books = library.books.len(),
+                            "initial library scan complete"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "initial library scan was withheld as suspect; retrying in {}s",
+                            delay.as_secs()
+                        );
+                    }
+                }
+                Err(error) => tracing::error!(
+                    "initial library scan failed; retrying in {}s: {error:#}",
+                    delay.as_secs()
+                ),
+            }
+            {
+                let mut library = state.library.write().await;
+                library.startup_scan_pending = false;
+                library.catalogue_error = !library.catalogue_ready;
+                if library.catalogue_ready {
+                    return;
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = shutdown.recv() => return,
+            }
+            // Another trigger (an upload, a job, the rescan route) may have
+            // published in the meantime.
+            if state.library.read().await.catalogue_ready {
+                return;
+            }
+            delay = (delay * 2).min(STARTUP_SCAN_RETRY_CEILING);
+        }
+    });
+}
+
+/// How long an update-triggered shutdown waits for in-flight requests. The
+/// launcher's updater gives this process 45 seconds to exit before it gives
+/// up on the update, so the drain has to finish inside that.
+const UPDATE_SHUTDOWN_DRAIN: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownReason {
+    /// SIGINT or SIGTERM: drain for as long as it takes.
+    Signal,
+    /// An in-process update is waiting on this process to exit.
+    Update,
+}
+
+/// Serve until the shutdown signal fires, then drain: without limit after a
+/// signal, and for at most [`UPDATE_SHUTDOWN_DRAIN`] when an update asked.
+async fn serve_until_shutdown(
+    serve: impl std::future::IntoFuture<Output = io::Result<()>>,
+    shutdown_reason: tokio::sync::oneshot::Receiver<ShutdownReason>,
+) -> anyhow::Result<()> {
+    let serve = serve.into_future();
+    tokio::pin!(serve);
+    let reason = tokio::select! {
+        result = &mut serve => return Ok(result?),
+        reason = shutdown_reason => reason,
+    };
+    if matches!(reason, Ok(ShutdownReason::Update)) {
+        match tokio::time::timeout(UPDATE_SHUTDOWN_DRAIN, &mut serve).await {
+            Ok(result) => result?,
+            Err(_) => tracing::warn!(
+                "connections still open {} seconds after the update requested shutdown; exiting without them",
+                UPDATE_SHUTDOWN_DRAIN.as_secs()
+            ),
+        }
+        return Ok(());
+    }
+    Ok(serve.await?)
+}
+
+async fn shutdown_signal(mut shutdown: broadcast::Receiver<()>) -> ShutdownReason {
     #[cfg(unix)]
     {
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .expect("install SIGTERM handler");
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = terminate.recv() => {},
-            _ = shutdown.recv() => {},
+            _ = tokio::signal::ctrl_c() => ShutdownReason::Signal,
+            _ = terminate.recv() => ShutdownReason::Signal,
+            _ = shutdown.recv() => ShutdownReason::Update,
         }
     }
     #[cfg(not(unix))]
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        _ = shutdown.recv() => {},
+        _ = tokio::signal::ctrl_c() => ShutdownReason::Signal,
+        _ = shutdown.recv() => ShutdownReason::Update,
     }
 }
 

@@ -12,10 +12,12 @@ export const READER_THEME_CHOICES: readonly ReaderThemeChoice[] = ["auto", "pape
 type StorageReader = Pick<Storage, "getItem">;
 type StorageWriter = Pick<Storage, "setItem">;
 
-export function readReaderThemeChoice(storage: StorageReader): ReaderThemeChoice {
+export function readReaderThemeChoice(storage?: StorageReader): ReaderThemeChoice {
   let stored: string | null = null;
   try {
-    stored = storage.getItem(READER_THEME_STORAGE_KEY);
+    // Resolve the default inside the try: merely touching window.localStorage
+    // throws under Safari's "Block All Cookies" and sandboxed frames.
+    stored = (storage ?? window.localStorage).getItem(READER_THEME_STORAGE_KEY);
   } catch {
     stored = null;
   }
@@ -24,9 +26,9 @@ export function readReaderThemeChoice(storage: StorageReader): ReaderThemeChoice
   return "auto";
 }
 
-export function writeReaderThemeChoice(storage: StorageWriter, choice: ReaderThemeChoice): void {
+export function writeReaderThemeChoice(choice: ReaderThemeChoice, storage?: StorageWriter): void {
   try {
-    storage.setItem(READER_THEME_STORAGE_KEY, choice);
+    (storage ?? window.localStorage).setItem(READER_THEME_STORAGE_KEY, choice);
   } catch {
     // Keep the in-memory choice usable when device storage is unavailable.
   }

@@ -10,6 +10,10 @@ pub(crate) const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
 pub(crate) const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
 
+/// Track streams and downloads carry the listener's media token in the URL,
+/// so a shared cache must never hold one.
+pub(crate) const MEDIA_CACHE_CONTROL: &str = "private";
+
 pub(crate) async fn get_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -203,34 +207,33 @@ pub(crate) async fn serve_file_response(
             .map_err(|_| ApiError::not_found("Media file not found"))?;
     let file_size = metadata.len();
     let content_type = media_content_type(&file_path);
+    // A range this server cannot serve (another unit, several ranges, a
+    // malformed spec) is ignored and the whole file goes out, as RFC 9110
+    // allows; only a well-formed byte range outside the file earns a 416.
+    let requested_range = match headers.get(RANGE) {
+        None => None,
+        Some(value) => match value
+            .to_str()
+            .map(|value| parse_byte_range(value, file_size))
+        {
+            Ok(ByteRange::Satisfiable(start, end)) => Some((start, end)),
+            Ok(ByteRange::Unsatisfiable) => return range_not_satisfiable_response(file_size),
+            Ok(ByteRange::Unsupported) | Err(_) => None,
+        },
+    };
     if file_size == 0 {
-        if headers.contains_key(RANGE) {
-            return range_not_satisfiable_response(file_size);
-        }
         let mut response = Response::builder()
             .status(StatusCode::OK)
             .header(ACCEPT_RANGES, "bytes")
             .header(CONTENT_TYPE, content_type)
-            .header(CONTENT_LENGTH, "0");
+            .header(CONTENT_LENGTH, "0")
+            .header(CACHE_CONTROL, MEDIA_CACHE_CONTROL);
         if let Some(content_disposition) = content_disposition {
             response =
                 response.header(axum::http::header::CONTENT_DISPOSITION, content_disposition);
         }
         return Ok(response.body(Body::empty())?);
     }
-
-    let requested_range = match headers.get(RANGE) {
-        None => None,
-        Some(value) => {
-            let Ok(value) = value.to_str() else {
-                return range_not_satisfiable_response(file_size);
-            };
-            let Some(range) = parse_range(value, file_size) else {
-                return range_not_satisfiable_response(file_size);
-            };
-            Some(range)
-        }
-    };
 
     let (status, start, end) = match requested_range {
         Some(range) => (StatusCode::PARTIAL_CONTENT, range.0, range.1),
@@ -247,7 +250,8 @@ pub(crate) async fn serve_file_response(
         .status(status)
         .header(ACCEPT_RANGES, "bytes")
         .header(CONTENT_TYPE, content_type)
-        .header(CONTENT_LENGTH, (end - start + 1).to_string());
+        .header(CONTENT_LENGTH, (end - start + 1).to_string())
+        .header(CACHE_CONTROL, MEDIA_CACHE_CONTROL);
 
     if status == StatusCode::PARTIAL_CONTENT {
         response = response.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));
@@ -403,13 +407,19 @@ pub(crate) async fn download_book(
         });
     }
 
-    let (zip_path, download_permit) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(PathBuf, OwnedSemaphorePermit)> {
+    // The archive stays under its `TempPath` guard until the response owns it,
+    // so the file is removed on every path that does not end in a download:
+    // an error while writing drops the guard inside the closure, and a caller
+    // that goes away mid-build drops this `JoinHandle` without cancelling the
+    // blocking task — tokio lets it run to completion and then drops its
+    // output, guard included, because no handle is left to receive it.
+    let (zip_path, download_permit) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(tempfile::TempPath, OwnedSemaphorePermit)> {
             let temp = tempfile::Builder::new()
-                .prefix("operalibre-")
-                .suffix(".zip")
+                .prefix(DOWNLOAD_TEMP_PREFIX)
+                .suffix(DOWNLOAD_TEMP_SUFFIX)
                 .tempfile_in(download_temp_dir)?;
-            let (file, path) = temp.keep()?;
+            let (file, path) = temp.into_parts();
             let mut writer = zip::ZipWriter::new(file);
             let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored)
@@ -424,44 +434,112 @@ pub(crate) async fn download_book(
             }
             writer.finish()?;
             Ok((path, download_permit))
-        })
-        .await
-        .map_err(|error| ApiError::internal(error.to_string()))??;
+        },
+    )
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))??;
 
     let file = fs::File::open(&zip_path).await?;
     let metadata = file.metadata().await?;
     let file_size = metadata.len();
 
     let safe_filename = sanitize_filename(&book_title);
-    let stream = ReaderStream::new(RemoveOnDropFile::new(file, zip_path, download_permit));
+    let stream = ReaderStream::new(RemoveOnDropFile::guarded(file, zip_path, download_permit));
     let body = Body::from_stream(stream);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/zip")
         .header(CONTENT_LENGTH, file_size.to_string())
+        .header(CACHE_CONTROL, MEDIA_CACHE_CONTROL)
         .header(
             axum::http::header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{safe_filename}.zip\""),
+            download_content_disposition(&safe_filename),
         )
         .body(body)?)
 }
 
+/// `attachment` with the plain ASCII name every client understands and the
+/// RFC 8187 form that carries the title's real characters.
+pub(crate) fn download_content_disposition(safe_filename: &str) -> String {
+    let ascii_fallback: String = safe_filename
+        .chars()
+        .map(|character| {
+            if character.is_ascii() && character != '"' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "attachment; filename=\"{ascii_fallback}.zip\"; filename*=UTF-8''{}.zip",
+        rfc8187_encode(safe_filename)
+    )
+}
+
+pub(crate) const DOWNLOAD_TEMP_PREFIX: &str = "operalibre-";
+
+pub(crate) const DOWNLOAD_TEMP_SUFFIX: &str = ".zip";
+
+/// Remove archives left in the download directory by an earlier process: a
+/// crash or a hard stop mid-download loses the guard that would have deleted
+/// them. Returns how many were removed.
+pub(crate) fn sweep_download_temp_dir(download_temp_dir: &FsPath) -> io::Result<usize> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(download_temp_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !(name.starts_with(DOWNLOAD_TEMP_PREFIX) && name.ends_with(DOWNLOAD_TEMP_SUFFIX))
+            || !entry.file_type()?.is_file()
+        {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    "failed to remove leftover download archive: {error}"
+                );
+            }
+        }
+    }
+    Ok(removed)
+}
+
 pub(crate) struct RemoveOnDropFile {
     pub(crate) file: Option<fs::File>,
-    pub(crate) path: PathBuf,
+    /// Deletes the archive when dropped, after the handle below is closed.
+    pub(crate) path: Option<tempfile::TempPath>,
     pub(crate) _download_permit: OwnedSemaphorePermit,
 }
 
 impl RemoveOnDropFile {
+    #[cfg(test)]
     pub(crate) fn new(
         file: fs::File,
         path: PathBuf,
         download_permit: OwnedSemaphorePermit,
     ) -> Self {
+        let path = tempfile::TempPath::try_from_path(path).expect("an absolute archive path");
+        Self::guarded(file, path, download_permit)
+    }
+
+    /// Take over an archive that is still under its creation guard, so there
+    /// is no moment between building and serving it when nothing owns it.
+    pub(crate) fn guarded(
+        file: fs::File,
+        path: tempfile::TempPath,
+        download_permit: OwnedSemaphorePermit,
+    ) -> Self {
         Self {
             file: Some(file),
-            path,
+            path: Some(path),
             _download_permit: download_permit,
         }
     }
@@ -483,13 +561,11 @@ impl Drop for RemoveOnDropFile {
         // Windows cannot unlink an open file. Close the handle before cleanup
         // so completed and cancelled downloads both remove their temporary ZIP.
         drop(self.file.take());
-        if let Err(error) = std::fs::remove_file(&self.path)
+        if let Some(path) = self.path.take()
+            && let Err(error) = path.close()
             && error.kind() != io::ErrorKind::NotFound
         {
-            tracing::warn!(
-                path = %self.path.display(),
-                "failed to remove temporary download: {error}"
-            );
+            tracing::warn!("failed to remove temporary download: {error}");
         }
     }
 }
@@ -519,19 +595,24 @@ pub(crate) async fn delete_downloaded_book(
     }
 
     let metadata = fs::metadata(&canonical_book_path).await?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(&canonical_book_path).await?;
+    let removal = if metadata.is_dir() {
+        fs::remove_dir_all(&canonical_book_path).await
     } else if metadata.is_file() {
-        fs::remove_file(&canonical_book_path).await?;
+        fs::remove_file(&canonical_book_path).await
     } else {
         return Err(ApiError::bad_request(
             "The downloaded book is not a regular file or folder.",
         ));
-    }
+    };
 
     // Progress, metadata overrides, access grants, and Libation's catalog are
     // intentionally retained. If Libation downloads the same ASIN again, the
     // stable book id reconnects all of that state to the new local copy.
-    rescan_library(&state).await?;
+    //
+    // The rescan runs even when the removal failed part-way: a folder that
+    // lost some of its tracks must stop being advertised as whole.
+    let rescan = rescan_library(&state).await;
+    removal?;
+    rescan?;
     Ok(Json(books_with_progress(&state, &auth).await?))
 }

@@ -219,9 +219,10 @@ impl ServerConfig {
         Ok(Self {
             deployment_mode,
             host,
-            port: config_u16_value(&values, "port")?
-                .or_else(|| env_u16_value("PORT"))
-                .unwrap_or(4000),
+            port: match config_u16_value(&values, "port")? {
+                Some(port) => port,
+                None => env_u16_value("PORT")?.unwrap_or(4000),
+            },
             max_upload_bytes,
             max_book_download_bytes,
             max_concurrent_book_downloads,
@@ -247,10 +248,12 @@ impl ServerConfig {
                 .or_else(|| env_path_value("OPERALIBRE_FFMPEG_PATH")),
             ffprobe_path: config_path_value(&values, &config_dir, "ffprobe_path")
                 .or_else(|| env_path_value("OPERALIBRE_FFPROBE_PATH")),
-            allowed_origins: config_string_value(&values, "allowed_origins")
-                .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
-                .map(parse_origin_list)
-                .unwrap_or_default(),
+            allowed_origins: normalize_allowed_origins(
+                config_string_value(&values, "allowed_origins")
+                    .or_else(|| env_string_value("OPERALIBRE_ALLOWED_ORIGINS"))
+                    .map(parse_origin_list)
+                    .unwrap_or_default(),
+            )?,
             web_dist_dir: config_path_value(&values, &config_dir, "web_dist_dir")
                 .or_else(|| env_path_value("OPERALIBRE_WEB_DIST_DIR")),
         })
@@ -409,10 +412,17 @@ pub(crate) fn config_bounded_usize(
     Ok(value)
 }
 
-pub(crate) fn env_u16_value(key: &str) -> Option<u16> {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u16>().ok())
+/// A malformed value is an error, as it is in the config file: silently
+/// falling back to the default would start the server on a port nobody asked
+/// for.
+pub(crate) fn env_u16_value(key: &str) -> anyhow::Result<Option<u16>> {
+    let Some(value) = env_string_value(key) else {
+        return Ok(None);
+    };
+    value
+        .parse::<u16>()
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("Invalid {key} environment value `{value}`: {error}"))
 }
 
 pub(crate) fn config_path_value(
@@ -440,6 +450,33 @@ pub(crate) fn parse_origin_list(value: String) -> Vec<String> {
         .filter(|origin| !origin.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Check and canonicalise the configured origins once, so the CORS allow-list
+/// and the CSRF check see the same values. An origin is a scheme and an
+/// authority and nothing else; a lowercased copy of exactly that is kept.
+pub(crate) fn normalize_allowed_origins(origins: Vec<String>) -> anyhow::Result<Vec<String>> {
+    let mut normalized = Vec::with_capacity(origins.len());
+    for origin in origins {
+        let parsed = origin.parse::<axum::http::Uri>().map_err(|error| {
+            anyhow::anyhow!("Invalid allowed_origins entry `{origin}`: {error}")
+        })?;
+        let (Some(scheme), Some(authority)) = (parsed.scheme_str(), parsed.authority()) else {
+            anyhow::bail!(
+                "Invalid allowed_origins entry `{origin}`: an origin needs a scheme and a host, such as https://reader.example"
+            );
+        };
+        if !matches!(parsed.path(), "" | "/") || parsed.query().is_some() {
+            anyhow::bail!(
+                "Invalid allowed_origins entry `{origin}`: an origin has no path or query"
+            );
+        }
+        let canonical = format!("{scheme}://{authority}").to_ascii_lowercase();
+        if !normalized.contains(&canonical) {
+            normalized.push(canonical);
+        }
+    }
+    Ok(normalized)
 }
 
 pub(crate) fn resolve_config_path(config_dir: &FsPath, value: &str) -> PathBuf {

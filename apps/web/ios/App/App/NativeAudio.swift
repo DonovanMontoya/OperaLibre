@@ -487,6 +487,10 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func stop(_ call: CAPPluginCall) {
+        // The attach cleanup passes false: it runs on every track change and
+        // the next load() follows at once, so releasing the session there
+        // would hand audio back to other apps between every two chapters.
+        let releaseSession = call.getBool("releaseSession") ?? true
         DispatchQueue.main.async { [weak self] in
             self?.generation += 1
             // stop() must disarm the sleep timer so it cannot keep counting
@@ -498,6 +502,9 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.sleepTimerLastTick = nil
             self?.sleepTimerFinishedWhileInactive = false
             self?.tearDownPlayer()
+            if releaseSession {
+                self?.deactivateAudioSession()
+            }
             call.resolve()
         }
     }
@@ -654,11 +661,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     durationSeconds: endedDuration > 0 ? endedDuration : nil
                 )
                 self.updateNowPlayingInfo()
-                let finalState: JSObject = [
-                    "positionSeconds": endedPosition,
-                    "durationSeconds": endedDuration,
-                    "isPlaying": false
-                ]
+                let finalState = self.stateData(
+                    positionSeconds: endedPosition,
+                    durationSeconds: endedDuration,
+                    isPlaying: false
+                )
                 if UIApplication.shared.applicationState == .active {
                     self.notifyListeners("state", data: finalState)
                     self.notifyListeners("ended", data: finalState)
@@ -861,11 +868,11 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     durationSeconds: self.finishedDurationSeconds
                 )
                 self.finishedWhileInactive = false
-                let finalState: JSObject = [
-                    "positionSeconds": self.finishedPositionSeconds ?? 0,
-                    "durationSeconds": self.finishedDurationSeconds ?? 0,
-                    "isPlaying": false
-                ]
+                let finalState = self.stateData(
+                    positionSeconds: self.finishedPositionSeconds ?? 0,
+                    durationSeconds: self.finishedDurationSeconds ?? 0,
+                    isPlaying: false
+                )
                 self.notifyListeners("state", data: finalState)
                 self.notifyListeners("ended", data: finalState)
             } else {
@@ -968,8 +975,15 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             // interruption without a useful matching `.ended` notification.
             // The retained play intent is authoritative: reclaim the session
             // and Now Playing ownership once the new output route is ready.
-            interruptionIsActive = false
+            // A route change is not proof the interruption is over, though:
+            // a phone call is still one while AirPods go in. Only a session
+            // activation that succeeds ends the interruption bookkeeping; a
+            // failed one keeps the play intent for the `.ended` notification.
             if shouldAutoplay {
+                if interruptionIsActive {
+                    guard activateAudioSession() else { break }
+                    interruptionIsActive = false
+                }
                 resumeAfterInterruption()
             } else {
                 wasPlayingBeforeInterruption = false
@@ -998,13 +1012,34 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         if UIApplication.shared.applicationState == .active { emitState() }
     }
 
-    private func activateAudioSession() {
+    @discardableResult
+    private func activateAudioSession() -> Bool {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio)
             try session.setActive(true)
+            return true
         } catch {
-            emitError("Unable to activate background audio: \(error.localizedDescription)")
+            // iOS refuses activation while another interruption (a phone
+            // call) owns the session. That is expected, not a broken native
+            // player: keep the play intent and let the interruption's end
+            // resume playback instead of failing over to web audio for good.
+            if interruptionIsActive {
+                NSLog("Audio session activation deferred during an interruption: %@", error.localizedDescription)
+            } else {
+                emitError("Unable to activate background audio: \(error.localizedDescription)")
+            }
+            return false
+        }
+    }
+
+    /// Gives the audio session up after a teardown so other apps' audio can
+    /// resume. Pausing keeps the session; only a stop releases it.
+    private func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            NSLog("Unable to deactivate the audio session: %@", error.localizedDescription)
         }
     }
 
@@ -1123,11 +1158,25 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let player else { return }
         let position = finiteSeconds(player.currentTime())
         let duration = finiteSeconds(player.currentItem?.duration ?? .invalid)
-        notifyListeners("state", data: [
-            "positionSeconds": position,
-            "durationSeconds": duration,
-            "isPlaying": player.timeControlStatus == .playing
-        ])
+        notifyListeners("state", data: stateData(
+            positionSeconds: position,
+            durationSeconds: duration,
+            isPlaying: player.timeControlStatus == .playing
+        ))
+    }
+
+    /// A `state` payload. The track id lets the JS side drop a clock that
+    /// belongs to a track it has already moved away from.
+    private func stateData(positionSeconds: Double, durationSeconds: Double, isPlaying: Bool) -> JSObject {
+        var data: JSObject = [
+            "positionSeconds": positionSeconds,
+            "durationSeconds": durationSeconds,
+            "isPlaying": isPlaying
+        ]
+        if let trackId = recoveryTrackId {
+            data["trackId"] = trackId
+        }
+        return data
     }
 
     private func emitError(_ message: String) {

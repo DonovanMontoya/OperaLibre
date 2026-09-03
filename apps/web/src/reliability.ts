@@ -134,13 +134,17 @@ export function resolveActivePlaybackBookId(
     tracks: Array<unknown>;
     progress?: { status: string } | null;
   }>,
-  preferredId: string | null
+  preferredId: string | null,
+  // While audio is actually running, a listing that calls the book finished
+  // (a stale summary, or the final-position save landing mid-refresh) must not
+  // tear the session down under the listener. Only its disappearance from the
+  // library can end a playing session.
+  isPlaying = false
 ): string | null {
   if (!preferredId) return null;
   const book = books.find((candidate) => candidate.id === preferredId);
-  return book && book.tracks.length > 0 && book.progress?.status !== "finished"
-    ? book.id
-    : null;
+  if (!book || book.tracks.length === 0) return null;
+  return isPlaying || book.progress?.status !== "finished" ? book.id : null;
 }
 
 /**
@@ -247,6 +251,60 @@ export function adoptableServerProgress(
 
 /** Mirrors the server's PROGRESS_AUTOMATIC_REGRESSION_SLACK_SECONDS. */
 export const FOREGROUND_ADOPTION_SLACK_SECONDS = 2;
+
+/**
+ * Whether a deliberate seek also needs the server's reset guard lifted.
+ * `intentionalSeek` alone already lets a write move backwards; only
+ * `intentionalRegression` lets a near-zero position replace substantial
+ * progress. Sending both for every seek meant a +30 s tap armed the reset
+ * guard for the next write, and a stale near-zero clock that followed it
+ * became the authoritative copy. So the guard is lifted only when the seek
+ * itself went near the start, or behind the position the server last
+ * acknowledged — a forward tap never lifts it.
+ */
+export function shouldFlagIntentionalRegression(
+  seekTargetBookPosition: number | null | undefined,
+  acknowledgedServerBookPosition: number | null | undefined
+): boolean {
+  if (seekTargetBookPosition === null || seekTargetBookPosition === undefined) {
+    return false;
+  }
+  if (!Number.isFinite(seekTargetBookPosition)) return false;
+  if (seekTargetBookPosition < NEAR_ZERO_PROGRESS_SECONDS) return true;
+  return (
+    acknowledgedServerBookPosition !== null &&
+    acknowledgedServerBookPosition !== undefined &&
+    Number.isFinite(acknowledgedServerBookPosition) &&
+    seekTargetBookPosition < acknowledgedServerBookPosition
+  );
+}
+
+/**
+ * Whether an `ended` event can be trusted as the end of the track. A stream
+ * cut short by the network (a truncated response, a proxy timeout) ends the
+ * element too, and advancing on it would mark the book finished with an hour
+ * unheard. A truncated stream ends with the clock well short of the length
+ * the element itself declared; that is the only comparison made. The
+ * catalogue's tag-derived estimate is not a substitute: for a VBR MP3
+ * without a Xing header it runs minutes past the real length, and measuring
+ * against it stopped every track "early" instead of advancing.
+ */
+export function endedShortOfTrack(
+  currentTimeSeconds: number,
+  elementDurationSeconds: number | null | undefined,
+  toleranceSeconds = 60
+): boolean {
+  if (
+    elementDurationSeconds === null ||
+    elementDurationSeconds === undefined ||
+    !Number.isFinite(elementDurationSeconds) ||
+    elementDurationSeconds <= 0 ||
+    !Number.isFinite(currentTimeSeconds)
+  ) {
+    return false;
+  }
+  return elementDurationSeconds - currentTimeSeconds > toleranceSeconds;
+}
 
 /**
  * A local copy at the very start of the book that outranks substantial server

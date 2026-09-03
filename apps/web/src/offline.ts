@@ -82,6 +82,23 @@ async function removeRecord(storeName: string, key: string): Promise<void> {
   });
 }
 
+/** Deletes every record whose string key starts with `prefix`, in one transaction. */
+async function removeRecordsWithPrefix(storeName: string, prefix: string): Promise<void> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+    // Keys are strings, so every key with this prefix sorts between the
+    // prefix itself and the prefix followed by the highest code unit.
+    const request = store.getAllKeys(IDBKeyRange.bound(prefix, prefix + String.fromCharCode(0xffff)));
+    request.onsuccess = () => {
+      for (const key of request.result) store.delete(key);
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 async function readMedia(bookId: string, kind: string) {
   const scoped = await read<StoredMedia>("media", mediaKey(bookId, kind));
   if (scoped) return scoped;
@@ -139,11 +156,24 @@ export async function cancelBookOfflineDownload(book: Pick<Book, "id">) {
   }
 }
 
-const migratedLegacyBooks = new Set<string>();
-async function migrateLegacyBookDirectory(book: Book) {
+// One in-flight move per book, shared by concurrent callers. A failed move is
+// forgotten so the next caller tries again instead of treating the book as
+// already migrated and then finding no files at the new path.
+const legacyBookMigrations = new Map<string, Promise<void>>();
+function migrateLegacyBookDirectory(book: Book) {
   const migrationKey = `${getServerStorageKey()}:${book.id}`;
-  if (migratedLegacyBooks.has(migrationKey)) return;
-  migratedLegacyBooks.add(migrationKey);
+  let migration = legacyBookMigrations.get(migrationKey);
+  if (!migration) {
+    migration = moveLegacyBookDirectory(book).catch((error) => {
+      legacyBookMigrations.delete(migrationKey);
+      throw error;
+    });
+    legacyBookMigrations.set(migrationKey, migration);
+  }
+  return migration;
+}
+
+async function moveLegacyBookDirectory(book: Book) {
   const destination = bookDirectory(book.id);
   if (await fileExists(destination)) return;
   const legacy = legacyBookDirectory(book.id);
@@ -337,17 +367,32 @@ export async function downloadBookForOffline(
     return;
   }
 
-  let completed = 0;
-  for (const track of book.tracks) {
-    const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
-    if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
-    await write("media", { key: mediaKey(book.id, `track:${track.id}`), blob: await response.blob() });
-    completed += 1;
-    onProgress(completed, total);
-  }
-  if (book.coverArtUrl) {
-    const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
-    if (response.ok) await write("media", { key: mediaKey(book.id, "cover"), blob: await response.blob() });
+  // Records written by this attempt, so an abort or failure part-way leaves
+  // no half-downloaded book behind that `isBookDownloaded` would then have to
+  // explain.
+  const written: string[] = [];
+  try {
+    let completed = 0;
+    for (const track of book.tracks) {
+      const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
+      if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
+      const key = mediaKey(book.id, `track:${track.id}`);
+      await write("media", { key, blob: await response.blob() });
+      written.push(key);
+      completed += 1;
+      onProgress(completed, total);
+    }
+    if (book.coverArtUrl) {
+      const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
+      if (response.ok) {
+        const key = mediaKey(book.id, "cover");
+        await write("media", { key, blob: await response.blob() });
+        written.push(key);
+      }
+    }
+  } catch (error) {
+    await Promise.all(written.map((key) => removeRecord("media", key).catch(() => undefined)));
+    throw error;
   }
 }
 
@@ -359,11 +404,12 @@ export async function removeBookDownload(book: Book) {
     );
     return;
   }
+  // Delete by key prefix rather than from the current track list: a track
+  // the server has since renamed or dropped would otherwise leave its blob
+  // behind forever.
   await Promise.all([
-    ...book.tracks.map((track) => removeRecord("media", mediaKey(book.id, `track:${track.id}`))),
-    ...book.tracks.map((track) => removeRecord("media", `${book.id}:track:${track.id}`)),
-    removeRecord("media", mediaKey(book.id, "cover")),
-    removeRecord("media", `${book.id}:cover`)
+    removeRecordsWithPrefix("media", mediaKey(book.id, "")),
+    removeRecordsWithPrefix("media", `${book.id}:`)
   ]);
 }
 
@@ -396,4 +442,18 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
 
 export function releaseOfflineMediaUrl(url: string | null) {
   if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+/**
+ * Forget the offline fallback account. Signing out clears the token, but
+ * checkAuth's offline branch would otherwise resurrect the last user from
+ * this record the next time the server is unreachable.
+ */
+export function forgetOfflineUser(): void {
+  try {
+    localStorage.removeItem(scopedKey(USER_KEY));
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // Storage can be unavailable in private browsing; nothing to forget then.
+  }
 }

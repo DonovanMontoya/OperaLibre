@@ -41,6 +41,7 @@ public class OfflineDownloadWorker extends Worker {
     private static final String CHANNEL_ID = "offline-downloads";
     private static final int NOTIFICATION_ID = 0x0F71;
     private static final int MAX_ATTEMPTS = 5;
+    private static final int MAX_REDIRECTS = 5;
     private final NotificationManager notificationManager;
 
     /** Raised when a book is cancelled while the worker is transferring it. */
@@ -176,6 +177,10 @@ public class OfflineDownloadWorker extends Worker {
 
     @Nullable
     private Result recordFailure(String jobId, JSONObject job, Exception error) {
+        // A transfer cut short because WorkManager stopped the worker is not a
+        // failed download: hand the book back to the queue without using up
+        // an attempt, exactly as the file loop does between files.
+        if (isStopped()) return requeueForLater(jobId, job);
         try {
             int attempts = job.optInt("attempts", 0) + 1;
             boolean retry = attempts < MAX_ATTEMPTS && !isStopped();
@@ -204,14 +209,8 @@ public class OfflineDownloadWorker extends Worker {
         int completedRequired,
         int requiredTotal
     ) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(source).openConnection();
-        connection.setConnectTimeout(60_000);
-        connection.setReadTimeout(600_000);
-        connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("Accept-Encoding", "identity");
+        HttpURLConnection connection = openWithSameOriginRedirects(new URL(source));
         try {
-            int response = connection.getResponseCode();
-            if (response < 200 || response >= 300) throw new IllegalStateException("The server returned HTTP " + response + ".");
             long expected = connection.getContentLengthLong();
             long received = 0;
             long lastUpdate = 0;
@@ -243,6 +242,63 @@ public class OfflineDownloadWorker extends Worker {
         } finally {
             connection.disconnect();
         }
+    }
+
+    /**
+     * Opens {@code source} and returns a connection that answered 2xx.
+     *
+     * Redirects are followed by hand: the media URL carries the access token
+     * in its query string, and HttpURLConnection would otherwise forward it
+     * to whatever host a redirect names. Only hops that stay on the original
+     * scheme, host, and port are followed.
+     */
+    private static HttpURLConnection openWithSameOriginRedirects(URL original) throws Exception {
+        URL url = original;
+        for (int hop = 0; ; hop++) {
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(60_000);
+            connection.setReadTimeout(600_000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            int response;
+            try {
+                response = connection.getResponseCode();
+            } catch (Exception error) {
+                connection.disconnect();
+                throw error;
+            }
+            if (response >= 200 && response < 300) return connection;
+            String location = connection.getHeaderField("Location");
+            connection.disconnect();
+            if (!isRedirect(response)) {
+                throw new IllegalStateException("The server returned HTTP " + response + ".");
+            }
+            if (location == null || location.isEmpty()) {
+                throw new IllegalStateException("The server redirected the download without a destination.");
+            }
+            if (hop >= MAX_REDIRECTS) {
+                throw new IllegalStateException("The server redirected the download too many times.");
+            }
+            URL next = new URL(url, location);
+            if (!sameOrigin(original, next)) {
+                throw new SecurityException("The server redirected the download to another address.");
+            }
+            url = next;
+        }
+    }
+
+    private static boolean isRedirect(int response) {
+        return response == 301 || response == 302 || response == 303 || response == 307 || response == 308;
+    }
+
+    private static boolean sameOrigin(URL first, URL second) {
+        return first.getProtocol().equalsIgnoreCase(second.getProtocol())
+            && first.getHost().equalsIgnoreCase(second.getHost())
+            && effectivePort(first) == effectivePort(second);
+    }
+
+    private static int effectivePort(URL url) {
+        return url.getPort() == -1 ? url.getDefaultPort() : url.getPort();
     }
 
     static void deleteDownloadFiles(Context context, JSONObject job) throws Exception {
