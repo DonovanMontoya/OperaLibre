@@ -328,3 +328,69 @@ test("range reads fall back to streaming when a server ignores Range", async () 
     globalThis.fetch = originalFetch;
   }
 });
+
+/** The chapter-track fixture from the QuickTime test, with the sample table counts pluggable. */
+function quickTimeChapterFile(titles: string[], options: { counts?: number; co64?: boolean } = {}) {
+  const samples = titles.map((title) => concat(u16(encoder.encode(title).length), encoder.encode(title)));
+  const sampleSizes = samples.map((sample) => sample.length);
+  const mdat = box("mdat", ...samples);
+  const ftyp = box("ftyp", latin1("M4B "));
+  const mdatDataOffset = ftyp.length + 8;
+  const timescale = 600;
+  const count = (real: number) => u32(options.counts ?? real);
+  const stbl = box(
+    "stbl",
+    box("stts", u32(0), count(1), u32(titles.length), u32(timescale * 10)),
+    box("stsc", u32(0), count(1), u32(1), u32(titles.length), u32(1)),
+    box("stsz", u32(0), u32(0), count(titles.length), ...sampleSizes.map(u32)),
+    options.co64
+      ? box("co64", u32(0), count(1), u64(mdatDataOffset))
+      : box("stco", u32(0), count(1), u32(mdatDataOffset))
+  );
+  const chapterTrack = box(
+    "trak",
+    box("tkhd", u32(0), u32(0), u32(0), u32(2), new Uint8Array(60)),
+    box("mdia", box("mdhd", u32(0), u32(0), u32(0), u32(timescale), u32(0), u32(0)), box("minf", stbl))
+  );
+  const audioTrack = box(
+    "trak",
+    box("tkhd", u32(0), u32(0), u32(0), u32(1), new Uint8Array(60)),
+    box("tref", box("chap", u32(2)))
+  );
+  return { file: concat(ftyp, mdat, box("moov", mvhd(1_000, 30_000), audioTrack, chapterTrack)), mdatDataOffset };
+}
+
+test("sample tables claiming billions of entries are clamped to their boxes", async () => {
+  for (const co64 of [false, true]) {
+    const { file } = quickTimeChapterFile(["One", "Two", "Three"], { counts: 0xffffffff, co64 });
+    const started = Date.now();
+    const tags = await readAudioFileTags(bytesSource(file));
+    assert.ok(Date.now() - started < 2_000, "the parser must not walk the claimed entry count");
+    // Every count is clamped to what its box holds, so the real table is still read.
+    assert.deepEqual(tags?.chapters, [
+      { title: "One", startSeconds: 0 },
+      { title: "Two", startSeconds: 10 },
+      { title: "Three", startSeconds: 20 }
+    ]);
+  }
+});
+
+test("a chunk's chapter samples are fetched with one read", async () => {
+  const titles = ["Chapter One", "Chapter Two", "Chapter Three"];
+  const { file, mdatDataOffset } = quickTimeChapterFile(titles);
+  const mdatLength = titles.reduce((sum, title) => sum + 2 + title.length, 0);
+  const inner = bytesSource(file);
+  const mediaReads: number[] = [];
+  const counting = {
+    get size() {
+      return inner.size;
+    },
+    read(offset: number, length: number) {
+      if (offset >= mdatDataOffset && offset < mdatDataOffset + mdatLength) mediaReads.push(length);
+      return inner.read(offset, length);
+    }
+  };
+  const tags = await readAudioFileTags(counting);
+  assert.equal(tags?.chapters.length, 3);
+  assert.deepEqual(mediaReads, [mdatLength]);
+});

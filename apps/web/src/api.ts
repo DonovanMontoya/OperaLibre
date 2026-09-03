@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { ApiError } from "./apiError";
 import type {
   AlignmentStatus,
   AuthStatus,
@@ -403,7 +404,7 @@ export function getStoredToken(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
-  if (!usesNativeCredentialStorage()) {
+  if (!persistsAuthToken()) {
     // Browser sessions are restored from the Secure, HttpOnly cookie. Remove
     // tokens left by older builds so a later XSS cannot recover a persistent
     // full-API credential from localStorage.
@@ -414,6 +415,17 @@ export function getStoredToken(): string | null {
   return cachedToken;
 }
 
+// Whether the auth token lives in localStorage. Native shells have no cookie
+// session, so they must. A Jellyfin server never sets one either — its access
+// token is the whole session — so a browser tab would forget the sign-in on
+// every reload unless the token is kept. The trade-off is accepted because the
+// identical token is already persisted as the media token (Jellyfin media URLs
+// need it), so keeping it here exposes nothing more; OperaLibre servers keep
+// relying on the cookie in the browser.
+function persistsAuthToken(): boolean {
+  return usesNativeCredentialStorage() || getServerType() === "jellyfin";
+}
+
 export function setStoredToken(token: string | null) {
   cachedToken = token;
   if (!token) {
@@ -422,7 +434,7 @@ export function setStoredToken(token: string | null) {
   if (typeof window === "undefined") {
     return;
   }
-  if (token && usesNativeCredentialStorage()) {
+  if (token && persistsAuthToken()) {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
   } else {
     window.localStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -452,22 +464,48 @@ export function setStoredMediaToken(token: string | null) {
   }
 }
 
-export class ApiError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
-}
+export { ApiError };
 
 // fetch rejects with a TypeError when the server is unreachable; anything the
-// server actually answered comes back as ApiError (or a plain Error from the
+// server actually answered comes back as ApiError (from this module or the
 // Jellyfin client). Callers use this to tell "offline" apart from "rejected".
+//
+// Only the TypeErrors fetch itself raises count — every browser words them
+// with one of these ("Failed to fetch", "NetworkError when attempting to
+// fetch resource.", "Load failed") — so a programming error thrown while
+// handling a response is not mistaken for being offline. A 502/503/504 is a
+// proxy or gateway reporting that it could not reach the server, which for the
+// app is the same situation as no answer at all; a plain 500 is a real answer
+// and stays a rejection.
 export function isNetworkError(error: unknown): boolean {
-  return error instanceof TypeError || (error instanceof DOMException && error.name === "AbortError");
+  if (error instanceof TypeError) return /fetch|network|load failed|connection/i.test(error.message);
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof ApiError && (error.status === 502 || error.status === 503 || error.status === 504);
 }
 
-async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000): Promise<T> {
+// The server is up but has not published its catalogue yet: it answers
+// listings with 503 and a `Retry-After` while the startup scan runs. Check
+// this before `isNetworkError`, which counts every 503 as unreachable; a
+// proxy's own 503 carries no `Retry-After`, so it still reads as offline.
+export function isServerNotReadyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 503 && error.retryAfterSeconds !== undefined;
+}
+
+function retryAfterSeconds(response: Response): number | undefined {
+  const value = response.headers.get("Retry-After");
+  if (value === null) return undefined;
+  const seconds = Number(value.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
+type RequestOptions = RequestInit & {
+  // Leave the session alone on a 401: the request checks a password the user
+  // typed, so a wrong one is an answer to show, not a sign the session ended.
+  ignoreUnauthorized?: boolean;
+};
+
+async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30_000): Promise<T> {
+  const { ignoreUnauthorized = false, ...init } = options ?? {};
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -489,7 +527,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
     credentials: usesNativeCredentialStorage() ? "omit" : "include"
   }, timeoutMs);
 
-  if (response.status === 401 && unauthorizedHandler) {
+  if (response.status === 401 && unauthorizedHandler && !ignoreUnauthorized) {
     unauthorizedHandler();
   }
 
@@ -503,7 +541,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
     } catch {
       // ignore
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, retryAfterSeconds(response));
   }
 
   if (response.status === 204) {
@@ -527,12 +565,13 @@ export async function getAuthStatus() {
         mediaToken: token
       };
     } catch (error) {
-      // Only treat an answered request as "not signed in"; when the server is
-      // unreachable, let the caller fall back to the cached offline session.
-      if (isNetworkError(error)) {
-        throw error;
+      // Only a rejected credential means "not signed in". Anything else — the
+      // server unreachable, or answering with a 5xx — is rethrown so the caller
+      // keeps the token and falls back to the cached offline session.
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        return { setupRequired: false, user: null, mediaToken: null };
       }
-      return { setupRequired: false, user: null, mediaToken: null };
+      throw error;
     }
   }
   return request<AuthStatus>("/api/auth/status", undefined, STARTUP_TIMEOUT_MS);
@@ -801,7 +840,10 @@ export async function changePassword(
 ) {
   return request<{ ok: boolean }>(`/api/users/${encodeURIComponent(userId)}/password`, {
     method: "POST",
-    body: JSON.stringify({ newPassword, currentPassword })
+    body: JSON.stringify({ newPassword, currentPassword }),
+    // A 401 here means the typed current password was wrong, not that the
+    // session expired.
+    ignoreUnauthorized: currentPassword !== undefined
   });
 }
 
@@ -896,12 +938,21 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
   );
 }
 
-export async function getProgress(bookId: string) {
+/**
+ * `timeoutMs` caps the fetch and aborts it — a startup read that can fall
+ * back to a local copy should neither wait the client's default 30 s nor
+ * leave the request running once it has given up on it.
+ */
+export async function getProgress(bookId: string, timeoutMs?: number) {
   if (isDemoMode()) return getDemoProgress(bookId);
   if (getServerType() === "jellyfin") {
     return getCachedJellyfinProgress(bookId);
   }
-  return request<Progress | null>(`/api/books/${bookId}/progress`);
+  return request<Progress | null>(
+    `/api/books/${encodeURIComponent(bookId)}/progress`,
+    undefined,
+    timeoutMs
+  );
 }
 
 /**
@@ -909,16 +960,20 @@ export async function getProgress(bookId: string) {
  * settle for Jellyfin's library-fetch cache the way `getProgress` does — a
  * stale cached copy is exactly the position it is trying to move off.
  */
-export async function getFreshProgress(book: Book) {
+export async function getFreshProgress(book: Book, timeoutMs?: number) {
   if (isDemoMode()) return getDemoProgress(book.id);
   if (getServerType() === "jellyfin") {
     const token = getStoredToken();
     if (!token) {
       throw new ApiError("Not signed in.", 401);
     }
-    return refreshJellyfinProgress(currentApiBase(), token, book);
+    return refreshJellyfinProgress(currentApiBase(), token, book, timeoutMs);
   }
-  return request<Progress | null>(`/api/books/${book.id}/progress`);
+  return request<Progress | null>(
+    `/api/books/${encodeURIComponent(book.id)}/progress`,
+    undefined,
+    timeoutMs
+  );
 }
 
 export async function saveProgress(
@@ -946,12 +1001,16 @@ export async function saveProgress(
   // a deliberate backwards jump (restart, rewind) — without it the server
   // refuses near-zero writes that would erase substantial progress.
   const { updatedAt, ...fields } = progress;
-  return request<Progress>(`/api/books/${bookId}/progress`, {
+  return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
     signal: options?.signal,
     body: JSON.stringify({
       ...fields,
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
+      // When this device's clock is off, updatedAtMs is off by the same
+      // amount; the server compares sentAtMs with its own arrival time to
+      // correct the skew.
+      sentAtMs: Date.now(),
       ...(options?.intentionalRegression ? { intentionalRegression: true } : {}),
       ...(options?.intentionalSeek ? { intentionalSeek: true } : {}),
       // Listening is filed under the reader's calendar day. Without this an
@@ -1119,7 +1178,7 @@ export function bookDownloadUrl(bookId: string) {
   if (getServerType() === "jellyfin") {
     return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
   }
-  return `${currentApiBase()}${appendMediaToken(`/api/books/${bookId}/download`)}`;
+  return `${currentApiBase()}${appendMediaToken(`/api/books/${encodeURIComponent(bookId)}/download`)}`;
 }
 
 export async function deleteDownloadedBook(bookId: string) {

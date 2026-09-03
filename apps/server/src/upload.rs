@@ -7,6 +7,40 @@ pub(crate) const MAX_UPLOAD_FILES: usize = 1_000;
 
 pub(crate) const UPLOAD_STAGING_PREFIX: &str = ".operalibre-upload-";
 
+/// Remove staging folders an earlier process left in the library: an upload
+/// interrupted by a crash or a hard stop never reached its own cleanup. Runs
+/// before the listener is up, so nothing can be mid-upload. Returns how many
+/// were removed; a library root that does not exist yet has none.
+pub(crate) fn sweep_upload_staging_dirs(library_root: &FsPath) -> io::Result<usize> {
+    let entries = match std::fs::read_dir(library_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(UPLOAD_STAGING_PREFIX) || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    "failed to remove leftover upload staging folder: {error}"
+                );
+            }
+        }
+    }
+    Ok(removed)
+}
+
 pub(crate) async fn upload_audiobook(
     State(state): State<AppState>,
     AdminUser(auth): AdminUser,
@@ -35,22 +69,37 @@ async fn stage_and_publish_upload(
     staging_path: &FsPath,
     multipart: &mut Multipart,
 ) -> Result<(), ApiError> {
-    let book_name =
-        receive_audiobook_upload(staging_path, multipart, state.max_upload_bytes).await?;
+    let book_name = receive_audiobook_upload(
+        staging_path,
+        multipart,
+        state.max_upload_bytes,
+        &state.library_root,
+    )
+    .await?;
+    // Checked again now that the whole upload is in: the early check while
+    // receiving only saves the client the transfer.
     let destination = state.library_root.join(&book_name);
     if fs::try_exists(&destination).await? {
-        return Err(ApiError::conflict(format!(
-            "A library folder named '{book_name}' already exists. Choose another book name."
-        )));
+        return Err(book_name_taken(&book_name));
     }
     fs::rename(staging_path, &destination).await?;
     Ok(())
 }
 
+fn book_name_taken(book_name: &str) -> ApiError {
+    ApiError::conflict(format!(
+        "A library folder named '{book_name}' already exists. Choose another book name."
+    ))
+}
+
+/// Receive the multipart body into `staging_path`. When the book name arrives
+/// before the files — the order the web app sends — a name already in use
+/// under `library_root` is refused before the audio is transferred.
 pub(crate) async fn receive_audiobook_upload(
     staging_path: &FsPath,
     multipart: &mut Multipart,
     max_upload_bytes: Option<u64>,
+    library_root: &FsPath,
 ) -> Result<String, ApiError> {
     let mut book_name = None;
     let mut audio_file_count = 0usize;
@@ -78,6 +127,9 @@ pub(crate) async fn receive_audiobook_upload(
                 let safe_name = sanitize_filename(trimmed);
                 if safe_name.len() > 240 {
                     return Err(ApiError::bad_request("Book name is too long."));
+                }
+                if fs::try_exists(library_root.join(&safe_name)).await? {
+                    return Err(book_name_taken(&safe_name));
                 }
                 book_name = Some(safe_name);
             }

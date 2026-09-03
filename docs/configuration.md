@@ -109,11 +109,11 @@ When nginx is used, its `client_max_body_size` is an additional upload ceiling. 
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `library_root` | *(required)* | Absolute path to the folder containing your audiobook files. The scanner reads from this folder; nothing is written into it. See [Library Layout](library-layout.md). The key `audiobook_library` is accepted as a legacy alias. |
+| `library_root` | `library` | Path to the folder containing your audiobook files; a relative path resolves against the folder holding `server.config`, and the default is a `library` folder in the server's working directory. Set it explicitly in any real installation. The scanner reads from this folder; the web uploader writes new books into it. See [Library Layout](library-layout.md). The key `audiobook_library` is accepted as a legacy alias. |
 
 ### Data directory
 
-The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), cached cover art (`covers/`), the server log and PID file written by the launcher, and `update-backups/` from in-app updates. On Unix, everything in it is kept readable only by the account running the server.
+The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), cached cover art (`covers/`), the server log and PID file written by the launcher, and `update-backups/` from in-app updates. The release launchers and the installer read `data_dir` from `server.config` too, so moving it relocates all of those files together. On Unix, everything in it is kept readable only by the account running the server.
 
 | Key | Default | Description |
 | --- | --- | --- |

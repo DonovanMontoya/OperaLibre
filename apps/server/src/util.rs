@@ -31,6 +31,23 @@ pub(crate) fn sanitize_filename(value: &str) -> String {
     }
 }
 
+/// Percent-encode a filename for an RFC 8187 `filename*=UTF-8''...` parameter.
+/// Only the RFC's `attr-char` set passes through unencoded.
+pub(crate) fn rfc8187_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let plain = byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte);
+        if plain {
+            encoded.push(byte as char);
+        } else {
+            write!(encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
+}
+
 pub(crate) fn sanitize_zip_entry(value: &str) -> String {
     let cleaned: String = value
         .chars()
@@ -76,31 +93,81 @@ pub(crate) fn progress_key(user_id: &str, book_id: &str) -> String {
     format!("user:{user_id}:book:{book_id}")
 }
 
-pub(crate) fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
-    let range = range.strip_prefix("bytes=")?;
-    let (start, end) = range.split_once('-')?;
+/// How a `Range` request header should be answered.
+///
+/// RFC 9110 separates the two failure cases: a range the server does not
+/// understand (another unit, several ranges, a malformed spec) is ignored and
+/// the full body is sent with 200, whereas a well-formed byte range that lies
+/// outside the file is refused with 416.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ByteRange {
+    /// A single satisfiable byte range, as an inclusive `(start, end)` pair.
+    Satisfiable(u64, u64),
+    /// A well-formed byte range that no part of the file can satisfy.
+    Unsatisfiable,
+    /// Not a single byte range this server serves; the header is ignored.
+    Unsupported,
+}
 
-    if start.is_empty() {
-        let suffix_length = end.parse::<u64>().ok()?;
-        if suffix_length == 0 {
-            return None;
-        }
-        let start = file_size.saturating_sub(suffix_length);
-        return Some((start, file_size - 1));
+pub(crate) fn parse_byte_range(range: &str, file_size: u64) -> ByteRange {
+    let Some(range) = range.strip_prefix("bytes=") else {
+        return ByteRange::Unsupported;
+    };
+    // Multiple ranges would need a multipart/byteranges body, which nothing
+    // here produces. Falling back to the full body is what the RFC permits.
+    if range.contains(',') {
+        return ByteRange::Unsupported;
     }
-
-    let start = start.parse::<u64>().ok()?;
-    let end = if end.is_empty() {
-        file_size - 1
-    } else {
-        end.parse::<u64>().ok()?
+    let Some((start, end)) = range.split_once('-') else {
+        return ByteRange::Unsupported;
     };
 
-    if start >= file_size || end < start {
-        return None;
+    if start.is_empty() {
+        let Ok(suffix_length) = end.parse::<u64>() else {
+            return ByteRange::Unsupported;
+        };
+        // An empty file has no last byte for any suffix to end on.
+        let Some(last) = file_size.checked_sub(1) else {
+            return ByteRange::Unsatisfiable;
+        };
+        if suffix_length == 0 {
+            return ByteRange::Unsatisfiable;
+        }
+        return ByteRange::Satisfiable(file_size.saturating_sub(suffix_length), last);
     }
 
-    Some((start, end.min(file_size - 1)))
+    let Ok(start) = start.parse::<u64>() else {
+        return ByteRange::Unsupported;
+    };
+    let end = if end.is_empty() {
+        None
+    } else {
+        match end.parse::<u64>() {
+            Ok(end) => Some(end),
+            Err(_) => return ByteRange::Unsupported,
+        }
+    };
+    if end.is_some_and(|end| end < start) {
+        return ByteRange::Unsupported;
+    }
+
+    let Some(last) = file_size.checked_sub(1) else {
+        return ByteRange::Unsatisfiable;
+    };
+    if start > last {
+        return ByteRange::Unsatisfiable;
+    }
+    ByteRange::Satisfiable(start, end.map_or(last, |end| end.min(last)))
+}
+
+/// The satisfiable byte range, if there is exactly one. Serving code tells an
+/// ignorable header from an unsatisfiable range with [`parse_byte_range`].
+#[cfg(test)]
+pub(crate) fn parse_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
+    match parse_byte_range(range, file_size) {
+        ByteRange::Satisfiable(start, end) => Some((start, end)),
+        ByteRange::Unsatisfiable | ByteRange::Unsupported => None,
+    }
 }
 
 pub(crate) fn natural_path_key(path: &FsPath) -> String {

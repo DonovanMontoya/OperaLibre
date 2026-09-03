@@ -74,19 +74,10 @@ pub(crate) async fn write_bytes_atomic(path: &FsPath, contents: &[u8]) -> Result
         "{file_name}.{:016x}.tmp",
         u64::from_le_bytes(suffix)
     ));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut temp_file = options.open(&temp_path).await?;
-    temp_file.write_all(contents).await?;
-    // `flush` only drains tokio's userspace buffer. Without `sync_all` the
-    // bytes can still be sitting in the page cache when power is lost, and the
-    // rename below would then publish a truncated or empty store.
-    temp_file.sync_all().await?;
-    drop(temp_file);
-    secure_file_permissions(&temp_path).await?;
-    if let Err(error) = replace_file(&temp_path, path).await {
+    if let Err(error) = write_and_publish(&temp_path, path, contents).await {
+        // Whichever step failed, the temporary sibling must not stay behind:
+        // a full disk that leaves a `.tmp` file beside the store on every
+        // attempt only fills the disk faster.
         let _ = fs::remove_file(&temp_path).await;
         return Err(error.into());
     }
@@ -96,6 +87,24 @@ pub(crate) async fn write_bytes_atomic(path: &FsPath, contents: &[u8]) -> Result
     // store after a crash even though the data was safely on disk.
     sync_parent_directories(path, &created_directories).await?;
     Ok(())
+}
+
+/// Fill the temporary file and rename it over the destination. The caller
+/// removes the temporary file if any step here fails.
+async fn write_and_publish(temp_path: &FsPath, path: &FsPath, contents: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut temp_file = options.open(temp_path).await?;
+    temp_file.write_all(contents).await?;
+    // `flush` only drains tokio's userspace buffer. Without `sync_all` the
+    // bytes can still be sitting in the page cache when power is lost, and the
+    // rename below would then publish a truncated or empty store.
+    temp_file.sync_all().await?;
+    drop(temp_file);
+    secure_file_permissions(temp_path).await?;
+    replace_file(temp_path, path).await
 }
 
 /// Create the destination directory and remember every directory created.
@@ -885,6 +894,50 @@ impl SessionStore {
 }
 /// Per-listener daily listening totals.
 pub(crate) type ActivityLog = CachedStore<ActivityStore>;
+
+impl ActivityLog {
+    /// Adds listening seconds to one day's total, persisting just that row.
+    ///
+    /// Every playback checkpoint lands here, and going through `mutate` meant
+    /// rewriting every listener's every day for each one. The cache is
+    /// updated in place under the same write lock `mutate` holds across its
+    /// commit, so the two cannot interleave, and the cache is only touched
+    /// once the row is on disk. `write_activity_rows` stays the whole-store
+    /// path that restore and import use.
+    pub(crate) async fn add_seconds(
+        &self,
+        user_id: &str,
+        day: &str,
+        delta_seconds: f64,
+    ) -> Result<f64, ApiError> {
+        let _state_guard = self.db.state_read_guard().await;
+        let mut value = self.value.write().await;
+        let total = value
+            .by_user
+            .get(user_id)
+            .and_then(|days| days.get(day))
+            .copied()
+            .unwrap_or(0.0)
+            + delta_seconds;
+        let (row_user_id, row_day) = (user_id.to_string(), day.to_string());
+        self.db
+            .transaction_while_guarded(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO activity (user_id, day, seconds) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (user_id, day) DO UPDATE SET seconds = excluded.seconds",
+                    params![row_user_id, row_day, total],
+                )?;
+                Ok(())
+            })
+            .await?;
+        value
+            .by_user
+            .entry(user_id.to_string())
+            .or_default()
+            .insert(day.to_string(), total);
+        Ok(total)
+    }
+}
 /// Administrator edits layered over scanned metadata.
 pub(crate) type MetadataOverrides = CachedStore<MetadataOverrideStore>;
 /// Pending and decided Libation download requests.
