@@ -528,7 +528,7 @@ pub(crate) const MAX_JSON_BODY_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerMetrics {
-    version: &'static str,
+    version: String,
     deployment_mode: String,
     books: usize,
     tracks: usize,
@@ -590,7 +590,7 @@ pub(crate) async fn metrics(
     .map_err(|error| ApiError::internal(format!("Could not size server storage: {error}")))?;
 
     Ok(Json(ServerMetrics {
-        version: env!("CARGO_PKG_VERSION"),
+        version: updates::current_version(),
         deployment_mode: format!("{:?}", state.deployment_mode).to_lowercase(),
         books,
         tracks,
