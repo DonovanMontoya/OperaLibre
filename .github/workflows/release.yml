@@ -128,17 +128,14 @@ jobs:
           cargo clippy --locked --all-targets --manifest-path apps/launcher/Cargo.toml -- -D warnings
           cargo test --locked --manifest-path apps/launcher/Cargo.toml
 
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       - name: Audit server dependencies
-        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main, Node.js 24
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: apps/server
+        run: cargo audit --locked --file apps/server/Cargo.lock
 
       - name: Audit launcher dependencies
-        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main, Node.js 24
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: apps/launcher
+        run: cargo audit --locked --file apps/launcher/Cargo.lock
 
   frontend:
     name: Frontend package
