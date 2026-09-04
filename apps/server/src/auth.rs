@@ -700,8 +700,7 @@ pub(crate) async fn auth_status(
         [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         Json(AuthStatus {
             setup_required,
-            setup_token_required: setup_required
-                && state.deployment_mode.setup_token_required(remote_client),
+            setup_token_required: setup_required && state.deployment_mode.setup_token_required(),
             setup_local_only: setup_required
                 && remote_client
                 && !state.deployment_mode.allows_remote_setup(),
@@ -723,7 +722,7 @@ pub(crate) async fn setup_admin(
             "First-run setup must be completed from the server itself in local mode.",
         ));
     }
-    if state.deployment_mode.setup_token_required(remote_client) {
+    if state.deployment_mode.setup_token_required() {
         let candidate = payload.setup_token.as_deref().unwrap_or_default();
         let valid_token = state
             .setup_token

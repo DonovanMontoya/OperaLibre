@@ -1231,9 +1231,9 @@ fn deployment_profiles_choose_safe_defaults() {
             .secure_cookies()
     );
     assert!(!super::DeploymentMode::Lan.secure_cookies());
-    assert!(super::DeploymentMode::Proxy.setup_token_required(false));
-    assert!(super::DeploymentMode::Lan.setup_token_required(true));
-    assert!(!super::DeploymentMode::Lan.setup_token_required(false));
+    assert!(super::DeploymentMode::Proxy.setup_token_required());
+    assert!(!super::DeploymentMode::Lan.setup_token_required());
+    assert!(!super::DeploymentMode::Local.setup_token_required());
     assert!(super::DeploymentMode::parse("public").is_err());
 
     let (legacy_mode, legacy_host) =
@@ -1646,24 +1646,37 @@ async fn concurrent_first_run_setup_creates_only_one_owner() {
     assert!(users.users[0].is_admin);
 }
 
+/// Calls setup_admin as a forwarded remote client (loopback peer plus
+/// `x-forwarded-for`), the scaffold shared by the per-mode setup tests below.
+#[cfg(unix)]
+async fn attempt_forwarded_setup(
+    state: &super::AppState,
+    forwarded_for: &str,
+    username: &str,
+    setup_token: Option<&str>,
+) -> Result<(), super::ApiError> {
+    let mut headers = super::HeaderMap::new();
+    headers.insert("x-forwarded-for", forwarded_for.parse().unwrap());
+    super::setup_admin(
+        super::State(state.clone()),
+        super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
+        headers,
+        super::Json(super::SetupRequest {
+            username: username.to_string(),
+            password: "a-secure-password".to_string(),
+            setup_token: setup_token.map(str::to_string),
+        }),
+    )
+    .await
+    .map(|_| ())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn first_run_setup_rejects_remote_clients() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
-    let mut headers = super::HeaderMap::new();
-    headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
-    let result = super::setup_admin(
-        super::State(state.clone()),
-        super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
-        headers,
-        super::Json(super::SetupRequest {
-            username: "remote-owner".to_string(),
-            password: "a-secure-password".to_string(),
-            setup_token: None,
-        }),
-    )
-    .await;
+    let result = attempt_forwarded_setup(&state, "203.0.113.9", "remote-owner", None).await;
     let error = match result {
         Ok(_) => panic!("remote setup unexpectedly succeeded"),
         Err(error) => error,
@@ -1682,23 +1695,30 @@ async fn remote_first_run_setup_requires_the_bootstrap_token() {
         "one-time-secret",
         super::unix_now_seconds(),
     ));
-    let mut headers = super::HeaderMap::new();
-    headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
 
-    let result = super::setup_admin(
-        super::State(state.clone()),
-        super::ConnectInfo("127.0.0.1:41001".parse().unwrap()),
-        headers,
-        super::Json(super::SetupRequest {
-            username: "remote-owner".to_string(),
-            password: "a-secure-password".to_string(),
-            setup_token: Some("one-time-secret".to_string()),
-        }),
+    let result = attempt_forwarded_setup(
+        &state,
+        "203.0.113.9",
+        "remote-owner",
+        Some("one-time-secret"),
     )
     .await;
 
     assert!(result.is_ok());
     assert!(state.setup_token.lock().await.is_none());
+    assert!(state.users.read().await.users[0].is_owner);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lan_remote_first_run_setup_needs_no_token() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    state.deployment_mode = super::DeploymentMode::Lan;
+
+    let result = attempt_forwarded_setup(&state, "192.168.1.20", "lan-owner", None).await;
+
+    assert!(result.is_ok());
     assert!(state.users.read().await.users[0].is_owner);
 }
 
