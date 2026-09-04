@@ -9,7 +9,7 @@ import {
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
 import { fileExtension, storedMediaExtension } from "./mediaFiles";
-import type { AuthUser, Book, Progress, Track } from "./types";
+import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
 const DB_VERSION = 1;
@@ -142,6 +142,24 @@ function coverExtension(book: Book) {
 }
 
 const coverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
+
+// The ebook, its picture supplements, and any loose images, kept beside the
+// audio so a downloaded book can be read as well as heard.
+const companionFilePath = (book: Book, companion: CompanionFile) =>
+  `${bookDirectory(book.id)}/companion-${sanitizeSegment(companion.id)}.${sanitizeSegment(companion.extension || "bin")}`;
+const syncMapFilePath = (book: Book) => `${bookDirectory(book.id)}/sync.json`;
+const companionMediaKind = (companion: CompanionFile) => `companion:${companion.id}`;
+const SYNC_MAP_KIND = "sync";
+
+/** Base64 in chunks: one apply() over a whole ebook overruns the call stack. */
+function toBase64(data: ArrayBuffer) {
+  const bytes = new Uint8Array(data);
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return btoa(binary);
+}
 
 export const backgroundDownloadJobId = (book: Pick<Book, "id">) =>
   `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}`;
@@ -356,6 +374,25 @@ export async function downloadBookForOffline(
         required: false
       });
     }
+    // The ebook and pictures belong to the book, so they come down with it:
+    // a book taken on a flight can be read as well as heard. They are not
+    // required, so a missing companion cannot fail the audio download.
+    for (const companion of book.companions ?? []) {
+      files.push({
+        url: resolveUrl(companion.url),
+        path: (await Filesystem.getUri({ path: companionFilePath(book, companion), directory: MEDIA_DIRECTORY })).uri,
+        label: companion.fileName,
+        required: false
+      });
+    }
+    if (book.syncFile) {
+      files.push({
+        url: resolveUrl(book.syncFile.url),
+        path: (await Filesystem.getUri({ path: syncMapFilePath(book), directory: MEDIA_DIRECTORY })).uri,
+        label: "read-along sync",
+        required: false
+      });
+    }
     // Stable IDs let a relaunched app reattach to work the OS is already
     // running instead of scheduling a duplicate copy of the same book.
     const jobId = backgroundDownloadJobId(book);
@@ -386,6 +423,24 @@ export async function downloadBookForOffline(
       const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
       if (response.ok) {
         const key = mediaKey(book.id, "cover");
+        await write("media", { key, blob: await response.blob() });
+        written.push(key);
+      }
+    }
+    // The ebook and pictures, so a downloaded book can be read offline too.
+    // A companion that will not come down is not worth failing the book for.
+    for (const companion of book.companions ?? []) {
+      const response = await fetch(resolveUrl(companion.url), { signal }).catch(() => null);
+      if (response?.ok) {
+        const key = mediaKey(book.id, companionMediaKind(companion));
+        await write("media", { key, blob: await response.blob() });
+        written.push(key);
+      }
+    }
+    if (book.syncFile) {
+      const response = await fetch(resolveUrl(book.syncFile.url), { signal }).catch(() => null);
+      if (response?.ok) {
+        const key = mediaKey(book.id, SYNC_MAP_KIND);
         await write("media", { key, blob: await response.blob() });
         written.push(key);
       }
@@ -438,6 +493,77 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
   }
   const record = await readMedia(book.id, "cover");
   return record ? URL.createObjectURL(record.blob) : null;
+}
+
+/**
+ * The bytes of a companion document, from the device when they are there.
+ *
+ * The reader opens the same ebook every time the listener returns to a book,
+ * and a long one runs to megabytes; keeping the first copy means later opens
+ * cost nothing and work with no server in reach. A download stores the same
+ * file at the same place, so a book downloaded for offline opens straight
+ * from disk.
+ */
+export async function loadCompanionBytes(
+  book: Book,
+  companion: CompanionFile,
+  url: string,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  if (isNative()) {
+    await migrateLegacyBookDirectory(book);
+    const path = companionFilePath(book, companion);
+    const cached = await nativeFileUrl(path);
+    if (cached) {
+      try {
+        return await (await fetch(cached, { signal })).arrayBuffer();
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        // A truncated or unreadable copy: fall through and fetch it again.
+      }
+    }
+    const data = await fetchCompanion(url, signal);
+    try {
+      await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true });
+    } catch {
+      // Already there.
+    }
+    await Filesystem.writeFile({
+      path,
+      directory: MEDIA_DIRECTORY,
+      data: toBase64(data)
+    }).catch(() => undefined);
+    return data;
+  }
+  const record = await readMedia(book.id, companionMediaKind(companion));
+  if (record) return record.blob.arrayBuffer();
+  const data = await fetchCompanion(url, signal);
+  await write("media", {
+    key: mediaKey(book.id, companionMediaKind(companion)),
+    blob: new Blob([data], { type: companion.contentType })
+  }).catch(() => undefined);
+  return data;
+}
+
+async function fetchCompanion(url: string, signal?: AbortSignal) {
+  const response = await fetch(url, { credentials: "include", signal });
+  if (!response.ok) throw new Error(`Companion request failed with ${response.status}`);
+  return response.arrayBuffer();
+}
+
+/** The sync map stored with a downloaded book, for reading with no server. */
+export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
+  try {
+    if (isNative()) {
+      await migrateLegacyBookDirectory(book);
+      const url = await nativeFileUrl(syncMapFilePath(book));
+      return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
+    }
+    const record = await readMedia(book.id, SYNC_MAP_KIND);
+    return record ? ((JSON.parse(await record.blob.text())) as SyncMap) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function releaseOfflineMediaUrl(url: string | null) {

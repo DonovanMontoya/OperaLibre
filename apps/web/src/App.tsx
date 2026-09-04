@@ -71,7 +71,9 @@ import {
   normalizeSyncNeedle,
   readAlongMode,
   anchorAfterRelocation,
+  anchorOnPage,
   readerStorageKey,
+  shouldOpenPlayingChapter,
   syncMapPrecision,
   type SyncPrecision
 } from "./readalong";
@@ -86,6 +88,7 @@ import {
   type ReaderTheme,
   type ReaderThemeChoice
 } from "./readerTheme";
+import { readerDebugLog, shortCfi } from "./readerDebug";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -210,9 +213,11 @@ import {
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
+  getOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
+  loadCompanionBytes,
   releaseOfflineMediaUrl,
   removeBookDownload
 } from "./offline";
@@ -1385,6 +1390,7 @@ function EpubReadalong({
   storageScope,
   title,
   url,
+  loadBytes,
   syncTarget,
   syncFragments,
   precision,
@@ -1404,6 +1410,8 @@ function EpubReadalong({
   storageScope: string;
   title: string;
   url: string;
+  /** Reads the ebook, from the device when a copy is already there. */
+  loadBytes?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
   precision: SyncPrecision | null;
@@ -1456,8 +1464,23 @@ function EpubReadalong({
   // off screen, so a relayout that starts the same page a few words earlier
   // does not walk the remembered place backwards on every reopen.
   const anchorCfiRef = useRef<string | null>(null);
+  // While the reader is putting the page back where it was — opening the
+  // book, or laying it out again after a resize or a text-size change — it
+  // passes through the pages between the top of the chapter and the
+  // remembered place. Until it arrives, those pages must not be mistaken
+  // for somewhere the listener turned to.
+  const restoringUntilRef = useRef(0);
+  // Set once the listener turns a page themselves: the reader stops putting
+  // the page back and follows them instead.
+  const handNavigatedRef = useRef(false);
+  const beginRestore = useCallback(() => {
+    // A deadline, so a place that never resolves cannot freeze the anchor.
+    restoringUntilRef.current = performance.now() + 5000;
+  }, []);
   const syncFragmentsRef = useRef<SyncFragment[] | null>(syncFragments);
+  const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
   const onSeekToRef = useRef(onSeekTo);
+  const loadBytesRef = useRef(loadBytes);
   const onPinNarrationRef = useRef(onPinNarration);
   // Set while the listener is choosing the sentence being narrated: the next
   // tap places a sync anchor instead of seeking.
@@ -1479,9 +1502,13 @@ function EpubReadalong({
     readerUrlRef.current = url;
     lastLocationRef.current = null;
     anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
+    handNavigatedRef.current = false;
   }
   syncFragmentsRef.current = syncFragments;
+  syncTargetRef.current = syncTarget;
   onSeekToRef.current = onSeekTo;
+  loadBytesRef.current = loadBytes;
   onPinNarrationRef.current = onPinNarration;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
@@ -1577,9 +1604,18 @@ function EpubReadalong({
   // back); the narration marker must not drag the page away again until they
   // ask to return.
   const navigateByHand = useCallback((action: () => unknown) => {
-    if (syncFragmentsRef.current && syncFragmentsRef.current.length > 0) {
+    // Chapter-level following pulls the page just as a sentence marker does,
+    // so a page turned by hand has to stop that too, or the reader is
+    // dragged back to the narrator's chapter on the next run.
+    const followingNarration =
+      (syncFragmentsRef.current?.length ?? 0) > 0 || !!syncTargetRef.current;
+    if (followingNarration) {
       setFollow(false);
     }
+    // The listener is driving now; where they stop is the remembered place.
+    handNavigatedRef.current = true;
+    restoringUntilRef.current = 0;
+    readerDebugLog("hand");
     void action();
   }, []);
 
@@ -1696,6 +1732,7 @@ function EpubReadalong({
     setIsReady(false);
     setSlowToOpen(false);
     syncedTargetRef.current = null;
+    handNavigatedRef.current = false;
     searchIndexRef.current = null;
     searchCursorRef.current = 0;
     fragmentRangesRef.current = null;
@@ -1723,14 +1760,22 @@ function EpubReadalong({
         );
       }
       const EpubCfiClass = epubCfiClassRef.current;
-      const anchor = anchorAfterRelocation(
+      const restoring = performance.now() < restoringUntilRef.current;
+      const update = anchorAfterRelocation(
         anchorCfiRef.current,
         { start: nextLocation.start?.cfi, end: nextLocation.end?.cfi },
-        (a, b) => (EpubCfiClass ? new EpubCfiClass().compare(a, b) : 0)
+        (a, b) => (EpubCfiClass ? new EpubCfiClass().compare(a, b) : 0),
+        restoring
       );
-      if (anchor && anchor !== anchorCfiRef.current) {
-        anchorCfiRef.current = anchor;
-        writeStoredValue(locationStorageKey, anchor);
+      if (update.arrived) {
+        restoringUntilRef.current = 0;
+      }
+      readerDebugLog(
+        `reloc ${restoring ? "restoring" : "settled"} p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total} start=${shortCfi(nextLocation.start?.cfi)} anchor=${shortCfi(anchorCfiRef.current)}->${shortCfi(update.anchor)}${update.arrived ? " arrived" : ""}`
+      );
+      if (update.anchor && update.anchor !== anchorCfiRef.current) {
+        anchorCfiRef.current = update.anchor;
+        writeStoredValue(locationStorageKey, update.anchor);
       }
     };
 
@@ -1894,14 +1939,18 @@ function EpubReadalong({
           }
         }, 12000);
 
-        const response = await fetch(url, {
-          credentials: "include",
-          signal: abortController.signal
-        });
-        if (!response.ok) {
-          throw new Error(`EPUB request failed with ${response.status}`);
-        }
-        const data = await response.arrayBuffer();
+        const data = loadBytesRef.current
+          ? await loadBytesRef.current(url, abortController.signal)
+          : await (async () => {
+              const response = await fetch(url, {
+                credentials: "include",
+                signal: abortController.signal
+              });
+              if (!response.ok) {
+                throw new Error(`EPUB request failed with ${response.status}`);
+              }
+              return response.arrayBuffer();
+            })();
         if (cancelled || !viewerRef.current) {
           return;
         }
@@ -1994,9 +2043,14 @@ function EpubReadalong({
         // Reopen where the listener left off; when narration is being
         // followed the marker moves the page again as soon as it is known.
         const savedLocation = readStoredValue(locationStorageKey);
+        readerDebugLog(`stored=${shortCfi(savedLocation)} last=${shortCfi(lastLocationRef.current?.start?.cfi)}`);
         const startAt = anchorCfiRef.current ?? savedLocation;
         anchorCfiRef.current = startAt;
         debugLog(`display:${startAt}`);
+        readerDebugLog(`open saved=${shortCfi(startAt)}`);
+        if (startAt) {
+          beginRestore();
+        }
         try {
           await rendition.display(startAt ?? undefined);
         } catch (error) {
@@ -2006,9 +2060,47 @@ function EpubReadalong({
             throw error;
           }
           console.warn("EPUB remembered place could not be opened", error);
+          readerDebugLog(`open failed ${String(error).slice(0, 60)}`);
           anchorCfiRef.current = null;
+          restoringUntilRef.current = 0;
           await rendition.display();
         }
+        // The listener left off here, so this is where the book opens; the
+        // chapter being played counts as already handled. It takes the page
+        // only once the narration moves on to a different chapter.
+        if (anchorCfiRef.current) {
+          syncedTargetRef.current = syncTargetRef.current?.id ?? null;
+        }
+        // The chapter's pictures and web fonts arrive after the first
+        // layout and push the text along, so the page epub.js first shows
+        // for a remembered place is usually an earlier one. Check back while
+        // the layout settles and turn to the place again if it has moved off
+        // the page — unless the listener has started reading somewhere else.
+        void (async () => {
+          for (const delay of [300, 700, 1400, 2500]) {
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+            const anchor = anchorCfiRef.current;
+            const EpubCfiClass = epubCfiClassRef.current;
+            const page = locationRef.current;
+            if (cancelled || handNavigatedRef.current || !anchor || !rendition) {
+              return;
+            }
+            if (!EpubCfiClass || !page?.start?.cfi || !page.end?.cfi) {
+              continue;
+            }
+            const compare = (a: string, b: string) => new EpubCfiClass().compare(a, b);
+            if (anchorOnPage(anchor, { start: page.start.cfi, end: page.end.cfi }, compare)) {
+              continue;
+            }
+            readerDebugLog(`settle back to ${shortCfi(anchor)} from ${shortCfi(page.start.cfi)}`);
+            beginRestore();
+            try {
+              await rendition.display(anchor);
+            } catch {
+              return;
+            }
+          }
+        })();
         if (!cancelled) {
           setIsReady(true);
           setSlowToOpen(false);
@@ -2038,6 +2130,12 @@ function EpubReadalong({
         // to itself it would turn to the old page's first words instead,
         // which lands a little earlier with every pass.
         debugLog(`resize:${Math.floor(bounds.width)}x${Math.floor(bounds.height)}:anchor=${anchorCfiRef.current}`);
+        readerDebugLog(
+          `resize ${Math.floor(bounds.width)}x${Math.floor(bounds.height)} anchor=${shortCfi(anchorCfiRef.current)}`
+        );
+        if (anchorCfiRef.current) {
+          beginRestore();
+        }
         (rendition as unknown as { resize(width: number, height: number, cfi?: string): void }).resize(
           Math.floor(bounds.width),
           Math.floor(bounds.height),
@@ -2052,6 +2150,7 @@ function EpubReadalong({
     return () => {
       cancelled = true;
       debugLog("cleanup");
+      readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
       abortController.abort();
       if (readyTimeout !== null) {
         window.clearTimeout(readyTimeout);
@@ -2075,7 +2174,7 @@ function EpubReadalong({
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [ensureSearchIndex, locationStorageKey, navigateByHand, tapFragment, url]);
+  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, tapFragment, url]);
 
   useEffect(() => {
     writeReaderThemeChoice(readerThemeChoice);
@@ -2097,13 +2196,17 @@ function EpubReadalong({
     }
     appliedFontScaleRef.current = fontScale;
     rendition.themes.fontSize(`${fontScale}%`);
+    readerDebugLog(`fontScale ${fontScale} anchor=${shortCfi(anchorCfiRef.current)}`);
+    if (anchorCfiRef.current) {
+      beginRestore();
+    }
     // The chapter reflows at the new size while the stage stays scrolled to
     // the old page, which now holds different words. Lay the chapter out
     // afresh and turn to the place being read.
     rendition.clear();
     void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
-  }, [fontScale, isReady]);
+  }, [beginRestore, fontScale, isReady]);
 
   useEffect(() => {
     if (!fullscreen) {
@@ -2135,7 +2238,7 @@ function EpubReadalong({
     if (!syncTarget || !isReady || toc.length === 0) {
       return;
     }
-    if (!follow || syncedTargetRef.current === syncTarget.id) {
+    if (!shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
       return;
     }
     const href = findTocHrefForChapterTitle(toc, syncTarget.title);
@@ -2144,6 +2247,7 @@ function EpubReadalong({
     }
     syncedTargetRef.current = syncTarget.id;
     setActiveHref(href);
+    readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
   }, [follow, isReady, syncTarget, toc]);
 
@@ -4566,7 +4670,8 @@ function MainApp({
       .catch(() => setAlignmentStatus(null));
   }, [currentUser.isAdmin]);
 
-  const syncMapBookId = readalongOpen && selectedBook?.syncFile ? selectedBook.id : null;
+  const syncMapBook = readalongOpen && selectedBook?.syncFile ? selectedBook : null;
+  const syncMapBookId = syncMapBook?.id ?? null;
   useEffect(() => {
     if (!syncMapBookId || syncMaps[syncMapBookId] !== undefined) {
       return;
@@ -4578,15 +4683,17 @@ function MainApp({
           setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
         }
       })
-      .catch(() => {
+      .catch(async () => {
+        // No server in reach: a downloaded book carries its own sync map.
+        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: null }));
+          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [syncMapBookId, syncMaps]);
+  }, [syncMapBook, syncMapBookId, syncMaps]);
 
   useEffect(() => {
     if (!syncJob || syncJob.status !== "running") {
@@ -7326,6 +7433,9 @@ function MainApp({
         storageScope={readerScope}
         title={selectedBook.title}
         url={activeCompanionUrl}
+        loadBytes={(companionUrl, signal) =>
+          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
+        }
         syncTarget={
           narrationFollowActive && activeCompanionIsBook && !selectedSyncFragments && isViewingPlayingBook && activeChapter
             ? activeChapter

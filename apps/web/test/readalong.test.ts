@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   activeWordIndex,
+  anchorOnPage,
   anchorAfterRelocation,
   describeCompanion,
   findActiveFragmentIndex,
@@ -11,6 +12,7 @@ import {
   parseReadalongLabel,
   readAlongMode,
   readalongMatchScore,
+  shouldOpenPlayingChapter,
   syncMapPrecision
 } from "../src/readalong.ts";
 import type { Book, CompanionFile, SyncFragment, SyncMap } from "../src/types.ts";
@@ -186,23 +188,77 @@ describe("companions", () => {
 describe("remembered place", () => {
   // CFIs compared as plain numbers for the test.
   const compare = (a: string, b: string) => Number(a) - Number(b);
+  const at = (anchor: string | null, start?: string, end?: string, restoring = false) =>
+    anchorAfterRelocation(anchor, { start, end }, compare, restoring);
 
   it("keeps the anchor while the page still holds it", () => {
-    assert.equal(anchorAfterRelocation("12", { start: "10", end: "20" }, compare), "12");
-    assert.equal(anchorAfterRelocation("10", { start: "10", end: "20" }, compare), "10");
-    assert.equal(anchorAfterRelocation("20", { start: "10", end: "20" }, compare), "20");
+    assert.deepEqual(at("12", "10", "20"), { anchor: "12", arrived: true });
+    assert.deepEqual(at("10", "10", "20"), { anchor: "10", arrived: true });
+    assert.deepEqual(at("20", "10", "20"), { anchor: "20", arrived: true });
   });
 
   it("moves to the new page start once the reader leaves the page", () => {
-    assert.equal(anchorAfterRelocation("12", { start: "21", end: "30" }, compare), "21");
-    assert.equal(anchorAfterRelocation("12", { start: "1", end: "9" }, compare), "1");
+    assert.deepEqual(at("12", "21", "30"), { anchor: "21", arrived: true });
+    assert.deepEqual(at("12", "1", "9"), { anchor: "1", arrived: true });
+  });
+
+  it("ignores the pages passed through while restoring the place", () => {
+    // Opening a chapter lands at its top before turning to the anchor.
+    assert.deepEqual(at("120", "1", "9", true), { anchor: "120", arrived: false });
+    assert.deepEqual(at("120", "60", "80", true), { anchor: "120", arrived: false });
+    // Arriving ends the restore, and page turns count again.
+    assert.deepEqual(at("120", "115", "125", true), { anchor: "120", arrived: true });
   });
 
   it("takes the page start when nothing is remembered or the comparison fails", () => {
-    assert.equal(anchorAfterRelocation(null, { start: "10", end: "20" }, compare), "10");
-    assert.equal(anchorAfterRelocation("12", { start: "10", end: undefined }, compare), "10");
-    assert.equal(anchorAfterRelocation("12", { start: undefined, end: undefined }, compare), "12");
+    assert.deepEqual(at(null, "10", "20"), { anchor: "10", arrived: true });
+    assert.deepEqual(at("12", "10", undefined), { anchor: "10", arrived: true });
+    assert.deepEqual(at("12", undefined, undefined), { anchor: "12", arrived: false });
     const throwing = () => { throw new Error("bad cfi"); };
-    assert.equal(anchorAfterRelocation("12", { start: "10", end: "20" }, throwing), "10");
+    assert.deepEqual(anchorAfterRelocation("12", { start: "10", end: "20" }, throwing), {
+      anchor: "10",
+      arrived: true
+    });
+    // A broken comparison must not strand the reader mid-restore either.
+    assert.deepEqual(
+      anchorAfterRelocation("12", { start: "10", end: "20" }, throwing, true),
+      { anchor: "12", arrived: false }
+    );
+  });
+});
+
+describe("following the chapter being played", () => {
+  it("opens the chapter when the narration moves to a new one", () => {
+    assert.equal(shouldOpenPlayingChapter(true, "ch-4", "ch-3"), true);
+    assert.equal(shouldOpenPlayingChapter(true, "ch-4", null), true);
+  });
+
+  it("leaves the page alone once that chapter has been opened", () => {
+    assert.equal(shouldOpenPlayingChapter(true, "ch-4", "ch-4"), false);
+  });
+
+  it("stays where the listener is reading when following is off", () => {
+    assert.equal(shouldOpenPlayingChapter(false, "ch-4", "ch-3"), false);
+  });
+
+  it("does nothing when no chapter is playing", () => {
+    assert.equal(shouldOpenPlayingChapter(true, null, null), false);
+  });
+});
+
+describe("is the remembered place on this page", () => {
+  const compare = (a: string, b: string) => Number(a) - Number(b);
+
+  it("knows a place inside, at the edges of, and outside the page", () => {
+    assert.equal(anchorOnPage("12", { start: "10", end: "20" }, compare), true);
+    assert.equal(anchorOnPage("10", { start: "10", end: "20" }, compare), true);
+    assert.equal(anchorOnPage("20", { start: "10", end: "20" }, compare), true);
+    assert.equal(anchorOnPage("9", { start: "10", end: "20" }, compare), false);
+    assert.equal(anchorOnPage("21", { start: "10", end: "20" }, compare), false);
+  });
+
+  it("treats an unusable comparison as not on the page", () => {
+    const throwing = () => { throw new Error("bad cfi"); };
+    assert.equal(anchorOnPage("12", { start: "10", end: "20" }, throwing), false);
   });
 });

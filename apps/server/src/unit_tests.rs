@@ -810,9 +810,15 @@ async fn invalid_requested_range_returns_416_with_file_size() {
         HeaderValue::from_static("bytes=1000-"),
     );
 
-    let response = super::serve_file_response(&path, &[root.path()], headers, None)
-        .await
-        .unwrap();
+    let response = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Private,
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(
         response.headers()[axum::http::header::CONTENT_RANGE],
@@ -826,9 +832,15 @@ async fn empty_file_without_range_returns_empty_200() {
     let path = root.path().join("empty.txt");
     std::fs::write(&path, []).unwrap();
 
-    let response = super::serve_file_response(&path, &[root.path()], HeaderMap::new(), None)
-        .await
-        .unwrap();
+    let response = super::serve_file_response(
+        &path,
+        &[root.path()],
+        HeaderMap::new(),
+        None,
+        super::FileCaching::Private,
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[axum::http::header::CONTENT_LENGTH], "0");
 }
