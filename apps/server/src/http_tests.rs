@@ -2510,6 +2510,72 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
     assert_eq!(readalong_compressed.header(header::CONTENT_ENCODING), "");
 }
 
+/// Enough prose that the classifier calls the EPUB the book being narrated
+/// rather than a picture supplement.
+fn long_chapter_text() -> String {
+    "<h1>Chapter 1</h1>".to_string()
+        + &"<p>The meadow was quiet in the early morning light, and the bees drifted between the flowers.</p>".repeat(60)
+}
+
+/// Reopening the reader must not pull the whole ebook down again: the
+/// companion and its sync map carry a validator, and a client that offers it
+/// back is told the file has not changed.
+#[tokio::test]
+async fn companions_and_sync_maps_are_revalidated_rather_than_refetched() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[(
+                "Book 00.epub",
+                alignment::build_test_epub_with_text(
+                    &long_chapter_text(),
+                    "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                ),
+            )],
+        )
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+
+    for path in [
+        format!("/api/books/{book_id}/readalong"),
+        format!("/api/books/{book_id}/sync"),
+    ] {
+        let first = server.get(&path, &token).await;
+        assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+        let etag = first.header(header::ETAG);
+        assert!(!etag.is_empty(), "{path} carries no validator");
+        assert_eq!(first.header(header::CACHE_CONTROL), "private, no-cache");
+        assert!(!first.body.is_empty());
+
+        let again = server
+            .send(
+                Request::builder()
+                    .uri(&path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::IF_NONE_MATCH, &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(again.status, StatusCode::NOT_MODIFIED, "{path}");
+        assert!(again.body.is_empty(), "{path} sent the file again");
+        assert_eq!(again.header(header::ETAG), etag);
+    }
+
+    // A track stream stays uncacheable: its URL carries the media token.
+    let (_, track_id) = server.first_book_and_track(&token).await;
+    let track = server
+        .get(
+            &format!("/api/books/{book_id}/tracks/{track_id}/stream"),
+            &token,
+        )
+        .await;
+    assert_eq!(track.header(header::CACHE_CONTROL), "private");
+    assert_eq!(track.header(header::ETAG), "");
+}
+
 /// A book whose only companion is a picture PDF has nothing to read along
 /// with: no reading file, no sync map, but the supplement is still listed.
 #[tokio::test]

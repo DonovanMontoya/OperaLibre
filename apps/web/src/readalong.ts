@@ -431,24 +431,60 @@ export function readerStorageKey(scope: string, bookId: string, field: "location
   return `operalibre.reader.${scope}.${bookId}.${field}`;
 }
 
+/** The remembered place, and whether the reader has settled on it. */
+export type AnchorUpdate = { anchor: string | null; arrived: boolean };
+
 /**
  * Where the reader should reopen after a page of `page.start`…`page.end` is
- * shown. The remembered `anchor` stays while it is still on the page: page
- * starts move a little earlier with every relayout (a resize, a theme with
- * a wider font), and re-saving each start would walk the place backwards
- * one reopen at a time. Leaving the page moves the anchor to the new start.
+ * shown.
+ *
+ * The remembered `anchor` stays while it is still on the page: page starts
+ * move a little earlier with every relayout, and re-saving each start would
+ * walk the place backwards one reopen at a time.
+ *
+ * While `restoring` — the book is opening, or the page is being laid out
+ * again after a resize or a text-size change — the reader passes through
+ * pages on its way back to the anchor, starting at the top of the chapter.
+ * Those pages are not somewhere the listener went, so they must not become
+ * the remembered place; adopting one would strand the reader there, and the
+ * next relayout would restore that wrong place and keep it for good.
+ *
+ * Once the anchor is on the page again the reader has arrived, and ordinary
+ * page turns move the anchor as usual.
  */
+/** Whether the remembered place lies on the page now shown. */
+export function anchorOnPage(
+  anchor: string,
+  page: { start: string; end: string },
+  compare: (a: string, b: string) => number
+): boolean {
+  try {
+    return compare(anchor, page.start) >= 0 && compare(anchor, page.end) <= 0;
+  } catch {
+    return false;
+  }
+}
+
 export function anchorAfterRelocation(
   anchor: string | null,
   page: { start: string | undefined; end: string | undefined },
-  compare: (a: string, b: string) => number
-): string | null {
-  if (!page.start) return anchor;
-  if (!anchor || !page.end) return page.start;
-  try {
-    const onPage = compare(anchor, page.start) >= 0 && compare(anchor, page.end) <= 0;
-    return onPage ? anchor : page.start;
-  } catch {
-    return page.start;
+  compare: (a: string, b: string) => number,
+  restoring = false
+): AnchorUpdate {
+  if (!page.start) return { anchor, arrived: false };
+  if (!anchor || !page.end) return { anchor: page.start, arrived: true };
+  if (anchorOnPage(anchor, { start: page.start, end: page.end }, compare)) {
+    return { anchor, arrived: true };
   }
+  if (restoring) return { anchor, arrived: false };
+  return { anchor: page.start, arrived: true };
+}
+
+export function shouldOpenPlayingChapter(
+  following: boolean,
+  playingChapterId: string | null,
+  handledChapterId: string | null
+): boolean {
+  if (!following || !playingChapterId) return false;
+  return playingChapterId !== handledChapterId;
 }

@@ -47,6 +47,7 @@ pub(crate) async fn get_sync_map(
         &[&state.library_root, &state.sync_dir],
         headers,
         None,
+        FileCaching::Revalidated,
     )
     .await
 }
