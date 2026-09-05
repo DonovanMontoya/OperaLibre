@@ -57,8 +57,3 @@ export function storedMediaExtension(extension: string) {
   const normalized = extension.toLowerCase();
   return STORED_EXTENSIONS[normalized] ?? normalized;
 }
-
-/** True when a stored file needs renaming to satisfy {@link storedMediaExtension}. */
-export function storedMediaExtensionChanged(extension: string) {
-  return storedMediaExtension(extension) !== extension.toLowerCase();
-}

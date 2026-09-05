@@ -22,10 +22,6 @@ export function normalizePlaybackSpeed(value: number) {
   return Number((PLAYBACK_SPEED_MIN + stepsFromMinimum * PLAYBACK_SPEED_STEP).toFixed(2));
 }
 
-export function stepPlaybackSpeed(value: number, direction: -1 | 1) {
-  return normalizePlaybackSpeed(value + direction * PLAYBACK_SPEED_STEP);
-}
-
 export function formatPlaybackSpeed(value: number) {
   return normalizePlaybackSpeed(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }

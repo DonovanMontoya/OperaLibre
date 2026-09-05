@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import {
   ArrowUpCircle,
   BookOpen,
@@ -32,7 +33,6 @@ import {
   getUpdateStatus,
   installFrontendUpdate,
   installServerUpdate,
-  isNativeApp,
   listLibationRequests,
   listUsers,
   mediaUrl,
@@ -135,7 +135,7 @@ export function AdminPanel({
     try {
       const [serverResult, frontendResult] = await Promise.allSettled([
         getUpdateStatus(30_000, force),
-        isNativeApp()
+        Capacitor.isNativePlatform()
           ? Promise.resolve(null)
           : getFrontendUpdateStatus(
               30_000,
