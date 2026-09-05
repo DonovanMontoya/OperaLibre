@@ -102,6 +102,7 @@ export function getDeviceBooks(): Book[] {
   const progress = storedProgress();
   return storedBooks().map((book) => ({
     ...book,
+    tags: book.tags ?? [],
     source: "device",
     deviceBookId: book.id,
     progress: summarizeBookProgress(book, progress[book.id] ?? null)
@@ -487,6 +488,7 @@ export async function importAudiobookFromDevice(
     localCoverPath: localCoverPath ?? undefined,
     description: bookTags?.description ?? null,
     genres: bookTags?.genres ?? [],
+    tags: [],
     publishedDate: bookTags?.publishedDate ?? null,
     asin: bookTags?.asin ?? null,
     readingFile: null,
@@ -528,18 +530,19 @@ export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = get
       unmatched.has(candidate.id) &&
       deviceBookMatchesServer(candidate, serverBook)
     );
-    if (candidates.length !== 1) return { ...serverBook, source: "server" as const };
+    if (candidates.length !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
     const deviceBook = candidates[0];
     const matchingServerCount = serverBooks.filter((candidate) =>
       deviceBookMatchesServer(deviceBook, candidate)
     ).length;
-    if (matchingServerCount !== 1) return { ...serverBook, source: "server" as const };
+    if (matchingServerCount !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
     unmatched.delete(deviceBook.id);
     const deviceProgressIsNewer = !!deviceBook.progress && (
       !serverBook.progress || progressTimestamp(deviceBook.progress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt)
     );
     return {
       ...serverBook,
+      tags: serverBook.tags ?? [],
       source: "server" as const,
       deviceBookId: deviceBook.id,
       progress: deviceProgressIsNewer ? deviceBook.progress : serverBook.progress,

@@ -358,6 +358,7 @@ function mapBook(items: JellyfinItem[]): Book | null {
     coverArtContentType: hasCover ? "image/jpeg" : null,
     description: first.Overview ?? null,
     genres: first.Genres ?? [],
+    tags: [],
     publishedDate,
     asin: first.ProviderIds?.Audible ?? first.ProviderIds?.ASIN ?? null,
     readingFile: null,
