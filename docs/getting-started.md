@@ -85,7 +85,7 @@ The Vite web app forwards its requests to the server automatically, so use the *
 
 ### 4. Create the admin account
 
-Open the app for the one-time setup form. `local` setup needs no extra credential. A remote setup in `lan` mode, and every setup in `proxy` mode, asks for the 30-minute, single-use token printed in the server console. Fill it in to create the initial owner account; subsequent visits show the normal sign-in form. See [Users & Accounts](users.md) for details.
+Open the app for the one-time setup form. `local` and `lan` setup need no extra credential. Every setup in `proxy` mode asks for the 30-minute, single-use token printed in the server console. Create the initial owner account; subsequent visits show the normal sign-in form. See [Users & Accounts](users.md) for details.
 
 ### 5. Start listening
 

@@ -80,8 +80,11 @@ impl DeploymentMode {
         !matches!(self, Self::Local)
     }
 
-    pub(crate) fn setup_token_required(self, remote_client: bool) -> bool {
-        matches!(self, Self::Proxy) || (matches!(self, Self::Lan) && remote_client)
+    // Proxy servers may be internet-reachable, where an unclaimed setup form
+    // would be found and claimed by automated scanners; lan mode trusts the
+    // local network and keeps first-run setup open, like the sign-in page.
+    pub(crate) fn setup_token_required(self) -> bool {
+        matches!(self, Self::Proxy)
     }
 
     pub(crate) fn as_str(self) -> &'static str {
