@@ -92,6 +92,7 @@ import {
   type ReaderThemeChoice
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
+import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -1422,12 +1423,13 @@ function highlightStyles(theme: ReaderTheme, precision: SyncPrecision | null) {
   };
 }
 
-function EpubReadalong({
+export function EpubReadalong({
   bookId,
   storageScope,
   title,
   url,
   loadBytes,
+  listeningChapter,
   syncTarget,
   syncFragments,
   precision,
@@ -1449,6 +1451,7 @@ function EpubReadalong({
   url: string;
   /** Reads the ebook, from the device when a copy is already there. */
   loadBytes?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
+  listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
   precision: SyncPrecision | null;
@@ -1510,6 +1513,7 @@ function EpubReadalong({
   // Set once the listener turns a page themselves: the reader stops putting
   // the page back and follows them instead.
   const handNavigatedRef = useRef(false);
+  const readerNavigationVersionRef = useRef(0);
   const beginRestore = useCallback(() => {
     // A deadline, so a place that never resolves cannot freeze the anchor.
     restoringUntilRef.current = performance.now() + 5000;
@@ -1597,6 +1601,25 @@ function EpubReadalong({
   const sheetRef = useRef(sheet);
   sheetRef.current = sheet;
   const locationStorageKey = readerStorageKey(storageScope, bookId, "location");
+  const openingPreferenceKey = `operalibre.reader.${storageScope}.opening`;
+  const returnLocationKey = `${locationStorageKey}.return.${url.split("?")[0]}`;
+  const [openAtListening, setOpenAtListening] = useState(() => readStoredValue(openingPreferenceKey) === "listening");
+  // Freeze the launch decision. Later audio updates only refresh the manual action.
+  const openingChoiceRef = useRef({
+    enabled: openAtListening,
+    chapter: listeningChapter,
+    following: follow && (!!syncTarget || !!syncFragments?.length)
+  });
+  const [returnLocation, setReturnLocation] = useState(() => readStoredValue(returnLocationKey));
+  const [catchUpCfi, setCatchUpCfi] = useState<string | null>(null);
+  const [catchUpNotice, setCatchUpNotice] = useState("");
+  const [offerOpeningPreference, setOfferOpeningPreference] = useState(false);
+  const [catchUpBusy, setCatchUpBusy] = useState(false);
+  const changeOpeningPreference = (enabled: boolean) => {
+    setOpenAtListening(enabled);
+    writeStoredValue(openingPreferenceKey, enabled ? "listening" : "reading");
+    setOfferOpeningPreference(false);
+  };
   const sheetRootRef = useRef<HTMLElement | null>(null);
   // A long table of contents opens on the chapter being read, not at the top.
   // The scroll runs after the sheet has settled to its card height and moves
@@ -1641,6 +1664,7 @@ function EpubReadalong({
   // back); the narration marker must not drag the page away again until they
   // ask to return.
   const navigateByHand = useCallback((action: () => unknown) => {
+    readerNavigationVersionRef.current += 1;
     // Chapter-level following pulls the page just as a sentence marker does,
     // so a page turned by hand has to stop that too, or the reader is
     // dragged back to the narrator's chapter on the next run.
@@ -2081,7 +2105,26 @@ function EpubReadalong({
         // followed the marker moves the page again as soon as it is known.
         const savedLocation = readStoredValue(locationStorageKey);
         readerDebugLog(`stored=${shortCfi(savedLocation)} last=${shortCfi(lastLocationRef.current?.start?.cfi)}`);
-        const startAt = anchorCfiRef.current ?? savedLocation;
+        let startAt = anchorCfiRef.current ?? savedLocation;
+        const originalLocation = startAt;
+        const openingChoice = openingChoiceRef.current;
+        // Consume this once, including failed matches and loads. Reflow never retries it.
+        openingChoiceRef.current = { enabled: false, chapter: null, following: false };
+        if (openingChoice.enabled && !openingChoice.following) {
+          try {
+            const navigation = await book.loaded.navigation;
+            const target = await resolveListeningCfi(book, flattenToc(navigation.toc), openingChoice.chapter);
+            if (cancelled) return;
+            if (!handNavigatedRef.current && canCatchUp(startAt, target, (a, b) => new epubModule.EpubCFI().compare(a, b))) {
+              writeStoredValue(returnLocationKey, startAt!);
+              setReturnLocation(startAt);
+              startAt = target;
+              setCatchUpNotice(`Opened at ${openingChoice.chapter}.`);
+            }
+          } catch {
+            // An unavailable chapter preserves the saved reading place.
+          }
+        }
         anchorCfiRef.current = startAt;
         debugLog(`display:${startAt}`);
         readerDebugLog(`open saved=${shortCfi(startAt)}`);
@@ -2090,6 +2133,7 @@ function EpubReadalong({
         }
         try {
           await rendition.display(startAt ?? undefined);
+          if (!cancelled && startAt && startAt !== originalLocation) writeStoredValue(locationStorageKey, startAt);
         } catch (error) {
           // A remembered place that no longer resolves (the file was
           // replaced) must not keep the book from opening at all.
@@ -2098,9 +2142,16 @@ function EpubReadalong({
           }
           console.warn("EPUB remembered place could not be opened", error);
           readerDebugLog(`open failed ${String(error).slice(0, 60)}`);
-          anchorCfiRef.current = null;
-          restoringUntilRef.current = 0;
-          await rendition.display();
+          anchorCfiRef.current = originalLocation;
+          setCatchUpNotice("");
+          beginRestore();
+          try {
+            await rendition.display(originalLocation ?? undefined);
+          } catch {
+            anchorCfiRef.current = null;
+            restoringUntilRef.current = 0;
+            await rendition.display();
+          }
         }
         // The listener left off here, so this is where the book opens; the
         // chapter being played counts as already handled. It takes the page
@@ -2211,7 +2262,49 @@ function EpubReadalong({
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, tapFragment, url]);
+  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, returnLocationKey, tapFragment, url]);
+
+  useEffect(() => {
+    const book = bookRef.current;
+    if (!isReady || !book) return;
+    let cancelled = false;
+    setCatchUpCfi(null);
+    void resolveListeningCfi(book, toc, listeningChapter).then((target) => {
+      if (!cancelled) setCatchUpCfi(target);
+    }).catch(() => { /* A chapter that cannot be resolved is not offered. */ });
+    return () => { cancelled = true; };
+  }, [isReady, toc, listeningChapter]);
+
+  const moveReaderTo = async (target: string, returning: boolean) => {
+    const rendition = renditionRef.current;
+    const previous = anchorCfiRef.current;
+    if (!rendition || !previous || catchUpBusy) return;
+    const navigationVersion = ++readerNavigationVersionRef.current;
+    setCatchUpBusy(true);
+    if (!returning) {
+      writeStoredValue(returnLocationKey, previous);
+      setReturnLocation(previous);
+    }
+    setFollow(false);
+    handNavigatedRef.current = true;
+    anchorCfiRef.current = target;
+    beginRestore();
+    try {
+      await rendition.display(target);
+      if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
+      writeStoredValue(locationStorageKey, target);
+      setCatchUpNotice(returning ? "Returned to your previous reading place." : `Moved to ${listeningChapter}.`);
+      setOfferOpeningPreference(!returning && !openAtListening);
+    } catch {
+      if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
+      anchorCfiRef.current = previous;
+      beginRestore();
+      await rendition.display(previous).catch(() => undefined);
+      setCatchUpNotice("That place could not be opened. Your reading place is saved.");
+    } finally {
+      setCatchUpBusy(false);
+    }
+  };
 
   useEffect(() => {
     writeReaderThemeChoice(readerThemeChoice);
@@ -2749,6 +2842,31 @@ function EpubReadalong({
           </div>
         </div>
       )}
+      <div className="epub-catch-up" aria-label="Reading and listening place">
+        {isReady && canCatchUp(anchorCfiRef.current, catchUpCfi, (a, b) => {
+          const Cfi = epubCfiClassRef.current;
+          return Cfi ? new Cfi().compare(a, b) : 0;
+        }) ? (
+          <button type="button" disabled={catchUpBusy} onClick={() => void moveReaderTo(catchUpCfi!, false)}>
+            Go to listening chapter{listeningChapter ? ` · ${listeningChapter}` : ""}
+          </button>
+        ) : null}
+        {returnLocation ? (
+          <button type="button" disabled={!isReady || catchUpBusy} onClick={() => void moveReaderTo(returnLocation, true)}>
+            Return to previous reading place
+          </button>
+        ) : null}
+        {catchUpNotice ? <span role="status">{catchUpNotice}</span> : null}
+        {offerOpeningPreference ? (
+          <span>Open at your listening chapter next time? <button type="button" onClick={() => changeOpeningPreference(true)}>Yes</button> <button type="button" onClick={() => setOfferOpeningPreference(false)}>Not now</button></span>
+        ) : null}
+        {!fullscreen ? (
+          <label>When opening <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
+            <option value="reading">Resume reading</option>
+            <option value="listening">Open at listening chapter</option>
+          </select></label>
+        ) : null}
+      </div>
       {fullscreen ? (
         <div className="epub-stage-wrap">
           {stage}
@@ -2917,6 +3035,14 @@ function EpubReadalong({
                 <h3>Appearance</h3>
                 <div className="epub-sheet-row">{themeOptions}</div>
                 <div className="epub-sheet-row">{fontControls}</div>
+                <h3>When opening</h3>
+                <label className="epub-sheet-row">Starting place
+                  <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
+                    <option value="reading">Resume reading</option>
+                    <option value="listening">Open at listening chapter</option>
+                  </select>
+                </label>
+                <p className="epub-sheet-hint">Opens at the beginning of your listening chapter when it is ahead. Your previous page stays available. Follow is controlled separately. Saved for this account on this device.</p>
                 {canFollow || syncTools ? (
                   <>
                     <h3>Narration</h3>
@@ -7662,11 +7788,14 @@ function MainApp({
   const epubReaderElement =
     selectedBook && activeCompanion && activeCompanionUrl && activeCompanion.extension === "epub" && !showGallery ? (
       <EpubReadalong
-        key={activeCompanion.id}
+        key={`${readerScope}:${selectedBook.id}:${activeCompanion.id}`}
         bookId={selectedBook.id}
         storageScope={readerScope}
         title={selectedBook.title}
         url={activeCompanionUrl}
+        listeningChapter={activeCompanionIsBook
+          ? (isViewingPlayingBook ? activeChapter?.title : chapterAtBookPosition(selectedChapterSegments, selectedBook.progress?.bookPositionSeconds ?? 0)?.title) ?? null
+          : null}
         loadBytes={(companionUrl, signal) =>
           loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
         }
