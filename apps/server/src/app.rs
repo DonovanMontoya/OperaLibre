@@ -236,10 +236,24 @@ pub(crate) fn build_router(
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
         .route("/api/books/{book_id}/cover", get(get_cover_art))
         .route("/api/books/{book_id}/readalong", get(get_reading_file))
-        .route("/api/books/{book_id}/sync", get(get_sync_map))
+        .route(
+            "/api/books/{book_id}/companions/{companion_id}",
+            get(get_companion_file),
+        )
+        // A sync map names every sentence of the book, so a long title runs
+        // to several megabytes of JSON that gzips five-to-one. Only this
+        // route is compressed: audio and documents stream with ranges.
+        .route(
+            "/api/books/{book_id}/sync",
+            get(get_sync_map).layer(CompressionLayer::new()),
+        )
         .route(
             "/api/books/{book_id}/sync/generate",
             post(generate_sync_map),
+        )
+        .route(
+            "/api/books/{book_id}/sync/anchors",
+            post(add_sync_anchor).delete(clear_sync_anchors),
         )
         .route("/api/alignment/status", get(alignment_status))
         .route(
