@@ -2409,6 +2409,23 @@ img.large-cover {
   background: #fffdf7;
 }
 
+.epub-catch-up {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 8px 16px;
+  font-size: 12px;
+  flex-shrink: 0;
+  color: var(--reader-ink);
+  background: var(--reader-surface);
+}
+.epub-catch-up:empty { padding: 0; }
+.epub-catch-up button { font: inherit; cursor: pointer; }
+.epub-catch-up label { display: flex; gap: 8px; align-items: center; }
+.epub-catch-up select, .epub-sheet-row select { max-width: 100%; }
+.epub-reader.fullscreen.chrome-hidden .epub-catch-up { visibility: hidden; }
+
 .epub-reader {
   --reader-surface: #fffdf7;
   --reader-ink: #241b15;
@@ -2444,7 +2461,7 @@ img.large-cover {
      reader opens over itself, and above the shell's bars. */
   z-index: 100;
   height: calc(100dvh - 36px);
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   border-color: var(--reader-line);
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.35);
 }
