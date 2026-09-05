@@ -305,6 +305,25 @@ impl TestServer {
         .await
     }
 
+    /// Drops companion files into the first book's folder and rescans.
+    async fn add_companions_to_first_book(&self, token: &str, files: &[(&str, Vec<u8>)]) {
+        let folder = self.library_root.join("Book 00");
+        for (name, bytes) in files {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+        let response = self
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/rescan")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    }
+
     /// The first book and its first track, as the API reports them.
     async fn first_book_and_track(&self, token: &str) -> (String, String) {
         let books = self.get("/api/books", token).await;
@@ -2336,3 +2355,773 @@ async fn the_compatibility_layer_requires_a_session() {
         assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{uri}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Companions and read-along sync
+// ---------------------------------------------------------------------------
+
+/// An Audible download often lands a picture PDF beside the audio. The book
+/// response must call the EPUB the book and the PDF a supplement, serve both,
+/// and offer an estimated sync map for the EPUB without any aligner.
+#[tokio::test]
+async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_map() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let long_text = "<h1>Chapter 1</h1>".to_string()
+        + &"<p>The meadow was quiet in the early morning light, and the bees drifted between the flowers.</p>".repeat(60);
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[
+                (
+                    "Book 00.epub",
+                    alignment::build_test_epub_with_text(
+                        &long_text,
+                        "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                    ),
+                ),
+                (
+                    "Book 00 - Maps.pdf",
+                    companions::build_test_pdf(&[companions::PdfPage::Image; 4]),
+                ),
+                ("map-of-the-north.png", vec![0x89, b'P', b'N', b'G']),
+                ("cover.jpg", vec![0xff, 0xd8]),
+            ],
+        )
+        .await;
+
+    let books = server.get("/api/books", &token).await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    let books = books.json();
+    let book = books
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|book| book["title"] == "Book 00")
+        .expect("the fixture book");
+    let book_id = book["id"].as_str().unwrap();
+
+    let companions = book["companions"].as_array().unwrap();
+    let kinds = companions
+        .iter()
+        .map(|companion| {
+            (
+                companion["fileName"].as_str().unwrap().to_string(),
+                companion["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            ("Book 00 - Maps.pdf".to_string(), "supplement".to_string()),
+            ("Book 00.epub".to_string(), "book".to_string()),
+            ("map-of-the-north.png".to_string(), "image".to_string()),
+        ],
+        "cover art is not a companion, and the PDF of pictures is not the book"
+    );
+    let pdf = &companions[0];
+    assert_eq!(pdf["pageCount"], 4);
+    assert_eq!(pdf["imageCount"], 4);
+    assert_eq!(pdf["textCharacters"], 0);
+    assert_eq!(book["readingFile"]["extension"], "epub");
+    assert_eq!(book["syncFile"]["source"], "estimated");
+
+    let pdf_id = pdf["id"].as_str().unwrap();
+    let response = server
+        .get(&format!("/api/books/{book_id}/companions/{pdf_id}"), &token)
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.header(header::CONTENT_TYPE), "application/pdf");
+    assert_eq!(
+        response.header(header::HeaderName::from_static("x-content-type-options")),
+        "nosniff"
+    );
+    let missing = server
+        .get(&format!("/api/books/{book_id}/companions/nope"), &token)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    let readalong = server
+        .get(&format!("/api/books/{book_id}/readalong"), &token)
+        .await;
+    assert_eq!(readalong.status, StatusCode::OK);
+    assert_eq!(
+        readalong.header(header::CONTENT_TYPE),
+        "application/epub+zip"
+    );
+
+    let sync = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
+    assert_eq!(sync.status, StatusCode::OK, "{}", sync.text());
+    let map = sync.json();
+    assert_eq!(map["precision"], "estimated");
+    assert_eq!(map["version"], alignment::SYNC_MAP_VERSION);
+    let fragments = map["fragments"].as_array().unwrap();
+    assert!(
+        fragments.len() > 60,
+        "one fragment per sentence: {}",
+        fragments.len()
+    );
+    assert_eq!(fragments[0]["text"], "Chapter 1");
+    assert_eq!(fragments[0]["href"], "text/ch1.xhtml");
+    let last = fragments.last().unwrap();
+    assert!(last["endSeconds"].as_f64().unwrap() > 0.0);
+
+    // The estimate is kept, and a second request serves the same file.
+    let again = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body, sync.body);
+
+    // A long book's map runs to megabytes of sentence text; a client that
+    // accepts gzip gets it compressed, and only on this route.
+    let compressed = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book_id}/sync"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(compressed.status, StatusCode::OK);
+    assert_eq!(compressed.header(header::CONTENT_ENCODING), "gzip");
+    assert!(
+        compressed.body.len() < sync.body.len() / 2,
+        "{} vs {}",
+        compressed.body.len(),
+        sync.body.len()
+    );
+    let readalong_compressed = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book_id}/readalong"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(readalong_compressed.status, StatusCode::OK);
+    assert_eq!(readalong_compressed.header(header::CONTENT_ENCODING), "");
+}
+
+/// Enough prose that the classifier calls the EPUB the book being narrated
+/// rather than a picture supplement.
+fn long_chapter_text() -> String {
+    "<h1>Chapter 1</h1>".to_string()
+        + &"<p>The meadow was quiet in the early morning light, and the bees drifted between the flowers.</p>".repeat(60)
+}
+
+/// Reopening the reader must not pull the whole ebook down again: the
+/// companion and its sync map carry a validator, and a client that offers it
+/// back is told the file has not changed.
+#[tokio::test]
+async fn companions_and_sync_maps_are_revalidated_rather_than_refetched() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[(
+                "Book 00.epub",
+                alignment::build_test_epub_with_text(
+                    &long_chapter_text(),
+                    "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                ),
+            )],
+        )
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+
+    for path in [
+        format!("/api/books/{book_id}/readalong"),
+        format!("/api/books/{book_id}/sync"),
+    ] {
+        let first = server.get(&path, &token).await;
+        assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+        let etag = first.header(header::ETAG);
+        assert!(!etag.is_empty(), "{path} carries no validator");
+        assert_eq!(first.header(header::CACHE_CONTROL), "private, no-cache");
+        assert!(!first.body.is_empty());
+
+        let again = server
+            .send(
+                Request::builder()
+                    .uri(&path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::IF_NONE_MATCH, &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(again.status, StatusCode::NOT_MODIFIED, "{path}");
+        assert!(again.body.is_empty(), "{path} sent the file again");
+        assert_eq!(again.header(header::ETAG), etag);
+    }
+
+    // A track stream stays uncacheable: its URL carries the media token.
+    let (_, track_id) = server.first_book_and_track(&token).await;
+    let track = server
+        .get(
+            &format!("/api/books/{book_id}/tracks/{track_id}/stream"),
+            &token,
+        )
+        .await;
+    assert_eq!(track.header(header::CACHE_CONTROL), "private");
+    assert_eq!(track.header(header::ETAG), "");
+}
+
+/// A book whose only companion is a picture PDF has nothing to read along
+/// with: no reading file, no sync map, but the supplement is still listed.
+#[tokio::test]
+async fn a_supplement_alone_is_not_offered_as_the_book() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[(
+                "Book 00.pdf",
+                companions::build_test_pdf(&[companions::PdfPage::Image; 3]),
+            )],
+        )
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+    let book = server
+        .get(&format!("/api/books/{book_id}"), &token)
+        .await
+        .json();
+    assert!(book["readingFile"].is_null(), "{book}");
+    assert!(book["syncFile"].is_null(), "{book}");
+    assert_eq!(book["companions"][0]["kind"], "supplement");
+    let sync = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
+    assert_eq!(sync.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn restoring_a_backup_signs_every_other_session_out() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::OK
+    );
+
+    // The reader's session is in the file. Restoring must not revive it.
+    let exported = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
+    let backup: serde_json::Value = exported.json();
+    assert!(
+        backup["data"]["sessions"]
+            .as_object()
+            .unwrap()
+            .contains_key(&reader),
+        "the export no longer carries sessions; adjust this test"
+    );
+
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(exported.body.clone()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    assert_eq!(restored.json()["sessionRetained"], true);
+
+    // The owner who ran the restore is still signed in; nobody else is.
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server.get("/api/auth/me", &reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn restoring_a_backup_only_retains_a_session_for_an_account_in_the_backup() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let other_server = TestServer::start(1).await;
+    let other_setup = other_server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/setup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": "other-owner",
+                        "password": "owner-password-1234"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(other_setup.status, StatusCode::OK, "{}", other_setup.text());
+    let other_owner = other_setup.json()["token"].as_str().unwrap().to_string();
+    let exported = other_server.get("/api/admin/backup", &other_owner).await;
+    assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
+
+    let restored = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/backup")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(exported.body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text());
+    assert_eq!(restored.json()["sessionRetained"], false);
+    assert_eq!(
+        server.get("/api/auth/me", &owner).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review sweep: health, ranges, download headers, and access grants
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn health_reports_whether_the_library_is_still_being_scanned() {
+    let server = TestServer::start(1).await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.json();
+    assert_eq!(body["ok"], true);
+    // The harness scanned before building the router, and nothing is
+    // scanning now.
+    assert_eq!(body["scanning"], false);
+    assert_eq!(body["ready"], true);
+    assert_eq!(body["catalogueError"], false);
+}
+
+/// A range the server does not serve is ignored, as RFC 9110 allows, rather
+/// than refused: several ranges and other units both get the whole file.
+#[tokio::test]
+async fn unsupported_range_requests_get_the_whole_track() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    for range in ["bytes=0-1,5-6", "items=0-99"] {
+        let response = server
+            .send(
+                Request::builder()
+                    .uri(format!("/api/books/{book}/tracks/{track}/stream"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::RANGE, range)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{range}");
+        assert_eq!(response.body.len(), fixture_wav().len(), "{range}");
+        assert!(
+            !response.headers.contains_key(header::CONTENT_RANGE),
+            "{range}"
+        );
+    }
+}
+
+/// Track URLs carry the listener's media token, so a shared cache must never
+/// keep one.
+#[tokio::test]
+async fn track_streams_are_marked_private_for_caches() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    let full = server
+        .get(&format!("/api/books/{book}/tracks/{track}/stream"), &token)
+        .await;
+    assert_eq!(full.status, StatusCode::OK);
+    assert_eq!(full.header(header::CACHE_CONTROL), "private");
+
+    let partial = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book}/tracks/{track}/stream"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::RANGE, "bytes=0-9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(partial.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(partial.header(header::CACHE_CONTROL), "private");
+}
+
+#[tokio::test]
+async fn book_downloads_name_the_archive_in_both_disposition_forms() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, _) = server.first_book_and_track(&token).await;
+
+    let response = server
+        .get(&format!("/api/books/{book}/download"), &token)
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let disposition = response.header(header::CONTENT_DISPOSITION);
+    assert!(
+        disposition.starts_with("attachment; filename=\""),
+        "{disposition}"
+    );
+    assert!(disposition.contains("; filename*=UTF-8''"), "{disposition}");
+    assert_eq!(response.header(header::CACHE_CONTROL), "private");
+}
+
+/// Direct Libation access is an owner's grant on every path: the dedicated
+/// route already refuses it from an administrator, and account creation must
+/// not be the way around that.
+#[tokio::test]
+async fn only_an_owner_can_create_a_reader_with_direct_libation_access() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let admin = server.add_reader_login("deputy").await;
+
+    let refused = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "downloader",
+                "password": "downloader-password-1234",
+                "libationAccess": "direct"
+            }),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text());
+
+    // Asking for approval, or not asking at all, still works for an
+    // administrator.
+    let allowed = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "requester",
+                "password": "requester-password-1234",
+                "libationAccess": "approval"
+            }),
+        )
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text());
+    assert_eq!(allowed.json()["libationAccess"], "approval");
+
+    let granted = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "trusted",
+                "password": "trusted-password-1234",
+                "libationAccess": "direct"
+            }),
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.text());
+    assert_eq!(granted.json()["libationAccess"], "direct");
+}
+
+/// Administrators download directly by default. A demotion to reader gives
+/// that up along with the rest of the tier.
+#[tokio::test]
+async fn demoting_an_administrator_resets_libation_access_to_approval() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    assert_eq!(created["libationAccess"], "direct");
+    let user_id = created["id"].as_str().unwrap().to_string();
+
+    let demoted = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{user_id}/role"),
+            &owner,
+            serde_json::json!({ "isAdmin": false, "isOwner": false }),
+        )
+        .await;
+    assert_eq!(demoted.status, StatusCode::OK, "{}", demoted.text());
+    let demoted = demoted.json();
+    assert_eq!(demoted["isAdmin"], false);
+    assert_eq!(demoted["libationAccess"], "approval");
+
+    // A reader whose access an owner granted keeps it across a role update
+    // that does not leave the administrator tier, because it never entered it.
+    let reader = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "trusted",
+                "password": "trusted-password-1234",
+                "libationAccess": "direct"
+            }),
+        )
+        .await;
+    assert_eq!(reader.status, StatusCode::OK, "{}", reader.text());
+    let reader_id = reader.json()["id"].as_str().unwrap().to_string();
+    let unchanged = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/role"),
+            &owner,
+            serde_json::json!({ "isAdmin": false, "isOwner": false }),
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::OK, "{}", unchanged.text());
+    assert_eq!(unchanged.json()["libationAccess"], "direct");
+}
+
+#[tokio::test]
+async fn only_an_owner_can_grant_direct_libation_access_to_an_existing_reader() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+
+    let created = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username": "deputy",
+                "password": "deputy-password-1234",
+                "isAdmin": true
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let admin = server.add_reader_login("deputy").await;
+
+    let reader = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &admin,
+            serde_json::json!({
+                "username": "requester",
+                "password": "requester-password-1234"
+            }),
+        )
+        .await;
+    assert_eq!(reader.status, StatusCode::OK, "{}", reader.text());
+    let reader_id = reader.json()["id"].as_str().unwrap().to_string();
+
+    // An administrator held to approval cannot route around it by upgrading
+    // a reader they control.
+    let refused = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/libation-access"),
+            &admin,
+            serde_json::json!({ "libationAccess": "direct" }),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text());
+
+    let allowed = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/libation-access"),
+            &owner,
+            serde_json::json!({ "libationAccess": "direct" }),
+        )
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text());
+    assert_eq!(allowed.json()["libationAccess"], "direct");
+
+    // Setting a reader back to approval stays an administrator action.
+    let downgraded = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/libation-access"),
+            &admin,
+            serde_json::json!({ "libationAccess": "approval" }),
+        )
+        .await;
+    assert_eq!(downgraded.status, StatusCode::OK, "{}", downgraded.text());
+}
+
+/// A listing asked for while the startup scan is still running is refused
+/// with `503` and `Retry-After`, not answered with an empty catalogue a
+/// client would take as the truth. A book the client already knows keeps
+/// streaming meanwhile, and the listing answers once the scan lands.
+#[tokio::test]
+async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
+    let root = tempfile::tempdir().unwrap();
+    let library_root = root.path().join("library");
+    let data_dir = root.path().join("data");
+    std::fs::create_dir_all(&library_root).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(data_dir.join("download-temp")).unwrap();
+    let folder = library_root.join("Book 00");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("01 Track.wav"), fixture_wav()).unwrap();
+
+    // Assembled through the real startup builder rather than the harness so
+    // the test keeps the state the router shares and can flip the scan flag
+    // mid-flight, the way the startup scan task does.
+    let config = ServerConfig {
+        deployment_mode: DeploymentMode::Local,
+        host: "127.0.0.1".to_string(),
+        port: 4000,
+        max_upload_bytes: Some(DEFAULT_MAX_UPLOAD_GIB * GIBIBYTE_BYTES),
+        max_book_download_bytes: Some(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES),
+        max_concurrent_book_downloads: DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
+        download_temp_dir: data_dir.join("download-temp"),
+        min_download_free_bytes: DEFAULT_MIN_DOWNLOAD_FREE_GIB * GIBIBYTE_BYTES,
+        library_root: library_root.clone(),
+        data_dir: data_dir.clone(),
+        progress_file: data_dir.join("progress.json"),
+        users_file: data_dir.join("users.json"),
+        sessions_file: data_dir.join("sessions.json"),
+        activity_file: data_dir.join("activity.json"),
+        metadata_overrides_file: data_dir.join("metadata-overrides.json"),
+        libation_requests_file: data_dir.join("libation-requests.json"),
+        libation_cli_path: None,
+        libation_files_dir: None,
+        libation_auto_refresh_hours: 0,
+        libation_reader_refreshes_per_hour: DEFAULT_LIBATION_READER_REFRESHES_PER_HOUR,
+        alignment_cli_path: None,
+        ffmpeg_path: None,
+        ffprobe_path: None,
+        allowed_origins: Vec::new(),
+        web_dist_dir: None,
+    };
+    let database_path = data_dir.join("operalibre.db");
+    let database = Database::open(&database_path).unwrap();
+    let snapshot = CachedSnapshot {
+        users: UsersStore::default(),
+        sessions: std::collections::HashMap::new(),
+        activity: ActivityStore::default(),
+        metadata_overrides: MetadataOverrideStore::default(),
+        libation_requests: LibationRequestStore::default(),
+        libation_refreshes: LibationRefreshStore::default(),
+        libation_accounts: ManagedLibationAccountStore::default(),
+        reading_history: ReadingHistory::default(),
+        works: WorkStore::default(),
+    };
+    let state = build_app_state(
+        &config,
+        database,
+        database_path,
+        snapshot,
+        None,
+        data_dir.join("libation-accounts"),
+    )
+    .unwrap();
+    rescan_library(&state).await.unwrap();
+    let server = TestServer {
+        router: build_router(state.clone(), None, &[]).unwrap(),
+        library_root,
+        _root: root,
+    };
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+
+    {
+        let mut library = state.library.write().await;
+        library.startup_scan_pending = true;
+        library.catalogue_ready = false;
+    }
+    for uri in [
+        "/api/books".to_string(),
+        "/api/opds/books".to_string(),
+        format!("/abs/api/libraries/{ABS_LIBRARY_ID}/items"),
+        format!("/abs/api/libraries/{ABS_LIBRARY_ID}/filterdata"),
+        format!("/abs/api/libraries/{ABS_LIBRARY_ID}/search?q=book"),
+    ] {
+        let response = server.get(&uri, &token).await;
+        assert_eq!(
+            response.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{uri}: {}",
+            response.text()
+        );
+        assert_eq!(response.headers[header::RETRY_AFTER], "5", "{uri}");
+        assert_eq!(
+            response.json()["message"],
+            "The library is still being scanned.",
+            "{uri}"
+        );
+    }
+    // Per-book routes are not gated: a known book keeps playing.
+    let stream = server
+        .get(&format!("/api/books/{book}/tracks/{track}/stream"), &token)
+        .await;
+    assert_eq!(stream.status, StatusCode::OK, "{}", stream.text());
+
+    {
+        let mut library = state.library.write().await;
+        library.startup_scan_pending = false;
+        library.catalogue_ready = true;
+    }
+    let books = server.get("/api/books", &token).await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    assert!(books.headers.get(header::RETRY_AFTER).is_none());
+    assert_eq!(books.json().as_array().unwrap().len(), 1);
+}
+
+#[path = "performance_tests.rs"]
+mod performance_tests;

@@ -60,9 +60,12 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "aiff", "flac", "m4a", "m4b", "mp3", "mp4", "ogg", "opus", "wav",
 ];
 
-pub(crate) const READING_EXTENSIONS: &[&str] = &["epub", "html", "htm", "pdf", "txt"];
-
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
+/// Marks a sync map the server interpolated rather than aligned:
+/// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
+/// fingerprint covers the EPUB and the chapter list, so a changed companion
+/// or re-chaptered audio produces a fresh estimate.
+pub(crate) const ESTIMATED_SYNC_INFIX: &str = ".estimate";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -82,6 +85,7 @@ pub(crate) struct BookMetadataOverride {
     pub(crate) publisher: Option<String>,
     pub(crate) series: Option<String>,
     pub(crate) series_position: Option<String>,
+    pub(crate) tags: Option<Vec<BookTag>>,
     pub(crate) asin: Option<String>,
 }
 
@@ -92,13 +96,26 @@ pub(crate) struct LibraryState {
     /// for a grouped book. Used by the admin-only local-copy deletion route.
     pub(crate) book_paths: HashMap<String, PathBuf>,
     pub(crate) track_paths: HashMap<String, PathBuf>,
+    /// Companion file paths keyed by companion id (the primary reading file
+    /// shares its companion's id).
     pub(crate) reading_paths: HashMap<String, PathBuf>,
+    /// What each companion document held the last time it was opened, so a
+    /// rescan re-reads only documents that changed.
+    pub(crate) companion_analyses: AnalysisCache,
     /// Sync map file paths keyed by book id.
     pub(crate) sync_paths: HashMap<String, PathBuf>,
     /// Cover art, extracted to disk during the scan. Holding every embedded
     /// image in memory cost a gigabyte on a few thousand books, and every
     /// request copied one again on its way out.
     pub(crate) cover_art: HashMap<String, CachedCover>,
+    /// True from the moment the server starts listening until its first scan
+    /// has finished, so an empty catalogue can be told from a finished one.
+    pub(crate) startup_scan_pending: bool,
+    /// True only after a scan has successfully published a catalogue. A scan
+    /// can finish without publishing when its view of the library is unsafe.
+    pub(crate) catalogue_ready: bool,
+    /// True when the startup scan failed or was deliberately withheld.
+    pub(crate) catalogue_error: bool,
 }
 
 impl LibraryState {
@@ -315,9 +332,15 @@ pub(crate) struct Book {
     pub(crate) cover_art_url: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) genres: Vec<String>,
+    pub(crate) tags: Vec<BookTag>,
     pub(crate) published_date: Option<String>,
     pub(crate) asin: Option<String>,
+    /// The companion read-along follows: the primary book-kind document
+    /// among `companions`, if any.
     pub(crate) reading_file: Option<ReadingFile>,
+    /// Every document and picture found beside the audio, each classified as
+    /// the book's text, a picture supplement, or a loose image.
+    pub(crate) companions: Vec<CompanionFile>,
     pub(crate) sync_file: Option<SyncFile>,
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) metadata: MetadataSummary,
@@ -332,6 +355,17 @@ pub(crate) struct Book {
     /// the file's level. Books are mastered at wildly different loudnesses, so
     /// this is per book rather than a single device volume.
     pub(crate) volume_gain: f64,
+}
+
+/// A user-defined grouping that may order a book independently of its formal
+/// series. For example, a Mistborn title can keep its Mistborn series number
+/// while also being tagged as book 3 in the wider Cosmere.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BookTag {
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) position: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -349,7 +383,9 @@ pub(crate) struct ReadingFile {
 pub(crate) struct SyncFile {
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
-    /// by the alignment job into the server's data directory.
+    /// by the alignment job into the server's data directory, `estimated`
+    /// when the server interpolates one from the EPUB and the chapter list
+    /// on request.
     pub(crate) source: String,
     pub(crate) url: String,
 }
@@ -408,6 +444,10 @@ pub(crate) struct BookMetadataUpdate {
     pub(crate) publisher: Option<String>,
     pub(crate) series: Option<String>,
     pub(crate) series_position: Option<String>,
+    /// Optional so an older client can edit another field without clearing
+    /// tags created by a newer client.
+    #[serde(default)]
+    pub(crate) tags: Option<Vec<BookTag>>,
     pub(crate) asin: Option<String>,
 }
 
@@ -445,12 +485,29 @@ pub(crate) struct ListBooksQuery {
 /// The largest page a client may ask for at once.
 const MAX_BOOKS_PAGE: usize = 500;
 
+/// Catalogue listings refuse rather than answer with an empty list while the
+/// startup scan is still running: a client takes the listing as the truth,
+/// and an empty one would wipe its offline shelf and end whatever it was
+/// playing. `503` with `Retry-After` is what clients already read as "the
+/// server is not there yet", so they keep their cached shelf and ask again.
+/// Per-book routes are not gated: a book a client already knows keeps
+/// streaming and saving its position.
+pub(crate) async fn ensure_startup_scan_finished(state: &AppState) -> Result<(), ApiError> {
+    if !state.library.read().await.catalogue_ready {
+        return Err(ApiError::service_unavailable(
+            "The library is still being scanned.",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn list_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Query(query): Query<ListBooksQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    ensure_startup_scan_finished(&state).await?;
     let mut books = books_with_progress(&state, &auth).await?;
 
     // Paging is by the id of the last book seen rather than by offset: a
@@ -536,12 +593,18 @@ pub(crate) async fn update_book_metadata(
     Path(book_id): Path<String>,
     Json(payload): Json<BookMetadataUpdate>,
 ) -> Result<Json<Book>, ApiError> {
-    let metadata_override = metadata_override_from_update(payload)?;
+    let mut metadata_override = metadata_override_from_update(payload)?;
     state.library.read().await.book(&book_id)?;
 
     state
         .metadata_overrides
         .mutate(|overrides| {
+            if metadata_override.tags.is_none() {
+                metadata_override.tags = overrides
+                    .books
+                    .get(&book_id)
+                    .and_then(|existing| existing.tags.clone());
+            }
             overrides
                 .books
                 .insert(book_id.clone(), metadata_override.clone());
@@ -625,6 +688,7 @@ pub(crate) fn metadata_override_from_update(
         series_position: update
             .series_position
             .map(|value| clean_metadata_text(&value)),
+        tags: update.tags.map(clean_book_tags),
         asin,
     })
 }
@@ -642,6 +706,22 @@ pub(crate) fn clean_genre_list(genres: Vec<String>) -> Vec<String> {
             .filter(|value| !value.is_empty())
             .collect(),
     )
+}
+
+pub(crate) fn clean_book_tags(tags: Vec<BookTag>) -> Vec<BookTag> {
+    let mut seen = HashSet::new();
+    tags.into_iter()
+        .filter_map(|tag| {
+            let name = clean_metadata_text(&tag.name);
+            if name.is_empty() || !seen.insert(name.to_lowercase()) {
+                return None;
+            }
+            Some(BookTag {
+                name,
+                position: tag.position.as_deref().and_then(optional_override_value),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn optional_override_value(value: &str) -> Option<String> {
@@ -686,6 +766,9 @@ pub(crate) fn apply_book_metadata_override(
     }
     if let Some(series_position) = metadata_override.series_position.as_deref() {
         book.metadata.series_position = optional_override_value(series_position);
+    }
+    if let Some(tags) = metadata_override.tags.as_ref() {
+        book.tags = clean_book_tags(tags.clone());
     }
     if let Some(asin) = metadata_override.asin.as_deref() {
         book.asin = optional_override_value(asin);
@@ -769,12 +852,32 @@ struct LegacyTrackIdentity {
 /// Migration preserves every issued `bookId` and `trackId` byte for byte —
 /// progress, settings and access grants are keyed by them, so reminting here
 /// would detach all three.
+#[derive(Debug)]
 pub(crate) struct LoadedIdentities {
     pub(crate) store: LibraryIdentityStore,
     /// True when the file on disk was in the pre-versioned shape, so the
     /// caller knows a backup is owed before it is overwritten.
     pub(crate) migrated: bool,
 }
+
+/// The identities file on disk was written by a build that this one cannot
+/// read. A scan must leave it untouched rather than fail or overwrite it.
+#[derive(Debug)]
+pub(crate) struct NewerIdentityFormat {
+    pub(crate) version: u64,
+}
+
+impl std::fmt::Display for NewerIdentityFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "library-identities.json was written by a newer OperaLibre (format {}, this build understands {IDENTITY_FORMAT_VERSION}).",
+            self.version
+        )
+    }
+}
+
+impl std::error::Error for NewerIdentityFormat {}
 
 pub(crate) fn parse_library_identities(contents: &str) -> anyhow::Result<LoadedIdentities> {
     let value: serde_json::Value = serde_json::from_str(contents)?;
@@ -784,9 +887,7 @@ pub(crate) fn parse_library_identities(contents: &str) -> anyhow::Result<LoadedI
         .unwrap_or(0);
     if versioned >= 1 {
         if versioned > u64::from(IDENTITY_FORMAT_VERSION) {
-            anyhow::bail!(
-                "library-identities.json was written by a newer OperaLibre (format {versioned}, this build understands {IDENTITY_FORMAT_VERSION})."
-            );
+            return Err(NewerIdentityFormat { version: versioned }.into());
         }
         return Ok(LoadedIdentities {
             store: serde_json::from_value(value)?,
@@ -1139,10 +1240,23 @@ pub(crate) fn resolve_library_identities(
     // copies share a digest, so a bare "does this digest appear anywhere" test
     // would report both identities as alive whenever either copy is present,
     // and close the later tiers against a copy that was genuinely remuxed.
-    let current_is_present = |identity: &BookIdentity, claimed_by: &[Option<usize>]| {
-        groups.iter().enumerate().any(|(position, group)| {
-            claimed_by[position].is_none() && group.book_fingerprint == identity.fingerprint
-        })
+    //
+    // The set is built once per tier from that tier's snapshot: the check runs
+    // for every (unclaimed group, identity) pair, and rescanning the groups
+    // inside it made a bulk retag cubic in the size of the library.
+    fn unclaimed_fingerprints<'a>(
+        groups: &[ScannedGroup<'a>],
+        claimed_by: &[Option<usize>],
+    ) -> HashSet<&'a str> {
+        groups
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| claimed_by[*position].is_none())
+            .map(|(_, group)| group.book_fingerprint)
+            .collect()
+    }
+    let current_is_present = |identity: &BookIdentity, unclaimed: &HashSet<&str>| {
+        unclaimed.contains(identity.fingerprint.as_str())
     };
 
     // A book's shape: how many tracks it has and how long it runs. A faststart
@@ -1213,18 +1327,18 @@ pub(crate) fn resolve_library_identities(
     // digest is nowhere in this scan. Without that guard an old copy left at a
     // stale alias could out-claim the live book, since it matches history at a
     // remembered path while the real book matches neither.
-    let snapshot = claimed_by.clone();
+    let unclaimed = unclaimed_fingerprints(groups, &claimed_by);
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
-        !current_is_present(identity, &snapshot)
+        !current_is_present(identity, &unclaimed)
             && identity.matches_fingerprint(group.book_fingerprint)
             && path_matches(identity, group)
     });
 
     // Pass 4 — a historical digest carried by exactly one identity, path
     // unknown. Recovers a book that was both rewritten and moved.
-    let snapshot = claimed_by.clone();
+    let unclaimed = unclaimed_fingerprints(groups, &claimed_by);
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
-        !current_is_present(identity, &snapshot)
+        !current_is_present(identity, &unclaimed)
             && identity.matches_fingerprint(group.book_fingerprint)
     });
 
@@ -1237,12 +1351,12 @@ pub(crate) fn resolve_library_identities(
     // seen recently, because a long-dead identity's remembered path is exactly
     // what a new book at a reused location collides with. And the book's shape
     // must still match, which is what separates a remux from a replacement.
-    let snapshot_p5 = claimed_by.clone();
+    let unclaimed_p5 = unclaimed_fingerprints(groups, &claimed_by);
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
         if !path_matches(identity, group) {
             return false;
         }
-        if current_is_present(identity, &snapshot_p5)
+        if current_is_present(identity, &unclaimed_p5)
             || identity
                 .fingerprint_history
                 .iter()
@@ -1578,7 +1692,17 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         (group_files_into_books(&scan_root, walk.files), walk.errors)
     })
     .await?;
-    let mut identities = load_library_identities(&state.library_identities_file).await?;
+    // An identities file from a newer build is withheld from, not failed on:
+    // the file is left exactly as it is, and the catalogue stays as it was,
+    // until the build that wrote it is running again.
+    let mut identities = match load_library_identities(&state.library_identities_file).await {
+        Ok(identities) => identities,
+        Err(error) if error.downcast_ref::<NewerIdentityFormat>().is_some() => {
+            tracing::warn!("library scan withheld: {error}");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     // A scan that could not read part of the library is not evidence that the
     // library shrank, so an untrusted scan stops here, before anything derived
@@ -1588,13 +1712,13 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     // The previously published library stays up instead.
     //
     // At startup there is no previously published library, so a suspect first
-    // scan leaves the catalogue empty until something triggers another one — a
-    // restart, an upload, a download, a faststart job, or the administrative
-    // rescan endpoint. Recovery is on the next scan, not on the drive
-    // reappearing. That is the intended trade: an empty library is visibly
-    // wrong and one rescan away from correct, whereas a library rebuilt from a
-    // half-mounted directory looks right and quietly detaches everything it
-    // could not see.
+    // scan leaves the catalogue unpublished until another scan lands — the
+    // startup task retries on a backoff, and an upload, a download, a
+    // faststart job, or the administrative rescan endpoint runs one sooner.
+    // Recovery is on the next scan, not on the drive reappearing. That is the
+    // intended trade: an unpublished library is visibly wrong and one rescan
+    // away from correct, whereas a library rebuilt from a half-mounted
+    // directory looks right and quietly detaches everything it could not see.
     let scanned_aliases = groups
         .iter()
         .map(|(group_key, _)| library_identity_path(&state.library_root, group_key))
@@ -1634,18 +1758,35 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     // Tag reading is the slowest part of a first scan, and every file is
     // independent, so it fans out across the pool instead of walking the list
     // on one thread.
+    //
+    // Only one cover per book is ever used, so the picture bytes every track
+    // may carry are reduced to a digest here and read again once per book,
+    // and only when the cover cache does not already hold them. Keeping every
+    // track's picture through the scan cost hundreds of megabytes on a large
+    // library.
     let metadata_task = tokio::task::spawn_blocking(move || {
         use rayon::prelude::*;
         metadata_files
             .into_par_iter()
             .map(|path| {
-                let metadata = read_track_metadata(&path);
-                (path, metadata)
+                let mut metadata = read_track_metadata(&path);
+                let cover = metadata
+                    .cover_art
+                    .take()
+                    .map(|image| ScannedCover::from_image(&path, &image));
+                (path, metadata, cover)
             })
-            .collect::<HashMap<_, _>>()
+            .collect::<Vec<_>>()
     });
     let (track_fingerprints_by_path, fingerprint_cache) = fingerprint_task.await?;
-    let mut metadata_by_path = metadata_task.await?;
+    let mut metadata_by_path = HashMap::new();
+    let mut covers_by_path = HashMap::new();
+    for (path, metadata, cover) in metadata_task.await? {
+        if let Some(cover) = cover {
+            covers_by_path.insert(path.clone(), cover);
+        }
+        metadata_by_path.insert(path, metadata);
+    }
     identities
         .fingerprint_cache
         .insert(DEFAULT_ROOT_ID.to_string(), fingerprint_cache);
@@ -1655,8 +1796,9 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let mut book_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
     let mut sync_paths = HashMap::new();
-    let mut extracted_covers: Vec<(String, EmbeddedImage)> = Vec::new();
+    let mut extracted_covers: Vec<(String, ScannedCover)> = Vec::new();
     let mut books = Vec::new();
+    let mut pending_companions: Vec<(usize, Vec<PathBuf>)> = Vec::new();
 
     // Stage one: describe every scanned book. Resolution needs to see the whole
     // scan before it decides anything, so nothing is matched inside this loop.
@@ -1711,25 +1853,31 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         .collect::<Vec<_>>();
 
     // Stage two: resolve the whole scan at once, so no book's position in the
-    // walk can decide which identity it gets.
-    let scanned_groups = prepared
-        .iter()
-        .map(|group| ScannedGroup {
-            book_fingerprint: &group.book_fingerprint,
-            group_alias: &group.group_alias,
-            root_id: DEFAULT_ROOT_ID,
-            grouped_files: &group.grouped_files,
-            track_fingerprints: &group.track_fingerprints,
-            track_aliases: &group.track_aliases,
-            duration_seconds: group.duration_seconds,
-        })
-        .collect::<Vec<_>>();
-
-    let resolved = resolve_library_identities(
-        &mut identities,
-        &scanned_groups,
-        &mut (mint_identity_id as fn() -> String),
-    );
+    // walk can decide which identity it gets. The resolver is pure CPU over
+    // the whole library, so it runs on a blocking thread rather than holding a
+    // runtime worker for the length of a large scan.
+    let (mut identities, prepared, resolved) = tokio::task::spawn_blocking(move || {
+        let mut identities = identities;
+        let scanned_groups = prepared
+            .iter()
+            .map(|group| ScannedGroup {
+                book_fingerprint: &group.book_fingerprint,
+                group_alias: &group.group_alias,
+                root_id: DEFAULT_ROOT_ID,
+                grouped_files: &group.grouped_files,
+                track_fingerprints: &group.track_fingerprints,
+                track_aliases: &group.track_aliases,
+                duration_seconds: group.duration_seconds,
+            })
+            .collect::<Vec<_>>();
+        let resolved = resolve_library_identities(
+            &mut identities,
+            &scanned_groups,
+            &mut (mint_identity_id as fn() -> String),
+        );
+        (identities, prepared, resolved)
+    })
+    .await?;
 
     for (position, group) in prepared.into_iter().enumerate() {
         let PreparedGroup {
@@ -1756,11 +1904,12 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
 
         let mut title = book_title_for_group(&group_key, &grouped_files, &metadata);
 
-        let cover_art_url = metadata
+        // The first track carrying a picture supplies the book's cover.
+        let cover_art_url = grouped_files
             .iter()
-            .find_map(|item| item.cover_art.clone())
-            .map(|image| {
-                extracted_covers.push((book_id.clone(), image));
+            .find_map(|file_path| covers_by_path.remove(file_path))
+            .map(|cover| {
+                extracted_covers.push((book_id.clone(), cover));
                 format!("/api/books/{book_id}/cover")
             });
         let mut metadata_summary = merge_metadata_summary(&metadata);
@@ -1789,10 +1938,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
         }
-        let reading_file = find_reading_file(&book_id, &group_key, &grouped_files, &title);
-        if let Some(reading_file) = reading_file.as_ref() {
-            reading_paths.insert(reading_file.file.id.clone(), reading_file.path.clone());
-        }
+        let companion_candidates = discover_candidates(&group_key, &grouped_files, &title);
         let sync_file = find_sync_file(
             &book_id,
             &group_key,
@@ -1814,9 +1960,11 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             cover_art_url,
             description: metadata_summary.description.clone(),
             genres: metadata_summary.genres.clone(),
+            tags: Vec::new(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
-            reading_file: reading_file.map(|reading_file| reading_file.file),
+            reading_file: None,
+            companions: Vec::new(),
             sync_file: sync_file.map(|sync_file| sync_file.file),
             chapters: book_chapters,
             metadata: metadata_summary,
@@ -1828,7 +1976,57 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
         }
+        pending_companions.push((books.len(), companion_candidates));
         books.push(book);
+    }
+
+    // Companion documents are opened to tell the book's text from a picture
+    // supplement. That reads every EPUB and PDF beside the audio, so it runs
+    // once over the whole scan on the blocking pool, with the previous scan's
+    // answers as a cache so an unchanged file is never opened twice.
+    let previous_analyses = state.library.read().await.companion_analyses.clone();
+    let candidate_paths = pending_companions
+        .iter()
+        .flat_map(|(_, paths)| paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let companion_analyses =
+        tokio::task::spawn_blocking(move || analyze_all(&candidate_paths, &previous_analyses))
+            .await?;
+    for (book_index, candidates) in pending_companions {
+        let book = &mut books[book_index];
+        let described = describe(
+            &book.id,
+            &candidates,
+            &companion_analyses,
+            book.duration_seconds,
+        );
+        for (companion, path) in &described {
+            reading_paths.insert(companion.id.clone(), path.clone());
+        }
+        book.companions = described
+            .into_iter()
+            .map(|(companion, _)| companion)
+            .collect();
+        book.reading_file = primary_reading_file(&book.companions).map(|companion| ReadingFile {
+            id: companion.id.clone(),
+            file_name: companion.file_name.clone(),
+            extension: companion.extension.clone(),
+            content_type: companion.content_type.clone(),
+            url: format!("/api/books/{}/readalong", book.id),
+        });
+        // An EPUB can always be followed approximately: the sync route
+        // estimates a map from the chapter list when nothing better exists.
+        let has_epub_text = book
+            .reading_file
+            .as_ref()
+            .is_some_and(|reading_file| reading_file.extension == "epub");
+        if book.sync_file.is_none() && has_epub_text {
+            book.sync_file = Some(SyncFile {
+                file_name: format!("{}{ESTIMATED_SYNC_INFIX}{SYNC_SIDECAR_SUFFIX}", book.id),
+                source: "estimated".to_string(),
+                url: format!("/api/books/{}/sync", book.id),
+            });
+        }
     }
 
     // Reaching here means the scan was trustworthy: a suspect one returned
@@ -1864,10 +2062,11 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     // would stall every route that reads the library, including media
     // streaming, for the length of the pass.
     let covers_dir = state.covers_dir.clone();
-    let (cover_art, stale_covers) =
-        tokio::task::spawn_blocking(move || write_cover_cache(&covers_dir, extracted_covers))
-            .await
-            .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
+    let (cover_art, stale_covers) = tokio::task::spawn_blocking(move || {
+        write_scanned_cover_cache(&covers_dir, extracted_covers)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
 
     {
         let mut library = state.library.write().await;
@@ -1875,8 +2074,11 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         library.book_paths = book_paths;
         library.track_paths = track_paths;
         library.reading_paths = reading_paths;
+        library.companion_analyses = companion_analyses;
         library.sync_paths = sync_paths;
         library.cover_art = cover_art;
+        library.catalogue_ready = true;
+        library.catalogue_error = false;
     }
     // Only now is the published library done with these.
     remove_stale_covers(&stale_covers);
@@ -2005,14 +2207,14 @@ pub(crate) struct DiscoveredSyncFile {
     pub(crate) path: PathBuf,
 }
 
-/// Picks the companion file beside a book that best matches it.
+/// Picks the sidecar file beside a book that best matches it.
 ///
-/// Readalong documents and sync-map sidecars are matched the same way: files
-/// in the book's own directory (depth one, natural order) are matched by
-/// normalized stem against the folder name, the book title, and every audio
-/// file's stem. A folder book falls back to its first candidate even without
-/// a name match — a folder holds one book, so an unmatched name there is
-/// still unambiguous.
+/// Files in the book's own directory (depth one, natural order) are matched
+/// by normalized stem against the folder name, the book title, and every
+/// audio file's stem. A folder book falls back to its first candidate even
+/// without a name match — a folder holds one book, so an unmatched name there
+/// is still unambiguous. Reading companions are discovered separately (see
+/// `companions`), since a folder may legitimately hold several of them.
 fn find_companion_file(
     group_key: &FsPath,
     grouped_files: &[PathBuf],
@@ -2134,68 +2336,6 @@ pub(crate) fn has_sync_sidecar_suffix(name: &str) -> bool {
     name.len() > SYNC_SIDECAR_SUFFIX.len()
         && name.is_char_boundary(name.len() - SYNC_SIDECAR_SUFFIX.len())
         && name[name.len() - SYNC_SIDECAR_SUFFIX.len()..].eq_ignore_ascii_case(SYNC_SIDECAR_SUFFIX)
-}
-
-pub(crate) struct DiscoveredReadingFile {
-    pub(crate) file: ReadingFile,
-    pub(crate) path: PathBuf,
-}
-
-/// Finds the readalong document for a book among the files beside it.
-pub(crate) fn find_reading_file(
-    book_id: &str,
-    group_key: &FsPath,
-    grouped_files: &[PathBuf],
-    book_title: &str,
-) -> Option<DiscoveredReadingFile> {
-    let selected = find_companion_file(
-        group_key,
-        grouped_files,
-        book_title,
-        is_supported_reading_file,
-        |path| {
-            path.file_stem()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        },
-    )?;
-
-    let extension = selected
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let file_name = selected
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("readalong")
-        .to_string();
-    let id = stable_id(&selected.to_string_lossy());
-    let content_type = mime_guess::from_path(&selected)
-        .first_or_octet_stream()
-        .to_string();
-
-    Some(DiscoveredReadingFile {
-        path: selected,
-        file: ReadingFile {
-            id,
-            file_name,
-            extension,
-            content_type,
-            url: format!("/api/books/{book_id}/readalong"),
-        },
-    })
-}
-
-pub(crate) fn is_supported_reading_file(path: &FsPath) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            READING_EXTENSIONS
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-        })
-        .unwrap_or(false)
 }
 
 pub(crate) fn is_supported_audio_file(path: &FsPath) -> bool {
@@ -2624,13 +2764,45 @@ pub(crate) fn extract_cover_art(tag: &Tag) -> Option<EmbeddedImage> {
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?;
     Some(EmbeddedImage {
-        mime_type: picture
-            .mime_type()
-            .map(|mime| mime.as_str().to_string())
-            .unwrap_or_else(|| "application/octet-stream".to_string()),
+        mime_type: cover_art_content_type(picture.mime_type().map(|mime| mime.as_str())),
         data: picture.data().to_vec(),
         etag: bytes_etag(picture.data()),
     })
+}
+
+/// The type a cover is served under. The tag's own claim is served verbatim
+/// only when it names an image: anything else — `text/html` most of all —
+/// would otherwise go out same-origin as whatever the tag said it was.
+pub(crate) fn cover_art_content_type(declared: Option<&str>) -> String {
+    let declared = declared
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    match declared.as_str() {
+        "image/jpeg" | "image/jpg" => "image/jpeg",
+        "image/png" => "image/png",
+        "image/gif" => "image/gif",
+        "image/webp" => "image/webp",
+        "image/bmp" => "image/bmp",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// The picture a track carries, read on its own. Used to fetch a book's cover
+/// once the scan has chosen it, without keeping every track's bytes around.
+pub(crate) fn read_track_cover_art(file_path: &FsPath) -> Option<EmbeddedImage> {
+    let tagged_file = read_from_path(file_path).ok()?;
+    tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())
+        .and_then(extract_cover_art)
 }
 
 pub(crate) fn read_embedded_chapters(file_path: &FsPath) -> Vec<ParsedChapter> {
@@ -2858,45 +3030,161 @@ pub(crate) fn unique_metadata_fields(fields: Vec<MetadataField>) -> Vec<Metadata
 /// Stale files — covers for books that have left the library — are reported
 /// rather than removed, for the same reason: the caller deletes them only
 /// after the new snapshot is published.
+#[cfg(test)]
 pub(crate) fn write_cover_cache(
     covers_dir: &FsPath,
     extracted: Vec<(String, EmbeddedImage)>,
 ) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
+    write_covers(covers_dir, extracted)
+}
+
+/// What the scan keeps of a book's cover: enough to tell whether the cache
+/// already holds it, and where to read the bytes from when it does not.
+pub(crate) struct ScannedCover {
+    pub(crate) mime_type: String,
+    pub(crate) etag: String,
+    pub(crate) len: u64,
+    /// The track whose tag carries the picture.
+    pub(crate) source: PathBuf,
+}
+
+impl ScannedCover {
+    pub(crate) fn from_image(source: &FsPath, image: &EmbeddedImage) -> Self {
+        Self {
+            mime_type: image.mime_type.clone(),
+            etag: image.etag.clone(),
+            len: image.data.len() as u64,
+            source: source.to_path_buf(),
+        }
+    }
+}
+
+/// [`write_cover_cache`] for covers the scan summarised rather than kept. A
+/// cover the cache already holds costs nothing further; one it does not is
+/// read back from its track here, one book at a time.
+pub(crate) fn write_scanned_cover_cache(
+    covers_dir: &FsPath,
+    extracted: Vec<(String, ScannedCover)>,
+) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
+    write_covers(covers_dir, extracted)
+}
+
+/// A cover the cache can be brought up to date from: its digest, for the
+/// comparison, and the bytes, for the rewrite.
+pub(crate) trait CoverSource {
+    fn mime_type(&self) -> &str;
+    fn etag(&self) -> &str;
+    fn len(&self) -> u64;
+    /// The picture itself, if it can still be had.
+    fn into_image(self) -> Option<EmbeddedImage>;
+}
+
+impl CoverSource for EmbeddedImage {
+    fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    fn etag(&self) -> &str {
+        &self.etag
+    }
+
+    fn len(&self) -> u64 {
+        self.data.len() as u64
+    }
+
+    fn into_image(self) -> Option<EmbeddedImage> {
+        Some(self)
+    }
+}
+
+impl CoverSource for ScannedCover {
+    fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    fn etag(&self) -> &str {
+        &self.etag
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Read back from the track. What the track holds *now* is what gets
+    /// cached, so a file rewritten between the two passes is served as it is
+    /// rather than as it was.
+    fn into_image(self) -> Option<EmbeddedImage> {
+        read_track_cover_art(&self.source)
+    }
+}
+
+fn write_covers<T: CoverSource + Send>(
+    covers_dir: &FsPath,
+    extracted: Vec<(String, T)>,
+) -> anyhow::Result<(HashMap<String, CachedCover>, Vec<PathBuf>)> {
+    use rayon::prelude::*;
+
     create_private_directory(covers_dir)?;
+
+    // Every book's cover is its own file, so the misses — each a read-back of
+    // the track plus a write — run across the pool like the scan pass that
+    // found them, instead of one after another on this thread. On a first
+    // scan every cover is a miss.
+    let written = extracted
+        .into_par_iter()
+        .map(|(book_id, input)| -> anyhow::Result<Option<(String, String, CachedCover)>> {
+            let file_name = format!("{}.cover", sanitize_filename(&book_id));
+            let path = covers_dir.join(&file_name);
+
+            let unchanged = std::fs::metadata(&path)
+                .ok()
+                .is_some_and(|metadata| metadata.len() == input.len())
+                && std::fs::read(&path)
+                    .ok()
+                    .is_some_and(|existing| bytes_etag(&existing) == input.etag());
+            let (mime_type, etag, len) = if unchanged {
+                (
+                    input.mime_type().to_string(),
+                    input.etag().to_string(),
+                    input.len(),
+                )
+            } else {
+                let Some(image) = input.into_image() else {
+                    // The picture the scan saw is gone from the track. The
+                    // route answers 404 until the next scan, which stops
+                    // advertising it.
+                    tracing::warn!(book_id = %book_id, "cover art disappeared before it could be cached");
+                    return Ok(None);
+                };
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since_epoch| since_epoch.as_nanos())
+                    .unwrap_or(0);
+                let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
+                std::fs::write(&temp_path, &image.data)?;
+                replace_file_blocking(&temp_path, &path).map_err(|error| {
+                    anyhow::anyhow!("could not publish cover {file_name}: {error}")
+                })?;
+                (image.mime_type, image.etag, image.data.len() as u64)
+            };
+            Ok(Some((
+                book_id,
+                file_name,
+                CachedCover {
+                    mime_type,
+                    etag,
+                    len,
+                    path,
+                },
+            )))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
     let mut cached = HashMap::new();
     let mut keep = HashSet::new();
-
-    for (book_id, image) in extracted {
-        let file_name = format!("{}.cover", sanitize_filename(&book_id));
-        let path = covers_dir.join(&file_name);
-        keep.insert(file_name.clone());
-
-        let unchanged = std::fs::metadata(&path)
-            .ok()
-            .is_some_and(|metadata| metadata.len() == image.data.len() as u64)
-            && std::fs::read(&path)
-                .ok()
-                .is_some_and(|existing| bytes_etag(&existing) == image.etag);
-        if !unchanged {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since_epoch| since_epoch.as_nanos())
-                .unwrap_or(0);
-            let temp_path = covers_dir.join(format!(".{file_name}.{nanos}.tmp"));
-            std::fs::write(&temp_path, &image.data)?;
-            replace_file_blocking(&temp_path, &path)
-                .map_err(|error| anyhow::anyhow!("could not publish cover {file_name}: {error}"))?;
-        }
-
-        cached.insert(
-            book_id,
-            CachedCover {
-                mime_type: image.mime_type,
-                etag: image.etag,
-                len: image.data.len() as u64,
-                path,
-            },
-        );
+    for (book_id, file_name, cover) in written.into_iter().flatten() {
+        keep.insert(file_name);
+        cached.insert(book_id, cover);
     }
 
     // Covers for books that have left the library.

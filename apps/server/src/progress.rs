@@ -123,6 +123,47 @@ pub(crate) struct ProgressUpdate {
     pub(crate) client: Option<String>,
 }
 
+/// A progress checkpoint as it arrives on the wire: the update itself plus
+/// the client's clock reading at send time, which brings `updatedAtMs` into
+/// the server's clock domain before the staleness rule compares it with a
+/// server-issued revision. Kept apart from [`ProgressUpdate`] so the decision
+/// rules only ever see one kind of timestamp.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProgressCheckpoint {
+    #[serde(flatten)]
+    pub(crate) update: ProgressUpdate,
+    /// Client-side epoch milliseconds of when the request was sent, as
+    /// distinct from when the position was recorded. Optional: without it the
+    /// recorded timestamp is compared as it is, as before.
+    pub(crate) sent_at_ms: Option<u64>,
+}
+
+/// Bring a client-recorded timestamp into the server's clock domain.
+///
+/// Stored revisions are server-issued, so comparing a raw client timestamp
+/// against one measures clock skew as much as staleness: a device five
+/// minutes behind the server had every checkpoint refused as a replay. The
+/// gap between when the client says it sent the request and when the server
+/// received it is that skew (plus transit time, which can only make the
+/// write look fresher, and is bounded by the cap at the server clock). A
+/// checkpoint recorded an hour before it was sent stays an hour old after the
+/// correction, so a genuine replay is still caught. Without `sent_at_ms` the
+/// raw value is kept.
+pub(crate) fn server_domain_timestamp_ms(
+    updated_at_ms: Option<u64>,
+    sent_at_ms: Option<u64>,
+    now_millis: u64,
+) -> Option<u64> {
+    let updated_at_ms = updated_at_ms?;
+    let Some(sent_at_ms) = sent_at_ms else {
+        return Some(updated_at_ms);
+    };
+    let offset = now_millis as i128 - sent_at_ms as i128;
+    let corrected = (updated_at_ms as i128 + offset).clamp(0, u64::MAX as i128);
+    Some(corrected as u64)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompletionUpdate {
@@ -276,9 +317,13 @@ pub(crate) async fn update_progress(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
-    Json(update): Json<ProgressUpdate>,
+    Json(checkpoint): Json<ProgressCheckpoint>,
 ) -> Result<Json<Progress>, ApiError> {
     require_book_access(&auth, &book_id)?;
+    let now_millis = unix_now_millis();
+    let mut update = checkpoint.update;
+    update.updated_at_ms =
+        server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis);
     // Cloned out of the library so the decision can travel to the database's
     // blocking task, and so the library lock is not held across the write.
     let (book, track) = {
@@ -293,7 +338,6 @@ pub(crate) async fn update_progress(
         (book.clone(), track)
     };
 
-    let now_millis = unix_now_millis();
     let decision_update = update.clone();
     let decided_book_id = book.id.clone();
     let decision_book = book.clone();
@@ -418,37 +462,22 @@ pub(crate) async fn update_book_completion(
     let records_completion = final_position.is_some();
 
     let now_millis = unix_now_millis();
-    // Marking a book finished or unfinished is an explicit instruction, so it
-    // bypasses the regression rules that guard automatic checkpoints.
     let decision_book = book.clone();
     let decision_update = update.clone();
     let completion_book_id = book.id.clone();
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &completion_book_id, move |previous| {
-            let book = decision_book;
-            let update = decision_update;
-            let next_timestamp = next_progress_timestamp(previous, now_millis);
-            let mut saved = previous
-                .cloned()
-                .unwrap_or_else(|| fresh_progress(&book, &first_track, previous, now_millis));
-            if let Some((track, position_seconds)) = final_position {
-                saved.track_id = track.id.clone();
-                saved.position_seconds = position_seconds;
-                saved.book_position_seconds = validated_book_position_seconds(
-                    &book,
-                    &track,
-                    position_seconds,
-                    update.book_position_seconds,
-                );
-                saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
-                saved.updated_at = next_timestamp;
-            }
-            saved.finished_override = Some(update.finished);
-            ProgressDecision::Store {
-                saved,
-                backup_previous: false,
-            }
+            decide_completion_write(
+                &decision_book,
+                &first_track,
+                previous,
+                &decision_update,
+                final_position
+                    .as_ref()
+                    .map(|(track, position_seconds)| (track, *position_seconds)),
+                now_millis,
+            )
         })
         .await?;
 
@@ -467,6 +496,48 @@ pub(crate) async fn update_book_completion(
         .await;
     }
     Ok(Json(summary))
+}
+
+/// What a completion request should store, decided without touching storage.
+///
+/// Marking a book finished or unfinished is an explicit instruction, so it
+/// bypasses the staleness and regression rules that guard automatic
+/// checkpoints. The rollback copy is not skipped with them: a final position
+/// far below the stored one is a lost place whichever request carried it, and
+/// the copy is what makes it recoverable. `final_position` is the already
+/// clamped track position the request carried, if it carried one.
+pub(crate) fn decide_completion_write(
+    book: &Book,
+    first_track: &Track,
+    previous: Option<&Progress>,
+    update: &CompletionUpdate,
+    final_position: Option<(&Track, f64)>,
+    now_millis: u64,
+) -> ProgressDecision {
+    let mut saved = previous
+        .cloned()
+        .unwrap_or_else(|| fresh_progress(book, first_track, previous, now_millis));
+    if let Some((track, position_seconds)) = final_position {
+        saved.track_id = track.id.clone();
+        saved.position_seconds = position_seconds;
+        saved.book_position_seconds = validated_book_position_seconds(
+            book,
+            track,
+            position_seconds,
+            update.book_position_seconds,
+        );
+        saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
+        saved.updated_at = next_progress_timestamp(previous, now_millis);
+    }
+    saved.finished_override = Some(update.finished);
+    let backup_previous = previous.is_some_and(|previous| {
+        previous.book_position_seconds - saved.book_position_seconds
+            > PROGRESS_BACKUP_REGRESSION_SECONDS
+    });
+    ProgressDecision::Store {
+        saved,
+        backup_previous,
+    }
 }
 
 /// Accept a plausible finite playback rate only. Playback engines vary, but

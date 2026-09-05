@@ -6,6 +6,11 @@
 //! progress and its rollback rows, per-book settings, activity, reading
 //! history, metadata, works, Libation records, and the identity index that
 //! keeps those rows attached to books.
+//!
+//! Sessions are exported for format compatibility but never restored: a
+//! backup file has been outside the server's control since it was written,
+//! and reviving the tokens in it would sign every device that held one back
+//! in. A restore signs everyone out except the owner performing it.
 
 use crate::*;
 use rusqlite::OptionalExtension;
@@ -104,6 +109,12 @@ pub(crate) async fn import_server_backup(
 ) -> Result<Json<RestoreResult>, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
     validate_backup_header(&backup)?;
+    // The identity index is rewritten below, and a scan running at the same
+    // time would read the old index and write it back over the restored one.
+    // Taken before the state gate: a scan holds the rescan lock while it
+    // commits its works through the gate, so the other order could deadlock
+    // a restore against a scan.
+    let rescan_guard = state.rescan_lock.lock().await;
     let state_guard = state.database.quiesce_state().await;
 
     // A restore should include the useful tail of a sitting that is still in
@@ -129,24 +140,49 @@ pub(crate) async fn import_server_backup(
     )
     .await?;
 
+    // The sessions in the file are not revived (see the module notes). The
+    // owner's own live session — taken from the running server, never from
+    // the backup — is carried across so the page they are on keeps working.
+    let retained_session = state
+        .sessions
+        .read()
+        .await
+        .get(&current_session)
+        .cloned()
+        .filter(|session| {
+            backup
+                .data
+                .users
+                .users
+                .iter()
+                .any(|user| user.id == session.user_id)
+        });
+    let retained_sessions: HashMap<String, Session> = retained_session
+        .map(|session| (current_session.clone(), session))
+        .into_iter()
+        .collect();
+    let session_retained = retained_sessions.contains_key(&current_session);
+
     let database_path = state.database_path.clone();
     let restored_data = backup.data.clone();
-    let snapshot =
-        tokio::task::spawn_blocking(move || restore_database(&database_path, &restored_data))
-            .await
-            .map_err(|error| ApiError::internal(format!("Backup restore task failed: {error}")))?
-            .map_err(|error| {
-                ApiError::bad_request(format!("The backup could not be restored: {error}"))
-            })?;
+    let snapshot = tokio::task::spawn_blocking(move || {
+        restore_database(&database_path, &restored_data, &retained_sessions)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Backup restore task failed: {error}")))?
+    .map_err(|error| ApiError::bad_request(format!("The backup could not be restored: {error}")))?;
 
     if let Err(identity_error) =
         write_json_atomic(&state.library_identities_file, &backup.library_identities).await
     {
         let database_path = state.database_path.clone();
         let rollback_data = before.data.clone();
-        let rollback =
-            tokio::task::spawn_blocking(move || restore_database(&database_path, &rollback_data))
-                .await;
+        // Rolling back puts the sessions that were live a moment ago back.
+        let rollback = tokio::task::spawn_blocking(move || {
+            let sessions = rollback_data.sessions.clone();
+            restore_database(&database_path, &rollback_data, &sessions)
+        })
+        .await;
         return match rollback {
             Ok(Ok(_)) => Err(ApiError::internal(format!(
                 "Could not restore the library identity index; the database was returned to its previous state: {}",
@@ -162,6 +198,10 @@ pub(crate) async fn import_server_backup(
     *state.open_sessions.lock().await = OpenSessions::default();
     state.libation_login_sessions.lock().await.clear();
     drop(state_guard);
+    // `rescan_library` takes the rescan lock itself. Another scan may slip in
+    // between here and there, but it reads the restored index and so can do
+    // no harm; the lock only had to cover the write.
+    drop(rescan_guard);
 
     // The data restore is already complete at this point. A temporarily
     // unavailable library must not turn that success into a misleading 500;
@@ -190,7 +230,7 @@ pub(crate) async fn import_server_backup(
         progress_records: backup.data.progress.len(),
         reading_sessions: history.sessions.len(),
         completions: history.completions.len(),
-        session_retained: backup.data.sessions.contains_key(&current_session),
+        session_retained,
         warning,
     }))
 }
@@ -352,7 +392,13 @@ fn read_database(path: &FsPath) -> anyhow::Result<BackupData> {
     })
 }
 
-fn restore_database(path: &FsPath, data: &BackupData) -> anyhow::Result<CachedSnapshot> {
+/// Replace the database's contents with `data`, keeping only `sessions` —
+/// which the caller chooses, so the ones in a backup file stay in the file.
+fn restore_database(
+    path: &FsPath,
+    data: &BackupData,
+    sessions: &HashMap<String, Session>,
+) -> anyhow::Result<CachedSnapshot> {
     let mut connection = db::open_existing(path)?;
     let transaction = connection.transaction()?;
     transaction.execute("DELETE FROM book_access", [])?;
@@ -365,7 +411,7 @@ fn restore_database(path: &FsPath, data: &BackupData) -> anyhow::Result<CachedSn
     transaction.execute("DELETE FROM documents", [])?;
 
     write_users_rows(&transaction, &serde_json::to_string(&data.users)?)?;
-    write_sessions_rows(&transaction, &serde_json::to_string(&data.sessions)?)?;
+    write_sessions_rows(&transaction, &serde_json::to_string(sessions)?)?;
     write_activity_rows(&transaction, &serde_json::to_string(&data.activity)?)?;
 
     for row in &data.progress {

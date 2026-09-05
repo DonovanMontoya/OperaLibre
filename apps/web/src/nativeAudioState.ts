@@ -32,6 +32,37 @@ export function reflectNativeAudioState(
   return state.isPlaying;
 }
 
+export type NativeAudioTrackChange = {
+  trackId: string;
+  positionSeconds: number;
+  bookPositionSeconds: number;
+  isPlaying: boolean;
+};
+
+/**
+ * A trackChanged React declined (the startup settle window, while paused) is
+ * re-offered from the next state tick for that track, because AVPlayer has
+ * already moved on and nothing re-emits the event once startup is ready. The
+ * tick carries the live clock, so the offer is rebuilt from it: the stored
+ * position is seconds or minutes stale by then, and a pending seek to it
+ * would yank native playback backwards once the new element loads.
+ */
+export function refreshDeclinedTrackChange(
+  declined: NativeAudioTrackChange,
+  tick: { positionSeconds: number; isPlaying: boolean }
+): NativeAudioTrackChange {
+  if (!Number.isFinite(tick.positionSeconds)) {
+    return { ...declined, isPlaying: tick.isPlaying };
+  }
+  return {
+    trackId: declined.trackId,
+    positionSeconds: tick.positionSeconds,
+    bookPositionSeconds: declined.bookPositionSeconds
+      + (tick.positionSeconds - declined.positionSeconds),
+    isPlaying: tick.isPlaying
+  };
+}
+
 /** Keep a native update authoritative without fighting an in-flight web seek. */
 export class NativeAudioStateSynchronizer {
   private pendingState: NativeAudioClockState | null = null;

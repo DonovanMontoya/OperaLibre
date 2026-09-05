@@ -21,3 +21,6 @@ CLAUDE.md
 .claude/
 .codex/
 .playwright-cli/
+
+# Local test traces, benchmarks, and generated native test projects.
+output/

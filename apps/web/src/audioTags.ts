@@ -618,20 +618,52 @@ async function readQuickTimeChapters(source: ByteSource, bytes: Uint8Array, root
   if (!samples.length) return [];
 
   const chapters: EmbeddedChapter[] = [];
-  for (const sample of samples.slice(0, MAX_CHAPTERS)) {
-    // Each sample is a 16-bit length followed by the title text; anything after
-    // that (an `encd` atom naming the encoding) is not part of the title.
-    const raw = await source.read(sample.offset, Math.min(sample.size, 4 + 1_024));
-    if (raw.length < 2) continue;
-    const length = Math.min((raw[0] << 8) + raw[1], raw.length - 2);
-    const text = raw.subarray(2, 2 + length);
-    const title =
-      text.length >= 2 && ((text[0] === 0xfe && text[1] === 0xff) || (text[0] === 0xff && text[1] === 0xfe))
-        ? decodeUtf16(text, true)
-        : decodeUtf8(text);
-    chapters.push({ title: cleanTagText(title), startSeconds: sample.startTicks / timescale });
+  // Samples of one chunk sit back to back, so read each chunk once instead of
+  // making one range request per chapter.
+  for (const run of chapterReadRuns(samples.slice(0, MAX_CHAPTERS))) {
+    const buffer = await source.read(run.offset, run.length);
+    for (const sample of run.samples) {
+      // Each sample is a 16-bit length followed by the title text; anything
+      // after that (an `encd` atom naming the encoding) is not part of the
+      // title.
+      const start = sample.offset - run.offset;
+      const raw = buffer.subarray(start, start + Math.min(sample.size, MAX_CHAPTER_SAMPLE_BYTES));
+      if (raw.length < 2) continue;
+      const length = Math.min((raw[0] << 8) + raw[1], raw.length - 2);
+      const text = raw.subarray(2, 2 + length);
+      const title =
+        text.length >= 2 && ((text[0] === 0xfe && text[1] === 0xff) || (text[0] === 0xff && text[1] === 0xfe))
+          ? decodeUtf16(text, true)
+          : decodeUtf8(text);
+      chapters.push({ title: cleanTagText(title), startSeconds: sample.startTicks / timescale });
+    }
   }
   return chapters;
+}
+
+/** How much of one chapter sample is worth reading: the length prefix and a long title. */
+const MAX_CHAPTER_SAMPLE_BYTES = 4 + 1_024;
+/** Keep each coalesced read small enough that a slow link still shows progress. */
+const MAX_CHAPTER_READ_BYTES = 64 * 1_024;
+
+type ReadRun = { offset: number; length: number; samples: SampleLocation[] };
+
+/** Groups samples that follow each other in the file into single reads. */
+function chapterReadRuns(samples: SampleLocation[]): ReadRun[] {
+  const runs: ReadRun[] = [];
+  for (const sample of samples) {
+    const wanted = Math.min(sample.size, MAX_CHAPTER_SAMPLE_BYTES);
+    const last = runs[runs.length - 1];
+    // A sample only joins the run when the previous one was read in full;
+    // otherwise its bytes would not be where the run buffer expects them.
+    if (last && last.offset + last.length === sample.offset && last.length + wanted <= MAX_CHAPTER_READ_BYTES) {
+      last.length += wanted;
+      last.samples.push(sample);
+    } else {
+      runs.push({ offset: sample.offset, length: wanted, samples: [sample] });
+    }
+  }
+  return runs;
 }
 
 function trackId(bytes: Uint8Array, trak: Box) {
@@ -642,6 +674,28 @@ function trackId(bytes: Uint8Array, trak: Box) {
 }
 
 type SampleLocation = { offset: number; size: number; startTicks: number };
+
+/**
+ * The most entries any one sample table is read with. Each count below is
+ * first clamped to what its box actually holds, so this only bounds the
+ * arrays built from a huge (but genuinely present) table: the chapter track
+ * has one sample per chapter, so even a thousand-chapter book needs a few
+ * thousand entries, and a million is far past any real file.
+ */
+const MAX_SAMPLE_TABLE_ENTRIES = 1_000_000;
+
+/**
+ * A table's entry count, no larger than the entries that fit between
+ * `entriesStart` and the end of the box. A count claiming billions of entries
+ * would otherwise be walked off the end of the buffer, where every read is
+ * NaN and a `<` loop never ends.
+ */
+function tableEntryCount(bytes: Uint8Array, box: Box, entriesStart: number, entrySize: number) {
+  const count = readUint32(bytes, entriesStart - 4);
+  if (!Number.isFinite(count)) throw new Error("Sample table lies outside its box.");
+  const available = Math.max(0, Math.floor((box.end - entriesStart) / entrySize));
+  return Math.min(count, available, MAX_SAMPLE_TABLE_ENTRIES);
+}
 
 /** Resolves a chapter track's sample table into file offsets and start times. */
 function sampleTable(bytes: Uint8Array, stbl: Box): SampleLocation[] {
@@ -654,22 +708,26 @@ function sampleTable(bytes: Uint8Array, stbl: Box): SampleLocation[] {
 
   const sizes: number[] = [];
   const uniformSize = readUint32(bytes, stsz.start + 4);
-  const sampleCount = readUint32(bytes, stsz.start + 8);
+  // A uniform size means the table itself is empty and the count is only a
+  // number, so it cannot be checked against the box like the others.
+  const sampleCount = uniformSize
+    ? readUint32(bytes, stsz.start + 8)
+    : tableEntryCount(bytes, stsz, stsz.start + 12, 4);
   for (let index = 0; index < sampleCount && index < MAX_CHAPTERS; index += 1) {
     sizes.push(uniformSize || readUint32(bytes, stsz.start + 12 + index * 4));
   }
 
   const chunkOffsets: number[] = [];
   if (co64) {
-    const count = readUint32(bytes, co64.start + 4);
+    const count = tableEntryCount(bytes, co64, co64.start + 8, 8);
     for (let index = 0; index < count; index += 1) chunkOffsets.push(readUint64(bytes, co64.start + 8 + index * 8));
   } else if (stco) {
-    const count = readUint32(bytes, stco.start + 4);
+    const count = tableEntryCount(bytes, stco, stco.start + 8, 4);
     for (let index = 0; index < count; index += 1) chunkOffsets.push(readUint32(bytes, stco.start + 8 + index * 4));
   }
 
   const runs: { firstChunk: number; samplesPerChunk: number }[] = [];
-  const runCount = readUint32(bytes, stsc.start + 4);
+  const runCount = tableEntryCount(bytes, stsc, stsc.start + 8, 12);
   for (let index = 0; index < runCount; index += 1) {
     const entry = stsc.start + 8 + index * 12;
     runs.push({
@@ -680,8 +738,8 @@ function sampleTable(bytes: Uint8Array, stbl: Box): SampleLocation[] {
 
   const durations: number[] = [];
   if (stts) {
-    const entries = readUint32(bytes, stts.start + 4);
-    for (let index = 0; index < entries; index += 1) {
+    const entries = tableEntryCount(bytes, stts, stts.start + 8, 8);
+    for (let index = 0; index < entries && durations.length < sizes.length; index += 1) {
       const entry = stts.start + 8 + index * 8;
       const count = readUint32(bytes, entry);
       const delta = readUint32(bytes, entry + 4);
@@ -692,9 +750,12 @@ function sampleTable(bytes: Uint8Array, stbl: Box): SampleLocation[] {
   const samples: SampleLocation[] = [];
   let sampleIndex = 0;
   let startTicks = 0;
+  // stsc runs are in ascending first-chunk order, so the run in force only
+  // ever moves forward as the chunks are walked.
+  let runIndex = -1;
   for (let chunk = 0; chunk < chunkOffsets.length && sampleIndex < sizes.length; chunk += 1) {
-    const run = runs.filter((candidate) => candidate.firstChunk <= chunk + 1).pop();
-    const perChunk = run?.samplesPerChunk ?? 1;
+    while (runIndex + 1 < runs.length && runs[runIndex + 1].firstChunk <= chunk + 1) runIndex += 1;
+    const perChunk = runIndex >= 0 ? runs[runIndex].samplesPerChunk : 1;
     let offset = chunkOffsets[chunk];
     for (let inChunk = 0; inChunk < perChunk && sampleIndex < sizes.length; inChunk += 1) {
       samples.push({ offset, size: sizes[sampleIndex], startTicks });

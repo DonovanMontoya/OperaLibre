@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  demoContentIsSelfContained,
   getDemoBooks,
   saveDemoProgress,
   setDemoBookCompletion
 } from "../src/demo.ts";
 
 test("demo content is entirely local and carries no store identifiers", () => {
-  assert.equal(demoContentIsSelfContained(), true);
   for (const book of getDemoBooks()) {
+    assert.match(book.coverArtUrl ?? "", /^\/demo\//, `${book.id}: cover must be local`);
+    for (const track of book.tracks) {
+      assert.match(track.streamUrl, /^\/demo\//, `${book.id}/${track.id}: audio must be local`);
+    }
+    if (book.readingFile) {
+      assert.match(book.readingFile.url, /^\/demo\//, `${book.id}: reading file must be local`);
+    }
     assert.equal(book.asin, null);
     assert.match(book.description ?? "", /original|procedural/i);
     assert.ok(book.tracks.length > 0);

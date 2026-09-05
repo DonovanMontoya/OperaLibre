@@ -71,7 +71,19 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// A temporary refusal the client should retry, such as a listing asked
+    /// for before the startup scan has finished.
+    pub(crate) fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
 }
+
+/// What a `503` tells the client to wait before asking again.
+pub(crate) const SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS: u64 = 5;
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -81,12 +93,19 @@ impl IntoResponse for ApiError {
         } else {
             self.message
         };
-        (
+        let mut response = (
             self.status,
             [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
             Json(serde_json::json!({ "message": message })),
         )
-            .into_response()
+            .into_response();
+        if self.status == StatusCode::SERVICE_UNAVAILABLE {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                HeaderValue::from(SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS),
+            );
+        }
+        response
     }
 }
 

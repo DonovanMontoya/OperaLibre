@@ -36,9 +36,21 @@ export function applyAppearanceMode(mode: AppearanceMode): void {
   applyDarkMode(document.documentElement, resolveDarkMode(mode, prefersDarkQuery()?.matches ?? false));
 }
 
+/**
+ * The stored mode, or "system" when site data is blocked: merely touching
+ * window.localStorage throws then, and the app still has to paint.
+ */
+export function readStoredAppearanceMode(): AppearanceMode {
+  try {
+    return readAppearanceMode(window.localStorage);
+  } catch {
+    return "system";
+  }
+}
+
 export function applyStoredAppearance(): void {
   if (!document.documentElement.classList.contains("platform-ios")) return;
-  applyAppearanceMode(readAppearanceMode(window.localStorage));
+  applyAppearanceMode(readStoredAppearanceMode());
 }
 
 /* In system mode the WKWebView re-evaluates prefers-color-scheme when the

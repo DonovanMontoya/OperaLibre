@@ -284,10 +284,12 @@ impl UpdateManager {
             validated_update_asset(&release, &status.latest_version, platform)?;
 
         let install = managed_install(self.web_dist_dir.as_deref())?;
-        let staging_dir = self
-            .data_dir
-            .join("updates")
-            .join(format!("staging-{}-{platform}", status.latest_version));
+        // Probe afresh here: the cached answer a status check gave may be
+        // hours old, and this is the moment a stale one would hurt.
+        ensure_install_root_is_writable(&install.root)?;
+        let updates_dir = self.data_dir.join("updates");
+        let staging_dir = updates_dir.join(format!("staging-{}-{platform}", status.latest_version));
+        prune_stale_staging(&updates_dir, &staging_dir).await;
         reset_dir(&staging_dir).await?;
 
         let archive_path = self
@@ -359,10 +361,9 @@ impl UpdateManager {
         }
         let (asset, expected_digest) = validated_frontend_asset(&release, &status.latest_version)?;
         let web_dist_dir = managed_frontend_dir(self.web_dist_dir.as_deref())?;
-        let staging_dir = self
-            .data_dir
-            .join("updates")
-            .join(format!("frontend-staging-{}", status.latest_version));
+        let updates_dir = self.data_dir.join("updates");
+        let staging_dir = updates_dir.join(format!("frontend-staging-{}", status.latest_version));
+        prune_stale_staging(&updates_dir, &staging_dir).await;
         reset_dir(&staging_dir).await?;
 
         let archive_path = self
@@ -568,6 +569,39 @@ fn validated_frontend_asset<'a>(
     check_release_asset(asset, MAX_FRONTEND_PACKAGE_BYTES, "frontend package")
 }
 
+/// Removes every other entry under `updates_dir`, leaving only `keep`. Each
+/// staged version otherwise stays behind after it was applied or abandoned,
+/// and an update package is a few hundred megabytes extracted.
+async fn prune_stale_staging(updates_dir: &Path, keep: &Path) {
+    let mut entries = match fs::read_dir(updates_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::warn!(
+                "could not list old update staging folders in {}: {error}",
+                updates_dir.display()
+            );
+            return;
+        }
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let removed = match entry.file_type().await {
+            Ok(file_type) if file_type.is_dir() => fs::remove_dir_all(&path).await,
+            _ => fs::remove_file(&path).await,
+        };
+        if let Err(error) = removed {
+            tracing::warn!(
+                "could not remove old update staging entry {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
 /// Clears whatever a previous, possibly interrupted attempt left in `dir` and
 /// recreates it empty.
 async fn reset_dir(dir: &Path) -> anyhow::Result<()> {
@@ -680,14 +714,42 @@ fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall
     // The updater replaces files here after the server exits. Proving the
     // folder is writable now turns an unrecoverable half-applied update into
     // an ordinary error message, while the server is still running.
-    ensure_install_root_is_writable(&root)?;
+    ensure_install_root_is_writable_cached(&root)?;
     Ok(ManagedInstall { root, layout })
+}
+
+/// Roots that a probe has already found writable. Every status check calls
+/// [`managed_install`], and writing a probe file to the install folder each
+/// time is needless once it has passed; an install still probes afresh.
+static WRITABLE_INSTALL_ROOTS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn ensure_install_root_is_writable_cached(root: &Path) -> anyhow::Result<()> {
+    if WRITABLE_INSTALL_ROOTS
+        .lock()
+        .map(|roots| roots.iter().any(|known| known == root))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    ensure_install_root_is_writable(root)?;
+    if let Ok(mut roots) = WRITABLE_INSTALL_ROOTS.lock()
+        && !roots.iter().any(|known| known == root)
+    {
+        roots.push(root.to_path_buf());
+    }
+    Ok(())
 }
 
 fn ensure_install_root_is_writable(root: &Path) -> anyhow::Result<()> {
     let probe = root.join(format!(".operalibre-update-probe-{}", std::process::id()));
-    std::fs::write(&probe, [])
-        .with_context(|| format!("{} is not writable by this server.", root.display()))?;
+    // The hardened systemd unit mounts the install folder read-only, so the
+    // message names the setting that lets in-app updates through.
+    std::fs::write(&probe, []).with_context(|| {
+        format!(
+            "{} is not writable by this server. If OperaLibre runs under the hardened systemd unit, add the install folder to ReadWritePaths to allow in-app updates.",
+            root.display()
+        )
+    })?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
 }
@@ -907,7 +969,7 @@ mod tests {
     use super::{
         GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, UpdateManager,
         install_frontend_files, install_layout, installed_frontend_version, normalize_version,
-        truncate_notes, validated_frontend_asset, validated_update_asset,
+        prune_stale_staging, truncate_notes, validated_frontend_asset, validated_update_asset,
     };
     use std::sync::{
         Arc,
@@ -933,6 +995,29 @@ mod tests {
             install_layout(root.path(), None).unwrap(),
             InstallLayout::ServerOnly
         );
+    }
+
+    #[tokio::test]
+    async fn staging_a_version_removes_every_other_staged_version() {
+        let data = tempfile::tempdir().unwrap();
+        let updates = data.path().join("updates");
+        let old = updates.join("staging-1.0.0-macos-arm64");
+        let old_frontend = updates.join("frontend-staging-1.0.0");
+        let current = updates.join("staging-1.1.0-macos-arm64");
+        for dir in [&old, &old_frontend, &current] {
+            std::fs::create_dir_all(dir.join("extracted")).unwrap();
+        }
+        std::fs::write(updates.join("stray.zip"), b"zip").unwrap();
+
+        prune_stale_staging(&updates, &current).await;
+
+        assert!(!old.exists());
+        assert!(!old_frontend.exists());
+        assert!(!updates.join("stray.zip").exists());
+        assert!(current.join("extracted").is_dir());
+
+        // A missing updates folder is not an error on a fresh install.
+        prune_stale_staging(&data.path().join("missing"), &current).await;
     }
 
     #[test]

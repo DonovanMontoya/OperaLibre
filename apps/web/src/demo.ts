@@ -51,6 +51,7 @@ const DEMO_BOOKS: Book[] = [
     coverArtContentType: "image/svg+xml",
     description: lanternDescription,
     genres: ["Fiction", "Adventure"],
+    tags: [],
     publishedDate: "2026",
     asin: null,
     readingFile: {
@@ -60,6 +61,17 @@ const DEMO_BOOKS: Book[] = [
       contentType: "text/html",
       url: "/demo/readalong/lantern-atlas.html"
     },
+    companions: [
+      {
+        id: "demo-lantern-notes",
+        fileName: "The Lantern Atlas — Field Notes.html",
+        extension: "html",
+        contentType: "text/html",
+        url: "/demo/readalong/lantern-atlas.html",
+        kind: "book",
+        sizeBytes: 0
+      }
+    ],
     syncFile: null,
     chapters: [
       { id: "demo-lantern-c1", title: "The Brass Door", trackId: "demo-lantern-t1", trackIndex: 0, startSeconds: 0, endSeconds: 12, source: "demo" },
@@ -103,6 +115,7 @@ const DEMO_BOOKS: Book[] = [
     coverArtContentType: "image/svg+xml",
     description: weatherDescription,
     genres: ["Nature", "Essays"],
+    tags: [],
     publishedDate: "2026",
     asin: null,
     readingFile: null,
@@ -349,13 +362,4 @@ export function getDemoProfileStats(): ProfileStats {
       updatedAt: book.progress?.updatedAt ?? String(Math.floor(Date.now() / 1000))
     }))
   };
-}
-
-export function demoContentIsSelfContained() {
-  return DEMO_BOOKS.every((book) =>
-    book.coverArtUrl?.startsWith(DEMO_MEDIA_PREFIX) &&
-    book.tracks.every((track) => track.streamUrl.startsWith(DEMO_MEDIA_PREFIX)) &&
-    (!book.readingFile || book.readingFile.url.startsWith(DEMO_MEDIA_PREFIX)) &&
-    !book.asin
-  );
 }

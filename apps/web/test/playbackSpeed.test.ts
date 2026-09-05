@@ -5,7 +5,6 @@ import {
   normalizePlaybackSpeed,
   PLAYBACK_SPEED_STORAGE_KEY,
   readPlaybackSpeed,
-  stepPlaybackSpeed,
   writePlaybackSpeed
 } from "../src/playbackSpeed.ts";
 
@@ -19,15 +18,14 @@ function memoryStorage(initialValue: string | null = null) {
 }
 
 test("playback speed supports exact 0.05x adjustments", () => {
-  assert.equal(stepPlaybackSpeed(1, 1), 1.05);
-  assert.equal(stepPlaybackSpeed(1.1, 1), 1.15);
-  assert.equal(stepPlaybackSpeed(1.15, -1), 1.1);
+  assert.equal(normalizePlaybackSpeed(1.03), 1.05);
+  assert.equal(normalizePlaybackSpeed(1.17), 1.15);
   assert.equal(normalizePlaybackSpeed(1.149999999), 1.15);
 });
 
 test("playback speed stays within the supported range", () => {
-  assert.equal(stepPlaybackSpeed(0.75, -1), 0.75);
-  assert.equal(stepPlaybackSpeed(2, 1), 2);
+  assert.equal(normalizePlaybackSpeed(0.7), 0.75);
+  assert.equal(normalizePlaybackSpeed(2.05), 2);
 });
 
 test("granular playback speed is restored and written consistently", () => {

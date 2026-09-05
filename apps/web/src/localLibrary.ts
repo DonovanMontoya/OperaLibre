@@ -102,6 +102,7 @@ export function getDeviceBooks(): Book[] {
   const progress = storedProgress();
   return storedBooks().map((book) => ({
     ...book,
+    tags: book.tags ?? [],
     source: "device",
     deviceBookId: book.id,
     progress: summarizeBookProgress(book, progress[book.id] ?? null)
@@ -426,6 +427,8 @@ export async function importAudiobookFromDevice(
   );
   const tracks: Track[] = [];
   const tagsByTrack: (AudioFileTags | null)[] = [];
+  const discardCopiedFiles = () =>
+    Filesystem.rmdir({ path: directory, directory: Directory.Data, recursive: true }).catch(() => undefined);
   try {
     for (const [index, file] of files.entries()) {
       const ext = storedMediaExtension(extension(file.name) || "m4a");
@@ -460,7 +463,7 @@ export async function importAudiobookFromDevice(
       onProgress?.(index + 1, files.length);
     }
   } catch (error) {
-    await Filesystem.rmdir({ path: directory, directory: Directory.Data, recursive: true }).catch(() => undefined);
+    await discardCopiedFiles();
     throw error;
   }
 
@@ -485,6 +488,7 @@ export async function importAudiobookFromDevice(
     localCoverPath: localCoverPath ?? undefined,
     description: bookTags?.description ?? null,
     genres: bookTags?.genres ?? [],
+    tags: [],
     publishedDate: bookTags?.publishedDate ?? null,
     asin: bookTags?.asin ?? null,
     readingFile: null,
@@ -496,9 +500,16 @@ export async function importAudiobookFromDevice(
     source: "device",
     deviceBookId: id
   };
-  await importStep("The imported book could not be saved", async () =>
-    writeJson(LIBRARY_KEY, [...storedBooks(), book])
-  );
+  // Without an index entry the copied files are orphans nothing can list or
+  // delete, so a failed index write rolls the copy back too.
+  try {
+    await importStep("The imported book could not be saved", async () =>
+      writeJson(LIBRARY_KEY, [...storedBooks(), book])
+    );
+  } catch (error) {
+    await discardCopiedFiles();
+    throw error;
+  }
   return book;
 }
 
@@ -519,18 +530,19 @@ export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = get
       unmatched.has(candidate.id) &&
       deviceBookMatchesServer(candidate, serverBook)
     );
-    if (candidates.length !== 1) return { ...serverBook, source: "server" as const };
+    if (candidates.length !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
     const deviceBook = candidates[0];
     const matchingServerCount = serverBooks.filter((candidate) =>
       deviceBookMatchesServer(deviceBook, candidate)
     ).length;
-    if (matchingServerCount !== 1) return { ...serverBook, source: "server" as const };
+    if (matchingServerCount !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
     unmatched.delete(deviceBook.id);
     const deviceProgressIsNewer = !!deviceBook.progress && (
       !serverBook.progress || progressTimestamp(deviceBook.progress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt)
     );
     return {
       ...serverBook,
+      tags: serverBook.tags ?? [],
       source: "server" as const,
       deviceBookId: deviceBook.id,
       progress: deviceProgressIsNewer ? deviceBook.progress : serverBook.progress,

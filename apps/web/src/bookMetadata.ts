@@ -1,4 +1,9 @@
-import type { Book, LibationBook } from "./types";
+import type { Book, BookTag, LibationBook } from "./types";
+
+/** Native offline caches written by an older frontend do not have this field. */
+export function tagsForBook(book: Book): BookTag[] {
+  return book.tags ?? [];
+}
 
 function descriptionEchoesBook(book: Book, description: string) {
   const normalized = description.trim().toLowerCase();

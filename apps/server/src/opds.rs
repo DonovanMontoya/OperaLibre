@@ -85,6 +85,7 @@ pub(crate) async fn opds_books(
     Extension(auth): Extension<AuthUser>,
     Extension(session): Extension<SessionToken>,
 ) -> Result<Response, ApiError> {
+    ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let updated = rfc3339_utc(unix_now_seconds());
     let media_token = media_token_for_session(&session.0);
@@ -122,6 +123,12 @@ pub(crate) async fn opds_books(
         }
         for genre in &book.genres {
             body.push_str(&format!("    <category term=\"{}\"/>\n", xml_escape(genre)));
+        }
+        for tag in &book.tags {
+            body.push_str(&format!(
+                "    <category term=\"{}\" label=\"Tag\"/>\n",
+                xml_escape(&tag.name)
+            ));
         }
         // Narrator and length are what a listener actually chooses on, and
         // OPDS has nowhere structured to put either.
