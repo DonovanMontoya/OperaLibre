@@ -143,6 +143,7 @@ pub(crate) struct AbsMetadata {
     published_year: Option<String>,
     asin: Option<String>,
     genres: Vec<String>,
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -464,6 +465,7 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
                 published_year: book.published_date.clone(),
                 asin: book.asin.clone(),
                 genres: book.genres.clone(),
+                tags: book.tags.iter().map(|tag| tag.name.clone()).collect(),
             },
             cover_path,
             duration,
@@ -623,6 +625,7 @@ pub(crate) async fn abs_library_items(
             "series" => book.metadata.series.as_deref() == Some(value.as_str()),
             "narrators" => book.narrator.as_deref() == Some(value.as_str()),
             "genres" => book.genres.iter().any(|genre| genre == &value),
+            "tags" => book.tags.iter().any(|tag| tag.name == value),
             _ => false,
         });
     }
@@ -664,16 +667,18 @@ pub(crate) async fn abs_filter_data(
     let mut series = BTreeSet::new();
     let mut narrators = BTreeSet::new();
     let mut genres = BTreeSet::new();
+    let mut tags = BTreeSet::new();
     for book in books {
         authors.extend(book.author);
         series.extend(book.metadata.series);
         narrators.extend(book.narrator);
         genres.extend(book.genres);
+        tags.extend(book.tags.into_iter().map(|tag| tag.name));
     }
     Ok(Json(AbsFilterData {
         authors: named_entities(authors),
         genres: genres.into_iter().collect(),
-        tags: Vec::new(),
+        tags: tags.into_iter().collect(),
         series: named_entities(series),
         narrators: narrators.into_iter().collect(),
         languages: Vec::new(),
@@ -720,6 +725,10 @@ pub(crate) async fn abs_search(
                     .narrator
                     .as_deref()
                     .is_some_and(|narrator| narrator.to_lowercase().contains(&needle))
+                || book
+                    .tags
+                    .iter()
+                    .any(|tag| tag.name.to_lowercase().contains(&needle))
         })
         .take(limit)
         .map(|book| AbsSearchResult {

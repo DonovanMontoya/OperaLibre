@@ -85,6 +85,7 @@ pub(crate) struct BookMetadataOverride {
     pub(crate) publisher: Option<String>,
     pub(crate) series: Option<String>,
     pub(crate) series_position: Option<String>,
+    pub(crate) tags: Option<Vec<BookTag>>,
     pub(crate) asin: Option<String>,
 }
 
@@ -331,6 +332,7 @@ pub(crate) struct Book {
     pub(crate) cover_art_url: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) genres: Vec<String>,
+    pub(crate) tags: Vec<BookTag>,
     pub(crate) published_date: Option<String>,
     pub(crate) asin: Option<String>,
     /// The companion read-along follows: the primary book-kind document
@@ -353,6 +355,17 @@ pub(crate) struct Book {
     /// the file's level. Books are mastered at wildly different loudnesses, so
     /// this is per book rather than a single device volume.
     pub(crate) volume_gain: f64,
+}
+
+/// A user-defined grouping that may order a book independently of its formal
+/// series. For example, a Mistborn title can keep its Mistborn series number
+/// while also being tagged as book 3 in the wider Cosmere.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BookTag {
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) position: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -431,6 +444,10 @@ pub(crate) struct BookMetadataUpdate {
     pub(crate) publisher: Option<String>,
     pub(crate) series: Option<String>,
     pub(crate) series_position: Option<String>,
+    /// Optional so an older client can edit another field without clearing
+    /// tags created by a newer client.
+    #[serde(default)]
+    pub(crate) tags: Option<Vec<BookTag>>,
     pub(crate) asin: Option<String>,
 }
 
@@ -576,12 +593,18 @@ pub(crate) async fn update_book_metadata(
     Path(book_id): Path<String>,
     Json(payload): Json<BookMetadataUpdate>,
 ) -> Result<Json<Book>, ApiError> {
-    let metadata_override = metadata_override_from_update(payload)?;
+    let mut metadata_override = metadata_override_from_update(payload)?;
     state.library.read().await.book(&book_id)?;
 
     state
         .metadata_overrides
         .mutate(|overrides| {
+            if metadata_override.tags.is_none() {
+                metadata_override.tags = overrides
+                    .books
+                    .get(&book_id)
+                    .and_then(|existing| existing.tags.clone());
+            }
             overrides
                 .books
                 .insert(book_id.clone(), metadata_override.clone());
@@ -665,6 +688,7 @@ pub(crate) fn metadata_override_from_update(
         series_position: update
             .series_position
             .map(|value| clean_metadata_text(&value)),
+        tags: update.tags.map(clean_book_tags),
         asin,
     })
 }
@@ -682,6 +706,22 @@ pub(crate) fn clean_genre_list(genres: Vec<String>) -> Vec<String> {
             .filter(|value| !value.is_empty())
             .collect(),
     )
+}
+
+pub(crate) fn clean_book_tags(tags: Vec<BookTag>) -> Vec<BookTag> {
+    let mut seen = HashSet::new();
+    tags.into_iter()
+        .filter_map(|tag| {
+            let name = clean_metadata_text(&tag.name);
+            if name.is_empty() || !seen.insert(name.to_lowercase()) {
+                return None;
+            }
+            Some(BookTag {
+                name,
+                position: tag.position.as_deref().and_then(optional_override_value),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn optional_override_value(value: &str) -> Option<String> {
@@ -726,6 +766,9 @@ pub(crate) fn apply_book_metadata_override(
     }
     if let Some(series_position) = metadata_override.series_position.as_deref() {
         book.metadata.series_position = optional_override_value(series_position);
+    }
+    if let Some(tags) = metadata_override.tags.as_ref() {
+        book.tags = clean_book_tags(tags.clone());
     }
     if let Some(asin) = metadata_override.asin.as_deref() {
         book.asin = optional_override_value(asin);
@@ -1917,6 +1960,7 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             cover_art_url,
             description: metadata_summary.description.clone(),
             genres: metadata_summary.genres.clone(),
+            tags: Vec::new(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
             reading_file: None,

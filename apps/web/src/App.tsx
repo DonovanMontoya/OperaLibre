@@ -1,10 +1,12 @@
 import {
   ALargeSmall,
   AlertCircle,
+  ArrowDown,
   ArrowUp,
   Bell,
   BookOpen,
   Bookmark,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -46,6 +48,7 @@ import {
   Settings,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Sparkles,
   Timer,
   Trash2,
@@ -139,9 +142,28 @@ import {
   writeUnsyncedBookGains
 } from "./bookVolume";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
+import {
+  bookMatchesFacet,
+  bookMatchesShelfSearch,
+  bookMatchesShelfStatus,
+  countActiveShelfFilters,
+  countShelfFacet,
+  EMPTY_SHELF_FILTERS,
+  SHELF_FACET_PREVIEW_COUNT,
+  SHELF_STATUS_OPTIONS,
+  tagForShelfSort,
+  toggleShelfFacet,
+  updateShelfFacetCounts
+} from "./shelfFilters";
+import type {
+  ShelfFacetGroupKey,
+  ShelfFacetOption,
+  ShelfFilters,
+  ShelfStatusFilter
+} from "./shelfFilters";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
 import { isLibationAdding } from "./libationState";
-import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
+import { displayBookDescription, enrichBooksFromLibation, tagsForBook } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   bookDownloadUrl,
@@ -756,7 +778,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
-type SortMode = "title" | "author" | "series" | "genre" | "progress" | "duration" | "account";
+type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type MetadataEditorState = {
@@ -766,6 +788,7 @@ type MetadataEditorState = {
   publisher: string;
   series: string;
   seriesPosition: string;
+  tags: { name: string; position: string }[];
   publishedDate: string;
   genres: string;
   asin: string;
@@ -776,6 +799,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
   { value: "author", label: "Author" },
   { value: "series", label: "Series" },
+  { value: "tag", label: "Tag" },
   { value: "genre", label: "Genre" },
   { value: "progress", label: "Progress" },
   { value: "account", label: "Account" },
@@ -792,7 +816,7 @@ const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible"];
 // "local" — restores what was last chosen there instead of permanently collapsing to
 // "title".
 const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
-const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "genre", "progress"];
+const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
   const unsupported = source === "local" ? AUDIBLE_ONLY_SORT_MODES : LOCAL_ONLY_SORT_MODES;
@@ -847,8 +871,9 @@ function compareShelfLabels(left: string | null | undefined, right: string | nul
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function bookSortGroupLabel(book: Book, sortMode: SortMode) {
+function bookSortGroupLabel(book: Book, sortMode: SortMode, selectedTags: string[]) {
   if (sortMode === "series") return book.metadata.series?.trim() || "Standalone";
+  if (sortMode === "tag") return tagForShelfSort(book, selectedTags)?.name.trim() || "Untagged";
   if (sortMode === "genre") return book.genres[0]?.trim() || "Uncategorized";
   if (sortMode === "progress") return readingStatusLabel(readingStatus(book));
   return null;
@@ -858,9 +883,11 @@ function bookSortGroupLabel(book: Book, sortMode: SortMode) {
 // modes bookSortGroupLabel groups ever reach this.
 function bookSortGroupCaption(sortMode: SortMode) {
   if (sortMode === "series") return "Series";
+  if (sortMode === "tag") return "Tag";
   if (sortMode === "genre") return "Genre";
   return "Progress";
 }
+
 
 function formatTime(value: number | null | undefined) {
   if (!Number.isFinite(value ?? NaN)) {
@@ -905,6 +932,10 @@ function metadataEditorFromBook(book: Book): MetadataEditorState {
     publisher: book.metadata.publisher ?? "",
     series: book.metadata.series ?? "",
     seriesPosition: book.metadata.seriesPosition ?? "",
+    tags: tagsForBook(book).map((tag) => ({
+      name: tag.name,
+      position: tag.position ?? ""
+    })),
     publishedDate: book.publishedDate ?? "",
     genres: book.genres.join(", "),
     asin: book.asin ?? "",
@@ -927,6 +958,12 @@ function metadataUpdateFromEditor(form: MetadataEditorState): BookMetadataUpdate
     publisher: form.publisher.trim(),
     series: form.series.trim(),
     seriesPosition: form.seriesPosition.trim(),
+    tags: form.tags
+      .map((tag) => ({
+        name: tag.name.trim(),
+        position: tag.position.trim() || null
+      }))
+      .filter((tag) => tag.name),
     publishedDate: form.publishedDate.trim(),
     genres: parseGenreInput(form.genres),
     asin: form.asin.trim(),
@@ -3172,6 +3209,92 @@ function NativeLaunchPlaceholder() {
   );
 }
 
+/**
+ * One column of the filter panel: a heading and a cloud of toggleable chips.
+ * Genre and tag are the same control twice over, so they share this rather than
+ * diverging the moment one of them grows a feature.
+ */
+function ShelfFacetGroup({
+  title,
+  hint,
+  options,
+  selected,
+  onToggle
+}: {
+  title: string;
+  hint: string;
+  options: ShelfFacetOption[];
+  selected: string[];
+  onToggle: (key: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [query, setQuery] = useState("");
+  const matching = options.filter((option) => option.label.toLowerCase().includes(query.trim().toLowerCase()));
+  // A chosen chip survives the collapse even when it sits past the preview, so a
+  // filter can always be undone where it was set rather than only after
+  // expanding a list you may not remember choosing from.
+  const visible = expanded || query.trim()
+    ? matching
+    : matching.filter((option, index) => index < SHELF_FACET_PREVIEW_COUNT || selected.includes(option.key));
+  const hiddenCount = matching.length - visible.length;
+
+  return (
+    <div className="shelf-facet">
+      <div className="shelf-facet-heading">
+        <span className="shelf-facet-title">{title}</span>
+        {selected.length > 0 ? <span className="shelf-facet-count">{selected.length} selected</span> : null}
+      </div>
+      {options.length > SHELF_FACET_PREVIEW_COUNT ? (
+        <label className="shelf-facet-search">
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label={`Find ${title.toLowerCase()}`}
+            placeholder={`Find ${title.toLowerCase()}…`}
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+      ) : null}
+      {options.length === 0 ? (
+        <p className="shelf-facet-hint">{hint}</p>
+      ) : (
+        <>
+          <div className="shelf-facet-chips" role="group" aria-label={`Filter by ${title.toLowerCase()}`}>
+            {visible.map((option) => {
+              const isSelected = selected.includes(option.key);
+              // Zero means this chip adds nothing under the filters already set.
+              // It stays put, dimmed, rather than vanishing and shuffling every
+              // other chip out from under the pointer.
+              const isEmpty = option.count === 0 && !isSelected;
+              return (
+                <button
+                  type="button"
+                  key={option.key}
+                  className={`facet-chip ${isSelected ? "selected" : ""}`}
+                  aria-pressed={isSelected}
+                  disabled={isEmpty}
+                  onClick={() => onToggle(option.key)}
+                >
+                  {isSelected ? <Check size={11} strokeWidth={2.5} aria-hidden="true" /> : null}
+                  <span className="facet-chip-label">{option.label}</span>
+                  <em>{option.count}</em>
+                </button>
+              );
+            })}
+          </div>
+          {matching.length === 0 ? <p className="shelf-facet-hint">No {title.toLowerCase()} match “{query.trim()}”.</p> : null}
+          {!query.trim() && (hiddenCount > 0 || expanded) ? (
+            <button type="button" className="shelf-facet-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+              {expanded ? "Show fewer" : `${hiddenCount} more`}
+            </button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
@@ -3729,9 +3852,14 @@ function MainApp({
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
+  const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
+  const shelfSearchRef = useRef<HTMLInputElement | null>(null);
+  const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterToggleRef = useRef<HTMLButtonElement | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
@@ -3818,6 +3946,7 @@ function MainApp({
   // "title": each source keeps its own persisted sort (see readStoredSortMode).
   useEffect(() => {
     setSortMode(readStoredSortMode(librarySource));
+    setSortReversed(readStoredValue(`operalibre.sortReversed.${librarySource}`) === "true");
   }, [librarySource]);
 
   function selectSortMode(mode: SortMode) {
@@ -3825,15 +3954,112 @@ function MainApp({
     writeStoredValue(sortModeStorageKey(librarySource), mode);
   }
 
-  const visibleBooks = useMemo(() => {
+  function reverseSort() {
+    setSortReversed(!sortReversed);
+    writeStoredValue(`operalibre.sortReversed.${librarySource}`, String(!sortReversed));
+  }
+
+  function closeShelfFilters() {
+    setFiltersOpen(false);
+    filterToggleRef.current?.focus();
+  }
+
+  const sortOrderLabel = sortMode === "duration"
+    ? sortReversed ? "Shortest first" : "Longest first"
+    : sortMode === "progress"
+      ? sortReversed ? "Finished first" : "In progress first"
+      : sortMode === "tag" || sortMode === "series"
+        ? sortReversed ? "Reverse book order" : "Book order"
+        : sortReversed ? "Z–A" : "A–Z";
+
+  const allShelfFacets = useMemo(() => ({
+    genres: countShelfFacet(books, "genres"),
+    tags: countShelfFacet(books, "tags")
+  }), [books]);
+
+  // Each book scored once against every filter axis separately. Keeping the four
+  // verdicts apart is what lets the panel count a group over the books the
+  // *other* groups allow without walking the library again per chip.
+  const shelfMatches = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    const filtered = query
-      ? books.filter((book) =>
-          [book.title, book.author, book.narrator, book.metadata.series, ...book.genres]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(query))
-        )
-      : books;
+    return books.map((book) => ({
+      book,
+      search: bookMatchesShelfSearch(book, query),
+      status: bookMatchesShelfStatus(book, shelfFilters.status),
+      genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
+      tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
+    }));
+  }, [books, searchQuery, shelfFilters]);
+
+  const shelfFacets = useMemo(() => {
+    const forGenres: Book[] = [];
+    const forTags: Book[] = [];
+    const statusCounts: Record<ShelfStatusFilter, number> = {
+      all: 0,
+      inProgress: 0,
+      notStarted: 0,
+      finished: 0
+    };
+    for (const match of shelfMatches) {
+      if (match.search && match.status && match.tags) forGenres.push(match.book);
+      if (match.search && match.status && match.genres) forTags.push(match.book);
+      if (match.search && match.genres && match.tags) {
+        statusCounts.all += 1;
+        statusCounts[readingStatus(match.book)] += 1;
+      }
+    }
+    return {
+      genres: updateShelfFacetCounts(allShelfFacets.genres, forGenres, "genres"),
+      tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
+      statusCounts
+    };
+  }, [allShelfFacets, shelfMatches]);
+
+  const activeShelfFilterCount = countActiveShelfFilters(shelfFilters);
+  // Genres, tags and progress are all things only your own shelf records; the
+  // Audible list keeps its account filter instead. Any shelf with books on it
+  // can be filtered — every book has a reading status even when nothing has
+  // been given a genre or a tag yet, so this is deliberately not gated on the
+  // two chip groups having something in them. Hiding the control until the
+  // metadata showed up only made it missing whenever someone went looking.
+  const showShelfFilters = librarySource === "local" && books.length > 0;
+
+  // Reads back the chips that are on, so the summary line under the toolbar can
+  // name a filter and drop it without the panel being open.
+  const activeShelfFilterChips = useMemo(() => {
+    const chips: { id: string; caption: string; label: string; clear: () => void }[] = [];
+    if (shelfFilters.status !== "all") {
+      chips.push({
+        id: `status:${shelfFilters.status}`,
+        caption: "Status",
+        label: readingStatusLabel(shelfFilters.status),
+        clear: () => setShelfFilters((filters) => ({ ...filters, status: "all" }))
+      });
+    }
+    for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
+      const caption = group === "genres" ? "Genre" : "Tag";
+      for (const key of shelfFilters[group]) {
+        // Keep a removed/renamed value removable until the reader clears it.
+        const label = shelfFacets[group].find((option) => option.key === key)?.label ?? key;
+        chips.push({
+          id: `${group}:${key}`,
+          caption,
+          label,
+          clear: () => setShelfFilters((filters) => toggleShelfFacet(filters, group, key))
+        });
+      }
+    }
+    return chips;
+  }, [shelfFacets, shelfFilters]);
+
+  function clearShelfFilters() {
+    setShelfFilters(EMPTY_SHELF_FILTERS);
+  }
+
+  const visibleBooks = useMemo(() => {
+    const filtered = shelfMatches
+      .filter((match) => match.search && match.status && match.genres && match.tags)
+      .map((match) => match.book);
 
     const sorted = [...filtered];
     sorted.sort((a, b) => {
@@ -3844,6 +4070,13 @@ function MainApp({
           return compareShelfLabels(a.metadata.series, b.metadata.series)
             || compareShelfLabels(a.metadata.seriesPosition, b.metadata.seriesPosition)
             || a.title.localeCompare(b.title);
+        case "tag": {
+          const aTag = tagForShelfSort(a, shelfFilters.tags);
+          const bTag = tagForShelfSort(b, shelfFilters.tags);
+          return compareShelfLabels(aTag?.name, bTag?.name)
+            || compareShelfLabels(aTag?.position, bTag?.position)
+            || a.title.localeCompare(b.title);
+        }
         case "genre":
           return compareShelfLabels(a.genres[0], b.genres[0]) || a.title.localeCompare(b.title);
         case "progress":
@@ -3855,8 +4088,8 @@ function MainApp({
           return a.title.localeCompare(b.title);
       }
     });
-    return sorted;
-  }, [books, searchQuery, sortMode]);
+    return sortReversed ? sorted.reverse() : sorted;
+  }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
 
   const audibleAccountLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -3882,7 +4115,7 @@ function MainApp({
         )
       : accountBooks;
 
-    return [...filtered].sort((a, b) => {
+    const sorted = [...filtered].sort((a, b) => {
       if (sortMode === "account") {
         const aLabel = audibleAccountLabels.get(a.profileId) ?? a.profileName;
         const bLabel = audibleAccountLabels.get(b.profileId) ?? b.profileName;
@@ -3896,7 +4129,8 @@ function MainApp({
       }
       return a.title.localeCompare(b.title);
     });
-  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode]);
+    return sortReversed ? sorted.reverse() : sorted;
+  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed]);
   const audibleProfiles = useMemo(() => {
     const profiles = new Map<string, string>();
     for (const book of libationBooks) {
@@ -7820,20 +8054,47 @@ function MainApp({
         </div>
 
         <div className="library-toolbar">
-          <label className="library-search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              placeholder={librarySource === "local" ? "Search title, author…" : "Search Audible titles…"}
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.currentTarget.value)}
-              aria-label="Search library"
-            />
-          </label>
+          <div className="library-search-row">
+            <div className="library-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                ref={shelfSearchRef}
+                placeholder={librarySource === "local" ? "Search books, authors, tags…" : "Search Audible titles…"}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.currentTarget.value)}
+                aria-label="Search library"
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="library-search-clear"
+                  aria-label="Clear search"
+                  onClick={() => { setSearchQuery(""); shelfSearchRef.current?.focus(); }}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+            {showShelfFilters ? (
+              <button
+                type="button"
+                ref={filterToggleRef}
+                className={`library-filter-toggle ${filtersOpen ? "open" : ""} ${activeShelfFilterCount > 0 ? "engaged" : ""}`}
+                onClick={() => setFiltersOpen(!filtersOpen)}
+                aria-expanded={filtersOpen}
+                aria-controls="library-filter-panel"
+              >
+                <SlidersHorizontal size={14} aria-hidden="true" />
+                <span>Filters</span>
+                {activeShelfFilterCount > 0 ? <em>{activeShelfFilterCount}</em> : null}
+              </button>
+            ) : null}
+          </div>
 
           <div className="library-controls">
             <label className="library-sort">
-              <span className="sr-only">Sort by</span>
+              <span>Sort by</span>
               <select
                 value={sortMode}
                 onChange={(event) => selectSortMode(event.currentTarget.value as SortMode)}
@@ -7846,7 +8107,16 @@ function MainApp({
                 ))}
               </select>
             </label>
-
+            <button
+              type="button"
+              className="library-sort-direction"
+              onClick={reverseSort}
+              aria-label={`Reverse sort order (currently ${sortOrderLabel})`}
+              title={`Reverse sort order · ${sortOrderLabel}`}
+              aria-pressed={sortReversed}
+            >
+              {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+            </button>
             <div className="view-toggle" role="group" aria-label="View mode">
               <button
                 className={viewMode === "list" ? "selected" : ""}
@@ -7865,6 +8135,97 @@ function MainApp({
                 <LayoutGrid size={14} />
               </button>
             </div>
+          </div>
+
+          {showShelfFilters && filtersOpen ? (
+            <section
+              className="library-filters"
+              id="library-filter-panel"
+              aria-label="Library filters"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { event.stopPropagation(); closeShelfFilters(); }
+              }}
+            >
+              <div className="library-filters-heading">
+                <strong>Find your next listen</strong>
+                <button type="button" className="library-clear-filters" onClick={closeShelfFilters}>Done</button>
+              </div>
+              <div className="library-filters-body">
+                <div className="shelf-facet shelf-facet-status">
+                  <div className="shelf-facet-heading">
+                    <span className="shelf-facet-title">Progress</span>
+                  </div>
+                  <div className="shelf-status-row" role="group" aria-label="Filter by reading progress">
+                    {SHELF_STATUS_OPTIONS.map((option) => {
+                      const isSelected = shelfFilters.status === option.value;
+                      const count = shelfFacets.statusCounts[option.value];
+                      return (
+                        <button
+                          type="button"
+                          key={option.value}
+                          className={isSelected ? "selected" : ""}
+                          aria-pressed={isSelected}
+                          disabled={count === 0 && !isSelected}
+                          onClick={() => setShelfFilters({ ...shelfFilters, status: option.value })}
+                        >
+                          <span>{option.label}</span>
+                          <em>{count}</em>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="shelf-facet-groups">
+                  <ShelfFacetGroup
+                    title="Genres"
+                    hint="No genres on this shelf yet. Add them when you edit a book’s details."
+                    options={shelfFacets.genres}
+                    selected={shelfFilters.genres}
+                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "genres", key))}
+                  />
+                  <ShelfFacetGroup
+                    title="Tags"
+                    hint="No tags on this shelf yet. Tag books to gather a wider world or reading order."
+                    options={shelfFacets.tags}
+                    selected={shelfFilters.tags}
+                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "tags", key))}
+                  />
+                </div>
+                <p className="shelf-facet-hint">Choose any in each group. Combine groups to narrow your shelf.</p>
+              </div>
+            </section>
+          ) : null}
+
+          {showShelfFilters && activeShelfFilterCount > 0 ? (
+            <div className="library-active-filters">
+              <span className="library-active-filters-caption">Filtering</span>
+              {activeShelfFilterChips.map((chip) => (
+                <button
+                  type="button"
+                  key={chip.id}
+                  className="active-filter-chip"
+                  onClick={chip.clear}
+                  aria-label={`Remove ${chip.caption.toLowerCase()} filter ${chip.label}`}
+                >
+                  <span className="active-filter-caption">{chip.caption}</span>
+                  <span className="active-filter-label">{chip.label}</span>
+                  <X size={11} strokeWidth={2.5} aria-hidden="true" />
+                </button>
+              ))}
+              <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
+                Clear all
+              </button>
+            </div>
+          ) : null}
+
+          <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
+            <span>
+              {librarySource === "local"
+                ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
+                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+            </span>
+            <span>{sortOrderLabel}</span>
           </div>
 
           {canBrowseLibation ? (
@@ -8124,7 +8485,23 @@ function MainApp({
               </div>
             ) : null}
             {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
-              <div className="empty-state">Nothing matches “{searchQuery}”.</div>
+              <div className="empty-state shelf-empty-state">
+                <span>
+                  {searchQuery.trim()
+                    ? `Nothing matches “${searchQuery.trim()}”${activeShelfFilterCount > 0 ? " under these filters" : ""}.`
+                    : "No books match these filters."}
+                </span>
+                {activeShelfFilterCount > 0 ? (
+                  <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
+                    Clear filters
+                  </button>
+                ) : null}
+                {searchQuery ? (
+                  <button type="button" className="library-clear-filters" onClick={() => setSearchQuery("")}>
+                    Clear search
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
@@ -8144,9 +8521,10 @@ function MainApp({
                   : "Available from the server";
                 const unavailableOffline = isOffline && !availableOnDevice;
                 const shared = summarizeSharedProgress(book.sharedProgress);
-                const sortGroup = bookSortGroupLabel(book, sortMode);
+                const sortTag = tagForShelfSort(book, shelfFilters.tags);
+                const sortGroup = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
                 const previousSortGroup = index > 0
-                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode)
+                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode, shelfFilters.tags)
                   : null;
                 return (
                   <Fragment key={book.id}>
@@ -8184,6 +8562,11 @@ function MainApp({
                         <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
                         {sortMode === "series" && book.metadata.seriesPosition ? (
                           <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
+                        ) : null}
+                        {sortMode === "tag" && sortTag?.position ? (
+                          <span className="book-sort-context">
+                            Book {sortTag.position} in {sortTag.name}
+                          </span>
                         ) : null}
                         {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
                           <span className="book-runtime-tag">
@@ -8789,6 +9172,11 @@ function MainApp({
               {selectedBook.metadata.series ? (
                 <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
               ) : null}
+              {tagsForBook(selectedBook).map((tag) => (
+                <span className="metadata-custom-tag" key={tag.name}>
+                  {tag.name}{tag.position ? ` · #${tag.position}` : ""}
+                </span>
+              ))}
               {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
               {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
@@ -9683,6 +10071,65 @@ function MainApp({
                   placeholder="1"
                 />
               </label>
+              <div className="wide metadata-tags-field">
+                <div className="metadata-tags-heading">
+                  <span>Tags</span>
+                  <button
+                    type="button"
+                    onClick={() => setMetadataForm({
+                      ...metadataForm,
+                      tags: [...metadataForm.tags, { name: "", position: "" }]
+                    })}
+                  >
+                    <Plus size={13} /> Add tag
+                  </button>
+                </div>
+                <p>Use tags for wider worlds or reading orders beyond the book’s immediate series.</p>
+                {metadataForm.tags.map((tag, index) => (
+                  <div className="metadata-tag-row" key={index}>
+                    <input
+                      type="text"
+                      value={tag.name}
+                      aria-label={`Tag ${index + 1} name`}
+                      onChange={(event) => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, name: event.currentTarget.value }
+                            : candidate
+                        )
+                      })}
+                      placeholder="Cosmere"
+                    />
+                    <input
+                      className="metadata-tag-position"
+                      type="text"
+                      value={tag.position}
+                      aria-label={`Tag ${index + 1} book number`}
+                      onChange={(event) => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, position: event.currentTarget.value }
+                            : candidate
+                        )
+                      })}
+                      placeholder="Book # (optional)"
+                    />
+                    <button
+                      type="button"
+                      className="metadata-tag-remove"
+                      aria-label={`Remove ${tag.name || `tag ${index + 1}`}`}
+                      onClick={() => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.filter((_, candidateIndex) => candidateIndex !== index)
+                      })}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
               <label>
                 <span>Published date</span>
                 <input
