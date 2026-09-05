@@ -9,6 +9,7 @@ import {
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
 import { fileExtension, storedMediaExtension } from "./mediaFiles";
+import { optionalCompanionDownload, revalidatedCompanion } from "./companionCache";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -430,20 +431,24 @@ export async function downloadBookForOffline(
     // The ebook and pictures, so a downloaded book can be read offline too.
     // A companion that will not come down is not worth failing the book for.
     for (const companion of book.companions ?? []) {
-      const response = await fetch(resolveUrl(companion.url), { signal }).catch(() => null);
-      if (response?.ok) {
-        const key = mediaKey(book.id, companionMediaKind(companion));
-        await write("media", { key, blob: await response.blob() });
-        written.push(key);
-      }
+      await optionalCompanionDownload(async () => {
+        const response = await fetch(resolveUrl(companion.url), { signal });
+        if (response.ok) {
+          const key = mediaKey(book.id, companionMediaKind(companion));
+          await write("media", { key, blob: await response.blob() });
+          written.push(key);
+        }
+      }, signal);
     }
     if (book.syncFile) {
-      const response = await fetch(resolveUrl(book.syncFile.url), { signal }).catch(() => null);
-      if (response?.ok) {
-        const key = mediaKey(book.id, SYNC_MAP_KIND);
-        await write("media", { key, blob: await response.blob() });
-        written.push(key);
-      }
+      await optionalCompanionDownload(async () => {
+        const response = await fetch(resolveUrl(book.syncFile!.url), { signal });
+        if (response.ok) {
+          const key = mediaKey(book.id, SYNC_MAP_KIND);
+          await write("media", { key, blob: await response.blob() });
+          written.push(key);
+        }
+      }, signal);
     }
   } catch (error) {
     await Promise.all(written.map((key) => removeRecord("media", key).catch(() => undefined)));
@@ -498,11 +503,9 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
 /**
  * The bytes of a companion document, from the device when they are there.
  *
- * The reader opens the same ebook every time the listener returns to a book,
- * and a long one runs to megabytes; keeping the first copy means later opens
- * cost nothing and work with no server in reach. A download stores the same
- * file at the same place, so a book downloaded for offline opens straight
- * from disk.
+ * Online opens revalidate through the HTTP cache, so replacing an EPUB at
+ * the same library path also replaces the device's copy. Downloads and reader
+ * opens share the durable copy used when the server cannot be reached.
  */
 export async function loadCompanionBytes(
   book: Book,
@@ -513,42 +516,23 @@ export async function loadCompanionBytes(
   if (isNative()) {
     await migrateLegacyBookDirectory(book);
     const path = companionFilePath(book, companion);
-    const cached = await nativeFileUrl(path);
-    if (cached) {
-      try {
-        return await (await fetch(cached, { signal })).arrayBuffer();
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        // A truncated or unreadable copy: fall through and fetch it again.
-      }
-    }
-    const data = await fetchCompanion(url, signal);
-    try {
-      await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true });
-    } catch {
-      // Already there.
-    }
-    await Filesystem.writeFile({
-      path,
-      directory: MEDIA_DIRECTORY,
-      data: toBase64(data)
-    }).catch(() => undefined);
-    return data;
+    return revalidatedCompanion(url, async () => {
+      const cached = await nativeFileUrl(path);
+      if (!cached) return null;
+      const response = await fetch(cached, { signal });
+      return response.ok ? response.arrayBuffer() : null;
+    }, async (data) => {
+      await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(() => undefined);
+      await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
+    }, signal);
   }
-  const record = await readMedia(book.id, companionMediaKind(companion));
-  if (record) return record.blob.arrayBuffer();
-  const data = await fetchCompanion(url, signal);
-  await write("media", {
+  return revalidatedCompanion(url, async () => {
+    const record = await readMedia(book.id, companionMediaKind(companion));
+    return record ? record.blob.arrayBuffer() : null;
+  }, (data) => write("media", {
     key: mediaKey(book.id, companionMediaKind(companion)),
     blob: new Blob([data], { type: companion.contentType })
-  }).catch(() => undefined);
-  return data;
-}
-
-async function fetchCompanion(url: string, signal?: AbortSignal) {
-  const response = await fetch(url, { credentials: "include", signal });
-  if (!response.ok) throw new Error(`Companion request failed with ${response.status}`);
-  return response.arrayBuffer();
+  }), signal);
 }
 
 /** The sync map stored with a downloaded book, for reading with no server. */
