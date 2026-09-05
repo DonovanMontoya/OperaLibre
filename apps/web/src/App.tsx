@@ -1,20 +1,25 @@
 import {
+  ALargeSmall,
   AlertCircle,
   ArrowUp,
   Bell,
+  BookOpen,
   Bookmark,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
   Cloud,
+  Crosshair,
   CloudDownload,
   Download,
   ExternalLink,
+  FileText,
   FolderOpen,
   Gamepad2,
   Gauge,
   Headphones,
+  Images,
   KeyRound,
   LoaderCircle,
   LayoutGrid,
@@ -24,7 +29,6 @@ import {
   LocateFixed,
   LogOut,
   Maximize2,
-  Minimize2,
   Minus,
   Moon,
   Network,
@@ -45,6 +49,7 @@ import {
   Sparkles,
   Timer,
   Trash2,
+  Undo2,
   Upload,
   ScrollText,
   UserCog,
@@ -53,7 +58,38 @@ import {
   X
 } from "lucide-react";
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  READ_ALONG_MODE_LABELS,
+  activeWordIndex,
+  companionKindLabel,
+  describeCompanion,
+  findActiveFragmentIndex,
+  findTocHrefForChapterTitle,
+  groupCompanions,
+  hasExtras,
+  hrefsMatch,
+  normalizeSyncNeedle,
+  readAlongMode,
+  anchorAfterRelocation,
+  anchorOnPage,
+  readerStorageKey,
+  shouldOpenPlayingChapter,
+  syncMapPrecision,
+  type SyncPrecision
+} from "./readalong";
+import {
+  READER_THEME_CHOICES,
+  applyReaderThemeColors,
+  currentAppPrefersDark,
+  readReaderThemeChoice,
+  resolveReaderTheme,
+  watchAppPrefersDark,
+  writeReaderThemeChoice,
+  type ReaderTheme,
+  type ReaderThemeChoice
+} from "./readerTheme";
+import { readerDebugLog, shortCfi } from "./readerDebug";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   adoptableServerProgress,
@@ -148,6 +184,8 @@ import {
   mediaUrl,
   pingServer,
   readalongUrl,
+  addSyncAnchor,
+  clearSyncAnchors,
   reconnectUsingServerAliases,
   requestLibationBook,
   reportPlaybackStarted,
@@ -175,9 +213,11 @@ import {
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
+  getOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
+  loadCompanionBytes,
   releaseOfflineMediaUrl,
   removeBookDownload
 } from "./offline";
@@ -235,6 +275,12 @@ import {
 import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
 import { GamesPage } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
+import {
+  readReadalongEnabled,
+  writeReadalongEnabled,
+  readFollowSyncEnabled,
+  writeFollowSyncEnabled
+} from "./readalongPreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
@@ -713,7 +759,6 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 type SortMode = "title" | "author" | "series" | "genre" | "progress" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
-type ReaderTheme = "paper" | "sepia" | "night";
 type MetadataEditorState = {
   title: string;
   author: string;
@@ -1046,10 +1091,14 @@ function bookProgressLabel(book: Book) {
   return "Not started";
 }
 
-function canPreviewReadalong(book: Book) {
-  const extension = book.readingFile?.extension.toLowerCase();
-  return extension === "epub" || extension === "pdf" || extension === "txt" || extension === "html" || extension === "htm";
+/** Formats the browser can show inline; anything else gets an "Open" link. */
+function canPreviewCompanion(extension: string) {
+  const lower = extension.toLowerCase();
+  return lower === "epub" || lower === "pdf" || lower === "txt" || lower === "html" || lower === "htm";
 }
+
+/** Pseudo companion id for the picture gallery tab. */
+const GALLERY_COMPANION_ID = "__gallery__";
 
 function storedStateKey(userId: string, field: "selectedBookId" | "playbackBookId") {
   return `${APP_STATE_STORAGE_PREFIX}.${getServerStorageKey()}.${userId}.${field}`;
@@ -1110,130 +1159,39 @@ type EpubSyncTarget = {
   title: string;
 };
 
-type ParsedReadalongLabel = {
-  number: number | null;
-  key: string;
-};
-
-function normalizeReadalongText(value: string) {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’']/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function parseReadalongLabel(value: string): ParsedReadalongLabel {
-  const chapterMatch = value.match(/\bchapter\s+0*(\d+)\b/i);
-  const leadingMatch = value.match(/^\s*0*(\d+)\s*[.:)\-–—]\s*/);
-  const number = Number(chapterMatch?.[1] ?? leadingMatch?.[1] ?? NaN);
-  const withoutNumber = chapterMatch
-    ? value.slice((chapterMatch.index ?? 0) + chapterMatch[0].length).replace(/^\s*[.:)\-–—]\s*/, "")
-    : value.replace(/^\s*0*\d+\s*[.:)\-–—]\s*/, "");
-
-  return {
-    number: Number.isFinite(number) ? number : null,
-    key: normalizeReadalongText(withoutNumber)
-  };
-}
-
-function readalongMatchScore(target: ParsedReadalongLabel, item: ParsedReadalongLabel) {
-  let score = 0;
-  if (target.number !== null && item.number === target.number) {
-    score += 100;
-  }
-  if (target.key && item.key) {
-    if (target.key === item.key) {
-      score += 80;
-    } else if (target.key.includes(item.key) || item.key.includes(target.key)) {
-      score += 45;
-    } else {
-      const targetWords = new Set(target.key.split(" ").filter((word) => word.length > 3));
-      const sharedWords = item.key
-        .split(" ")
-        .filter((word) => word.length > 3 && targetWords.has(word)).length;
-      score += Math.min(35, sharedWords * 10);
-    }
-  }
-  return score;
-}
-
-function findTocHrefForSyncTarget(
-  toc: Array<NavItem & { depth: number }>,
-  syncTarget: EpubSyncTarget
-) {
-  const parsedTarget = parseReadalongLabel(syncTarget.title);
-  const ranked = toc
-    .filter((item) => item.href)
-    .map((item) => ({
-      href: item.href,
-      score: readalongMatchScore(parsedTarget, parseReadalongLabel(item.label))
-    }))
-    .sort((a, b) => b.score - a.score);
-  const best = ranked[0];
-  return best && best.score >= 70 ? best.href : null;
-}
-
-function hrefsMatch(displayedHref: string, fragmentHref: string) {
-  const clean = (value: string) => {
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // keep as-is
-    }
-    return value.split(/[#?]/)[0].replace(/^\.?\//, "");
-  };
-  const a = clean(displayedHref);
-  const b = clean(fragmentHref);
-  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
-}
-
-function findActiveFragmentIndex(fragments: SyncFragment[], seconds: number) {
-  let low = 0;
-  let high = fragments.length - 1;
-  let best = -1;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (fragments[mid].startSeconds <= seconds) {
-      best = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-  if (best < 0) {
-    return -1;
-  }
-  // Keep the fragment active through the silence before the next sentence so
-  // the highlight doesn't flicker off between sentences.
-  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds;
-  return seconds < activeUntil ? best : -1;
-}
-
-// The haystack index and this needle normalization must collapse text the
-// same way so indexOf offsets map back to DOM positions.
-function normalizeSyncNeedle(value: string) {
-  let out = "";
+/**
+ * Like `normalizeSyncNeedle`, but remembers which UTF-16 offset of the raw
+ * text each normalized character came from, so a word timing given in raw
+ * offsets can be placed inside the normalized needle.
+ */
+function normalizeNeedleWithOffsets(value: string): { text: string; offsets: number[] } {
+  let text = "";
+  const offsets: number[] = [];
   let lastWasSpace = true;
-  for (const ch of value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index];
     if (ch === "\u00AD") {
       continue;
     }
     if (/\s/.test(ch)) {
       if (!lastWasSpace) {
-        out += " ";
+        text += " ";
+        offsets.push(index);
         lastWasSpace = true;
       }
     } else {
-      out += ch.toLowerCase();
+      for (const piece of ch.toLowerCase()) {
+        text += piece;
+        offsets.push(index);
+      }
       lastWasSpace = false;
     }
   }
-  return out.trim();
+  while (text.endsWith(" ")) {
+    text = text.slice(0, -1);
+    offsets.pop();
+  }
+  return { text, offsets };
 }
 
 type DocumentSearchIndex = {
@@ -1296,20 +1254,192 @@ function findRangeInSearchIndex(index: DocumentSearchIndex, needle: string, from
   return { range, endOffset: at + needle.length };
 }
 
+/** A DOM range over `[from, to)` of the search index text. */
+function rangeForIndexSpan(index: DocumentSearchIndex, from: number, to: number) {
+  const start = index.map[from];
+  const end = index.map[to - 1];
+  if (!start || !end || to <= from) {
+    return null;
+  }
+  const range = index.doc.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, Math.min(end.offset + 1, end.node.data.length));
+  return range;
+}
+
+type FragmentRange = { index: number; start: number; end: number };
+
+/**
+ * Where every fragment of the displayed document sits in its search index,
+ * found in order so a repeated sentence lands on its own occurrence. Sorted
+ * by position so a tap can be resolved with one scan.
+ */
+function locateFragments(index: DocumentSearchIndex, fragments: SyncFragment[], href: string): FragmentRange[] {
+  const ranges: FragmentRange[] = [];
+  let cursor = 0;
+  fragments.forEach((fragment, position) => {
+    if (!hrefsMatch(href, fragment.href)) {
+      return;
+    }
+    const needle = normalizeSyncNeedle(fragment.text);
+    if (!needle) {
+      return;
+    }
+    let at = index.text.indexOf(needle, cursor);
+    if (at === -1) {
+      at = index.text.indexOf(needle);
+      if (at === -1) {
+        return;
+      }
+    }
+    ranges.push({ index: position, start: at, end: at + needle.length });
+    cursor = at + needle.length;
+  });
+  return ranges.sort((a, b) => a.start - b.start);
+}
+
+/** The fragment a tap at `position` belongs to: the last one that starts at or before it. */
+function fragmentAtIndexPosition(ranges: FragmentRange[], position: number) {
+  let best = -1;
+  for (const range of ranges) {
+    if (range.start > position) {
+      break;
+    }
+    best = range.index;
+  }
+  return best;
+}
+
+/** The search-index position of a caret inside a text node, or -1. */
+function indexPositionForCaret(index: DocumentSearchIndex, node: Node, offset: number) {
+  if (node.nodeType !== Node.TEXT_NODE) {
+    // A caret on an element: use its first text node.
+    const walker = index.doc.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const first = walker.nextNode();
+    if (!first) {
+      return -1;
+    }
+    node = first;
+    offset = 0;
+  }
+  let last = -1;
+  for (let position = 0; position < index.map.length; position += 1) {
+    const entry = index.map[position];
+    if (entry.node !== node) {
+      continue;
+    }
+    if (entry.offset >= offset) {
+      return position;
+    }
+    last = position;
+  }
+  return last;
+}
+
+/** Whether a point lies on one of the text node's line boxes (with a little slack). */
+function pointOnText(node: Node, x: number, y: number): boolean {
+  const doc = node.ownerDocument;
+  if (!doc || node.nodeType !== Node.TEXT_NODE) {
+    return false;
+  }
+  const range = doc.createRange();
+  range.selectNodeContents(node);
+  const slack = 6;
+  for (const rect of Array.from(range.getClientRects())) {
+    if (x >= rect.left - slack && x <= rect.right + slack && y >= rect.top - slack && y <= rect.bottom + slack) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The text position under a point in the reader document, on any browser. */
+function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
+  const withCaret = doc as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  if (typeof withCaret.caretPositionFromPoint === "function") {
+    const caret = withCaret.caretPositionFromPoint(x, y);
+    return caret ? { node: caret.offsetNode, offset: caret.offset } : null;
+  }
+  if (typeof withCaret.caretRangeFromPoint === "function") {
+    const range = withCaret.caretRangeFromPoint(x, y);
+    return range ? { node: range.startContainer, offset: range.startOffset } : null;
+  }
+  return null;
+}
+
+/** Marker colours for the narrated sentence and word, per reading theme. */
+function highlightStyles(theme: ReaderTheme, precision: SyncPrecision | null) {
+  // The night page is dark, so the marker must lighten instead of darken.
+  const night = theme === "night";
+  const soft = precision === "estimated";
+  return {
+    sentence: night
+      ? { fill: "#e8b64c", "fill-opacity": soft ? "0.22" : "0.4", "mix-blend-mode": "screen" }
+      : { fill: "#d9a441", "fill-opacity": soft ? "0.18" : "0.32", "mix-blend-mode": "multiply" },
+    word: night
+      ? { fill: "#ffd27a", "fill-opacity": "0.6", "mix-blend-mode": "screen" }
+      : { fill: "#b8893a", "fill-opacity": "0.42", "mix-blend-mode": "multiply" }
+  };
+}
+
 function EpubReadalong({
+  bookId,
+  storageScope,
   title,
   url,
+  loadBytes,
   syncTarget,
   syncFragments,
+  precision,
   positionSeconds,
-  onSeekTo
+  onSeekTo,
+  onPinNarration,
+  immersive = false,
+  onClose,
+  chapterTitle = null,
+  positionLabel = null,
+  playback = null,
+  onListen,
+  syncTools = null,
+  companionSwitcher = null
 }: {
+  bookId: string;
+  storageScope: string;
   title: string;
   url: string;
+  /** Reads the ebook, from the device when a copy is already there. */
+  loadBytes?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
+  precision: SyncPrecision | null;
   positionSeconds: number;
   onSeekTo?: (seconds: number) => void;
+  /** "The narrator is reading this sentence now": re-times an estimated map. */
+  onPinNarration?: (fragment: { href: string; text: string }) => void;
+  /** A full-screen reading surface with its own bars and sheets (the native app). */
+  immersive?: boolean;
+  onClose?: () => void;
+  chapterTitle?: string | null;
+  positionLabel?: string | null;
+  /** Transport for the book being read, when it is the one playing. */
+  playback?: {
+    playing: boolean;
+    speed: number;
+    sleepRemaining: number;
+    onToggle: () => void;
+    onSkip: (delta: number) => void;
+    /** Open the app's speed, sleep timer, or chapter sheet over the reader. */
+    onOpen: (sheet: "speed" | "sleep" | "chapters") => void;
+  } | null;
+  /** Start playing this book, offered when it is not the one playing. */
+  onListen?: () => void;
+  /** App-level sync actions and notices, shown in the appearance sheet. */
+  syncTools?: ReactNode;
+  /** Switcher for the book's other files, shown in the contents sheet. */
+  companionSwitcher?: ReactNode;
 }) {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
@@ -1318,32 +1448,268 @@ function EpubReadalong({
   const epubCfiClassRef = useRef<typeof EpubCFI | null>(null);
   const searchIndexRef = useRef<DocumentSearchIndex | null>(null);
   const searchCursorRef = useRef(0);
+  const fragmentRangesRef = useRef<{ doc: Document; href: string; ranges: FragmentRange[] } | null>(null);
   const highlightCfiRef = useRef<string | null>(null);
   const highlightThemeRef = useRef<ReaderTheme | null>(null);
   const highlightedFragmentRef = useRef(-1);
+  // Where the highlighted sentence sits in the index, so the word marker can
+  // be placed inside it without searching again.
+  const sentenceSpanRef = useRef<{ fragmentIndex: number; at: number; offsets: number[] } | null>(null);
+  const wordCfiRef = useRef<{ cfi: string; wordIndex: number; fragmentIndex: number; theme: ReaderTheme } | null>(null);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
+  const locationRef = useRef<Location | null>(null);
+  // The place being read, as a CFI: what the reader reopens to and turns
+  // back to after a resize or reflow. It only moves once its page has gone
+  // off screen, so a relayout that starts the same page a few words earlier
+  // does not walk the remembered place backwards on every reopen.
+  const anchorCfiRef = useRef<string | null>(null);
+  // While the reader is putting the page back where it was — opening the
+  // book, or laying it out again after a resize or a text-size change — it
+  // passes through the pages between the top of the chapter and the
+  // remembered place. Until it arrives, those pages must not be mistaken
+  // for somewhere the listener turned to.
+  const restoringUntilRef = useRef(0);
+  // Set once the listener turns a page themselves: the reader stops putting
+  // the page back and follows them instead.
+  const handNavigatedRef = useRef(false);
+  const beginRestore = useCallback(() => {
+    // A deadline, so a place that never resolves cannot freeze the anchor.
+    restoringUntilRef.current = performance.now() + 5000;
+  }, []);
+  const syncFragmentsRef = useRef<SyncFragment[] | null>(syncFragments);
+  const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
+  const onSeekToRef = useRef(onSeekTo);
+  const loadBytesRef = useRef(loadBytes);
+  const onPinNarrationRef = useRef(onPinNarration);
+  // Set while the listener is choosing the sentence being narrated: the next
+  // tap places a sync anchor instead of seeking.
+  const [pinning, setPinning] = useState(false);
+  const pinningRef = useRef(false);
+  pinningRef.current = pinning;
+  // Bumped whenever the page reflows (text size, zoom, window resize): the
+  // markers were measured against the old layout and the narrated sentence
+  // may have moved to another page.
+  const [relayoutTick, setRelayoutTick] = useState(0);
+  const handledRelayoutRef = useRef(0);
+  const attachedDocsRef = useRef<WeakSet<Document>>(new WeakSet());
+  const touchStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  // When a tap was handled on touchend, the click iOS may still send for it
+  // must not be handled again.
+  const lastTouchTapRef = useRef(0);
   const readerUrlRef = useRef(url);
   if (readerUrlRef.current !== url) {
     readerUrlRef.current = url;
     lastLocationRef.current = null;
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
+    handNavigatedRef.current = false;
   }
+  syncFragmentsRef.current = syncFragments;
+  syncTargetRef.current = syncTarget;
+  onSeekToRef.current = onSeekTo;
+  loadBytesRef.current = loadBytes;
+  onPinNarrationRef.current = onPinNarration;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [follow, setFollow] = useState(true);
-  const [readerTheme, setReaderTheme] = useState<ReaderTheme>(() => {
-    const stored = readStoredValue("operalibre.readerTheme");
-    return stored === "sepia" || stored === "night" ? stored : "paper";
-  });
+  // The book is still downloading or unpacking after a while: worth a word
+  // to the listener, never a reason to give up on a slow connection.
+  const [slowToOpen, setSlowToOpen] = useState(false);
+  const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  const setFollow = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setFollowState((prev) => {
+      const next = typeof value === "function" ? value(prev) : value;
+      writeStoredValue("operalibre.readerFollow", next ? "1" : "0");
+      return next;
+    });
+  }, []);
+  const [readerThemeChoice, setReaderThemeChoice] = useState<ReaderThemeChoice>(() =>
+    readReaderThemeChoice()
+  );
+  // Whether the app is in its dark look, for the auto theme; follows the
+  // system theme and the iOS appearance setting while the reader is open.
+  const [appDark, setAppDark] = useState(currentAppPrefersDark);
+  useEffect(() => watchAppPrefersDark(setAppDark), []);
+  const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
   const [fontScale, setFontScale] = useState(() => {
     const stored = Number(readStoredValue("operalibre.readerFontScale"));
     return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
   });
+  // The look a freshly opened book is styled with, and what the open one has
+  // been given so far, so a change re-styles it exactly once.
+  const readerThemeRef = useRef(readerTheme);
+  readerThemeRef.current = readerTheme;
+  const fontScaleRef = useRef(fontScale);
+  fontScaleRef.current = fontScale;
+  const appliedThemeRef = useRef<ReaderTheme | null>(null);
+  const appliedFontScaleRef = useRef<number | null>(null);
   const [focusMode, setFocusMode] = useState(false);
+  // Full screen: the native reader always, the web reader in focus mode. The
+  // bars fade out for reading and a tap on blank page brings them back.
+  const fullscreen = immersive || focusMode;
+  const fullscreenRef = useRef(fullscreen);
+  fullscreenRef.current = fullscreen;
+  const [chromeHidden, setChromeHidden] = useState(false);
+  const chromeHiddenRef = useRef(chromeHidden);
+  chromeHiddenRef.current = chromeHidden;
+  const [sheet, setSheet] = useState<"contents" | "appearance" | null>(null);
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const locationStorageKey = readerStorageKey(storageScope, bookId, "location");
+  const sheetRootRef = useRef<HTMLElement | null>(null);
+  // A long table of contents opens on the chapter being read, not at the top.
+  // The scroll runs after the sheet has settled to its card height and moves
+  // only the sheet's own scrollbar (scrollIntoView would scroll ancestors and
+  // make the sheet flash full-height as it opens).
+  useEffect(() => {
+    if (sheet !== "contents") {
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const root = sheetRootRef.current;
+      const current = root?.querySelector<HTMLElement>(".epub-toc button.current");
+      if (!root || !current) {
+        return;
+      }
+      root.scrollTop = Math.max(0, current.offsetTop - root.clientHeight / 2 + current.offsetHeight / 2);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [sheet]);
+
+  const resumeFollowing = useCallback(() => {
+    highlightedFragmentRef.current = -1;
+    // Let the chapter-sync effect re-open the playing chapter on the next run.
+    syncedTargetRef.current = null;
+    setFollow(true);
+  }, []);
+
+  // What a tap on a sentence does: seek there, or, while pinning, tell the
+  // server the narrator is reading it now.
+  const tapFragment = useCallback((fragment: SyncFragment) => {
+    if (pinningRef.current) {
+      setPinning(false);
+      onPinNarrationRef.current?.({ href: fragment.href, text: fragment.text });
+      return;
+    }
+    onSeekToRef.current?.(fragment.startSeconds);
+    highlightedFragmentRef.current = -1;
+    setFollow(true);
+  }, []);
+
+  // Turning a page by hand means the listener wants to read ahead (or
+  // back); the narration marker must not drag the page away again until they
+  // ask to return.
+  const navigateByHand = useCallback((action: () => unknown) => {
+    // Chapter-level following pulls the page just as a sentence marker does,
+    // so a page turned by hand has to stop that too, or the reader is
+    // dragged back to the narrator's chapter on the next run.
+    const followingNarration =
+      (syncFragmentsRef.current?.length ?? 0) > 0 || !!syncTargetRef.current;
+    if (followingNarration) {
+      setFollow(false);
+    }
+    // The listener is driving now; where they stop is the remembered place.
+    handNavigatedRef.current = true;
+    restoringUntilRef.current = 0;
+    readerDebugLog("hand");
+    void action();
+  }, []);
+
+  const ensureSearchIndex = useCallback((doc: Document) => {
+    if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
+      searchIndexRef.current = buildDocumentSearchIndex(doc);
+      searchCursorRef.current = 0;
+      fragmentRangesRef.current = null;
+      sentenceSpanRef.current = null;
+    }
+    return searchIndexRef.current;
+  }, []);
+
+  // WKWebView does not deliver taps made on the epub iframe's own document to
+  // its listeners, so in the full-screen reader an app-layer overlay catches
+  // taps instead (the reader chrome, in this same layer, receives them
+  // reliably). The overlay reports a page-relative x and the tapped point in
+  // window coordinates; this resolves the point to a page turn, a sentence
+  // seek, or a bar toggle.
+  const handleOverlayTap = useCallback(
+    (xFraction: number, clientX: number, clientY: number) => {
+      const rendition = renditionRef.current;
+      if (xFraction < 0.25) {
+        navigateByHand(() => rendition?.prev());
+        return;
+      }
+      if (xFraction > 0.75) {
+        navigateByHand(() => rendition?.next());
+        return;
+      }
+      // Middle: seek to the tapped sentence, if the tap landed on one.
+      const contentsList = ([] as Contents[]).concat(
+        (rendition?.getContents() as unknown as Contents[]) ?? []
+      );
+      const contents = contentsList.find((candidate) => candidate?.document?.body);
+      const doc = contents?.document;
+      const frame = doc?.defaultView?.frameElement as HTMLElement | undefined;
+      const fragments = syncFragmentsRef.current;
+      if (doc && frame && fragments && fragments.length > 0) {
+        const frameBox = frame.getBoundingClientRect();
+        const innerX = clientX - frameBox.left;
+        const innerY = clientY - frameBox.top;
+        const caret = caretAtPoint(doc, innerX, innerY);
+        if (caret && pointOnText(caret.node, innerX, innerY)) {
+          const index = ensureSearchIndex(doc);
+          const position = indexPositionForCaret(index, caret.node, caret.offset);
+          if (position >= 0) {
+            const href = locationRef.current?.start?.href ?? "";
+            if (
+              !fragmentRangesRef.current ||
+              fragmentRangesRef.current.doc !== doc ||
+              fragmentRangesRef.current.href !== href
+            ) {
+              fragmentRangesRef.current = { doc, href, ranges: locateFragments(index, fragments, href) };
+            }
+            const fragmentIndex = fragmentAtIndexPosition(fragmentRangesRef.current.ranges, position);
+            if (fragmentIndex >= 0) {
+              tapFragment(fragments[fragmentIndex]);
+              return;
+            }
+          }
+        }
+      }
+      setChromeHidden((hidden) => !hidden);
+    },
+    [ensureSearchIndex, navigateByHand, tapFragment]
+  );
+
+  // A horizontal swipe on the overlay turns the page as well.
+  const overlaySwipeRef = useRef<{ x: number; y: number } | null>(null);
+  const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    overlaySwipeRef.current = { x: event.clientX, y: event.clientY };
+  }, []);
+  const handleOverlayPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const start = overlaySwipeRef.current;
+      overlaySwipeRef.current = null;
+      const rendition = renditionRef.current;
+      const stage = viewerRef.current?.getBoundingClientRect();
+      if (!start || !stage || stage.width === 0) {
+        return;
+      }
+      const deltaX = event.clientX - start.x;
+      const deltaY = event.clientY - start.y;
+      if (Math.abs(deltaX) > 55 && Math.abs(deltaY) < 45) {
+        navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+        return;
+      }
+      if (Math.abs(deltaX) < 16 && Math.abs(deltaY) < 16) {
+        handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+      }
+    },
+    [handleOverlayTap]
+  );
 
   useEffect(() => {
     if (!viewerRef.current) {
@@ -1351,18 +1717,31 @@ function EpubReadalong({
     }
 
     let cancelled = false;
+    const debugLog = (entry: string) => {
+      if (import.meta.env.DEV) {
+        const debugWindow = window as unknown as { __operalibreReaderOpens?: string[] };
+        debugWindow.__operalibreReaderOpens = [...(debugWindow.__operalibreReaderOpens ?? []), `${Math.round(performance.now())}:${entry}`];
+      }
+    };
+    debugLog(`effect:${url.slice(-8)}:${locationStorageKey.slice(-12)}`);
     setToc([]);
     setLocation(null);
     setActiveHref("");
     setError(null);
     setErrorDetail(null);
     setIsReady(false);
+    setSlowToOpen(false);
     syncedTargetRef.current = null;
+    handNavigatedRef.current = false;
     searchIndexRef.current = null;
     searchCursorRef.current = 0;
+    fragmentRangesRef.current = null;
+    sentenceSpanRef.current = null;
     highlightCfiRef.current = null;
+    wordCfiRef.current = null;
     highlightedFragmentRef.current = -1;
     autoNavHrefRef.current = null;
+    attachedDocsRef.current = new WeakSet();
 
     const abortController = new AbortController();
     let readyTimeout: number | null = null;
@@ -1371,11 +1750,178 @@ function EpubReadalong({
     let rendition: Rendition | null = null;
     const handleRelocated = (nextLocation: Location) => {
       lastLocationRef.current = nextLocation;
+      locationRef.current = nextLocation;
       setLocation(nextLocation);
       setIsReady(true);
+      if (import.meta.env.DEV) {
+        const container = viewerRef.current?.querySelector<HTMLElement>(".epub-container");
+        debugLog(
+          `relocated:${nextLocation.start?.cfi}..${nextLocation.end?.cfi}:p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total}:sl${container?.scrollLeft}/${container?.clientWidth}/${container?.scrollWidth}:anchor=${anchorCfiRef.current}`
+        );
+      }
+      const EpubCfiClass = epubCfiClassRef.current;
+      const restoring = performance.now() < restoringUntilRef.current;
+      const update = anchorAfterRelocation(
+        anchorCfiRef.current,
+        { start: nextLocation.start?.cfi, end: nextLocation.end?.cfi },
+        (a, b) => (EpubCfiClass ? new EpubCfiClass().compare(a, b) : 0),
+        restoring
+      );
+      if (update.arrived) {
+        restoringUntilRef.current = 0;
+      }
+      readerDebugLog(
+        `reloc ${restoring ? "restoring" : "settled"} p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total} start=${shortCfi(nextLocation.start?.cfi)} anchor=${shortCfi(anchorCfiRef.current)}->${shortCfi(update.anchor)}${update.arrived ? " arrived" : ""}`
+      );
+      if (update.anchor && update.anchor !== anchorCfiRef.current) {
+        anchorCfiRef.current = update.anchor;
+        writeStoredValue(locationStorageKey, update.anchor);
+      }
+    };
+
+    // Tapping a sentence seeks the audio to it and resumes following. The
+    // narrated sentence's own marker has its own click handler (an SVG
+    // overlay), so clicks landing on that overlay are left to it.
+    // The narrated sentence under a tap, if the tap landed on one.
+    const fragmentUnderTap = (doc: Document, clientX: number, clientY: number): SyncFragment | null => {
+      const fragments = syncFragmentsRef.current;
+      if (!fragments || fragments.length === 0) {
+        return null;
+      }
+      const caret = caretAtPoint(doc, clientX, clientY);
+      // Caret lookup snaps to the nearest text; a tap in a margin must not
+      // read as a tap on the closest sentence.
+      if (!caret || !pointOnText(caret.node, clientX, clientY)) {
+        return null;
+      }
+      const index = ensureSearchIndex(doc);
+      const position = indexPositionForCaret(index, caret.node, caret.offset);
+      if (position < 0) {
+        return null;
+      }
+      const href = locationRef.current?.start?.href ?? "";
+      if (
+        !fragmentRangesRef.current ||
+        fragmentRangesRef.current.doc !== doc ||
+        fragmentRangesRef.current.href !== href
+      ) {
+        fragmentRangesRef.current = { doc, href, ranges: locateFragments(index, fragments, href) };
+      }
+      const fragmentIndex = fragmentAtIndexPosition(fragmentRangesRef.current.ranges, position);
+      return fragmentIndex < 0 ? null : fragments[fragmentIndex];
+    };
+    const handleTap = (doc: Document, target: Element | null, clientX: number, clientY: number) => {
+      if (target?.closest?.("a, button, input, textarea, select, svg")) {
+        return;
+      }
+      // Full screen reads like a paper book: the outer quarters of the page
+      // turn it, the middle seeks to the tapped sentence, and a tap on nothing
+      // in particular shows or hides the bars.
+      if (fullscreenRef.current) {
+        // The chapter is one wide, scrolled document; the visible page is
+        // the stage's box in the app's own coordinates.
+        const frame = doc.defaultView?.frameElement;
+        const stage = viewerRef.current?.getBoundingClientRect();
+        if (frame && stage && stage.width > 0) {
+          const x = (frame.getBoundingClientRect().left + clientX - stage.left) / stage.width;
+          if (x < 0.25) {
+            navigateByHand(() => rendition?.prev());
+            return;
+          }
+          if (x > 0.75) {
+            navigateByHand(() => rendition?.next());
+            return;
+          }
+        }
+      }
+      const fragment = fragmentUnderTap(doc, clientX, clientY);
+      if (fragment) {
+        tapFragment(fragment);
+      } else if (fullscreenRef.current) {
+        setChromeHidden((hidden) => !hidden);
+      }
+    };
+    const handleContentClick = (event: MouseEvent) => {
+      // A tap already handled on touchend; iOS may still send its click.
+      if (performance.now() - lastTouchTapRef.current < 700) {
+        return;
+      }
+      const doc = (event.target as Node | null)?.ownerDocument;
+      if (doc) {
+        handleTap(doc, event.target as Element | null, event.clientX, event.clientY);
+      }
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY, at: performance.now() } : null;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      event.preventDefault();
+    };
+    const handleTouchEnd = (event: TouchEvent) => {
+      const start = touchStartRef.current;
+      const touch = event.changedTouches[0];
+      touchStartRef.current = null;
+      if (!start || !touch) {
+        return;
+      }
+      const deltaX = touch.clientX - start.x;
+      const deltaY = touch.clientY - start.y;
+      // iOS withholds the click for a touch whose move was cancelled (the
+      // scroll lock above), and a finger rarely lands perfectly still, so a
+      // tap is recognised here rather than waited for as a click.
+      if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && performance.now() - start.at < 600) {
+        const target = event.target as Element | null;
+        if (target?.closest?.("a, button, input, textarea, select")) {
+          return;
+        }
+        lastTouchTapRef.current = performance.now();
+        const doc = (event.target as Node | null)?.ownerDocument;
+        if (doc) {
+          handleTap(doc, target, touch.clientX, touch.clientY);
+        }
+        return;
+      }
+      if (Math.abs(deltaX) < 60 || Math.abs(deltaY) > 50) {
+        return;
+      }
+      navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown") {
+        event.preventDefault();
+        navigateByHand(() => rendition?.next());
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        navigateByHand(() => rendition?.prev());
+      }
+    };
+    const attachToDocument = (doc: Document) => {
+      if (attachedDocsRef.current.has(doc)) {
+        return;
+      }
+      attachedDocsRef.current.add(doc);
+      doc.addEventListener("click", handleContentClick);
+      doc.addEventListener("touchstart", handleTouchStart, { passive: true });
+      // A paginated chapter is one wide, column-laid-out document. iOS lets a
+      // finger drag it sideways (and the page behind it) even with overflow
+      // hidden, which tears the page mid-column whenever the reader isn't
+      // actively snapping back to the narration. Pages turn by swipe or tap.
+      doc.addEventListener("touchmove", handleTouchMove, { passive: false });
+      doc.addEventListener("touchend", handleTouchEnd);
+      doc.addEventListener("keydown", handleKeyDown);
     };
     const handleRendered = () => {
+      debugLog("rendered");
       setIsReady(true);
+      const contentsList = ([] as Contents[]).concat(
+        (rendition?.getContents() as unknown as Contents[]) ?? []
+      );
+      for (const contents of contentsList) {
+        if (contents?.document) {
+          attachToDocument(contents.document);
+        }
+      }
     };
 
     const openBook = async () => {
@@ -1389,19 +1935,22 @@ function EpubReadalong({
 
         readyTimeout = window.setTimeout(() => {
           if (!cancelled) {
-            setError("This EPUB is taking longer than expected to open.");
-            abortController.abort();
+            setSlowToOpen(true);
           }
-        }, 15000);
+        }, 12000);
 
-        const response = await fetch(url, {
-          credentials: "include",
-          signal: abortController.signal
-        });
-        if (!response.ok) {
-          throw new Error(`EPUB request failed with ${response.status}`);
-        }
-        const data = await response.arrayBuffer();
+        const data = loadBytesRef.current
+          ? await loadBytesRef.current(url, abortController.signal)
+          : await (async () => {
+              const response = await fetch(url, {
+                credentials: "include",
+                signal: abortController.signal
+              });
+              if (!response.ok) {
+                throw new Error(`EPUB request failed with ${response.status}`);
+              }
+              return response.arrayBuffer();
+            })();
         if (cancelled || !viewerRef.current) {
           return;
         }
@@ -1425,47 +1974,59 @@ function EpubReadalong({
           manager: "default"
         });
 
-        rendition.themes.register("operalibre-paper", {
+        // Keep touch from scrolling the chapter document itself; navigation
+        // is by page turn only.
+        const readerLockRules = {
+          html: { "touch-action": "none !important", "overscroll-behavior": "none !important" }
+        };
+        // One stylesheet for every look; the colours come from custom
+        // properties set per theme (see applyReaderThemeColors).
+        rendition.themes.register("operalibre", {
           body: {
-            color: "#241b15 !important",
-            background: "#fffdf7 !important",
+            color: "var(--reader-ink) !important",
+            background: "var(--reader-page) !important",
             "font-family": "Georgia, 'Times New Roman', serif !important",
             "line-height": "1.78 !important",
-            padding: "0 5% !important"
+            padding: "0 5% !important",
+            // The narrow phone column plus em-dash-joined words makes justified
+            // text open large gaps between words; left align reads cleanly and
+            // hyphenation keeps the ragged edge tidy.
+            "text-align": "left !important",
+            "-webkit-hyphens": "auto",
+            hyphens: "auto"
           },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#7c2f2a !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
-        });
-        rendition.themes.register("operalibre-sepia", {
-          body: {
-            color: "#3b2b1d !important",
-            background: "#f2e5c9 !important",
-            "font-family": "Georgia, 'Times New Roman', serif !important",
-            "line-height": "1.78 !important",
-            padding: "0 5% !important"
+          p: {
+            "margin-bottom": "1.15em !important",
+            "text-align": "left !important",
+            "-webkit-hyphens": "auto",
+            hyphens: "auto"
           },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#7d3f26 !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
+          "p, li, blockquote, div": { "text-align": "left !important" },
+          a: { color: "var(--reader-link) !important" },
+          img: { "max-width": "100% !important", height: "auto !important" },
+          ...readerLockRules
         });
-        rendition.themes.register("operalibre-night", {
-          body: {
-            color: "#e7dcc8 !important",
-            background: "#171411 !important",
-            "font-family": "Georgia, 'Times New Roman', serif !important",
-            "line-height": "1.78 !important",
-            padding: "0 5% !important"
-          },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#d9b574 !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
-        });
+
+        // Style the pages before the first one is laid out. Applying the
+        // theme and text size afterwards reflows the chapter under a stage
+        // still scrolled to the old page, which then shows earlier words than
+        // the remembered place, and that earlier page gets saved in its turn.
+        rendition.themes.select("operalibre");
+        applyReaderThemeColors(rendition.themes, readerThemeRef.current);
+        rendition.themes.fontSize(`${fontScaleRef.current}%`);
+        appliedThemeRef.current = readerThemeRef.current;
+        appliedFontScaleRef.current = fontScaleRef.current;
 
         bookRef.current = book;
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
         rendition.on("rendered", handleRendered);
+        if (import.meta.env.DEV) {
+          // Inspectable from the console while developing the reader.
+          const debugWindow = window as unknown as { __operalibreReader?: unknown; __operalibreReaderOpens?: string[] };
+          debugWindow.__operalibreReader = { book, rendition };
+          debugWindow.__operalibreReaderOpens = [...(debugWindow.__operalibreReaderOpens ?? []), `${Math.round(performance.now())}:${url.slice(-12)}`];
+        }
 
         book.loaded.navigation
           .then((navigation) => {
@@ -1479,9 +2040,70 @@ function EpubReadalong({
             }
           });
 
-        await rendition.display(lastLocationRef.current?.start?.cfi);
+        // Reopen where the listener left off; when narration is being
+        // followed the marker moves the page again as soon as it is known.
+        const savedLocation = readStoredValue(locationStorageKey);
+        readerDebugLog(`stored=${shortCfi(savedLocation)} last=${shortCfi(lastLocationRef.current?.start?.cfi)}`);
+        const startAt = anchorCfiRef.current ?? savedLocation;
+        anchorCfiRef.current = startAt;
+        debugLog(`display:${startAt}`);
+        readerDebugLog(`open saved=${shortCfi(startAt)}`);
+        if (startAt) {
+          beginRestore();
+        }
+        try {
+          await rendition.display(startAt ?? undefined);
+        } catch (error) {
+          // A remembered place that no longer resolves (the file was
+          // replaced) must not keep the book from opening at all.
+          if (!startAt || cancelled) {
+            throw error;
+          }
+          console.warn("EPUB remembered place could not be opened", error);
+          readerDebugLog(`open failed ${String(error).slice(0, 60)}`);
+          anchorCfiRef.current = null;
+          restoringUntilRef.current = 0;
+          await rendition.display();
+        }
+        // The listener left off here, so this is where the book opens; the
+        // chapter being played counts as already handled. It takes the page
+        // only once the narration moves on to a different chapter.
+        if (anchorCfiRef.current) {
+          syncedTargetRef.current = syncTargetRef.current?.id ?? null;
+        }
+        // The chapter's pictures and web fonts arrive after the first
+        // layout and push the text along, so the page epub.js first shows
+        // for a remembered place is usually an earlier one. Check back while
+        // the layout settles and turn to the place again if it has moved off
+        // the page — unless the listener has started reading somewhere else.
+        void (async () => {
+          for (const delay of [300, 700, 1400, 2500]) {
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+            const anchor = anchorCfiRef.current;
+            const EpubCfiClass = epubCfiClassRef.current;
+            const page = locationRef.current;
+            if (cancelled || handNavigatedRef.current || !anchor || !rendition) {
+              return;
+            }
+            if (!EpubCfiClass || !page?.start?.cfi || !page.end?.cfi) {
+              continue;
+            }
+            const compare = (a: string, b: string) => new EpubCfiClass().compare(a, b);
+            if (anchorOnPage(anchor, { start: page.start.cfi, end: page.end.cfi }, compare)) {
+              continue;
+            }
+            readerDebugLog(`settle back to ${shortCfi(anchor)} from ${shortCfi(page.start.cfi)}`);
+            beginRestore();
+            try {
+              await rendition.display(anchor);
+            } catch {
+              return;
+            }
+          }
+        })();
         if (!cancelled) {
           setIsReady(true);
+          setSlowToOpen(false);
           setError(null);
           setErrorDetail(null);
           if (readyTimeout !== null) {
@@ -1500,8 +2122,26 @@ function EpubReadalong({
 
     resizeObserver = new ResizeObserver(() => {
       const bounds = viewerRef.current?.getBoundingClientRect();
-      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition) {
-        rendition.resize(Math.floor(bounds.width), Math.floor(bounds.height));
+      // epub.js only gains a view manager once it has attached; a resize
+      // before then throws inside the observer callback.
+      const attached = !!(rendition as unknown as { manager?: unknown } | null)?.manager;
+      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition && attached) {
+        // epub.js re-lays the chapter out and turns to the given place; left
+        // to itself it would turn to the old page's first words instead,
+        // which lands a little earlier with every pass.
+        debugLog(`resize:${Math.floor(bounds.width)}x${Math.floor(bounds.height)}:anchor=${anchorCfiRef.current}`);
+        readerDebugLog(
+          `resize ${Math.floor(bounds.width)}x${Math.floor(bounds.height)} anchor=${shortCfi(anchorCfiRef.current)}`
+        );
+        if (anchorCfiRef.current) {
+          beginRestore();
+        }
+        (rendition as unknown as { resize(width: number, height: number, cfi?: string): void }).resize(
+          Math.floor(bounds.width),
+          Math.floor(bounds.height),
+          anchorCfiRef.current ?? undefined
+        );
+        setRelayoutTick((tick) => tick + 1);
       }
     });
     resizeObserver.observe(viewerRef.current);
@@ -1509,41 +2149,77 @@ function EpubReadalong({
 
     return () => {
       cancelled = true;
+      debugLog("cleanup");
+      readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
       abortController.abort();
       if (readyTimeout !== null) {
         window.clearTimeout(readyTimeout);
       }
       resizeObserver?.disconnect();
-      rendition?.off("relocated", handleRelocated);
-      rendition?.off("rendered", handleRendered);
-      rendition?.destroy();
-      book?.destroy();
+      // epub.js teardown throws when a rendition is destroyed before it has
+      // attached (the reader closed while the book was still opening), and a
+      // throw here would unmount the whole app.
+      try {
+        rendition?.off("relocated", handleRelocated);
+        rendition?.off("rendered", handleRendered);
+        rendition?.destroy();
+      } catch (error) {
+        console.warn("EPUB rendition teardown failed", error);
+      }
+      try {
+        book?.destroy();
+      } catch (error) {
+        console.warn("EPUB book teardown failed", error);
+      }
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [url]);
+  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, tapFragment, url]);
 
   useEffect(() => {
-    writeStoredValue("operalibre.readerTheme", readerTheme);
-    if (isReady) {
-      renditionRef.current?.themes.select(`operalibre-${readerTheme}`);
+    writeReaderThemeChoice(readerThemeChoice);
+  }, [readerThemeChoice]);
+
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (isReady && rendition && appliedThemeRef.current !== readerTheme) {
+      applyReaderThemeColors(rendition.themes, readerTheme);
+      appliedThemeRef.current = readerTheme;
     }
   }, [isReady, readerTheme]);
 
   useEffect(() => {
     writeStoredValue("operalibre.readerFontScale", String(fontScale));
-    if (isReady) {
-      renditionRef.current?.themes.fontSize(`${fontScale}%`);
+    const rendition = renditionRef.current;
+    if (!isReady || !rendition || appliedFontScaleRef.current === fontScale) {
+      return;
     }
-  }, [fontScale, isReady]);
+    appliedFontScaleRef.current = fontScale;
+    rendition.themes.fontSize(`${fontScale}%`);
+    readerDebugLog(`fontScale ${fontScale} anchor=${shortCfi(anchorCfiRef.current)}`);
+    if (anchorCfiRef.current) {
+      beginRestore();
+    }
+    // The chapter reflows at the new size while the stage stays scrolled to
+    // the old page, which now holds different words. Lay the chapter out
+    // afresh and turn to the place being read.
+    rendition.clear();
+    void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+    setRelayoutTick((tick) => tick + 1);
+  }, [beginRestore, fontScale, isReady]);
 
   useEffect(() => {
-    if (!focusMode) {
+    if (!fullscreen) {
       return;
     }
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (sheetRef.current) {
+        setSheet(null);
+      } else if (!immersive) {
         setFocusMode(false);
       }
     };
@@ -1553,22 +2229,27 @@ function EpubReadalong({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [focusMode]);
+  }, [fullscreen, immersive]);
 
+  // Chapter-level sync: with no sentence map, follow keeps the reader on the
+  // chapter being played. Turning a page (which clears follow) stops it, so a
+  // listener can read ahead; turning follow back on re-opens the chapter.
   useEffect(() => {
-    if (!syncTarget || !isReady || toc.length === 0 || syncedTargetRef.current === syncTarget.id) {
+    if (!syncTarget || !isReady || toc.length === 0) {
       return;
     }
-
-    const href = findTocHrefForSyncTarget(toc, syncTarget);
+    if (!shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
+      return;
+    }
+    const href = findTocHrefForChapterTitle(toc, syncTarget.title);
     if (!href) {
       return;
     }
-
     syncedTargetRef.current = syncTarget.id;
     setActiveHref(href);
+    readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
-  }, [isReady, syncTarget, toc]);
+  }, [follow, isReady, syncTarget, toc]);
 
   const fragmentIndex = useMemo(
     () =>
@@ -1578,24 +2259,29 @@ function EpubReadalong({
     [positionSeconds, syncFragments]
   );
 
+  const removeAnnotation = useCallback((cfi: string | null) => {
+    const rendition = renditionRef.current;
+    if (!rendition || !cfi) {
+      return;
+    }
+    try {
+      rendition.annotations.remove(cfi, "highlight");
+    } catch {
+      // stale annotation already gone
+    }
+  }, []);
+
   // Sentence-level readalong: highlight the fragment being narrated and keep
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    // The night page is dark, so the marker must lighten instead of darken.
-    const highlightStyles =
-      readerTheme === "night"
-        ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
-        : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
+    const styles = highlightStyles(readerTheme, precision);
     if (!follow || !syncFragments || fragmentIndex < 0) {
-      if (rendition && highlightCfiRef.current) {
-        try {
-          rendition.annotations.remove(highlightCfiRef.current, "highlight");
-        } catch {
-          // stale annotation already gone
-        }
-      }
+      removeAnnotation(highlightCfiRef.current);
+      removeAnnotation(wordCfiRef.current?.cfi ?? null);
       highlightCfiRef.current = null;
+      wordCfiRef.current = null;
+      sentenceSpanRef.current = null;
       highlightedFragmentRef.current = -1;
       return;
     }
@@ -1613,77 +2299,13 @@ function EpubReadalong({
       return;
     }
     autoNavHrefRef.current = null;
-    if (highlightedFragmentRef.current === fragmentIndex) {
-      if (highlightThemeRef.current !== readerTheme && highlightCfiRef.current) {
-        try {
-          rendition.annotations.remove(highlightCfiRef.current, "highlight");
-        } catch {
-          // stale annotation already gone
-        }
-        rendition.annotations.highlight(
-          highlightCfiRef.current,
-          {},
-          () => onSeekTo?.(fragment.startSeconds),
-          "readalong-highlight",
-          highlightStyles
-        );
-        highlightThemeRef.current = readerTheme;
+    // Turns the page to a marker that has ended up off-screen, whether the
+    // narration moved on or the layout changed under it.
+    const keepOnPage = (cfi: string) => {
+      const EpubCfiClass = epubCfiClassRef.current;
+      if (!EpubCfiClass || !location.start?.cfi || !location.end?.cfi) {
+        return;
       }
-      return;
-    }
-
-    const contentsList = ([] as Contents[]).concat(
-      (rendition.getContents() as unknown as Contents[]) ?? []
-    );
-    const contents = contentsList.find((candidate) => candidate?.document?.body);
-    const doc = contents?.document;
-    if (!contents || !doc) {
-      return;
-    }
-    if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
-      searchIndexRef.current = buildDocumentSearchIndex(doc);
-      searchCursorRef.current = 0;
-    }
-
-    // Mark the fragment handled up front so a missing sentence doesn't retry
-    // on every relocation.
-    highlightedFragmentRef.current = fragmentIndex;
-
-    const found = findRangeInSearchIndex(
-      searchIndexRef.current,
-      normalizeSyncNeedle(fragment.text),
-      searchCursorRef.current
-    );
-    if (!found) {
-      return;
-    }
-    searchCursorRef.current = found.endOffset;
-
-    let cfi: string;
-    try {
-      cfi = contents.cfiFromRange(found.range);
-    } catch {
-      return;
-    }
-    if (highlightCfiRef.current) {
-      try {
-        rendition.annotations.remove(highlightCfiRef.current, "highlight");
-      } catch {
-        // stale annotation already gone
-      }
-    }
-    rendition.annotations.highlight(
-      cfi,
-      {},
-      () => onSeekTo?.(fragment.startSeconds),
-      "readalong-highlight",
-      highlightStyles
-    );
-    highlightCfiRef.current = cfi;
-    highlightThemeRef.current = readerTheme;
-
-    const EpubCfiClass = epubCfiClassRef.current;
-    if (EpubCfiClass && location.start?.cfi && location.end?.cfi) {
       try {
         const comparator = new EpubCfiClass();
         if (
@@ -1695,8 +2317,146 @@ function EpubReadalong({
       } catch {
         // invalid comparison; leave the page as-is
       }
+    };
+    if (highlightedFragmentRef.current === fragmentIndex) {
+      const relaid = handledRelayoutRef.current !== relayoutTick;
+      if ((highlightThemeRef.current !== readerTheme || relaid) && highlightCfiRef.current) {
+        // Redraw against the current layout; the word marker follows suit.
+        removeAnnotation(highlightCfiRef.current);
+        removeAnnotation(wordCfiRef.current?.cfi ?? null);
+        wordCfiRef.current = null;
+        rendition.annotations.highlight(
+          highlightCfiRef.current,
+          {},
+          () => tapFragment(fragment),
+          "readalong-highlight",
+          styles.sentence
+        );
+        highlightThemeRef.current = readerTheme;
+        handledRelayoutRef.current = relayoutTick;
+      }
+      if (highlightCfiRef.current) {
+        keepOnPage(highlightCfiRef.current);
+      }
+      return;
     }
-  }, [follow, fragmentIndex, isReady, location, onSeekTo, readerTheme, syncFragments]);
+    handledRelayoutRef.current = relayoutTick;
+
+    const contentsList = ([] as Contents[]).concat(
+      (rendition.getContents() as unknown as Contents[]) ?? []
+    );
+    const contents = contentsList.find((candidate) => candidate?.document?.body);
+    const doc = contents?.document;
+    if (!contents || !doc) {
+      return;
+    }
+    const index = ensureSearchIndex(doc);
+
+    // Mark the fragment handled up front so a missing sentence doesn't retry
+    // on every relocation.
+    highlightedFragmentRef.current = fragmentIndex;
+    sentenceSpanRef.current = null;
+    removeAnnotation(wordCfiRef.current?.cfi ?? null);
+    wordCfiRef.current = null;
+
+    const needle = normalizeNeedleWithOffsets(fragment.text);
+    const found = findRangeInSearchIndex(index, needle.text, searchCursorRef.current);
+    if (!found) {
+      return;
+    }
+    searchCursorRef.current = found.endOffset;
+    sentenceSpanRef.current = {
+      fragmentIndex,
+      at: found.endOffset - needle.text.length,
+      offsets: needle.offsets
+    };
+
+    let cfi: string;
+    try {
+      cfi = contents.cfiFromRange(found.range);
+    } catch {
+      return;
+    }
+    removeAnnotation(highlightCfiRef.current);
+    rendition.annotations.highlight(
+      cfi,
+      {},
+      () => tapFragment(fragment),
+      "readalong-highlight",
+      styles.sentence
+    );
+    highlightCfiRef.current = cfi;
+    highlightThemeRef.current = readerTheme;
+    keepOnPage(cfi);
+  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+
+  // Word-level readalong: a second, stronger marker on the narrated word,
+  // placed inside the sentence found above.
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    const clearWord = () => {
+      removeAnnotation(wordCfiRef.current?.cfi ?? null);
+      wordCfiRef.current = null;
+    };
+    if (!follow || !syncFragments || fragmentIndex < 0 || precision !== "word" || !rendition || !isReady) {
+      clearWord();
+      return;
+    }
+    const fragment = syncFragments[fragmentIndex];
+    const sentence = sentenceSpanRef.current;
+    const index = searchIndexRef.current;
+    const wordIndex = activeWordIndex(fragment, positionSeconds);
+    if (wordIndex < 0 || !sentence || sentence.fragmentIndex !== fragmentIndex || !index) {
+      clearWord();
+      return;
+    }
+    const current = wordCfiRef.current;
+    if (
+      current &&
+      current.wordIndex === wordIndex &&
+      current.fragmentIndex === fragmentIndex &&
+      current.theme === readerTheme
+    ) {
+      return;
+    }
+    const [, , offset, length] = fragment.words![wordIndex];
+    const from = sentence.offsets.findIndex((raw) => raw >= offset);
+    let to = from;
+    while (to < sentence.offsets.length && sentence.offsets[to] < offset + length) {
+      to += 1;
+    }
+    if (from < 0 || to <= from) {
+      clearWord();
+      return;
+    }
+    const range = rangeForIndexSpan(index, sentence.at + from, sentence.at + to);
+    const contentsList = ([] as Contents[]).concat(
+      (rendition.getContents() as unknown as Contents[]) ?? []
+    );
+    const contents = contentsList.find((candidate) => candidate?.document === index.doc);
+    if (!range || !contents) {
+      clearWord();
+      return;
+    }
+    let cfi: string;
+    try {
+      cfi = contents.cfiFromRange(range);
+    } catch {
+      clearWord();
+      return;
+    }
+    clearWord();
+    rendition.annotations.highlight(
+      cfi,
+      {},
+      () => tapFragment(fragment),
+      "readalong-word",
+      highlightStyles(readerTheme, precision).word
+    );
+    wordCfiRef.current = { cfi, wordIndex, fragmentIndex, theme: readerTheme };
+    // `location` is not read here, but the sentence marker above is placed in
+    // response to it, and the word marker must follow even while paused.
+  }, [follow, fragmentIndex, isReady, location, positionSeconds, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -1718,127 +2478,435 @@ function EpubReadalong({
     return match;
   }, [location, toc]);
   const selectedTocHref = currentTocItem?.href ?? activeHref;
+  const hasSync = !!syncFragments && syncFragments.length > 0;
+  // Chapter-sync books have no marker but still follow the narrated chapter,
+  // so they get the same follow toggle.
+  const canFollow = hasSync || !!syncTarget;
+  const followLabel =
+    precision === "word"
+      ? "Following word for word"
+      : precision === "estimated"
+        ? "Following approximately"
+        : "Following by sentence";
+  const statusLabel = hasSync
+    ? follow
+      ? fragmentIndex >= 0
+        ? `${followLabel} · ${locationLabel}`
+        : `Waiting for narration · ${locationLabel}`
+      : `Reading freely · ${locationLabel}`
+    : syncTarget
+      ? `Chapter sync · ${locationLabel}`
+      : locationLabel;
+  const awayFromNarration = hasSync && !follow && fragmentIndex >= 0;
 
-  const reader = (
-    <div className={`epub-reader theme-${readerTheme} ${focusMode ? "focus-mode" : ""}`}>
-      <div className="epub-reader-chrome">
-        <div className="epub-toolbar">
-          <button type="button" onClick={() => void renditionRef.current?.prev()} aria-label="Previous page">
-            <ChevronLeft size={17} />
-          </button>
-          <div className="epub-location">
-            <select
-              aria-label={`${title} table of contents`}
-              value={selectedTocHref}
-              onChange={(event) => {
-                const href = event.currentTarget.value;
-                setActiveHref(href);
-                syncedTargetRef.current = null;
-                if (href) {
-                  void renditionRef.current?.display(href);
-                }
-              }}
-            >
-              <option value="">Contents</option>
-              {toc.map((item) => (
-                <option key={`${item.href}-${item.label}`} value={item.href}>
-                  {"\u00A0".repeat(item.depth * 2)}{item.label}
-                </option>
-              ))}
-            </select>
-            <span className="epub-status">
-              {syncFragments && follow && fragmentIndex >= 0
-                ? `Following · ${locationLabel}`
-                : syncTarget
-                  ? `Synced · ${locationLabel}`
-                  : locationLabel}
-            </span>
-          </div>
-          <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
-            <ChevronRight size={17} />
-          </button>
-        </div>
+  const pageInfo =
+    location?.start?.displayed && location.start.displayed.total > 0
+      ? `Page ${location.start.displayed.page} of ${location.start.displayed.total}`
+      : null;
+  const chapterLabel = chapterTitle ?? currentTocItem?.label?.trim() ?? null;
+  const hint = pinning
+    ? "Tap the sentence the narrator is reading right now."
+    : awayFromNarration
+      ? "Reading freely. The narration marker is off while you turn pages yourself."
+      : precision === "estimated"
+        ? "Approximate sync: the marker is timed from the chapter list. Tap any sentence to play from there; if the marker drifts, use Sync here to pin it to the narrator."
+        : "Tap any sentence to play from there. Turning a page pauses following.";
+  const goToHref = (href: string) => {
+    setActiveHref(href);
+    syncedTargetRef.current = null;
+    if (href) {
+      navigateByHand(() => renditionRef.current?.display(href));
+    }
+  };
+  const handleReaderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key === "ArrowRight" || event.key === "PageDown") {
+      event.preventDefault();
+      navigateByHand(() => renditionRef.current?.next());
+    } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+      event.preventDefault();
+      navigateByHand(() => renditionRef.current?.prev());
+    }
+  };
 
-        <div className="epub-preferences" aria-label="Reader appearance">
-          <div className="epub-theme-options" aria-label="Reading theme">
-            {(["paper", "sepia", "night"] as const).map((theme) => (
-              <button
-                type="button"
-                key={theme}
-                className={readerTheme === theme ? "selected" : ""}
-                aria-pressed={readerTheme === theme}
-                onClick={() => setReaderTheme(theme)}
-              >
-                {theme}
-              </button>
-            ))}
-          </div>
-          <div className="epub-font-controls">
-            <button
-              type="button"
-              aria-label="Decrease reader text size"
-              disabled={fontScale <= 85}
-              onClick={() => setFontScale((size) => Math.max(85, size - 10))}
-            >
-              <Minus size={15} />
-            </button>
-            <span aria-label={`Reader text size ${fontScale}%`}>Aa&nbsp; {fontScale}%</span>
-            <button
-              type="button"
-              aria-label="Increase reader text size"
-              disabled={fontScale >= 140}
-              onClick={() => setFontScale((size) => Math.min(140, size + 10))}
-            >
-              <Plus size={15} />
-            </button>
-          </div>
-          {syncFragments && syncFragments.length > 0 ? (
-            <button
-              type="button"
-              className={`epub-tool-button ${follow ? "selected" : ""}`}
-              onClick={() =>
-                setFollow((enabled) => {
-                  const next = !enabled;
-                  if (next) {
-                    highlightedFragmentRef.current = -1;
-                  }
-                  return next;
-                })
-              }
-              aria-pressed={follow}
-              aria-label={follow ? "Stop following narration" : "Follow narration"}
-              title={follow ? "Stop following narration" : "Follow narration"}
-            >
-              <LocateFixed size={15} />
-              <span>Follow</span>
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="epub-tool-button"
-            onClick={() => setFocusMode((enabled) => !enabled)}
-            aria-pressed={focusMode}
-            aria-label={focusMode ? "Exit reader focus mode" : "Open reader focus mode"}
-            title={focusMode ? "Exit focus mode (Esc)" : "Focus mode"}
-          >
-            {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            <span>{focusMode ? "Close" : "Focus"}</span>
-          </button>
-        </div>
-      </div>
-      <div className="epub-stage" ref={viewerRef}>
-        <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
-        {!isReady && !error ? <span className="epub-loading">Loading EPUB…</span> : null}
-        {error ? (
-          <span className="epub-error">
-            {error}
-            {errorDetail ? <small>{errorDetail}</small> : null}
-          </span>
-        ) : null}
-      </div>
+  const themeOptions = (
+    <div className="epub-theme-options" aria-label="Reading theme">
+      {READER_THEME_CHOICES.map((choice) => (
+        <button
+          type="button"
+          key={choice}
+          className={readerThemeChoice === choice ? "selected" : ""}
+          aria-pressed={readerThemeChoice === choice}
+          onClick={() => setReaderThemeChoice(choice)}
+          title={choice === "auto" ? `Follows the app: ${readerTheme} right now` : undefined}
+        >
+          {choice}
+        </button>
+      ))}
     </div>
   );
-  return reader;
+  const fontControls = (
+    <div className="epub-font-controls">
+      <button
+        type="button"
+        aria-label="Decrease reader text size"
+        disabled={fontScale <= 85}
+        onClick={() => setFontScale((size) => Math.max(85, size - 10))}
+      >
+        <Minus size={15} />
+      </button>
+      <span aria-label={`Reader text size ${fontScale}%`}>Aa&nbsp; {fontScale}%</span>
+      <button
+        type="button"
+        aria-label="Increase reader text size"
+        disabled={fontScale >= 140}
+        onClick={() => setFontScale((size) => Math.min(140, size + 10))}
+      >
+        <Plus size={15} />
+      </button>
+    </div>
+  );
+  const followButton = canFollow ? (
+    <button
+      type="button"
+      className={`epub-tool-button ${follow ? "selected" : ""}`}
+      onClick={() => (follow ? setFollow(false) : resumeFollowing())}
+      aria-pressed={follow}
+      aria-label={follow ? "Stop following narration" : "Follow narration"}
+      title={follow ? "Stop following narration" : "Follow narration"}
+    >
+      <LocateFixed size={15} />
+      <span>Follow</span>
+    </button>
+  ) : null;
+  const pinButton =
+    hasSync && precision === "estimated" && onPinNarration ? (
+      <button
+        type="button"
+        className={`epub-tool-button ${pinning ? "selected" : ""}`}
+        onClick={() => {
+          setPinning((active) => !active);
+          setSheet(null);
+        }}
+        aria-pressed={pinning}
+        aria-label={pinning ? "Cancel sync adjustment" : "Adjust sync to the narrator"}
+        title="The marker has drifted? Tap this, then tap the sentence being read."
+      >
+        <Crosshair size={15} />
+        <span>Sync here</span>
+      </button>
+    ) : null;
+
+  // The page itself. It must keep its place in the tree between the inline
+  // and full-screen layouts: epub.js is attached to this very element.
+  const stage = (
+    <div className="epub-stage" ref={viewerRef}>
+      {fullscreen ? null : (
+        <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
+      )}
+      {!isReady && !error ? (
+        <span className="epub-loading">
+          {slowToOpen ? "Still opening the ebook… a large book takes a moment on a slow connection." : "Loading EPUB…"}
+        </span>
+      ) : null}
+      {error ? (
+        <span className="epub-error">
+          {error}
+          {errorDetail ? <small>{errorDetail}</small> : null}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const reader = (
+    <div
+      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""} ${precision === "estimated" ? "estimated" : ""}`}
+      tabIndex={0}
+      onKeyDown={handleReaderKeyDown}
+    >
+      {fullscreen ? (
+        <header className="epub-topbar">
+          <button
+            type="button"
+            className="epub-icon-button"
+            onClick={() => (immersive ? onClose?.() : setFocusMode(false))}
+            aria-label="Close the reader"
+          >
+            <X size={20} />
+          </button>
+          <div className="epub-topbar-title">
+            <strong>{title}</strong>
+            {chapterLabel ? <span>{chapterLabel}</span> : null}
+          </div>
+          <div className="epub-topbar-actions">
+            {canFollow ? (
+              <button
+                type="button"
+                className={`epub-icon-button ${follow ? "selected" : ""}`}
+                onClick={() => (follow ? setFollow(false) : resumeFollowing())}
+                aria-pressed={follow}
+                aria-label={follow ? "Stop following narration" : "Follow narration"}
+              >
+                <LocateFixed size={19} />
+              </button>
+            ) : null}
+            <button type="button" className="epub-icon-button" onClick={() => setSheet("contents")} aria-label="Contents">
+              <List size={20} />
+            </button>
+            <button type="button" className="epub-icon-button" onClick={() => setSheet("appearance")} aria-label="Appearance and sync">
+              <ALargeSmall size={22} />
+            </button>
+          </div>
+        </header>
+      ) : (
+        <div className="epub-reader-chrome">
+          <div className="epub-toolbar">
+            <button
+              type="button"
+              onClick={() => navigateByHand(() => renditionRef.current?.prev())}
+              aria-label="Previous page"
+            >
+              <ChevronLeft size={17} />
+            </button>
+            <div className="epub-location">
+              <select
+                aria-label={`${title} table of contents`}
+                value={selectedTocHref}
+                onChange={(event) => goToHref(event.currentTarget.value)}
+              >
+                <option value="">Contents</option>
+                {toc.map((item) => (
+                  <option key={`${item.href}-${item.label}`} value={item.href}>
+                    {" ".repeat(item.depth * 2)}{item.label}
+                  </option>
+                ))}
+              </select>
+              <span className="epub-status" aria-live="polite">{statusLabel}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateByHand(() => renditionRef.current?.next())}
+              aria-label="Next page"
+            >
+              <ChevronRight size={17} />
+            </button>
+          </div>
+
+          <div className="epub-preferences" aria-label="Reader appearance">
+            {themeOptions}
+            {fontControls}
+            {pinButton}
+            {followButton}
+            <button
+              type="button"
+              className="epub-tool-button"
+              onClick={() => setFocusMode(true)}
+              aria-label="Open reader focus mode"
+              title="Focus mode"
+            >
+              <Maximize2 size={15} />
+              <span>Focus</span>
+            </button>
+          </div>
+        </div>
+      )}
+      {fullscreen ? (
+        <div className="epub-stage-wrap">
+          {stage}
+          <div
+            className="epub-tapzones"
+            onPointerDown={handleOverlayPointerDown}
+            onPointerUp={handleOverlayPointerUp}
+            aria-hidden="true"
+          >
+            <span className="epub-tapzone epub-tapzone-prev" />
+            <span className="epub-tapzone epub-tapzone-next" />
+          </div>
+        </div>
+      ) : (
+        stage
+      )}
+      {fullscreen ? (
+        <footer className="epub-bottombar">
+          <div className="epub-pagebar" aria-hidden="true">
+            <i style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
+          </div>
+          <div className="epub-pageinfo">
+            <span>
+              {hasSync
+                ? follow
+                  ? fragmentIndex >= 0
+                    ? followLabel
+                    : "Waiting for narration"
+                  : "Reading freely"
+                : syncTarget
+                  ? follow
+                    ? "Following by chapter"
+                    : "Reading freely"
+                  : locationLabel}
+            </span>
+            <span>{pageInfo ?? locationLabel}</span>
+          </div>
+          {playback ? (
+            <div className={`epub-audiobar ${pinning ? "pinning" : ""}`}>
+              <button type="button" className="epub-icon-button epub-skip" onClick={() => playback.onSkip(-15)} aria-label="Back 15 seconds">
+                <RotateCcw size={19} />
+                <small>15</small>
+              </button>
+              <button
+                type="button"
+                className="epub-audiobar-play"
+                onClick={playback.onToggle}
+                aria-label={playback.playing ? "Pause" : "Play"}
+              >
+                {playback.playing ? <Pause size={22} /> : <Play size={22} />}
+              </button>
+              <button type="button" className="epub-icon-button epub-skip" onClick={() => playback.onSkip(30)} aria-label="Forward 30 seconds">
+                <RotateCw size={19} />
+                <small>30</small>
+              </button>
+              <div className="epub-audiobar-status" role="status">
+                {pinning ? (
+                  <>
+                    <span>Tap the sentence being read</span>
+                    <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
+                      <X size={14} />
+                      <span>Cancel</span>
+                    </button>
+                  </>
+                ) : (
+                  <span className="epub-audiobar-time">{positionLabel ?? ""}</span>
+                )}
+              </div>
+              {/* The rest of the player without leaving the page: the app's own
+                  speed, sleep, and chapter sheets open over the reader. */}
+              <div className="epub-audiobar-extras">
+                <button
+                  type="button"
+                  className="epub-icon-button epub-audiobar-speed"
+                  onClick={() => playback.onOpen("speed")}
+                  aria-label={`Playback speed, ${playback.speed}×`}
+                >
+                  <span>{playback.speed}×</span>
+                </button>
+                <button
+                  type="button"
+                  className="epub-icon-button"
+                  onClick={() => playback.onOpen("sleep")}
+                  aria-label={playback.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(playback.sleepRemaining / 60)} minutes left` : "Sleep timer"}
+                >
+                  <Timer size={18} />
+                  {playback.sleepRemaining > 0 ? <small>{Math.ceil(playback.sleepRemaining / 60)}m</small> : null}
+                </button>
+                <button type="button" className="epub-icon-button" onClick={() => playback.onOpen("chapters")} aria-label="Chapters">
+                  <ListMusic size={18} />
+                </button>
+              </div>
+            </div>
+          ) : onListen ? (
+            <button type="button" className="epub-audiobar-listen" onClick={onListen}>
+              <Play size={15} />
+              <span>Listen while you read</span>
+            </button>
+          ) : null}
+        </footer>
+      ) : hasSync ? (
+        // Guidance and the way back live in a bar under the page, never over
+        // the words: a listener reading ahead must keep every line legible.
+        <div className={`epub-footer ${pinning ? "pinning" : ""}`}>
+          <p className="epub-hint" role="status">{hint}</p>
+          {pinning ? (
+            <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
+              <X size={14} />
+              <span>Cancel</span>
+            </button>
+          ) : awayFromNarration ? (
+            <button type="button" className="epub-footer-action" onClick={resumeFollowing}>
+              <Undo2 size={14} />
+              <span>Return to narration</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {fullscreen && sheet ? (
+        <div className="epub-sheet-layer" role="presentation">
+          <button type="button" className="epub-sheet-scrim" aria-label="Close" onClick={() => setSheet(null)} />
+          <section
+            className="epub-sheet"
+            ref={sheetRootRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={sheet === "contents" ? "Contents" : "Appearance and sync"}
+          >
+            <div className="epub-sheet-grabber" aria-hidden="true" />
+            {sheet === "contents" ? (
+              <>
+                <h3>Contents</h3>
+                {toc.length === 0 ? (
+                  <p className="epub-sheet-hint">This book has no table of contents.</p>
+                ) : (
+                  <ul className="epub-toc">
+                    {toc.map((item) => {
+                      const current = hrefsMatch(selectedTocHref, item.href);
+                      return (
+                        <li key={`${item.href}-${item.label}`} style={{ paddingLeft: `${item.depth * 16}px` }}>
+                          <button
+                            type="button"
+                            className={current ? "current" : ""}
+                            aria-current={current ? "location" : undefined}
+                            onClick={() => {
+                              goToHref(item.href);
+                              setSheet(null);
+                            }}
+                          >
+                            {item.label.trim()}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {companionSwitcher ? (
+                  <>
+                    <h3>Other files</h3>
+                    {companionSwitcher}
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <h3>Appearance</h3>
+                <div className="epub-sheet-row">{themeOptions}</div>
+                <div className="epub-sheet-row">{fontControls}</div>
+                {canFollow || syncTools ? (
+                  <>
+                    <h3>Narration</h3>
+                    {canFollow ? (
+                      <>
+                        <div className="epub-sheet-row">
+                          {followButton}
+                          {pinButton}
+                        </div>
+                        <p className="epub-sheet-hint">
+                          {hasSync
+                            ? hint
+                            : "This book follows by chapter: the reader opens to the chapter being played. Turn following off to read ahead on your own."}
+                        </p>
+                      </>
+                    ) : null}
+                    {syncTools}
+                  </>
+                ) : null}
+              </>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+  return immersive ? createPortal(reader, document.body) : reader;
 }
 
 /**
@@ -2336,6 +3404,12 @@ function MainApp({
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
+  // The ebook reader ships off by default; the narration-follow highlight is a
+  // sub-option beneath it, off by default and behind a warning.
+  const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
+  const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
+  // Following only runs when the reader itself is on.
+  const narrationFollowActive = readalongEnabled && followSyncEnabled;
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
     ios ? readStoredAppearanceMode() : "light"
@@ -2660,10 +3734,13 @@ function MainApp({
   const [searchQuery, setSearchQuery] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
+  const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
+  const readalongPanelRef = useRef<HTMLElement | null>(null);
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
   const [syncMaps, setSyncMaps] = useState<Record<string, SyncMap | null>>({});
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
   const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
@@ -3049,18 +4126,138 @@ function MainApp({
 
   const selectedCanBoost = bookCanBoost(selectedBook);
   const playbackCanBoost = bookCanBoost(playbackBook);
-  const selectedReadalongUrl = selectedBook?.readingFile
-    ? readalongUrl(selectedBook.readingFile.url)
-    : null;
+  const selectedCompanionGroups = useMemo(
+    () => (selectedBook ? groupCompanions(selectedBook) : { text: [], supplements: [], images: [] }),
+    [selectedBook]
+  );
+  const selectedCompanionList = useMemo(
+    () => [...selectedCompanionGroups.text, ...selectedCompanionGroups.supplements],
+    [selectedCompanionGroups]
+  );
+  const galleryAvailable = selectedCompanionGroups.images.length > 0;
+  const activeCompanion =
+    activeCompanionId === GALLERY_COMPANION_ID
+      ? null
+      : selectedCompanionList.find((companion) => companion.id === activeCompanionId)
+        ?? selectedCompanionList.find((companion) => companion.id === selectedBook?.readingFile?.id)
+        ?? selectedCompanionList[0]
+        ?? null;
+  const showGallery = activeCompanionId === GALLERY_COMPANION_ID || (!activeCompanion && galleryAvailable);
+  // The companion URL carries the media token. Until the token is known the
+  // URL would change a moment later and the reader would open the EPUB
+  // twice, so the reader waits for it.
+  const companionUrlReady = !isOperaLibre || !!getStoredMediaToken();
+  const activeCompanionUrl = activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null;
+  const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
   const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
   const selectedSyncFragments =
     isViewingPlayingBook && selectedSyncMap && selectedSyncMap.fragments.length > 0
       ? selectedSyncMap.fragments
       : null;
+  const selectedSyncPrecision = syncMapPrecision(selectedSyncMap);
+  const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap) : null;
+  const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
+  const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
+  // The web now-playing view hides the details block, so while the selected
+  // book is the one playing the reader moves into the playback card instead
+  // of vanishing the moment Play is pressed.
+  // Decided without waiting for the track to resolve: mounting the reader in
+  // the hidden details block first and moving it here a moment later would
+  // open the EPUB twice.
+  const showReaderInNowView =
+    !native
+    && nativePlayerView === "now"
+    && isViewingPlayingBook
+    && readalongOpen
+    && (!!activeCompanion || showGallery);
+  const selectedSyncPrecise =
+    selectedBook?.syncFile?.source === "sidecar" || selectedBook?.syncFile?.source === "generated";
   const canGenerateSync =
     currentUser.isAdmin &&
     !!alignmentStatus?.enabled &&
     selectedBook?.readingFile?.extension === "epub";
+  const readerScope = `${getServerStorageKey()}.${currentUser.id}`;
+
+  const readerOpenedThisSessionRef = useRef<Set<string>>(new Set());
+
+  function readReaderOpenFlag(bookId: string) {
+    try {
+      return window.localStorage.getItem(readerStorageKey(readerScope, bookId, "open")) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeReaderOpenFlag(bookId: string, open: boolean) {
+    try {
+      window.localStorage.setItem(readerStorageKey(readerScope, bookId, "open"), open ? "1" : "0");
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  /** Opens the reader for a book and brings it on screen, on every layout. */
+  function openReadalong(book: Book, companionId: string | null = null) {
+    setSelectedBookId(book.id);
+    setActiveCompanionId(companionId);
+    setReadalongOpen(true);
+    readerOpenedThisSessionRef.current.add(book.id);
+    writeReaderOpenFlag(book.id, true);
+    if (native) {
+      // The native ebook reader covers the whole screen, so whatever is
+      // underneath is left alone; closing returns the listener to it. Extras
+      // (a PDF, pictures) still open inline on the details page.
+      if (!companionId && book.readingFile?.extension === "epub") {
+        return;
+      }
+      setNativeTab("shelf");
+      setNativePlayerView("details");
+    }
+    window.setTimeout(() => {
+      readalongPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }
+
+  function closeReadalong() {
+    setReadalongOpen(false);
+    if (selectedBook) {
+      writeReaderOpenFlag(selectedBook.id, false);
+    }
+  }
+
+  /** Forget a book's loaded sync map so the next look at the reader refetches it. */
+  function forgetSyncMap(bookId: string) {
+    setSyncMaps((existing) => {
+      const { [bookId]: _dropped, ...rest } = existing;
+      return rest;
+    });
+  }
+
+  async function pinNarration(book: Book, fragment: { href: string; text: string }) {
+    setSyncJobError(null);
+    setSyncNotice(null);
+    try {
+      const summary = await addSyncAnchor(book.id, { ...fragment, seconds: bookPosition });
+      forgetSyncMap(book.id);
+      setSyncNotice(
+        `Sync adjusted here. Sentences around this point are re-timed for everyone (${summary.anchorCount} ${summary.anchorCount === 1 ? "adjustment" : "adjustments"} on this book).`
+      );
+    } catch (error) {
+      setSyncJobError(errorMessage(error, "Could not adjust the sync."));
+    }
+  }
+
+  async function clearNarrationPins(book: Book) {
+    setSyncJobError(null);
+    setSyncNotice(null);
+    try {
+      await clearSyncAnchors(book.id);
+      forgetSyncMap(book.id);
+      setSyncNotice("Sync adjustments cleared. The estimate is back to the chapter list alone.");
+    } catch (error) {
+      setSyncJobError(errorMessage(error, "Could not clear the sync adjustments."));
+    }
+  }
 
   async function startSyncGeneration(book: Book) {
     setSyncJobError(null);
@@ -3441,11 +4638,28 @@ function MainApp({
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
   }, [currentUser.id, playbackBookId]);
 
+  // A book the listener was reading along with reopens its reader when it is
+  // selected again; a book with nothing to read closes it.
+  const selectedBookIdForReader = selectedBook?.id ?? null;
   useEffect(() => {
-    if (!selectedBook?.readingFile) {
+    if (!selectedBookIdForReader || !readalongAvailable) {
       setReadalongOpen(false);
+      return;
     }
-  }, [selectedBook?.readingFile]);
+    setActiveCompanionId(null);
+    setSyncNotice(null);
+    let remembered = false;
+    try {
+      remembered =
+        window.localStorage.getItem(readerStorageKey(readerScope, selectedBookIdForReader, "open")) === "1";
+    } catch {
+      remembered = false;
+    }
+    // On the web the reader pane reopens where it was left. The native reader
+    // is a full-screen layer, so it only comes back for a book opened during
+    // this run, never over the shelf at launch.
+    setReadalongOpen(remembered && (!native || readerOpenedThisSessionRef.current.has(selectedBookIdForReader)));
+  }, [native, readalongAvailable, readerScope, selectedBookIdForReader]);
 
   useEffect(() => {
     if (!currentUser.isAdmin) {
@@ -3456,7 +4670,8 @@ function MainApp({
       .catch(() => setAlignmentStatus(null));
   }, [currentUser.isAdmin]);
 
-  const syncMapBookId = readalongOpen && selectedBook?.syncFile ? selectedBook.id : null;
+  const syncMapBook = readalongOpen && selectedBook?.syncFile ? selectedBook : null;
+  const syncMapBookId = syncMapBook?.id ?? null;
   useEffect(() => {
     if (!syncMapBookId || syncMaps[syncMapBookId] !== undefined) {
       return;
@@ -3468,15 +4683,17 @@ function MainApp({
           setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
         }
       })
-      .catch(() => {
+      .catch(async () => {
+        // No server in reach: a downloaded book carries its own sync map.
+        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: null }));
+          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [syncMapBookId, syncMaps]);
+  }, [syncMapBook, syncMapBookId, syncMaps]);
 
   useEffect(() => {
     if (!syncJob || syncJob.status !== "running") {
@@ -5687,6 +6904,22 @@ function MainApp({
     if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
+  function toggleReadalongEnabled() {
+    const enabled = !readalongEnabled;
+    writeReadalongEnabled(enabled);
+    setReadalongEnabled(enabled);
+    if (!enabled) {
+      setReadalongOpen(false);
+      if (selectedBook) writeReaderOpenFlag(selectedBook.id, false);
+    }
+  }
+
+  function toggleFollowSyncEnabled() {
+    const enabled = !followSyncEnabled;
+    writeFollowSyncEnabled(enabled);
+    setFollowSyncEnabled(enabled);
+  }
+
   async function refreshLibrary() {
     setIsLoading(true);
     if (localMode) {
@@ -6058,6 +7291,27 @@ function MainApp({
           <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
+      {isOperaLibre ? (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={readalongEnabled}
+          onClick={toggleReadalongEnabled}
+        >
+          <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
+        </button>
+      ) : null}
+      {isOperaLibre && readalongEnabled ? (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={followSyncEnabled}
+          onClick={toggleFollowSyncEnabled}
+          title="Experimental: the highlight can drift and may move the page to match the audio."
+        >
+          <LocateFixed size={14} /> Follow narration: {followSyncEnabled ? "On" : "Off"} (experimental)
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -6071,6 +7325,255 @@ function MainApp({
       </button>
     </div>
   );
+
+  // Sync actions and notices, shared by the inline panel header and the
+  // full-screen reader's appearance sheet.
+  const readerSyncActions = selectedBook ? (
+    <>
+      {canGenerateSync && activeCompanionIsBook ? (
+        <button
+          type="button"
+          className="download-btn"
+          disabled={syncJob?.status === "running"}
+          onClick={() => void startSyncGeneration(selectedBook)}
+          title={
+            selectedSyncPrecise
+              ? "Regenerate the narration sync map"
+              : "Align the narration to the text for sentence and word highlighting"
+          }
+        >
+          {syncJob?.status === "running" ? (
+            <LoaderCircle size={13} className="spin-icon" />
+          ) : (
+            <Sparkles size={13} />
+          )}
+          <span>{selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
+        </button>
+      ) : null}
+      {currentUser.isAdmin && activeCompanionIsBook && (selectedSyncMap?.manualAnchorCount ?? 0) > 0 ? (
+        <button
+          type="button"
+          className="download-btn"
+          onClick={() => void clearNarrationPins(selectedBook)}
+          title="Forget every Sync here adjustment on this book"
+        >
+          <RotateCcw size={13} />
+          <span>Clear adjustments</span>
+        </button>
+      ) : null}
+    </>
+  ) : null;
+  const readerSyncMessages = (
+    <>
+      {syncJob && syncJob.status === "running" ? (
+        <div className="readalong-genstatus">
+          Aligning the narration to the text… this can take a while for long books.
+        </div>
+      ) : syncJob && syncJob.status === "failed" ? (
+        <div className="readalong-genstatus error">
+          {syncJob.error ?? "Readalong sync generation failed."}
+        </div>
+      ) : null}
+      {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
+      {syncNotice ? <div className="readalong-genstatus notice">{syncNotice}</div> : null}
+      {currentUser.isAdmin
+      && activeCompanionIsBook
+      && activeCompanion?.extension === "epub"
+      && !selectedSyncPrecise
+      && alignmentStatus
+      && !alignmentStatus.enabled ? (
+        <div className="readalong-genstatus">
+          Following is approximate on this server. Install echogarden beside OperaLibre to align the
+          narration word for word.
+        </div>
+      ) : null}
+    </>
+  );
+  const companionTabs =
+    selectedCompanionList.length + (galleryAvailable ? 1 : 0) > 1 ? (
+      <div className="readalong-tabs" role="tablist" aria-label="Companion files">
+        {selectedCompanionList.map((companion) => {
+          const selected = !showGallery && activeCompanion?.id === companion.id;
+          return (
+            <button
+              type="button"
+              role="tab"
+              key={companion.id}
+              aria-selected={selected}
+              className={selected ? "selected" : ""}
+              onClick={() => setActiveCompanionId(companion.id)}
+              title={describeCompanion(companion)}
+            >
+              {companion.kind === "book" ? <BookOpen size={12} /> : <FileText size={12} />}
+              <span>{companionKindLabel(companion)}</span>
+              <small>{companion.fileName}</small>
+            </button>
+          );
+        })}
+        {galleryAvailable ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={showGallery}
+            className={showGallery ? "selected" : ""}
+            onClick={() => setActiveCompanionId(GALLERY_COMPANION_ID)}
+          >
+            <Images size={12} />
+            <span>Pictures</span>
+            <small>{selectedCompanionGroups.images.length}</small>
+          </button>
+        ) : null}
+      </div>
+    ) : null;
+  const epubReaderElement =
+    selectedBook && activeCompanion && activeCompanionUrl && activeCompanion.extension === "epub" && !showGallery ? (
+      <EpubReadalong
+        key={activeCompanion.id}
+        bookId={selectedBook.id}
+        storageScope={readerScope}
+        title={selectedBook.title}
+        url={activeCompanionUrl}
+        loadBytes={(companionUrl, signal) =>
+          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
+        }
+        syncTarget={
+          narrationFollowActive && activeCompanionIsBook && !selectedSyncFragments && isViewingPlayingBook && activeChapter
+            ? activeChapter
+            : null
+        }
+        syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
+        precision={narrationFollowActive && activeCompanionIsBook ? selectedSyncPrecision : null}
+        positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
+        onSeekTo={
+          narrationFollowActive
+            ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
+            : undefined
+        }
+        onPinNarration={
+          narrationFollowActive && activeCompanionIsBook && isViewingPlayingBook && selectedSyncPrecision === "estimated"
+            ? (fragment) => void pinNarration(selectedBook, fragment)
+            : undefined
+        }
+        immersive={native}
+        onClose={closeReadalong}
+        chapterTitle={isViewingPlayingBook ? activeChapter?.title ?? null : null}
+        positionLabel={
+          isViewingPlayingBook
+            ? formatTime(activeChapter ? Math.max(0, displayBookPosition - activeChapter.startSeconds) : displayBookPosition)
+            : null
+        }
+        playback={
+          isViewingPlayingBook
+            ? {
+                playing: isPlaying,
+                speed,
+                sleepRemaining,
+                onToggle: togglePlayback,
+                onSkip: seekBy,
+                onOpen: (sheet) => setNativePlayerSheet(sheet)
+              }
+            : null
+        }
+        onListen={isViewingPlayingBook ? undefined : () => playSelectedBook(selectedBook)}
+        syncTools={
+          narrationFollowActive && (readerSyncActions || readerSyncMessages) ? (
+            <>
+              <div className="epub-sheet-row">{readerSyncActions}</div>
+              {readerSyncMessages}
+            </>
+          ) : null
+        }
+        companionSwitcher={companionTabs}
+      />
+    ) : null;
+  // The native ebook reader is a full-screen layer of its own; everything
+  // else (extras, pictures, the web reader) lives in the inline panel.
+  const immersiveEpub = native && !!epubReaderElement;
+
+  const readalongPanelElement =
+    readalongOpen && selectedBook && (activeCompanion || showGallery) ? immersiveEpub ? (
+      epubReaderElement
+    ) : (
+      <section
+        className="readalong-panel"
+        aria-label={`${selectedBook.title} read along`}
+        ref={readalongPanelRef}
+      >
+        <div className="readalong-header">
+          <div>
+            <span className="section-label">
+              {showGallery ? <Images size={13} /> : <BookOpen size={13} />}{" "}
+              {showGallery ? "Pictures" : activeCompanion?.kind === "supplement" ? "Extras" : "Read along"}
+            </span>
+            <strong>
+              {showGallery
+                ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
+                : activeCompanion?.fileName}
+            </strong>
+            <span className="readalong-mode">
+              {showGallery
+                ? "Loose pictures found beside the audio"
+                : activeCompanion
+                  ? `${activeCompanionIsBook && selectedReadAlongMode ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title} · ` : ""}${describeCompanion(activeCompanion)}${
+                      activeCompanionIsBook && selectedSyncMap?.manualAnchorCount
+                        ? ` · ${selectedSyncMap.manualAnchorCount} sync ${selectedSyncMap.manualAnchorCount === 1 ? "adjustment" : "adjustments"}`
+                        : ""
+                    }`
+                  : null}
+            </span>
+          </div>
+          <div className="readalong-actions">
+            {narrationFollowActive ? readerSyncActions : null}
+            {activeCompanionUrl && !showGallery ? (
+              <a className="download-btn" href={activeCompanionUrl} target="_blank" rel="noreferrer">
+                <ExternalLink size={13} />
+                <span>Open</span>
+              </a>
+            ) : null}
+            <button type="button" className="download-btn" onClick={closeReadalong} aria-label="Close the reader">
+              <X size={13} />
+              <span>Close</span>
+            </button>
+          </div>
+        </div>
+        {companionTabs}
+        {narrationFollowActive ? readerSyncMessages : null}
+        {showGallery ? (
+          <div className="readalong-gallery">
+            {selectedCompanionGroups.images.map((image) => (
+              <a key={image.id} href={readalongUrl(image.url)} target="_blank" rel="noreferrer">
+                <img src={readalongUrl(image.url)} alt={image.fileName} loading="lazy" />
+                <span>{image.fileName}</span>
+              </a>
+            ))}
+          </div>
+        ) : epubReaderElement ? (
+          epubReaderElement
+        ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
+          <iframe
+            className="readalong-frame"
+            src={activeCompanionUrl}
+            title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
+            sandbox=""
+            referrerPolicy="no-referrer"
+          />
+        ) : activeCompanion ? (
+          <div className="readalong-fallback">
+            <ScrollText size={36} strokeWidth={1.4} />
+            <p>
+              {activeCompanion.extension.toUpperCase()} files are available to open, but this browser
+              cannot preview them inline yet.
+            </p>
+          </div>
+        ) : null}
+        {activeChapter && !showGallery ? (
+          <div className="readalong-sync">
+            <span>{activeChapter.title}</span>
+            <span>{formatTime(displayBookPosition)}</span>
+          </div>
+        ) : null}
+      </section>
+    ) : null;
 
   return (
     <main
@@ -6688,6 +8191,17 @@ function MainApp({
                             {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
                           </span>
                         ) : null}
+                        {readalongEnabled && book.readingFile ? (
+                          <span className="book-readalong-tag" title="Ebook included: read along while you listen">
+                            <BookOpen size={11} strokeWidth={1.6} />
+                            Read along
+                          </span>
+                        ) : readalongEnabled && hasExtras(book) ? (
+                          <span className="book-readalong-tag extras" title="Pictures or a supplement are included">
+                            <Images size={11} strokeWidth={1.6} />
+                            Extras
+                          </span>
+                        ) : null}
                         <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
                           <em>{bookProgressLabel(book)}</em>
                           {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
@@ -6816,7 +8330,7 @@ function MainApp({
       <section
         className={`player-pane native-player-view-${nativePlayerView} ${
           isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-        }`}
+        } ${showReaderInNowView ? "has-reader" : ""}`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
         onTouchStart={beginBookDetailsBackSwipe}
@@ -6841,7 +8355,7 @@ function MainApp({
         {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
           <>
             {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
-              <section className="native-now-playing" aria-label="Now playing">
+              <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
                 <div className="native-now-artwork">
                   <CoverArt book={nowPlayingBook} size="large" />
                 </div>
@@ -6970,6 +8484,18 @@ function MainApp({
                   >
                     <ListMusic size={16} /> Chapters
                   </button>
+                  {readalongEnabled && playbackBook?.readingFile ? (
+                    <button
+                      type="button"
+                      className="native-now-read"
+                      onClick={() => {
+                        haptic("light");
+                        openReadalong(playbackBook);
+                      }}
+                    >
+                      <BookOpen size={16} /> Read along
+                    </button>
+                  ) : null}
                 </div>
 
                 {!native ? (
@@ -7058,6 +8584,7 @@ function MainApp({
                     </section>
                   </div>
                 ) : null}
+                {showReaderInNowView ? <div className="web-now-reader">{readalongPanelElement}</div> : null}
               </section>
             ) : null}
             {/* On the shelf tab the details page is a child page of the library
@@ -7153,16 +8680,16 @@ function MainApp({
                         <span>Mark Unplayed</span>
                       </button>
                     ) : null}
-                    {selectedBook.readingFile ? (
+                    {readalongAvailable ? (
                       <button
                         className={`download-btn ${readalongOpen ? "active" : ""}`}
                         type="button"
-                        onClick={() => setReadalongOpen((open) => !open)}
+                        onClick={() => (readalongOpen ? closeReadalong() : openReadalong(selectedBook))}
                         aria-pressed={readalongOpen}
-                        aria-label={`${readalongOpen ? "Close" : "Open"} readalong for ${selectedBook.title}`}
+                        aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
                       >
-                        <ScrollText size={13} />
-                        <span>Read Along</span>
+                        {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
+                        <span>{selectedBook.readingFile ? "Read Along" : "Extras"}</span>
                       </button>
                     ) : null}
                     {selectedBook.deviceBookId ? (
@@ -7303,95 +8830,42 @@ function MainApp({
               </div>
             ) : null}
 
-            {readalongOpen && selectedBook.readingFile && selectedReadalongUrl ? (
-              <section className="readalong-panel" aria-label={`${selectedBook.title} readalong`}>
-                <div className="readalong-header">
-                  <div>
-                    <span className="section-label"><ScrollText size={13} /> Readalong</span>
-                    <strong>{selectedBook.readingFile.fileName}</strong>
-                  </div>
-                  <div className="readalong-actions">
-                    {canGenerateSync ? (
-                      <button
-                        type="button"
-                        className="download-btn"
-                        disabled={syncJob?.status === "running"}
-                        onClick={() => void startSyncGeneration(selectedBook)}
-                        title={
-                          selectedBook.syncFile
-                            ? "Regenerate the narration sync map"
-                            : "Generate a narration sync map for sentence highlighting"
-                        }
-                      >
-                        {syncJob?.status === "running" ? (
-                          <LoaderCircle size={13} className="spin-icon" />
-                        ) : (
-                          <Sparkles size={13} />
-                        )}
-                        <span>{selectedBook.syncFile ? "Re-sync" : "Sync"}</span>
-                      </button>
-                    ) : null}
-                    <a className="download-btn" href={selectedReadalongUrl} target="_blank" rel="noreferrer">
-                      <Download size={13} />
-                      <span>Open</span>
-                    </a>
-                  </div>
+            {!readalongOpen && readalongAvailable ? (
+              <section className={`readalong-invite ${selectedBook.readingFile ? "" : "extras"}`} aria-label="Read along">
+                <span className="readalong-invite-icon" aria-hidden="true">
+                  {selectedBook.readingFile ? <BookOpen size={22} strokeWidth={1.4} /> : <Images size={22} strokeWidth={1.4} />}
+                </span>
+                <div className="readalong-invite-copy">
+                  <strong>
+                    {selectedBook.readingFile
+                      ? selectedHasExtras
+                        ? "Read along with the ebook — extras included"
+                        : "Read along with the ebook"
+                      : "Extras included with this book"}
+                  </strong>
+                  <span>
+                    {selectedBook.readingFile && selectedReadAlongMode
+                      ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title}. ${READ_ALONG_MODE_LABELS[selectedReadAlongMode].detail}`
+                      : [
+                          selectedCompanionGroups.supplements.length > 0
+                            ? `${selectedCompanionGroups.supplements.length} picture ${selectedCompanionGroups.supplements.length === 1 ? "document" : "documents"}`
+                            : null,
+                          selectedCompanionGroups.images.length > 0
+                            ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
+                            : null
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                  </span>
                 </div>
-                {syncJob && syncJob.status === "running" ? (
-                  <div className="readalong-genstatus">
-                    Generating narration sync… this can take a while for long books.
-                  </div>
-                ) : syncJob && syncJob.status === "failed" ? (
-                  <div className="readalong-genstatus error">
-                    {syncJob.error ?? "Readalong sync generation failed."}
-                  </div>
-                ) : null}
-                {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
-                {selectedBook.readingFile.extension === "epub" ? (
-                  <EpubReadalong
-                    title={selectedBook.title}
-                    url={selectedReadalongUrl}
-                    syncTarget={
-                      !selectedSyncFragments && isViewingPlayingBook && activeChapter
-                        ? activeChapter
-                        : null
-                    }
-                    syncFragments={selectedSyncFragments}
-                    positionSeconds={isViewingPlayingBook ? bookPosition : 0}
-                    onSeekTo={(seconds) => {
-                      seekBookPositionInBook(selectedBook, seconds, true);
-                      if (native) {
-                        setNativeTab("reading");
-                        setNativePlayerView("now");
-                        playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-                      }
-                    }}
-                  />
-                ) : canPreviewReadalong(selectedBook) ? (
-                  <iframe
-                    className="readalong-frame"
-                    src={selectedReadalongUrl}
-                    title={`${selectedBook.title} readalong`}
-                    sandbox=""
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="readalong-fallback">
-                    <ScrollText size={36} strokeWidth={1.4} />
-                    <p>
-                      {selectedBook.readingFile.extension.toUpperCase()} files are available to open, but this browser
-                      cannot preview them inline yet.
-                    </p>
-                  </div>
-                )}
-                {activeChapter ? (
-                  <div className="readalong-sync">
-                    <span>{activeChapter.title}</span>
-                    <span>{formatTime(displayBookPosition)}</span>
-                  </div>
-                ) : null}
+                <button type="button" className="download-btn active" onClick={() => openReadalong(selectedBook)}>
+                  {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
+                  <span>{selectedBook.readingFile ? "Open reader" : "View extras"}</span>
+                </button>
               </section>
             ) : null}
+
+            {showReaderInNowView ? null : readalongPanelElement}
 
             {isViewingPlayingBook && currentTrack ? (
               <>
@@ -8470,6 +9944,44 @@ function MainApp({
                 <span aria-hidden="true" />
               </button>
             </div>
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Ebook reader (beta)</strong>
+                <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={readalongEnabled}
+                aria-label="Ebook reader"
+                onClick={toggleReadalongEnabled}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+            {readalongEnabled ? (
+              <div className="settings-toggle-row settings-subrow">
+                <span>
+                  <strong>Follow the narration</strong>
+                  <small>Highlights the sentence being read and turns the page with the audio.</small>
+                  <small className="settings-warning">
+                    Experimental: the highlight can drift, and turning it on may move the page to match
+                    the audio while you read.
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  className="settings-switch"
+                  role="switch"
+                  aria-checked={followSyncEnabled}
+                  aria-label="Follow the narration"
+                  onClick={toggleFollowSyncEnabled}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
           </section>
 
           {sharedProgressAvailable ? (

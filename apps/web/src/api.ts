@@ -2,6 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import type {
   AlignmentStatus,
+  SyncAnchorSummary,
   AuthStatus,
   AuthUser,
   Book,
@@ -1123,6 +1124,20 @@ export async function getSyncMap(bookId: string) {
 export async function generateSyncMap(bookId: string) {
   return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
     method: "POST"
+  });
+}
+
+/** "The narrator is reading this sentence at this second": re-times the book's estimated sync map. */
+export async function addSyncAnchor(bookId: string, anchor: { href: string; text: string; seconds: number }) {
+  return request<SyncAnchorSummary>(`/api/books/${encodeURIComponent(bookId)}/sync/anchors`, {
+    method: "POST",
+    body: JSON.stringify(anchor)
+  });
+}
+
+export async function clearSyncAnchors(bookId: string) {
+  return request<SyncAnchorSummary>(`/api/books/${encodeURIComponent(bookId)}/sync/anchors`, {
+    method: "DELETE"
   });
 }
 

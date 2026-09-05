@@ -125,6 +125,7 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         published_date: None,
         asin: None,
         reading_file: None,
+        companions: Vec::new(),
         sync_file: None,
         chapters: Vec::new(),
         metadata: Default::default(),
@@ -809,9 +810,15 @@ async fn invalid_requested_range_returns_416_with_file_size() {
         HeaderValue::from_static("bytes=1000-"),
     );
 
-    let response = super::serve_file_response(&path, &[root.path()], headers, None)
-        .await
-        .unwrap();
+    let response = super::serve_file_response(
+        &path,
+        &[root.path()],
+        headers,
+        None,
+        super::FileCaching::Private,
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(
         response.headers()[axum::http::header::CONTENT_RANGE],
@@ -825,9 +832,15 @@ async fn empty_file_without_range_returns_empty_200() {
     let path = root.path().join("empty.txt");
     std::fs::write(&path, []).unwrap();
 
-    let response = super::serve_file_response(&path, &[root.path()], HeaderMap::new(), None)
-        .await
-        .unwrap();
+    let response = super::serve_file_response(
+        &path,
+        &[root.path()],
+        HeaderMap::new(),
+        None,
+        super::FileCaching::Private,
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[axum::http::header::CONTENT_LENGTH], "0");
 }
@@ -1328,6 +1341,24 @@ fn query_tokens_are_limited_to_read_only_media_routes() {
     assert!(super::query_token_allowed(
         &Method::GET,
         "/abs/api/books/book/tracks/track/stream"
+    ));
+    // The reader in the phone apps fetches the ebook and its sync map with
+    // the media token: no cookie, and a plain fetch carries no bearer.
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/api/books/book/companions/file"
+    ));
+    assert!(super::query_token_allowed(
+        &Method::GET,
+        "/api/books/book/sync"
+    ));
+    assert!(!super::query_token_allowed(
+        &Method::POST,
+        "/api/books/book/sync/anchors"
+    ));
+    assert!(!super::query_token_allowed(
+        &Method::GET,
+        "/api/books/book/sync/generate"
     ));
     assert!(!super::query_token_allowed(&Method::GET, "/api/users"));
     assert!(!super::query_token_allowed(
@@ -4830,6 +4861,156 @@ fn a_shrink_confirms_only_when_the_same_books_are_found() {
         super::assess_scan(&identities, super::DEFAULT_ROOT_ID, &steady, &[], root).commits(),
         "a stable reduced library is eventually accepted"
     );
+}
+
+/// Runs the companion classifier, the chapter matcher, and the sync estimate
+/// against a real book. Not part of the suite: point it at files with
+/// `OPERALIBRE_INSPECT_EPUB` and `OPERALIBRE_INSPECT_AUDIO` and run
+/// `cargo test -- --ignored inspect_real_book --nocapture`.
+#[test]
+#[ignore]
+fn inspect_real_book() {
+    use crate::{FsPath, alignment};
+    let epub_path = std::env::var("OPERALIBRE_INSPECT_EPUB").expect("OPERALIBRE_INSPECT_EPUB");
+    let audio_path = std::env::var("OPERALIBRE_INSPECT_AUDIO").expect("OPERALIBRE_INSPECT_AUDIO");
+    let metadata = super::read_track_metadata(FsPath::new(&audio_path));
+    let duration = metadata.duration_seconds.unwrap_or(0.0);
+    println!(
+        "audio: {:?} duration {:.0}s chapters {}",
+        metadata.title,
+        duration,
+        metadata.chapters.len()
+    );
+    for chapter in metadata.chapters.iter().take(120) {
+        println!(
+            "  audio chapter {:>9.1}s  {}",
+            chapter.start_seconds, chapter.title
+        );
+    }
+    let epub_bytes = std::fs::read(&epub_path).unwrap();
+    let analysis = super::analyze_epub(&epub_bytes);
+    println!(
+        "epub: {analysis:?} -> {:?}",
+        super::classify(&analysis, "epub", Some(duration))
+    );
+    let epub = alignment::parse_epub(&epub_bytes).unwrap();
+    println!(
+        "epub sections {} toc {}",
+        epub.sections.len(),
+        epub.toc.len()
+    );
+    for entry in epub.toc.iter().take(160) {
+        println!("  toc [{:>3}] {}", entry.spine_index, entry.title);
+    }
+    let chapters = metadata
+        .chapters
+        .iter()
+        .enumerate()
+        .map(|(index, chapter)| alignment::AudioChapter {
+            title: chapter.title.clone(),
+            start_seconds: chapter.start_seconds,
+            end_seconds: chapter
+                .end_seconds
+                .or_else(|| {
+                    metadata
+                        .chapters
+                        .get(index + 1)
+                        .map(|next| next.start_seconds)
+                })
+                .unwrap_or(duration),
+        })
+        .collect::<Vec<_>>();
+    let targets = chapters
+        .iter()
+        .map(|chapter| alignment::parse_label(&chapter.title))
+        .collect::<Vec<_>>();
+    let items = epub
+        .toc
+        .iter()
+        .map(|entry| alignment::parse_label(&entry.title))
+        .collect::<Vec<_>>();
+    let matched = alignment::match_in_order(&targets, &items);
+    let mut matched_count = 0;
+    for (index, item) in matched.iter().enumerate() {
+        match item {
+            Some(item) => {
+                matched_count += 1;
+                println!(
+                    "  match  {:<40} -> {}",
+                    chapters[index].title, epub.toc[*item].title
+                );
+            }
+            None => println!("  unmatched {}", chapters[index].title),
+        }
+    }
+    println!(
+        "matched {matched_count} of {} audio chapters",
+        chapters.len()
+    );
+    let plan = alignment::plan_estimate(&epub, &chapters, duration);
+    println!("fitted model {:?}", plan.model);
+    let default_model = alignment::ReadingModel::default();
+    let mut worst = Vec::new();
+    for (anchor, sentences) in plan.anchors.iter() {
+        let span = anchor.end_seconds - anchor.start_seconds;
+        let predicted: f64 = sentences
+            .iter()
+            .map(|s| {
+                plan.model
+                    .seconds(&alignment::sentence_features_for_test(s))
+            })
+            .sum();
+        let baseline: f64 = sentences
+            .iter()
+            .map(|s| default_model.seconds(&alignment::sentence_features_for_test(s)))
+            .sum();
+        worst.push((
+            (predicted - span) / span * 100.0,
+            (baseline - span) / span * 100.0,
+            span,
+        ));
+    }
+    let mean_abs = |pick: fn(&(f64, f64, f64)) -> f64| {
+        worst.iter().map(|w| pick(w).abs()).sum::<f64>() / worst.len() as f64
+    };
+    println!(
+        "chapter length error: fitted mean {:.1}% (default {:.1}%) over {} chapters",
+        mean_abs(|w| w.0),
+        mean_abs(|w| w.1),
+        worst.len()
+    );
+    let started = std::time::Instant::now();
+    let map = alignment::estimate_sync_map(&epub, &chapters, duration, &[]).unwrap();
+    println!(
+        "estimate: anchors {:?} fragments {} in {:?}, json {} KB",
+        map.anchor_count,
+        map.fragments.len(),
+        started.elapsed(),
+        serde_json::to_string(&map).unwrap().len() / 1024
+    );
+    for fragment in map.fragments.iter().step_by(map.fragments.len() / 12) {
+        println!(
+            "  {:>9.1}s {:<22} {}",
+            fragment.start_seconds,
+            fragment.href,
+            fragment.text.chars().take(70).collect::<String>()
+        );
+    }
+}
+
+#[test]
+fn sync_files_are_only_named_after_plain_book_ids() {
+    assert_eq!(
+        crate::sync::sync_file_book_id("a1f092a9b8796c43").unwrap(),
+        "a1f092a9b8796c43"
+    );
+    assert!(crate::sync::sync_file_book_id("book-1_2").is_ok());
+    for bad in ["", "../etc/passwd", "a/b", "a\\b", "id.json", "id name"] {
+        assert!(
+            crate::sync::sync_file_book_id(bad).is_err(),
+            "{bad:?} was accepted"
+        );
+    }
 }
 
 #[cfg(unix)]

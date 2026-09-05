@@ -25,7 +25,15 @@ export type Book = {
   genres: string[];
   publishedDate: string | null;
   asin: string | null;
+  /** The companion read-along follows: the primary book-kind document. */
   readingFile: ReadingFile | null;
+  /**
+   * Every document and picture beside the audio, each classified as the
+   * book's text, a picture supplement, or a loose image. Absent on servers
+   * released before companion classification, on Jellyfin, and on device
+   * books.
+   */
+  companions?: CompanionFile[];
   syncFile: SyncFile | null;
   chapters: Chapter[];
   metadata: MetadataSummary;
@@ -79,24 +87,59 @@ export type ReadingFile = {
   url: string;
 };
 
+export type CompanionKind = "book" | "supplement" | "image";
+
+export type CompanionFile = {
+  id: string;
+  fileName: string;
+  extension: string;
+  contentType: string;
+  url: string;
+  kind: CompanionKind;
+  sizeBytes: number;
+  pageCount?: number;
+  imageCount?: number;
+  textCharacters?: number;
+  /** The document could not be opened, so its kind is a guess from the extension. */
+  unreadable?: boolean;
+};
+
 export type SyncFile = {
   fileName: string;
-  source: "sidecar" | "generated" | string;
+  /**
+   * `sidecar` and `generated` are forced alignments; `estimated` means the
+   * server will interpolate a map from the chapter list on request.
+   */
+  source: "sidecar" | "generated" | "estimated" | string;
   url: string;
 };
+
+/** `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside the fragment text. */
+export type SyncWord = [number, number, number, number];
 
 export type SyncFragment = {
   startSeconds: number;
   endSeconds: number;
   href: string;
   text: string;
+  words?: SyncWord[];
 };
 
 export type SyncMap = {
   version: number;
   generator?: string | null;
   generatedAt?: string | null;
+  /** `sentence` for a forced alignment, `estimated` for an interpolation; absent in version 1. */
+  precision?: "sentence" | "estimated" | string | null;
+  /** For an estimate: audio chapters pinned to the table of contents. Zero means one whole-book guess. */
+  anchorCount?: number | null;
+  /** For an estimate: listener-placed "Sync here" anchors that re-timed its chapters. */
+  manualAnchorCount?: number | null;
   fragments: SyncFragment[];
+};
+
+export type SyncAnchorSummary = {
+  anchorCount: number;
 };
 
 export type AlignmentStatus = {

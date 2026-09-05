@@ -14,6 +14,35 @@ pub(crate) const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
 /// so a shared cache must never hold one.
 pub(crate) const MEDIA_CACHE_CONTROL: &str = "private";
 
+/// Companion documents and sync maps are held by the browser and checked
+/// against the file before use, so reopening a book costs a small
+/// conditional request rather than the whole ebook again.
+pub(crate) const COMPANION_CACHE_CONTROL: &str = "private, no-cache";
+
+/// Whether a served file may be kept by the client between requests.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileCaching {
+    /// Streamed media: never stored, never revalidated.
+    Private,
+    /// Kept and revalidated with an `ETag`.
+    Revalidated,
+}
+
+/// A validator for a file on disk: its length and modification time, which
+/// together change whenever the library file is replaced.
+fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!(
+        "\"{:x}-{:x}\"",
+        metadata.len(),
+        modified.as_nanos()
+    ))
+}
+
 pub(crate) async fn get_cover_art(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -82,15 +111,53 @@ pub(crate) async fn get_reading_file(
             .cloned()
             .ok_or(ApiError::not_found("Readalong path not found"))?
     };
+    serve_companion_document(&state, &file_path, headers).await
+}
 
+/// Any companion beside the book — the text, a picture supplement, or a
+/// loose image — by the id the book response gave it.
+pub(crate) async fn get_companion_file(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path((book_id, companion_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    let file_path = {
+        let library = state.library.read().await;
+        let book = library.book(&book_id)?;
+        book.companions
+            .iter()
+            .find(|companion| companion.id == companion_id)
+            .ok_or(ApiError::not_found("Companion file not found"))?;
+        library
+            .reading_paths
+            .get(&companion_id)
+            .cloned()
+            .ok_or(ApiError::not_found("Companion path not found"))?
+    };
+    serve_companion_document(&state, &file_path, headers).await
+}
+
+async fn serve_companion_document(
+    state: &AppState,
+    file_path: &FsPath,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let isolate_html = file_path
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
             extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
         });
-    let mut response =
-        serve_file_response(&file_path, &[&state.library_root], headers, None).await?;
+    let mut response = serve_file_response(
+        file_path,
+        &[&state.library_root],
+        headers,
+        None,
+        FileCaching::Revalidated,
+    )
+    .await?;
     // Companion files come from the audiobook library, not the application
     // bundle, so no readalong type may be re-interpreted as active content —
     // a .txt sniffed as HTML is exactly what this prevents.
@@ -132,7 +199,14 @@ pub(crate) async fn stream_track(
             .ok_or(ApiError::not_found("Track path not found"))?
     };
 
-    serve_file_response(&file_path, &[&state.library_root], headers, None).await
+    serve_file_response(
+        &file_path,
+        &[&state.library_root],
+        headers,
+        None,
+        FileCaching::Private,
+    )
+    .await
 }
 
 /// `mime_guess` types the MPEG-4 audio extensions in ways no client acts on:
@@ -161,6 +235,7 @@ pub(crate) async fn serve_file_response(
     allowed_roots: &[&FsPath],
     headers: HeaderMap,
     content_disposition: Option<String>,
+    caching: FileCaching,
 ) -> Result<Response, ApiError> {
     let file_path = file_path.to_path_buf();
     let path_for_open = file_path.clone();
@@ -175,6 +250,24 @@ pub(crate) async fn serve_file_response(
             .map_err(|_| ApiError::not_found("Media file not found"))?;
     let file_size = metadata.len();
     let content_type = media_content_type(&file_path);
+    let etag = match caching {
+        FileCaching::Private => None,
+        FileCaching::Revalidated => file_etag(&metadata),
+    };
+    let cache_control = match caching {
+        FileCaching::Private => MEDIA_CACHE_CONTROL,
+        FileCaching::Revalidated => COMPANION_CACHE_CONTROL,
+    };
+    // The client already holds this exact file; a range of it is moot.
+    if let Some(etag) = etag.as_deref()
+        && if_none_match_matches(&headers, etag)
+    {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(ETAG, etag)
+            .header(CACHE_CONTROL, cache_control)
+            .body(Body::empty())?);
+    }
     // A range this server cannot serve (another unit, several ranges, a
     // malformed spec) is ignored and the whole file goes out, as RFC 9110
     // allows; only a well-formed byte range outside the file earns a 416.
@@ -195,7 +288,7 @@ pub(crate) async fn serve_file_response(
             .header(ACCEPT_RANGES, "bytes")
             .header(CONTENT_TYPE, content_type)
             .header(CONTENT_LENGTH, "0")
-            .header(CACHE_CONTROL, MEDIA_CACHE_CONTROL);
+            .header(CACHE_CONTROL, cache_control);
         if let Some(content_disposition) = content_disposition {
             response =
                 response.header(axum::http::header::CONTENT_DISPOSITION, content_disposition);
@@ -219,7 +312,10 @@ pub(crate) async fn serve_file_response(
         .header(ACCEPT_RANGES, "bytes")
         .header(CONTENT_TYPE, content_type)
         .header(CONTENT_LENGTH, (end - start + 1).to_string())
-        .header(CACHE_CONTROL, MEDIA_CACHE_CONTROL);
+        .header(CACHE_CONTROL, cache_control);
+    if let Some(etag) = etag {
+        response = response.header(ETAG, etag);
+    }
 
     if status == StatusCode::PARTIAL_CONTENT {
         response = response.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));

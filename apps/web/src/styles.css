@@ -1697,6 +1697,177 @@ img.large-cover {
   padding: 18px;
   border: 1px solid rgba(var(--ink-rgb), 0.18);
   background: rgba(var(--lift-rgb), 0.34);
+  scroll-margin-top: 16px;
+}
+
+/* The invitation to read along: shown whenever a selected book has an
+   ebook or extras and the reader is closed. */
+.readalong-invite {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.22);
+  border-left: 3px solid var(--oxblood);
+  background: rgba(var(--lift-rgb), 0.34);
+}
+
+.readalong-invite.extras {
+  border-left-color: var(--gold);
+}
+
+.readalong-invite-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  color: var(--oxblood);
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-radius: 50%;
+}
+
+.readalong-invite.extras .readalong-invite-icon {
+  color: var(--gold);
+}
+
+.readalong-invite-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.readalong-invite-copy strong {
+  font-family: "Fraunces", serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.readalong-invite-copy span {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--ink-faded);
+}
+
+.readalong-invite > .download-btn {
+  flex-shrink: 0;
+}
+
+/* Narrow screens: icon and copy share the first row, the button takes a
+   full row beneath them instead of squeezing the copy into a sliver. */
+@media (max-width: 640px) {
+  .readalong-invite {
+    flex-wrap: wrap;
+    gap: 12px 14px;
+  }
+
+  .readalong-invite > .download-btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+}
+
+.readalong-mode {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-faded);
+}
+
+.readalong-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.readalong-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 7px 11px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid rgba(var(--ink-rgb), 0.25);
+  cursor: pointer;
+}
+
+.readalong-tabs button small {
+  max-width: 220px;
+  overflow: hidden;
+  font-size: 0.6rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-faded);
+}
+
+.readalong-tabs button:hover,
+.readalong-tabs button.selected {
+  color: var(--on-ink);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.readalong-tabs button.selected small {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.readalong-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.readalong-gallery a {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-faded);
+  text-decoration: none;
+}
+
+.readalong-gallery img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  background: #fffdf7;
+}
+
+.readalong-gallery span {
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-readalong-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem !important;
+  letter-spacing: 0.14em;
+  color: var(--gold-soft) !important;
+  text-transform: uppercase;
+}
+
+.book-readalong-tag.extras {
+  color: rgba(241, 231, 208, 0.55) !important;
+}
+
+.native-now-read {
+  color: var(--gold-soft);
 }
 
 .readalong-header,
@@ -1721,11 +1892,19 @@ img.large-cover {
   color: var(--ink);
 }
 
+/* Two columns of actions beside the title, so four buttons make two short
+   rows rather than one tall column. */
 .readalong-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  justify-content: end;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.readalong-actions > * {
+  justify-content: center;
 }
 
 .readalong-genstatus {
@@ -1737,6 +1916,10 @@ img.large-cover {
 
 .readalong-genstatus.error {
   color: var(--oxblood);
+}
+
+.readalong-genstatus.notice {
+  color: var(--ink-soft);
 }
 
 .spin-icon {
@@ -1780,12 +1963,14 @@ img.large-cover {
   box-shadow: 0 22px 58px -32px rgba(0, 0, 0, 0.85);
 }
 
-.epub-reader.focus-mode {
+.epub-reader.fullscreen {
   position: fixed;
   inset: 18px;
-  z-index: 120;
+  /* Below the player's own sheets (speed, sleep timer, chapters), which the
+     reader opens over itself, and above the shell's bars. */
+  z-index: 100;
   height: calc(100dvh - 36px);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border-color: var(--reader-line);
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.35);
 }
@@ -1945,9 +2130,37 @@ img.large-cover {
   transition: background 0.25s ease;
 }
 
-.epub-reader.focus-mode .epub-stage {
+.epub-reader.fullscreen .epub-stage {
   height: auto;
   min-height: 0;
+}
+
+/* App-layer tap catcher over the page (full screen only): WKWebView will not
+   deliver taps to the epub iframe's own listeners, so paging and sentence
+   seeks are handled here, in the layer that does receive taps. The stage-wrap
+   is the middle grid row; the overlay is pinned to it. */
+.epub-stage-wrap {
+  position: relative;
+  min-height: 0;
+  /* A grid so the stage stretches to the wrap's resolved height; a percentage
+     height would not resolve against a stretched grid item. */
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.epub-tapzones {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: space-between;
+  touch-action: none;
+}
+
+.epub-tapzone {
+  display: block;
+  width: 25%;
+  height: 100%;
 }
 
 .epub-stage iframe {
@@ -1967,6 +2180,61 @@ img.large-cover {
 
 .theme-night .epub-progress {
   background: var(--gold);
+}
+
+.epub-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--reader-line);
+  background: color-mix(in srgb, var(--reader-surface) 94%, transparent);
+}
+
+.epub-footer.pinning {
+  border-top-color: var(--oxblood);
+}
+
+.epub-hint {
+  margin: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  color: var(--reader-muted);
+}
+
+.epub-footer.pinning .epub-hint {
+  color: var(--oxblood);
+}
+
+.epub-footer-action {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 8px 13px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--reader-surface);
+  background: var(--reader-ink);
+  border: 1px solid var(--reader-ink);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.epub-footer-action:hover {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: #fffdf7;
+}
+
+.epub-reader:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }
 
 .epub-loading,
@@ -1996,6 +2264,422 @@ img.large-cover {
   line-height: 1.5;
   overflow-wrap: anywhere;
   color: var(--oxblood);
+}
+
+/* --- Full-screen reading ---
+   The page fills the screen between a slim title bar and a page/audio strip.
+   Both bars keep their space when hidden (opacity only), so hiding them never
+   reflows the book. The native app renders this layer over everything; the
+   web reader uses the same layout for focus mode. */
+.epub-reader.immersive {
+  inset: 0;
+  z-index: 100;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.epub-reader.fullscreen .epub-stage {
+  height: auto;
+  min-height: 0;
+}
+
+.epub-topbar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--reader-ink);
+  background: var(--reader-surface);
+  transition: opacity 0.25s ease;
+}
+
+.epub-reader.immersive .epub-topbar {
+  padding-top: calc(env(safe-area-inset-top) + 4px);
+}
+
+.epub-topbar-title {
+  display: grid;
+  min-width: 0;
+  text-align: center;
+}
+
+.epub-topbar-title strong {
+  overflow: hidden;
+  font-family: "Fraunces", serif;
+  font-size: 0.98rem;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.epub-topbar-title span {
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--reader-muted);
+}
+
+.epub-topbar-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.epub-icon-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--reader-ink);
+  background: transparent;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.epub-icon-button:hover,
+.epub-icon-button.selected {
+  background: color-mix(in srgb, var(--reader-ink) 10%, transparent);
+}
+
+.epub-icon-button.selected {
+  color: var(--oxblood);
+}
+
+.theme-night .epub-icon-button.selected {
+  color: var(--gold-soft);
+}
+
+.epub-bottombar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 6px;
+  padding: 4px 16px 10px;
+  color: var(--reader-muted);
+  background: var(--reader-surface);
+  transition: opacity 0.25s ease;
+}
+
+.epub-reader.immersive .epub-bottombar {
+  padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px));
+}
+
+.epub-reader.chrome-hidden .epub-topbar,
+.epub-reader.chrome-hidden .epub-bottombar {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.epub-pagebar {
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--reader-line);
+}
+
+.epub-pagebar i {
+  display: block;
+  height: 100%;
+  background: var(--oxblood);
+  transition: width 0.35s ease;
+}
+
+.theme-night .epub-pagebar i {
+  background: var(--gold);
+}
+
+.epub-pageinfo {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+.epub-pageinfo span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.epub-audiobar {
+  display: grid;
+  grid-template-columns: 40px 48px 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.epub-audiobar-extras {
+  display: flex;
+  gap: 0;
+}
+
+.epub-audiobar-extras .epub-icon-button {
+  width: 38px;
+}
+
+.epub-audiobar-speed span {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.epub-audiobar-extras small {
+  position: absolute;
+  right: 2px;
+  bottom: 3px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.42rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--oxblood);
+}
+
+.epub-audiobar.pinning .epub-audiobar-extras {
+  display: none;
+}
+
+.epub-skip small {
+  position: absolute;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.42rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  padding-top: 1px;
+}
+
+.epub-audiobar-play {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--paper);
+  background: var(--oxblood);
+  box-shadow: 0 10px 22px -12px rgba(0, 0, 0, 0.6);
+  transition: transform 0.15s ease;
+}
+
+.epub-audiobar-play:active {
+  transform: scale(0.94);
+}
+
+.theme-night .epub-audiobar-play {
+  color: #171411;
+  background: var(--gold);
+}
+
+.epub-audiobar-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+}
+
+.epub-audiobar-status > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.epub-audiobar-time {
+  font-size: 0.78rem;
+  color: var(--reader-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.epub-audiobar-listen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  margin-top: 2px;
+  padding: 0 16px;
+  border: 1px solid var(--reader-line);
+  border-radius: 999px;
+  color: var(--reader-ink);
+  background: color-mix(in srgb, var(--reader-ink) 6%, transparent);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Contents and appearance sheets, drawn inside the reader in its own theme. */
+.epub-sheet-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  /* Clip the sliding sheet so it can never paint above its card, even for a
+     frame while it settles to its capped height. */
+  overflow: hidden;
+}
+
+.epub-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(12, 8, 6, 0.42);
+  animation: scrim-fade 0.22s ease both;
+}
+
+.epub-sheet {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 560px);
+  max-height: min(72dvh, 640px);
+  overflow-y: auto;
+  padding: 10px 18px max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  border: 1px solid var(--reader-line);
+  border-bottom: 0;
+  border-radius: 24px 24px 0 0;
+  color: var(--reader-ink);
+  background: var(--reader-surface);
+  box-shadow: 0 -24px 60px -28px rgba(0, 0, 0, 0.6);
+  animation: sheet-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.epub-sheet-grabber {
+  width: 40px;
+  height: 5px;
+  margin: 0 auto 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-ink) 22%, transparent);
+}
+
+.epub-sheet h3 {
+  margin: 14px 0 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--reader-muted);
+}
+
+.epub-sheet h3:first-of-type {
+  margin-top: 4px;
+}
+
+.epub-sheet-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.epub-sheet-row:empty {
+  display: none;
+}
+
+.epub-sheet-row .epub-theme-options {
+  flex: 1 1 100%;
+}
+
+.epub-sheet-row .epub-theme-options button {
+  flex: 1;
+}
+
+.epub-sheet-row .epub-font-controls {
+  flex: 1 1 100%;
+}
+
+.epub-sheet-row .epub-font-controls span {
+  flex: 1;
+  text-align: center;
+}
+
+.epub-sheet .epub-tool-button {
+  width: auto;
+  min-width: auto;
+  height: 36px;
+  margin: 0;
+  padding: 0 12px;
+}
+
+.epub-sheet .epub-tool-button span {
+  display: inline;
+}
+
+.epub-sheet-hint {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--reader-muted);
+}
+
+.epub-sheet .readalong-genstatus {
+  margin-top: 8px;
+}
+
+.epub-sheet .readalong-tabs button {
+  color: var(--reader-ink);
+}
+
+.epub-toc {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.epub-toc button {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--reader-ink);
+  background: transparent;
+  font-family: "Fraunces", serif;
+  font-size: 0.98rem;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.epub-toc button:hover {
+  background: color-mix(in srgb, var(--reader-ink) 7%, transparent);
+}
+
+.epub-toc button.current {
+  color: var(--oxblood);
+  background: color-mix(in srgb, var(--oxblood) 10%, transparent);
+}
+
+.theme-night .epub-toc button.current {
+  color: var(--gold-soft);
+  background: color-mix(in srgb, var(--gold) 14%, transparent);
 }
 
 .readalong-fallback {
@@ -3523,6 +4207,34 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
     flex-direction: column;
   }
 
+  /* Actions sit in a wrapped row under the title rather than a column of
+     full-width buttons, and the footer stacks its hint over its button. */
+  .readalong-actions {
+    align-self: stretch;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .readalong-actions > * {
+    width: auto;
+  }
+
+  .readalong-tabs button small {
+    max-width: 140px;
+  }
+
+  .epub-footer {
+    flex-wrap: wrap;
+  }
+
+  .epub-footer:has(.epub-footer-action) .epub-hint {
+    flex: 1 1 100%;
+  }
+
+  .epub-footer-action {
+    margin-left: auto;
+  }
+
   .readalong-frame {
     min-height: 360px;
     height: 62vh;
@@ -3585,7 +4297,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
     margin-left: auto;
   }
 
-  .epub-reader.focus-mode {
+  .epub-reader.fullscreen {
     inset: 0;
     height: 100dvh;
     border: 0;
@@ -6371,6 +7083,48 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
   margin: 0 auto;
 }
 
+/* A two-line chapter title ("Part One: Burdens: 9. Contradictions") uses up
+   the few pixels of slack the stack has on a phone, and the pane then scrolls
+   by that handful of pixels. Instead of growing past the pane, the card keeps
+   the pane's height and the artwork row gives up the difference: its track
+   may shrink below the cover's natural size, and the cover scales down with
+   it (width follows height so it stays square). With room to spare the row
+   still sizes to the cover and the stack stays centered as before. */
+@media (orientation: portrait) {
+  html.native-app .has-native-player.native-player-view-now .native-now-playing {
+    min-height: 0;
+    grid-template-rows: minmax(0, max-content) auto auto auto auto;
+  }
+
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork {
+    min-height: 0;
+    align-items: center;
+  }
+
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+    width: auto;
+    height: auto;
+    max-width: min(66vw, 294px);
+    max-height: min(35vh, 100%);
+  }
+
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+    width: min(66vw, 294px);
+    max-height: 100%;
+  }
+}
+
+@media (orientation: portrait) and (max-height: 740px) {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+    max-width: min(56vw, 238px);
+    max-height: min(29vh, 100%);
+  }
+
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+    width: min(56vw, 238px);
+  }
+}
+
 /* A phone in landscape has enough width for a compact two-column player but
    not enough height for the portrait stack. Without this layout the centered
    grid overflows its fixed card, clipping both the cover and controls. The
@@ -6512,6 +7266,37 @@ html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player 
 html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player
   > :not(.native-now-playing):not(.library-open-btn) {
   display: none;
+}
+
+/* With the reader open the playback card grows past the viewport, so the
+   pane scrolls instead of clipping the page the listener is reading. */
+html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player.has-reader {
+  grid-template-rows: auto;
+  align-content: start;
+  overflow-y: auto;
+}
+
+html:not(.native-app) .native-now-playing.has-reader {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  align-content: start;
+  /* Size to the reader inside rather than to the pane's viewport-high row,
+     so the card's frame wraps the reader instead of ending above it. */
+  align-self: start;
+}
+
+/* A fifth control ("Read along") shares the utility row instead of wrapping
+   alone onto a second line. */
+html:not(.native-app) .native-now-utility:has(.native-now-read),
+html.native-app .native-now-utility:has(.native-now-read) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+html:not(.native-app) .web-now-reader {
+  min-width: 0;
+  margin-top: 8px;
+  text-align: left;
 }
 
 html:not(.native-app) .web-shell.player-view-now .mini-player {
@@ -7058,9 +7843,14 @@ html:not(.native-app) .native-player-return-icon {
       "art timeline"
       "art transport"
       "art utility"
-      "extras extras";
+      "extras extras"
+      "reader reader";
     align-items: center;
     column-gap: clamp(34px, 4vw, 64px);
+  }
+
+  html:not(.native-app) .web-now-reader {
+    grid-area: reader;
   }
 
   html:not(.native-app) .native-now-artwork {
@@ -7122,12 +7912,17 @@ html:not(.native-app) .native-player-return-icon {
       "art timeline"
       "art transport"
       "art utility"
-      "extras extras";
+      "extras extras"
+      "reader reader";
     align-content: center;
     align-items: center;
     column-gap: clamp(20px, 3vw, 32px);
     row-gap: clamp(8px, 1.4vh, 13px);
     padding: clamp(18px, 2.8vw, 28px);
+  }
+
+  html:not(.native-app) .web-now-reader {
+    grid-area: reader;
   }
 
   html:not(.native-app) .native-now-artwork {
@@ -8936,6 +9731,23 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .settings-toggle-row > span {
   display: grid;
   gap: 4px;
+}
+
+/* The follow-narration sub-option sits indented beneath the reader toggle, with
+   a hairline on the left to read as nested. */
+.settings-subrow {
+  margin-top: 10px;
+  padding-left: 14px;
+  border-left: 2px solid rgba(var(--ink-rgb), 0.14);
+}
+
+.settings-warning {
+  color: var(--oxblood);
+}
+
+.theme-night .settings-warning,
+html.native-app .settings-warning {
+  color: var(--gold-soft);
 }
 
 .settings-toggle-row strong {
