@@ -31,7 +31,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 
 - **Streams almost anything** — `.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, `.aiff`
 - **Real seeking** — HTTP range requests, so scrubbing works on huge `.m4b` files
-- **Rich metadata** — title/subtitle, author, narrator, publisher, dates, genres, language, description, embedded cover art
+- **Rich metadata** — title/subtitle, author, narrator, publisher, dates, genres, custom ordered tags, language, description, embedded cover art
 - **Chapters** — M4A/M4B/MP4 chapter tracks, MP3 ID3 `CHAP` frames, and multi-file track boundaries
 - **Readalong** — inline reader for `.epub`, `.pdf`, `.txt`, `.html`, `.htm` companion files
 - **Readalong sync** — sentence highlighting that follows the narration through an EPUB, with server-side sync-map generation via an optional [echogarden](https://github.com/echogarden-project/echogarden) install

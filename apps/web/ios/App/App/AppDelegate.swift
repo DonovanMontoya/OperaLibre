@@ -8,9 +8,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // Only the category is set here. Activating the exclusive playback
+        // session would silence whatever else is playing merely because the
+        // app was opened; NativeAudio activates it when playback starts.
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-            try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             NSLog("Unable to configure audiobook playback audio session: %@", error.localizedDescription)
         }

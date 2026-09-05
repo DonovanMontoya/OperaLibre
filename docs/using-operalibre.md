@@ -30,6 +30,34 @@ You can add books in either of these ways:
 
 Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art comes from the artwork embedded in the audio files' tags; add a readalong file by copying it into the book’s folder afterward, then rescan.
 
+### Organize books with custom tags
+
+An administrator can open a book, choose **Edit book info**, and add one or
+more custom tags. Each tag can also have its own optional book number. This is
+useful when a title has an immediate series but also belongs to a wider world
+or reading order: keep its normal series as **Mistborn**, then add **Cosmere**
+with the appropriate Cosmere book number. Tags survive library rescans, appear
+on the book, participate in search, and can be selected as the library sort.
+
+### Sort and filter your shelf
+
+Use **Sort by** to choose the order and the arrow beside it to reverse that
+order. Your choice is remembered separately for Your Library and Audible.
+The count below the controls shows how many books match.
+
+Open **Filters** to combine reading progress, genres, and tags. Selecting
+multiple genres or tags includes any of those choices within that group;
+combining groups narrows the results. Larger genre and tag lists have their
+own search fields. Counts update as you filter, and selected filters remain
+visible as removable chips after you close the panel. **Clear all** removes
+filters; the search field has its own clear button.
+
+For a wider reading order, filter to **Cosmere** and choose **Tag** under
+**Sort by**. Books then follow their Cosmere numbers, even if Cosmere is not
+their first tag. With multiple tags selected, the first selected tag that a
+book carries determines its group and number; without tag filters, its first
+tag is used.
+
 ## Add people and recover access
 
 An administrator opens the avatar menu and chooses **Manage readers** to add a reader, remove one, or reset a password. Give every household member their own account rather than sharing the administrator password.
@@ -71,27 +99,43 @@ For a directly installable development build, run `npm run build:android`; the A
 
 ### Use another audiobook app
 
-The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre filters, and resume position all sync with the reader's OperaLibre progress.
+The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre and tag filters, and resume position all sync with the reader's OperaLibre progress.
 
 There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
 
-## Readalong and sentence highlighting
+## Read along with the ebook
 
-To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Select a book and open the **Readalong** control in the player.
+Read along is a **beta feature and is off by default.** Turn it on per device under **Settings → Extras → Read along** in the phone and tablet apps, or from the account menu (**Read along: On/Off**) in the browser. With it off, none of the read-along controls appear.
 
-For sentence highlighting, the companion must be an EPUB and the book needs a sync map. An administrator can either put a matching `.sync.json` file beside the book or set up automatic generation:
+To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books that have one show a **Read along** tag in the library, and their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
+
+With an EPUB, the reader follows the audio:
+
+- The narrated sentence is highlighted and the page turns with the narration. With a precise sync map the narrated word is marked inside the sentence too.
+- Tap any sentence to play from there.
+- Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target button in the reader, or the **Follow** control), and the marker snaps to the narrated sentence again.
+- With approximate sync, the marker can drift within a long chapter. Choose **Sync here**, then tap the sentence the narrator is reading: the server keeps that anchor with the book and re-times the sentences around it for every listener. One or two taps in a long chapter keep it close. An administrator can clear the adjustments from the reader.
+- Themes, text size, and a full-screen focus mode are in the reader's toolbar. Arrow keys and swipes turn pages.
+
+On the phone and tablet apps the ebook opens as a full-screen reader of its own, over whatever you were doing, and closing it puts you back there. It reads like a paper book: tap the left or right edge of the page to turn it, swipe if you prefer, and tap a sentence in the middle to play from there. A tap on an empty part of the page hides the bars for distraction-free reading and brings them back. The title bar holds the follow toggle, the **Contents** sheet (chapters and any other companion files), and the **Appearance** sheet (theme, text size, **Sync here**, **Improve sync**). The theme starts on **auto**, which turns the page dark whenever the app is in its dark look (the system theme, or the appearance chosen in Settings on the phone); pick **paper**, **sepia**, or **night** to fix it. Under the page a strip shows the sync state and the page within the chapter, and holds the full player so you never have to leave the book: play/pause, skip back and forward, and buttons for speed, the sleep timer, and the chapter list that open over the page. When the book isn't the one playing, a **Listen while you read** button starts it instead. Full-screen focus mode on the web uses the same layout.
+
+Every EPUB can be followed straight away: with nothing else installed, the server times the text from the audiobook's chapter list, which the reader labels *Approximate sync* — close enough to keep the page and paragraph in step, but the marker can run a few lines ahead or behind. The narrator's pace is learned from the book itself: with enough chapters, how long this narrator spends per character, per sentence, per paragraph, and on dialogue is fitted from the chapters' known lengths. For sentence and word precision an administrator can either put a matching `.sync.json` file beside the book or set up automatic alignment:
 
 1. Install [echogarden](https://github.com/echogarden-project/echogarden) on the server machine: `npm install -g echogarden`.
 2. Restart OperaLibre. If `echogarden` is not on the server’s PATH, set `alignment_cli_path` in `server.config` to its full path instead.
-3. Open the book’s readalong pane and select **Sync**. Wait for the job to complete, then play the book.
+3. Open the book’s reader and select **Improve sync**. Wait for the job to complete, then play the book.
 
-Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside the book takes priority. Sync quality is best when the audio track names correspond to the EPUB chapter titles.
+Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside the book takes priority. Alignment works best when the audio chapter or track names correspond to the EPUB chapter titles, in any spelling (`Chapter 3`, `Chapter Three`, `III.`).
+
+### Extras: maps, illustrations, and supplements
+
+Audible titles often come with a PDF of maps or illustrations rather than the book's text. OperaLibre opens each companion during a scan and tells the two apart, so a picture PDF is offered as **Extras** instead of being presented as the book. A book can have both: the reader pane then shows tabs for the ebook, each supplement, and a gallery of any loose pictures in the book's folder (in the phone reader these are listed under **Other files** in the Contents sheet). A book with only extras shows a **View extras** invitation in place of the reader.
 
 ## Import Audible books with Libation (optional)
 
-Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. An owner or administrator can then open **Audible → Add account** in the browser or installed app, complete Audible sign-in in the external browser (a secure Safari view on iOS), and add additional server-wide accounts the same way. Give each account a short label such as **Dad** or **UK**; that label appears on its books instead of the Audible email address. The catalog can be filtered or sorted by account, and duplicate titles remain visible in **All accounts**.
+Install a recent [Libation](https://github.com/rmcrackan/Libation) CLI on the same computer as OperaLibre. Add every Audible account in Libation itself; OperaLibre reads the accounts Libation already knows about rather than signing them in. Give each account a short label such as **Dad** or **UK**; that label appears on its books instead of the Audible email address. The catalog can be filtered or sorted by account.
 
-Add the Libation CLI path to `server.config`, restart OperaLibre, and use the **Audible** area in the library to manage accounts, refresh purchases, and choose **Download** for a book. `libation_files_dir` is needed only when retaining an existing desktop-managed profile. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
+Add the Libation CLI path and `libation_files_dir` to `server.config`, restart OperaLibre, and use the **Audible** area in the library to review account status, refresh purchases, and choose **Download** for a book. Detailed path examples and troubleshooting are in [Libation / Audible Import](libation.md).
 
 ## Games
 

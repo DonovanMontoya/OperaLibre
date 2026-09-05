@@ -27,7 +27,9 @@ The installer walks you through the whole setup:
 
 When it finishes, open the address it prints — usually <http://localhost:4000> — and create the administrator account.
 
-Running the same command again updates an existing installation in place. It stops the running server, replaces the program files, and keeps your `data` folder, `audiobooks` folder, and `server.config` settings.
+Running the same command again updates an existing installation in place. It stops the running server and waits for it to exit, copies the new files into a staging folder beside the installation, and only then swaps them into place, so a download or copy that fails part-way leaves the old version untouched. Your `data` folder, `audiobooks` folder, and `server.config` settings are kept.
+
+The installer warns when it is run as root: OperaLibre needs no privileges, and a server running as root turns any media-parser bug into a system compromise. In a terminal it asks before continuing; with `--yes` it only prints the warning. Prefer the dedicated account and `operalibre.service` unit described in [Deployment](deployment.md).
 
 Useful options, passed after `sh -s --`:
 
@@ -206,13 +208,15 @@ If `library_root` points somewhere else, back up that audiobook folder instead.
 
 ## Update to a newer release
 
-On macOS and Linux, running the one-line installer again is the simplest update. It stops the server, installs the newest release, and preserves `data`, `audiobooks`, and `server.config`.
+On macOS and Linux, running the one-line installer again is the simplest update. It stops the server and waits for it to exit, stages the newest release beside the installation before replacing the old files, and preserves `data`, `audiobooks`, and `server.config`.
 
 OperaLibre checks the latest GitHub release when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
 
+Under the hardened `operalibre.service` unit from [deployment](deployment.md) the install folder is read-only to the service, so the in-app updater is disabled: the Administration page reports that the installation is not writable and points at `ReadWritePaths`. Either update by replacing the files as root and restarting the service, or add the install folder to `ReadWritePaths` (the unit carries a commented-out line for this) to allow in-app updates at the cost of that protection.
+
 Published packages also receive GitHub build-provenance attestations after the release workflow verifies that the source commit belongs to `main`, runs the Rust and web tests, lints Rust, and audits production dependencies. To verify a package manually with GitHub CLI, run `gh attestation verify FILE --repo DonovanMontoya/OperaLibre`. The in-app updater currently enforces the release digest and package structure; provenance verification is an additional manual check for security-sensitive installations.
 
-Automatic install is available for managed combined and server-only release packages. It preserves `data`, `audiobooks`, and `server.config`, so deployment profiles and custom paths survive upgrades. Configs from older versions remain compatible: a non-loopback `host` with no profile is inferred as `lan`. Combined updates replace the server, bundled web app, and launchers together; server-only updates replace only the server and leave a separately hosted frontend untouched. The prior managed files remain under `data/update-backups` for rollback; if the new server cannot start, the launcher restores and starts the previous version automatically.
+Automatic install is available for managed combined and server-only release packages. It preserves `data`, `audiobooks`, and `server.config`, so deployment profiles and custom paths survive upgrades. Configs from older versions remain compatible: a non-loopback `host` with no profile is inferred as `lan`. Combined updates replace the server, bundled web app, and launchers together; server-only updates replace only the server and leave a separately hosted frontend untouched. The prior managed files remain under `update-backups` inside `data_dir` for rollback; if the new server exits during startup, the launcher restores and starts the previous version automatically. A new server that is still scanning a large library when the launcher's wait runs out is left running, not rolled back.
 
 New configuration keys use secure defaults when they are absent, so an existing managed installation does not need a manual config migration after an automatic update. Add the keys from `server.config.example` only when you want to override those defaults.
 

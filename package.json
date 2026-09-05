@@ -15,7 +15,13 @@
     "build:ios": "./script/build_ios.sh",
     "sync:android": "npm run android:sync -w @operalibre/web",
     "sync:ios": "npm run ios:sync -w @operalibre/web",
-    "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && cargo check --manifest-path apps/launcher/Cargo.toml && npm run typecheck -w @operalibre/web"
+    "typecheck": "cargo check --manifest-path apps/server/Cargo.toml && cargo check --manifest-path apps/launcher/Cargo.toml && npm run typecheck -w @operalibre/web",
+    "test:perf": "node script/performance/run.mjs portable",
+    "test:perf:web": "node script/performance/run.mjs web",
+    "test:perf:server": "node script/performance/run.mjs server",
+    "test:perf:ios": "node script/performance/run.mjs ios",
+    "test:perf:all": "node script/performance/run.mjs all",
+    "perf:compare": "node script/performance/compare.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

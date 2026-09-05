@@ -1,20 +1,28 @@
+import { Capacitor } from "@capacitor/core";
 import {
+  ALargeSmall,
   AlertCircle,
+  ArrowDown,
   ArrowUp,
   Bell,
+  BookOpen,
   Bookmark,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
   Cloud,
+  Crosshair,
   CloudDownload,
   Download,
   ExternalLink,
+  FileText,
   FolderOpen,
   Gamepad2,
   Gauge,
   Headphones,
+  Images,
   KeyRound,
   LoaderCircle,
   LayoutGrid,
@@ -24,7 +32,6 @@ import {
   LocateFixed,
   LogOut,
   Maximize2,
-  Minimize2,
   Minus,
   Moon,
   Network,
@@ -42,9 +49,11 @@ import {
   Settings,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Sparkles,
   Timer,
   Trash2,
+  Undo2,
   Upload,
   ScrollText,
   UserCog,
@@ -53,12 +62,46 @@ import {
   X
 } from "lucide-react";
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  READ_ALONG_MODE_LABELS,
+  activeWordIndex,
+  companionKindLabel,
+  describeCompanion,
+  findActiveFragmentIndex,
+  findTocHrefForChapterTitle,
+  groupCompanions,
+  hasExtras,
+  hrefsMatch,
+  normalizeSyncNeedle,
+  readAlongMode,
+  anchorAfterRelocation,
+  anchorOnPage,
+  readerStorageKey,
+  shouldOpenPlayingChapter,
+  syncMapPrecision,
+  type SyncPrecision
+} from "./readalong";
+import {
+  READER_THEME_CHOICES,
+  applyReaderThemeColors,
+  currentAppPrefersDark,
+  readReaderThemeChoice,
+  resolveReaderTheme,
+  watchAppPrefersDark,
+  writeReaderThemeChoice,
+  type ReaderTheme,
+  type ReaderThemeChoice
+} from "./readerTheme";
+import { readerDebugLog, shortCfi } from "./readerDebug";
+import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   adoptableServerProgress,
+  endedShortOfTrack,
   freshestProgress,
   isSuspectProgressReset,
+  PROGRESS_RESET_GUARD_SECONDS,
   progressAfterSave,
   progressFromBookSummary,
   progressTimestamp,
@@ -66,6 +109,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
+  shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
   summarizeBookProgress,
   writeProgressCheckpoint
@@ -100,18 +144,34 @@ import {
   writeUnsyncedBookGains
 } from "./bookVolume";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
+import {
+  bookMatchesFacet,
+  bookMatchesShelfSearch,
+  bookMatchesShelfStatus,
+  countActiveShelfFilters,
+  countShelfFacet,
+  EMPTY_SHELF_FILTERS,
+  SHELF_FACET_PREVIEW_COUNT,
+  SHELF_STATUS_OPTIONS,
+  tagForShelfSort,
+  toggleShelfFacet,
+  updateShelfFacetCounts
+} from "./shelfFilters";
+import type {
+  ShelfFacetGroupKey,
+  ShelfFacetOption,
+  ShelfFilters,
+  ShelfStatusFilter
+} from "./shelfFilters";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
 import { isLibationAdding } from "./libationState";
-import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
+import { displayBookDescription, enrichBooksFromLibation, tagsForBook } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   bookDownloadUrl,
   activateServerAlias,
   addServerAlias,
   clearServerUrl,
-  completeLibationAccountLogin,
-  cancelLibationAccountLogin,
-  deleteLibationAccount,
   generateSyncMap,
   getAlignmentStatus,
   getAuthStatus,
@@ -136,6 +196,7 @@ import {
   hasUserConfiguredServer,
   SERVER_SETUP_GUIDE_URL,
   isNetworkError,
+  isServerNotReadyError,
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
@@ -147,6 +208,8 @@ import {
   mediaUrl,
   pingServer,
   readalongUrl,
+  addSyncAnchor,
+  clearSyncAnchors,
   reconnectUsingServerAliases,
   requestLibationBook,
   reportPlaybackStarted,
@@ -159,7 +222,6 @@ import {
   setStoredToken,
   setUnauthorizedHandler,
   syncLibationLibrary,
-  startLibationAccountLogin,
   uploadAudiobook,
   updateBookMetadata
 } from "./api";
@@ -170,20 +232,22 @@ import {
   cacheProgress,
   cancelBookOfflineDownload,
   downloadBookForOffline,
+  forgetOfflineUser,
   getBookBackgroundDownloadStatus,
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
+  getOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
+  loadCompanionBytes,
   releaseOfflineMediaUrl,
   removeBookDownload
 } from "./offline";
-import { isNativeApp } from "./api";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, openNativeBrowser, selectionHaptic, syncStatusBarStyle } from "./native";
-import { applyAppearanceMode, readAppearanceMode, writeAppearanceMode } from "./appearance";
+import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
+import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import {
@@ -198,6 +262,7 @@ import {
   getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
+  releaseNativeAudioSession,
   seekNativeAudio,
   setNativeAudioGain,
   setNativeAudioSleepTimer,
@@ -233,6 +298,12 @@ import {
 import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
 import { GamesPage } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
+import {
+  readReadalongEnabled,
+  writeReadalongEnabled,
+  readFollowSyncEnabled,
+  writeFollowSyncEnabled
+} from "./readalongPreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
   AlignmentStatus,
@@ -243,9 +314,7 @@ import type {
   FinishFeed,
   JobStatus,
   LibationBook,
-  LibationAccount,
   LibationDownloadRequest,
-  LibationLoginStarted,
   LibationStatus,
   SyncFragment,
   SyncMap,
@@ -277,6 +346,11 @@ type QueuedProgressSave = {
   progress: Progress;
   isPaused: boolean;
   intentionalSeekGeneration: number;
+  // Whether the seek behind that generation also went backwards far enough to
+  // need the server's near-zero reset guard lifted (see
+  // shouldFlagIntentionalRegression). Decided when the save is queued, from
+  // the seek's own target rather than from whatever the clock reads later.
+  intentionalRegression: boolean;
 };
 
 function audioSourceMatches(audio: HTMLAudioElement, source: string) {
@@ -697,10 +771,17 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
   audio?.play().catch(() => undefined);
 }
 
-type SortMode = "title" | "author" | "series" | "genre" | "progress" | "duration" | "account";
+// The API client's own timeout is generous (30 s); a startup-critical read
+// that is allowed to fall back to a local copy should not wait that long.
+// Before "Begin this reading" trusts a stale listing summary, the server gets
+// this long to say whether the book is actually well under way elsewhere.
+const START_OVER_PROGRESS_CHECK_MS = 2_500;
+// The restore effect's own /progress reads; local copies cover the wait.
+const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
+
+type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
 type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
-type ReaderTheme = "paper" | "sepia" | "night";
 type MetadataEditorState = {
   title: string;
   author: string;
@@ -708,6 +789,7 @@ type MetadataEditorState = {
   publisher: string;
   series: string;
   seriesPosition: string;
+  tags: { name: string; position: string }[];
   publishedDate: string;
   genres: string;
   asin: string;
@@ -718,6 +800,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },
   { value: "author", label: "Author" },
   { value: "series", label: "Series" },
+  { value: "tag", label: "Tag" },
   { value: "genre", label: "Genre" },
   { value: "progress", label: "Progress" },
   { value: "account", label: "Account" },
@@ -734,7 +817,7 @@ const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible"];
 // "local" — restores what was last chosen there instead of permanently collapsing to
 // "title".
 const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
-const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "genre", "progress"];
+const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
   const unsupported = source === "local" ? AUDIBLE_ONLY_SORT_MODES : LOCAL_ONLY_SORT_MODES;
@@ -774,7 +857,8 @@ function readStoredSortMode(source: LibrarySource): SortMode {
     legacySortModeMigrated = true;
     migrateLegacySortMode();
   }
-  const stored = window.localStorage.getItem(sortModeStorageKey(source));
+  // Storage unavailable reads as null — the shelf opens on the default sort.
+  const stored = readStoredValue(sortModeStorageKey(source));
   const isValid = SORT_OPTIONS.some((option) => option.value === stored)
     && isSortModeSupported(source, stored as SortMode);
   return isValid ? (stored as SortMode) : "title";
@@ -788,8 +872,9 @@ function compareShelfLabels(left: string | null | undefined, right: string | nul
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function bookSortGroupLabel(book: Book, sortMode: SortMode) {
+function bookSortGroupLabel(book: Book, sortMode: SortMode, selectedTags: string[]) {
   if (sortMode === "series") return book.metadata.series?.trim() || "Standalone";
+  if (sortMode === "tag") return tagForShelfSort(book, selectedTags)?.name.trim() || "Untagged";
   if (sortMode === "genre") return book.genres[0]?.trim() || "Uncategorized";
   if (sortMode === "progress") return readingStatusLabel(readingStatus(book));
   return null;
@@ -799,9 +884,11 @@ function bookSortGroupLabel(book: Book, sortMode: SortMode) {
 // modes bookSortGroupLabel groups ever reach this.
 function bookSortGroupCaption(sortMode: SortMode) {
   if (sortMode === "series") return "Series";
+  if (sortMode === "tag") return "Tag";
   if (sortMode === "genre") return "Genre";
   return "Progress";
 }
+
 
 function formatTime(value: number | null | undefined) {
   if (!Number.isFinite(value ?? NaN)) {
@@ -846,6 +933,10 @@ function metadataEditorFromBook(book: Book): MetadataEditorState {
     publisher: book.metadata.publisher ?? "",
     series: book.metadata.series ?? "",
     seriesPosition: book.metadata.seriesPosition ?? "",
+    tags: tagsForBook(book).map((tag) => ({
+      name: tag.name,
+      position: tag.position ?? ""
+    })),
     publishedDate: book.publishedDate ?? "",
     genres: book.genres.join(", "),
     asin: book.asin ?? "",
@@ -868,6 +959,12 @@ function metadataUpdateFromEditor(form: MetadataEditorState): BookMetadataUpdate
     publisher: form.publisher.trim(),
     series: form.series.trim(),
     seriesPosition: form.seriesPosition.trim(),
+    tags: form.tags
+      .map((tag) => ({
+        name: tag.name.trim(),
+        position: tag.position.trim() || null
+      }))
+      .filter((tag) => tag.name),
     publishedDate: form.publishedDate.trim(),
     genres: parseGenreInput(form.genres),
     asin: form.asin.trim(),
@@ -1032,10 +1129,14 @@ function bookProgressLabel(book: Book) {
   return "Not started";
 }
 
-function canPreviewReadalong(book: Book) {
-  const extension = book.readingFile?.extension.toLowerCase();
-  return extension === "epub" || extension === "pdf" || extension === "txt" || extension === "html" || extension === "htm";
+/** Formats the browser can show inline; anything else gets an "Open" link. */
+function canPreviewCompanion(extension: string) {
+  const lower = extension.toLowerCase();
+  return lower === "epub" || lower === "pdf" || lower === "txt" || lower === "html" || lower === "htm";
 }
+
+/** Pseudo companion id for the picture gallery tab. */
+const GALLERY_COMPANION_ID = "__gallery__";
 
 function storedStateKey(userId: string, field: "selectedBookId" | "playbackBookId") {
   return `${APP_STATE_STORAGE_PREFIX}.${getServerStorageKey()}.${userId}.${field}`;
@@ -1046,6 +1147,24 @@ function readStoredBookId(userId: string, field: "selectedBookId" | "playbackBoo
     return window.localStorage.getItem(storedStateKey(userId, field));
   } catch {
     return null;
+  }
+}
+
+// Merely touching window.localStorage throws when site data is blocked, and
+// setItem throws under quota pressure; neither should take the app down.
+function readStoredValue(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredValue(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore storage failures
   }
 }
 
@@ -1078,130 +1197,39 @@ type EpubSyncTarget = {
   title: string;
 };
 
-type ParsedReadalongLabel = {
-  number: number | null;
-  key: string;
-};
-
-function normalizeReadalongText(value: string) {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’']/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function parseReadalongLabel(value: string): ParsedReadalongLabel {
-  const chapterMatch = value.match(/\bchapter\s+0*(\d+)\b/i);
-  const leadingMatch = value.match(/^\s*0*(\d+)\s*[.:)\-–—]\s*/);
-  const number = Number(chapterMatch?.[1] ?? leadingMatch?.[1] ?? NaN);
-  const withoutNumber = chapterMatch
-    ? value.slice((chapterMatch.index ?? 0) + chapterMatch[0].length).replace(/^\s*[.:)\-–—]\s*/, "")
-    : value.replace(/^\s*0*\d+\s*[.:)\-–—]\s*/, "");
-
-  return {
-    number: Number.isFinite(number) ? number : null,
-    key: normalizeReadalongText(withoutNumber)
-  };
-}
-
-function readalongMatchScore(target: ParsedReadalongLabel, item: ParsedReadalongLabel) {
-  let score = 0;
-  if (target.number !== null && item.number === target.number) {
-    score += 100;
-  }
-  if (target.key && item.key) {
-    if (target.key === item.key) {
-      score += 80;
-    } else if (target.key.includes(item.key) || item.key.includes(target.key)) {
-      score += 45;
-    } else {
-      const targetWords = new Set(target.key.split(" ").filter((word) => word.length > 3));
-      const sharedWords = item.key
-        .split(" ")
-        .filter((word) => word.length > 3 && targetWords.has(word)).length;
-      score += Math.min(35, sharedWords * 10);
-    }
-  }
-  return score;
-}
-
-function findTocHrefForSyncTarget(
-  toc: Array<NavItem & { depth: number }>,
-  syncTarget: EpubSyncTarget
-) {
-  const parsedTarget = parseReadalongLabel(syncTarget.title);
-  const ranked = toc
-    .filter((item) => item.href)
-    .map((item) => ({
-      href: item.href,
-      score: readalongMatchScore(parsedTarget, parseReadalongLabel(item.label))
-    }))
-    .sort((a, b) => b.score - a.score);
-  const best = ranked[0];
-  return best && best.score >= 70 ? best.href : null;
-}
-
-function hrefsMatch(displayedHref: string, fragmentHref: string) {
-  const clean = (value: string) => {
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // keep as-is
-    }
-    return value.split(/[#?]/)[0].replace(/^\.?\//, "");
-  };
-  const a = clean(displayedHref);
-  const b = clean(fragmentHref);
-  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
-}
-
-function findActiveFragmentIndex(fragments: SyncFragment[], seconds: number) {
-  let low = 0;
-  let high = fragments.length - 1;
-  let best = -1;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (fragments[mid].startSeconds <= seconds) {
-      best = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-  if (best < 0) {
-    return -1;
-  }
-  // Keep the fragment active through the silence before the next sentence so
-  // the highlight doesn't flicker off between sentences.
-  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds;
-  return seconds < activeUntil ? best : -1;
-}
-
-// The haystack index and this needle normalization must collapse text the
-// same way so indexOf offsets map back to DOM positions.
-function normalizeSyncNeedle(value: string) {
-  let out = "";
+/**
+ * Like `normalizeSyncNeedle`, but remembers which UTF-16 offset of the raw
+ * text each normalized character came from, so a word timing given in raw
+ * offsets can be placed inside the normalized needle.
+ */
+function normalizeNeedleWithOffsets(value: string): { text: string; offsets: number[] } {
+  let text = "";
+  const offsets: number[] = [];
   let lastWasSpace = true;
-  for (const ch of value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index];
     if (ch === "\u00AD") {
       continue;
     }
     if (/\s/.test(ch)) {
       if (!lastWasSpace) {
-        out += " ";
+        text += " ";
+        offsets.push(index);
         lastWasSpace = true;
       }
     } else {
-      out += ch.toLowerCase();
+      for (const piece of ch.toLowerCase()) {
+        text += piece;
+        offsets.push(index);
+      }
       lastWasSpace = false;
     }
   }
-  return out.trim();
+  while (text.endsWith(" ")) {
+    text = text.slice(0, -1);
+    offsets.pop();
+  }
+  return { text, offsets };
 }
 
 type DocumentSearchIndex = {
@@ -1264,20 +1292,194 @@ function findRangeInSearchIndex(index: DocumentSearchIndex, needle: string, from
   return { range, endOffset: at + needle.length };
 }
 
-function EpubReadalong({
+/** A DOM range over `[from, to)` of the search index text. */
+function rangeForIndexSpan(index: DocumentSearchIndex, from: number, to: number) {
+  const start = index.map[from];
+  const end = index.map[to - 1];
+  if (!start || !end || to <= from) {
+    return null;
+  }
+  const range = index.doc.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, Math.min(end.offset + 1, end.node.data.length));
+  return range;
+}
+
+type FragmentRange = { index: number; start: number; end: number };
+
+/**
+ * Where every fragment of the displayed document sits in its search index,
+ * found in order so a repeated sentence lands on its own occurrence. Sorted
+ * by position so a tap can be resolved with one scan.
+ */
+function locateFragments(index: DocumentSearchIndex, fragments: SyncFragment[], href: string): FragmentRange[] {
+  const ranges: FragmentRange[] = [];
+  let cursor = 0;
+  fragments.forEach((fragment, position) => {
+    if (!hrefsMatch(href, fragment.href)) {
+      return;
+    }
+    const needle = normalizeSyncNeedle(fragment.text);
+    if (!needle) {
+      return;
+    }
+    let at = index.text.indexOf(needle, cursor);
+    if (at === -1) {
+      at = index.text.indexOf(needle);
+      if (at === -1) {
+        return;
+      }
+    }
+    ranges.push({ index: position, start: at, end: at + needle.length });
+    cursor = at + needle.length;
+  });
+  return ranges.sort((a, b) => a.start - b.start);
+}
+
+/** The fragment a tap at `position` belongs to: the last one that starts at or before it. */
+function fragmentAtIndexPosition(ranges: FragmentRange[], position: number) {
+  let best = -1;
+  for (const range of ranges) {
+    if (range.start > position) {
+      break;
+    }
+    best = range.index;
+  }
+  return best;
+}
+
+/** The search-index position of a caret inside a text node, or -1. */
+function indexPositionForCaret(index: DocumentSearchIndex, node: Node, offset: number) {
+  if (node.nodeType !== Node.TEXT_NODE) {
+    // A caret on an element: use its first text node.
+    const walker = index.doc.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const first = walker.nextNode();
+    if (!first) {
+      return -1;
+    }
+    node = first;
+    offset = 0;
+  }
+  let last = -1;
+  for (let position = 0; position < index.map.length; position += 1) {
+    const entry = index.map[position];
+    if (entry.node !== node) {
+      continue;
+    }
+    if (entry.offset >= offset) {
+      return position;
+    }
+    last = position;
+  }
+  return last;
+}
+
+/** Whether a point lies on one of the text node's line boxes (with a little slack). */
+function pointOnText(node: Node, x: number, y: number): boolean {
+  const doc = node.ownerDocument;
+  if (!doc || node.nodeType !== Node.TEXT_NODE) {
+    return false;
+  }
+  const range = doc.createRange();
+  range.selectNodeContents(node);
+  const slack = 6;
+  for (const rect of Array.from(range.getClientRects())) {
+    if (x >= rect.left - slack && x <= rect.right + slack && y >= rect.top - slack && y <= rect.bottom + slack) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The text position under a point in the reader document, on any browser. */
+function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset: number } | null {
+  const withCaret = doc as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  if (typeof withCaret.caretPositionFromPoint === "function") {
+    const caret = withCaret.caretPositionFromPoint(x, y);
+    return caret ? { node: caret.offsetNode, offset: caret.offset } : null;
+  }
+  if (typeof withCaret.caretRangeFromPoint === "function") {
+    const range = withCaret.caretRangeFromPoint(x, y);
+    return range ? { node: range.startContainer, offset: range.startOffset } : null;
+  }
+  return null;
+}
+
+/** Marker colours for the narrated sentence and word, per reading theme. */
+function highlightStyles(theme: ReaderTheme, precision: SyncPrecision | null) {
+  // The night page is dark, so the marker must lighten instead of darken.
+  const night = theme === "night";
+  const soft = precision === "estimated";
+  return {
+    sentence: night
+      ? { fill: "#e8b64c", "fill-opacity": soft ? "0.22" : "0.4", "mix-blend-mode": "screen" }
+      : { fill: "#d9a441", "fill-opacity": soft ? "0.18" : "0.32", "mix-blend-mode": "multiply" },
+    word: night
+      ? { fill: "#ffd27a", "fill-opacity": "0.6", "mix-blend-mode": "screen" }
+      : { fill: "#b8893a", "fill-opacity": "0.42", "mix-blend-mode": "multiply" }
+  };
+}
+
+export function EpubReadalong({
+  bookId,
+  storageScope,
   title,
   url,
+  loadBytes,
+  listeningChapter,
   syncTarget,
   syncFragments,
+  precision,
   positionSeconds,
-  onSeekTo
+  onSeekTo,
+  onPinNarration,
+  immersive = false,
+  onClose,
+  chapterTitle = null,
+  positionLabel = null,
+  playback = null,
+  onListen,
+  syncTools = null,
+  companionSwitcher = null
 }: {
+  bookId: string;
+  storageScope: string;
   title: string;
   url: string;
+  /** Reads the ebook, from the device when a copy is already there. */
+  loadBytes?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
+  listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
+  precision: SyncPrecision | null;
   positionSeconds: number;
   onSeekTo?: (seconds: number) => void;
+  /** "The narrator is reading this sentence now": re-times an estimated map. */
+  onPinNarration?: (fragment: { href: string; text: string }) => void;
+  /** A full-screen reading surface with its own bars and sheets (the native app). */
+  immersive?: boolean;
+  onClose?: () => void;
+  chapterTitle?: string | null;
+  positionLabel?: string | null;
+  /** Transport for the book being read, when it is the one playing. */
+  playback?: {
+    playing: boolean;
+    speed: number;
+    sleepRemaining: number;
+    onToggle: () => void;
+    onSkip: (delta: number) => void;
+    /** Open the app's speed, sleep timer, or chapter sheet over the reader. */
+    onOpen: (sheet: "speed" | "sleep" | "chapters") => void;
+  } | null;
+  /** Start playing this book, offered when it is not the one playing. */
+  onListen?: () => void;
+  /** App-level sync actions and notices, shown in the appearance sheet. */
+  syncTools?: ReactNode;
+  /** Switcher for the book's other files, shown in the contents sheet. */
+  companionSwitcher?: ReactNode;
 }) {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
@@ -1286,32 +1488,289 @@ function EpubReadalong({
   const epubCfiClassRef = useRef<typeof EpubCFI | null>(null);
   const searchIndexRef = useRef<DocumentSearchIndex | null>(null);
   const searchCursorRef = useRef(0);
+  const fragmentRangesRef = useRef<{ doc: Document; href: string; ranges: FragmentRange[] } | null>(null);
   const highlightCfiRef = useRef<string | null>(null);
   const highlightThemeRef = useRef<ReaderTheme | null>(null);
   const highlightedFragmentRef = useRef(-1);
+  // Where the highlighted sentence sits in the index, so the word marker can
+  // be placed inside it without searching again.
+  const sentenceSpanRef = useRef<{ fragmentIndex: number; at: number; offsets: number[] } | null>(null);
+  const wordCfiRef = useRef<{ cfi: string; wordIndex: number; fragmentIndex: number; theme: ReaderTheme } | null>(null);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
+  const locationRef = useRef<Location | null>(null);
+  // The place being read, as a CFI: what the reader reopens to and turns
+  // back to after a resize or reflow. It only moves once its page has gone
+  // off screen, so a relayout that starts the same page a few words earlier
+  // does not walk the remembered place backwards on every reopen.
+  const anchorCfiRef = useRef<string | null>(null);
+  // While the reader is putting the page back where it was — opening the
+  // book, or laying it out again after a resize or a text-size change — it
+  // passes through the pages between the top of the chapter and the
+  // remembered place. Until it arrives, those pages must not be mistaken
+  // for somewhere the listener turned to.
+  const restoringUntilRef = useRef(0);
+  // Set once the listener turns a page themselves: the reader stops putting
+  // the page back and follows them instead.
+  const handNavigatedRef = useRef(false);
+  const readerNavigationVersionRef = useRef(0);
+  const beginRestore = useCallback(() => {
+    // A deadline, so a place that never resolves cannot freeze the anchor.
+    restoringUntilRef.current = performance.now() + 5000;
+  }, []);
+  const syncFragmentsRef = useRef<SyncFragment[] | null>(syncFragments);
+  const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
+  const onSeekToRef = useRef(onSeekTo);
+  const loadBytesRef = useRef(loadBytes);
+  const onPinNarrationRef = useRef(onPinNarration);
+  // Set while the listener is choosing the sentence being narrated: the next
+  // tap places a sync anchor instead of seeking.
+  const [pinning, setPinning] = useState(false);
+  const pinningRef = useRef(false);
+  pinningRef.current = pinning;
+  // Bumped whenever the page reflows (text size, zoom, window resize): the
+  // markers were measured against the old layout and the narrated sentence
+  // may have moved to another page.
+  const [relayoutTick, setRelayoutTick] = useState(0);
+  const handledRelayoutRef = useRef(0);
+  const attachedDocsRef = useRef<WeakSet<Document>>(new WeakSet());
+  const touchStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  // When a tap was handled on touchend, the click iOS may still send for it
+  // must not be handled again.
+  const lastTouchTapRef = useRef(0);
   const readerUrlRef = useRef(url);
   if (readerUrlRef.current !== url) {
     readerUrlRef.current = url;
     lastLocationRef.current = null;
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
+    handNavigatedRef.current = false;
   }
+  syncFragmentsRef.current = syncFragments;
+  syncTargetRef.current = syncTarget;
+  onSeekToRef.current = onSeekTo;
+  loadBytesRef.current = loadBytes;
+  onPinNarrationRef.current = onPinNarration;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [follow, setFollow] = useState(true);
-  const [readerTheme, setReaderTheme] = useState<ReaderTheme>(() => {
-    const stored = window.localStorage.getItem("operalibre.readerTheme");
-    return stored === "sepia" || stored === "night" ? stored : "paper";
-  });
+  // The book is still downloading or unpacking after a while: worth a word
+  // to the listener, never a reason to give up on a slow connection.
+  const [slowToOpen, setSlowToOpen] = useState(false);
+  const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  const setFollow = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    setFollowState((prev) => {
+      const next = typeof value === "function" ? value(prev) : value;
+      writeStoredValue("operalibre.readerFollow", next ? "1" : "0");
+      return next;
+    });
+  }, []);
+  const [readerThemeChoice, setReaderThemeChoice] = useState<ReaderThemeChoice>(() =>
+    readReaderThemeChoice()
+  );
+  // Whether the app is in its dark look, for the auto theme; follows the
+  // system theme and the iOS appearance setting while the reader is open.
+  const [appDark, setAppDark] = useState(currentAppPrefersDark);
+  useEffect(() => watchAppPrefersDark(setAppDark), []);
+  const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
   const [fontScale, setFontScale] = useState(() => {
-    const stored = Number(window.localStorage.getItem("operalibre.readerFontScale"));
+    const stored = Number(readStoredValue("operalibre.readerFontScale"));
     return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
   });
+  // The look a freshly opened book is styled with, and what the open one has
+  // been given so far, so a change re-styles it exactly once.
+  const readerThemeRef = useRef(readerTheme);
+  readerThemeRef.current = readerTheme;
+  const fontScaleRef = useRef(fontScale);
+  fontScaleRef.current = fontScale;
+  const appliedThemeRef = useRef<ReaderTheme | null>(null);
+  const appliedFontScaleRef = useRef<number | null>(null);
   const [focusMode, setFocusMode] = useState(false);
+  // Full screen: the native reader always, the web reader in focus mode. The
+  // bars fade out for reading and a tap on blank page brings them back.
+  const fullscreen = immersive || focusMode;
+  const fullscreenRef = useRef(fullscreen);
+  fullscreenRef.current = fullscreen;
+  const [chromeHidden, setChromeHidden] = useState(false);
+  const chromeHiddenRef = useRef(chromeHidden);
+  chromeHiddenRef.current = chromeHidden;
+  const [sheet, setSheet] = useState<"contents" | "appearance" | null>(null);
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+  const locationStorageKey = readerStorageKey(storageScope, bookId, "location");
+  const openingPreferenceKey = `operalibre.reader.${storageScope}.opening`;
+  const returnLocationKey = `${locationStorageKey}.return.${url.split("?")[0]}`;
+  const [openAtListening, setOpenAtListening] = useState(() => readStoredValue(openingPreferenceKey) === "listening");
+  // Freeze the launch decision. Later audio updates only refresh the manual action.
+  const openingChoiceRef = useRef({
+    enabled: openAtListening,
+    chapter: listeningChapter,
+    following: follow && (!!syncTarget || !!syncFragments?.length)
+  });
+  const [returnLocation, setReturnLocation] = useState(() => readStoredValue(returnLocationKey));
+  const [catchUpCfi, setCatchUpCfi] = useState<string | null>(null);
+  const [catchUpNotice, setCatchUpNotice] = useState("");
+  const [offerOpeningPreference, setOfferOpeningPreference] = useState(false);
+  const [catchUpBusy, setCatchUpBusy] = useState(false);
+  const changeOpeningPreference = (enabled: boolean) => {
+    setOpenAtListening(enabled);
+    writeStoredValue(openingPreferenceKey, enabled ? "listening" : "reading");
+    setOfferOpeningPreference(false);
+  };
+  const sheetRootRef = useRef<HTMLElement | null>(null);
+  // A long table of contents opens on the chapter being read, not at the top.
+  // The scroll runs after the sheet has settled to its card height and moves
+  // only the sheet's own scrollbar (scrollIntoView would scroll ancestors and
+  // make the sheet flash full-height as it opens).
+  useEffect(() => {
+    if (sheet !== "contents") {
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const root = sheetRootRef.current;
+      const current = root?.querySelector<HTMLElement>(".epub-toc button.current");
+      if (!root || !current) {
+        return;
+      }
+      root.scrollTop = Math.max(0, current.offsetTop - root.clientHeight / 2 + current.offsetHeight / 2);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [sheet]);
+
+  const resumeFollowing = useCallback(() => {
+    highlightedFragmentRef.current = -1;
+    // Let the chapter-sync effect re-open the playing chapter on the next run.
+    syncedTargetRef.current = null;
+    setFollow(true);
+  }, []);
+
+  // What a tap on a sentence does: seek there, or, while pinning, tell the
+  // server the narrator is reading it now.
+  const tapFragment = useCallback((fragment: SyncFragment) => {
+    if (pinningRef.current) {
+      setPinning(false);
+      onPinNarrationRef.current?.({ href: fragment.href, text: fragment.text });
+      return;
+    }
+    onSeekToRef.current?.(fragment.startSeconds);
+    highlightedFragmentRef.current = -1;
+    setFollow(true);
+  }, []);
+
+  // Turning a page by hand means the listener wants to read ahead (or
+  // back); the narration marker must not drag the page away again until they
+  // ask to return.
+  const navigateByHand = useCallback((action: () => unknown) => {
+    readerNavigationVersionRef.current += 1;
+    // Chapter-level following pulls the page just as a sentence marker does,
+    // so a page turned by hand has to stop that too, or the reader is
+    // dragged back to the narrator's chapter on the next run.
+    const followingNarration =
+      (syncFragmentsRef.current?.length ?? 0) > 0 || !!syncTargetRef.current;
+    if (followingNarration) {
+      setFollow(false);
+    }
+    // The listener is driving now; where they stop is the remembered place.
+    handNavigatedRef.current = true;
+    restoringUntilRef.current = 0;
+    readerDebugLog("hand");
+    void action();
+  }, []);
+
+  const ensureSearchIndex = useCallback((doc: Document) => {
+    if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
+      searchIndexRef.current = buildDocumentSearchIndex(doc);
+      searchCursorRef.current = 0;
+      fragmentRangesRef.current = null;
+      sentenceSpanRef.current = null;
+    }
+    return searchIndexRef.current;
+  }, []);
+
+  // WKWebView does not deliver taps made on the epub iframe's own document to
+  // its listeners, so in the full-screen reader an app-layer overlay catches
+  // taps instead (the reader chrome, in this same layer, receives them
+  // reliably). The overlay reports a page-relative x and the tapped point in
+  // window coordinates; this resolves the point to a page turn, a sentence
+  // seek, or a bar toggle.
+  const handleOverlayTap = useCallback(
+    (xFraction: number, clientX: number, clientY: number) => {
+      const rendition = renditionRef.current;
+      if (xFraction < 0.25) {
+        navigateByHand(() => rendition?.prev());
+        return;
+      }
+      if (xFraction > 0.75) {
+        navigateByHand(() => rendition?.next());
+        return;
+      }
+      // Middle: seek to the tapped sentence, if the tap landed on one.
+      const contentsList = ([] as Contents[]).concat(
+        (rendition?.getContents() as unknown as Contents[]) ?? []
+      );
+      const contents = contentsList.find((candidate) => candidate?.document?.body);
+      const doc = contents?.document;
+      const frame = doc?.defaultView?.frameElement as HTMLElement | undefined;
+      const fragments = syncFragmentsRef.current;
+      if (doc && frame && fragments && fragments.length > 0) {
+        const frameBox = frame.getBoundingClientRect();
+        const innerX = clientX - frameBox.left;
+        const innerY = clientY - frameBox.top;
+        const caret = caretAtPoint(doc, innerX, innerY);
+        if (caret && pointOnText(caret.node, innerX, innerY)) {
+          const index = ensureSearchIndex(doc);
+          const position = indexPositionForCaret(index, caret.node, caret.offset);
+          if (position >= 0) {
+            const href = locationRef.current?.start?.href ?? "";
+            if (
+              !fragmentRangesRef.current ||
+              fragmentRangesRef.current.doc !== doc ||
+              fragmentRangesRef.current.href !== href
+            ) {
+              fragmentRangesRef.current = { doc, href, ranges: locateFragments(index, fragments, href) };
+            }
+            const fragmentIndex = fragmentAtIndexPosition(fragmentRangesRef.current.ranges, position);
+            if (fragmentIndex >= 0) {
+              tapFragment(fragments[fragmentIndex]);
+              return;
+            }
+          }
+        }
+      }
+      setChromeHidden((hidden) => !hidden);
+    },
+    [ensureSearchIndex, navigateByHand, tapFragment]
+  );
+
+  // A horizontal swipe on the overlay turns the page as well.
+  const overlaySwipeRef = useRef<{ x: number; y: number } | null>(null);
+  const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    overlaySwipeRef.current = { x: event.clientX, y: event.clientY };
+  }, []);
+  const handleOverlayPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const start = overlaySwipeRef.current;
+      overlaySwipeRef.current = null;
+      const rendition = renditionRef.current;
+      const stage = viewerRef.current?.getBoundingClientRect();
+      if (!start || !stage || stage.width === 0) {
+        return;
+      }
+      const deltaX = event.clientX - start.x;
+      const deltaY = event.clientY - start.y;
+      if (Math.abs(deltaX) > 55 && Math.abs(deltaY) < 45) {
+        navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+        return;
+      }
+      if (Math.abs(deltaX) < 16 && Math.abs(deltaY) < 16) {
+        handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+      }
+    },
+    [handleOverlayTap]
+  );
 
   useEffect(() => {
     if (!viewerRef.current) {
@@ -1319,18 +1778,31 @@ function EpubReadalong({
     }
 
     let cancelled = false;
+    const debugLog = (entry: string) => {
+      if (import.meta.env.DEV) {
+        const debugWindow = window as unknown as { __operalibreReaderOpens?: string[] };
+        debugWindow.__operalibreReaderOpens = [...(debugWindow.__operalibreReaderOpens ?? []), `${Math.round(performance.now())}:${entry}`];
+      }
+    };
+    debugLog(`effect:${url.slice(-8)}:${locationStorageKey.slice(-12)}`);
     setToc([]);
     setLocation(null);
     setActiveHref("");
     setError(null);
     setErrorDetail(null);
     setIsReady(false);
+    setSlowToOpen(false);
     syncedTargetRef.current = null;
+    handNavigatedRef.current = false;
     searchIndexRef.current = null;
     searchCursorRef.current = 0;
+    fragmentRangesRef.current = null;
+    sentenceSpanRef.current = null;
     highlightCfiRef.current = null;
+    wordCfiRef.current = null;
     highlightedFragmentRef.current = -1;
     autoNavHrefRef.current = null;
+    attachedDocsRef.current = new WeakSet();
 
     const abortController = new AbortController();
     let readyTimeout: number | null = null;
@@ -1339,11 +1811,178 @@ function EpubReadalong({
     let rendition: Rendition | null = null;
     const handleRelocated = (nextLocation: Location) => {
       lastLocationRef.current = nextLocation;
+      locationRef.current = nextLocation;
       setLocation(nextLocation);
       setIsReady(true);
+      if (import.meta.env.DEV) {
+        const container = viewerRef.current?.querySelector<HTMLElement>(".epub-container");
+        debugLog(
+          `relocated:${nextLocation.start?.cfi}..${nextLocation.end?.cfi}:p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total}:sl${container?.scrollLeft}/${container?.clientWidth}/${container?.scrollWidth}:anchor=${anchorCfiRef.current}`
+        );
+      }
+      const EpubCfiClass = epubCfiClassRef.current;
+      const restoring = performance.now() < restoringUntilRef.current;
+      const update = anchorAfterRelocation(
+        anchorCfiRef.current,
+        { start: nextLocation.start?.cfi, end: nextLocation.end?.cfi },
+        (a, b) => (EpubCfiClass ? new EpubCfiClass().compare(a, b) : 0),
+        restoring
+      );
+      if (update.arrived) {
+        restoringUntilRef.current = 0;
+      }
+      readerDebugLog(
+        `reloc ${restoring ? "restoring" : "settled"} p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total} start=${shortCfi(nextLocation.start?.cfi)} anchor=${shortCfi(anchorCfiRef.current)}->${shortCfi(update.anchor)}${update.arrived ? " arrived" : ""}`
+      );
+      if (update.anchor && update.anchor !== anchorCfiRef.current) {
+        anchorCfiRef.current = update.anchor;
+        writeStoredValue(locationStorageKey, update.anchor);
+      }
+    };
+
+    // Tapping a sentence seeks the audio to it and resumes following. The
+    // narrated sentence's own marker has its own click handler (an SVG
+    // overlay), so clicks landing on that overlay are left to it.
+    // The narrated sentence under a tap, if the tap landed on one.
+    const fragmentUnderTap = (doc: Document, clientX: number, clientY: number): SyncFragment | null => {
+      const fragments = syncFragmentsRef.current;
+      if (!fragments || fragments.length === 0) {
+        return null;
+      }
+      const caret = caretAtPoint(doc, clientX, clientY);
+      // Caret lookup snaps to the nearest text; a tap in a margin must not
+      // read as a tap on the closest sentence.
+      if (!caret || !pointOnText(caret.node, clientX, clientY)) {
+        return null;
+      }
+      const index = ensureSearchIndex(doc);
+      const position = indexPositionForCaret(index, caret.node, caret.offset);
+      if (position < 0) {
+        return null;
+      }
+      const href = locationRef.current?.start?.href ?? "";
+      if (
+        !fragmentRangesRef.current ||
+        fragmentRangesRef.current.doc !== doc ||
+        fragmentRangesRef.current.href !== href
+      ) {
+        fragmentRangesRef.current = { doc, href, ranges: locateFragments(index, fragments, href) };
+      }
+      const fragmentIndex = fragmentAtIndexPosition(fragmentRangesRef.current.ranges, position);
+      return fragmentIndex < 0 ? null : fragments[fragmentIndex];
+    };
+    const handleTap = (doc: Document, target: Element | null, clientX: number, clientY: number) => {
+      if (target?.closest?.("a, button, input, textarea, select, svg")) {
+        return;
+      }
+      // Full screen reads like a paper book: the outer quarters of the page
+      // turn it, the middle seeks to the tapped sentence, and a tap on nothing
+      // in particular shows or hides the bars.
+      if (fullscreenRef.current) {
+        // The chapter is one wide, scrolled document; the visible page is
+        // the stage's box in the app's own coordinates.
+        const frame = doc.defaultView?.frameElement;
+        const stage = viewerRef.current?.getBoundingClientRect();
+        if (frame && stage && stage.width > 0) {
+          const x = (frame.getBoundingClientRect().left + clientX - stage.left) / stage.width;
+          if (x < 0.25) {
+            navigateByHand(() => rendition?.prev());
+            return;
+          }
+          if (x > 0.75) {
+            navigateByHand(() => rendition?.next());
+            return;
+          }
+        }
+      }
+      const fragment = fragmentUnderTap(doc, clientX, clientY);
+      if (fragment) {
+        tapFragment(fragment);
+      } else if (fullscreenRef.current) {
+        setChromeHidden((hidden) => !hidden);
+      }
+    };
+    const handleContentClick = (event: MouseEvent) => {
+      // A tap already handled on touchend; iOS may still send its click.
+      if (performance.now() - lastTouchTapRef.current < 700) {
+        return;
+      }
+      const doc = (event.target as Node | null)?.ownerDocument;
+      if (doc) {
+        handleTap(doc, event.target as Element | null, event.clientX, event.clientY);
+      }
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY, at: performance.now() } : null;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      event.preventDefault();
+    };
+    const handleTouchEnd = (event: TouchEvent) => {
+      const start = touchStartRef.current;
+      const touch = event.changedTouches[0];
+      touchStartRef.current = null;
+      if (!start || !touch) {
+        return;
+      }
+      const deltaX = touch.clientX - start.x;
+      const deltaY = touch.clientY - start.y;
+      // iOS withholds the click for a touch whose move was cancelled (the
+      // scroll lock above), and a finger rarely lands perfectly still, so a
+      // tap is recognised here rather than waited for as a click.
+      if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && performance.now() - start.at < 600) {
+        const target = event.target as Element | null;
+        if (target?.closest?.("a, button, input, textarea, select")) {
+          return;
+        }
+        lastTouchTapRef.current = performance.now();
+        const doc = (event.target as Node | null)?.ownerDocument;
+        if (doc) {
+          handleTap(doc, target, touch.clientX, touch.clientY);
+        }
+        return;
+      }
+      if (Math.abs(deltaX) < 60 || Math.abs(deltaY) > 50) {
+        return;
+      }
+      navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown") {
+        event.preventDefault();
+        navigateByHand(() => rendition?.next());
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        navigateByHand(() => rendition?.prev());
+      }
+    };
+    const attachToDocument = (doc: Document) => {
+      if (attachedDocsRef.current.has(doc)) {
+        return;
+      }
+      attachedDocsRef.current.add(doc);
+      doc.addEventListener("click", handleContentClick);
+      doc.addEventListener("touchstart", handleTouchStart, { passive: true });
+      // A paginated chapter is one wide, column-laid-out document. iOS lets a
+      // finger drag it sideways (and the page behind it) even with overflow
+      // hidden, which tears the page mid-column whenever the reader isn't
+      // actively snapping back to the narration. Pages turn by swipe or tap.
+      doc.addEventListener("touchmove", handleTouchMove, { passive: false });
+      doc.addEventListener("touchend", handleTouchEnd);
+      doc.addEventListener("keydown", handleKeyDown);
     };
     const handleRendered = () => {
+      debugLog("rendered");
       setIsReady(true);
+      const contentsList = ([] as Contents[]).concat(
+        (rendition?.getContents() as unknown as Contents[]) ?? []
+      );
+      for (const contents of contentsList) {
+        if (contents?.document) {
+          attachToDocument(contents.document);
+        }
+      }
     };
 
     const openBook = async () => {
@@ -1357,19 +1996,22 @@ function EpubReadalong({
 
         readyTimeout = window.setTimeout(() => {
           if (!cancelled) {
-            setError("This EPUB is taking longer than expected to open.");
-            abortController.abort();
+            setSlowToOpen(true);
           }
-        }, 15000);
+        }, 12000);
 
-        const response = await fetch(url, {
-          credentials: "include",
-          signal: abortController.signal
-        });
-        if (!response.ok) {
-          throw new Error(`EPUB request failed with ${response.status}`);
-        }
-        const data = await response.arrayBuffer();
+        const data = loadBytesRef.current
+          ? await loadBytesRef.current(url, abortController.signal)
+          : await (async () => {
+              const response = await fetch(url, {
+                credentials: "include",
+                signal: abortController.signal
+              });
+              if (!response.ok) {
+                throw new Error(`EPUB request failed with ${response.status}`);
+              }
+              return response.arrayBuffer();
+            })();
         if (cancelled || !viewerRef.current) {
           return;
         }
@@ -1393,47 +2035,59 @@ function EpubReadalong({
           manager: "default"
         });
 
-        rendition.themes.register("operalibre-paper", {
+        // Keep touch from scrolling the chapter document itself; navigation
+        // is by page turn only.
+        const readerLockRules = {
+          html: { "touch-action": "none !important", "overscroll-behavior": "none !important" }
+        };
+        // One stylesheet for every look; the colours come from custom
+        // properties set per theme (see applyReaderThemeColors).
+        rendition.themes.register("operalibre", {
           body: {
-            color: "#241b15 !important",
-            background: "#fffdf7 !important",
+            color: "var(--reader-ink) !important",
+            background: "var(--reader-page) !important",
             "font-family": "Georgia, 'Times New Roman', serif !important",
             "line-height": "1.78 !important",
-            padding: "0 5% !important"
+            padding: "0 5% !important",
+            // The narrow phone column plus em-dash-joined words makes justified
+            // text open large gaps between words; left align reads cleanly and
+            // hyphenation keeps the ragged edge tidy.
+            "text-align": "left !important",
+            "-webkit-hyphens": "auto",
+            hyphens: "auto"
           },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#7c2f2a !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
-        });
-        rendition.themes.register("operalibre-sepia", {
-          body: {
-            color: "#3b2b1d !important",
-            background: "#f2e5c9 !important",
-            "font-family": "Georgia, 'Times New Roman', serif !important",
-            "line-height": "1.78 !important",
-            padding: "0 5% !important"
+          p: {
+            "margin-bottom": "1.15em !important",
+            "text-align": "left !important",
+            "-webkit-hyphens": "auto",
+            hyphens: "auto"
           },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#7d3f26 !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
+          "p, li, blockquote, div": { "text-align": "left !important" },
+          a: { color: "var(--reader-link) !important" },
+          img: { "max-width": "100% !important", height: "auto !important" },
+          ...readerLockRules
         });
-        rendition.themes.register("operalibre-night", {
-          body: {
-            color: "#e7dcc8 !important",
-            background: "#171411 !important",
-            "font-family": "Georgia, 'Times New Roman', serif !important",
-            "line-height": "1.78 !important",
-            padding: "0 5% !important"
-          },
-          p: { "margin-bottom": "1.15em !important" },
-          a: { color: "#d9b574 !important" },
-          img: { "max-width": "100% !important", height: "auto !important" }
-        });
+
+        // Style the pages before the first one is laid out. Applying the
+        // theme and text size afterwards reflows the chapter under a stage
+        // still scrolled to the old page, which then shows earlier words than
+        // the remembered place, and that earlier page gets saved in its turn.
+        rendition.themes.select("operalibre");
+        applyReaderThemeColors(rendition.themes, readerThemeRef.current);
+        rendition.themes.fontSize(`${fontScaleRef.current}%`);
+        appliedThemeRef.current = readerThemeRef.current;
+        appliedFontScaleRef.current = fontScaleRef.current;
 
         bookRef.current = book;
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
         rendition.on("rendered", handleRendered);
+        if (import.meta.env.DEV) {
+          // Inspectable from the console while developing the reader.
+          const debugWindow = window as unknown as { __operalibreReader?: unknown; __operalibreReaderOpens?: string[] };
+          debugWindow.__operalibreReader = { book, rendition };
+          debugWindow.__operalibreReaderOpens = [...(debugWindow.__operalibreReaderOpens ?? []), `${Math.round(performance.now())}:${url.slice(-12)}`];
+        }
 
         book.loaded.navigation
           .then((navigation) => {
@@ -1447,9 +2101,97 @@ function EpubReadalong({
             }
           });
 
-        await rendition.display(lastLocationRef.current?.start?.cfi);
+        // Reopen where the listener left off; when narration is being
+        // followed the marker moves the page again as soon as it is known.
+        const savedLocation = readStoredValue(locationStorageKey);
+        readerDebugLog(`stored=${shortCfi(savedLocation)} last=${shortCfi(lastLocationRef.current?.start?.cfi)}`);
+        let startAt = anchorCfiRef.current ?? savedLocation;
+        const originalLocation = startAt;
+        const openingChoice = openingChoiceRef.current;
+        // Consume this once, including failed matches and loads. Reflow never retries it.
+        openingChoiceRef.current = { enabled: false, chapter: null, following: false };
+        if (openingChoice.enabled && !openingChoice.following) {
+          try {
+            const navigation = await book.loaded.navigation;
+            const target = await resolveListeningCfi(book, flattenToc(navigation.toc), openingChoice.chapter);
+            if (cancelled) return;
+            if (!handNavigatedRef.current && canCatchUp(startAt, target, (a, b) => new epubModule.EpubCFI().compare(a, b))) {
+              writeStoredValue(returnLocationKey, startAt!);
+              setReturnLocation(startAt);
+              startAt = target;
+              setCatchUpNotice(`Opened at ${openingChoice.chapter}.`);
+            }
+          } catch {
+            // An unavailable chapter preserves the saved reading place.
+          }
+        }
+        anchorCfiRef.current = startAt;
+        debugLog(`display:${startAt}`);
+        readerDebugLog(`open saved=${shortCfi(startAt)}`);
+        if (startAt) {
+          beginRestore();
+        }
+        try {
+          await rendition.display(startAt ?? undefined);
+          if (!cancelled && startAt && startAt !== originalLocation) writeStoredValue(locationStorageKey, startAt);
+        } catch (error) {
+          // A remembered place that no longer resolves (the file was
+          // replaced) must not keep the book from opening at all.
+          if (!startAt || cancelled) {
+            throw error;
+          }
+          console.warn("EPUB remembered place could not be opened", error);
+          readerDebugLog(`open failed ${String(error).slice(0, 60)}`);
+          anchorCfiRef.current = originalLocation;
+          setCatchUpNotice("");
+          beginRestore();
+          try {
+            await rendition.display(originalLocation ?? undefined);
+          } catch {
+            anchorCfiRef.current = null;
+            restoringUntilRef.current = 0;
+            await rendition.display();
+          }
+        }
+        // The listener left off here, so this is where the book opens; the
+        // chapter being played counts as already handled. It takes the page
+        // only once the narration moves on to a different chapter.
+        if (anchorCfiRef.current) {
+          syncedTargetRef.current = syncTargetRef.current?.id ?? null;
+        }
+        // The chapter's pictures and web fonts arrive after the first
+        // layout and push the text along, so the page epub.js first shows
+        // for a remembered place is usually an earlier one. Check back while
+        // the layout settles and turn to the place again if it has moved off
+        // the page — unless the listener has started reading somewhere else.
+        void (async () => {
+          for (const delay of [300, 700, 1400, 2500]) {
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+            const anchor = anchorCfiRef.current;
+            const EpubCfiClass = epubCfiClassRef.current;
+            const page = locationRef.current;
+            if (cancelled || handNavigatedRef.current || !anchor || !rendition) {
+              return;
+            }
+            if (!EpubCfiClass || !page?.start?.cfi || !page.end?.cfi) {
+              continue;
+            }
+            const compare = (a: string, b: string) => new EpubCfiClass().compare(a, b);
+            if (anchorOnPage(anchor, { start: page.start.cfi, end: page.end.cfi }, compare)) {
+              continue;
+            }
+            readerDebugLog(`settle back to ${shortCfi(anchor)} from ${shortCfi(page.start.cfi)}`);
+            beginRestore();
+            try {
+              await rendition.display(anchor);
+            } catch {
+              return;
+            }
+          }
+        })();
         if (!cancelled) {
           setIsReady(true);
+          setSlowToOpen(false);
           setError(null);
           setErrorDetail(null);
           if (readyTimeout !== null) {
@@ -1468,8 +2210,26 @@ function EpubReadalong({
 
     resizeObserver = new ResizeObserver(() => {
       const bounds = viewerRef.current?.getBoundingClientRect();
-      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition) {
-        rendition.resize(Math.floor(bounds.width), Math.floor(bounds.height));
+      // epub.js only gains a view manager once it has attached; a resize
+      // before then throws inside the observer callback.
+      const attached = !!(rendition as unknown as { manager?: unknown } | null)?.manager;
+      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition && attached) {
+        // epub.js re-lays the chapter out and turns to the given place; left
+        // to itself it would turn to the old page's first words instead,
+        // which lands a little earlier with every pass.
+        debugLog(`resize:${Math.floor(bounds.width)}x${Math.floor(bounds.height)}:anchor=${anchorCfiRef.current}`);
+        readerDebugLog(
+          `resize ${Math.floor(bounds.width)}x${Math.floor(bounds.height)} anchor=${shortCfi(anchorCfiRef.current)}`
+        );
+        if (anchorCfiRef.current) {
+          beginRestore();
+        }
+        (rendition as unknown as { resize(width: number, height: number, cfi?: string): void }).resize(
+          Math.floor(bounds.width),
+          Math.floor(bounds.height),
+          anchorCfiRef.current ?? undefined
+        );
+        setRelayoutTick((tick) => tick + 1);
       }
     });
     resizeObserver.observe(viewerRef.current);
@@ -1477,41 +2237,119 @@ function EpubReadalong({
 
     return () => {
       cancelled = true;
+      debugLog("cleanup");
+      readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
       abortController.abort();
       if (readyTimeout !== null) {
         window.clearTimeout(readyTimeout);
       }
       resizeObserver?.disconnect();
-      rendition?.off("relocated", handleRelocated);
-      rendition?.off("rendered", handleRendered);
-      rendition?.destroy();
-      book?.destroy();
+      // epub.js teardown throws when a rendition is destroyed before it has
+      // attached (the reader closed while the book was still opening), and a
+      // throw here would unmount the whole app.
+      try {
+        rendition?.off("relocated", handleRelocated);
+        rendition?.off("rendered", handleRendered);
+        rendition?.destroy();
+      } catch (error) {
+        console.warn("EPUB rendition teardown failed", error);
+      }
+      try {
+        book?.destroy();
+      } catch (error) {
+        console.warn("EPUB book teardown failed", error);
+      }
       renditionRef.current = null;
       bookRef.current = null;
     };
-  }, [url]);
+  }, [beginRestore, ensureSearchIndex, locationStorageKey, navigateByHand, returnLocationKey, tapFragment, url]);
 
   useEffect(() => {
-    window.localStorage.setItem("operalibre.readerTheme", readerTheme);
-    if (isReady) {
-      renditionRef.current?.themes.select(`operalibre-${readerTheme}`);
+    const book = bookRef.current;
+    if (!isReady || !book) return;
+    let cancelled = false;
+    setCatchUpCfi(null);
+    void resolveListeningCfi(book, toc, listeningChapter).then((target) => {
+      if (!cancelled) setCatchUpCfi(target);
+    }).catch(() => { /* A chapter that cannot be resolved is not offered. */ });
+    return () => { cancelled = true; };
+  }, [isReady, toc, listeningChapter]);
+
+  const moveReaderTo = async (target: string, returning: boolean) => {
+    const rendition = renditionRef.current;
+    const previous = anchorCfiRef.current;
+    if (!rendition || !previous || catchUpBusy) return;
+    const navigationVersion = ++readerNavigationVersionRef.current;
+    setCatchUpBusy(true);
+    if (!returning) {
+      writeStoredValue(returnLocationKey, previous);
+      setReturnLocation(previous);
+    }
+    setFollow(false);
+    handNavigatedRef.current = true;
+    anchorCfiRef.current = target;
+    beginRestore();
+    try {
+      await rendition.display(target);
+      if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
+      writeStoredValue(locationStorageKey, target);
+      setCatchUpNotice(returning ? "Returned to your previous reading place." : `Moved to ${listeningChapter}.`);
+      setOfferOpeningPreference(!returning && !openAtListening);
+    } catch {
+      if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
+      anchorCfiRef.current = previous;
+      beginRestore();
+      await rendition.display(previous).catch(() => undefined);
+      setCatchUpNotice("That place could not be opened. Your reading place is saved.");
+    } finally {
+      setCatchUpBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    writeReaderThemeChoice(readerThemeChoice);
+  }, [readerThemeChoice]);
+
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (isReady && rendition && appliedThemeRef.current !== readerTheme) {
+      applyReaderThemeColors(rendition.themes, readerTheme);
+      appliedThemeRef.current = readerTheme;
     }
   }, [isReady, readerTheme]);
 
   useEffect(() => {
-    window.localStorage.setItem("operalibre.readerFontScale", String(fontScale));
-    if (isReady) {
-      renditionRef.current?.themes.fontSize(`${fontScale}%`);
+    writeStoredValue("operalibre.readerFontScale", String(fontScale));
+    const rendition = renditionRef.current;
+    if (!isReady || !rendition || appliedFontScaleRef.current === fontScale) {
+      return;
     }
-  }, [fontScale, isReady]);
+    appliedFontScaleRef.current = fontScale;
+    rendition.themes.fontSize(`${fontScale}%`);
+    readerDebugLog(`fontScale ${fontScale} anchor=${shortCfi(anchorCfiRef.current)}`);
+    if (anchorCfiRef.current) {
+      beginRestore();
+    }
+    // The chapter reflows at the new size while the stage stays scrolled to
+    // the old page, which now holds different words. Lay the chapter out
+    // afresh and turn to the place being read.
+    rendition.clear();
+    void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+    setRelayoutTick((tick) => tick + 1);
+  }, [beginRestore, fontScale, isReady]);
 
   useEffect(() => {
-    if (!focusMode) {
+    if (!fullscreen) {
       return;
     }
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (sheetRef.current) {
+        setSheet(null);
+      } else if (!immersive) {
         setFocusMode(false);
       }
     };
@@ -1521,22 +2359,27 @@ function EpubReadalong({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [focusMode]);
+  }, [fullscreen, immersive]);
 
+  // Chapter-level sync: with no sentence map, follow keeps the reader on the
+  // chapter being played. Turning a page (which clears follow) stops it, so a
+  // listener can read ahead; turning follow back on re-opens the chapter.
   useEffect(() => {
-    if (!syncTarget || !isReady || toc.length === 0 || syncedTargetRef.current === syncTarget.id) {
+    if (!syncTarget || !isReady || toc.length === 0) {
       return;
     }
-
-    const href = findTocHrefForSyncTarget(toc, syncTarget);
+    if (!shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
+      return;
+    }
+    const href = findTocHrefForChapterTitle(toc, syncTarget.title);
     if (!href) {
       return;
     }
-
     syncedTargetRef.current = syncTarget.id;
     setActiveHref(href);
+    readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
-  }, [isReady, syncTarget, toc]);
+  }, [follow, isReady, syncTarget, toc]);
 
   const fragmentIndex = useMemo(
     () =>
@@ -1546,24 +2389,29 @@ function EpubReadalong({
     [positionSeconds, syncFragments]
   );
 
+  const removeAnnotation = useCallback((cfi: string | null) => {
+    const rendition = renditionRef.current;
+    if (!rendition || !cfi) {
+      return;
+    }
+    try {
+      rendition.annotations.remove(cfi, "highlight");
+    } catch {
+      // stale annotation already gone
+    }
+  }, []);
+
   // Sentence-level readalong: highlight the fragment being narrated and keep
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    // The night page is dark, so the marker must lighten instead of darken.
-    const highlightStyles =
-      readerTheme === "night"
-        ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
-        : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
+    const styles = highlightStyles(readerTheme, precision);
     if (!follow || !syncFragments || fragmentIndex < 0) {
-      if (rendition && highlightCfiRef.current) {
-        try {
-          rendition.annotations.remove(highlightCfiRef.current, "highlight");
-        } catch {
-          // stale annotation already gone
-        }
-      }
+      removeAnnotation(highlightCfiRef.current);
+      removeAnnotation(wordCfiRef.current?.cfi ?? null);
       highlightCfiRef.current = null;
+      wordCfiRef.current = null;
+      sentenceSpanRef.current = null;
       highlightedFragmentRef.current = -1;
       return;
     }
@@ -1581,77 +2429,13 @@ function EpubReadalong({
       return;
     }
     autoNavHrefRef.current = null;
-    if (highlightedFragmentRef.current === fragmentIndex) {
-      if (highlightThemeRef.current !== readerTheme && highlightCfiRef.current) {
-        try {
-          rendition.annotations.remove(highlightCfiRef.current, "highlight");
-        } catch {
-          // stale annotation already gone
-        }
-        rendition.annotations.highlight(
-          highlightCfiRef.current,
-          {},
-          () => onSeekTo?.(fragment.startSeconds),
-          "readalong-highlight",
-          highlightStyles
-        );
-        highlightThemeRef.current = readerTheme;
+    // Turns the page to a marker that has ended up off-screen, whether the
+    // narration moved on or the layout changed under it.
+    const keepOnPage = (cfi: string) => {
+      const EpubCfiClass = epubCfiClassRef.current;
+      if (!EpubCfiClass || !location.start?.cfi || !location.end?.cfi) {
+        return;
       }
-      return;
-    }
-
-    const contentsList = ([] as Contents[]).concat(
-      (rendition.getContents() as unknown as Contents[]) ?? []
-    );
-    const contents = contentsList.find((candidate) => candidate?.document?.body);
-    const doc = contents?.document;
-    if (!contents || !doc) {
-      return;
-    }
-    if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
-      searchIndexRef.current = buildDocumentSearchIndex(doc);
-      searchCursorRef.current = 0;
-    }
-
-    // Mark the fragment handled up front so a missing sentence doesn't retry
-    // on every relocation.
-    highlightedFragmentRef.current = fragmentIndex;
-
-    const found = findRangeInSearchIndex(
-      searchIndexRef.current,
-      normalizeSyncNeedle(fragment.text),
-      searchCursorRef.current
-    );
-    if (!found) {
-      return;
-    }
-    searchCursorRef.current = found.endOffset;
-
-    let cfi: string;
-    try {
-      cfi = contents.cfiFromRange(found.range);
-    } catch {
-      return;
-    }
-    if (highlightCfiRef.current) {
-      try {
-        rendition.annotations.remove(highlightCfiRef.current, "highlight");
-      } catch {
-        // stale annotation already gone
-      }
-    }
-    rendition.annotations.highlight(
-      cfi,
-      {},
-      () => onSeekTo?.(fragment.startSeconds),
-      "readalong-highlight",
-      highlightStyles
-    );
-    highlightCfiRef.current = cfi;
-    highlightThemeRef.current = readerTheme;
-
-    const EpubCfiClass = epubCfiClassRef.current;
-    if (EpubCfiClass && location.start?.cfi && location.end?.cfi) {
       try {
         const comparator = new EpubCfiClass();
         if (
@@ -1663,8 +2447,146 @@ function EpubReadalong({
       } catch {
         // invalid comparison; leave the page as-is
       }
+    };
+    if (highlightedFragmentRef.current === fragmentIndex) {
+      const relaid = handledRelayoutRef.current !== relayoutTick;
+      if ((highlightThemeRef.current !== readerTheme || relaid) && highlightCfiRef.current) {
+        // Redraw against the current layout; the word marker follows suit.
+        removeAnnotation(highlightCfiRef.current);
+        removeAnnotation(wordCfiRef.current?.cfi ?? null);
+        wordCfiRef.current = null;
+        rendition.annotations.highlight(
+          highlightCfiRef.current,
+          {},
+          () => tapFragment(fragment),
+          "readalong-highlight",
+          styles.sentence
+        );
+        highlightThemeRef.current = readerTheme;
+        handledRelayoutRef.current = relayoutTick;
+      }
+      if (highlightCfiRef.current) {
+        keepOnPage(highlightCfiRef.current);
+      }
+      return;
     }
-  }, [follow, fragmentIndex, isReady, location, onSeekTo, readerTheme, syncFragments]);
+    handledRelayoutRef.current = relayoutTick;
+
+    const contentsList = ([] as Contents[]).concat(
+      (rendition.getContents() as unknown as Contents[]) ?? []
+    );
+    const contents = contentsList.find((candidate) => candidate?.document?.body);
+    const doc = contents?.document;
+    if (!contents || !doc) {
+      return;
+    }
+    const index = ensureSearchIndex(doc);
+
+    // Mark the fragment handled up front so a missing sentence doesn't retry
+    // on every relocation.
+    highlightedFragmentRef.current = fragmentIndex;
+    sentenceSpanRef.current = null;
+    removeAnnotation(wordCfiRef.current?.cfi ?? null);
+    wordCfiRef.current = null;
+
+    const needle = normalizeNeedleWithOffsets(fragment.text);
+    const found = findRangeInSearchIndex(index, needle.text, searchCursorRef.current);
+    if (!found) {
+      return;
+    }
+    searchCursorRef.current = found.endOffset;
+    sentenceSpanRef.current = {
+      fragmentIndex,
+      at: found.endOffset - needle.text.length,
+      offsets: needle.offsets
+    };
+
+    let cfi: string;
+    try {
+      cfi = contents.cfiFromRange(found.range);
+    } catch {
+      return;
+    }
+    removeAnnotation(highlightCfiRef.current);
+    rendition.annotations.highlight(
+      cfi,
+      {},
+      () => tapFragment(fragment),
+      "readalong-highlight",
+      styles.sentence
+    );
+    highlightCfiRef.current = cfi;
+    highlightThemeRef.current = readerTheme;
+    keepOnPage(cfi);
+  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+
+  // Word-level readalong: a second, stronger marker on the narrated word,
+  // placed inside the sentence found above.
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    const clearWord = () => {
+      removeAnnotation(wordCfiRef.current?.cfi ?? null);
+      wordCfiRef.current = null;
+    };
+    if (!follow || !syncFragments || fragmentIndex < 0 || precision !== "word" || !rendition || !isReady) {
+      clearWord();
+      return;
+    }
+    const fragment = syncFragments[fragmentIndex];
+    const sentence = sentenceSpanRef.current;
+    const index = searchIndexRef.current;
+    const wordIndex = activeWordIndex(fragment, positionSeconds);
+    if (wordIndex < 0 || !sentence || sentence.fragmentIndex !== fragmentIndex || !index) {
+      clearWord();
+      return;
+    }
+    const current = wordCfiRef.current;
+    if (
+      current &&
+      current.wordIndex === wordIndex &&
+      current.fragmentIndex === fragmentIndex &&
+      current.theme === readerTheme
+    ) {
+      return;
+    }
+    const [, , offset, length] = fragment.words![wordIndex];
+    const from = sentence.offsets.findIndex((raw) => raw >= offset);
+    let to = from;
+    while (to < sentence.offsets.length && sentence.offsets[to] < offset + length) {
+      to += 1;
+    }
+    if (from < 0 || to <= from) {
+      clearWord();
+      return;
+    }
+    const range = rangeForIndexSpan(index, sentence.at + from, sentence.at + to);
+    const contentsList = ([] as Contents[]).concat(
+      (rendition.getContents() as unknown as Contents[]) ?? []
+    );
+    const contents = contentsList.find((candidate) => candidate?.document === index.doc);
+    if (!range || !contents) {
+      clearWord();
+      return;
+    }
+    let cfi: string;
+    try {
+      cfi = contents.cfiFromRange(range);
+    } catch {
+      clearWord();
+      return;
+    }
+    clearWord();
+    rendition.annotations.highlight(
+      cfi,
+      {},
+      () => tapFragment(fragment),
+      "readalong-word",
+      highlightStyles(readerTheme, precision).word
+    );
+    wordCfiRef.current = { cfi, wordIndex, fragmentIndex, theme: readerTheme };
+    // `location` is not read here, but the sentence marker above is placed in
+    // response to it, and the word marker must follow even while paused.
+  }, [follow, fragmentIndex, isReady, location, positionSeconds, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -1686,127 +2608,468 @@ function EpubReadalong({
     return match;
   }, [location, toc]);
   const selectedTocHref = currentTocItem?.href ?? activeHref;
+  const hasSync = !!syncFragments && syncFragments.length > 0;
+  // Chapter-sync books have no marker but still follow the narrated chapter,
+  // so they get the same follow toggle.
+  const canFollow = hasSync || !!syncTarget;
+  const followLabel =
+    precision === "word"
+      ? "Following word for word"
+      : precision === "estimated"
+        ? "Following approximately"
+        : "Following by sentence";
+  const statusLabel = hasSync
+    ? follow
+      ? fragmentIndex >= 0
+        ? `${followLabel} · ${locationLabel}`
+        : `Waiting for narration · ${locationLabel}`
+      : `Reading freely · ${locationLabel}`
+    : syncTarget
+      ? `Chapter sync · ${locationLabel}`
+      : locationLabel;
+  const awayFromNarration = hasSync && !follow && fragmentIndex >= 0;
 
-  const reader = (
-    <div className={`epub-reader theme-${readerTheme} ${focusMode ? "focus-mode" : ""}`}>
-      <div className="epub-reader-chrome">
-        <div className="epub-toolbar">
-          <button type="button" onClick={() => void renditionRef.current?.prev()} aria-label="Previous page">
-            <ChevronLeft size={17} />
-          </button>
-          <div className="epub-location">
-            <select
-              aria-label={`${title} table of contents`}
-              value={selectedTocHref}
-              onChange={(event) => {
-                const href = event.currentTarget.value;
-                setActiveHref(href);
-                syncedTargetRef.current = null;
-                if (href) {
-                  void renditionRef.current?.display(href);
-                }
-              }}
-            >
-              <option value="">Contents</option>
-              {toc.map((item) => (
-                <option key={`${item.href}-${item.label}`} value={item.href}>
-                  {"\u00A0".repeat(item.depth * 2)}{item.label}
-                </option>
-              ))}
-            </select>
-            <span className="epub-status">
-              {syncFragments && follow && fragmentIndex >= 0
-                ? `Following · ${locationLabel}`
-                : syncTarget
-                  ? `Synced · ${locationLabel}`
-                  : locationLabel}
-            </span>
-          </div>
-          <button type="button" onClick={() => void renditionRef.current?.next()} aria-label="Next page">
-            <ChevronRight size={17} />
-          </button>
-        </div>
+  const pageInfo =
+    location?.start?.displayed && location.start.displayed.total > 0
+      ? `Page ${location.start.displayed.page} of ${location.start.displayed.total}`
+      : null;
+  const chapterLabel = chapterTitle ?? currentTocItem?.label?.trim() ?? null;
+  const hint = pinning
+    ? "Tap the sentence the narrator is reading right now."
+    : awayFromNarration
+      ? "Reading freely. The narration marker is off while you turn pages yourself."
+      : precision === "estimated"
+        ? "Approximate sync: the marker is timed from the chapter list. Tap any sentence to play from there; if the marker drifts, use Sync here to pin it to the narrator."
+        : "Tap any sentence to play from there. Turning a page pauses following.";
+  const goToHref = (href: string) => {
+    setActiveHref(href);
+    syncedTargetRef.current = null;
+    if (href) {
+      navigateByHand(() => renditionRef.current?.display(href));
+    }
+  };
+  const handleReaderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key === "ArrowRight" || event.key === "PageDown") {
+      event.preventDefault();
+      navigateByHand(() => renditionRef.current?.next());
+    } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+      event.preventDefault();
+      navigateByHand(() => renditionRef.current?.prev());
+    }
+  };
 
-        <div className="epub-preferences" aria-label="Reader appearance">
-          <div className="epub-theme-options" aria-label="Reading theme">
-            {(["paper", "sepia", "night"] as const).map((theme) => (
-              <button
-                type="button"
-                key={theme}
-                className={readerTheme === theme ? "selected" : ""}
-                aria-pressed={readerTheme === theme}
-                onClick={() => setReaderTheme(theme)}
-              >
-                {theme}
-              </button>
-            ))}
-          </div>
-          <div className="epub-font-controls">
-            <button
-              type="button"
-              aria-label="Decrease reader text size"
-              disabled={fontScale <= 85}
-              onClick={() => setFontScale((size) => Math.max(85, size - 10))}
-            >
-              <Minus size={15} />
-            </button>
-            <span aria-label={`Reader text size ${fontScale}%`}>Aa&nbsp; {fontScale}%</span>
-            <button
-              type="button"
-              aria-label="Increase reader text size"
-              disabled={fontScale >= 140}
-              onClick={() => setFontScale((size) => Math.min(140, size + 10))}
-            >
-              <Plus size={15} />
-            </button>
-          </div>
-          {syncFragments && syncFragments.length > 0 ? (
-            <button
-              type="button"
-              className={`epub-tool-button ${follow ? "selected" : ""}`}
-              onClick={() =>
-                setFollow((enabled) => {
-                  const next = !enabled;
-                  if (next) {
-                    highlightedFragmentRef.current = -1;
-                  }
-                  return next;
-                })
-              }
-              aria-pressed={follow}
-              aria-label={follow ? "Stop following narration" : "Follow narration"}
-              title={follow ? "Stop following narration" : "Follow narration"}
-            >
-              <LocateFixed size={15} />
-              <span>Follow</span>
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="epub-tool-button"
-            onClick={() => setFocusMode((enabled) => !enabled)}
-            aria-pressed={focusMode}
-            aria-label={focusMode ? "Exit reader focus mode" : "Open reader focus mode"}
-            title={focusMode ? "Exit focus mode (Esc)" : "Focus mode"}
-          >
-            {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            <span>{focusMode ? "Close" : "Focus"}</span>
-          </button>
-        </div>
-      </div>
-      <div className="epub-stage" ref={viewerRef}>
-        <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
-        {!isReady && !error ? <span className="epub-loading">Loading EPUB…</span> : null}
-        {error ? (
-          <span className="epub-error">
-            {error}
-            {errorDetail ? <small>{errorDetail}</small> : null}
-          </span>
-        ) : null}
-      </div>
+  const themeOptions = (
+    <div className="epub-theme-options" aria-label="Reading theme">
+      {READER_THEME_CHOICES.map((choice) => (
+        <button
+          type="button"
+          key={choice}
+          className={readerThemeChoice === choice ? "selected" : ""}
+          aria-pressed={readerThemeChoice === choice}
+          onClick={() => setReaderThemeChoice(choice)}
+          title={choice === "auto" ? `Follows the app: ${readerTheme} right now` : undefined}
+        >
+          {choice}
+        </button>
+      ))}
     </div>
   );
-  return reader;
+  const fontControls = (
+    <div className="epub-font-controls">
+      <button
+        type="button"
+        aria-label="Decrease reader text size"
+        disabled={fontScale <= 85}
+        onClick={() => setFontScale((size) => Math.max(85, size - 10))}
+      >
+        <Minus size={15} />
+      </button>
+      <span aria-label={`Reader text size ${fontScale}%`}>Aa&nbsp; {fontScale}%</span>
+      <button
+        type="button"
+        aria-label="Increase reader text size"
+        disabled={fontScale >= 140}
+        onClick={() => setFontScale((size) => Math.min(140, size + 10))}
+      >
+        <Plus size={15} />
+      </button>
+    </div>
+  );
+  const followButton = canFollow ? (
+    <button
+      type="button"
+      className={`epub-tool-button ${follow ? "selected" : ""}`}
+      onClick={() => (follow ? setFollow(false) : resumeFollowing())}
+      aria-pressed={follow}
+      aria-label={follow ? "Stop following narration" : "Follow narration"}
+      title={follow ? "Stop following narration" : "Follow narration"}
+    >
+      <LocateFixed size={15} />
+      <span>Follow</span>
+    </button>
+  ) : null;
+  const pinButton =
+    hasSync && precision === "estimated" && onPinNarration ? (
+      <button
+        type="button"
+        className={`epub-tool-button ${pinning ? "selected" : ""}`}
+        onClick={() => {
+          setPinning((active) => !active);
+          setSheet(null);
+        }}
+        aria-pressed={pinning}
+        aria-label={pinning ? "Cancel sync adjustment" : "Adjust sync to the narrator"}
+        title="The marker has drifted? Tap this, then tap the sentence being read."
+      >
+        <Crosshair size={15} />
+        <span>Sync here</span>
+      </button>
+    ) : null;
+
+  // The page itself. It must keep its place in the tree between the inline
+  // and full-screen layouts: epub.js is attached to this very element.
+  const stage = (
+    <div className="epub-stage" ref={viewerRef}>
+      {fullscreen ? null : (
+        <span className="epub-progress" style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
+      )}
+      {!isReady && !error ? (
+        <span className="epub-loading">
+          {slowToOpen ? "Still opening the ebook… a large book takes a moment on a slow connection." : "Loading EPUB…"}
+        </span>
+      ) : null}
+      {error ? (
+        <span className="epub-error">
+          {error}
+          {errorDetail ? <small>{errorDetail}</small> : null}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const reader = (
+    <div
+      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""} ${precision === "estimated" ? "estimated" : ""}`}
+      tabIndex={0}
+      onKeyDown={handleReaderKeyDown}
+    >
+      {fullscreen ? (
+        <header className="epub-topbar">
+          <button
+            type="button"
+            className="epub-icon-button"
+            onClick={() => (immersive ? onClose?.() : setFocusMode(false))}
+            aria-label="Close the reader"
+          >
+            <X size={20} />
+          </button>
+          <div className="epub-topbar-title">
+            <strong>{title}</strong>
+            {chapterLabel ? <span>{chapterLabel}</span> : null}
+          </div>
+          <div className="epub-topbar-actions">
+            {canFollow ? (
+              <button
+                type="button"
+                className={`epub-icon-button ${follow ? "selected" : ""}`}
+                onClick={() => (follow ? setFollow(false) : resumeFollowing())}
+                aria-pressed={follow}
+                aria-label={follow ? "Stop following narration" : "Follow narration"}
+              >
+                <LocateFixed size={19} />
+              </button>
+            ) : null}
+            <button type="button" className="epub-icon-button" onClick={() => setSheet("contents")} aria-label="Contents">
+              <List size={20} />
+            </button>
+            <button type="button" className="epub-icon-button" onClick={() => setSheet("appearance")} aria-label="Appearance and sync">
+              <ALargeSmall size={22} />
+            </button>
+          </div>
+        </header>
+      ) : (
+        <div className="epub-reader-chrome">
+          <div className="epub-toolbar">
+            <button
+              type="button"
+              onClick={() => navigateByHand(() => renditionRef.current?.prev())}
+              aria-label="Previous page"
+            >
+              <ChevronLeft size={17} />
+            </button>
+            <div className="epub-location">
+              <select
+                aria-label={`${title} table of contents`}
+                value={selectedTocHref}
+                onChange={(event) => goToHref(event.currentTarget.value)}
+              >
+                <option value="">Contents</option>
+                {toc.map((item) => (
+                  <option key={`${item.href}-${item.label}`} value={item.href}>
+                    {" ".repeat(item.depth * 2)}{item.label}
+                  </option>
+                ))}
+              </select>
+              <span className="epub-status" aria-live="polite">{statusLabel}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateByHand(() => renditionRef.current?.next())}
+              aria-label="Next page"
+            >
+              <ChevronRight size={17} />
+            </button>
+          </div>
+
+          <div className="epub-preferences" aria-label="Reader appearance">
+            {themeOptions}
+            {fontControls}
+            {pinButton}
+            {followButton}
+            <button
+              type="button"
+              className="epub-tool-button"
+              onClick={() => setFocusMode(true)}
+              aria-label="Open reader focus mode"
+              title="Focus mode"
+            >
+              <Maximize2 size={15} />
+              <span>Focus</span>
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="epub-catch-up" aria-label="Reading and listening place">
+        {isReady && canCatchUp(anchorCfiRef.current, catchUpCfi, (a, b) => {
+          const Cfi = epubCfiClassRef.current;
+          return Cfi ? new Cfi().compare(a, b) : 0;
+        }) ? (
+          <button type="button" disabled={catchUpBusy} onClick={() => void moveReaderTo(catchUpCfi!, false)}>
+            Go to listening chapter{listeningChapter ? ` · ${listeningChapter}` : ""}
+          </button>
+        ) : null}
+        {returnLocation ? (
+          <button type="button" disabled={!isReady || catchUpBusy} onClick={() => void moveReaderTo(returnLocation, true)}>
+            Return to previous reading place
+          </button>
+        ) : null}
+        {catchUpNotice ? <span role="status">{catchUpNotice}</span> : null}
+        {offerOpeningPreference ? (
+          <span>Open at your listening chapter next time? <button type="button" onClick={() => changeOpeningPreference(true)}>Yes</button> <button type="button" onClick={() => setOfferOpeningPreference(false)}>Not now</button></span>
+        ) : null}
+        {!fullscreen ? (
+          <label>When opening <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
+            <option value="reading">Resume reading</option>
+            <option value="listening">Open at listening chapter</option>
+          </select></label>
+        ) : null}
+      </div>
+      {fullscreen ? (
+        <div className="epub-stage-wrap">
+          {stage}
+          <div
+            className="epub-tapzones"
+            onPointerDown={handleOverlayPointerDown}
+            onPointerUp={handleOverlayPointerUp}
+            aria-hidden="true"
+          >
+            <span className="epub-tapzone epub-tapzone-prev" />
+            <span className="epub-tapzone epub-tapzone-next" />
+          </div>
+        </div>
+      ) : (
+        stage
+      )}
+      {fullscreen ? (
+        <footer className="epub-bottombar">
+          <div className="epub-pagebar" aria-hidden="true">
+            <i style={{ width: `${Math.max(0, Math.min(100, (percent ?? 0) * 100))}%` }} />
+          </div>
+          <div className="epub-pageinfo">
+            <span>
+              {hasSync
+                ? follow
+                  ? fragmentIndex >= 0
+                    ? followLabel
+                    : "Waiting for narration"
+                  : "Reading freely"
+                : syncTarget
+                  ? follow
+                    ? "Following by chapter"
+                    : "Reading freely"
+                  : locationLabel}
+            </span>
+            <span>{pageInfo ?? locationLabel}</span>
+          </div>
+          {playback ? (
+            <div className={`epub-audiobar ${pinning ? "pinning" : ""}`}>
+              <button type="button" className="epub-icon-button epub-skip" onClick={() => playback.onSkip(-15)} aria-label="Back 15 seconds">
+                <RotateCcw size={19} />
+                <small>15</small>
+              </button>
+              <button
+                type="button"
+                className="epub-audiobar-play"
+                onClick={playback.onToggle}
+                aria-label={playback.playing ? "Pause" : "Play"}
+              >
+                {playback.playing ? <Pause size={22} /> : <Play size={22} />}
+              </button>
+              <button type="button" className="epub-icon-button epub-skip" onClick={() => playback.onSkip(30)} aria-label="Forward 30 seconds">
+                <RotateCw size={19} />
+                <small>30</small>
+              </button>
+              <div className="epub-audiobar-status" role="status">
+                {pinning ? (
+                  <>
+                    <span>Tap the sentence being read</span>
+                    <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
+                      <X size={14} />
+                      <span>Cancel</span>
+                    </button>
+                  </>
+                ) : (
+                  <span className="epub-audiobar-time">{positionLabel ?? ""}</span>
+                )}
+              </div>
+              {/* The rest of the player without leaving the page: the app's own
+                  speed, sleep, and chapter sheets open over the reader. */}
+              <div className="epub-audiobar-extras">
+                <button
+                  type="button"
+                  className="epub-icon-button epub-audiobar-speed"
+                  onClick={() => playback.onOpen("speed")}
+                  aria-label={`Playback speed, ${playback.speed}×`}
+                >
+                  <span>{playback.speed}×</span>
+                </button>
+                <button
+                  type="button"
+                  className="epub-icon-button"
+                  onClick={() => playback.onOpen("sleep")}
+                  aria-label={playback.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(playback.sleepRemaining / 60)} minutes left` : "Sleep timer"}
+                >
+                  <Timer size={18} />
+                  {playback.sleepRemaining > 0 ? <small>{Math.ceil(playback.sleepRemaining / 60)}m</small> : null}
+                </button>
+                <button type="button" className="epub-icon-button" onClick={() => playback.onOpen("chapters")} aria-label="Chapters">
+                  <ListMusic size={18} />
+                </button>
+              </div>
+            </div>
+          ) : onListen ? (
+            <button type="button" className="epub-audiobar-listen" onClick={onListen}>
+              <Play size={15} />
+              <span>Listen while you read</span>
+            </button>
+          ) : null}
+        </footer>
+      ) : hasSync ? (
+        // Guidance and the way back live in a bar under the page, never over
+        // the words: a listener reading ahead must keep every line legible.
+        <div className={`epub-footer ${pinning ? "pinning" : ""}`}>
+          <p className="epub-hint" role="status">{hint}</p>
+          {pinning ? (
+            <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
+              <X size={14} />
+              <span>Cancel</span>
+            </button>
+          ) : awayFromNarration ? (
+            <button type="button" className="epub-footer-action" onClick={resumeFollowing}>
+              <Undo2 size={14} />
+              <span>Return to narration</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {fullscreen && sheet ? (
+        <div className="epub-sheet-layer" role="presentation">
+          <button type="button" className="epub-sheet-scrim" aria-label="Close" onClick={() => setSheet(null)} />
+          <section
+            className="epub-sheet"
+            ref={sheetRootRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={sheet === "contents" ? "Contents" : "Appearance and sync"}
+          >
+            <div className="epub-sheet-grabber" aria-hidden="true" />
+            {sheet === "contents" ? (
+              <>
+                <h3>Contents</h3>
+                {toc.length === 0 ? (
+                  <p className="epub-sheet-hint">This book has no table of contents.</p>
+                ) : (
+                  <ul className="epub-toc">
+                    {toc.map((item) => {
+                      const current = hrefsMatch(selectedTocHref, item.href);
+                      return (
+                        <li key={`${item.href}-${item.label}`} style={{ paddingLeft: `${item.depth * 16}px` }}>
+                          <button
+                            type="button"
+                            className={current ? "current" : ""}
+                            aria-current={current ? "location" : undefined}
+                            onClick={() => {
+                              goToHref(item.href);
+                              setSheet(null);
+                            }}
+                          >
+                            {item.label.trim()}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {companionSwitcher ? (
+                  <>
+                    <h3>Other files</h3>
+                    {companionSwitcher}
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <h3>Appearance</h3>
+                <div className="epub-sheet-row">{themeOptions}</div>
+                <div className="epub-sheet-row">{fontControls}</div>
+                <h3>When opening</h3>
+                <label className="epub-sheet-row">Starting place
+                  <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
+                    <option value="reading">Resume reading</option>
+                    <option value="listening">Open at listening chapter</option>
+                  </select>
+                </label>
+                <p className="epub-sheet-hint">Opens at the beginning of your listening chapter when it is ahead. Your previous page stays available. Follow is controlled separately. Saved for this account on this device.</p>
+                {canFollow || syncTools ? (
+                  <>
+                    <h3>Narration</h3>
+                    {canFollow ? (
+                      <>
+                        <div className="epub-sheet-row">
+                          {followButton}
+                          {pinButton}
+                        </div>
+                        <p className="epub-sheet-hint">
+                          {hasSync
+                            ? hint
+                            : "This book follows by chapter: the reader opens to the chapter being played. Turn following off to read ahead on your own."}
+                        </p>
+                      </>
+                    ) : null}
+                    {syncTools}
+                  </>
+                ) : null}
+              </>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+  return immersive ? createPortal(reader, document.body) : reader;
 }
 
 /**
@@ -1905,7 +3168,7 @@ function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
     let active = true;
     let resolvedUrl: string | null = null;
     setLoadFailed(false);
-    if (isNativeApp()) {
+    if (Capacitor.isNativePlatform()) {
       void getOfflineCoverUrl(book).then((url) => {
         resolvedUrl = url;
         if (active) {
@@ -2042,7 +3305,7 @@ function initialAuthState(): AuthState {
     // app before their server exists can still listen, and connecting stays
     // one tap away on the shelf and in settings. The mode must be persisted
     // before MainApp renders because it reads isLocalMode() directly.
-    if (isNativeApp()) {
+    if (Capacitor.isNativePlatform()) {
       enterLocalMode();
       return { phase: "ready", user: DEVICE_USER };
     }
@@ -2056,7 +3319,7 @@ function initialAuthState(): AuthState {
   // shelf must wait for its query-safe media credential before it renders
   // remote artwork. This matters on the first launch after upgrading from a
   // build that only persisted the full session token.
-  const cachedUser = isNativeApp() && getStoredToken() && getStoredMediaToken()
+  const cachedUser = Capacitor.isNativePlatform() && getStoredToken() && getStoredMediaToken()
     ? getOfflineUser()
     : null;
   return cachedUser
@@ -2068,6 +3331,92 @@ function NativeLaunchPlaceholder() {
   return (
     <div className="native-launch-placeholder" role="status" aria-label="Opening OperaLibre">
       <span>OperaLibre</span>
+    </div>
+  );
+}
+
+/**
+ * One column of the filter panel: a heading and a cloud of toggleable chips.
+ * Genre and tag are the same control twice over, so they share this rather than
+ * diverging the moment one of them grows a feature.
+ */
+function ShelfFacetGroup({
+  title,
+  hint,
+  options,
+  selected,
+  onToggle
+}: {
+  title: string;
+  hint: string;
+  options: ShelfFacetOption[];
+  selected: string[];
+  onToggle: (key: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [query, setQuery] = useState("");
+  const matching = options.filter((option) => option.label.toLowerCase().includes(query.trim().toLowerCase()));
+  // A chosen chip survives the collapse even when it sits past the preview, so a
+  // filter can always be undone where it was set rather than only after
+  // expanding a list you may not remember choosing from.
+  const visible = expanded || query.trim()
+    ? matching
+    : matching.filter((option, index) => index < SHELF_FACET_PREVIEW_COUNT || selected.includes(option.key));
+  const hiddenCount = matching.length - visible.length;
+
+  return (
+    <div className="shelf-facet">
+      <div className="shelf-facet-heading">
+        <span className="shelf-facet-title">{title}</span>
+        {selected.length > 0 ? <span className="shelf-facet-count">{selected.length} selected</span> : null}
+      </div>
+      {options.length > SHELF_FACET_PREVIEW_COUNT ? (
+        <label className="shelf-facet-search">
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label={`Find ${title.toLowerCase()}`}
+            placeholder={`Find ${title.toLowerCase()}…`}
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+      ) : null}
+      {options.length === 0 ? (
+        <p className="shelf-facet-hint">{hint}</p>
+      ) : (
+        <>
+          <div className="shelf-facet-chips" role="group" aria-label={`Filter by ${title.toLowerCase()}`}>
+            {visible.map((option) => {
+              const isSelected = selected.includes(option.key);
+              // Zero means this chip adds nothing under the filters already set.
+              // It stays put, dimmed, rather than vanishing and shuffling every
+              // other chip out from under the pointer.
+              const isEmpty = option.count === 0 && !isSelected;
+              return (
+                <button
+                  type="button"
+                  key={option.key}
+                  className={`facet-chip ${isSelected ? "selected" : ""}`}
+                  aria-pressed={isSelected}
+                  disabled={isEmpty}
+                  onClick={() => onToggle(option.key)}
+                >
+                  {isSelected ? <Check size={11} strokeWidth={2.5} aria-hidden="true" /> : null}
+                  <span className="facet-chip-label">{option.label}</span>
+                  <em>{option.count}</em>
+                </button>
+              );
+            })}
+          </div>
+          {matching.length === 0 ? <p className="shelf-facet-hint">No {title.toLowerCase()} match “{query.trim()}”.</p> : null}
+          {!query.trim() && (hiddenCount > 0 || expanded) ? (
+            <button type="button" className="shelf-facet-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+              {expanded ? "Show fewer" : `${hiddenCount} more`}
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -2085,7 +3434,7 @@ export default function App() {
       return;
     }
     if (!hasUserConfiguredServer()) {
-      if (isNativeApp()) {
+      if (Capacitor.isNativePlatform()) {
         enterLocalMode();
         setAuthState({ phase: "ready", user: DEVICE_USER });
         return;
@@ -2161,7 +3510,7 @@ export default function App() {
   }, []);
 
   if (authState.phase === "loading") {
-    if (isNativeApp()) return <NativeLaunchPlaceholder />;
+    if (Capacitor.isNativePlatform()) return <NativeLaunchPlaceholder />;
     return (
       <main className="auth-shell startup-shell">
         <div className="startup-loader" role="status" aria-live="polite" aria-label="Opening OperaLibre">
@@ -2192,7 +3541,7 @@ export default function App() {
           enterDemoMode();
           setAuthState({ phase: "ready", user: DEMO_USER });
         }}
-        onLocal={isNativeApp() ? () => {
+        onLocal={Capacitor.isNativePlatform() ? () => {
           enterLocalMode();
           setAuthState({ phase: "ready", user: DEVICE_USER });
         } : undefined}
@@ -2246,6 +3595,9 @@ export default function App() {
           // ignore
         }
         setStoredToken(null);
+        // Otherwise checkAuth's offline fallback signs the account straight
+        // back in the next time the server cannot be reached.
+        forgetOfflineUser();
         if (leavingDemo) {
           exitDemoMode();
           setAuthState({ phase: "server" });
@@ -2293,7 +3645,7 @@ function MainApp({
   const isOperaLibre = getServerType() === "operalibre";
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
-  const native = isNativeApp();
+  const native = Capacitor.isNativePlatform();
   const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
@@ -2301,15 +3653,21 @@ function MainApp({
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
+  // The ebook reader ships off by default; the narration-follow highlight is a
+  // sub-option beneath it, off by default and behind a warning.
+  const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
+  const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
+  // Following only runs when the reader itself is on.
+  const narrationFollowActive = readalongEnabled && followSyncEnabled;
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
-    ios ? readAppearanceMode(window.localStorage) : "light"
+    ios ? readStoredAppearanceMode() : "light"
   );
   const [rotationLockBusy, setRotationLockBusy] = useState(false);
   const [rotationLockError, setRotationLockError] = useState<string | null>(null);
   const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
   const [connectPromptDismissed, setConnectPromptDismissed] = useState(
-    () => window.localStorage.getItem(CONNECT_PROMPT_DISMISSED_KEY) === "true"
+    () => readStoredValue(CONNECT_PROMPT_DISMISSED_KEY) === "true"
   );
   const [aliasName, setAliasName] = useState("");
   const [aliasUrl, setAliasUrl] = useState("");
@@ -2478,7 +3836,7 @@ function MainApp({
   const bookDetailsSwipeStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const saveStartedAt = useRef(0);
   const playWhenTrackLoads = useRef(false);
-  const progressSaveInFlight = useRef(false);
+  const progressSaveDrainPromiseRef = useRef<Promise<void> | null>(null);
   const progressSaveAbortController = useRef<AbortController | null>(null);
   const queuedProgressSaves = useRef<Map<string, QueuedProgressSave>>(new Map());
   const progressMutationVersion = useRef(0);
@@ -2504,6 +3862,19 @@ function MainApp({
   // intentional without permanently disabling reset protection afterward.
   const intentionalSeekGenerationRef = useRef<Map<string, number>>(new Map());
   const acknowledgedSeekGenerationRef = useRef<Map<string, number>>(new Map());
+  // The whole-book position each book's latest deliberate seek aimed at, and
+  // the position the server last acknowledged for it. Together they decide
+  // whether a seek needs the server's reset guard lifted — a forward tap must
+  // not hand that authority to whatever stale clock gets persisted next.
+  const intentionalSeekTargetRef = useRef<Map<string, number>>(new Map());
+  const acknowledgedServerPositionRef = useRef<Map<string, number>>(new Map());
+  // Set by startPlayback for an automatic Shelf-Resume start, consumed by the
+  // element's `play` event. That event cannot tell an automatic start from a
+  // listener's tap, and treating the automatic one as a listener action bumped
+  // playbackActionVersionRef — after which the restore effect dropped the
+  // /progress reply whenever it landed after loadedmetadata, and the stale
+  // optimistic position kept playing.
+  const autoResumePlayEventPendingRef = useRef(false);
   const explicitSessionStartBookIdRef = useRef<string | null>(null);
   // A shelf Resume is a request to play the *restored* position. Autoplay is
   // therefore armed by the restore effect rather than by the click, so it can
@@ -2549,6 +3920,8 @@ function MainApp({
   const [playbackBookId, setPlaybackBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "playbackBookId")
   );
+  const playbackBookIdRef = useRef(playbackBookId);
+  playbackBookIdRef.current = playbackBookId;
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeekState] = useState<PendingSeek | null>(null);
   // Mirrored in a ref so persistProgress (called from pagehide/visibility
@@ -2605,15 +3978,23 @@ function MainApp({
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
+  const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
+  const shelfSearchRef = useRef<HTMLInputElement | null>(null);
+  const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterToggleRef = useRef<HTMLButtonElement | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
+  const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
+  const readalongPanelRef = useRef<HTMLElement | null>(null);
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
   const [syncMaps, setSyncMaps] = useState<Record<string, SyncMap | null>>({});
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
   const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
   const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
@@ -2632,15 +4013,6 @@ function MainApp({
   const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
   const [libationRefreshPending, setLibationRefreshPending] = useState(false);
   const [audibleAccountFilter, setAudibleAccountFilter] = useState("all");
-  const [libationAccountFormOpen, setLibationAccountFormOpen] = useState(false);
-  const [libationAccountLabel, setLibationAccountLabel] = useState("");
-  const [libationAccountId, setLibationAccountId] = useState("");
-  const [libationAccountLocale, setLibationAccountLocale] = useState("us");
-  const [libationReconnectProfileId, setLibationReconnectProfileId] = useState<string | null>(null);
-  const [libationLoginFlow, setLibationLoginFlow] = useState<LibationLoginStarted | null>(null);
-  const [libationLoginResponseUrl, setLibationLoginResponseUrl] = useState("");
-  const [libationLoginBusy, setLibationLoginBusy] = useState(false);
-  const [libationAccountBusyId, setLibationAccountBusyId] = useState<string | null>(null);
   const libationMessage = formatLibationMessage(libationStatus);
   const brokenLibationAccounts = libationStatus?.accounts.filter((account) => !account.authenticated) ?? [];
   const pendingLibationJobs = libationJobs.filter(isPendingJob);
@@ -2675,6 +4047,15 @@ function MainApp({
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
   const libraryRequestGenerationRef = useRef(0);
+  // A listing refused while the server's startup scan runs is asked for
+  // again after its Retry-After; the timer and the latest loader live in
+  // refs so a scheduled retry always runs the current one and a fresh load
+  // (mount, refresh, sign-in) cancels whatever was pending.
+  const libraryRetryTimerRef = useRef<number | null>(null);
+  const loadBooksRef = useRef<() => Promise<void>>(async () => undefined);
+  // Set once native playback has attached, so the effect that sees the
+  // player closed can tell that from the app's first render.
+  const nativeAudioAttachedRef = useRef(false);
   const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
@@ -2691,22 +4072,120 @@ function MainApp({
   // "title": each source keeps its own persisted sort (see readStoredSortMode).
   useEffect(() => {
     setSortMode(readStoredSortMode(librarySource));
+    setSortReversed(readStoredValue(`operalibre.sortReversed.${librarySource}`) === "true");
   }, [librarySource]);
 
   function selectSortMode(mode: SortMode) {
     setSortMode(mode);
-    window.localStorage.setItem(sortModeStorageKey(librarySource), mode);
+    writeStoredValue(sortModeStorageKey(librarySource), mode);
+  }
+
+  function reverseSort() {
+    setSortReversed(!sortReversed);
+    writeStoredValue(`operalibre.sortReversed.${librarySource}`, String(!sortReversed));
+  }
+
+  function closeShelfFilters() {
+    setFiltersOpen(false);
+    filterToggleRef.current?.focus();
+  }
+
+  const sortOrderLabel = sortMode === "duration"
+    ? sortReversed ? "Shortest first" : "Longest first"
+    : sortMode === "progress"
+      ? sortReversed ? "Finished first" : "In progress first"
+      : sortMode === "tag" || sortMode === "series"
+        ? sortReversed ? "Reverse book order" : "Book order"
+        : sortReversed ? "Z–A" : "A–Z";
+
+  const allShelfFacets = useMemo(() => ({
+    genres: countShelfFacet(books, "genres"),
+    tags: countShelfFacet(books, "tags")
+  }), [books]);
+
+  // Each book scored once against every filter axis separately. Keeping the four
+  // verdicts apart is what lets the panel count a group over the books the
+  // *other* groups allow without walking the library again per chip.
+  const shelfMatches = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return books.map((book) => ({
+      book,
+      search: bookMatchesShelfSearch(book, query),
+      status: bookMatchesShelfStatus(book, shelfFilters.status),
+      genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
+      tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
+    }));
+  }, [books, searchQuery, shelfFilters]);
+
+  const shelfFacets = useMemo(() => {
+    const forGenres: Book[] = [];
+    const forTags: Book[] = [];
+    const statusCounts: Record<ShelfStatusFilter, number> = {
+      all: 0,
+      inProgress: 0,
+      notStarted: 0,
+      finished: 0
+    };
+    for (const match of shelfMatches) {
+      if (match.search && match.status && match.tags) forGenres.push(match.book);
+      if (match.search && match.status && match.genres) forTags.push(match.book);
+      if (match.search && match.genres && match.tags) {
+        statusCounts.all += 1;
+        statusCounts[readingStatus(match.book)] += 1;
+      }
+    }
+    return {
+      genres: updateShelfFacetCounts(allShelfFacets.genres, forGenres, "genres"),
+      tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
+      statusCounts
+    };
+  }, [allShelfFacets, shelfMatches]);
+
+  const activeShelfFilterCount = countActiveShelfFilters(shelfFilters);
+  // Genres, tags and progress are all things only your own shelf records; the
+  // Audible list keeps its account filter instead. Any shelf with books on it
+  // can be filtered — every book has a reading status even when nothing has
+  // been given a genre or a tag yet, so this is deliberately not gated on the
+  // two chip groups having something in them. Hiding the control until the
+  // metadata showed up only made it missing whenever someone went looking.
+  const showShelfFilters = librarySource === "local" && books.length > 0;
+
+  // Reads back the chips that are on, so the summary line under the toolbar can
+  // name a filter and drop it without the panel being open.
+  const activeShelfFilterChips = useMemo(() => {
+    const chips: { id: string; caption: string; label: string; clear: () => void }[] = [];
+    if (shelfFilters.status !== "all") {
+      chips.push({
+        id: `status:${shelfFilters.status}`,
+        caption: "Status",
+        label: readingStatusLabel(shelfFilters.status),
+        clear: () => setShelfFilters((filters) => ({ ...filters, status: "all" }))
+      });
+    }
+    for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
+      const caption = group === "genres" ? "Genre" : "Tag";
+      for (const key of shelfFilters[group]) {
+        // Keep a removed/renamed value removable until the reader clears it.
+        const label = shelfFacets[group].find((option) => option.key === key)?.label ?? key;
+        chips.push({
+          id: `${group}:${key}`,
+          caption,
+          label,
+          clear: () => setShelfFilters((filters) => toggleShelfFacet(filters, group, key))
+        });
+      }
+    }
+    return chips;
+  }, [shelfFacets, shelfFilters]);
+
+  function clearShelfFilters() {
+    setShelfFilters(EMPTY_SHELF_FILTERS);
   }
 
   const visibleBooks = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    const filtered = query
-      ? books.filter((book) =>
-          [book.title, book.author, book.narrator, book.metadata.series, ...book.genres]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(query))
-        )
-      : books;
+    const filtered = shelfMatches
+      .filter((match) => match.search && match.status && match.genres && match.tags)
+      .map((match) => match.book);
 
     const sorted = [...filtered];
     sorted.sort((a, b) => {
@@ -2717,6 +4196,13 @@ function MainApp({
           return compareShelfLabels(a.metadata.series, b.metadata.series)
             || compareShelfLabels(a.metadata.seriesPosition, b.metadata.seriesPosition)
             || a.title.localeCompare(b.title);
+        case "tag": {
+          const aTag = tagForShelfSort(a, shelfFilters.tags);
+          const bTag = tagForShelfSort(b, shelfFilters.tags);
+          return compareShelfLabels(aTag?.name, bTag?.name)
+            || compareShelfLabels(aTag?.position, bTag?.position)
+            || a.title.localeCompare(b.title);
+        }
         case "genre":
           return compareShelfLabels(a.genres[0], b.genres[0]) || a.title.localeCompare(b.title);
         case "progress":
@@ -2728,8 +4214,8 @@ function MainApp({
           return a.title.localeCompare(b.title);
       }
     });
-    return sorted;
-  }, [books, searchQuery, sortMode]);
+    return sortReversed ? sorted.reverse() : sorted;
+  }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
 
   const audibleAccountLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -2755,7 +4241,7 @@ function MainApp({
         )
       : accountBooks;
 
-    return [...filtered].sort((a, b) => {
+    const sorted = [...filtered].sort((a, b) => {
       if (sortMode === "account") {
         const aLabel = audibleAccountLabels.get(a.profileId) ?? a.profileName;
         const bLabel = audibleAccountLabels.get(b.profileId) ?? b.profileName;
@@ -2769,7 +4255,8 @@ function MainApp({
       }
       return a.title.localeCompare(b.title);
     });
-  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode]);
+    return sortReversed ? sorted.reverse() : sorted;
+  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed]);
   const audibleProfiles = useMemo(() => {
     const profiles = new Map<string, string>();
     for (const book of libationBooks) {
@@ -2777,6 +4264,17 @@ function MainApp({
     }
     return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [audibleAccountLabels, libationBooks]);
+
+  // Accounts come and go in Libation, so a filter pinned to a departed account
+  // would quietly show an empty library under a select that reads "All accounts".
+  useEffect(() => {
+    if (audibleAccountFilter === "all") return;
+    const known = (libationStatus?.accounts ?? []).some((account) => account.id === audibleAccountFilter)
+      || audibleProfiles.some((profile) => profile.id === audibleAccountFilter);
+    if (!known && (libationStatus || audibleProfiles.length > 0)) {
+      setAudibleAccountFilter("all");
+    }
+  }, [audibleAccountFilter, audibleProfiles, libationStatus]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -2803,15 +4301,44 @@ function MainApp({
     ? books.find((book) => book.id === unplayedConfirmationBookId) ?? null
     : null;
 
+  // The best position this device knows for a book without asking the
+  // server: the synchronous checkpoint, backstopped by the listing summary,
+  // distrusting a near-zero checkpoint the same way the restore effect does.
+  function lastKnownProgressFor(book: Book): Progress | null {
+    const checkpoint = readProgressCheckpoint(
+      window.localStorage,
+      getServerStorageKey(),
+      currentUser.id,
+      book.id
+    );
+    const listed = progressFromBookSummary(book.id, book.progress);
+    return isSuspectProgressReset(checkpoint, listed)
+      ? listed
+      : freshestProgress(checkpoint, listed);
+  }
+
   const currentTrack = useMemo(() => {
     if (!playbackBook) {
       return null;
     }
-    return (
-      playbackBook.tracks.find((track) => track.id === currentTrackId) ??
-      playbackBook.tracks[0] ??
-      null
-    );
+    const saved = playbackBook.tracks.find((track) => track.id === currentTrackId);
+    if (saved) return saved;
+    if (currentTrackId) {
+      // The track id vanished from the book (a rescan renumbered its files).
+      // Falling back to the first track would remount the element at 0:00
+      // with no pending seek and let the next tick persist that. Resolve the
+      // whole-book offset instead; the effect below stages the matching seek.
+      const location = resolveProgressLocation(
+        playbackBook.tracks,
+        lastKnownProgressFor(playbackBook)
+      );
+      const resolved = location
+        ? playbackBook.tracks.find((track) => track.id === location.trackId)
+        : null;
+      if (resolved) return resolved;
+    }
+    return playbackBook.tracks[0] ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackId, playbackBook]);
 
   const activeTrackIndex = currentTrackIndex(playbackBook, currentTrack);
@@ -2822,6 +4349,39 @@ function MainApp({
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
+  const playbackTrackIdsKey = useMemo(
+    () => playbackBook?.tracks.map((track) => track.id).join("|") ?? "",
+    [playbackBook]
+  );
+  // Commit the currentTrack fallback resolution once per track-list change:
+  // point the saved track id at the resolved track and queue its position as
+  // a pending seek, so the remounted element restores it instead of starting
+  // at 0:00. Only for a book already restored — while a restore is still
+  // running it owns the track id and the pending seek.
+  useEffect(() => {
+    if (
+      !playbackBook ||
+      !currentTrackId ||
+      restoredProgressBookId.current !== playbackBook.id ||
+      playbackBook.tracks.some((track) => track.id === currentTrackId)
+    ) {
+      return;
+    }
+    const location = resolveProgressLocation(
+      playbackBook.tracks,
+      lastKnownProgressFor(playbackBook)
+    );
+    if (!location) return;
+    const wasPlaying = nativeAudio ? nativePlaybackPlayingRef.current : isPlaying;
+    setCurrentTrackId(location.trackId);
+    setPendingSeek(location);
+    setPosition(location.positionSeconds);
+    setDuration(
+      playbackBook.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0
+    );
+    playWhenTrackLoads.current = wasPlaying;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbackBookKey, playbackTrackIdsKey, currentTrackId]);
   const administrableBooks = useMemo(
     () => books.filter((book) => book.source !== "device"),
     [books]
@@ -2926,18 +4486,138 @@ function MainApp({
 
   const selectedCanBoost = bookCanBoost(selectedBook);
   const playbackCanBoost = bookCanBoost(playbackBook);
-  const selectedReadalongUrl = selectedBook?.readingFile
-    ? readalongUrl(selectedBook.readingFile.url)
-    : null;
+  const selectedCompanionGroups = useMemo(
+    () => (selectedBook ? groupCompanions(selectedBook) : { text: [], supplements: [], images: [] }),
+    [selectedBook]
+  );
+  const selectedCompanionList = useMemo(
+    () => [...selectedCompanionGroups.text, ...selectedCompanionGroups.supplements],
+    [selectedCompanionGroups]
+  );
+  const galleryAvailable = selectedCompanionGroups.images.length > 0;
+  const activeCompanion =
+    activeCompanionId === GALLERY_COMPANION_ID
+      ? null
+      : selectedCompanionList.find((companion) => companion.id === activeCompanionId)
+        ?? selectedCompanionList.find((companion) => companion.id === selectedBook?.readingFile?.id)
+        ?? selectedCompanionList[0]
+        ?? null;
+  const showGallery = activeCompanionId === GALLERY_COMPANION_ID || (!activeCompanion && galleryAvailable);
+  // The companion URL carries the media token. Until the token is known the
+  // URL would change a moment later and the reader would open the EPUB
+  // twice, so the reader waits for it.
+  const companionUrlReady = !isOperaLibre || !!getStoredMediaToken();
+  const activeCompanionUrl = activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null;
+  const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
   const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
   const selectedSyncFragments =
     isViewingPlayingBook && selectedSyncMap && selectedSyncMap.fragments.length > 0
       ? selectedSyncMap.fragments
       : null;
+  const selectedSyncPrecision = syncMapPrecision(selectedSyncMap);
+  const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap) : null;
+  const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
+  const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
+  // The web now-playing view hides the details block, so while the selected
+  // book is the one playing the reader moves into the playback card instead
+  // of vanishing the moment Play is pressed.
+  // Decided without waiting for the track to resolve: mounting the reader in
+  // the hidden details block first and moving it here a moment later would
+  // open the EPUB twice.
+  const showReaderInNowView =
+    !native
+    && nativePlayerView === "now"
+    && isViewingPlayingBook
+    && readalongOpen
+    && (!!activeCompanion || showGallery);
+  const selectedSyncPrecise =
+    selectedBook?.syncFile?.source === "sidecar" || selectedBook?.syncFile?.source === "generated";
   const canGenerateSync =
     currentUser.isAdmin &&
     !!alignmentStatus?.enabled &&
     selectedBook?.readingFile?.extension === "epub";
+  const readerScope = `${getServerStorageKey()}.${currentUser.id}`;
+
+  const readerOpenedThisSessionRef = useRef<Set<string>>(new Set());
+
+  function readReaderOpenFlag(bookId: string) {
+    try {
+      return window.localStorage.getItem(readerStorageKey(readerScope, bookId, "open")) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeReaderOpenFlag(bookId: string, open: boolean) {
+    try {
+      window.localStorage.setItem(readerStorageKey(readerScope, bookId, "open"), open ? "1" : "0");
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  /** Opens the reader for a book and brings it on screen, on every layout. */
+  function openReadalong(book: Book, companionId: string | null = null) {
+    setSelectedBookId(book.id);
+    setActiveCompanionId(companionId);
+    setReadalongOpen(true);
+    readerOpenedThisSessionRef.current.add(book.id);
+    writeReaderOpenFlag(book.id, true);
+    if (native) {
+      // The native ebook reader covers the whole screen, so whatever is
+      // underneath is left alone; closing returns the listener to it. Extras
+      // (a PDF, pictures) still open inline on the details page.
+      if (!companionId && book.readingFile?.extension === "epub") {
+        return;
+      }
+      setNativeTab("shelf");
+      setNativePlayerView("details");
+    }
+    window.setTimeout(() => {
+      readalongPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }
+
+  function closeReadalong() {
+    setReadalongOpen(false);
+    if (selectedBook) {
+      writeReaderOpenFlag(selectedBook.id, false);
+    }
+  }
+
+  /** Forget a book's loaded sync map so the next look at the reader refetches it. */
+  function forgetSyncMap(bookId: string) {
+    setSyncMaps((existing) => {
+      const { [bookId]: _dropped, ...rest } = existing;
+      return rest;
+    });
+  }
+
+  async function pinNarration(book: Book, fragment: { href: string; text: string }) {
+    setSyncJobError(null);
+    setSyncNotice(null);
+    try {
+      const summary = await addSyncAnchor(book.id, { ...fragment, seconds: bookPosition });
+      forgetSyncMap(book.id);
+      setSyncNotice(
+        `Sync adjusted here. Sentences around this point are re-timed for everyone (${summary.anchorCount} ${summary.anchorCount === 1 ? "adjustment" : "adjustments"} on this book).`
+      );
+    } catch (error) {
+      setSyncJobError(errorMessage(error, "Could not adjust the sync."));
+    }
+  }
+
+  async function clearNarrationPins(book: Book) {
+    setSyncJobError(null);
+    setSyncNotice(null);
+    try {
+      await clearSyncAnchors(book.id);
+      forgetSyncMap(book.id);
+      setSyncNotice("Sync adjustments cleared. The estimate is back to the chapter list alone.");
+    } catch (error) {
+      setSyncJobError(errorMessage(error, "Could not clear the sync adjustments."));
+    }
+  }
 
   async function startSyncGeneration(book: Book) {
     setSyncJobError(null);
@@ -2962,6 +4642,10 @@ function MainApp({
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
     const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
+    if (libraryRetryTimerRef.current !== null) {
+      window.clearTimeout(libraryRetryTimerRef.current);
+      libraryRetryTimerRef.current = null;
+    }
     setIsLoading(true);
     setError(null);
     if (native) {
@@ -2975,9 +4659,14 @@ function MainApp({
       setSelectedBookId((existing) =>
         resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
+      // A background refresh that lists the playing book as finished must not
+      // pull the session out from under the listener; only its absence can.
+      const isPlayingNow = nativeAudio
+        ? nativePlaybackPlayingRef.current
+        : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) => {
         const preferred = existing ?? readStoredBookId(currentUser.id, "playbackBookId");
-        const next = resolveActivePlaybackBookId(nextBooks, preferred);
+        const next = resolveActivePlaybackBookId(nextBooks, preferred, isPlayingNow);
         const preferredIsPresent = !!preferred && nextBooks.some((book) => book.id === preferred);
         // A device-only first paint may not contain the stored server book.
         // Wait for the cached/live shelf before deciding that session vanished.
@@ -3116,14 +4805,27 @@ function MainApp({
           })
           .catch(() => undefined);
       }
-    } catch {
+    } catch (loadError) {
       const cachedServer = hydratedServerBooks.length
         ? hydratedServerBooks
         : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
       if (!isCurrentRequest()) return;
       const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      setIsOffline(true);
       applyLoadedBooks(cached, true);
+      if (isServerNotReadyError(loadError)) {
+        // The server answered: it is up, its startup scan just has not
+        // published a catalogue yet. Keep the cached shelf without muting
+        // anything, and ask again when it said to.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
+        libraryRetryTimerRef.current = window.setTimeout(() => {
+          libraryRetryTimerRef.current = null;
+          void loadBooksRef.current();
+        }, delayMs);
+        return;
+      }
+      setIsOffline(true);
       if (cached.length) {
         setError("Offline mode — showing downloaded books and cached library.");
       } else {
@@ -3133,12 +4835,29 @@ function MainApp({
       if (isCurrentRequest()) setIsLoading(false);
     }
   }, [currentUser.id, isOperaLibre, localMode, native]);
+  loadBooksRef.current = loadBooks;
+
+  useEffect(
+    () => () => {
+      if (libraryRetryTimerRef.current !== null) {
+        window.clearTimeout(libraryRetryTimerRef.current);
+        libraryRetryTimerRef.current = null;
+      }
+      // Signing out unmounts the player with its session still held (the
+      // attach cleanup keeps it for the next track); nothing follows now.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!libationBooks.length) return;
     setBooks((current) => {
       const enriched = enrichBooksFromLibation(current, libationBooks);
-      if (enriched !== current && isNativeApp()) {
+      if (enriched !== current && Capacitor.isNativePlatform()) {
         void cacheLibrary(
           currentUser.id,
           enriched.filter((book) => book.source !== "device")
@@ -3149,7 +4868,7 @@ function MainApp({
   }, [currentUser.id, libationBooks]);
 
   useEffect(() => {
-    if (!isNativeApp() || !books.length) return;
+    if (!Capacitor.isNativePlatform() || !books.length) return;
     void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
     // Keyed on ids: re-statting every downloaded file each time a progress
@@ -3161,7 +4880,7 @@ function MainApp({
   // idempotent, so this also supplies file metadata needed to recover jobs
   // created by older builds without duplicating their URLSession tasks.
   useEffect(() => {
-    if (!isNativeApp() || !books.length) return;
+    if (!Capacitor.isNativePlatform() || !books.length) return;
     let cancelled = false;
     void Promise.all(books.map(async (book) => {
       const status = await getBookBackgroundDownloadStatus(book).catch(() => null);
@@ -3183,7 +4902,7 @@ function MainApp({
     let active = true;
     let resolvedUrl: string | null = null;
     setOfflineSource(null);
-    if (isNativeApp() && playbackBook && currentTrack) {
+    if (Capacitor.isNativePlatform() && playbackBook && currentTrack) {
       const trackId = currentTrack.id;
       void getOfflineTrackUrl(playbackBook, currentTrack)
         .catch(() => null)
@@ -3279,11 +4998,28 @@ function MainApp({
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
   }, [currentUser.id, playbackBookId]);
 
+  // A book the listener was reading along with reopens its reader when it is
+  // selected again; a book with nothing to read closes it.
+  const selectedBookIdForReader = selectedBook?.id ?? null;
   useEffect(() => {
-    if (!selectedBook?.readingFile) {
+    if (!selectedBookIdForReader || !readalongAvailable) {
       setReadalongOpen(false);
+      return;
     }
-  }, [selectedBook?.readingFile]);
+    setActiveCompanionId(null);
+    setSyncNotice(null);
+    let remembered = false;
+    try {
+      remembered =
+        window.localStorage.getItem(readerStorageKey(readerScope, selectedBookIdForReader, "open")) === "1";
+    } catch {
+      remembered = false;
+    }
+    // On the web the reader pane reopens where it was left. The native reader
+    // is a full-screen layer, so it only comes back for a book opened during
+    // this run, never over the shelf at launch.
+    setReadalongOpen(remembered && (!native || readerOpenedThisSessionRef.current.has(selectedBookIdForReader)));
+  }, [native, readalongAvailable, readerScope, selectedBookIdForReader]);
 
   useEffect(() => {
     if (!currentUser.isAdmin) {
@@ -3294,7 +5030,8 @@ function MainApp({
       .catch(() => setAlignmentStatus(null));
   }, [currentUser.isAdmin]);
 
-  const syncMapBookId = readalongOpen && selectedBook?.syncFile ? selectedBook.id : null;
+  const syncMapBook = readalongOpen && selectedBook?.syncFile ? selectedBook : null;
+  const syncMapBookId = syncMapBook?.id ?? null;
   useEffect(() => {
     if (!syncMapBookId || syncMaps[syncMapBookId] !== undefined) {
       return;
@@ -3306,15 +5043,17 @@ function MainApp({
           setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
         }
       })
-      .catch(() => {
+      .catch(async () => {
+        // No server in reach: a downloaded book carries its own sync map.
+        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: null }));
+          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [syncMapBookId, syncMaps]);
+  }, [syncMapBook, syncMapBookId, syncMaps]);
 
   useEffect(() => {
     if (!syncJob || syncJob.status !== "running") {
@@ -3767,9 +5506,12 @@ function MainApp({
       // One failed fetch must not strand this device on a stale or empty
       // copy — that is how a second device ends up at 0:00 and later pushes
       // it over real progress. Retry briefly before reconciling.
+      // Each attempt is capped well below the client's 30 s default: local
+      // copies cover the wait, and no server checkpoint is queued until the
+      // window closes, so a long one is listening that goes unsynced.
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          server = await getProgress(playbackBook.id);
+          server = await getProgress(playbackBook.id, RESTORE_PROGRESS_TIMEOUT_MS);
           serverReachable = true;
           break;
         } catch {
@@ -3790,6 +5532,12 @@ function MainApp({
         return;
       }
       const lastKnownServer = server ?? listed;
+      if (lastKnownServer) {
+        acknowledgedServerPositionRef.current.set(
+          playbackBook.id,
+          lastKnownServer.bookPositionSeconds
+        );
+      }
       const suspectLocalReset = isSuspectProgressReset(freshestLocal, lastKnownServer);
       const localIsNewer =
         !!freshestLocal &&
@@ -3866,7 +5614,20 @@ function MainApp({
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!nativeAudio || !audio || !playbackBook || !currentTrack) return;
+    if (!nativeAudio) return;
+    if (!audio || !playbackBook || !currentTrack) {
+      // The player closed. The attach cleanup keeps the audio session so a
+      // track change does not hand audio to other apps between chapters;
+      // nothing follows this time, so give the session up. Skipped on the
+      // app's first render, where a WebView reload may have left native
+      // audio playing that React is about to pick back up.
+      if (nativeAudioAttachedRef.current) {
+        nativeAudioAttachedRef.current = false;
+        void releaseNativeAudioSession();
+      }
+      return;
+    }
+    nativeAudioAttachedRef.current = true;
     return attachNativeAudioPlayer(
       audio,
       (message) => setPlaybackError(message),
@@ -3884,12 +5645,12 @@ function MainApp({
         }
       },
       (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
-        if (!playbackBook.tracks.some((track) => track.id === trackId)) return;
+        if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;
         // getNativeAudioRecovery already participated in startup
         // reconciliation. A paused trackChanged event emitted while AVPlayer
         // rebuilds its queue is not a listener action and must not overwrite
         // the restored checkpoint or make the player oscillate.
-        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return;
+        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return false;
         markPlaybackTouched();
         nativePlaybackPlayingRef.current = nativeIsPlaying;
         playWhenTrackLoads.current = nativeIsPlaying;
@@ -3899,9 +5660,24 @@ function MainApp({
         setPosition(positionSeconds);
         setDuration(playbackBook.tracks.find((track) => track.id === trackId)?.durationSeconds ?? 0);
         scheduleStartupReveal();
+        return true;
       },
       () => {
-        markPlaybackTouched(true);
+        // The native side has already moved the control clock to the seek.
+        // While a pending seek is still queued for this track it would win
+        // at loadedmetadata, so retarget it rather than let the lock-screen
+        // seek be undone.
+        const nativePosition = Math.max(0, audio.currentTime);
+        markPlaybackTouched(
+          true,
+          undefined,
+          true,
+          trackOffsetSeconds(playbackBook, activeTrackIndex) + nativePosition
+        );
+        if (pendingSeekRef.current?.trackId === currentTrack.id) {
+          setPendingSeek({ trackId: currentTrack.id, positionSeconds: nativePosition });
+          setPosition(nativePosition);
+        }
         void persistProgress();
       },
       () => {
@@ -4037,20 +5813,6 @@ function MainApp({
           ]
         : undefined
     });
-    navigator.mediaSession.setActionHandler("play", () => startPlayback(audioRef.current));
-    navigator.mediaSession.setActionHandler("pause", () => pausePlayback(audioRef.current));
-    navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
-    navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
-    navigator.mediaSession.setActionHandler("previoustrack", restartOrPreviousChapter);
-    navigator.mediaSession.setActionHandler("nexttrack", nextChapter);
-    navigator.mediaSession.setActionHandler("seekto", (details) => {
-      if (details.seekTime === undefined) return;
-      if (activeChapter) {
-        seekBookPosition(activeChapter.startSeconds + details.seekTime);
-      } else {
-        seekTo(details.seekTime);
-      }
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeChapter?.id,
@@ -4060,6 +5822,65 @@ function MainApp({
     nativeAudio,
     playbackBookKey
   ]);
+
+  // Lock-screen and hardware-key handlers are registered once and delegate
+  // through this ref, which every render refreshes. Registering the handlers
+  // themselves was keyed on the chapter and track, so between re-registrations
+  // they held closures from an earlier render: "previous" saw a chapter
+  // elapsed of 0 and never restarted the chapter, and "play" engaged the
+  // gain chain with a stale gain.
+  const mediaSessionHandlersRef = useRef({
+    startPlayback,
+    pausePlayback,
+    seekBy,
+    seekTo,
+    seekBookPosition,
+    restartOrPreviousChapter,
+    nextChapter,
+    activeChapter
+  });
+  mediaSessionHandlersRef.current = {
+    startPlayback,
+    pausePlayback,
+    seekBy,
+    seekTo,
+    seekBookPosition,
+    restartOrPreviousChapter,
+    nextChapter,
+    activeChapter
+  };
+
+  useEffect(() => {
+    if (nativeAudio || !("mediaSession" in navigator)) return;
+    const handlers = mediaSessionHandlersRef;
+    const session = navigator.mediaSession;
+    session.setActionHandler("play", () => handlers.current.startPlayback(audioRef.current));
+    session.setActionHandler("pause", () => handlers.current.pausePlayback(audioRef.current));
+    session.setActionHandler("seekbackward", () => handlers.current.seekBy(-15));
+    session.setActionHandler("seekforward", () => handlers.current.seekBy(30));
+    session.setActionHandler("previoustrack", () => handlers.current.restartOrPreviousChapter());
+    session.setActionHandler("nexttrack", () => handlers.current.nextChapter());
+    session.setActionHandler("seekto", (details) => {
+      if (details.seekTime === undefined) return;
+      const { activeChapter: chapter, seekBookPosition: seekBook, seekTo: seek } = handlers.current;
+      if (chapter) {
+        seekBook(chapter.startSeconds + details.seekTime);
+      } else {
+        seek(details.seekTime);
+      }
+    });
+    return () => {
+      for (const action of [
+        "play", "pause", "seekbackward", "seekforward", "previoustrack", "nexttrack", "seekto"
+      ] as MediaSessionAction[]) {
+        try {
+          session.setActionHandler(action, null);
+        } catch {
+          // An action the browser does not know cannot have been registered.
+        }
+      }
+    };
+  }, [nativeAudio]);
 
   useEffect(() => {
     if (nativeAudio || !("mediaSession" in navigator) || !currentTrack) return;
@@ -4183,23 +6004,31 @@ function MainApp({
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
 
-  function persistProgress() {
+  function persistProgress(): Promise<void> {
     if (
       !playbackBook ||
       restoredProgressBookId.current !== playbackBook.id ||
       !currentTrack ||
-      !audioRef.current ||
-      resumeReconciliationBookIdRef.current === playbackBook.id
+      !audioRef.current
     ) {
-      return;
+      return Promise.resolve();
     }
+    // A shelf Resume plays the optimistic local copy while the server's is
+    // still being fetched. Until that reconciliation settles, nothing goes
+    // to the server: the position being played may be about to be replaced
+    // by a fresher copy, and a push would make it look like the newest. The
+    // local checkpoint is still kept — the window can span several retries
+    // when the server is slow, and listening during it must survive a kill.
+    // It does not advance progressMutationVersion, so the reconciled copy
+    // still applies when it lands.
+    const reconciling = resumeReconciliationBookIdRef.current === playbackBook.id;
     // Nothing moved playback since this book was restored: there is nothing
     // new to save, and writing the restored position back with a fresh
     // timestamp would let a device whose restore silently failed outrank —
     // and then erase — real progress recorded elsewhere. Opening a book and
     // closing it again must write nothing.
     if (!playbackTouchedRef.current) {
-      return;
+      return Promise.resolve();
     }
 
     // While a seek is queued the media element does not reflect the real
@@ -4209,7 +6038,7 @@ function MainApp({
     // server's only copy.
     const pending = pendingSeekRef.current;
     if (pending && pending.trackId !== currentTrack.id) {
-      return;
+      return Promise.resolve();
     }
     const trackPosition = pending
       ? Math.max(0, pending.positionSeconds)
@@ -4227,7 +6056,7 @@ function MainApp({
       updatedAt: new Date().toISOString(),
       finishedOverride: playbackBook.progress?.finishedOverride ?? null
     };
-    progressMutationVersion.current += 1;
+    if (!reconciling) progressMutationVersion.current += 1;
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
     void cacheProgress(currentUser.id, localProgress).catch(() => undefined);
     if (playbackBook.deviceBookId) {
@@ -4236,8 +6065,8 @@ function MainApp({
       if (deviceTrack) saveDeviceProgress(playbackBook.deviceBookId, { ...localProgress, bookId: playbackBook.deviceBookId, trackId: deviceTrack.id });
     }
     updateBookProgress(playbackBook.id, localProgress);
-    if (playbackBook.source === "device") {
-      return;
+    if (playbackBook.source === "device" || reconciling) {
+      return Promise.resolve();
     }
 
     const existingQueued = queuedProgressSaves.current.get(playbackBook.id);
@@ -4245,21 +6074,31 @@ function MainApp({
       existingQueued?.intentionalSeekGeneration ?? 0,
       intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0
     );
+    // Lifting the server's reset guard is decided by where the seek went,
+    // not by the position being saved now: a +30 s tap must not turn a stale
+    // near-zero clock persisted after it into the authoritative copy.
+    const intentionalRegression =
+      (existingQueued?.intentionalRegression ?? false) ||
+      shouldFlagIntentionalRegression(
+        intentionalSeekTargetRef.current.get(playbackBook.id),
+        acknowledgedServerPositionRef.current.get(playbackBook.id)
+      );
     queuedProgressSaves.current.set(playbackBook.id, {
       bookId: playbackBook.id,
       progress: localProgress,
       isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
-      intentionalSeekGeneration
+      intentionalSeekGeneration,
+      intentionalRegression
     });
-    void flushProgressSaveQueue();
+    return flushProgressSaveQueue();
   }
 
-  async function flushProgressSaveQueue() {
-    if (progressSaveInFlight.current) {
-      return;
+  function flushProgressSaveQueue(): Promise<void> {
+    const existingDrain = progressSaveDrainPromiseRef.current;
+    if (existingDrain) {
+      return existingDrain;
     }
-    progressSaveInFlight.current = true;
-    try {
+    const drain = (async () => {
       // A slow request must not cause a newer position to be discarded. Each
       // in-flight save is followed by the most recent checkpoint queued while
       // it was running.
@@ -4281,14 +6120,18 @@ function MainApp({
             {
               isPaused: entry.isPaused,
               intentionalRegression:
-                entry.intentionalSeekGeneration
-                > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
+                entry.intentionalRegression
+                && entry.intentionalSeekGeneration
+                  > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               intentionalSeek:
                 entry.intentionalSeekGeneration
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               signal: abortController.signal
             }
           );
+          // Whatever the server answered is now its position — the copy a
+          // later rewind is measured against.
+          acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);
           acknowledgedSeekGenerationRef.current.set(
             entry.bookId,
             Math.max(
@@ -4319,12 +6162,16 @@ function MainApp({
           }
         }
       }
-    } finally {
-      progressSaveInFlight.current = false;
-      if (queuedProgressSaves.current.size > 0) {
-        void flushProgressSaveQueue();
+    })().finally(() => {
+      if (progressSaveDrainPromiseRef.current === drain) {
+        progressSaveDrainPromiseRef.current = null;
+        if (queuedProgressSaves.current.size > 0) {
+          void flushProgressSaveQueue();
+        }
       }
-    }
+    });
+    progressSaveDrainPromiseRef.current = drain;
+    return drain;
   }
 
   function updateBookProgress(bookId: string, saved: Progress) {
@@ -4342,6 +6189,7 @@ function MainApp({
   }
 
   function storeCanonicalServerProgress(book: Book, saved: Progress) {
+    acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
     writeProgressCheckpoint(
       window.localStorage,
       getServerStorageKey(),
@@ -4387,7 +6235,7 @@ function MainApp({
       return;
     }
     const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
-    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveInFlight.current) {
+    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
       return;
     }
     const actionVersion = playbackActionVersionRef.current;
@@ -4469,9 +6317,7 @@ function MainApp({
         queuedProgressSaves.current.delete(book.id);
         if (playbackBookId === book.id) pausePlayback(audioRef.current);
         progressSaveAbortController.current?.abort();
-        while (progressSaveInFlight.current) {
-          await new Promise((resolve) => window.setTimeout(resolve, 25));
-        }
+        await progressSaveDrainPromiseRef.current;
         queuedProgressSaves.current.delete(book.id);
       }
       const completedProgress: Progress | null = finalProgress
@@ -4529,7 +6375,7 @@ function MainApp({
         const next = existing.map((candidate) =>
           candidate.id === book.id ? { ...candidate, progress: summary } : candidate
         );
-        if (isNativeApp()) {
+        if (Capacitor.isNativePlatform()) {
           void cacheLibrary(
             currentUser.id,
             next.filter((candidate) => candidate.source !== "device")
@@ -4688,7 +6534,16 @@ function MainApp({
     if (!window.confirm(`Remove the downloaded copy of ${book.title} from this device? Your listening progress will be kept.`)) return;
     const removingActiveSource = playbackBook?.id === book.id && !!currentTrack && !!audioRef.current;
     const resumeTrack = removingActiveSource ? currentTrack : null;
-    const resumePosition = removingActiveSource ? Math.max(0, audioRef.current!.currentTime) : 0;
+    // A seek still queued for this track is the real position; the element
+    // reads 0 until its metadata loads, and staging that would replace it.
+    const resumePosition = removingActiveSource
+      ? Math.max(
+          0,
+          pendingSeekRef.current?.trackId === currentTrack!.id
+            ? pendingSeekRef.current.positionSeconds
+            : audioRef.current!.currentTime
+        )
+      : 0;
     const resumePlayback = removingActiveSource
       ? nativeAudio ? nativePlaybackPlayingRef.current : !audioRef.current!.paused
       : false;
@@ -4741,10 +6596,14 @@ function MainApp({
   // book: playbackBook still points at the previous book (or nothing) until
   // the state update lands, and marking the wrong book leaves the jump
   // unflagged — the server would then bill the skipped hours as listening.
+  //
+  // A deliberate seek also records the whole-book position it aimed at, which
+  // is what decides whether its saves may lift the server's reset guard.
   function markPlaybackTouched(
     deliberateSeek = false,
     seekBookId?: string,
-    interruptRestore = true
+    interruptRestore = true,
+    seekTargetBookPosition?: number
   ) {
     playbackTouchedRef.current = true;
     if (interruptRestore) {
@@ -4760,7 +6619,18 @@ function MainApp({
         bookId,
         (intentionalSeekGenerationRef.current.get(bookId) ?? 0) + 1
       );
+      if (seekTargetBookPosition !== undefined && Number.isFinite(seekTargetBookPosition)) {
+        intentionalSeekTargetRef.current.set(bookId, Math.max(0, seekTargetBookPosition));
+      } else {
+        intentionalSeekTargetRef.current.delete(bookId);
+      }
     }
+  }
+
+  /** The whole-book position a track-relative seek on the playing book lands at. */
+  function seekTargetInPlaybackBook(trackPosition: number) {
+    if (!playbackBook) return undefined;
+    return trackOffsetSeconds(playbackBook, activeTrackIndex) + Math.max(0, trackPosition);
   }
 
   function gainChain() {
@@ -4776,7 +6646,12 @@ function MainApp({
    * outside one starts suspended, and a suspended context makes a routed
    * element silent rather than loud.
    */
-  function engageGainChain(audio: HTMLAudioElement | null | undefined, gain = playbackGain) {
+  function engageGainChain(
+    audio: HTMLAudioElement | null | undefined,
+    // Read from the ref, not the render: this runs from lock-screen handlers
+    // and media events whose closures can predate the current gain.
+    gain = playbackGainRef.current
+  ) {
     if (!audio || nativeAudio) return;
     if (!gainChain().isAttachedTo(audio)) {
       if (gain <= BOOK_GAIN_DEFAULT) return;
@@ -4805,12 +6680,19 @@ function MainApp({
   ) {
     if (!audio) return;
     markPlaybackTouched(false, undefined, interruptRestore);
+    // Let the element's `play` event tell an automatic Shelf-Resume start
+    // apart from a listener's tap. A rejected start clears it again so the
+    // next play event — a real tap — counts as one.
+    autoResumePlayEventPendingRef.current = !interruptRestore;
     engageGainChain(audio);
     if (!nativeAudio) {
-      safePlay(audio);
+      audio.play().catch(() => {
+        autoResumePlayEventPendingRef.current = false;
+      });
       return;
     }
     void playNativeAudio().catch((error) => {
+      autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
       audio.muted = false;
       setNativeAudioFailed(true);
@@ -4903,27 +6785,44 @@ function MainApp({
       return;
     }
     haptic("light");
-    markPlaybackTouched(true);
-    const nextPosition = setPlaybackPosition(audio, audio.currentTime + delta);
-    setPosition(nextPosition);
-    void persistProgress();
+    // While a seek is still queued the element reads 0 (metadata pending);
+    // the queued target is the real position, so move that instead.
+    const pending = pendingSeekRef.current;
+    const base = pending && pending.trackId === currentTrack?.id
+      ? pending.positionSeconds
+      : audio.currentTime;
+    seekTo(base + delta);
   }
 
   function seekTo(value: number) {
-    if (!audioRef.current) {
+    const audio = audioRef.current;
+    if (!audio) {
       return;
     }
-    markPlaybackTouched(true);
-    const nextPosition = setPlaybackPosition(audioRef.current, value);
+    const pending = pendingSeekRef.current;
+    if (pending && currentTrack && pending.trackId === currentTrack.id) {
+      const nextPosition = Math.max(
+        0,
+        Math.min(value, currentTrack.durationSeconds ?? value)
+      );
+      markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(nextPosition));
+      setPendingSeek({ trackId: currentTrack.id, positionSeconds: nextPosition });
+      setPosition(nextPosition);
+      void persistProgress();
+      return;
+    }
+    const clamped = Math.max(0, Math.min(value, audio.duration || value));
+    markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(clamped));
+    const nextPosition = setPlaybackPosition(audio, value);
     setPosition(nextPosition);
     void persistProgress();
   }
 
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
-    markPlaybackTouched(true, book.id);
-    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
+    markPlaybackTouched(true, book.id, true, clampedValue);
+    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
     let offset = 0;
     let targetTrack: Track | undefined = book.tracks[0];
 
@@ -5072,7 +6971,15 @@ function MainApp({
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
-    markPlaybackTouched(true, selectedBook?.id ?? playbackBook?.id);
+    const targetBook = selectedBook ?? playbackBook;
+    markPlaybackTouched(
+      true,
+      targetBook?.id,
+      true,
+      targetBook
+        ? trackOffsetSeconds(targetBook, targetBook.tracks.findIndex((candidate) => candidate.id === track.id))
+        : undefined
+    );
     if (selectedBook && playbackBook?.id !== selectedBook.id) {
       explicitSessionStartBookIdRef.current = selectedBook.id;
     }
@@ -5110,12 +7017,49 @@ function MainApp({
    * resume instead hands the book to that effect, which reconciles the native,
    * checkpoint, cached, listed and server copies before seeking.
    */
-  function playSelectedBook(book: Book) {
+  async function playSelectedBook(book: Book) {
     if (!shouldResumeSavedPosition(book.progress)) {
+      // The listing summary can lag the server (a cached shelf, a session on
+      // another device since the last refresh). Before "Begin this reading"
+      // writes a near-zero position with a deliberate seek attached — which
+      // the server would honour — ask for the live copy, briefly. Offline or
+      // unanswered, the summary stands as before.
+      const inProgressElsewhere = await freshProgressBeforeStartingOver(book);
+      if (inProgressElsewhere) {
+        updateBookProgress(book.id, inProgressElsewhere);
+        resumeSelectedBook(book);
+        return;
+      }
       // "Read it again" on a finished book, or one never opened: track one.
       if (book.tracks[0]) selectTrack(book.tracks[0]);
       return;
     }
+    resumeSelectedBook(book);
+  }
+
+  async function freshProgressBeforeStartingOver(book: Book): Promise<Progress | null> {
+    if (
+      book.source === "device" ||
+      localMode ||
+      isOffline ||
+      book.progress?.status === "finished"
+    ) {
+      return null;
+    }
+    try {
+      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
+      if (!server) return null;
+      const summary = summarizeBookProgress(book, server);
+      return summary?.status === "inProgress"
+        && server.bookPositionSeconds > PROGRESS_RESET_GUARD_SECONDS
+        ? server
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resumeSelectedBook(book: Book) {
     setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
@@ -5184,6 +7128,25 @@ function MainApp({
   }
 
   function playNextTrack() {
+    // `ended` also fires when a stream is cut short (a truncated response, a
+    // proxy giving up). Advancing on that — or finishing the book on its last
+    // track — would file unheard time as listened. Stop where the clock is.
+    // Only the element's own duration is trusted here: the catalogue's tag
+    // estimate can run minutes long and would stop every track "early".
+    const endedAudio = audioRef.current;
+    if (
+      endedAudio &&
+      currentTrack &&
+      endedShortOfTrack(endedAudio.currentTime, endedAudio.duration)
+    ) {
+      playWhenTrackLoads.current = false;
+      wantsAutoplayRef.current = false;
+      pausePlayback(endedAudio);
+      setIsPlaying(false);
+      void persistProgress();
+      setPlaybackError("Playback stopped early; the file may be incomplete.");
+      return;
+    }
     if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
       playWhenTrackLoads.current = false;
       setIsPlaying(false);
@@ -5301,6 +7264,22 @@ function MainApp({
     if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
+  function toggleReadalongEnabled() {
+    const enabled = !readalongEnabled;
+    writeReadalongEnabled(enabled);
+    setReadalongEnabled(enabled);
+    if (!enabled) {
+      setReadalongOpen(false);
+      if (selectedBook) writeReaderOpenFlag(selectedBook.id, false);
+    }
+  }
+
+  function toggleFollowSyncEnabled() {
+    const enabled = !followSyncEnabled;
+    writeFollowSyncEnabled(enabled);
+    setFollowSyncEnabled(enabled);
+  }
+
   async function refreshLibrary() {
     setIsLoading(true);
     if (localMode) {
@@ -5320,14 +7299,27 @@ function MainApp({
       setSelectedBookId((existing) =>
         resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
       );
+      // As in loadBooks: a listing that calls the playing book finished must
+      // not pull the session out from under the listener.
+      const isPlayingNow = nativeAudio
+        ? nativePlaybackPlayingRef.current
+        : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) =>
         resolveActivePlaybackBookId(
           visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId")
+          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
+          isPlayingNow
         )
       );
       setError(null);
     } catch (refreshError) {
+      if (isServerNotReadyError(refreshError)) {
+        // Up but still scanning: loadBooks keeps asking until it publishes.
+        setIsOffline(false);
+        setError("The server is still loading its library. The shelf refreshes once it is ready.");
+        void loadBooks();
+        return;
+      }
       // A rescan rejected by a reachable server is not "offline" — only
       // mute non-downloaded books when the server can't be reached at all.
       setIsOffline(isNetworkError(refreshError));
@@ -5344,17 +7336,28 @@ function MainApp({
     setBooks(visibleBooks);
     reconcileServerBookGains(nextBooks);
     setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
-    setPlaybackBookId((existing) => {
-      const next = resolveActivePlaybackBookId(visibleBooks, existing);
-      if (existing && !next) {
-        pausePlayback(audioRef.current);
-        setCurrentTrackId(null);
-        setPosition(0);
-        if (native) setNativeTab("shelf");
-      }
-      return next;
-    });
+    // Decided outside the state updater: updaters can run more than once and
+    // must stay pure, and the teardown below has to save first.
+    const isPlayingNow = nativeAudio
+      ? nativePlaybackPlayingRef.current
+      : !!audioRef.current && !audioRef.current.paused;
+    const currentPlaybackBookId = playbackBookIdRef.current;
+    const nextPlaybackBookId = resolveActivePlaybackBookId(visibleBooks, currentPlaybackBookId, isPlayingNow);
+    if (currentPlaybackBookId && !nextPlaybackBookId) {
+      pausePlayback(audioRef.current);
+      setCurrentTrackId(null);
+      setPosition(0);
+      if (native) setNativeTab("shelf");
+    }
+    playbackBookIdRef.current = nextPlaybackBookId;
+    setPlaybackBookId(nextPlaybackBookId);
     if (libationBooksLoaded) void loadLibationBooks();
+  }
+
+  async function prepareForAdminLibraryMutation() {
+    pausePlayback(audioRef.current);
+    await persistProgress();
+    await flushProgressSaveQueue();
   }
 
   function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
@@ -5411,114 +7414,6 @@ function MainApp({
     const next = [job, ...libationJobsRef.current.filter((existing) => existing.id !== job.id)];
     libationJobsRef.current = next;
     setLibationJobs(next);
-  }
-
-  function openLibationAccountForm(account?: LibationAccount) {
-    setLibationReconnectProfileId(account?.managed ? account.id : null);
-    setLibationAccountLabel(account?.name || "");
-    setLibationAccountId(account?.accountId || "");
-    setLibationAccountLocale(account?.locale || "us");
-    setLibationLoginFlow(null);
-    setLibationLoginResponseUrl("");
-    setLibationError(null);
-    setLibationAccountFormOpen(true);
-  }
-
-  async function beginLibationAccountLogin(event: React.FormEvent) {
-    event.preventDefault();
-    if (!libationAccountLabel.trim() || !libationAccountId.trim()) {
-      setLibationError("Enter an account label and Audible email.");
-      return;
-    }
-    const loginWindow = isNativeApp() ? null : window.open("about:blank", "_blank");
-    setLibationLoginBusy(true);
-    setLibationError(null);
-    try {
-      const started = await startLibationAccountLogin({
-        ...(libationReconnectProfileId ? { profileId: libationReconnectProfileId } : {}),
-        label: libationAccountLabel.trim(),
-        accountId: libationAccountId.trim(),
-        locale: libationAccountLocale
-      });
-      setLibationLoginFlow(started);
-      if (isNativeApp()) {
-        try {
-          await openNativeBrowser(started.loginUrl);
-        } catch {
-          setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
-        }
-      } else if (loginWindow) {
-        loginWindow.opener = null;
-        loginWindow.location.replace(started.loginUrl);
-      } else {
-        setLibationError("The sign-in URL is ready below. Open it to continue with Audible.");
-      }
-    } catch (error) {
-      loginWindow?.close();
-      setLibationError(errorMessage(error, "The Audible sign-in could not be started."));
-    } finally {
-      setLibationLoginBusy(false);
-    }
-  }
-
-  async function finishLibationAccountLogin(event: React.FormEvent) {
-    event.preventDefault();
-    if (!libationLoginFlow || !libationLoginResponseUrl.trim()) {
-      setLibationError("Paste the final URL from the Audible browser window.");
-      return;
-    }
-    setLibationLoginBusy(true);
-    setLibationError(null);
-    try {
-      const status = await completeLibationAccountLogin(
-        libationLoginFlow.sessionId,
-        libationLoginResponseUrl.trim()
-      );
-      setLibationStatus(status);
-      setAudibleAccountFilter(libationLoginFlow.profileId);
-      setLibationAccountFormOpen(false);
-      setLibationLoginFlow(null);
-      setLibationLoginResponseUrl("");
-      setLibationBooksLoaded(false);
-      await loadLibationBooks(false);
-    } catch (error) {
-      setLibationError(errorMessage(error, "Audible could not finish signing in."));
-    } finally {
-      setLibationLoginBusy(false);
-    }
-  }
-
-  async function closeLibationAccountForm() {
-    if (libationLoginFlow) {
-      try {
-        await cancelLibationAccountLogin(libationLoginFlow.sessionId);
-      } catch {
-        // The server also expires abandoned sign-in sessions automatically.
-      }
-    }
-    setLibationAccountFormOpen(false);
-    setLibationLoginFlow(null);
-    setLibationLoginResponseUrl("");
-  }
-
-  async function removeLibationAccount(account: LibationAccount) {
-    if (!account.managed || !window.confirm(`Remove ${account.name || account.accountId} from this server? Its Libation credentials and account-specific catalog will be deleted.`)) {
-      return;
-    }
-    setLibationAccountBusyId(account.id);
-    setLibationError(null);
-    try {
-      await deleteLibationAccount(account.id);
-      if (audibleAccountFilter === account.id) {
-        setAudibleAccountFilter("all");
-      }
-      await loadLibationStatus();
-      await loadLibationBooks(false);
-    } catch (error) {
-      setLibationError(errorMessage(error, `Could not remove ${account.name || "the Audible account"}.`));
-    } finally {
-      setLibationAccountBusyId(null);
-    }
   }
 
   async function startLibationSync() {
@@ -5756,6 +7651,27 @@ function MainApp({
           <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
+      {isOperaLibre ? (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={readalongEnabled}
+          onClick={toggleReadalongEnabled}
+        >
+          <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
+        </button>
+      ) : null}
+      {isOperaLibre && readalongEnabled ? (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={followSyncEnabled}
+          onClick={toggleFollowSyncEnabled}
+          title="Experimental: the highlight can drift and may move the page to match the audio."
+        >
+          <LocateFixed size={14} /> Follow narration: {followSyncEnabled ? "On" : "Off"} (experimental)
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -5769,6 +7685,258 @@ function MainApp({
       </button>
     </div>
   );
+
+  // Sync actions and notices, shared by the inline panel header and the
+  // full-screen reader's appearance sheet.
+  const readerSyncActions = selectedBook ? (
+    <>
+      {canGenerateSync && activeCompanionIsBook ? (
+        <button
+          type="button"
+          className="download-btn"
+          disabled={syncJob?.status === "running"}
+          onClick={() => void startSyncGeneration(selectedBook)}
+          title={
+            selectedSyncPrecise
+              ? "Regenerate the narration sync map"
+              : "Align the narration to the text for sentence and word highlighting"
+          }
+        >
+          {syncJob?.status === "running" ? (
+            <LoaderCircle size={13} className="spin-icon" />
+          ) : (
+            <Sparkles size={13} />
+          )}
+          <span>{selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
+        </button>
+      ) : null}
+      {currentUser.isAdmin && activeCompanionIsBook && (selectedSyncMap?.manualAnchorCount ?? 0) > 0 ? (
+        <button
+          type="button"
+          className="download-btn"
+          onClick={() => void clearNarrationPins(selectedBook)}
+          title="Forget every Sync here adjustment on this book"
+        >
+          <RotateCcw size={13} />
+          <span>Clear adjustments</span>
+        </button>
+      ) : null}
+    </>
+  ) : null;
+  const readerSyncMessages = (
+    <>
+      {syncJob && syncJob.status === "running" ? (
+        <div className="readalong-genstatus">
+          Aligning the narration to the text… this can take a while for long books.
+        </div>
+      ) : syncJob && syncJob.status === "failed" ? (
+        <div className="readalong-genstatus error">
+          {syncJob.error ?? "Readalong sync generation failed."}
+        </div>
+      ) : null}
+      {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
+      {syncNotice ? <div className="readalong-genstatus notice">{syncNotice}</div> : null}
+      {currentUser.isAdmin
+      && activeCompanionIsBook
+      && activeCompanion?.extension === "epub"
+      && !selectedSyncPrecise
+      && alignmentStatus
+      && !alignmentStatus.enabled ? (
+        <div className="readalong-genstatus">
+          Following is approximate on this server. Install echogarden beside OperaLibre to align the
+          narration word for word.
+        </div>
+      ) : null}
+    </>
+  );
+  const companionTabs =
+    selectedCompanionList.length + (galleryAvailable ? 1 : 0) > 1 ? (
+      <div className="readalong-tabs" role="tablist" aria-label="Companion files">
+        {selectedCompanionList.map((companion) => {
+          const selected = !showGallery && activeCompanion?.id === companion.id;
+          return (
+            <button
+              type="button"
+              role="tab"
+              key={companion.id}
+              aria-selected={selected}
+              className={selected ? "selected" : ""}
+              onClick={() => setActiveCompanionId(companion.id)}
+              title={describeCompanion(companion)}
+            >
+              {companion.kind === "book" ? <BookOpen size={12} /> : <FileText size={12} />}
+              <span>{companionKindLabel(companion)}</span>
+              <small>{companion.fileName}</small>
+            </button>
+          );
+        })}
+        {galleryAvailable ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={showGallery}
+            className={showGallery ? "selected" : ""}
+            onClick={() => setActiveCompanionId(GALLERY_COMPANION_ID)}
+          >
+            <Images size={12} />
+            <span>Pictures</span>
+            <small>{selectedCompanionGroups.images.length}</small>
+          </button>
+        ) : null}
+      </div>
+    ) : null;
+  const epubReaderElement =
+    selectedBook && activeCompanion && activeCompanionUrl && activeCompanion.extension === "epub" && !showGallery ? (
+      <EpubReadalong
+        key={`${readerScope}:${selectedBook.id}:${activeCompanion.id}`}
+        bookId={selectedBook.id}
+        storageScope={readerScope}
+        title={selectedBook.title}
+        url={activeCompanionUrl}
+        listeningChapter={activeCompanionIsBook
+          ? (isViewingPlayingBook ? activeChapter?.title : chapterAtBookPosition(selectedChapterSegments, selectedBook.progress?.bookPositionSeconds ?? 0)?.title) ?? null
+          : null}
+        loadBytes={(companionUrl, signal) =>
+          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
+        }
+        syncTarget={
+          narrationFollowActive && activeCompanionIsBook && !selectedSyncFragments && isViewingPlayingBook && activeChapter
+            ? activeChapter
+            : null
+        }
+        syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
+        precision={narrationFollowActive && activeCompanionIsBook ? selectedSyncPrecision : null}
+        positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
+        onSeekTo={
+          narrationFollowActive
+            ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
+            : undefined
+        }
+        onPinNarration={
+          narrationFollowActive && activeCompanionIsBook && isViewingPlayingBook && selectedSyncPrecision === "estimated"
+            ? (fragment) => void pinNarration(selectedBook, fragment)
+            : undefined
+        }
+        immersive={native}
+        onClose={closeReadalong}
+        chapterTitle={isViewingPlayingBook ? activeChapter?.title ?? null : null}
+        positionLabel={
+          isViewingPlayingBook
+            ? formatTime(activeChapter ? Math.max(0, displayBookPosition - activeChapter.startSeconds) : displayBookPosition)
+            : null
+        }
+        playback={
+          isViewingPlayingBook
+            ? {
+                playing: isPlaying,
+                speed,
+                sleepRemaining,
+                onToggle: togglePlayback,
+                onSkip: seekBy,
+                onOpen: (sheet) => setNativePlayerSheet(sheet)
+              }
+            : null
+        }
+        onListen={isViewingPlayingBook ? undefined : () => playSelectedBook(selectedBook)}
+        syncTools={
+          narrationFollowActive && (readerSyncActions || readerSyncMessages) ? (
+            <>
+              <div className="epub-sheet-row">{readerSyncActions}</div>
+              {readerSyncMessages}
+            </>
+          ) : null
+        }
+        companionSwitcher={companionTabs}
+      />
+    ) : null;
+  // The native ebook reader is a full-screen layer of its own; everything
+  // else (extras, pictures, the web reader) lives in the inline panel.
+  const immersiveEpub = native && !!epubReaderElement;
+
+  const readalongPanelElement =
+    readalongOpen && selectedBook && (activeCompanion || showGallery) ? immersiveEpub ? (
+      epubReaderElement
+    ) : (
+      <section
+        className="readalong-panel"
+        aria-label={`${selectedBook.title} read along`}
+        ref={readalongPanelRef}
+      >
+        <div className="readalong-header">
+          <div>
+            <span className="section-label">
+              {showGallery ? <Images size={13} /> : <BookOpen size={13} />}{" "}
+              {showGallery ? "Pictures" : activeCompanion?.kind === "supplement" ? "Extras" : "Read along"}
+            </span>
+            <strong>
+              {showGallery
+                ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
+                : activeCompanion?.fileName}
+            </strong>
+            <span className="readalong-mode">
+              {showGallery
+                ? "Loose pictures found beside the audio"
+                : activeCompanion
+                  ? `${activeCompanionIsBook && selectedReadAlongMode ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title} · ` : ""}${describeCompanion(activeCompanion)}${
+                      activeCompanionIsBook && selectedSyncMap?.manualAnchorCount
+                        ? ` · ${selectedSyncMap.manualAnchorCount} sync ${selectedSyncMap.manualAnchorCount === 1 ? "adjustment" : "adjustments"}`
+                        : ""
+                    }`
+                  : null}
+            </span>
+          </div>
+          <div className="readalong-actions">
+            {narrationFollowActive ? readerSyncActions : null}
+            {activeCompanionUrl && !showGallery ? (
+              <a className="download-btn" href={activeCompanionUrl} target="_blank" rel="noreferrer">
+                <ExternalLink size={13} />
+                <span>Open</span>
+              </a>
+            ) : null}
+            <button type="button" className="download-btn" onClick={closeReadalong} aria-label="Close the reader">
+              <X size={13} />
+              <span>Close</span>
+            </button>
+          </div>
+        </div>
+        {companionTabs}
+        {narrationFollowActive ? readerSyncMessages : null}
+        {showGallery ? (
+          <div className="readalong-gallery">
+            {selectedCompanionGroups.images.map((image) => (
+              <a key={image.id} href={readalongUrl(image.url)} target="_blank" rel="noreferrer">
+                <img src={readalongUrl(image.url)} alt={image.fileName} loading="lazy" />
+                <span>{image.fileName}</span>
+              </a>
+            ))}
+          </div>
+        ) : epubReaderElement ? (
+          epubReaderElement
+        ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
+          <iframe
+            className="readalong-frame"
+            src={activeCompanionUrl}
+            title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
+            sandbox=""
+            referrerPolicy="no-referrer"
+          />
+        ) : activeCompanion ? (
+          <div className="readalong-fallback">
+            <ScrollText size={36} strokeWidth={1.4} />
+            <p>
+              {activeCompanion.extension.toUpperCase()} files are available to open, but this browser
+              cannot preview them inline yet.
+            </p>
+          </div>
+        ) : null}
+        {activeChapter && !showGallery ? (
+          <div className="readalong-sync">
+            <span>{activeChapter.title}</span>
+            <span>{formatTime(displayBookPosition)}</span>
+          </div>
+        ) : null}
+      </section>
+    ) : null;
 
   return (
     <main
@@ -5799,13 +7967,35 @@ function MainApp({
                 : "This audio track could not be loaded.";
           setIsPlaying(false);
           setPlaybackError(message);
+          // The element keeps paused=false after a media error, so the
+          // toggle read "playing" and needed two taps. On iOS the element is
+          // only the control clock and its own errors say nothing about
+          // AVPlayer, so it is left alone there.
+          const failed = audioRef.current;
+          if (!nativeAudio && failed && !failed.paused) {
+            // If metadata never arrived the clock reads 0; stage the shown
+            // position so the pause save carries something coherent.
+            if (
+              failed.readyState < HTMLMediaElement.HAVE_METADATA &&
+              !pendingSeekRef.current &&
+              currentTrackKey
+            ) {
+              setPendingSeek({ trackId: currentTrackKey, positionSeconds: position });
+            }
+            failed.pause();
+          }
         }}
         onTimeUpdate={onTimeUpdate}
         onPlay={() => {
           // Playback can also start natively (lock screen, CarPlay) without
           // going through startPlayback; real listening must always count as
-          // touched or its progress would never be persisted.
-          markPlaybackTouched();
+          // touched or its progress would never be persisted. Only the
+          // automatic Shelf-Resume start (flagged by startPlayback) is kept
+          // from counting as a listener action, so a /progress reply that
+          // lands after loadedmetadata can still correct the position.
+          const automaticResume = autoResumePlayEventPendingRef.current;
+          autoResumePlayEventPendingRef.current = false;
+          markPlaybackTouched(false, undefined, !automaticResume);
           engageGainChain(audioRef.current);
           if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
@@ -5821,6 +8011,9 @@ function MainApp({
           }
         }}
         onPause={() => {
+          // Anything that plays after a pause is a fresh action, never the
+          // automatic resume that flag was armed for.
+          autoResumePlayEventPendingRef.current = false;
           if (nativeAudio) nativePlaybackPlayingRef.current = false;
           setIsPlaying(false);
           void persistProgress();
@@ -5990,20 +8183,47 @@ function MainApp({
         </div>
 
         <div className="library-toolbar">
-          <label className="library-search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              placeholder={librarySource === "local" ? "Search title, author…" : "Search Audible titles…"}
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.currentTarget.value)}
-              aria-label="Search library"
-            />
-          </label>
+          <div className="library-search-row">
+            <div className="library-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                ref={shelfSearchRef}
+                placeholder={librarySource === "local" ? "Search books, authors, tags…" : "Search Audible titles…"}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.currentTarget.value)}
+                aria-label="Search library"
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="library-search-clear"
+                  aria-label="Clear search"
+                  onClick={() => { setSearchQuery(""); shelfSearchRef.current?.focus(); }}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+            {showShelfFilters ? (
+              <button
+                type="button"
+                ref={filterToggleRef}
+                className={`library-filter-toggle ${filtersOpen ? "open" : ""} ${activeShelfFilterCount > 0 ? "engaged" : ""}`}
+                onClick={() => setFiltersOpen(!filtersOpen)}
+                aria-expanded={filtersOpen}
+                aria-controls="library-filter-panel"
+              >
+                <SlidersHorizontal size={14} aria-hidden="true" />
+                <span>Filters</span>
+                {activeShelfFilterCount > 0 ? <em>{activeShelfFilterCount}</em> : null}
+              </button>
+            ) : null}
+          </div>
 
           <div className="library-controls">
             <label className="library-sort">
-              <span className="sr-only">Sort by</span>
+              <span>Sort by</span>
               <select
                 value={sortMode}
                 onChange={(event) => selectSortMode(event.currentTarget.value as SortMode)}
@@ -6016,7 +8236,16 @@ function MainApp({
                 ))}
               </select>
             </label>
-
+            <button
+              type="button"
+              className="library-sort-direction"
+              onClick={reverseSort}
+              aria-label={`Reverse sort order (currently ${sortOrderLabel})`}
+              title={`Reverse sort order · ${sortOrderLabel}`}
+              aria-pressed={sortReversed}
+            >
+              {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+            </button>
             <div className="view-toggle" role="group" aria-label="View mode">
               <button
                 className={viewMode === "list" ? "selected" : ""}
@@ -6035,6 +8264,97 @@ function MainApp({
                 <LayoutGrid size={14} />
               </button>
             </div>
+          </div>
+
+          {showShelfFilters && filtersOpen ? (
+            <section
+              className="library-filters"
+              id="library-filter-panel"
+              aria-label="Library filters"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { event.stopPropagation(); closeShelfFilters(); }
+              }}
+            >
+              <div className="library-filters-heading">
+                <strong>Find your next listen</strong>
+                <button type="button" className="library-clear-filters" onClick={closeShelfFilters}>Done</button>
+              </div>
+              <div className="library-filters-body">
+                <div className="shelf-facet shelf-facet-status">
+                  <div className="shelf-facet-heading">
+                    <span className="shelf-facet-title">Progress</span>
+                  </div>
+                  <div className="shelf-status-row" role="group" aria-label="Filter by reading progress">
+                    {SHELF_STATUS_OPTIONS.map((option) => {
+                      const isSelected = shelfFilters.status === option.value;
+                      const count = shelfFacets.statusCounts[option.value];
+                      return (
+                        <button
+                          type="button"
+                          key={option.value}
+                          className={isSelected ? "selected" : ""}
+                          aria-pressed={isSelected}
+                          disabled={count === 0 && !isSelected}
+                          onClick={() => setShelfFilters({ ...shelfFilters, status: option.value })}
+                        >
+                          <span>{option.label}</span>
+                          <em>{count}</em>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="shelf-facet-groups">
+                  <ShelfFacetGroup
+                    title="Genres"
+                    hint="No genres on this shelf yet. Add them when you edit a book’s details."
+                    options={shelfFacets.genres}
+                    selected={shelfFilters.genres}
+                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "genres", key))}
+                  />
+                  <ShelfFacetGroup
+                    title="Tags"
+                    hint="No tags on this shelf yet. Tag books to gather a wider world or reading order."
+                    options={shelfFacets.tags}
+                    selected={shelfFilters.tags}
+                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "tags", key))}
+                  />
+                </div>
+                <p className="shelf-facet-hint">Choose any in each group. Combine groups to narrow your shelf.</p>
+              </div>
+            </section>
+          ) : null}
+
+          {showShelfFilters && activeShelfFilterCount > 0 ? (
+            <div className="library-active-filters">
+              <span className="library-active-filters-caption">Filtering</span>
+              {activeShelfFilterChips.map((chip) => (
+                <button
+                  type="button"
+                  key={chip.id}
+                  className="active-filter-chip"
+                  onClick={chip.clear}
+                  aria-label={`Remove ${chip.caption.toLowerCase()} filter ${chip.label}`}
+                >
+                  <span className="active-filter-caption">{chip.caption}</span>
+                  <span className="active-filter-label">{chip.label}</span>
+                  <X size={11} strokeWidth={2.5} aria-hidden="true" />
+                </button>
+              ))}
+              <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
+                Clear all
+              </button>
+            </div>
+          ) : null}
+
+          <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
+            <span>
+              {librarySource === "local"
+                ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
+                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+            </span>
+            <span>{sortOrderLabel}</span>
           </div>
 
           {canBrowseLibation ? (
@@ -6089,6 +8409,8 @@ function MainApp({
 
             {libationMessage ? <p>{libationMessage}</p> : null}
 
+            <p>Audible accounts are added and reconnected in Libation.</p>
+
             <div className="libation-account-toolbar">
               <label>
                 <span>Browsing</span>
@@ -6099,9 +8421,6 @@ function MainApp({
                   ))}
                 </select>
               </label>
-              <button type="button" className="quiet-button" onClick={() => openLibationAccountForm()} disabled={!libationStatus?.enabled}>
-                <Plus size={13} /> Add account
-              </button>
             </div>
 
             {libationStatus?.accounts.length ? (
@@ -6119,47 +8438,8 @@ function MainApp({
                       </small>
                       {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
                     </span>
-                    {account.managed ? (
-                      <span className="account-list-actions">
-                        <button type="button" onClick={() => openLibationAccountForm(account)} disabled={libationAccountBusyId !== null}>
-                          <KeyRound size={12} /> {account.authenticated ? "Reconnect" : "Sign in"}
-                        </button>
-                        {currentUser.isOwner ? (
-                          <button type="button" className="danger" aria-label={`Remove ${account.name || account.accountId}`} onClick={() => void removeLibationAccount(account)} disabled={libationAccountBusyId !== null}>
-                            {libationAccountBusyId === account.id ? <LoaderCircle size={12} className="spin-icon" /> : <Trash2 size={12} />}
-                          </button>
-                        ) : null}
-                      </span>
-                    ) : null}
                   </article>
                 ))}
-              </div>
-            ) : null}
-
-            {libationAccountFormOpen ? (
-              <div className="libation-login-card">
-                <div className="libation-login-head">
-                  <div>
-                    <strong>{libationReconnectProfileId ? "Reconnect Audible account" : "Add Audible account"}</strong>
-                    <small>Amazon handles your password and verification in the browser.</small>
-                  </div>
-                  <button type="button" aria-label="Close Audible sign-in" onClick={() => void closeLibationAccountForm()}><X size={14} /></button>
-                </div>
-                {!libationLoginFlow ? (
-                  <form onSubmit={(event) => void beginLibationAccountLogin(event)}>
-                    <label><span>Account label</span><input value={libationAccountLabel} maxLength={80} placeholder="Family account" onChange={(event) => setLibationAccountLabel(event.currentTarget.value)} /></label>
-                    <label><span>Audible email</span><input type="email" value={libationAccountId} maxLength={320} autoCapitalize="none" autoCorrect="off" placeholder="reader@example.com" onChange={(event) => setLibationAccountId(event.currentTarget.value)} /></label>
-                    <label><span>Marketplace</span><select value={libationAccountLocale} onChange={(event) => setLibationAccountLocale(event.currentTarget.value)}>{["us", "uk", "ca", "de", "fr", "au", "jp", "in", "es"].map((locale) => <option key={locale} value={locale}>{locale.toUpperCase()}</option>)}</select></label>
-                    <button type="submit" disabled={libationLoginBusy}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <KeyRound size={13} />} Start secure sign-in</button>
-                  </form>
-                ) : (
-                  <form onSubmit={(event) => void finishLibationAccountLogin(event)}>
-                    <p>Finish signing in with Audible, copy the complete final URL from the browser address bar, then paste it here.</p>
-                    <a className="libation-login-link" href={libationLoginFlow.loginUrl} target="_blank" rel="noreferrer"><Cloud size={13} /> Open Audible sign-in</a>
-                    <label><span>Final browser URL</span><textarea value={libationLoginResponseUrl} rows={3} autoCapitalize="none" autoCorrect="off" placeholder="https://www.amazon.com/ap/maplanding?..." onChange={(event) => setLibationLoginResponseUrl(event.currentTarget.value)} /></label>
-                    <button type="submit" disabled={libationLoginBusy || !libationLoginResponseUrl.trim()}>{libationLoginBusy ? <LoaderCircle size={13} className="spin-icon" /> : <CircleCheck size={13} />} Complete sign-in</button>
-                  </form>
-                )}
               </div>
             ) : null}
 
@@ -6312,7 +8592,7 @@ function MainApp({
                     type="button"
                     className="connect-server-dismiss"
                     onClick={() => {
-                      window.localStorage.setItem(CONNECT_PROMPT_DISMISSED_KEY, "true");
+                      writeStoredValue(CONNECT_PROMPT_DISMISSED_KEY, "true");
                       setConnectPromptDismissed(true);
                     }}
                   >
@@ -6334,7 +8614,23 @@ function MainApp({
               </div>
             ) : null}
             {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
-              <div className="empty-state">Nothing matches “{searchQuery}”.</div>
+              <div className="empty-state shelf-empty-state">
+                <span>
+                  {searchQuery.trim()
+                    ? `Nothing matches “${searchQuery.trim()}”${activeShelfFilterCount > 0 ? " under these filters" : ""}.`
+                    : "No books match these filters."}
+                </span>
+                {activeShelfFilterCount > 0 ? (
+                  <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
+                    Clear filters
+                  </button>
+                ) : null}
+                {searchQuery ? (
+                  <button type="button" className="library-clear-filters" onClick={() => setSearchQuery("")}>
+                    Clear search
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
@@ -6354,9 +8650,10 @@ function MainApp({
                   : "Available from the server";
                 const unavailableOffline = isOffline && !availableOnDevice;
                 const shared = summarizeSharedProgress(book.sharedProgress);
-                const sortGroup = bookSortGroupLabel(book, sortMode);
+                const sortTag = tagForShelfSort(book, shelfFilters.tags);
+                const sortGroup = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
                 const previousSortGroup = index > 0
-                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode)
+                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode, shelfFilters.tags)
                   : null;
                 return (
                   <Fragment key={book.id}>
@@ -6395,10 +8692,26 @@ function MainApp({
                         {sortMode === "series" && book.metadata.seriesPosition ? (
                           <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
                         ) : null}
+                        {sortMode === "tag" && sortTag?.position ? (
+                          <span className="book-sort-context">
+                            Book {sortTag.position} in {sortTag.name}
+                          </span>
+                        ) : null}
                         {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
                           <span className="book-runtime-tag">
                             <Timer size={11} strokeWidth={1.5} />
                             {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
+                          </span>
+                        ) : null}
+                        {readalongEnabled && book.readingFile ? (
+                          <span className="book-readalong-tag" title="Ebook included: read along while you listen">
+                            <BookOpen size={11} strokeWidth={1.6} />
+                            Read along
+                          </span>
+                        ) : readalongEnabled && hasExtras(book) ? (
+                          <span className="book-readalong-tag extras" title="Pictures or a supplement are included">
+                            <Images size={11} strokeWidth={1.6} />
+                            Extras
                           </span>
                         ) : null}
                         <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
@@ -6529,7 +8842,7 @@ function MainApp({
       <section
         className={`player-pane native-player-view-${nativePlayerView} ${
           isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-        }`}
+        } ${showReaderInNowView ? "has-reader" : ""}`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
         onTouchStart={beginBookDetailsBackSwipe}
@@ -6554,7 +8867,7 @@ function MainApp({
         {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
           <>
             {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
-              <section className="native-now-playing" aria-label="Now playing">
+              <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
                 <div className="native-now-artwork">
                   <CoverArt book={nowPlayingBook} size="large" />
                 </div>
@@ -6683,6 +8996,18 @@ function MainApp({
                   >
                     <ListMusic size={16} /> Chapters
                   </button>
+                  {readalongEnabled && playbackBook?.readingFile ? (
+                    <button
+                      type="button"
+                      className="native-now-read"
+                      onClick={() => {
+                        haptic("light");
+                        openReadalong(playbackBook);
+                      }}
+                    >
+                      <BookOpen size={16} /> Read along
+                    </button>
+                  ) : null}
                 </div>
 
                 {!native ? (
@@ -6771,6 +9096,7 @@ function MainApp({
                     </section>
                   </div>
                 ) : null}
+                {showReaderInNowView ? <div className="web-now-reader">{readalongPanelElement}</div> : null}
               </section>
             ) : null}
             {/* On the shelf tab the details page is a child page of the library
@@ -6866,16 +9192,16 @@ function MainApp({
                         <span>Mark Unplayed</span>
                       </button>
                     ) : null}
-                    {selectedBook.readingFile ? (
+                    {readalongAvailable ? (
                       <button
                         className={`download-btn ${readalongOpen ? "active" : ""}`}
                         type="button"
-                        onClick={() => setReadalongOpen((open) => !open)}
+                        onClick={() => (readalongOpen ? closeReadalong() : openReadalong(selectedBook))}
                         aria-pressed={readalongOpen}
-                        aria-label={`${readalongOpen ? "Close" : "Open"} readalong for ${selectedBook.title}`}
+                        aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
                       >
-                        <ScrollText size={13} />
-                        <span>Read Along</span>
+                        {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
+                        <span>{selectedBook.readingFile ? "Read Along" : "Extras"}</span>
                       </button>
                     ) : null}
                     {selectedBook.deviceBookId ? (
@@ -6888,7 +9214,7 @@ function MainApp({
                         <CircleCheck size={13} />
                         <span>On device</span>
                       </span>
-                    ) : isNativeApp() ? (
+                    ) : Capacitor.isNativePlatform() ? (
                       <button
                         className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
                           selectedDownload ? "downloading" : ""
@@ -6933,7 +9259,7 @@ function MainApp({
                         <span>Download</span>
                       </a>
                     ) : null}
-                    {isNativeApp() && downloadStatus?.bookId === selectedBook.id ? (
+                    {Capacitor.isNativePlatform() && downloadStatus?.bookId === selectedBook.id ? (
                       <span className="download-status">{downloadStatus.message}</span>
                     ) : null}
                     {playbackError ? <span className="download-status">{playbackError}</span> : null}
@@ -6975,6 +9301,11 @@ function MainApp({
               {selectedBook.metadata.series ? (
                 <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
               ) : null}
+              {tagsForBook(selectedBook).map((tag) => (
+                <span className="metadata-custom-tag" key={tag.name}>
+                  {tag.name}{tag.position ? ` · #${tag.position}` : ""}
+                </span>
+              ))}
               {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
               {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
               {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
@@ -7016,95 +9347,42 @@ function MainApp({
               </div>
             ) : null}
 
-            {readalongOpen && selectedBook.readingFile && selectedReadalongUrl ? (
-              <section className="readalong-panel" aria-label={`${selectedBook.title} readalong`}>
-                <div className="readalong-header">
-                  <div>
-                    <span className="section-label"><ScrollText size={13} /> Readalong</span>
-                    <strong>{selectedBook.readingFile.fileName}</strong>
-                  </div>
-                  <div className="readalong-actions">
-                    {canGenerateSync ? (
-                      <button
-                        type="button"
-                        className="download-btn"
-                        disabled={syncJob?.status === "running"}
-                        onClick={() => void startSyncGeneration(selectedBook)}
-                        title={
-                          selectedBook.syncFile
-                            ? "Regenerate the narration sync map"
-                            : "Generate a narration sync map for sentence highlighting"
-                        }
-                      >
-                        {syncJob?.status === "running" ? (
-                          <LoaderCircle size={13} className="spin-icon" />
-                        ) : (
-                          <Sparkles size={13} />
-                        )}
-                        <span>{selectedBook.syncFile ? "Re-sync" : "Sync"}</span>
-                      </button>
-                    ) : null}
-                    <a className="download-btn" href={selectedReadalongUrl} target="_blank" rel="noreferrer">
-                      <Download size={13} />
-                      <span>Open</span>
-                    </a>
-                  </div>
+            {!readalongOpen && readalongAvailable ? (
+              <section className={`readalong-invite ${selectedBook.readingFile ? "" : "extras"}`} aria-label="Read along">
+                <span className="readalong-invite-icon" aria-hidden="true">
+                  {selectedBook.readingFile ? <BookOpen size={22} strokeWidth={1.4} /> : <Images size={22} strokeWidth={1.4} />}
+                </span>
+                <div className="readalong-invite-copy">
+                  <strong>
+                    {selectedBook.readingFile
+                      ? selectedHasExtras
+                        ? "Read along with the ebook — extras included"
+                        : "Read along with the ebook"
+                      : "Extras included with this book"}
+                  </strong>
+                  <span>
+                    {selectedBook.readingFile && selectedReadAlongMode
+                      ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title}. ${READ_ALONG_MODE_LABELS[selectedReadAlongMode].detail}`
+                      : [
+                          selectedCompanionGroups.supplements.length > 0
+                            ? `${selectedCompanionGroups.supplements.length} picture ${selectedCompanionGroups.supplements.length === 1 ? "document" : "documents"}`
+                            : null,
+                          selectedCompanionGroups.images.length > 0
+                            ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
+                            : null
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                  </span>
                 </div>
-                {syncJob && syncJob.status === "running" ? (
-                  <div className="readalong-genstatus">
-                    Generating narration sync… this can take a while for long books.
-                  </div>
-                ) : syncJob && syncJob.status === "failed" ? (
-                  <div className="readalong-genstatus error">
-                    {syncJob.error ?? "Readalong sync generation failed."}
-                  </div>
-                ) : null}
-                {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
-                {selectedBook.readingFile.extension === "epub" ? (
-                  <EpubReadalong
-                    title={selectedBook.title}
-                    url={selectedReadalongUrl}
-                    syncTarget={
-                      !selectedSyncFragments && isViewingPlayingBook && activeChapter
-                        ? activeChapter
-                        : null
-                    }
-                    syncFragments={selectedSyncFragments}
-                    positionSeconds={isViewingPlayingBook ? bookPosition : 0}
-                    onSeekTo={(seconds) => {
-                      seekBookPositionInBook(selectedBook, seconds, true);
-                      if (native) {
-                        setNativeTab("reading");
-                        setNativePlayerView("now");
-                        playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-                      }
-                    }}
-                  />
-                ) : canPreviewReadalong(selectedBook) ? (
-                  <iframe
-                    className="readalong-frame"
-                    src={selectedReadalongUrl}
-                    title={`${selectedBook.title} readalong`}
-                    sandbox=""
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="readalong-fallback">
-                    <ScrollText size={36} strokeWidth={1.4} />
-                    <p>
-                      {selectedBook.readingFile.extension.toUpperCase()} files are available to open, but this browser
-                      cannot preview them inline yet.
-                    </p>
-                  </div>
-                )}
-                {activeChapter ? (
-                  <div className="readalong-sync">
-                    <span>{activeChapter.title}</span>
-                    <span>{formatTime(displayBookPosition)}</span>
-                  </div>
-                ) : null}
+                <button type="button" className="download-btn active" onClick={() => openReadalong(selectedBook)}>
+                  {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
+                  <span>{selectedBook.readingFile ? "Open reader" : "View extras"}</span>
+                </button>
               </section>
             ) : null}
+
+            {showReaderInNowView ? null : readalongPanelElement}
 
             {isViewingPlayingBook && currentTrack ? (
               <>
@@ -7261,7 +9539,7 @@ function MainApp({
                     type="button"
                     className="preview-primary"
                     aria-label={`Play ${selectedBook.title}`}
-                    onClick={() => playSelectedBook(selectedBook)}
+                    onClick={() => void playSelectedBook(selectedBook)}
                   >
                     <span className="preview-primary-icon"><Play size={19} fill="currentColor" /></span>
                     <span>
@@ -7282,7 +9560,7 @@ function MainApp({
                       type="button"
                       className="round-button primary"
                       aria-label={`Play ${selectedBook.title}`}
-                      onClick={() => playSelectedBook(selectedBook)}
+                      onClick={() => void playSelectedBook(selectedBook)}
                     >
                       <Play size={30} fill="currentColor" />
                     </button>
@@ -7922,6 +10200,65 @@ function MainApp({
                   placeholder="1"
                 />
               </label>
+              <div className="wide metadata-tags-field">
+                <div className="metadata-tags-heading">
+                  <span>Tags</span>
+                  <button
+                    type="button"
+                    onClick={() => setMetadataForm({
+                      ...metadataForm,
+                      tags: [...metadataForm.tags, { name: "", position: "" }]
+                    })}
+                  >
+                    <Plus size={13} /> Add tag
+                  </button>
+                </div>
+                <p>Use tags for wider worlds or reading orders beyond the book’s immediate series.</p>
+                {metadataForm.tags.map((tag, index) => (
+                  <div className="metadata-tag-row" key={index}>
+                    <input
+                      type="text"
+                      value={tag.name}
+                      aria-label={`Tag ${index + 1} name`}
+                      onChange={(event) => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, name: event.currentTarget.value }
+                            : candidate
+                        )
+                      })}
+                      placeholder="Cosmere"
+                    />
+                    <input
+                      className="metadata-tag-position"
+                      type="text"
+                      value={tag.position}
+                      aria-label={`Tag ${index + 1} book number`}
+                      onChange={(event) => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, position: event.currentTarget.value }
+                            : candidate
+                        )
+                      })}
+                      placeholder="Book # (optional)"
+                    />
+                    <button
+                      type="button"
+                      className="metadata-tag-remove"
+                      aria-label={`Remove ${tag.name || `tag ${index + 1}`}`}
+                      onClick={() => setMetadataForm({
+                        ...metadataForm,
+                        tags: metadataForm.tags.filter((_, candidateIndex) => candidateIndex !== index)
+                      })}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
               <label>
                 <span>Published date</span>
                 <input
@@ -8010,6 +10347,7 @@ function MainApp({
             setUploadModalOpen(true);
           }}
           onRescan={refreshLibrary}
+          onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
@@ -8182,6 +10520,44 @@ function MainApp({
                 <span aria-hidden="true" />
               </button>
             </div>
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Ebook reader (beta)</strong>
+                <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
+              </span>
+              <button
+                type="button"
+                className="settings-switch"
+                role="switch"
+                aria-checked={readalongEnabled}
+                aria-label="Ebook reader"
+                onClick={toggleReadalongEnabled}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+            {readalongEnabled ? (
+              <div className="settings-toggle-row settings-subrow">
+                <span>
+                  <strong>Follow the narration</strong>
+                  <small>Highlights the sentence being read and turns the page with the audio.</small>
+                  <small className="settings-warning">
+                    Experimental: the highlight can drift, and turning it on may move the page to match
+                    the audio while you read.
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  className="settings-switch"
+                  role="switch"
+                  aria-checked={followSyncEnabled}
+                  aria-label="Follow the narration"
+                  onClick={toggleFollowSyncEnabled}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
           </section>
 
           {sharedProgressAvailable ? (
@@ -8391,6 +10767,7 @@ function MainApp({
           books={administrableBooks}
           onUpload={() => setUploadModalOpen(true)}
           onRescan={refreshLibrary}
+          onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);

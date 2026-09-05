@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   NativeAudioStateSynchronizer,
-  reflectNativeAudioState
+  reflectNativeAudioState,
+  refreshDeclinedTrackChange
 } from "../src/nativeAudioState.ts";
 
 test("foreground pause persists the newer native clock", () => {
@@ -103,4 +104,29 @@ test("harmless sub-second drift does not seek the control element", () => {
 
   assert.equal(audio.currentTime, 480);
   assert.deepEqual(events, ["timeupdate"]);
+});
+
+test("a declined track change is re-offered with the tick's live clock", () => {
+  const declined = {
+    trackId: "track-2",
+    positionSeconds: 4,
+    bookPositionSeconds: 3604,
+    isPlaying: false
+  };
+
+  const refreshed = refreshDeclinedTrackChange(declined, { positionSeconds: 94, isPlaying: true });
+
+  assert.deepEqual(refreshed, {
+    trackId: "track-2",
+    positionSeconds: 94,
+    bookPositionSeconds: 3694,
+    isPlaying: true
+  });
+  // The stored offer is not mutated; it stays available for the next tick.
+  assert.equal(declined.positionSeconds, 4);
+  // A tick without a usable clock only refreshes the transport state.
+  assert.deepEqual(
+    refreshDeclinedTrackChange(declined, { positionSeconds: Number.NaN, isPlaying: true }),
+    { ...declined, isPlaying: true }
+  );
 });

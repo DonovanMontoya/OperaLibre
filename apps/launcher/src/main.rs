@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -21,12 +21,37 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
+/// How long the launcher waits for a freshly started server to answer on its
+/// port. The server can scan a large library before it is ready, so the
+/// ceiling is generous; an exited process is reported immediately instead.
+const STARTUP_CEILING: Duration = Duration::from_secs(10 * 60);
+/// How long a stopped server may take to shut down before it is killed.
+const SHUTDOWN_CEILING: Duration = Duration::from_secs(30);
+
+/// What happened after the launcher asked the server to start.
+#[derive(Debug, PartialEq, Eq)]
+enum StartOutcome {
+    /// The server answered on its port.
+    Ready,
+    /// The server process is still running but had not answered within the
+    /// startup ceiling — usually a long first scan. Not an error.
+    StillStarting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerReadiness {
+    Absent,
+    Starting,
+    Ready,
+    Unavailable,
+}
+
 fn main() {
     if let Err(error) = run() {
         let root = installation_root().unwrap_or_else(|_| PathBuf::from("."));
         let message = format!("OperaLibre could not complete the requested action:\n\n{error}");
         let _ = fs::write(root.join("LAUNCH-ERROR.txt"), format!("{message}\n"));
-        show_error(&message);
+        show_message(&message);
     }
 }
 
@@ -44,9 +69,54 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("Could not open {}: {error}", root.display()))?;
 
     if is_stop_launcher() {
-        stop_server(&root)
-    } else {
-        start_server(&root, true)
+        return stop_server(&root);
+    }
+
+    if start_server(&root, true)? == StartOutcome::StillStarting {
+        let port = configured_port(&root.join("server.config")).unwrap_or(4000);
+        show_message(&format!(
+            "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
+            server_log_path(&root).display()
+        ));
+    }
+    Ok(())
+}
+
+/// The data folder the server will use: `data_dir` from `server.config`
+/// (relative paths resolve against the config file's folder, as the server
+/// does), then `OPERALIBRE_DATA_DIR`, then `data` beside the server.
+fn data_dir(root: &Path) -> PathBuf {
+    configured_value(&root.join("server.config"), "data_dir")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("OPERALIBRE_DATA_DIR").map(PathBuf::from))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or_else(|| root.join("data"))
+}
+
+fn server_log_path(root: &Path) -> PathBuf {
+    data_dir(root).join("server.log")
+}
+
+fn pid_path(root: &Path) -> PathBuf {
+    data_dir(root).join("operalibre-server.pid")
+}
+
+/// Best-effort note in the server log, which is the file users are told to
+/// check; the launchers themselves have no console.
+fn append_log(root: &Path, message: &str) {
+    if let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(server_log_path(root))
+    {
+        let _ = writeln!(log, "[launcher] {message}");
     }
 }
 
@@ -77,20 +147,24 @@ fn is_stop_launcher() -> bool {
         || env::args().any(|argument| argument == "--stop")
 }
 
-fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
+fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, String> {
     fs::create_dir_all(root.join("audiobooks"))
         .map_err(|error| format!("Could not create the audiobooks folder: {error}"))?;
-    let data_dir = root.join("data");
+    let data_dir = data_dir(root);
     fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
     secure_directory(&data_dir)?;
 
     let port = configured_port(&root.join("server.config")).unwrap_or(4000);
-    if server_is_ready(port) {
-        if open_when_ready {
-            open_browser(port)?;
-        }
-        return Ok(());
+    let log_path = data_dir.join("server.log");
+
+    // A server already up, or still coming up from an earlier start, is
+    // waited on rather than started twice. One that goes away meanwhile
+    // (`None`) gets a fresh start below.
+    if !matches!(server_readiness(port), ServerReadiness::Absent)
+        && let Some(outcome) = wait_for_readiness(port, open_when_ready, &log_path, None)?
+    {
+        return Ok(outcome);
     }
 
     let server_name = if cfg!(target_os = "windows") {
@@ -105,7 +179,6 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
         ));
     }
 
-    let log_path = root.join("data").join("server.log");
     let mut log_options = OpenOptions::new();
     log_options.create(true).append(true);
     #[cfg(unix)]
@@ -129,7 +202,7 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
 
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not launch {}: {error}", server_path.display()))?;
     let pid_path = data_dir.join("operalibre-server.pid");
@@ -137,21 +210,66 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<(), String> {
         .map_err(|error| format!("Could not save the server process ID: {error}"))?;
     secure_file(&pid_path)?;
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if server_is_ready(port) {
-            if open_when_ready {
-                open_browser(port)?;
+    let outcome = wait_for_readiness(port, open_when_ready, &log_path, Some(&mut child))?
+        .expect("a started server is polled until it settles, never given up on");
+    if outcome == StartOutcome::StillStarting {
+        append_log(
+            root,
+            "the server is still starting after the launcher's wait; leaving it running",
+        );
+    }
+    Ok(outcome)
+}
+
+/// Polls the server until it is ready, has failed, or the startup ceiling
+/// passes: the listener comes up before a large first scan has published its
+/// catalogue, so a `Starting` answer is waited on. `child` is the process
+/// this launcher started, if any; its exit is reported as soon as it
+/// happens. Without one, a server that stops answering yields `None` so the
+/// caller can start its own.
+fn wait_for_readiness(
+    port: u16,
+    open_when_ready: bool,
+    log_path: &Path,
+    mut child: Option<&mut Child>,
+) -> Result<Option<StartOutcome>, String> {
+    let deadline = Instant::now() + STARTUP_CEILING;
+    loop {
+        match server_readiness(port) {
+            ServerReadiness::Ready => {
+                if open_when_ready {
+                    open_browser(port)?;
+                }
+                return Ok(Some(StartOutcome::Ready));
             }
-            return Ok(());
+            ServerReadiness::Unavailable => {
+                return Err(format!(
+                    "The server is running, but its library could not be loaded. Open {} for details.",
+                    log_path.display()
+                ));
+            }
+            ServerReadiness::Absent if child.is_none() => return Ok(None),
+            ServerReadiness::Absent | ServerReadiness::Starting => {}
+        }
+        if let Some(child) = &mut child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "The server exited during startup ({status}). Open {} for details.",
+                        log_path.display()
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(format!("Could not check on the server process: {error}"));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(Some(StartOutcome::StillStarting));
         }
         thread::sleep(Duration::from_millis(300));
     }
-
-    Err(format!(
-        "The server did not become ready. Open {} for details.",
-        log_path.display()
-    ))
 }
 
 #[cfg(unix)]
@@ -208,7 +326,7 @@ fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     validate_update_paths(&package_root, &install_root)?;
     wait_for_server_exit(server_pid, port)?;
 
-    let backup_root = install_root.join("data").join("update-backups").join(
+    let backup_root = data_dir(&install_root).join("update-backups").join(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| format!("Could not create an update timestamp: {error}"))?
@@ -239,7 +357,9 @@ fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
         refresh_launchers(&package_root, &install_root)?;
         move_required(&package_root.join("VERSION.txt"), &install_version)?;
         set_executable(&install_server)?;
-        start_server(&install_root, false)
+        // An update is successful only after its first catalogue is published;
+        // a failed or indefinitely withheld scan must restore the old build.
+        require_ready_start(start_server(&install_root, false)?)
     })();
 
     if let Err(update_error) = install_result {
@@ -297,7 +417,7 @@ fn validate_update_paths(package_root: &Path, install_root: &Path) -> Result<(),
     {
         return Err("The staged update package is incomplete.".to_string());
     }
-    if !install_root.join("data").is_dir() || !install_root.join("server.config").is_file() {
+    if !data_dir(install_root).is_dir() || !install_root.join("server.config").is_file() {
         return Err("The target is not a managed OperaLibre installation.".to_string());
     }
     Ok(())
@@ -306,7 +426,7 @@ fn validate_update_paths(package_root: &Path, install_root: &Path) -> Result<(),
 fn wait_for_server_exit(server_pid: u32, port: u16) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
-        if !process_is_running(server_pid) && !server_is_ready(port) {
+        if !process_is_running(server_pid) && server_readiness(port) == ServerReadiness::Absent {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
@@ -316,12 +436,35 @@ fn wait_for_server_exit(server_pid: u32, port: u16) -> Result<(), String> {
     ))
 }
 
-#[cfg(unix)]
+/// Whether `pid` is alive. A zombie — a child of this launcher that has
+/// exited but not been reaped — counts as gone, otherwise waiting for a
+/// server this process started could never finish.
+#[cfg(target_os = "linux")]
 fn process_is_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .is_ok_and(|status| status.success())
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // The state letter follows the parenthesised command name, which may
+    // itself contain spaces and parentheses.
+    let state = stat
+        .rsplit_once(')')
+        .map(|(_, rest)| rest.trim_start())
+        .and_then(|rest| rest.chars().next());
+    !matches!(state, None | Some('Z') | Some('X'))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_is_running(pid: u32) -> bool {
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            let state = String::from_utf8_lossy(&output.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        })
 }
 
 #[cfg(windows)]
@@ -431,7 +574,16 @@ fn rollback_update(
         &install_root.join("VERSION.txt"),
     )?;
     set_executable(&install_root.join(server_name))?;
-    start_server(install_root, false)
+    require_ready_start(start_server(install_root, false)?)
+}
+
+fn require_ready_start(outcome: StartOutcome) -> Result<(), String> {
+    match outcome {
+        StartOutcome::Ready => Ok(()),
+        StartOutcome::StillStarting => Err(
+            "The server did not finish loading its library before the startup timeout.".to_string(),
+        ),
+    }
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), String> {
@@ -503,7 +655,7 @@ fn set_executable(_path: &Path) -> Result<(), String> {
 }
 
 fn stop_server(root: &Path) -> Result<(), String> {
-    let pid_path = root.join("data").join("operalibre-server.pid");
+    let pid_path = pid_path(root);
     let pid = match fs::read_to_string(&pid_path) {
         Ok(pid) => pid.trim().to_string(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -524,62 +676,176 @@ fn stop_server(root: &Path) -> Result<(), String> {
         ));
     }
 
-    #[cfg(windows)]
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid, "/T", "/F"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
+    if let Err(error) = signal_server(pid_number, false)
+        && process_is_running(pid_number)
+    {
+        return Err(format!("Could not stop server process {pid}: {error}"));
+    }
 
-    #[cfg(unix)]
-    let status = Command::new("kill").arg(&pid).status();
-
-    match status {
-        Ok(status) if status.success() || !process_is_running(pid_number) => {
-            let _ = fs::remove_file(pid_path);
-            Ok(())
+    // The stop must not return while the server is still shutting down: the
+    // installer replaces the files under it as soon as this launcher exits.
+    if !wait_for_process_exit(pid_number, SHUTDOWN_CEILING) {
+        append_log(
+            root,
+            &format!(
+                "server process {pid} did not stop within {} seconds; killing it",
+                SHUTDOWN_CEILING.as_secs()
+            ),
+        );
+        let _ = signal_server(pid_number, true);
+        if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
+            return Err(format!(
+                "Could not stop server process {pid}; it is still running after being killed."
+            ));
         }
-        Ok(status) => Err(format!(
-            "Could not stop server process {pid}; the stop command exited with {status}."
-        )),
-        Err(error) => Err(format!("Could not stop server process {pid}: {error}")),
+    }
+
+    let _ = fs::remove_file(pid_path);
+    Ok(())
+}
+
+fn wait_for_process_exit(pid: u32, ceiling: Duration) -> bool {
+    let deadline = Instant::now() + ceiling;
+    loop {
+        if !process_is_running(pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Asks the server to stop, or kills it when `force` is set.
+///
+/// The server is spawned in its own process group so that helpers it runs
+/// (ffmpeg, echogarden, Libation) stop with it; the group is signalled first
+/// and the single process only if that fails.
+#[cfg(unix)]
+fn signal_server(pid: u32, force: bool) -> Result<(), String> {
+    let signal = if force { "-KILL" } else { "-TERM" };
+    let group = Command::new("kill")
+        .args([signal, "--", &format!("-{pid}")])
+        .stderr(Stdio::null())
+        .status();
+    if group.is_ok_and(|status| status.success()) {
+        return Ok(());
+    }
+    match Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("the stop command exited with {status}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn signal_server(pid: u32, _force: bool) -> Result<(), String> {
+    // taskkill /F /T ends the whole process tree; there is no gentler
+    // signal for a console-less process on Windows.
+    match Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("the stop command exited with {status}")),
+        Err(error) => Err(error.to_string()),
     }
 }
 
 fn configured_port(config_path: &Path) -> Option<u16> {
+    configured_value(config_path, "port")?.parse().ok()
+}
+
+/// The value of `key` in a `server.config` file. Keys match the server's
+/// rules: case-insensitive, with `-` and `_` interchangeable. Surrounding
+/// quotes are stripped from the value.
+fn configured_value(config_path: &Path, key: &str) -> Option<String> {
     let contents = fs::read_to_string(config_path).ok()?;
+    configured_value_in(&contents, key)
+}
+
+fn configured_value_in(contents: &str, key: &str) -> Option<String> {
+    let wanted = key.to_ascii_lowercase().replace('-', "_");
     contents.lines().find_map(|raw_line| {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
-        let (key, value) = line.split_once('=')?;
-        (key.trim().eq_ignore_ascii_case("port"))
-            .then(|| {
-                value
-                    .trim()
-                    .trim_matches(|character| character == '"' || character == '\'')
-                    .parse()
-                    .ok()
-            })
-            .flatten()
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted).then(|| {
+            value
+                .trim()
+                .trim_matches(|character| character == '"' || character == '\'')
+                .to_string()
+        })
     })
 }
 
-fn server_is_ready(port: u16) -> bool {
+fn server_readiness(port: u16) -> ServerReadiness {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
-        return false;
+        return ServerReadiness::Absent;
     };
     let request = b"GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     if stream.write_all(request).is_err() {
-        return false;
+        return ServerReadiness::Starting;
     }
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let mut response = [0_u8; 64];
-    stream
-        .read(&mut response)
-        .ok()
-        .is_some_and(|count| String::from_utf8_lossy(&response[..count]).contains("200 OK"))
+    let mut response = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => {
+                response.extend_from_slice(&chunk[..count]);
+                if response.len() >= 16 * 1024 {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                break;
+            }
+            Err(_) => return ServerReadiness::Starting,
+        }
+    }
+    parse_health_response(&response)
+}
+
+fn parse_health_response(response: &[u8]) -> ServerReadiness {
+    let response = String::from_utf8_lossy(response);
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return ServerReadiness::Starting;
+    };
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "))
+    {
+        return ServerReadiness::Starting;
+    }
+    let compact_body: String = body
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    if compact_body.contains("\"catalogueError\":true") {
+        ServerReadiness::Unavailable
+    } else if compact_body.contains("\"ready\":true") || !compact_body.contains("\"ready\":") {
+        // Servers from before catalogue readiness was exposed are already
+        // fully started by the time their health route answers.
+        ServerReadiness::Ready
+    } else {
+        ServerReadiness::Starting
+    }
 }
 
 fn open_browser(port: u16) -> Result<(), String> {
@@ -606,7 +872,7 @@ fn open_browser(port: u16) -> Result<(), String> {
         .map_err(|error| format!("OperaLibre started, but the browser could not open: {error}"))
 }
 
-fn show_error(message: &str) {
+fn show_message(message: &str) {
     #[cfg(target_os = "windows")]
     {
         let escaped = message.replace('\'', "''");
@@ -645,8 +911,46 @@ fn show_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{named_update_argument, optional_named_update_argument, process_command_matches};
-    use std::{ffi::OsString, path::Path};
+    use super::{
+        ServerReadiness, configured_value_in, data_dir, named_update_argument,
+        optional_named_update_argument, parse_health_response, process_command_matches,
+    };
+    use std::{env, ffi::OsString, fs, path::Path};
+
+    #[test]
+    fn config_values_match_the_servers_key_rules() {
+        let contents = "# comment\nPort = \"4123\"\nData-Dir = 'state'\nlibrary_root = books\n";
+        assert_eq!(
+            configured_value_in(contents, "port").as_deref(),
+            Some("4123")
+        );
+        assert_eq!(
+            configured_value_in(contents, "data_dir").as_deref(),
+            Some("state")
+        );
+        assert_eq!(configured_value_in(contents, "web_dist_dir"), None);
+    }
+
+    #[test]
+    fn data_dir_follows_server_config() {
+        let root = env::temp_dir().join(format!("operalibre-launcher-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join("server.config");
+
+        assert_eq!(data_dir(&root), root.join("data"));
+
+        fs::write(&config, "port = 4000\ndata_dir = state/live\n").unwrap();
+        assert_eq!(data_dir(&root), root.join("state/live"));
+
+        let absolute = root.join("elsewhere");
+        fs::write(&config, format!("data_dir = {}\n", absolute.display())).unwrap();
+        assert_eq!(data_dir(&root), absolute);
+
+        fs::write(&config, "data_dir =\n").unwrap();
+        assert_eq!(data_dir(&root), root.join("data"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn missing_layout_argument_is_optional() {
@@ -692,5 +996,35 @@ mod tests {
             "/usr/bin/python server.py",
             expected
         ));
+    }
+
+    #[test]
+    fn health_response_requires_a_published_catalogue() {
+        assert_eq!(
+            parse_health_response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 62\r\n\r\n{\"ok\":true,\"scanning\":true,\"ready\":false,\"catalogueError\":false}"
+            ),
+            ServerReadiness::Starting
+        );
+        assert_eq!(
+            parse_health_response(
+                b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"scanning\":false,\"ready\":false,\"catalogueError\":true}"
+            ),
+            ServerReadiness::Unavailable
+        );
+        assert_eq!(
+            parse_health_response(
+                b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"scanning\":false,\"ready\":true,\"catalogueError\":false}"
+            ),
+            ServerReadiness::Ready
+        );
+    }
+
+    #[test]
+    fn health_response_remains_compatible_with_older_servers() {
+        assert_eq!(
+            parse_health_response(b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"scanning\":false}"),
+            ServerReadiness::Ready
+        );
     }
 }

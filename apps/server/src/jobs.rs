@@ -65,6 +65,10 @@ pub(crate) async fn get_job(
     Ok(Json(summary))
 }
 
+/// A job that starts running at once, with no deduplication. Production
+/// paths all queue and deduplicate now; the faststart tests still create
+/// jobs directly.
+#[cfg(test)]
 pub(crate) async fn create_job(state: &AppState, kind: &str) -> String {
     create_job_with_state(state, kind, None, "running", false)
         .await
@@ -135,10 +139,26 @@ pub(crate) fn active_job_id(jobs: &HashMap<String, JobStatus>, kind: &str) -> Op
         .map(|job| job.id.clone())
 }
 
+/// How long a waiter follows a job before giving it up as failed. Generous,
+/// because a Libation download of a whole library can run for hours; finite,
+/// because a job the table has lost track of would otherwise be waited on
+/// for the life of the process.
+pub(crate) const JOB_OUTCOME_WAIT_CEILING: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// Waits for a job to leave the queue: `true` once it completed, `false` once
 /// it failed. A job missing from the table counts as failed — it can only
-/// disappear by being pruned, and active jobs are never pruned.
+/// disappear by being pruned, and active jobs are never pruned. So does one
+/// still active at [`JOB_OUTCOME_WAIT_CEILING`].
 pub(crate) async fn await_job_outcome(state: &AppState, job_id: &str) -> bool {
+    await_job_outcome_within(state, job_id, JOB_OUTCOME_WAIT_CEILING).await
+}
+
+pub(crate) async fn await_job_outcome_within(
+    state: &AppState,
+    job_id: &str,
+    ceiling: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + ceiling;
     loop {
         let status = state
             .jobs
@@ -149,9 +169,100 @@ pub(crate) async fn await_job_outcome(state: &AppState, job_id: &str) -> bool {
         match status.as_deref() {
             Some("completed") => return true,
             Some("failed") | None => return false,
-            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            _ if tokio::time::Instant::now() >= deadline => {
+                tracing::warn!("gave up waiting for job {job_id} after {ceiling:?}");
+                return false;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
+}
+
+/// Marks a job failed if the task running it goes away without reporting.
+///
+/// A job's future can panic, or be dropped when the runtime shuts down, and
+/// the table then showed it running for ever: deduplication pinned every
+/// later request of the same kind to it, and waiters polled it until their
+/// ceiling. Hold one of these for the life of the task and call
+/// [`JobGuard::finish`] on the way out; dropping it any other way marks the
+/// job failed. [`run_job`] does both around a future.
+///
+/// Adopted at the spawn sites one by one: wrap the spawned future in
+/// `run_job(state.clone(), job_id.clone(), async move { ... })`.
+pub(crate) struct JobGuard {
+    state: AppState,
+    job_id: String,
+    armed: bool,
+}
+
+impl JobGuard {
+    pub(crate) fn new(state: &AppState, job_id: &str) -> Self {
+        Self {
+            state: state.clone(),
+            job_id: job_id.to_string(),
+            armed: true,
+        }
+    }
+
+    /// The task ran to its end. A job it left active is still marked failed:
+    /// it can only be active because nothing recorded a result for it.
+    pub(crate) async fn finish(mut self) {
+        self.armed = false;
+        fail_if_still_active(
+            &self.state,
+            &self.job_id,
+            "The background job ended without reporting a result.",
+        )
+        .await;
+    }
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Drop cannot wait on the table's lock. Hand the update to the
+        // runtime when there is one; during runtime shutdown there is no
+        // table left to keep accurate.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let state = self.state.clone();
+        let job_id = std::mem::take(&mut self.job_id);
+        handle.spawn(async move {
+            fail_if_still_active(
+                &state,
+                &job_id,
+                "The background job stopped before it could report a result.",
+            )
+            .await;
+        });
+    }
+}
+
+async fn fail_if_still_active(state: &AppState, job_id: &str, error: &str) {
+    let mut jobs = state.jobs.write().await;
+    if let Some(job) = jobs.get_mut(job_id)
+        && is_active_job(job)
+    {
+        job.status = "failed".to_string();
+        job.finished_at = Some(unix_now_millis().to_string());
+        job.error = Some(error.to_string());
+    }
+    prune_finished_jobs(&mut jobs);
+}
+
+/// Runs a job's future under a [`JobGuard`], so the table can never show the
+/// job running once the task is gone. `work` is expected to record its own
+/// completion or failure; a job it leaves active is marked failed.
+pub(crate) async fn run_job<F>(state: AppState, job_id: String, work: F)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let guard = JobGuard::new(&state, &job_id);
+    work.await;
+    guard.finish().await;
 }
 
 pub(crate) fn next_job_timestamp(jobs: &HashMap<String, JobStatus>) -> u64 {

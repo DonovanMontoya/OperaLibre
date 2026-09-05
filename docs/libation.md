@@ -20,11 +20,11 @@ This integration is entirely optional. If you don't configure it, the relevant U
 The [one-line installer](installing-a-release.md#one-line-install-on-macos-and-linux) can do steps 1 and 2 of the prerequisites for you: it finds an existing Libation or downloads the official release into a `libation` folder inside your OperaLibre installation, then fills in `libation_cli_path`. Continue from step 2 below afterwards.
 
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
-2. Sign in to OperaLibre as an administrator, open **Audible**, and choose **Add account**.
-3. Enter a friendly label, Audible email, and marketplace. Use a short recognizable label such as **Dad** or **UK**; OperaLibre uses it on the account's book badges instead of exposing the full email address. Complete Amazon's sign-in in the external browser, then paste the final browser URL back into OperaLibre. The installed iOS and Android apps use the device's secure browser view; the Audible password is entered only on Amazon's page.
-4. Repeat for every Audible account the server should browse. OperaLibre creates an isolated Libation profile for each account under `data_dir/libation-accounts`, preserving duplicate ownership across accounts.
+2. Add every Audible account the server should browse in Libation itself, using Libation's own account settings. Accounts are not added from inside OperaLibre.
+3. Point OperaLibre at that Libation installation with `libation_files_dir`, the directory holding `AccountsSettings.json` and `Settings.json`.
+4. Sign in to OperaLibre as an administrator and open **Audible**. The accounts Libation knows about appear in the account list with their connection status, and the **Browsing** filter narrows the catalog to one of them.
 
-An existing desktop-managed Libation profile can still be connected with `libation_files_dir`. It is treated as a legacy shared profile; because Libation's shared database stores only one ownership row per book, duplicate ownership is guaranteed only for accounts added as isolated OperaLibre-managed profiles.
+Because Libation's shared database stores only one ownership row per book, a title owned by more than one account in the same Libation installation is recorded once. Accounts created as isolated OperaLibre-managed profiles under `data_dir/libation-accounts` preserve duplicate ownership, but those are no longer created from the OperaLibre interface.
 
 ## Configuration
 
@@ -36,7 +36,7 @@ libation_files_dir = /path/to/LibationFiles
 ```
 
 - `libation_cli_path` — absolute path to the Libation CLI executable. If left blank, the server searches `PATH` for `libationcli`, `LibationCli`, or `libationcli.exe`.
-- `libation_files_dir` — optional legacy Libation files directory containing `AccountsSettings.json` and `Settings.json`. Accounts added in OperaLibre use isolated directories under `data_dir/libation-accounts` instead.
+- `libation_files_dir` — the Libation files directory containing `AccountsSettings.json` and `Settings.json`, where the accounts you add in Libation live. Accounts created by older OperaLibre builds keep using their isolated directories under `data_dir/libation-accounts`.
 
 If both are blank, the integration stays disabled.
 
@@ -74,8 +74,8 @@ Under the hood these map to API endpoints:
 ## Troubleshooting
 
 - **"Libation not configured"** — `libation_cli_path` is blank and no Libation CLI is on `PATH`. Set the path explicitly.
-- **Account shows as not authenticated** — administrators can choose **Sign in** or **Reconnect** beside the account. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
-- **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once, then choose **Reconnect**. The server repairs the managed account profile before starting Libation.
+- **Account shows as not authenticated** — sign the account in again in Libation. OperaLibre reports the status but no longer signs accounts in itself. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
+- **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once. The server repairs the managed account profile before starting Libation.
 - **Downloads land somewhere the server can't see** — point Libation's output directory at `library_root` (or a subdirectory of it), or move the files there after the download. The server only knows about files inside `library_root`.
 
 ## Rich local metadata

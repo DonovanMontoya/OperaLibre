@@ -9,7 +9,8 @@ import {
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
 import { fileExtension, storedMediaExtension } from "./mediaFiles";
-import type { AuthUser, Book, Progress, Track } from "./types";
+import { optionalCompanionDownload, revalidatedCompanion } from "./companionCache";
+import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
 const DB_VERSION = 1;
@@ -22,8 +23,6 @@ const MEDIA_ROOT = "offline-media";
 const MEDIA_DIRECTORY = Directory.Data;
 
 type StoredMedia = { key: string; blob: Blob };
-
-const isNative = () => Capacitor.isNativePlatform();
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -82,6 +81,23 @@ async function removeRecord(storeName: string, key: string): Promise<void> {
   });
 }
 
+/** Deletes every record whose string key starts with `prefix`, in one transaction. */
+async function removeRecordsWithPrefix(storeName: string, prefix: string): Promise<void> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+    // Keys are strings, so every key with this prefix sorts between the
+    // prefix itself and the prefix followed by the highest code unit.
+    const request = store.getAllKeys(IDBKeyRange.bound(prefix, prefix + String.fromCharCode(0xffff)));
+    request.onsuccess = () => {
+      for (const key of request.result) store.delete(key);
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 async function readMedia(bookId: string, kind: string) {
   const scoped = await read<StoredMedia>("media", mediaKey(bookId, kind));
   if (scoped) return scoped;
@@ -126,6 +142,24 @@ function coverExtension(book: Book) {
 
 const coverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
 
+// The ebook, its picture supplements, and any loose images, kept beside the
+// audio so a downloaded book can be read as well as heard.
+const companionFilePath = (book: Book, companion: CompanionFile) =>
+  `${bookDirectory(book.id)}/companion-${sanitizeSegment(companion.id)}.${sanitizeSegment(companion.extension || "bin")}`;
+const syncMapFilePath = (book: Book) => `${bookDirectory(book.id)}/sync.json`;
+const companionMediaKind = (companion: CompanionFile) => `companion:${companion.id}`;
+const SYNC_MAP_KIND = "sync";
+
+/** Base64 in chunks: one apply() over a whole ebook overruns the call stack. */
+function toBase64(data: ArrayBuffer) {
+  const bytes = new Uint8Array(data);
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return btoa(binary);
+}
+
 export const backgroundDownloadJobId = (book: Pick<Book, "id">) =>
   `${sanitizeSegment(getServerStorageKey())}-${sanitizeSegment(book.id)}`;
 
@@ -134,16 +168,29 @@ export function getBookBackgroundDownloadStatus(book: Pick<Book, "id">) {
 }
 
 export async function cancelBookOfflineDownload(book: Pick<Book, "id">) {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     await cancelBackgroundBookDownload(backgroundDownloadJobId(book));
   }
 }
 
-const migratedLegacyBooks = new Set<string>();
-async function migrateLegacyBookDirectory(book: Book) {
+// One in-flight move per book, shared by concurrent callers. A failed move is
+// forgotten so the next caller tries again instead of treating the book as
+// already migrated and then finding no files at the new path.
+const legacyBookMigrations = new Map<string, Promise<void>>();
+function migrateLegacyBookDirectory(book: Book) {
   const migrationKey = `${getServerStorageKey()}:${book.id}`;
-  if (migratedLegacyBooks.has(migrationKey)) return;
-  migratedLegacyBooks.add(migrationKey);
+  let migration = legacyBookMigrations.get(migrationKey);
+  if (!migration) {
+    migration = moveLegacyBookDirectory(book).catch((error) => {
+      legacyBookMigrations.delete(migrationKey);
+      throw error;
+    });
+    legacyBookMigrations.set(migrationKey, migration);
+  }
+  return migration;
+}
+
+async function moveLegacyBookDirectory(book: Book) {
   const destination = bookDirectory(book.id);
   if (await fileExists(destination)) return;
   const legacy = legacyBookDirectory(book.id);
@@ -214,7 +261,7 @@ async function nativeFileUrl(path: string) {
 // IndexedDB; clear them once so they stop wasting WebView storage.
 let legacyMediaCleared = false;
 async function clearLegacyMediaBlobs() {
-  if (!isNative() || legacyMediaCleared) return;
+  if (!Capacitor.isNativePlatform() || legacyMediaCleared) return;
   legacyMediaCleared = true;
   try {
     const db = await openDatabase();
@@ -281,7 +328,7 @@ export function getCachedProgress(userId: string, bookId: string) {
 
 export async function isBookDownloaded(book: Book) {
   if (!book.tracks.length) return false;
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     if (book.tracks.every((track) => track.localFilePath)) {
       return (await Promise.all(book.tracks.map((track) => fileExists(track.localFilePath!)))).every(Boolean);
     }
@@ -309,7 +356,7 @@ export async function downloadBookForOffline(
   signal?: AbortSignal
 ) {
   const total = book.tracks.length;
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     void clearLegacyMediaBlobs();
     await migrateLegacyBookDirectory(book);
     const files: BackgroundDownloadFile[] = await Promise.all(book.tracks.map(async (track) => ({
@@ -326,6 +373,25 @@ export async function downloadBookForOffline(
         required: false
       });
     }
+    // The ebook and pictures belong to the book, so they come down with it:
+    // a book taken on a flight can be read as well as heard. They are not
+    // required, so a missing companion cannot fail the audio download.
+    for (const companion of book.companions ?? []) {
+      files.push({
+        url: resolveUrl(companion.url),
+        path: (await Filesystem.getUri({ path: companionFilePath(book, companion), directory: MEDIA_DIRECTORY })).uri,
+        label: companion.fileName,
+        required: false
+      });
+    }
+    if (book.syncFile) {
+      files.push({
+        url: resolveUrl(book.syncFile.url),
+        path: (await Filesystem.getUri({ path: syncMapFilePath(book), directory: MEDIA_DIRECTORY })).uri,
+        label: "read-along sync",
+        required: false
+      });
+    }
     // Stable IDs let a relaunched app reattach to work the OS is already
     // running instead of scheduling a duplicate copy of the same book.
     const jobId = backgroundDownloadJobId(book);
@@ -337,33 +403,71 @@ export async function downloadBookForOffline(
     return;
   }
 
-  let completed = 0;
-  for (const track of book.tracks) {
-    const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
-    if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
-    await write("media", { key: mediaKey(book.id, `track:${track.id}`), blob: await response.blob() });
-    completed += 1;
-    onProgress(completed, total);
-  }
-  if (book.coverArtUrl) {
-    const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
-    if (response.ok) await write("media", { key: mediaKey(book.id, "cover"), blob: await response.blob() });
+  // Records written by this attempt, so an abort or failure part-way leaves
+  // no half-downloaded book behind that `isBookDownloaded` would then have to
+  // explain.
+  const written: string[] = [];
+  try {
+    let completed = 0;
+    for (const track of book.tracks) {
+      const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
+      if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
+      const key = mediaKey(book.id, `track:${track.id}`);
+      await write("media", { key, blob: await response.blob() });
+      written.push(key);
+      completed += 1;
+      onProgress(completed, total);
+    }
+    if (book.coverArtUrl) {
+      const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
+      if (response.ok) {
+        const key = mediaKey(book.id, "cover");
+        await write("media", { key, blob: await response.blob() });
+        written.push(key);
+      }
+    }
+    // The ebook and pictures, so a downloaded book can be read offline too.
+    // A companion that will not come down is not worth failing the book for.
+    for (const companion of book.companions ?? []) {
+      await optionalCompanionDownload(async () => {
+        const response = await fetch(resolveUrl(companion.url), { signal });
+        if (response.ok) {
+          const key = mediaKey(book.id, companionMediaKind(companion));
+          await write("media", { key, blob: await response.blob() });
+          written.push(key);
+        }
+      }, signal);
+    }
+    if (book.syncFile) {
+      await optionalCompanionDownload(async () => {
+        const response = await fetch(resolveUrl(book.syncFile!.url), { signal });
+        if (response.ok) {
+          const key = mediaKey(book.id, SYNC_MAP_KIND);
+          await write("media", { key, blob: await response.blob() });
+          written.push(key);
+        }
+      }, signal);
+    }
+  } catch (error) {
+    await Promise.all(written.map((key) => removeRecord("media", key).catch(() => undefined)));
+    throw error;
   }
 }
 
 export async function removeBookDownload(book: Book) {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     await migrateLegacyBookDirectory(book);
     await Filesystem.rmdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(
       () => undefined
     );
     return;
   }
+  // Delete by key prefix rather than from the current track list: a track
+  // the server has since renamed or dropped would otherwise leave its blob
+  // behind forever.
   await Promise.all([
-    ...book.tracks.map((track) => removeRecord("media", mediaKey(book.id, `track:${track.id}`))),
-    ...book.tracks.map((track) => removeRecord("media", `${book.id}:track:${track.id}`)),
-    removeRecord("media", mediaKey(book.id, "cover")),
-    removeRecord("media", `${book.id}:cover`)
+    removeRecordsWithPrefix("media", mediaKey(book.id, "")),
+    removeRecordsWithPrefix("media", `${book.id}:`)
   ]);
 }
 
@@ -373,7 +477,7 @@ export async function removeBookDownload(book: Book) {
  * revoke. `releaseOfflineMediaUrl` handles both.
  */
 export async function getOfflineTrackUrl(book: Book, track: Track): Promise<string | null> {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     if (track.localFilePath) return nativeFileUrl(track.localFilePath);
     await migrateLegacyBookDirectory(book);
     return nativeFileUrl(await resolveTrackFilePath(book, track));
@@ -383,7 +487,7 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
 }
 
 export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
-  if (isNative()) {
+  if (Capacitor.isNativePlatform()) {
     // A book imported from the device picker keeps the cover its own tags
     // carried; there is no server copy to fall back to.
     if (book.localCoverPath) return nativeFileUrl(book.localCoverPath);
@@ -394,6 +498,70 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
+/**
+ * The bytes of a companion document, from the device when they are there.
+ *
+ * Online opens revalidate through the HTTP cache, so replacing an EPUB at
+ * the same library path also replaces the device's copy. Downloads and reader
+ * opens share the durable copy used when the server cannot be reached.
+ */
+export async function loadCompanionBytes(
+  book: Book,
+  companion: CompanionFile,
+  url: string,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  if (Capacitor.isNativePlatform()) {
+    await migrateLegacyBookDirectory(book);
+    const path = companionFilePath(book, companion);
+    return revalidatedCompanion(url, async () => {
+      const cached = await nativeFileUrl(path);
+      if (!cached) return null;
+      const response = await fetch(cached, { signal });
+      return response.ok ? response.arrayBuffer() : null;
+    }, async (data) => {
+      await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(() => undefined);
+      await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
+    }, signal);
+  }
+  return revalidatedCompanion(url, async () => {
+    const record = await readMedia(book.id, companionMediaKind(companion));
+    return record ? record.blob.arrayBuffer() : null;
+  }, (data) => write("media", {
+    key: mediaKey(book.id, companionMediaKind(companion)),
+    blob: new Blob([data], { type: companion.contentType })
+  }), signal);
+}
+
+/** The sync map stored with a downloaded book, for reading with no server. */
+export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      await migrateLegacyBookDirectory(book);
+      const url = await nativeFileUrl(syncMapFilePath(book));
+      return url ? ((await (await fetch(url)).json()) as SyncMap) : null;
+    }
+    const record = await readMedia(book.id, SYNC_MAP_KIND);
+    return record ? ((JSON.parse(await record.blob.text())) as SyncMap) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function releaseOfflineMediaUrl(url: string | null) {
   if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+/**
+ * Forget the offline fallback account. Signing out clears the token, but
+ * checkAuth's offline branch would otherwise resurrect the last user from
+ * this record the next time the server is unreachable.
+ */
+export function forgetOfflineUser(): void {
+  try {
+    localStorage.removeItem(scopedKey(USER_KEY));
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // Storage can be unavailable in private browsing; nothing to forget then.
+  }
 }
