@@ -124,6 +124,12 @@ pub(crate) async fn opds_books(
         for genre in &book.genres {
             body.push_str(&format!("    <category term=\"{}\"/>\n", xml_escape(genre)));
         }
+        for tag in &book.tags {
+            body.push_str(&format!(
+                "    <category term=\"{}\" label=\"Tag\"/>\n",
+                xml_escape(&tag.name)
+            ));
+        }
         // Narrator and length are what a listener actually chooses on, and
         // OPDS has nowhere structured to put either.
         let mut summary = book.description.clone().unwrap_or_default();

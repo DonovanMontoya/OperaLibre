@@ -51,6 +51,7 @@ const DEMO_BOOKS: Book[] = [
     coverArtContentType: "image/svg+xml",
     description: lanternDescription,
     genres: ["Fiction", "Adventure"],
+    tags: [],
     publishedDate: "2026",
     asin: null,
     readingFile: {
@@ -103,6 +104,7 @@ const DEMO_BOOKS: Book[] = [
     coverArtContentType: "image/svg+xml",
     description: weatherDescription,
     genres: ["Nature", "Essays"],
+    tags: [],
     publishedDate: "2026",
     asin: null,
     readingFile: null,

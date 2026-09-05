@@ -30,6 +30,34 @@ You can add books in either of these ways:
 
 Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art comes from the artwork embedded in the audio files' tags; add a readalong file by copying it into the book’s folder afterward, then rescan.
 
+### Organize books with custom tags
+
+An administrator can open a book, choose **Edit book info**, and add one or
+more custom tags. Each tag can also have its own optional book number. This is
+useful when a title has an immediate series but also belongs to a wider world
+or reading order: keep its normal series as **Mistborn**, then add **Cosmere**
+with the appropriate Cosmere book number. Tags survive library rescans, appear
+on the book, participate in search, and can be selected as the library sort.
+
+### Sort and filter your shelf
+
+Use **Sort by** to choose the order and the arrow beside it to reverse that
+order. Your choice is remembered separately for Your Library and Audible.
+The count below the controls shows how many books match.
+
+Open **Filters** to combine reading progress, genres, and tags. Selecting
+multiple genres or tags includes any of those choices within that group;
+combining groups narrows the results. Larger genre and tag lists have their
+own search fields. Counts update as you filter, and selected filters remain
+visible as removable chips after you close the panel. **Clear all** removes
+filters; the search field has its own clear button.
+
+For a wider reading order, filter to **Cosmere** and choose **Tag** under
+**Sort by**. Books then follow their Cosmere numbers, even if Cosmere is not
+their first tag. With multiple tags selected, the first selected tag that a
+book carries determines its group and number; without tag filters, its first
+tag is used.
+
 ## Add people and recover access
 
 An administrator opens the avatar menu and chooses **Manage readers** to add a reader, remove one, or reset a password. Give every household member their own account rather than sharing the administrator password.
@@ -71,7 +99,7 @@ For a directly installable development build, run `npm run build:android`; the A
 
 ### Use another audiobook app
 
-The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre filters, and resume position all sync with the reader's OperaLibre progress.
+The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre and tag filters, and resume position all sync with the reader's OperaLibre progress.
 
 There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
 

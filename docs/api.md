@@ -90,7 +90,7 @@ Frontend installation is available when the server directly serves a versioned w
 | --- | --- | --- |
 | `GET` | `/api/books` | List books the current user is allowed to access, cursor-paged (the next cursor is returned in the `x-next-cursor` response header, with an `ETag` for caching). Administrators always receive the full library. |
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
-| `PUT` | `/api/books/{book_id}/metadata` | Save metadata overrides for a book. Admin only. Overrides win over embedded tags and Libation sidecar metadata. |
+| `PUT` | `/api/books/{book_id}/metadata` | Save metadata overrides for a book, including repeatable custom tags with optional positions. Admin only. Overrides win over embedded audio tags and Libation sidecar metadata. |
 | `GET` | `/api/books/{book_id}/cover` | Cover art image, extracted from the audio files' embedded tags. |
 | `GET` | `/api/books/{book_id}/readalong` | The companion readalong file, if one is matched. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`), if one is matched or generated. |
@@ -238,8 +238,8 @@ The server also speaks a subset of the [Audiobookshelf](https://www.audiobookshe
 | `POST` | `/abs/login` | Sign in; returns an Audiobookshelf-shaped user object and the default library id. Public. |
 | `GET` | `/abs/api/me` | The current user with media progress and token. |
 | `GET` | `/abs/api/libraries` | The single synthetic library. |
-| `GET` | `/abs/api/libraries/{library_id}/items` | Paged, filterable library items (author, series, narrator, and genre filters are supported). |
-| `GET` | `/abs/api/libraries/{library_id}/filterdata` | Author, series, narrator, and genre facets. |
+| `GET` | `/abs/api/libraries/{library_id}/items` | Paged, filterable library items (author, series, narrator, genre, and tag filters are supported). |
+| `GET` | `/abs/api/libraries/{library_id}/filterdata` | Author, series, narrator, genre, and tag facets. |
 | `GET` | `/abs/api/libraries/{library_id}/search` | Search books. |
 | `GET` | `/abs/api/libraries/{library_id}/collections` | Always empty; collections are not supported. |
 | `GET` | `/abs/api/authors/{author_id}` | An author with their items. |

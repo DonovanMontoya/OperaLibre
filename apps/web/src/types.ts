@@ -23,6 +23,7 @@ export type Book = {
   coverArtContentType: string | null;
   description: string | null;
   genres: string[];
+  tags: BookTag[];
   publishedDate: string | null;
   asin: string | null;
   readingFile: ReadingFile | null;
@@ -50,6 +51,11 @@ export type Book = {
   volumeGain?: number;
 };
 
+export type BookTag = {
+  name: string;
+  position: string | null;
+};
+
 export type SharedProgress = {
   userId: string;
   username: string;
@@ -68,6 +74,7 @@ export type BookMetadataUpdate = {
   publisher: string;
   series: string;
   seriesPosition: string;
+  tags: BookTag[];
   asin: string;
 };
 
