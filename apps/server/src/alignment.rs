@@ -1297,18 +1297,19 @@ fn parse_roman_numeral(token: &str) -> Option<u32> {
         _ => 1000,
     };
     let chars: Vec<char> = token.chars().collect();
-    let mut total = 0u32;
+    let mut total = 0i64;
     for (index, c) in chars.iter().enumerate() {
         let value = value_of(*c);
         let next = chars.get(index + 1).map(|c| value_of(*c)).unwrap_or(0);
         if value < next {
             total = total.checked_sub(value)?;
         } else {
-            total += value;
+            total = total.checked_add(value)?;
         }
     }
     // Round-trip through the canonical spelling so `IIII` and `VX` are
     // rejected rather than read as some number.
+    let total = u32::try_from(total).ok()?;
     (total > 0 && total <= 200 && roman_numeral(total) == token).then_some(total)
 }
 
@@ -2276,6 +2277,17 @@ mod tests {
     }
 
     /// Publishers and narrators spell chapter numbers every way there is.
+    #[test]
+    fn subtractive_roman_chapters_round_trip() {
+        for number in 1..=200 {
+            let roman = roman_numeral(number);
+            assert_eq!(parse_roman_numeral(&roman), Some(number), "{roman}");
+        }
+        for invalid in ["IIII", "VX", "IC", "Mix", "CCI"] {
+            assert_eq!(parse_roman_numeral(invalid), None, "{invalid}");
+        }
+    }
+
     #[test]
     fn parse_label_reads_spelled_out_and_roman_numbers() {
         assert_eq!(
