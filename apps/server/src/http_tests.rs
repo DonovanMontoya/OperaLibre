@@ -3122,3 +3122,6 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
     assert!(books.headers.get(header::RETRY_AFTER).is_none());
     assert_eq!(books.json().as_array().unwrap().len(), 1);
 }
+
+#[path = "performance_tests.rs"]
+mod performance_tests;

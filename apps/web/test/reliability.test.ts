@@ -543,7 +543,16 @@ test("a foregrounded idle session adopts only a strictly newer, materially diffe
 
   // The reported cross-save sequence: web listened while this app was in the
   // background, so the server's copy is newer and far ahead. Adopt it.
-  assert.equal(adoptableServerProgress(local, webFinal), webFinal);
+  const adopted = adoptableServerProgress(local, webFinal);
+  assert.equal(adopted, webFinal);
+  assert.deepEqual(
+    resolveProgressLocation([
+      { id: "track-1", durationSeconds: 3600 },
+      { id: "track-2", durationSeconds: 3600 },
+      { id: "track-3", durationSeconds: 3600 }
+    ], adopted),
+    { trackId: "track-2", positionSeconds: 1400 }
+  );
 
   // A deliberate rewind or restart made on another device is newer but
   // behind; the server's own regression guards already vetted it. Adopt it.

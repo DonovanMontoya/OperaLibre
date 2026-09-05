@@ -1,5 +1,4 @@
 import { Capacitor } from "@capacitor/core";
-import { Browser } from "@capacitor/browser";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import type { AppearanceMode } from "./appearance";
@@ -10,17 +9,6 @@ import type { AppearanceMode } from "./appearance";
  */
 
 let nativeViewportSyncInstalled = false;
-
-export function isNativePlatform(): boolean {
-  return Capacitor.isNativePlatform();
-}
-
-export async function openNativeBrowser(url: string): Promise<void> {
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error("The native browser is only available in the mobile app.");
-  }
-  await Browser.open({ url, presentationStyle: "fullscreen" });
-}
 
 function installNativeViewportSync(root: HTMLElement): void {
   const viewport = window.visualViewport;

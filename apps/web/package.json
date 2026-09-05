@@ -12,11 +12,11 @@
     "ios:open": "npm run ios:sync && cap open ios",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "test:perf": "tsc -p tsconfig.performance.json && playwright test -c playwright.performance.config.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
-    "@capacitor/browser": "^8.0.4",
     "@capacitor/core": "^8.5.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/haptics": "^8.0.2",
@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",
+    "@playwright/test": "^1.63.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.0.5",

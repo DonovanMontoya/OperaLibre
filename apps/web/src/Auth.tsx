@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import { BookOpen, ExternalLink, FolderOpen, Globe, LogIn, Network, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import {
@@ -5,7 +6,6 @@ import {
   getServerUrl,
   getServerType,
   SERVER_SETUP_GUIDE_URL,
-  isNativeApp,
   login,
   pingServer,
   setServerConnection,
@@ -30,7 +30,7 @@ export function ServerSetup({
   const [url, setUrl] = useState(() => getServerUrl());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const nativeApp = isNativeApp();
+  const nativeApp = Capacitor.isNativePlatform();
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -192,7 +192,7 @@ export function AuthGate({
   setupLocalOnly?: boolean;
 }) {
   const isJellyfin = getServerType() === "jellyfin";
-  const nativeApp = isNativeApp();
+  const nativeApp = Capacitor.isNativePlatform();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
