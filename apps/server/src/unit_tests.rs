@@ -122,6 +122,7 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         cover_art_url: None,
         description: None,
         genres: Vec::new(),
+        tags: Vec::new(),
         published_date: None,
         asin: None,
         reading_file: None,
@@ -133,6 +134,42 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         shared_progress: Vec::new(),
         volume_gain: super::BOOK_VOLUME_GAIN_DEFAULT,
     }
+}
+
+#[test]
+fn custom_book_tags_are_cleaned_ordered_and_deduplicated() {
+    let tags = super::clean_book_tags(vec![
+        super::BookTag {
+            name: "  Cosmere  ".to_string(),
+            position: Some("  1  ".to_string()),
+        },
+        super::BookTag {
+            name: "cosmere".to_string(),
+            position: Some("2".to_string()),
+        },
+        super::BookTag {
+            name: " Epic   Fantasy ".to_string(),
+            position: Some("   ".to_string()),
+        },
+        super::BookTag {
+            name: " ".to_string(),
+            position: None,
+        },
+    ]);
+
+    assert_eq!(
+        tags,
+        vec![
+            super::BookTag {
+                name: "Cosmere".to_string(),
+                position: Some("1".to_string()),
+            },
+            super::BookTag {
+                name: "Epic Fantasy".to_string(),
+                position: None,
+            },
+        ]
+    );
 }
 
 /// A gain arrives from whatever client the listener is holding, so the
