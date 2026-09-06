@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch completed OperaLibre updates
+
+[Path]
+# Adjust this path if server.config uses a different data_dir.
+# Do not watch VERSION.txt: it changes before health checks finish.
+PathChanged=/opt/operalibre/data/update-result.txt
+Unit=operalibre-update.service
+
+[Install]
+WantedBy=multi-user.target

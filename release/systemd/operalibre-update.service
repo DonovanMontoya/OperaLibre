@@ -1,0 +1,6 @@
+[Unit]
+Description=Restore supervision after an OperaLibre update or rollback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart operalibre.service

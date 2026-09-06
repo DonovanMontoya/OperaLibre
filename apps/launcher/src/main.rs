@@ -48,10 +48,22 @@ enum ServerReadiness {
 
 fn main() {
     if let Err(error) = run() {
-        let root = installation_root().unwrap_or_else(|_| PathBuf::from("."));
+        let arguments: Vec<_> = env::args_os().collect();
+        let updating = arguments.get(1).is_some_and(|arg| arg == "--apply-update");
+        let root = if updating {
+            named_update_argument(&arguments, "--install-root").map(PathBuf::from)
+        } else {
+            installation_root()
+        }
+        .unwrap_or_else(|_| PathBuf::from("."));
         let message = format!("OperaLibre could not complete the requested action:\n\n{error}");
+        eprintln!("{message}");
+        append_log(&root, &message);
         let _ = fs::write(root.join("LAUNCH-ERROR.txt"), format!("{message}\n"));
-        show_message(&message);
+        if !updating && !arguments.iter().any(|arg| arg == "--service-start") {
+            show_message(&message);
+        }
+        std::process::exit(1);
     }
 }
 
@@ -67,6 +79,10 @@ fn run() -> Result<(), String> {
     let root = installation_root()?;
     env::set_current_dir(&root)
         .map_err(|error| format!("Could not open {}: {error}", root.display()))?;
+
+    if arguments.get(1).is_some_and(|arg| arg == "--service-start") {
+        return start_supervised_server(&root);
+    }
 
     if is_stop_launcher() {
         return stop_server(&root);
@@ -296,7 +312,78 @@ fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn update_lock(root: &Path) -> Result<fs::File, String> {
+    let data = data_dir(root);
+    fs::create_dir_all(&data).map_err(|error| error.to_string())?;
+    secure_directory(&data)?;
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options
+        .open(data.join("update.lock"))
+        .map_err(|error| error.to_string())?;
+    file.lock()
+        .map_err(|error| format!("Could not lock the update handoff: {error}"))?;
+    Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn start_supervised_server(root: &Path) -> Result<(), String> {
+    // The descriptor closes on exec. Hold the lock through retirement and PID
+    // publication so a queued updater cannot race the takeover.
+    let _lock = update_lock(root)?;
+    stop_server(root)?;
+    fs::write(pid_path(root), std::process::id().to_string())
+        .map_err(|error| format!("Could not save the supervised PID: {error}"))?;
+    secure_file(&pid_path(root))?;
+    let error = Command::new(root.join(server_binary_name()))
+        .current_dir(root)
+        .exec();
+    Err(format!("Could not start the supervised server: {error}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_supervised_server(_root: &Path) -> Result<(), String> {
+    Err("--service-start is supported only on Linux.".to_string())
+}
+
+fn publish_update_result(root: &Path, result: &Result<(), String>) -> Result<(), String> {
+    let message = match result {
+        Ok(()) => format!(
+            "Succeeded: {}",
+            fs::read_to_string(root.join("VERSION.txt"))
+                .unwrap_or_default()
+                .trim()
+        ),
+        Err(error) => format!("Failed: {error}"),
+    };
+    append_log(root, &message);
+    eprintln!("{message}");
+    let data = data_dir(root);
+    let temporary = data.join("update-result.txt.tmp");
+    fs::write(&temporary, format!("{message}\n")).map_err(|error| error.to_string())?;
+    secure_file(&temporary)?;
+    // This is the completion signal. Never watch VERSION.txt, which changes
+    // while the transaction is still in progress (and again during rollback).
+    fs::rename(temporary, data.join("update-result.txt")).map_err(|error| error.to_string())
+}
+
 fn apply_update(arguments: &[std::ffi::OsString]) -> Result<(), String> {
+    let root = PathBuf::from(named_update_argument(arguments, "--install-root")?);
+    let _lock = update_lock(&root)?;
+    let result = apply_update_inner(arguments);
+    let published = publish_update_result(&root, &result);
+    match (result, published) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(format!(
+            "Update installed, but could not publish its result: {error}"
+        )),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     let package_root = required_update_argument(arguments, 2, "update package")?;
     let install_root = named_update_argument(arguments, "--install-root")?;
     let server_pid = named_update_argument(arguments, "--server-pid")?
@@ -623,6 +710,7 @@ fn refresh_launchers(package_root: &Path, install_root: &Path) -> Result<(), Str
     } else {
         copy_launcher(&updater, &install_root.join("open-operalibre"))?;
         copy_launcher(&updater, &install_root.join("stop-operalibre"))?;
+        copy_launcher(&updater, &install_root.join("operalibre-service"))?;
     }
     Ok(())
 }
@@ -633,13 +721,17 @@ fn copy_launcher(source: &Path, destination: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("{} has no parent folder.", destination.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
-    fs::copy(source, destination).map_err(|error| {
+    // A systemd starter may be running from the old launcher while waiting
+    // on update.lock. Replace the inode instead of overwriting its executable.
+    let temporary = destination.with_extension("new");
+    fs::copy(source, &temporary).map_err(|error| {
         format!(
             "Could not refresh launcher {}: {error}",
             destination.display()
         )
     })?;
-    set_executable(destination)
+    set_executable(&temporary)?;
+    fs::rename(&temporary, destination).map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
@@ -911,6 +1003,72 @@ fn show_message(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completion_is_published_while_handoff_is_still_locked() {
+        let root = std::env::temp_dir().join(format!(
+            "operalibre-handoff-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("server.config"), "data_dir = state\n").unwrap();
+        std::fs::write(root.join("VERSION.txt"), "0.3.7\n").unwrap();
+        let lock = super::update_lock(&root).unwrap();
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join("state/update.lock"))
+            .unwrap();
+        assert!(contender.try_lock().is_err());
+        assert!(!root.join("state/update-result.txt").exists());
+        super::publish_update_result(&root, &Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("state/update-result.txt")).unwrap(),
+            "Succeeded: 0.3.7\n"
+        );
+        assert!(contender.try_lock().is_err());
+        super::publish_update_result(&root, &Err("restored previous version".into())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("state/update-result.txt")).unwrap(),
+            "Failed: restored previous version\n"
+        );
+        drop(lock);
+        contender.try_lock().unwrap();
+        drop(contender);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_a_launcher_preserves_an_open_old_inode() {
+        let root = std::env::temp_dir().join(format!(
+            "operalibre-launcher-copy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("launcher");
+        std::fs::write(&source, "new launcher").unwrap();
+        std::fs::write(&destination, "old launcher").unwrap();
+        let mut old = std::fs::File::open(&destination).unwrap();
+        super::copy_launcher(&source, &destination).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut old, &mut text).unwrap();
+        assert_eq!(text, "old launcher");
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "new launcher"
+        );
+        drop(old);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::{
         ServerReadiness, configured_value_in, data_dir, named_update_argument,
         optional_named_update_argument, parse_health_response, process_command_matches,

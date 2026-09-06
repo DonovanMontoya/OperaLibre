@@ -348,6 +348,7 @@ jobs:
             --kind server \
             --platform "${{ matrix.platform }}" \
             --binary "${{ matrix.executable }}" \
+            --launcher "${{ matrix.launcher }}" \
             --output "staging/${server_package}" \
             --version "${version}"
 

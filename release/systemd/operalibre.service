@@ -1,0 +1,25 @@
+[Unit]
+Description=OperaLibre managed release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=operalibre
+Group=operalibre
+WorkingDirectory=/opt/operalibre
+ExecStart=/opt/operalibre/operalibre-service --service-start
+Restart=on-failure
+RestartSec=5
+# Preserve the updater and its health-check child during a clean handoff.
+KillMode=process
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/operalibre
+
+[Install]
+WantedBy=multi-user.target
