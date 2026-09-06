@@ -91,6 +91,12 @@ async function stageNative({ binary, kind, launcher, output, platform, version, 
   );
   await mkdir(path.join(output, "data"), { recursive: true });
 
+  if (platform.startsWith("linux")) {
+    if (!launcher) throw new Error("Linux packages require --launcher for systemd handoff.");
+    await copyExecutable(launcher, path.join(output, "operalibre-service"));
+    await cp("release/systemd", path.join(output, "systemd"), { recursive: true });
+  }
+
   if (kind === "combined") {
     if (!web) {
       throw new Error("Combined packages require --web.");

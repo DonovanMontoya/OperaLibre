@@ -118,6 +118,7 @@ pub struct UpdateStatus {
     pub published_at: Option<String>,
     pub notes: Option<String>,
     pub message: Option<String>,
+    pub last_update_result: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,17 +262,31 @@ impl UpdateManager {
             if let Some(cached) = cache.as_ref()
                 && cached.checked_at.elapsed() < UPDATE_CACHE_TTL
             {
-                return Ok(cached.status.clone());
+                let mut status = cached.status.clone();
+                status.last_update_result = self.last_update_result().await;
+                return Ok(status);
             }
         }
 
         let release = self.fetch_latest_release().await?;
-        let status = self.status_for_release(&release)?;
+        let mut status = self.status_for_release(&release)?;
+        status.last_update_result = self.last_update_result().await;
         *self.cache.lock().await = Some(CachedUpdateStatus {
             checked_at: Instant::now(),
             status: status.clone(),
         });
         Ok(status)
+    }
+
+    async fn last_update_result(&self) -> Option<String> {
+        let path = self.data_dir.join("update-result.txt");
+        if fs::metadata(&path).await.ok()?.len() > 64 * 1024 {
+            return None;
+        }
+        fs::read_to_string(path)
+            .await
+            .ok()
+            .map(|text| text.trim().to_string())
     }
 
     pub async fn install(&self) -> anyhow::Result<UpdateInstallStarted> {
@@ -804,6 +819,7 @@ impl UpdateManager {
             published_at: release.published_at.clone(),
             notes: release.body.as_deref().map(truncate_notes),
             message,
+            last_update_result: None,
         })
     }
 
@@ -1814,6 +1830,54 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn completed_update_result_bypasses_the_release_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        assert!(manager.last_update_result().await.is_none());
+        *manager.cache.lock().await = Some(super::CachedUpdateStatus {
+            checked_at: std::time::Instant::now(),
+            status: super::UpdateStatus {
+                current_version: "0.3.7".into(),
+                latest_version: "0.3.8".into(),
+                update_available: true,
+                can_auto_update: true,
+                platform: None,
+                release_url: String::new(),
+                published_at: None,
+                notes: None,
+                message: None,
+                last_update_result: Some("old result".into()),
+            },
+        });
+        std::fs::write(
+            root.path().join("update-result.txt"),
+            "Failed: restored previous version\n",
+        )
+        .unwrap();
+        assert_eq!(
+            manager
+                .check(false)
+                .await
+                .unwrap()
+                .last_update_result
+                .as_deref(),
+            Some("Failed: restored previous version")
+        );
+        std::fs::write(root.path().join("update-result.txt"), "Succeeded: 0.3.8\n").unwrap();
+        assert_eq!(
+            manager
+                .check(false)
+                .await
+                .unwrap()
+                .last_update_result
+                .as_deref(),
+            Some("Succeeded: 0.3.8")
+        );
+        std::fs::write(root.path().join("update-result.txt"), vec![b'x'; 65537]).unwrap();
+        assert!(manager.last_update_result().await.is_none());
     }
 
     #[tokio::test]

@@ -62,6 +62,11 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test managed update handoff on Linux
+        run: |
+          cargo build --locked
+          python3 ../../script/test_managed_handoff.py target/debug/operalibre-launcher
+
   web:
     name: Web (TypeScript)
     runs-on: ubuntu-latest
@@ -74,6 +79,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: Test release packaging
+        run: node --test script/package_release.test.mjs
 
       - name: Install dependencies
         run: npm ci
