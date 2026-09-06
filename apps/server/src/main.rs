@@ -54,7 +54,7 @@ use tokio::{
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{
-    compression::CompressionLayer,
+    compression::{CompressionLayer, DefaultPredicate, predicate::Predicate},
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
     timeout::TimeoutLayer,

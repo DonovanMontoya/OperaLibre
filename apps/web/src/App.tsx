@@ -4627,7 +4627,7 @@ function MainApp({
         id: created.jobId,
         kind: "sync-generate",
         targetId: book.id,
-        status: "running",
+        status: "queued",
         startedAt: "",
         finishedAt: null,
         exitCode: null,
@@ -5056,7 +5056,7 @@ function MainApp({
   }, [syncMapBook, syncMapBookId, syncMaps]);
 
   useEffect(() => {
-    if (!syncJob || syncJob.status !== "running") {
+    if (!syncJob || !["queued", "running"].includes(syncJob.status)) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -7694,7 +7694,7 @@ function MainApp({
         <button
           type="button"
           className="download-btn"
-          disabled={syncJob?.status === "running"}
+          disabled={!!syncJob && ["queued", "running"].includes(syncJob.status)}
           onClick={() => void startSyncGeneration(selectedBook)}
           title={
             selectedSyncPrecise
@@ -7702,7 +7702,7 @@ function MainApp({
               : "Align the narration to the text for sentence and word highlighting"
           }
         >
-          {syncJob?.status === "running" ? (
+          {syncJob && ["queued", "running"].includes(syncJob.status) ? (
             <LoaderCircle size={13} className="spin-icon" />
           ) : (
             <Sparkles size={13} />
@@ -7725,9 +7725,11 @@ function MainApp({
   ) : null;
   const readerSyncMessages = (
     <>
-      {syncJob && syncJob.status === "running" ? (
+      {syncJob && ["queued", "running"].includes(syncJob.status) ? (
         <div className="readalong-genstatus">
-          Aligning the narration to the text… this can take a while for long books.
+          {syncJob.status === "queued"
+            ? "Waiting for the current sync job to finish…"
+            : "Aligning the narration to the text… this can take a while for long books."}
         </div>
       ) : syncJob && syncJob.status === "failed" ? (
         <div className="readalong-genstatus error">
@@ -7743,8 +7745,8 @@ function MainApp({
       && alignmentStatus
       && !alignmentStatus.enabled ? (
         <div className="readalong-genstatus">
-          Following is approximate on this server. Install echogarden beside OperaLibre to align the
-          narration word for word.
+          Following is approximate on this server. An owner can install and enable improved sync
+          under Administration → Experimental features.
         </div>
       ) : null}
     </>
@@ -10349,6 +10351,7 @@ function MainApp({
           onRescan={refreshLibrary}
           onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
+          onAlignmentChanged={setAlignmentStatus}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
             setUsersModalOpen(false);
@@ -10769,6 +10772,7 @@ function MainApp({
           onRescan={refreshLibrary}
           onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
+          onAlignmentChanged={setAlignmentStatus}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
             openNativeTab("shelf");

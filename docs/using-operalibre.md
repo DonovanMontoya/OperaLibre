@@ -121,11 +121,15 @@ On the phone and tablet apps the ebook opens as a full-screen reader of its own,
 
 Every EPUB can be followed straight away: with nothing else installed, the server times the text from the audiobook's chapter list, which the reader labels *Approximate sync* — close enough to keep the page and paragraph in step, but the marker can run a few lines ahead or behind. The narrator's pace is learned from the book itself: with enough chapters, how long this narrator spends per character, per sentence, per paragraph, and on dialogue is fitted from the chapters' known lengths. For sentence and word precision an administrator can either put a matching `.sync.json` file beside the book or set up automatic alignment:
 
-1. Install [echogarden](https://github.com/echogarden-project/echogarden) on the server machine: `npm install -g echogarden`.
-2. Restart OperaLibre. If `echogarden` is not on the server’s PATH, set `alignment_cli_path` in `server.config` to its full path instead.
-3. Open the book’s reader and select **Improve sync**. Wait for the job to complete, then play the book.
+1. Open **Administration → Experimental features** and install the optional follow-along generator (owner only).
+2. Choose **Enable**.
+3. Open the book’s reader and select **Improve sync**.
 
-Generated maps are saved in `data_dir/sync`; a matching `.sync.json` file beside the book takes priority. Alignment works best when the audio chapter or track names correspond to the EPUB chapter titles, in any spelling (`Chapter 3`, `Chapter Three`, `III.`).
+Generation downloads any missing model files, so initial use requires network access. Generation runs locally; audiobook contents are not uploaded anywhere. Jobs run one at a time; repeated requests for the same book reuse its queued or running job.
+
+Generated maps are saved in `data_dir/sync`; disabling or removing the add-on does not remove them. A matching `.sync.json` file beside the book takes priority. Sync quality is best when the audio track names, or the chapters embedded in an M4B, correspond to the EPUB chapter titles. Processing time and memory depend on the book and server; generation can compete with playback on smaller machines. The current implementation transcribes successive windows across long chapters and then aligns their text; it does not yet use sparse speech sampling. Wait for queued and running jobs to finish before updating, disabling, or removing the add-on.
+
+Development and manually managed installations may instead set `alignment_cli_path` to an existing echogarden executable. A manually configured generator is treated as installed and enabled, but OperaLibre does not update or remove it.
 
 ### Extras: maps, illustrations, and supplements
 

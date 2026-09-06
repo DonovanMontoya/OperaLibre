@@ -6,7 +6,7 @@ nav_order: 10
 # OperaLibre Privacy Policy
 
 **Effective date:** July 18, 2026  
-**Last updated:** August 19, 2026
+**Last updated:** September 3, 2026
 
 OperaLibre is an audiobook player that can use audio files stored on your device or connect to an OperaLibre or Jellyfin server chosen by you. This Privacy Policy explains how the OperaLibre application (the **“App”**) handles information.
 
@@ -47,6 +47,8 @@ The App may receive or create:
 - downloaded books and cached library information used for offline playback.
 
 When you use a connected server, this information is exchanged directly with that server as necessary to browse your library, stream or download audio, display artwork, and synchronize playback progress. Some information is also cached on your device to provide the App’s features.
+
+If the server owner installs and enables the optional follow-along sync generator, the selected OperaLibre server processes audiobook audio and EPUB text locally to create sentence timing maps. Audiobook contents are not sent to the developer or to a speech-recognition service. Installing the add-on and its first use download software and model files from their upstream hosts, which may receive ordinary request information such as the server's IP address and request time.
 
 ### Files selected from your device
 
