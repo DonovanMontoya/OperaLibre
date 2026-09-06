@@ -168,6 +168,14 @@ pub(crate) fn build_router(
         .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
         .route("/api/frontend-update", get(frontend_update_status))
+        .route(
+            "/api/experimental-features/readalong-sync",
+            get(readalong_sync_addon_status).delete(remove_readalong_sync_addon),
+        )
+        .route(
+            "/api/experimental-features/readalong-sync/enabled",
+            put(set_readalong_sync_addon_enabled),
+        )
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{user_id}", delete(delete_user))
         .route("/api/users/{user_id}/password", post(change_password))
@@ -241,8 +249,8 @@ pub(crate) fn build_router(
             get(get_companion_file),
         )
         // A sync map names every sentence of the book, so a long title runs
-        // to several megabytes of JSON that gzips five-to-one. Only this
-        // route is compressed: audio and documents stream with ranges.
+        // to several megabytes of JSON that gzips five-to-one. Audio and
+        // documents retain their original encoding and range behavior.
         .route(
             "/api/books/{book_id}/sync",
             get(get_sync_map).layer(CompressionLayer::new()),
@@ -318,6 +326,10 @@ pub(crate) fn build_router(
             post(install_frontend_update),
         )
         .route(
+            "/api/experimental-features/readalong-sync/install",
+            post(install_readalong_sync_addon),
+        )
+        .route(
             "/api/libation/accounts/login/{session_id}/complete",
             post(complete_libation_account_login),
         )
@@ -363,7 +375,26 @@ pub(crate) fn build_router(
             );
         }
     }
+    // JSON bodies such as the library listing and a readalong sync map (a
+    // 55-hour book produces about 9 MB of sentence timings) shrink four to
+    // five times under gzip. Media is left alone: audio and archives are
+    // already compressed, and the track stream relies on byte ranges and an
+    // exact `Content-Length`, which an encoding layer would strip.
+    let compression_predicate = DefaultPredicate::new().and(
+        |status: StatusCode,
+         _: axum::http::Version,
+         headers: &HeaderMap,
+         _: &axum::http::Extensions| {
+            status != StatusCode::PARTIAL_CONTENT
+                && headers
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.split(';').next() == Some("application/json"))
+        },
+    );
+
     Ok(app
+        .layer(CompressionLayer::new().compress_when(compression_predicate))
         .layer(
             cors.allow_methods(AllowMethods::mirror_request())
                 .allow_headers(AllowHeaders::mirror_request())
@@ -525,6 +556,75 @@ pub(crate) async fn install_frontend_update(
         .map(Json)
         .map_err(|error| {
             ApiError::bad_request(format!("Could not install the frontend update: {error}"))
+        })
+}
+
+pub(crate) async fn readalong_sync_addon_status(
+    State(state): State<AppState>,
+    _: AdminUser,
+    Query(query): Query<UpdateStatusQuery>,
+) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
+    state
+        .update_manager
+        .check_sync_addon(query.refresh, state.alignment_config.cli_path.as_deref())
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::bad_gateway(format!("Could not check the sync add-on: {error}")))
+}
+
+pub(crate) async fn install_readalong_sync_addon(
+    State(state): State<AppState>,
+    _: OwnerUser,
+) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
+    state
+        .update_manager
+        .install_sync_addon()
+        .await
+        .map(Json)
+        .map_err(|error| {
+            ApiError::bad_request(format!("Could not install the sync add-on: {error}"))
+        })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ExperimentalFeatureEnabled {
+    enabled: bool,
+}
+
+pub(crate) async fn set_readalong_sync_addon_enabled(
+    State(state): State<AppState>,
+    _: OwnerUser,
+    Json(input): Json<ExperimentalFeatureEnabled>,
+) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
+    state
+        .update_manager
+        .set_sync_addon_enabled(input.enabled)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            ApiError::bad_request(format!("Could not change the sync add-on: {error}"))
+        })
+}
+
+pub(crate) async fn remove_readalong_sync_addon(
+    State(state): State<AppState>,
+    _: OwnerUser,
+) -> Result<Json<updates::SyncAddonStatus>, ApiError> {
+    let has_active_sync = state.jobs.read().await.values().any(|job| {
+        job.kind == "sync-generate" && matches!(job.status.as_str(), "queued" | "running")
+    });
+    if has_active_sync {
+        return Err(ApiError::conflict(
+            "A follow-along sync job is running. Wait for it to finish before removing the add-on.",
+        ));
+    }
+    state
+        .update_manager
+        .remove_sync_addon()
+        .await
+        .map(Json)
+        .map_err(|error| {
+            ApiError::bad_request(format!("Could not remove the sync add-on: {error}"))
         })
 }
 

@@ -7,6 +7,7 @@ import {
   Database,
   Download,
   ExternalLink,
+  FlaskConical,
   Gauge,
   KeyRound,
   LoaderCircle,
@@ -29,15 +30,19 @@ import {
   getFaststartStatus,
   getBooks,
   getFrontendUpdateStatus,
+  getSyncAddonStatus,
   getJob,
   getUpdateStatus,
   installFrontendUpdate,
+  installSyncAddon,
   installServerUpdate,
   listLibationRequests,
   listUsers,
   mediaUrl,
+  removeSyncAddon,
   restoreServerBackup,
   startFaststartConversion,
+  setSyncAddonEnabled,
   updateUserBookAccess,
   updateUserLibationApproval,
   updateUserLibationAccess,
@@ -51,11 +56,12 @@ import type {
   JobStatus,
   LibationAccess,
   LibationDownloadRequest,
+  SyncAddonStatus,
   UpdateStatus
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
 
-type AdminSection = "overview" | "users" | "requests" | "books";
+type AdminSection = "overview" | "users" | "requests" | "books" | "experiments";
 type AccountRole = "owner" | "admin" | "reader";
 
 function isRunningJob(job: JobStatus | null) {
@@ -76,7 +82,8 @@ export function AdminPanel({
   onRescan,
   onOpenBook,
   onBeforeLibraryMutation,
-  onBooksChanged
+  onBooksChanged,
+  onAlignmentChanged
 }: {
   currentUser: AuthUser;
   books: Book[];
@@ -86,6 +93,7 @@ export function AdminPanel({
   onOpenBook?: (bookId: string) => void;
   onBeforeLibraryMutation: () => Promise<void>;
   onBooksChanged: (books: Book[]) => void;
+  onAlignmentChanged: (status: { enabled: boolean; cliPath: string | null }) => void;
 }) {
   const [section, setSection] = useState<AdminSection>("overview");
   const [users, setUsers] = useState<AuthUser[]>([]);
@@ -110,6 +118,10 @@ export function AdminPanel({
   const [faststartJob, setFaststartJob] = useState<JobStatus | null>(null);
   const [faststartError, setFaststartError] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
+  const [syncAddon, setSyncAddon] = useState<SyncAddonStatus | null>(null);
+  const [syncAddonChecking, setSyncAddonChecking] = useState(false);
+  const syncAddonSurveyed = useRef(false);
+  const [syncAddonBusy, setSyncAddonBusy] = useState<"install" | "toggle" | "remove" | null>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshUsers() {
@@ -182,6 +194,18 @@ export function AdminPanel({
       );
     } finally {
       setFaststartChecking(false);
+    }
+  }
+
+  async function refreshSyncAddon(force = false) {
+    setSyncAddonChecking(true);
+    try {
+      setSyncAddon(await getSyncAddonStatus(force));
+      if (force) setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not check the sync add-on.");
+    } finally {
+      setSyncAddonChecking(false);
     }
   }
 
@@ -260,6 +284,12 @@ export function AdminPanel({
     void refreshFaststart();
   }, [section]);
 
+  useEffect(() => {
+    if (section !== "experiments" || syncAddonSurveyed.current) return;
+    syncAddonSurveyed.current = true;
+    void refreshSyncAddon();
+  }, [section]);
+
   // A conversion runs on the server as a job; follow it until it settles, then
   // pick up the library it rewrote.
   useEffect(() => {
@@ -290,8 +320,8 @@ export function AdminPanel({
   const pendingRequests = libationRequests.filter((request) => request.status === "pending");
   const canApprove = currentUser.isOwner || currentUser.canApproveLibationRequests;
   const adminSections: AdminSection[] = canApprove
-    ? ["overview", "users", "requests", "books"]
-    : ["overview", "users", "books"];
+    ? ["overview", "users", "requests", "books", "experiments"]
+    : ["overview", "users", "books", "experiments"];
   const totalTracks = books.reduce((sum, book) => sum + book.trackCount, 0);
   const totalHours = books.reduce((sum, book) => sum + (book.durationSeconds ?? 0), 0) / 3600;
   const sortedBooks = useMemo(
@@ -569,6 +599,64 @@ export function AdminPanel({
     }
   }
 
+  async function handleInstallSyncAddon() {
+    if (!currentUser.isOwner || !syncAddon?.canInstall) return;
+    if (!window.confirm(
+      "Install the experimental follow-along sync generator?\n\nIt runs locally and downloads model files on first use. Generation can use substantial CPU, memory, and disk space, especially for long books."
+    )) return;
+    setSyncAddonBusy("install");
+    setError(null);
+    setNotice("Downloading and verifying the sync add-on…");
+    try {
+      const installed = await installSyncAddon();
+      setSyncAddon(installed);
+      onAlignmentChanged(installed);
+      setNotice("The sync add-on is installed. Enable it when you are ready to use it.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not install the sync add-on.");
+      setNotice(null);
+    } finally {
+      setSyncAddonBusy(null);
+    }
+  }
+
+  async function handleToggleSyncAddon() {
+    if (!currentUser.isOwner || !syncAddon?.installed || !syncAddon.managed) return;
+    setSyncAddonBusy("toggle");
+    setError(null);
+    setNotice(null);
+    try {
+      const status = await setSyncAddonEnabled(!syncAddon.enabled);
+      setSyncAddon(status);
+      onAlignmentChanged(status);
+      setNotice(`Follow-along sync generation is now ${status.enabled ? "enabled" : "disabled"}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the sync add-on.");
+    } finally {
+      setSyncAddonBusy(null);
+    }
+  }
+
+  async function handleRemoveSyncAddon() {
+    if (!currentUser.isOwner || !syncAddon?.installed || !syncAddon.managed) return;
+    if (!window.confirm(
+      "Remove the follow-along sync generator?\n\nGenerated sync maps will be kept and will continue to work. The installed add-on is moved into recoverable update storage."
+    )) return;
+    setSyncAddonBusy("remove");
+    setError(null);
+    setNotice(null);
+    try {
+      const status = await removeSyncAddon();
+      setSyncAddon(status);
+      onAlignmentChanged(status);
+      setNotice("The sync add-on was removed. Existing sync maps were kept.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove the sync add-on.");
+    } finally {
+      setSyncAddonBusy(null);
+    }
+  }
+
   return (
     <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
       <header className="admin-head">
@@ -592,8 +680,8 @@ export function AdminPanel({
             className={section === item ? "selected" : ""}
             onClick={() => setSection(item)}
           >
-            {item === "overview" ? <Database size={15} /> : item === "users" ? <Users size={15} /> : item === "requests" ? <CloudDownload size={15} /> : <BookOpen size={15} />}
-            {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : "Downloaded books"}
+            {item === "overview" ? <Database size={15} /> : item === "users" ? <Users size={15} /> : item === "requests" ? <CloudDownload size={15} /> : item === "experiments" ? <FlaskConical size={15} /> : <BookOpen size={15} />}
+            {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : item === "experiments" ? "Experiments" : "Downloaded books"}
           </button>
         ))}
       </nav>
@@ -780,6 +868,112 @@ export function AdminPanel({
                     </div>
                   </div>
                 ) : null}
+              </article>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {section === "experiments" ? (
+        <div className="admin-content">
+          <section className="admin-card admin-software-card">
+            <div className="admin-software-head">
+              <div className="admin-software-copy">
+                <span className="section-label"><FlaskConical size={13} /> Experimental features</span>
+                <h2>Optional server add-ons</h2>
+                <p>
+                  Install capabilities separately without making the normal OperaLibre server larger
+                  or more demanding. Experimental add-ons may change while their behavior is refined.
+                </p>
+              </div>
+              <div className="admin-software-actions">
+                <button
+                  type="button"
+                  className="quiet-button"
+                  disabled={syncAddonChecking || syncAddonBusy !== null}
+                  onClick={() => void refreshSyncAddon(true)}
+                >
+                  {syncAddonChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />}
+                  {syncAddonChecking ? "Checking…" : "Check add-ons"}
+                </button>
+              </div>
+            </div>
+
+            <div className="admin-experiment-list" aria-live="polite">
+              <article>
+                <div className="admin-software-version-head">
+                  <div>
+                    <span>Follow-along sync generation</span>
+                    <strong>
+                      {syncAddonChecking && !syncAddon
+                        ? "Checking…"
+                        : syncAddon?.installed
+                          ? syncAddon.installedVersion
+                            ? `Version ${syncAddon.installedVersion}`
+                            : "External installation"
+                          : "Not installed"}
+                    </strong>
+                  </div>
+                  {syncAddon?.enabled ? (
+                    <span className="admin-current-badge"><Check size={12} /> Enabled</span>
+                  ) : syncAddon?.installed ? (
+                    <span className="admin-experimental-badge">Disabled</span>
+                  ) : (
+                    <span className="admin-experimental-badge">Optional</span>
+                  )}
+                </div>
+                <p>
+                  Creates sentence-level EPUB highlighting using local speech recognition and forced
+                  alignment. Audio stays on this server. Jobs run one at a time and can use substantial
+                  CPU, memory, and disk space. On smaller servers, generation may affect playback.
+                </p>
+                {syncAddon?.packageBytes ? (
+                  <p className="admin-experiment-detail">
+                    Download size: {formatFileSize(syncAddon.packageBytes)}. The recognition model is
+                    downloaded separately on first use.
+                  </p>
+                ) : null}
+                {syncAddon?.message ? <p className="admin-experiment-detail">{syncAddon.message}</p> : null}
+                <div className="admin-update-actions">
+                  {currentUser.isOwner && syncAddon?.canInstall && (!syncAddon.installed || syncAddon.updateAvailable) ? (
+                    <button
+                      type="button"
+                      disabled={syncAddonBusy !== null}
+                      onClick={() => void handleInstallSyncAddon()}
+                    >
+                      {syncAddonBusy === "install" ? <LoaderCircle size={15} className="spin-icon" /> : <Download size={15} />}
+                      {syncAddonBusy === "install" ? "Installing…" : syncAddon.installed ? "Update add-on" : "Install add-on"}
+                    </button>
+                  ) : null}
+                  {currentUser.isOwner && syncAddon?.installed && syncAddon.managed ? (
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      disabled={syncAddonBusy !== null}
+                      onClick={() => void handleToggleSyncAddon()}
+                    >
+                      {syncAddonBusy === "toggle" ? <LoaderCircle size={15} className="spin-icon" /> : <FlaskConical size={15} />}
+                      {syncAddon.enabled ? "Disable" : "Enable"}
+                    </button>
+                  ) : null}
+                  {currentUser.isOwner && syncAddon?.installed && syncAddon.managed ? (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={syncAddonBusy !== null}
+                      onClick={() => void handleRemoveSyncAddon()}
+                    >
+                      {syncAddonBusy === "remove" ? <LoaderCircle size={15} className="spin-icon" /> : <Trash2 size={15} />}
+                      {syncAddonBusy === "remove" ? "Removing…" : "Remove"}
+                    </button>
+                  ) : null}
+                  {!currentUser.isOwner && syncAddon?.installed ? <span>Only an owner can change add-ons.</span> : null}
+                  {syncAddon?.releaseUrl ? (
+                    <a className="quiet-button" href={syncAddon.releaseUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink size={14} /> Release details
+                    </a>
+                  ) : null}
+                </div>
               </article>
             </div>
           </section>

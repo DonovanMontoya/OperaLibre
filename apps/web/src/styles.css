@@ -9989,6 +9989,43 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   background: rgba(55, 112, 71, 0.1);
 }
 
+.admin-experimental-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: #765315;
+  background: rgba(184, 137, 58, 0.14);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-experiment-list > article {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  border-radius: 10px;
+  background: rgba(112, 37, 24, 0.025);
+}
+
+.admin-experiment-list p {
+  margin: 0;
+  color: var(--ink-faded);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.admin-experiment-list strong {
+  font: 400 1.18rem "Instrument Serif", serif;
+}
+
+.admin-experiment-list .admin-experiment-detail {
+  font-size: 0.72rem;
+}
+
 .admin-software-update {
   display: grid;
   gap: 10px;

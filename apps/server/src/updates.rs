@@ -28,7 +28,9 @@ const RELEASE_DOWNLOAD_PREFIX: &str =
 const RELEASE_PAGE_PREFIX: &str = "https://github.com/DonovanMontoya/OperaLibre/releases/";
 const MAX_UPDATE_PACKAGE_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_FRONTEND_PACKAGE_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_SYNC_ADDON_PACKAGE_BYTES: u64 = 900 * 1024 * 1024;
 const MAX_UPDATE_EXTRACTED_BYTES: u64 = 750 * 1024 * 1024;
+const MAX_SYNC_ADDON_EXTRACTED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const UPDATE_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -43,7 +45,10 @@ pub struct UpdateManager {
     client: Client,
     cache: Arc<Mutex<Option<CachedUpdateStatus>>>,
     frontend_cache: Arc<Mutex<Option<CachedFrontendUpdateStatus>>>,
+    sync_addon_cache: Arc<Mutex<Option<CachedSyncAddonStatus>>>,
     installing: Arc<AtomicBool>,
+    pub(crate) sync_lifecycle: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) sync_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// Holds the `installing` flag for the length of one install and releases it
@@ -96,6 +101,11 @@ struct CachedFrontendUpdateStatus {
     status: FrontendUpdateStatus,
 }
 
+struct CachedSyncAddonStatus {
+    checked_at: Instant,
+    status: SyncAddonStatus,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
@@ -128,6 +138,52 @@ pub struct FrontendUpdateStatus {
     pub published_at: Option<String>,
     pub notes: Option<String>,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAddonStatus {
+    pub id: &'static str,
+    pub installed: bool,
+    pub enabled: bool,
+    pub managed: bool,
+    pub installed_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+    pub can_install: bool,
+    pub package_bytes: Option<u64>,
+    pub release_url: Option<String>,
+    pub cli_path: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncAddonRuntime {
+    pub cli_path: PathBuf,
+    pub cli_args: Vec<String>,
+    pub ffmpeg_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExperimentalFeatureSettings {
+    #[serde(default)]
+    readalong_sync_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncAddonPackageMetadata {
+    schema_version: u32,
+    id: String,
+    version: String,
+    platform: String,
+    protocol_version: u32,
+    cli: String,
+    #[serde(default)]
+    cli_args: Vec<String>,
+    #[serde(default)]
+    ffmpeg: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,7 +248,10 @@ impl UpdateManager {
             client,
             cache: Arc::new(Mutex::new(None)),
             frontend_cache: Arc::new(Mutex::new(None)),
+            sync_addon_cache: Arc::new(Mutex::new(None)),
             installing: Arc::new(AtomicBool::new(false)),
+            sync_lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            sync_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -262,6 +321,254 @@ impl UpdateManager {
         self.install_frontend_inner().await
     }
 
+    pub async fn check_sync_addon(
+        &self,
+        force: bool,
+        configured_cli: Option<&Path>,
+    ) -> anyhow::Result<SyncAddonStatus> {
+        if let Some(cli_path) = configured_cli.filter(|path| path.is_file()) {
+            return Ok(SyncAddonStatus {
+                id: "readalong-sync",
+                installed: true,
+                enabled: true,
+                managed: false,
+                installed_version: None,
+                latest_version: None,
+                update_available: false,
+                can_install: false,
+                package_bytes: None,
+                release_url: None,
+                cli_path: Some(cli_path.to_string_lossy().into_owned()),
+                message: Some(
+                    "This generator is configured manually in server.config and is always enabled."
+                        .to_string(),
+                ),
+            });
+        }
+        if !force {
+            let cache = self.sync_addon_cache.lock().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.checked_at.elapsed() < UPDATE_CACHE_TTL
+            {
+                return Ok(cached.status.clone());
+            }
+        }
+
+        let installed = installed_sync_addon().ok();
+        let settings = self.read_experimental_settings().await;
+        let mut status = SyncAddonStatus {
+            id: "readalong-sync",
+            installed: installed.is_some(),
+            enabled: installed.is_some() && settings.readalong_sync_enabled,
+            managed: true,
+            installed_version: installed
+                .as_ref()
+                .map(|addon| addon.metadata.version.clone()),
+            latest_version: None,
+            update_available: false,
+            can_install: false,
+            package_bytes: None,
+            release_url: None,
+            cli_path: installed
+                .as_ref()
+                .map(|addon| addon.cli_path.to_string_lossy().into_owned()),
+            message: None,
+        };
+
+        let platform = match platform_key() {
+            Some(platform) => platform,
+            None => {
+                status.managed = false;
+                status.message = Some(
+                    "No managed sync add-on is available for this server platform.".to_string(),
+                );
+                return Ok(status);
+            }
+        };
+        let install_capability = managed_install(self.web_dist_dir.as_deref());
+        if let Err(error) = &install_capability {
+            status.managed = false;
+            status.message = Some(error.to_string());
+        }
+
+        match self.fetch_latest_release().await {
+            Ok(release) => {
+                status.release_url = Some(release.html_url.clone());
+                let latest = normalize_version(&release.tag_name);
+                status.latest_version = Some(latest.clone());
+                match validated_sync_addon_asset(&release, &latest, platform) {
+                    Ok((asset, _)) => {
+                        status.package_bytes = Some(asset.size);
+                        status.can_install = install_capability.is_ok();
+                        status.update_available = status
+                            .installed_version
+                            .as_deref()
+                            .and_then(|version| Version::parse(version).ok())
+                            .zip(Version::parse(&latest).ok())
+                            .is_some_and(|(installed, latest)| latest > installed);
+                    }
+                    Err(error) if status.message.is_none() => {
+                        status.message = Some(error.to_string());
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(error) => {
+                status.message = Some(format!(
+                    "Could not check for a sync add-on package: {error}"
+                ));
+            }
+        }
+
+        *self.sync_addon_cache.lock().await = Some(CachedSyncAddonStatus {
+            checked_at: Instant::now(),
+            status: status.clone(),
+        });
+        Ok(status)
+    }
+
+    pub async fn install_sync_addon(&self) -> anyhow::Result<SyncAddonStatus> {
+        // A disconnected HTTP client must not drop the lifecycle guard while
+        // blocking extraction or replacement is still working on the package.
+        let manager = self.clone();
+        tokio::spawn(async move { manager.install_sync_addon_inner().await }).await?
+    }
+
+    async fn install_sync_addon_inner(&self) -> anyhow::Result<SyncAddonStatus> {
+        let _lifecycle = self.sync_lifecycle.try_write().map_err(|_| {
+            anyhow!("Wait for queued and running sync jobs to finish before changing the add-on.")
+        })?;
+        let Some(_guard) = InstallGuard::acquire(&self.installing) else {
+            bail!("Another OperaLibre package is already being installed.");
+        };
+        let release = self.fetch_latest_release().await?;
+        let version = normalize_version(&release.tag_name);
+        Version::parse(&version).context("Invalid release version")?;
+        let platform = platform_key()
+            .ok_or_else(|| anyhow!("This server platform does not have a sync add-on package."))?;
+        let (asset, expected_digest) = validated_sync_addon_asset(&release, &version, platform)?;
+        let install = managed_install(self.web_dist_dir.as_deref())?;
+        let updates_dir = self.data_dir.join("updates");
+        fs::create_dir_all(&updates_dir).await?;
+        let staging = tempfile::Builder::new()
+            .prefix("readalong-sync-")
+            .tempdir_in(&updates_dir)?;
+        let staging_dir = staging.path();
+        let archive_path = self
+            .download_verified_asset(
+                asset,
+                expected_digest,
+                staging_dir,
+                MAX_SYNC_ADDON_PACKAGE_BYTES,
+            )
+            .await?;
+        let extract_dir = staging_dir.join("extracted");
+        extract_zip(
+            archive_path,
+            extract_dir.clone(),
+            MAX_SYNC_ADDON_EXTRACTED_BYTES,
+        )
+        .await?;
+        let package_root =
+            extract_dir.join(format!("operalibre-{version}-readalong-sync-{platform}"));
+        let metadata = validate_sync_addon_package(&package_root, &version, platform).await?;
+        make_sync_addon_executables(&package_root, &metadata).await?;
+        install_sync_addon_files(
+            package_root,
+            install.root.join("addons/readalong-sync"),
+            self.data_dir.clone(),
+        )
+        .await?;
+        *self.sync_addon_cache.lock().await = None;
+        self.check_sync_addon(true, None).await
+    }
+
+    pub async fn set_sync_addon_enabled(&self, enabled: bool) -> anyhow::Result<SyncAddonStatus> {
+        let _lifecycle = self.sync_lifecycle.try_write().map_err(|_| {
+            anyhow!("Wait for queued and running sync jobs to finish before changing the add-on.")
+        })?;
+        installed_sync_addon().context("The follow-along sync add-on is not installed.")?;
+        let mut settings = self.read_experimental_settings().await;
+        settings.readalong_sync_enabled = enabled;
+        self.write_experimental_settings(&settings).await?;
+        *self.sync_addon_cache.lock().await = None;
+        self.check_sync_addon(false, None).await
+    }
+
+    pub async fn remove_sync_addon(&self) -> anyhow::Result<SyncAddonStatus> {
+        let manager = self.clone();
+        tokio::spawn(async move { manager.remove_sync_addon_inner().await }).await?
+    }
+
+    async fn remove_sync_addon_inner(&self) -> anyhow::Result<SyncAddonStatus> {
+        let _lifecycle = self.sync_lifecycle.try_write().map_err(|_| {
+            anyhow!("Wait for queued and running sync jobs to finish before changing the add-on.")
+        })?;
+        let Some(_guard) = InstallGuard::acquire(&self.installing) else {
+            bail!("Another OperaLibre package is already being installed.");
+        };
+        let addon =
+            installed_sync_addon().context("The follow-along sync add-on is not installed.")?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Could not create an add-on removal timestamp")?
+            .as_millis();
+        let backup = self
+            .data_dir
+            .join("update-backups")
+            .join(format!("{timestamp}-readalong-sync"));
+        tokio::task::spawn_blocking(move || remove_sync_addon_files(&addon.root, &backup))
+            .await??;
+        let mut settings = self.read_experimental_settings().await;
+        settings.readalong_sync_enabled = false;
+        self.write_experimental_settings(&settings).await?;
+        *self.sync_addon_cache.lock().await = None;
+        self.check_sync_addon(false, None).await
+    }
+
+    pub async fn sync_addon_runtime(
+        &self,
+        configured_cli: Option<&Path>,
+    ) -> Option<SyncAddonRuntime> {
+        if let Some(cli_path) = configured_cli.filter(|path| path.is_file()) {
+            return Some(SyncAddonRuntime {
+                cli_path: cli_path.to_path_buf(),
+                cli_args: Vec::new(),
+                ffmpeg_path: None,
+            });
+        }
+        if !self
+            .read_experimental_settings()
+            .await
+            .readalong_sync_enabled
+        {
+            return None;
+        }
+        installed_sync_addon().ok().map(|addon| SyncAddonRuntime {
+            cli_path: addon.cli_path,
+            cli_args: addon.cli_args,
+            ffmpeg_path: addon.ffmpeg_path,
+        })
+    }
+
+    async fn read_experimental_settings(&self) -> ExperimentalFeatureSettings {
+        let path = self.data_dir.join("experimental-features.json");
+        let Ok(contents) = fs::read(path).await else {
+            return ExperimentalFeatureSettings::default();
+        };
+        serde_json::from_slice(&contents).unwrap_or_default()
+    }
+
+    async fn write_experimental_settings(
+        &self,
+        settings: &ExperimentalFeatureSettings,
+    ) -> anyhow::Result<()> {
+        fs::create_dir_all(&self.data_dir).await?;
+        crate::write_json_atomic(&self.data_dir.join("experimental-features.json"), settings)
+            .await
+            .map_err(|error| anyhow!("Could not save experimental feature settings: {error:?}"))
+    }
+
     async fn install_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
         let release = self.fetch_latest_release().await?;
         let status = self.status_for_release(&release)?;
@@ -302,7 +609,12 @@ impl UpdateManager {
             .await?;
 
         let extract_dir = staging_dir.join("extracted");
-        extract_zip(archive_path, extract_dir.clone()).await?;
+        extract_zip(
+            archive_path,
+            extract_dir.clone(),
+            MAX_UPDATE_EXTRACTED_BYTES,
+        )
+        .await?;
         let package_root = extract_dir.join(format!(
             "operalibre-{}-update-{platform}",
             status.latest_version
@@ -375,7 +687,12 @@ impl UpdateManager {
             )
             .await?;
         let extract_dir = staging_dir.join("extracted");
-        extract_zip(archive_path, extract_dir.clone()).await?;
+        extract_zip(
+            archive_path,
+            extract_dir.clone(),
+            MAX_UPDATE_EXTRACTED_BYTES,
+        )
+        .await?;
         let package_root =
             extract_dir.join(format!("operalibre-{}-frontend", status.latest_version));
         validate_frontend_package(&package_root, &status.latest_version).await?;
@@ -602,6 +919,96 @@ async fn prune_stale_staging(updates_dir: &Path, keep: &Path) {
     }
 }
 
+fn validated_sync_addon_asset<'a>(
+    release: &'a GithubRelease,
+    version: &str,
+    platform: &str,
+) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
+    let name = format!("operalibre-{version}-readalong-sync-{platform}.zip");
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
+    check_release_asset(asset, MAX_SYNC_ADDON_PACKAGE_BYTES, "sync add-on package")
+}
+
+struct InstalledSyncAddon {
+    root: PathBuf,
+    metadata: SyncAddonPackageMetadata,
+    cli_path: PathBuf,
+    cli_args: Vec<String>,
+    ffmpeg_path: Option<PathBuf>,
+}
+
+fn installed_sync_addon() -> anyhow::Result<InstalledSyncAddon> {
+    let root = std::env::current_exe()?
+        .parent()
+        .ok_or_else(|| anyhow!("The server executable has no installation folder."))?
+        .join("addons/readalong-sync");
+    let metadata: SyncAddonPackageMetadata = serde_json::from_slice(
+        &std::fs::read(root.join("ADDON.json")).context("The sync add-on has no ADDON.json")?,
+    )?;
+    validate_installed_sync_addon(&root, metadata)
+}
+
+fn validate_installed_sync_addon(
+    root: &Path,
+    metadata: SyncAddonPackageMetadata,
+) -> anyhow::Result<InstalledSyncAddon> {
+    if metadata.schema_version != 1
+        || metadata.id != "readalong-sync"
+        || metadata.protocol_version != 1
+        || platform_key() != Some(metadata.platform.as_str())
+    {
+        bail!("The installed sync add-on is not compatible with this server.");
+    }
+    Version::parse(&normalize_version(&metadata.version))
+        .context("The installed sync add-on version is invalid")?;
+    let cli_path = safe_addon_member(root, &metadata.cli)?;
+    if !cli_path.is_file() {
+        bail!("The installed sync add-on is missing its command-line program.");
+    }
+    let cli_args = metadata
+        .cli_args
+        .iter()
+        .map(|path| safe_addon_member(root, path))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if cli_args.iter().any(|path| !path.is_file()) {
+        bail!("The installed sync add-on is missing a command-line program component.");
+    }
+    let ffmpeg_path = metadata
+        .ffmpeg
+        .as_deref()
+        .map(|path| safe_addon_member(root, path))
+        .transpose()?;
+    if ffmpeg_path.as_ref().is_some_and(|path| !path.is_file()) {
+        bail!("The installed sync add-on is missing ffmpeg.");
+    }
+    Ok(InstalledSyncAddon {
+        root: root.to_path_buf(),
+        metadata,
+        cli_path,
+        cli_args: cli_args
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        ffmpeg_path,
+    })
+}
+
+fn safe_addon_member(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        bail!("The sync add-on manifest contains an unsafe path.");
+    }
+    Ok(root.join(relative))
+}
+
 /// Clears whatever a previous, possibly interrupted attempt left in `dir` and
 /// recreates it empty.
 async fn reset_dir(dir: &Path) -> anyhow::Result<()> {
@@ -810,6 +1217,44 @@ async fn validate_frontend_package(root: &Path, version: &str) -> anyhow::Result
     Ok(())
 }
 
+async fn validate_sync_addon_package(
+    root: &Path,
+    version: &str,
+    platform: &str,
+) -> anyhow::Result<SyncAddonPackageMetadata> {
+    let metadata: SyncAddonPackageMetadata = serde_json::from_slice(
+        &fs::read(root.join("ADDON.json"))
+            .await
+            .context("The sync add-on package has no ADDON.json manifest.")?,
+    )?;
+    if metadata.schema_version != 1
+        || metadata.id != "readalong-sync"
+        || normalize_version(&metadata.version) != version
+        || metadata.platform != platform
+        || metadata.protocol_version != 1
+    {
+        bail!("The sync add-on package metadata does not match this server or release.");
+    }
+    safe_addon_member(root, &metadata.cli)?;
+    if let Some(ffmpeg) = &metadata.ffmpeg {
+        safe_addon_member(root, ffmpeg)?;
+    }
+    validate_installed_sync_addon(
+        root,
+        SyncAddonPackageMetadata {
+            schema_version: metadata.schema_version,
+            id: metadata.id.clone(),
+            version: metadata.version.clone(),
+            platform: metadata.platform.clone(),
+            protocol_version: metadata.protocol_version,
+            cli: metadata.cli.clone(),
+            cli_args: metadata.cli_args.clone(),
+            ffmpeg: metadata.ffmpeg.clone(),
+        },
+    )?;
+    Ok(metadata)
+}
+
 async fn install_frontend_files(
     source: PathBuf,
     destination: PathBuf,
@@ -868,6 +1313,130 @@ async fn install_frontend_files(
     Ok(())
 }
 
+/// Both renames stay on their own volume; the backup is verified before
+/// the live runtime is detached.
+fn remove_sync_addon_files(source: &Path, backup: &Path) -> anyhow::Result<()> {
+    let backup_parent = backup
+        .parent()
+        .context("The backup has no parent directory")?;
+    std::fs::create_dir_all(backup_parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".sync-backup-")
+        .tempdir_in(backup_parent)?;
+    let copy = staging.path().join("runtime");
+    copy_directory(source, &copy)
+        .context("Could not back up the sync runtime; installation retained")?;
+    verify_directory_copy(source, &copy)?;
+    anyhow::ensure!(
+        !backup.exists(),
+        "The sync backup already exists; installation retained"
+    );
+    std::fs::rename(&copy, backup)?;
+    let parent = source
+        .parent()
+        .context("The sync runtime has no parent directory")?;
+    let removed = tempfile::Builder::new()
+        .prefix(".removed-sync-")
+        .tempdir_in(parent)?;
+    std::fs::rename(source, removed.path().join("runtime"))
+        .context("Could not detach the sync runtime; backup retained")?;
+    if let Err(error) = removed.close() {
+        tracing::warn!("The sync runtime was removed, but temporary file cleanup failed: {error}");
+    }
+    Ok(())
+}
+
+fn verify_directory_copy(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            verify_directory_copy(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            anyhow::ensure!(
+                file_digest(&entry.path())? == file_digest(&target)?,
+                "Sync runtime backup verification failed; installation retained"
+            );
+        } else {
+            bail!("Unsupported sync runtime entry; installation retained");
+        }
+    }
+    Ok(())
+}
+
+fn file_digest(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = std::io::Read::read(&mut file, &mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().to_vec())
+}
+
+async fn install_sync_addon_files(
+    source: PathBuf,
+    destination: PathBuf,
+    data_dir: PathBuf,
+) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Could not create a sync add-on update timestamp")?
+            .as_millis();
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow!("The sync add-on folder has no parent."))?;
+        std::fs::create_dir_all(parent)?;
+        let staged = parent.join(format!(
+            ".readalong-sync-staged-{}-{timestamp}",
+            std::process::id()
+        ));
+        let rollback = parent.join(format!(
+            ".readalong-sync-rollback-{}-{timestamp}",
+            std::process::id()
+        ));
+        if let Err(error) = copy_directory(&source, &staged) {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(error).context("Could not stage the sync add-on");
+        }
+        if destination.exists() {
+            let backup = data_dir
+                .join("update-backups")
+                .join(format!("{timestamp}-readalong-sync"));
+            copy_directory(&destination, &backup)
+                .context("Could not create the sync add-on rollback copy")?;
+            std::fs::rename(&destination, &rollback)
+                .context("Could not move the installed sync add-on aside")?;
+        }
+        if let Err(error) = std::fs::rename(&staged, &destination) {
+            let rollback_result = if rollback.exists() {
+                std::fs::rename(&rollback, &destination)
+            } else {
+                Ok(())
+            };
+            return match rollback_result {
+                Ok(()) => Err(error)
+                    .context("Could not install the sync add-on; the previous version was restored"),
+                Err(rollback_error) => Err(anyhow!(
+                    "Could not install the sync add-on ({error}) and could not restore the previous version ({rollback_error})."
+                )),
+            };
+        }
+        if rollback.exists() {
+            let _ = std::fs::remove_dir_all(rollback);
+        }
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
 fn copy_directory(source: &Path, destination: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(destination)?;
     for entry in std::fs::read_dir(source)? {
@@ -899,7 +1468,27 @@ async fn make_package_executables(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn extract_zip(archive_path: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+async fn make_sync_addon_executables(
+    root: &Path,
+    metadata: &SyncAddonPackageMetadata,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        for relative in std::iter::once(metadata.cli.as_str()).chain(metadata.ffmpeg.as_deref()) {
+            let path = safe_addon_member(root, relative)?;
+            let mut permissions = fs::metadata(&path).await?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn extract_zip(
+    archive_path: PathBuf,
+    output: PathBuf,
+    maximum_extracted_bytes: u64,
+) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         std::fs::create_dir_all(&output)?;
         let file = std::fs::File::open(archive_path)?;
@@ -910,7 +1499,7 @@ async fn extract_zip(archive_path: PathBuf, output: PathBuf) -> anyhow::Result<(
             extracted_size = extracted_size
                 .checked_add(entry.size())
                 .ok_or_else(|| anyhow!("The extracted update package is too large."))?;
-            if extracted_size > MAX_UPDATE_EXTRACTED_BYTES {
+            if extracted_size > maximum_extracted_bytes {
                 bail!("The extracted update package is too large.");
             }
             let relative = entry
@@ -966,10 +1555,115 @@ fn truncate_notes(notes: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn removal_keeps_a_verified_backup_and_leaves_maps_alone() {
+        let install = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let source = install.path().join("runtime");
+        let backup = data.path().join("backups/runtime");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("nested/model"), b"runtime bytes").unwrap();
+        std::fs::write(data.path().join("book.sync.json"), b"map").unwrap();
+        super::remove_sync_addon_files(&source, &backup).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(backup.join("nested/model")).unwrap(),
+            b"runtime bytes"
+        );
+        assert_eq!(
+            std::fs::read(data.path().join("book.sync.json")).unwrap(),
+            b"map"
+        );
+    }
+
+    #[test]
+    fn a_failed_backup_preserves_the_installed_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("runtime");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("program"), b"original").unwrap();
+        let blocked = root.path().join("not-a-directory");
+        std::fs::write(&blocked, b"file").unwrap();
+        assert!(super::remove_sync_addon_files(&source, &blocked.join("backup")).is_err());
+        assert_eq!(std::fs::read(source.join("program")).unwrap(), b"original");
+        let copy = root.path().join("copy");
+        super::copy_directory(&source, &copy).unwrap();
+        std::fs::write(copy.join("program"), b"corrupt!").unwrap();
+        assert!(super::verify_directory_copy(&source, &copy).is_err());
+    }
+
+    #[tokio::test]
+    async fn sync_jobs_exclude_runtime_changes_and_only_one_can_process() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let running = manager.sync_lifecycle.clone().read_owned().await;
+        let queued = manager.sync_lifecycle.clone().read_owned().await;
+        let slot = manager.sync_slots.try_acquire().unwrap();
+        assert!(manager.sync_slots.try_acquire().is_err());
+        for result in [
+            manager.install_sync_addon().await,
+            manager.remove_sync_addon().await,
+            manager.set_sync_addon_enabled(false).await,
+        ] {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Wait for queued and running sync jobs")
+            );
+        }
+        drop(slot);
+        drop(running);
+        assert!(manager.sync_slots.try_acquire().is_ok());
+        assert!(manager.sync_lifecycle.try_write().is_err());
+        drop(queued);
+        let updating = manager.sync_lifecycle.write().await;
+        assert!(manager.sync_lifecycle.clone().try_read_owned().is_err());
+        drop(updating);
+        assert!(manager.sync_lifecycle.clone().try_read_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_runtime_replacement_preserves_previous_version_and_maps() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let installed = root.path().join("addons/readalong-sync");
+        let data = root.path().join("data");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(data.join("sync")).unwrap();
+        std::fs::write(source.join("runtime"), "new").unwrap();
+        std::fs::write(installed.join("runtime"), "old").unwrap();
+        std::fs::write(data.join("sync/book.sync.json"), "map").unwrap();
+        super::install_sync_addon_files(source, installed.clone(), data.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(installed.join("runtime")).unwrap(),
+            "new"
+        );
+        let backup = std::fs::read_dir(data.join("update-backups"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            std::fs::read_to_string(backup.join("runtime")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data.join("sync/book.sync.json")).unwrap(),
+            "map"
+        );
+    }
+
     use super::{
-        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, UpdateManager,
-        install_frontend_files, install_layout, installed_frontend_version, normalize_version,
-        prune_stale_staging, truncate_notes, validated_frontend_asset, validated_update_asset,
+        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, SyncAddonPackageMetadata,
+        UpdateManager, install_frontend_files, install_layout, installed_frontend_version,
+        normalize_version, platform_key, prune_stale_staging, truncate_notes,
+        validate_installed_sync_addon, validated_frontend_asset, validated_sync_addon_asset,
+        validated_update_asset,
     };
     use std::sync::{
         Arc,
@@ -1054,6 +1748,90 @@ mod tests {
         assert!(validated_update_asset(&release, "1.2.3", "macos-x64").is_err());
         release.assets[0].digest = Some("sha256:not-a-digest".to_string());
         assert!(validated_update_asset(&release, "1.2.3", "macos-arm64").is_err());
+    }
+
+    #[test]
+    fn sync_addon_assets_require_an_exact_platform_name_and_valid_digest() {
+        let platform = platform_key().unwrap();
+        let name = format!("operalibre-1.2.3-readalong-sync-{platform}.zip");
+        let mut release = GithubRelease {
+            tag_name: "v1.2.3".to_string(),
+            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
+                .to_string(),
+            published_at: None,
+            body: None,
+            assets: vec![GithubReleaseAsset {
+                browser_download_url: format!(
+                    "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/{name}"
+                ),
+                name,
+                size: 1024,
+                digest: Some(format!("sha256:{}", "b".repeat(64))),
+            }],
+        };
+
+        assert!(validated_sync_addon_asset(&release, "1.2.3", platform).is_ok());
+        assert!(validated_sync_addon_asset(&release, "1.2.3", "wrong-platform").is_err());
+        release.assets[0].digest = None;
+        assert!(validated_sync_addon_asset(&release, "1.2.3", platform).is_err());
+    }
+
+    #[test]
+    fn sync_addon_manifest_paths_cannot_escape_the_package() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("generator"), []).unwrap();
+        std::fs::write(root.path().join("launcher.js"), []).unwrap();
+        let metadata = |cli: &str, cli_args: Vec<String>| SyncAddonPackageMetadata {
+            schema_version: 1,
+            id: "readalong-sync".to_string(),
+            version: "1.2.3".to_string(),
+            platform: platform_key().unwrap().to_string(),
+            protocol_version: 1,
+            cli: cli.to_string(),
+            cli_args,
+            ffmpeg: None,
+        };
+
+        assert!(
+            validate_installed_sync_addon(
+                root.path(),
+                metadata("generator", vec!["launcher.js".to_string()]),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_installed_sync_addon(root.path(), metadata("../generator", Vec::new()))
+                .is_err()
+        );
+        assert!(
+            validate_installed_sync_addon(root.path(), metadata("/tmp/generator", Vec::new()))
+                .is_err()
+        );
+        assert!(
+            validate_installed_sync_addon(
+                root.path(),
+                metadata("generator", vec!["../launcher.js".to_string()]),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manually_configured_sync_generator_stays_enabled() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("echogarden");
+        std::fs::write(&cli, []).unwrap();
+        let manager = UpdateManager::new(root.path().join("data"), None, 4000).unwrap();
+
+        let status = manager.check_sync_addon(false, Some(&cli)).await.unwrap();
+
+        assert!(status.installed);
+        assert!(status.enabled);
+        assert!(!status.managed);
+        assert_eq!(
+            status.cli_path.as_deref(),
+            Some(cli.to_string_lossy().as_ref())
+        );
     }
 
     #[test]
