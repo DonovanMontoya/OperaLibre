@@ -1439,7 +1439,7 @@ fn login_throttle_locks_after_max_failures() {
 }
 
 #[cfg(unix)]
-fn fake_libation_state(root: &std::path::Path) -> (super::AppState, std::path::PathBuf) {
+pub(crate) fn fake_libation_state(root: &std::path::Path) -> (super::AppState, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
     let library_root = root.join("library");

@@ -21,6 +21,7 @@ import type {
   ProfileStats,
   Progress,
   ServerType,
+  SyncAddonStatus,
   SyncMap,
   UpdateInstallStarted,
   FrontendUpdateStatus,
@@ -645,6 +646,34 @@ export async function installFrontendUpdate() {
     "/api/frontend-update/install",
     { method: "POST" },
     10 * 60_000
+  );
+}
+
+export async function getSyncAddonStatus(refresh = false) {
+  return request<SyncAddonStatus>(
+    `/api/experimental-features/readalong-sync${refresh ? "?refresh=true" : ""}`
+  );
+}
+
+export async function installSyncAddon() {
+  return request<SyncAddonStatus>(
+    "/api/experimental-features/readalong-sync/install",
+    { method: "POST" },
+    10 * 60_000
+  );
+}
+
+export async function setSyncAddonEnabled(enabled: boolean) {
+  return request<SyncAddonStatus>(
+    "/api/experimental-features/readalong-sync/enabled",
+    { method: "PUT", body: JSON.stringify({ enabled }) }
+  );
+}
+
+export async function removeSyncAddon() {
+  return request<SyncAddonStatus>(
+    "/api/experimental-features/readalong-sync",
+    { method: "DELETE" }
   );
 }
 

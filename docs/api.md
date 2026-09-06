@@ -97,8 +97,12 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves a sidecar or generated map when one exists; otherwise, for a book with an EPUB companion, estimates one from the chapter list on first request and caches it. |
 | `POST` | `/api/books/{book_id}/sync/anchors` | Add a listener-placed sync anchor to an estimated map: `{ "href": ..., "text": ..., "seconds": ... }` says the sentence `text` in spine document `href` is being narrated at book position `seconds`. Kept with the book under `data_dir/sync`; the estimate is rebuilt through every anchor on the next request. Returns `{ "anchorCount": n }`. Rejected for books that already have an aligned map. |
 | `DELETE` | `/api/books/{book_id}/sync/anchors` | Drop every listener-placed anchor on the book. Admin only. |
-| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires the alignment CLI. Returns `{ "jobId": "..." }`. |
-| `GET` | `/api/alignment/status` | Whether an alignment CLI was found: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
+| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are queued and deduplicated by book. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
+| `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
+| `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
+| `PUT` | `/api/experimental-features/readalong-sync/enabled` | Enable or disable an installed managed add-on with `{ "enabled": bool }`. Owner only. |
+| `DELETE` | `/api/experimental-features/readalong-sync` | Disable the managed add-on and move its installed files into recoverable update storage. Existing sync maps are retained. Owner only. |
 | `GET` | `/api/books/{book_id}/download` | Zip download of all the book's files. Subject to `max_book_download_gib` and `max_concurrent_book_downloads`. |
 | `DELETE` | `/api/books/{book_id}/download` | Delete the server's local copy. Admin only; Libation catalog state, progress, metadata overrides, and access grants are retained for later redownload. |
 | `GET` | `/api/books/{book_id}/progress` | Playback progress for the current user and book. |

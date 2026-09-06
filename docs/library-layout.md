@@ -100,9 +100,9 @@ When a book has an EPUB companion, a *sync map* lets the reader pane follow the 
 2. **Sentence.** A forced alignment of the audio against the text, exact to the sentence.
 3. **Word.** The same alignment also times every word; the reader marks the narrated word inside the sentence.
 
-Sentence and word precision come from a `.sync.json` file matched with the same stem rules as sidecars (`The Hobbit.sync.json` next to `The Hobbit.m4b`). You can provide one yourself, or let the server generate one: install [echogarden](https://github.com/echogarden-project/echogarden) (`npm install -g echogarden`, or set `alignment_cli_path` in `server.config`), then use **Improve sync** in the readalong pane (admins only). Generated maps are stored under `data_dir/sync/`; a sidecar next to the book always wins over a generated one, and both win over an estimate.
+Sentence and word timings come from a matching `.sync.json` sidecar or the optional generator. Owners can install and enable it under **Administration → Experimental features**, then administrators can choose **Improve sync** in the reader. Manual installations can set `alignment_cli_path` to an existing echogarden executable. Generated maps live under `data_dir/sync/`; sidecars take priority, and both take priority over estimates. Disabling or removing the generator keeps those maps.
 
-Generation force-aligns each audio file against the EPUB text. Single-file audiobooks are aligned in one pass; multi-file books are scoped by matching track titles against the EPUB's table of contents in order. Chapter numbers are recognised as digits, words, or roman numerals (`Chapter 3`, `Chapter Three`, `III.`), duplicate titles land on the right occurrence, and tracks named only `Track 07` are paired by position when both sides list the same number of chapters. A track that matches nothing (opening credits, say) is skipped rather than failing the book.
+Generation uses embedded chapter boundaries when they match the EPUB; otherwise it uses whole-track scopes. Long scopes are processed in transcription and alignment windows to limit drift. Multi-file books use ordered chapter matching, including spelled-out and roman chapter numbers, repeated titles, and unmatched credits. Generation runs one book at a time and requires no paid transcription service.
 
 ## Metadata fields shown in the UI
 

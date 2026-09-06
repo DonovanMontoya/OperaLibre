@@ -95,6 +95,8 @@ pub struct EpubDocument {
     /// Pictures declared in the manifest. Used to tell an illustrated
     /// supplement from a text.
     pub image_count: usize,
+    /// `dc:language` from the package metadata, lowercased, when present.
+    pub language: Option<String>,
 }
 
 pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
@@ -195,11 +197,27 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
         .filter(|item| item.media_type.starts_with("image/"))
         .count();
 
+    let language = element_text(&opf, "dc:language")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+
     Ok(EpubDocument {
         sections,
         toc,
+        language,
         image_count,
     })
+}
+
+/// Text content of the first `<name>...</name>` element, if any.
+fn element_text(xml: &str, name: &str) -> Option<String> {
+    let lower = xml.to_ascii_lowercase();
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let start = lower.find(&open)?;
+    let body_start = start + lower[start..].find('>')? + 1;
+    let body_end = body_start + lower[body_start..].find(&close)?;
+    Some(strip_tags(&xml[body_start..body_end]))
 }
 
 fn read_zip_text<R: Read + std::io::Seek>(
@@ -676,6 +694,59 @@ impl Transcript {
         let section = self.sections.get(index)?;
         (offset_utf16 >= section.start_utf16).then_some(section.href.as_str())
     }
+
+    pub fn len_utf16(&self) -> u64 {
+        self.text.encode_utf16().count() as u64
+    }
+
+    /// The stretch of text between two UTF-16 offsets as a transcript of its
+    /// own, with section ranges rebased so an aligner's offsets into the
+    /// window map straight back to documents.
+    pub fn window(&self, start_utf16: u64, end_utf16: u64) -> Transcript {
+        let end_utf16 = end_utf16.max(start_utf16);
+        let start_byte = utf16_to_byte_index(&self.text, start_utf16);
+        let end_byte = utf16_to_byte_index(&self.text, end_utf16);
+        let sections = self
+            .sections
+            .iter()
+            .filter(|section| section.end_utf16 > start_utf16 && section.start_utf16 < end_utf16)
+            .map(|section| TranscriptSection {
+                href: section.href.clone(),
+                start_utf16: section.start_utf16.max(start_utf16) - start_utf16,
+                end_utf16: section.end_utf16.min(end_utf16) - start_utf16,
+            })
+            .collect();
+        Transcript {
+            text: self.text[start_byte..end_byte].to_string(),
+            sections,
+        }
+    }
+}
+
+/// Byte index of the character that starts at a UTF-16 offset (or the end of
+/// the text when the offset lies beyond it).
+pub fn utf16_to_byte_index(text: &str, offset_utf16: u64) -> usize {
+    let mut seen = 0u64;
+    for (byte_index, ch) in text.char_indices() {
+        if seen >= offset_utf16 {
+            return byte_index;
+        }
+        seen += ch.len_utf16() as u64;
+    }
+    text.len()
+}
+
+/// First non-whitespace UTF-16 offset at or after `offset_utf16`.
+pub fn skip_whitespace_utf16(text: &str, offset_utf16: u64) -> u64 {
+    let start = utf16_to_byte_index(text, offset_utf16);
+    let mut offset = offset_utf16;
+    for ch in text[start..].chars() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        offset += ch.len_utf16() as u64;
+    }
+    offset
 }
 
 // ---------------------------------------------------------------------------
@@ -881,12 +952,257 @@ impl<'a> TextCursor<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Windowed alignment anchors
+// ---------------------------------------------------------------------------
+//
+// The forced aligner holds a whole input in memory and, given more text than
+// speech (or the reverse), spreads the mismatch evenly across the input rather
+// than parking it at one end. Long audio is therefore aligned in windows whose
+// text is known exactly: a speech recognizer transcribes the window, runs of
+// recognized words are located in the transcript, and the last confident
+// match at a sentence end becomes the window's boundary. Recognizer word
+// timings are only trusted at those anchors; the forced aligner produces the
+// sentence timings in between.
+
+/// A recognizer word, normalized for matching against transcript tokens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecognizedWord {
+    pub text: String,
+    pub start_time: f64,
+    pub end_time: f64,
+}
+
+/// Every `word` entry of a recognizer timeline, in order, with punctuation
+/// and case removed. Words that normalize to nothing are dropped.
+pub fn recognized_words(entries: &[TimelineEntry]) -> Vec<RecognizedWord> {
+    let mut out = Vec::new();
+    collect_recognized_words(entries, &mut out);
+    out
+}
+
+fn collect_recognized_words(entries: &[TimelineEntry], out: &mut Vec<RecognizedWord>) {
+    for entry in entries {
+        if entry.kind == "word" {
+            let text = normalize_word(&entry.text);
+            if !text.is_empty() {
+                out.push(RecognizedWord {
+                    text,
+                    start_time: entry.start_time,
+                    end_time: entry.end_time,
+                });
+            }
+        } else if let Some(children) = &entry.timeline {
+            collect_recognized_words(children, out);
+        }
+    }
+}
+
+/// Lowercases and keeps only letters and digits, so `“Kaladin,”` in the
+/// transcript and `kaladin` from the recognizer compare equal.
+fn normalize_word(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+struct TranscriptWord {
+    text: String,
+    end_utf16: u64,
+    /// The token closes a sentence: it ends in terminal punctuation (allowing
+    /// closing quotes or brackets after it) or is followed by a line break.
+    sentence_final: bool,
+}
+
+/// Whitespace-delimited tokens of `text` that lie wholly inside the UTF-16
+/// range `[start, start + max_len)`.
+fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<TranscriptWord> {
+    let limit = start_utf16.saturating_add(max_len_utf16);
+    let mut words = Vec::new();
+    let mut offset = 0u64;
+    let mut current = String::new();
+    let mut current_end = 0u64;
+    let flush =
+        |current: &mut String, end: u64, followed_by_break: bool, out: &mut Vec<TranscriptWord>| {
+            if current.is_empty() {
+                return;
+            }
+            let normalized = normalize_word(current);
+            let trimmed = current.trim_end_matches(|ch: char| {
+                matches!(ch, '”' | '’' | '"' | '\'' | ')' | ']' | '»' | '」' | '』')
+            });
+            let sentence_final =
+                followed_by_break || trimmed.ends_with(['.', '!', '?', '…', '。', '！', '？']);
+            if !normalized.is_empty() {
+                out.push(TranscriptWord {
+                    text: normalized,
+                    end_utf16: end,
+                    sentence_final,
+                });
+            }
+            current.clear();
+        };
+    for ch in text.chars() {
+        let width = ch.len_utf16() as u64;
+        if offset >= limit {
+            // A token cut by the limit is unusable, and `current` is one.
+            current.clear();
+            break;
+        }
+        if offset >= start_utf16 {
+            if ch.is_whitespace() {
+                flush(
+                    &mut current,
+                    current_end,
+                    ch == '\n' || ch == '\r',
+                    &mut words,
+                );
+            } else {
+                current.push(ch);
+                current_end = offset + width;
+            }
+        }
+        offset += width;
+    }
+    flush(&mut current, current_end, true, &mut words);
+    words
+}
+
+/// UTF-16 offset just past the last sentence-final token that ends at or
+/// before `target_utf16`, falling back to the last whole token, then to
+/// `target_utf16` itself. Used when a window has no recognized anchor.
+pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u64 {
+    let words = transcript_words(text, start_utf16, target_utf16.saturating_sub(start_utf16));
+    words
+        .iter()
+        .rev()
+        .find(|word| word.sentence_final)
+        .or(words.last())
+        .map(|word| word.end_utf16)
+        .unwrap_or(target_utf16)
+}
+
+const ANCHOR_NGRAM: usize = 5;
+
+/// Where a recognized window can be tied to the transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowAnchor {
+    /// Seconds of unscripted audio at the start of the window (a narrated
+    /// heading, an image description), or zero. Only set when the first
+    /// scripted words were recognized after the window opened.
+    pub lead_in_seconds: f64,
+    /// The last confident sentence boundary inside the window.
+    pub end: Option<WindowEnd>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowEnd {
+    /// Seconds into the window at which the sentence-final word ends.
+    pub seconds: f64,
+    /// Absolute UTF-16 offset in the transcript just past that word.
+    pub text_end_utf16: u64,
+}
+
+/// Ties a window's recognized words to the transcript from
+/// `text_start_utf16` onward (looking at most `text_len_utf16` ahead). Runs
+/// of `ANCHOR_NGRAM` words that occur once in that stretch are matched, the
+/// longest monotonic chain of matches is kept, and the latest chained word
+/// that closes a sentence no later than `latest_seconds` becomes the end.
+pub fn find_window_anchor(
+    recognized: &[RecognizedWord],
+    transcript_text: &str,
+    text_start_utf16: u64,
+    text_len_utf16: u64,
+    latest_seconds: f64,
+) -> WindowAnchor {
+    let words = transcript_words(transcript_text, text_start_utf16, text_len_utf16);
+    let mut grams: HashMap<Vec<&str>, Option<usize>> = HashMap::new();
+    for (index, run) in words.windows(ANCHOR_NGRAM).enumerate() {
+        let key = run.iter().map(|word| word.text.as_str()).collect();
+        grams
+            .entry(key)
+            .and_modify(|seen| *seen = None)
+            .or_insert(Some(index));
+    }
+    let matches: Vec<(usize, usize)> = recognized
+        .windows(ANCHOR_NGRAM)
+        .enumerate()
+        .filter_map(|(recognized_index, run)| {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            let word_index = (*grams.get(&key)?)?;
+            Some((recognized_index, word_index))
+        })
+        .collect();
+    let chain = longest_increasing_chain(&matches);
+
+    let lead_in_seconds = chain
+        .first()
+        .filter(|(_, word_index)| *word_index == 0)
+        .map(|(recognized_index, _)| recognized[*recognized_index].start_time.max(0.0))
+        .unwrap_or(0.0);
+
+    let end = chain
+        .iter()
+        .rev()
+        .find_map(|(recognized_index, word_index)| {
+            (0..ANCHOR_NGRAM).rev().find_map(|k| {
+                let word = &words[word_index + k];
+                let seconds = recognized[recognized_index + k].end_time;
+                (word.sentence_final && seconds <= latest_seconds).then_some(WindowEnd {
+                    seconds,
+                    text_end_utf16: word.end_utf16,
+                })
+            })
+        });
+
+    WindowAnchor {
+        lead_in_seconds,
+        end,
+    }
+}
+
+/// Longest subsequence of `matches` (already ordered by recognizer position)
+/// whose transcript positions strictly increase. Drops matches that would
+/// require the narrator to jump backwards or forwards through the text.
+fn longest_increasing_chain(matches: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut tails: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; matches.len()];
+    for (index, (_, word_index)) in matches.iter().enumerate() {
+        let position = tails.partition_point(|&tail| matches[tail].1 < *word_index);
+        if position == tails.len() {
+            tails.push(index);
+        } else {
+            tails[position] = index;
+        }
+        previous[index] = (position > 0).then(|| tails[position - 1]);
+    }
+    let mut chain = Vec::new();
+    let mut cursor = tails.last().copied();
+    while let Some(index) = cursor {
+        chain.push(matches[index]);
+        cursor = previous[index];
+    }
+    chain.reverse();
+    chain
+}
+
+// ---------------------------------------------------------------------------
 // Track-to-chapter scoping for multi-file books
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq)]
 pub struct TrackScope {
     pub track_index: usize,
+    pub section_range: std::ops::Range<usize>,
+}
+
+/// A matched embedded-audio chapter and the EPUB spine sections that belong
+/// to it. The audio timing stays in `sync.rs`; this type only describes the
+/// structural match so the matching policy can be tested without media files.
+#[derive(Debug, PartialEq)]
+pub struct ChapterScope {
+    pub chapter_index: usize,
     pub section_range: std::ops::Range<usize>,
 }
 
@@ -1076,6 +1392,94 @@ pub fn align_labels(
     matched
 }
 
+/// Maps embedded audiobook chapters to EPUB chapter runs. Unmatched material
+/// at either edge is allowed (opening/closing credits are common), but a gap
+/// between matched chapters is rejected: assigning that EPUB text to either
+/// neighbour would recreate the drift that chapter scoping is meant to stop.
+///
+/// At least two chapters must match. A single match does not create useful
+/// reset points and is too weak a signal to justify slicing the source audio.
+pub fn build_chapter_scopes(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    section_count: usize,
+) -> Result<Vec<ChapterScope>, String> {
+    if toc.is_empty() {
+        return Err(
+            "The EPUB has no usable table of contents to match audio chapters against.".to_string(),
+        );
+    }
+
+    let targets = chapter_titles
+        .iter()
+        .map(|title| parse_label(title))
+        .collect::<Vec<_>>();
+    let items = toc
+        .iter()
+        .map(|entry| parse_label(&entry.title))
+        .collect::<Vec<_>>();
+    let matched = match_in_order(&targets, &items)
+        .into_iter()
+        .map(|index| index.map(|index| toc[index].spine_index))
+        .collect::<Vec<_>>();
+
+    let matched_indices = matched
+        .iter()
+        .enumerate()
+        .filter_map(|(index, spine)| spine.map(|spine| (index, spine)))
+        .collect::<Vec<_>>();
+    if matched_indices.len() < 2 {
+        return Err("Fewer than two embedded audio chapters matched the EPUB.".to_string());
+    }
+    if matched_indices
+        .windows(2)
+        .any(|pair| pair[0].1 >= pair[1].1)
+    {
+        return Err(
+            "Embedded chapters share or reverse EPUB documents; use whole-track alignment."
+                .to_string(),
+        );
+    }
+
+    let first = matched_indices.first().expect("checked above").0;
+    let last = matched_indices.last().expect("checked above").0;
+    if let Some((index, _)) = matched
+        .iter()
+        .enumerate()
+        .find(|(index, spine)| *index > first && *index < last && spine.is_none())
+    {
+        return Err(format!(
+            "Embedded audio chapter `{}` could not be matched between two matched chapters.",
+            chapter_titles[index]
+        ));
+    }
+
+    // The last chapter ends where the next table-of-contents entry begins,
+    // not at the end of the spine: back matter such as "About the Author" is
+    // not narrated, and the aligner would spread it over the closing audio.
+    let last_spine = matched_indices.last().expect("checked above").1;
+    let trailing_end = toc
+        .iter()
+        .map(|entry| entry.spine_index)
+        .filter(|spine_index| *spine_index > last_spine)
+        .min()
+        .unwrap_or(section_count)
+        .min(section_count);
+
+    Ok(matched_indices
+        .iter()
+        .enumerate()
+        .map(|(position, (chapter_index, start))| ChapterScope {
+            chapter_index: *chapter_index,
+            section_range: *start
+                ..matched_indices
+                    .get(position + 1)
+                    .map(|(_, next_start)| *next_start)
+                    .unwrap_or(trailing_end),
+        })
+        .collect())
+}
+
 #[derive(Debug)]
 pub struct ParsedLabel {
     number: Option<u32>,
@@ -1185,6 +1589,19 @@ pub fn parse_label(value: &str) -> ParsedLabel {
                 remainder = rest.to_string();
             }
         }
+    }
+
+    // Audiobook chapter metadata commonly prefixes individual interludes
+    // (`Interlude I-1: Puuli`) while the EPUB TOC uses only the interlude code
+    // (`I-1. Puuli`). The prefix carries no identity and otherwise prevents an
+    // exact title match.
+    let remainder_lower = remainder.to_ascii_lowercase();
+    if let Some(after) = remainder_lower
+        .strip_prefix("interlude ")
+        .or_else(|| remainder_lower.strip_prefix("interlude:"))
+    {
+        let prefix_bytes = remainder.len() - after.len();
+        remainder = remainder[prefix_bytes..].trim_start().to_string();
     }
 
     ParsedLabel {
@@ -2197,6 +2614,107 @@ mod tests {
     }
 
     #[test]
+    fn chapter_scopes_allow_unmatched_edge_credits() {
+        let toc = vec![
+            TocEntry {
+                title: "Chapter 1: The Meadow".into(),
+                spine_index: 1,
+            },
+            TocEntry {
+                title: "Chapter 2: The River".into(),
+                spine_index: 2,
+            },
+        ];
+        let titles = vec![
+            "Opening Credits".to_string(),
+            "01 - The Meadow".to_string(),
+            "02 - The River".to_string(),
+            "Closing Credits".to_string(),
+        ];
+
+        assert_eq!(
+            build_chapter_scopes(&titles, &toc, 3).unwrap(),
+            vec![
+                ChapterScope {
+                    chapter_index: 1,
+                    section_range: 1..2,
+                },
+                ChapterScope {
+                    chapter_index: 2,
+                    section_range: 2..3,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn embedded_chapters_match_repeated_titles_in_order() {
+        let titles = ["Interlude", "Chapter 2", "Interlude", "Chapter 4"]
+            .map(str::to_string)
+            .to_vec();
+        let toc = titles
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: title.clone(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &toc, 4).unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|scope| (scope.chapter_index, scope.section_range.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, 0..1), (1, 1..2), (2, 2..3), (3, 3..4)]
+        );
+        let shared = toc
+            .into_iter()
+            .map(|entry| TocEntry {
+                spine_index: 0,
+                ..entry
+            })
+            .collect::<Vec<_>>();
+        assert!(build_chapter_scopes(&titles, &shared, 1).is_err());
+    }
+
+    #[test]
+    fn chapter_scopes_reject_an_unmatched_interior_chapter() {
+        let toc = vec![
+            TocEntry {
+                title: "Chapter 1".into(),
+                spine_index: 0,
+            },
+            TocEntry {
+                title: "Chapter 2".into(),
+                spine_index: 1,
+            },
+            TocEntry {
+                title: "Chapter 3".into(),
+                spine_index: 2,
+            },
+        ];
+        let titles = vec![
+            "Chapter 1".to_string(),
+            "An unrelated interlude".to_string(),
+            "Chapter 3".to_string(),
+        ];
+
+        assert!(build_chapter_scopes(&titles, &toc, 3).is_err());
+    }
+
+    #[test]
+    fn chapter_scopes_require_multiple_reset_points() {
+        let toc = vec![TocEntry {
+            title: "Chapter 1".into(),
+            spine_index: 0,
+        }];
+        let titles = vec!["Chapter 1".to_string()];
+
+        assert!(build_chapter_scopes(&titles, &toc, 1).is_err());
+    }
+
+    #[test]
     fn parse_label_extracts_numbers() {
         let label = parse_label("Chapter 12: The Long Road");
         assert_eq!(label.number, Some(12));
@@ -2205,6 +2723,159 @@ mod tests {
         let label = parse_label("03 - Owl Post");
         assert_eq!(label.number, Some(3));
         assert_eq!(label.key, "owl post");
+    }
+
+    #[test]
+    fn the_last_chapter_scope_stops_at_the_next_toc_entry() {
+        let toc = vec![
+            TocEntry {
+                title: "Chapter 1".into(),
+                spine_index: 0,
+            },
+            TocEntry {
+                title: "Chapter 2".into(),
+                spine_index: 1,
+            },
+            TocEntry {
+                title: "About the Author".into(),
+                spine_index: 3,
+            },
+        ];
+        let titles = vec!["Chapter 1".to_string(), "Chapter 2".to_string()];
+
+        let scopes = build_chapter_scopes(&titles, &toc, 5).unwrap();
+
+        assert_eq!(scopes[1].section_range, 1..3);
+    }
+
+    fn spoken(words: &str, start_time: f64) -> Vec<RecognizedWord> {
+        words
+            .split_whitespace()
+            .enumerate()
+            .map(|(index, word)| RecognizedWord {
+                text: normalize_word(word),
+                start_time: start_time + index as f64 * 0.5,
+                end_time: start_time + index as f64 * 0.5 + 0.4,
+            })
+            .collect()
+    }
+
+    /// UTF-16 offset just past the first occurrence of `needle`.
+    fn utf16_end_of(needle: &str) -> u64 {
+        let end = WINDOW_TEXT.find(needle).unwrap() + needle.len();
+        WINDOW_TEXT[..end].encode_utf16().count() as u64
+    }
+
+    const WINDOW_TEXT: &str = "The cat sat on the mat and looked at the dog. \
+The dog barked loudly at the cat! “Go away,” said the cat.\n\n\
+Then it rained for the rest of the day and everyone went inside.";
+
+    #[test]
+    fn window_anchor_skips_a_narrated_heading_and_ends_at_a_sentence() {
+        // Ten unscripted words, then the transcript read verbatim.
+        let recognized = spoken(
+            "A rough map of the battle annotated by the general. \
+The cat sat on the mat and looked at the dog. The dog barked loudly at the cat. \
+Go away said the cat. Then it rained for the rest of the day",
+            0.0,
+        );
+
+        let anchor = find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 100.0);
+
+        assert!((anchor.lead_in_seconds - 5.0).abs() < 1e-9);
+        let end = anchor.end.unwrap();
+        assert_eq!(end.text_end_utf16, utf16_end_of("said the cat."));
+        // "cat." is recognized word 32 (10 unscripted + 11 + 7 + 5 words
+        // before it): it ends at 32 * 0.5 + 0.4.
+        assert!((end.seconds - 16.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn window_anchor_respects_the_latest_time_and_needs_a_sentence_end() {
+        let recognized = spoken(
+            "The cat sat on the mat and looked at the dog. \
+The dog barked loudly at the cat. Go away said the cat.",
+            0.0,
+        );
+
+        // Only the first sentence ends early enough.
+        let anchor = find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 6.0);
+        let end = anchor.end.unwrap();
+        assert_eq!(end.text_end_utf16, utf16_end_of("dog."));
+
+        // Nothing ends by 3 s.
+        assert!(
+            find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 3.0)
+                .end
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn window_anchor_ignores_unrelated_speech() {
+        let recognized = spoken("music plays and a narrator hums a tune for a while", 0.0);
+        let anchor = find_window_anchor(&recognized, WINDOW_TEXT, 0, 1000, 100.0);
+        assert_eq!(anchor.lead_in_seconds, 0.0);
+        assert!(anchor.end.is_none());
+    }
+
+    #[test]
+    fn window_anchor_starts_from_the_text_cursor() {
+        let cursor = utf16_end_of("said the cat.\n\n");
+        let recognized = spoken(
+            "then it rained for the rest of the day and everyone went inside",
+            2.0,
+        );
+
+        let anchor = find_window_anchor(&recognized, WINDOW_TEXT, cursor, 1000, 100.0);
+
+        assert!((anchor.lead_in_seconds - 2.0).abs() < 1e-9);
+        assert_eq!(
+            anchor.end.unwrap().text_end_utf16,
+            WINDOW_TEXT.encode_utf16().count() as u64
+        );
+    }
+
+    #[test]
+    fn sentence_end_before_prefers_terminal_punctuation() {
+        let target = utf16_end_of("barked ");
+        assert_eq!(
+            sentence_end_before(WINDOW_TEXT, 0, target),
+            utf16_end_of("dog.")
+        );
+        // No sentence end inside the range: the last whole word wins.
+        assert_eq!(
+            sentence_end_before(WINDOW_TEXT, 0, "The cat sat on".len() as u64),
+            "The cat sat".len() as u64
+        );
+    }
+
+    #[test]
+    fn transcript_window_rebases_section_offsets() {
+        let sections = vec![
+            SpineSection {
+                href: "a.html".into(),
+                text: "Alpha beta.".into(),
+            },
+            SpineSection {
+                href: "b.html".into(),
+                text: "Gamma délta.".into(),
+            },
+        ];
+        let transcript = build_transcript(&sections);
+        let start = "Alpha ".encode_utf16().count() as u64;
+        let end = "Alpha beta.\n\nGamma dél".encode_utf16().count() as u64;
+
+        let window = transcript.window(start, end);
+
+        assert_eq!(window.text, "beta.\n\nGamma dél");
+        assert_eq!(window.href_for_offset(0), Some("a.html"));
+        assert_eq!(window.href_for_offset(4), Some("a.html"));
+        assert_eq!(window.href_for_offset(5), None);
+        assert_eq!(window.href_for_offset(7), Some("b.html"));
+        assert_eq!(window.href_for_offset(15), Some("b.html"));
+        assert_eq!(window.href_for_offset(16), None);
+        assert_eq!(skip_whitespace_utf16(&transcript.text, 11), 13);
     }
 
     #[test]
