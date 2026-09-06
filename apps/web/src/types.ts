@@ -305,6 +305,17 @@ export type LibationDownloadRequest = {
   jobId: string | null;
 };
 
+/** What a running job says it is doing, for a progress display. */
+export type JobProgress = {
+  /** One short line written for whoever started the job, not for an operator. */
+  step: string;
+  /** 0-1 where the job can estimate it. */
+  fraction: number | null;
+  /** Whole units of work finished and expected, where the job counts them. */
+  completed: number | null;
+  total: number | null;
+};
+
 export type JobStatus = {
   id: string;
   kind: string;
@@ -315,6 +326,8 @@ export type JobStatus = {
   exitCode: number | null;
   output: string;
   error: string | null;
+  /** Only set while the job runs; cleared once it has a result. */
+  progress?: JobProgress | null;
 };
 
 export type JobCreated = {

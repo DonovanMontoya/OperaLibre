@@ -129,6 +129,8 @@ Every EPUB can be followed straight away: with nothing else installed, the serve
 2. Choose **Enable**.
 3. Open the book’s reader and select **Improve sync**.
 
+The reader explains what the button does before you press it, and shows a progress bar with the chapter being aligned, the percentage done, how long it has been running, and a rough estimate of the time left. The bar is read from the server, so closing the reader, moving to another book, or reloading the page does not stop the run — reopening the book picks the progress back up.
+
 Generation downloads any missing model files, so initial use requires network access. Generation runs locally; audiobook contents are not uploaded anywhere. Jobs run one at a time; repeated requests for the same book reuse its queued or running job.
 
 Generated maps are saved in `data_dir/sync`; disabling or removing the add-on does not remove them. A matching `.sync.json` file beside the book takes priority. Sync quality is best when the audio track names, or the chapters embedded in an M4B, correspond to the EPUB chapter titles. Processing time and memory depend on the book and server; generation can compete with playback on smaller machines. The current implementation transcribes successive windows across long chapters and then aligns their text; it does not yet use sparse speech sampling. Wait for queued and running jobs to finish before updating, disabling, or removing the add-on.

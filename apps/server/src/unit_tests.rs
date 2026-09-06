@@ -2249,6 +2249,7 @@ fn prune_finished_jobs_keeps_active_and_newest() {
                 exit_code: None,
                 output: String::new(),
                 error: None,
+                progress: None,
             },
         );
     }
@@ -2275,6 +2276,7 @@ fn job_list_summaries_bound_output_without_breaking_unicode() {
         exit_code: Some(0),
         output: output.clone(),
         error: Some(output),
+        progress: None,
     };
 
     let summary = super::job_for_list(&job);
@@ -2299,6 +2301,7 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
             exit_code: None,
             output: String::new(),
             error: None,
+            progress: None,
         },
     );
 
