@@ -2396,6 +2396,81 @@ img.large-cover {
   color: var(--ink-soft);
 }
 
+/* What "Improve sync" actually does, next to the button that does it. */
+.readalong-synchint {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-faded);
+}
+
+.sync-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 68ch;
+}
+
+.sync-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.sync-progress-step {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sync-progress-percent {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faded);
+}
+
+.sync-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.13);
+}
+
+.sync-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold), var(--oxblood));
+  transition: width 0.4s ease;
+}
+
+.sync-progress-fill.waiting {
+  width: 42%;
+  animation: startup-progress 1.25s ease-in-out infinite;
+}
+
+.sync-progress-note {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-faded);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-progress-fill {
+    transition: none;
+  }
+
+  .sync-progress-fill.waiting {
+    animation: none;
+  }
+}
+
 .spin-icon {
   animation: spin 1s linear infinite;
 }
@@ -3131,6 +3206,22 @@ img.large-cover {
 
 .epub-sheet .readalong-genstatus {
   margin-top: 8px;
+}
+
+/* Inside the reader the sheet follows the page theme, not the shelf's paper. */
+.epub-sheet .readalong-synchint,
+.epub-sheet .sync-progress-head,
+.epub-sheet .sync-progress-percent,
+.epub-sheet .sync-progress-note {
+  color: var(--reader-muted);
+}
+
+.epub-sheet .sync-progress {
+  margin-top: 8px;
+}
+
+.epub-sheet .sync-progress-track {
+  background: color-mix(in srgb, var(--reader-ink) 16%, transparent);
 }
 
 .epub-sheet .readalong-tabs button {

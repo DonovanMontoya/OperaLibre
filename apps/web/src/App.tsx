@@ -4677,6 +4677,7 @@ function MainApp({
 
   async function startSyncGeneration(book: Book) {
     setSyncJobError(null);
+    setSyncNotice(null);
     try {
       const created = await generateSyncMap(book.id);
       setSyncJob({
@@ -5130,6 +5131,7 @@ function MainApp({
           setSyncJob(job);
           if (job.status === "completed") {
             dispatchSyncMap({ type: "reset" });
+            setSyncNotice("Sync improved: the narration is now aligned sentence by sentence.");
             void loadBooks();
           }
         })
@@ -5137,6 +5139,40 @@ function MainApp({
     }, 2000);
     return () => window.clearInterval(timer);
   }, [loadBooks, syncJob]);
+
+  // A sync run outlives the page that started it: it is a server job, and a
+  // long book takes far longer than a reload or a walk to another book. Adopt
+  // whatever is already running for this book so the progress comes back
+  // instead of the reader looking idle.
+  const syncJobBookId = syncJob?.targetId ?? null;
+  useEffect(() => {
+    if (
+      !canGenerateSync
+      || !readalongOpen
+      || !narrationFollowActive
+      || !selectedBookId
+      || syncJobBookId === selectedBookId
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void listJobs()
+      .then((jobs) => {
+        const running = jobs.find(
+          (job) =>
+            job.kind === "sync-generate"
+            && job.targetId === selectedBookId
+            && ["queued", "running"].includes(job.status)
+        );
+        if (running && !cancelled) {
+          setSyncJob(running);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [canGenerateSync, narrationFollowActive, readalongOpen, selectedBookId, syncJobBookId]);
 
   const loadLibationStatus = useCallback(async () => {
     if (!isOperaLibre || (!currentUser.isAdmin && !native)) {
@@ -7769,13 +7805,57 @@ function MainApp({
 
   // Sync actions and notices, shared by the inline panel header and the
   // full-screen reader's appearance sheet.
+  //
+  // A job belongs to one book, so only that book's reader shows its progress;
+  // the poll above keeps following it either way.
+  const syncJobForBook =
+    syncJob && selectedBook && syncJob.targetId === selectedBook.id ? syncJob : null;
+  const syncJobRunning = !!syncJobForBook && ["queued", "running"].includes(syncJobForBook.status);
+  const syncProgressPercent = (() => {
+    const fraction = syncJobForBook?.progress?.fraction;
+    return typeof fraction === "number" && Number.isFinite(fraction)
+      ? Math.min(100, Math.max(0, Math.round(fraction * 100)))
+      : null;
+  })();
+  const syncElapsedSeconds = (() => {
+    if (syncJobForBook?.status !== "running") return null;
+    const startedAt = Number(syncJobForBook.runningAt ?? syncJobForBook.startedAt);
+    return Number.isFinite(startedAt) && startedAt > 0
+      ? Math.max(0, (Date.now() - startedAt) / 1000)
+      : null;
+  })();
+  // Alignment runs at a fairly steady pace, so what it has done so far
+  // predicts the rest well enough to be worth saying — once there is enough of
+  // both to divide by.
+  const syncRemainingLabel = (() => {
+    const fraction = syncJobForBook?.progress?.fraction ?? null;
+    if (
+      syncJobForBook?.status !== "running"
+      || fraction === null
+      || fraction < 0.05
+      || syncElapsedSeconds === null
+      || syncElapsedSeconds < 60
+    ) {
+      return null;
+    }
+    return formatDurationLabel((syncElapsedSeconds * (1 - fraction)) / fraction);
+  })();
+  const syncProgressNote = [
+    syncElapsedSeconds !== null && syncElapsedSeconds >= 60
+      ? `${formatDurationLabel(syncElapsedSeconds)} so far`
+      : null,
+    syncRemainingLabel ? `about ${syncRemainingLabel} left` : null,
+    "keeps running if you close the reader"
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const readerSyncActions = selectedBook ? (
     <>
       {canGenerateSync && activeCompanionIsBook ? (
         <button
           type="button"
           className="download-btn"
-          disabled={!!syncJob && ["queued", "running"].includes(syncJob.status)}
+          disabled={syncJobRunning}
           onClick={() => void startSyncGeneration(selectedBook)}
           title={
             selectedSyncPrecise
@@ -7783,7 +7863,7 @@ function MainApp({
               : "Align the narration to the text for sentence and word highlighting"
           }
         >
-          {syncJob && ["queued", "running"].includes(syncJob.status) ? (
+          {syncJobRunning ? (
             <LoaderCircle size={13} className="spin-icon" />
           ) : (
             <Sparkles size={13} />
@@ -7806,15 +7886,50 @@ function MainApp({
   ) : null;
   const readerSyncMessages = (
     <>
-      {syncJob && ["queued", "running"].includes(syncJob.status) ? (
-        <div className="readalong-genstatus">
-          {syncJob.status === "queued"
-            ? "Waiting for the current sync job to finish…"
-            : "Aligning the narration to the text… this can take a while for long books."}
+      {canGenerateSync && activeCompanionIsBook && !syncJobRunning ? (
+        <p className="readalong-synchint">
+          {selectedSyncPrecise
+            ? "This book is aligned sentence by sentence against its narration. Re-sync rebuilds that map from the audio and the text — worth doing when either file has been replaced."
+            : "Following is estimated from the chapter list here, so the highlight drifts within a chapter. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, which lets the reader highlight word by word. It runs in the background for everyone on this server and can take a long while on a full-length book."}
+        </p>
+      ) : null}
+      {syncJobForBook && syncJobRunning ? (
+        <div className="sync-progress" role="status" aria-live="polite">
+          <div className="sync-progress-head">
+            <span className="sync-progress-step">
+              {syncJobForBook.status === "queued"
+                ? "Waiting for another sync to finish"
+                : syncJobForBook.progress?.step ?? "Aligning the narration to the text"}
+            </span>
+            {syncProgressPercent !== null ? (
+              <span className="sync-progress-percent">{syncProgressPercent}%</span>
+            ) : null}
+          </div>
+          <div
+            className="sync-progress-track"
+            role="progressbar"
+            aria-label="Sync generation progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={syncProgressPercent ?? undefined}
+            aria-valuetext={
+              syncProgressPercent === null
+                ? "Starting"
+                : `${syncProgressPercent}% aligned`
+            }
+          >
+            {/* Nothing to measure yet: a sliding bar says "working" without
+                claiming a position the job has not reported. */}
+            <div
+              className={syncProgressPercent === null ? "sync-progress-fill waiting" : "sync-progress-fill"}
+              style={syncProgressPercent === null ? undefined : { width: `${syncProgressPercent}%` }}
+            />
+          </div>
+          <div className="sync-progress-note">{syncProgressNote}</div>
         </div>
-      ) : syncJob && syncJob.status === "failed" ? (
+      ) : syncJobForBook && syncJobForBook.status === "failed" ? (
         <div className="readalong-genstatus error">
-          {syncJob.error ?? "Readalong sync generation failed."}
+          {syncJobForBook.error ?? "Readalong sync generation failed."}
         </div>
       ) : null}
       {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
