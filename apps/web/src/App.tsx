@@ -94,7 +94,8 @@ import {
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { syncMapCacheReducer } from "./syncMapCache";
 import { createPortal } from "react-dom";
 import {
   adoptableServerProgress,
@@ -3993,8 +3994,7 @@ function MainApp({
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
-  const [syncMaps, setSyncMaps] = useState<Record<string, SyncMap | null>>({});
-  const [syncMapRevision, setSyncMapRevision] = useState(0);
+  const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -4616,10 +4616,7 @@ function MainApp({
 
   /** Forget a book's loaded sync map so the next look at the reader refetches it. */
   function forgetSyncMap(bookId: string) {
-    setSyncMaps((existing) => {
-      const { [bookId]: _dropped, ...rest } = existing;
-      return rest;
-    });
+    dispatchSyncMap({ type: "invalidate", bookId });
   }
 
   async function pinNarration(book: Book, fragment: { href: string; text: string }) {
@@ -5069,21 +5066,21 @@ function MainApp({
     void (async () => {
       const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
       if (cancelled) return null;
-      if (stored) setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
+      if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
       // Show the downloaded map immediately while checking for new alignment
       // or manual corrections in the background.
       return getSyncMap(syncMapBookId);
     })()
       .then((map) => {
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
+          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map });
         }
       })
       .catch(async () => {
         // No server in reach: a downloaded book carries its own sync map.
         const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
+          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
         }
       });
     return () => {
@@ -5102,8 +5099,7 @@ function MainApp({
         .then((job) => {
           setSyncJob(job);
           if (job.status === "completed") {
-            setSyncMaps({});
-            setSyncMapRevision((revision) => revision + 1);
+            dispatchSyncMap({ type: "reset" });
             void loadBooks();
           }
         })
