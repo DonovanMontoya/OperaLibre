@@ -322,6 +322,7 @@ export type JobCreated = {
 };
 
 export type UpdateStatus = {
+  lastUpdateResult?: string | null;
   currentVersion: string;
   latestVersion: string;
   updateAvailable: boolean;

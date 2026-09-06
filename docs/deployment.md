@@ -109,6 +109,52 @@ The checked-in `operalibre.service` applies the same hardening to the repository
 
 The same read-only install folder disables the in-app updater: **Update server** and **Update frontend** on the Administration page report that the installation is not writable and point at `ReadWritePaths`. That is the trade-off — under the hardened unit, updates are made by replacing the files as root (or by re-running the one-line installer) and restarting the service. To keep in-app updates instead, add the install folder to the list, as in the commented-out line in the unit (`ReadWritePaths=/opt/operalibre/data /opt/operalibre/audiobooks /opt/operalibre` for the layout above), accepting that a compromised server could then rewrite its own program.
 
+### Opt-in managed updates under systemd
+
+Linux release packages also ship `operalibre-service` and templates in `systemd/`
+for installations that deliberately allow the service account to replace its
+own application. The hardened unit above remains the default recommendation
+for manually administered servers. Making the installation writable reduces
+protection against a compromised server.
+
+The managed templates use a different handoff:
+
+1. The updater holds `data_dir/update.lock` while installing, checking health,
+   and, if necessary, rolling back.
+2. Only after that work finishes does it atomically publish
+   `data_dir/update-result.txt`. The path unit watches this completion signal.
+3. The takeover service restarts `operalibre.service`; `operalibre-service
+   --service-start` waits for the lock, retires the updater-started server,
+   records its own PID, and becomes the server process supervised by systemd.
+
+**Never watch `VERSION.txt` to trigger restarts.** It changes during installation,
+before the new server passes its health checks. Restarting at that point can
+kill a healthy new server and cause rollback.
+
+To opt in, first install a release containing these helpers. Edit all three
+templates for your installation path, service user/group, and actual `data_dir`.
+Add external library/data paths to `ReadWritePaths`, and ensure they are readable
+under `ProtectHome`. Then install the reviewed templates:
+
+```bash
+sudo cp systemd/operalibre.service systemd/operalibre-update.service systemd/operalibre-update.path /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now operalibre.service operalibre-update.path
+```
+
+For an existing custom version-file watcher, stop that watcher **before** the
+first upgrade, complete the upgrade, replace its units with the edited templates,
+then restart the main service and start the new watcher. Existing `/etc/systemd`
+files are never silently overwritten by the installer or in-app update.
+
+The last completed result is shown in Administration and recorded in
+`data_dir/update-result.txt`, `data_dir/server.log`, and the updater's redirected
+`data_dir/update.log`. A hard-killed updater cannot publish a completion signal;
+if the service remains inactive, inspect those logs and the saved backup before
+manually restarting it. For maintenance or manual replacement, stop the path
+unit first; `KillMode=process` intentionally lets an in-flight updater survive
+the main server's exit, so wait for it to finish before changing installed files.
+
 ## launchd (macOS)
 
 Drop the following at `~/Library/LaunchAgents/com.you.operalibre.plist` and load with `launchctl load ...`:
