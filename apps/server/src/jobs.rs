@@ -11,10 +11,53 @@ pub(crate) struct JobStatus {
     pub(crate) target_id: Option<String>,
     pub(crate) status: String,
     pub(crate) started_at: String,
+    /// When the job left its queue and began doing work. Kept separate from
+    /// `started_at`, which records when the request created the job.
+    pub(crate) running_at: Option<String>,
     pub(crate) finished_at: Option<String>,
     pub(crate) exit_code: Option<i32>,
     pub(crate) output: String,
     pub(crate) error: Option<String>,
+    /// What the job is doing right now, for a progress display. Only set
+    /// while it runs; cleared when it reaches a result.
+    pub(crate) progress: Option<JobProgress>,
+}
+
+/// A running job's own account of how far it has got. `step` is one short
+/// line written for a listener rather than an operator — unlike `output`, it
+/// never carries server paths or command text, so it stays readable by
+/// whoever started the job. `fraction` is 0.0-1.0 where the job can estimate
+/// it, and `completed`/`total` count whole units of work (chapters, tracks)
+/// where it can.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JobProgress {
+    pub(crate) step: String,
+    pub(crate) fraction: Option<f64>,
+    pub(crate) completed: Option<usize>,
+    pub(crate) total: Option<usize>,
+}
+
+impl JobProgress {
+    pub(crate) fn new(step: impl Into<String>) -> Self {
+        Self {
+            step: step.into(),
+            fraction: None,
+            completed: None,
+            total: None,
+        }
+    }
+
+    pub(crate) fn fraction(mut self, fraction: f64) -> Self {
+        self.fraction = Some(fraction.clamp(0.0, 1.0));
+        self
+    }
+
+    pub(crate) fn steps(mut self, completed: usize, total: usize) -> Self {
+        self.completed = Some(completed);
+        self.total = Some(total);
+        self
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -105,16 +148,19 @@ pub(crate) async fn create_job_with_state(
     }
 
     let started_at = next_job_timestamp(&jobs).to_string();
+    let running_at = (status == "running").then(|| started_at.clone());
     let job = JobStatus {
         id: id.clone(),
         kind: kind.to_string(),
         target_id,
         status: status.to_string(),
         started_at,
+        running_at,
         finished_at: None,
         exit_code: None,
         output: String::new(),
         error: None,
+        progress: None,
     };
     jobs.insert(id.clone(), job);
     prune_finished_jobs(&mut jobs);
@@ -249,6 +295,7 @@ async fn fail_if_still_active(state: &AppState, job_id: &str, error: &str) {
         job.status = "failed".to_string();
         job.finished_at = Some(unix_now_millis().to_string());
         job.error = Some(error.to_string());
+        job.progress = None;
     }
     prune_finished_jobs(&mut jobs);
 }
@@ -314,6 +361,15 @@ pub(crate) fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
 pub(crate) async fn update_job_running(state: &AppState, job_id: &str) {
     if let Some(job) = state.jobs.write().await.get_mut(job_id) {
         job.status = "running".to_string();
+        job.running_at = Some(unix_now_millis().to_string());
+    }
+}
+
+/// Replaces what a job reports it is doing. Progress is advisory: a job that
+/// never calls this simply shows no bar.
+pub(crate) async fn update_job_progress(state: &AppState, job_id: &str, progress: JobProgress) {
+    if let Some(job) = state.jobs.write().await.get_mut(job_id) {
+        job.progress = Some(progress);
     }
 }
 
@@ -347,6 +403,7 @@ pub(crate) async fn update_job_finished(
         job.finished_at = Some(unix_now_millis().to_string());
         job.exit_code = exit_code;
         job.error = error;
+        job.progress = None;
     }
     prune_finished_jobs(&mut jobs);
 }

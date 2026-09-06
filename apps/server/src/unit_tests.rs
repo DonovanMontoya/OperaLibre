@@ -2245,10 +2245,12 @@ fn prune_finished_jobs_keeps_active_and_newest() {
                 }
                 .to_string(),
                 started_at: index.to_string(),
+                running_at: None,
                 finished_at: None,
                 exit_code: None,
                 output: String::new(),
                 error: None,
+                progress: None,
             },
         );
     }
@@ -2271,10 +2273,12 @@ fn job_list_summaries_bound_output_without_breaking_unicode() {
         target_id: None,
         status: "completed".to_string(),
         started_at: "1".to_string(),
+        running_at: Some("1".to_string()),
         finished_at: Some("2".to_string()),
         exit_code: Some(0),
         output: output.clone(),
         error: Some(output),
+        progress: None,
     };
 
     let summary = super::job_for_list(&job);
@@ -2295,14 +2299,32 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
             target_id: None,
             status: "running".to_string(),
             started_at: latest.to_string(),
+            running_at: Some(latest.to_string()),
             finished_at: None,
             exit_code: None,
             output: String::new(),
             error: None,
+            progress: None,
         },
     );
 
     assert_eq!(super::next_job_timestamp(&jobs), latest + 1);
+}
+
+#[tokio::test]
+async fn queued_jobs_record_when_they_begin_running() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let (job_id, created) = super::create_queued_job(&state, "test", None).await;
+    assert!(created);
+    assert!(state.jobs.read().await[&job_id].running_at.is_none());
+
+    super::update_job_running(&state, &job_id).await;
+
+    let jobs = state.jobs.read().await;
+    let job = &jobs[&job_id];
+    assert_eq!(job.status, "running");
+    assert!(job.running_at.is_some());
 }
 
 #[test]
