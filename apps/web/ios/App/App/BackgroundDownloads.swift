@@ -126,7 +126,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 return (false, false, existing.state == "completed")
             }
             let shouldStart = !jobs.values.contains { $0.state == "running" }
-            let alreadyComplete = requiredTotal == 0 || completedRequired >= requiredTotal
+            // A retry must also fill missing EPUBs, covers and sync maps when
+            // the required audio files were downloaded by an earlier build.
+            let alreadyComplete = existingDestinations.count == descriptions.count
             jobs[jobId] = StoredBackgroundJob(
                 title: title,
                 state: alreadyComplete ? "completed" : shouldStart ? "running" : "queued",

@@ -498,12 +498,18 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
-/**
- * The bytes of a companion document, from the device when they are there.
- *
- * Online opens revalidate through the HTTP cache, so replacing an EPUB at
- * the same library path also replaces the device's copy. Downloads and reader
- * opens share the durable copy used when the server cannot be reached.
+/** A local preview URL; callers release web blob URLs when no longer used. */
+export async function getOfflineCompanionUrl(book: Book, companion: CompanionFile): Promise<string | null> {
+  if (Capacitor.isNativePlatform()) {
+    await migrateLegacyBookDirectory(book);
+    return nativeFileUrl(companionFilePath(book, companion));
+  }
+  const record = await readMedia(book.id, companionMediaKind(companion));
+  return record ? URL.createObjectURL(record.blob) : null;
+}
+
+/** Native reads prefer disk, independent of the asynchronous download badge scan.
+ * Web reads still revalidate; native copies persist until the download is removed.
  */
 export async function loadCompanionBytes(
   book: Book,
@@ -522,7 +528,7 @@ export async function loadCompanionBytes(
     }, async (data) => {
       await Filesystem.mkdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(() => undefined);
       await Filesystem.writeFile({ path, directory: MEDIA_DIRECTORY, data: toBase64(data) });
-    }, signal);
+    }, signal, true);
   }
   return revalidatedCompanion(url, async () => {
     const record = await readMedia(book.id, companionMediaKind(companion));
