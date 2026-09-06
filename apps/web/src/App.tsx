@@ -7712,7 +7712,7 @@ function MainApp({
           title={
             selectedSyncPrecise
               ? "Regenerate the narration sync map"
-              : "Align the narration to the text for sentence and word highlighting"
+              : "Align the narration to the text for sentence-exact highlighting"
           }
         >
           {syncJobRunning ? (
