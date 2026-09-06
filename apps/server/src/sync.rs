@@ -424,6 +424,12 @@ pub(crate) async fn generate_sync_map(
     if !created {
         return Ok(Json(JobCreated { job_id }));
     }
+    update_job_progress(
+        &state,
+        &job_id,
+        JobProgress::new("Waiting for the sync queue"),
+    )
+    .await;
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
@@ -435,6 +441,12 @@ pub(crate) async fn generate_sync_map(
             .await
             .expect("sync queue stays open for the lifetime of the server");
         update_job_running(&state_for_job, &job_id_for_task).await;
+        update_job_progress(
+            &state_for_job,
+            &job_id_for_task,
+            JobProgress::new("Reading the ebook").fraction(0.0),
+        )
+        .await;
         update_job_output(
             &state_for_job,
             &job_id_for_task,
@@ -458,6 +470,12 @@ pub(crate) async fn generate_sync_map(
                     &state_for_job,
                     &job_id_for_task,
                     &format!("Wrote sync map with {fragment_count} sentences and word timings.\n"),
+                )
+                .await;
+                update_job_progress(
+                    &state_for_job,
+                    &job_id_for_task,
+                    JobProgress::new("Refreshing the library").fraction(0.98),
                 )
                 .await;
                 if let Err(error) = rescan_library(&state_for_job).await {
@@ -513,6 +531,52 @@ struct SyncAlignmentScope {
     label: String,
 }
 
+/// The share of the progress bar given to alignment itself. Reading the EPUB
+/// and matching chapters come before it, writing the map and rescanning the
+/// library after; both are quick next to the aligner, but a bar that sat at
+/// 0 % or 100 % through them would look stuck.
+const ALIGN_PROGRESS_START: f64 = 0.03;
+const ALIGN_PROGRESS_END: f64 = 0.95;
+
+/// Where one scope sits in the whole run, so each window it finishes can move
+/// the bar rather than leaving it parked until the chapter ends.
+struct ScopeProgress {
+    base: f64,
+    span: f64,
+    step: String,
+    completed: usize,
+    total: usize,
+}
+
+impl ScopeProgress {
+    fn at(&self, done: f64) -> JobProgress {
+        JobProgress::new(self.step.clone())
+            .fraction(self.base + self.span * done.clamp(0.0, 1.0))
+            .steps(self.completed, self.total)
+    }
+
+    /// A single aligner run says nothing until it returns. Where the book is
+    /// one scope there is no other movement to fall back on, so report the
+    /// step without a fraction and let the reader show work in hand rather
+    /// than a number parked at the start for the whole run.
+    fn indeterminate(&self) -> JobProgress {
+        JobProgress::new(self.step.clone()).steps(self.completed, self.total)
+    }
+}
+
+/// How long a scope's audio runs, used only to weight the progress bar: a
+/// half-hour chapter should move it further than a two-minute one. Falls back
+/// to equal weights when durations are unknown.
+fn scope_audio_seconds(scope: &SyncAlignmentScope, tracks: &[SyncTrackInput]) -> f64 {
+    match scope.audio_range {
+        Some((start, end)) => (end - start).max(0.0),
+        None => tracks[scope.track_index]
+            .duration_seconds
+            .filter(|seconds| *seconds > 0.0)
+            .unwrap_or(1.0),
+    }
+}
+
 pub(crate) async fn run_sync_generation(
     state: &AppState,
     job_id: &str,
@@ -527,6 +591,12 @@ pub(crate) async fn run_sync_generation(
         !epub.sections.is_empty(),
         "No readable text sections were found in the EPUB."
     );
+    update_job_progress(
+        state,
+        job_id,
+        JobProgress::new("Matching the chapters to the text").fraction(0.01),
+    )
+    .await;
     update_job_output(
         state,
         job_id,
@@ -631,13 +701,46 @@ pub(crate) async fn run_sync_generation(
         temp_dir: temp_dir.path(),
         recognition: &recognition,
     };
+    let scope_unit = if tracks.len() > 1 {
+        "track"
+    } else if scopes.len() > 1 {
+        "chapter"
+    } else {
+        "section"
+    };
+    let scope_weights: Vec<f64> = scopes
+        .iter()
+        .map(|scope| scope_audio_seconds(scope, tracks))
+        .collect();
+    let total_weight = scope_weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+    let mut done_weight = 0.0f64;
     let mut fragments = Vec::new();
     for (scope_number, scope) in scopes.iter().enumerate() {
         let track = &tracks[scope.track_index];
+        let progress = ScopeProgress {
+            base: ALIGN_PROGRESS_START
+                + (ALIGN_PROGRESS_END - ALIGN_PROGRESS_START) * (done_weight / total_weight),
+            span: (ALIGN_PROGRESS_END - ALIGN_PROGRESS_START)
+                * (scope_weights[scope_number] / total_weight),
+            step: if scopes.len() > 1 {
+                format!(
+                    "Aligning {scope_unit} {} of {}: {}",
+                    scope_number + 1,
+                    scopes.len(),
+                    scope.label
+                )
+            } else {
+                "Aligning the narration to the text".to_string()
+            },
+            completed: scope_number,
+            total: scopes.len(),
+        };
+        done_weight += scope_weights[scope_number];
         let transcript = alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
         if transcript.text.trim().is_empty() {
             continue;
         }
+        update_job_progress(state, job_id, progress.at(0.0)).await;
         update_job_output(
             state,
             job_id,
@@ -651,7 +754,7 @@ pub(crate) async fn run_sync_generation(
         .await;
 
         let scope_fragments = aligner
-            .align_scope(scope, track, &transcript, scope_number)
+            .align_scope(scope, track, &transcript, scope_number, &progress)
             .await?;
         update_job_output(
             state,
@@ -666,6 +769,12 @@ pub(crate) async fn run_sync_generation(
         !fragments.is_empty(),
         "Alignment produced no usable sentence fragments."
     );
+    update_job_progress(
+        state,
+        job_id,
+        JobProgress::new("Saving the sync map").fraction(ALIGN_PROGRESS_END),
+    )
+    .await;
     fragments.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
     let fragment_count = fragments.len();
 
@@ -820,6 +929,7 @@ impl Aligner<'_> {
         track: &SyncTrackInput,
         transcript: &alignment::Transcript,
         scope_number: usize,
+        progress: &ScopeProgress,
     ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
         let (scope_start, scope_end) = match scope.audio_range {
             Some((start, end)) => (start, Some(end)),
@@ -843,10 +953,14 @@ impl Aligner<'_> {
                     ffmpeg,
                     scope_start,
                     scope_end,
+                    progress,
                 )
                 .await
             }
             None => {
+                if progress.total <= 1 {
+                    update_job_progress(self.state, self.job_id, progress.indeterminate()).await;
+                }
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
             }
@@ -903,6 +1017,7 @@ impl Aligner<'_> {
         ffmpeg: &FsPath,
         scope_start: f64,
         scope_end: f64,
+        progress: &ScopeProgress,
     ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
         // Book time of position zero in this file.
         let book_offset = scope.time_offset_seconds - scope_start;
@@ -1009,6 +1124,8 @@ impl Aligner<'_> {
             }
             position = segment_end;
             cursor = alignment::skip_whitespace_utf16(&transcript.text, text_end);
+            let done = (position - scope_start) / (scope_end - scope_start).max(f64::MIN_POSITIVE);
+            update_job_progress(self.state, self.job_id, progress.at(done)).await;
         }
 
         let note = if unanchored > 0 {
@@ -1597,12 +1714,30 @@ esac
                 recognition: &recognition,
             };
 
+            let progress = ScopeProgress {
+                base: 0.1,
+                span: 0.8,
+                step: "Aligning the narration to the text".into(),
+                completed: 0,
+                total: 1,
+            };
             let fragments = aligner
-                .align_scope(&scope, &track, &transcript, 0)
+                .align_scope(&scope, &track, &transcript, 0, &progress)
                 .await
                 .unwrap();
-            let output = state.jobs.read().await.get(&job_id).unwrap().output.clone();
-            (fragments, output)
+            let job = state.jobs.read().await.get(&job_id).unwrap().clone();
+            // Every window reports where it got to, so the bar reaches the end
+            // of this scope's share rather than sitting still until the job is
+            // over.
+            let reported = job
+                .progress
+                .and_then(|progress| progress.fraction)
+                .expect("windowed alignment reports progress");
+            assert!(
+                reported > 0.85 && reported <= 0.9 + 1e-6,
+                "progress ended at {reported}, not near the end of the scope's span"
+            );
+            (fragments, job.output)
         }
 
         fn assert_monotonic(fragments: &[alignment::SyncFragment]) {
