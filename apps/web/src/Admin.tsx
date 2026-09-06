@@ -558,6 +558,7 @@ export function AdminPanel({
         await new Promise((resolve) => window.setTimeout(resolve, 2_000));
         try {
           const status = await getUpdateStatus(3_000);
+          setUpdateStatus(status);
           if (status.currentVersion === targetVersion) {
             window.location.reload();
             return;
@@ -566,7 +567,7 @@ export function AdminPanel({
           // The expected restart window temporarily makes the API unavailable.
         }
       }
-      setNotice("The update is still finishing. Reload this page in a moment.");
+      setNotice("The server has not confirmed the target version. Check the last update result and update.log before retrying.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not install the server update.");
       setNotice(null);
@@ -783,6 +784,9 @@ export function AdminPanel({
                 </button>
               </div>
             </div>
+            {updateStatus?.lastUpdateResult && !updateInstalling ? (
+              <p role="status">Last server update: {updateStatus.lastUpdateResult}</p>
+            ) : null}
             <div className="admin-software-versions" aria-live="polite">
               <article className={updateStatus?.updateAvailable ? "update-available" : ""}>
                 <div className="admin-software-version-head">
