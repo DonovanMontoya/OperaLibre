@@ -94,7 +94,8 @@ import {
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { syncMapCacheReducer } from "./syncMapCache";
 import { createPortal } from "react-dom";
 import {
   adoptableServerProgress,
@@ -247,6 +248,7 @@ import {
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
+  getOfflineCompanionUrl,
   getOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
@@ -321,6 +323,7 @@ import type {
   Book,
   BookMetadataUpdate,
   Chapter,
+  CompanionFile,
   FinishFeed,
   JobStatus,
   LibationBook,
@@ -4021,7 +4024,7 @@ function MainApp({
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
-  const [syncMaps, setSyncMaps] = useState<Record<string, SyncMap | null>>({});
+  const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -4536,8 +4539,34 @@ function MainApp({
   // The companion URL carries the media token. Until the token is known the
   // URL would change a moment later and the reader would open the EPUB
   // twice, so the reader waits for it.
-  const companionUrlReady = !isOperaLibre || !!getStoredMediaToken();
+  const companionUrlReady = native || !isOperaLibre || !!getStoredMediaToken();
   const activeCompanionUrl = activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null;
+  const companionFilesKey = JSON.stringify([...selectedCompanionList, ...selectedCompanionGroups.images].map((file) => [file.id, file.extension]));
+  const companionScope = `${getServerStorageKey()}:${currentUser.id}:${selectedBook?.id ?? ""}:${companionFilesKey}`;
+  const [localCompanions, setLocalCompanions] = useState<{ scope: string; urls: Record<string, string | null> } | null>(null);
+  useEffect(() => {
+    if (!native || !readalongOpen || !selectedBook) return;
+    let cancelled = false;
+    const resolved: string[] = [];
+    void Promise.all([...selectedCompanionList, ...selectedCompanionGroups.images].map(async (file) => {
+      const url = await getOfflineCompanionUrl(selectedBook, file).catch(() => null);
+      if (url) resolved.push(url);
+      return [file.id, url] as const;
+    })).then((entries) => {
+      if (cancelled) resolved.forEach(releaseOfflineMediaUrl);
+      else setLocalCompanions({ scope: companionScope, urls: Object.fromEntries(entries) });
+    });
+    return () => {
+      cancelled = true;
+      resolved.forEach(releaseOfflineMediaUrl);
+    };
+    // Stable file identities avoid filesystem work on playback progress updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [native, readalongOpen, companionScope, companionFilesKey]);
+  const companionPreviewUrl = (file: CompanionFile) => {
+    if (native && localCompanions?.scope !== companionScope) return undefined;
+    return (localCompanions?.scope === companionScope ? localCompanions.urls[file.id] : null) ?? readalongUrl(file.url);
+  };
   const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
   const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
   const selectedSyncFragments =
@@ -4617,10 +4646,7 @@ function MainApp({
 
   /** Forget a book's loaded sync map so the next look at the reader refetches it. */
   function forgetSyncMap(bookId: string) {
-    setSyncMaps((existing) => {
-      const { [bookId]: _dropped, ...rest } = existing;
-      return rest;
-    });
+    dispatchSyncMap({ type: "invalidate", bookId });
   }
 
   async function pinNarration(book: Book, fragment: { href: string; text: string }) {
@@ -5063,27 +5089,36 @@ function MainApp({
   const syncMapBook = readalongOpen && selectedBook?.syncFile ? selectedBook : null;
   const syncMapBookId = syncMapBook?.id ?? null;
   useEffect(() => {
-    if (!syncMapBookId || syncMaps[syncMapBookId] !== undefined) {
+    if (!syncMapBookId) {
       return;
     }
     let cancelled = false;
-    void getSyncMap(syncMapBookId)
+    void (async () => {
+      const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
+      if (cancelled) return null;
+      if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
+      // Show the downloaded map immediately while checking for new alignment
+      // or manual corrections in the background.
+      return getSyncMap(syncMapBookId);
+    })()
       .then((map) => {
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: map }));
+          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map });
         }
       })
       .catch(async () => {
         // No server in reach: a downloaded book carries its own sync map.
         const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
         if (!cancelled) {
-          setSyncMaps((existing) => ({ ...existing, [syncMapBookId]: stored }));
+          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [syncMapBook, syncMapBookId, syncMaps]);
+    // Updating the visible map must not cancel its own background refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncMapBookId, syncMapRevision]);
 
   useEffect(() => {
     if (!syncJob || !["queued", "running"].includes(syncJob.status)) {
@@ -5094,7 +5129,7 @@ function MainApp({
         .then((job) => {
           setSyncJob(job);
           if (job.status === "completed") {
-            setSyncMaps({});
+            dispatchSyncMap({ type: "reset" });
             void loadBooks();
           }
         })
@@ -7936,7 +7971,7 @@ function MainApp({
           <div className="readalong-actions">
             {narrationFollowActive ? readerSyncActions : null}
             {activeCompanionUrl && !showGallery ? (
-              <a className="download-btn" href={activeCompanionUrl} target="_blank" rel="noreferrer">
+              <a className="download-btn" href={activeCompanion ? companionPreviewUrl(activeCompanion) : undefined} target="_blank" rel="noreferrer">
                 <ExternalLink size={13} />
                 <span>Open</span>
               </a>
@@ -7952,8 +7987,8 @@ function MainApp({
         {showGallery ? (
           <div className="readalong-gallery">
             {selectedCompanionGroups.images.map((image) => (
-              <a key={image.id} href={readalongUrl(image.url)} target="_blank" rel="noreferrer">
-                <img src={readalongUrl(image.url)} alt={image.fileName} loading="lazy" />
+              <a key={image.id} href={companionPreviewUrl(image)} target="_blank" rel="noreferrer">
+                <img src={companionPreviewUrl(image)} alt={image.fileName} loading="lazy" />
                 <span>{image.fileName}</span>
               </a>
             ))}
@@ -7963,7 +7998,7 @@ function MainApp({
         ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
           <iframe
             className="readalong-frame"
-            src={activeCompanionUrl}
+            src={companionPreviewUrl(activeCompanion)}
             title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
             sandbox=""
             referrerPolicy="no-referrer"

@@ -1,11 +1,20 @@
-/** Online reads revalidate the HTTP cache; durable copies are an offline fallback. */
+/**
+ * Online reads revalidate the HTTP cache; a deliberately downloaded book uses
+ * its durable companion first so opening its EPUB does not wait for the server.
+ */
 export async function revalidatedCompanion(
   url: string,
   readCached: () => Promise<ArrayBuffer | null>,
   save: (data: ArrayBuffer) => Promise<void>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  preferCached = false
 ): Promise<ArrayBuffer> {
   signal?.throwIfAborted();
+  if (preferCached) {
+    const cached = await readCached().catch(() => null);
+    signal?.throwIfAborted();
+    if (cached) return cached;
+  }
   let response: Response;
   try {
     response = await fetch(url, { credentials: "include", cache: "no-cache", signal });
