@@ -64,7 +64,6 @@ import {
 import type { Book as EpubBook, Contents, EpubCFI, Location, NavItem, Rendition } from "epubjs";
 import {
   READ_ALONG_MODE_LABELS,
-  activeWordIndex,
   companionKindLabel,
   describeCompanion,
   findActiveFragmentIndex,
@@ -1225,41 +1224,6 @@ type EpubSyncTarget = {
   title: string;
 };
 
-/**
- * Like `normalizeSyncNeedle`, but remembers which UTF-16 offset of the raw
- * text each normalized character came from, so a word timing given in raw
- * offsets can be placed inside the normalized needle.
- */
-function normalizeNeedleWithOffsets(value: string): { text: string; offsets: number[] } {
-  let text = "";
-  const offsets: number[] = [];
-  let lastWasSpace = true;
-  for (let index = 0; index < value.length; index += 1) {
-    const ch = value[index];
-    if (ch === "\u00AD") {
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (!lastWasSpace) {
-        text += " ";
-        offsets.push(index);
-        lastWasSpace = true;
-      }
-    } else {
-      for (const piece of ch.toLowerCase()) {
-        text += piece;
-        offsets.push(index);
-      }
-      lastWasSpace = false;
-    }
-  }
-  while (text.endsWith(" ")) {
-    text = text.slice(0, -1);
-    offsets.pop();
-  }
-  return { text, offsets };
-}
-
 type DocumentSearchIndex = {
   doc: Document;
   text: string;
@@ -1318,19 +1282,6 @@ function findRangeInSearchIndex(index: DocumentSearchIndex, needle: string, from
   range.setStart(start.node, start.offset);
   range.setEnd(end.node, Math.min(end.offset + 1, end.node.data.length));
   return { range, endOffset: at + needle.length };
-}
-
-/** A DOM range over `[from, to)` of the search index text. */
-function rangeForIndexSpan(index: DocumentSearchIndex, from: number, to: number) {
-  const start = index.map[from];
-  const end = index.map[to - 1];
-  if (!start || !end || to <= from) {
-    return null;
-  }
-  const range = index.doc.createRange();
-  range.setStart(start.node, start.offset);
-  range.setEnd(end.node, Math.min(end.offset + 1, end.node.data.length));
-  return range;
 }
 
 type FragmentRange = { index: number; start: number; end: number };
@@ -1436,19 +1387,13 @@ function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset
   return null;
 }
 
-/** Marker colours for the narrated sentence and word, per reading theme. */
-function highlightStyles(theme: ReaderTheme, precision: SyncPrecision | null) {
+/** Marker colours for the narrated sentence, per reading theme. */
+function sentenceHighlightStyle(theme: ReaderTheme, precision: SyncPrecision | null) {
   // The night page is dark, so the marker must lighten instead of darken.
-  const night = theme === "night";
   const soft = precision === "estimated";
-  return {
-    sentence: night
-      ? { fill: "#e8b64c", "fill-opacity": soft ? "0.22" : "0.4", "mix-blend-mode": "screen" }
-      : { fill: "#d9a441", "fill-opacity": soft ? "0.18" : "0.32", "mix-blend-mode": "multiply" },
-    word: night
-      ? { fill: "#ffd27a", "fill-opacity": "0.6", "mix-blend-mode": "screen" }
-      : { fill: "#b8893a", "fill-opacity": "0.42", "mix-blend-mode": "multiply" }
-  };
+  return theme === "night"
+    ? { fill: "#e8b64c", "fill-opacity": soft ? "0.22" : "0.4", "mix-blend-mode": "screen" }
+    : { fill: "#d9a441", "fill-opacity": soft ? "0.18" : "0.32", "mix-blend-mode": "multiply" };
 }
 
 export function EpubReadalong({
@@ -1520,10 +1465,6 @@ export function EpubReadalong({
   const highlightCfiRef = useRef<string | null>(null);
   const highlightThemeRef = useRef<ReaderTheme | null>(null);
   const highlightedFragmentRef = useRef(-1);
-  // Where the highlighted sentence sits in the index, so the word marker can
-  // be placed inside it without searching again.
-  const sentenceSpanRef = useRef<{ fragmentIndex: number; at: number; offsets: number[] } | null>(null);
-  const wordCfiRef = useRef<{ cfi: string; wordIndex: number; fragmentIndex: number; theme: ReaderTheme } | null>(null);
   const autoNavHrefRef = useRef<string | null>(null);
   const lastLocationRef = useRef<Location | null>(null);
   const locationRef = useRef<Location | null>(null);
@@ -1713,7 +1654,6 @@ export function EpubReadalong({
       searchIndexRef.current = buildDocumentSearchIndex(doc);
       searchCursorRef.current = 0;
       fragmentRangesRef.current = null;
-      sentenceSpanRef.current = null;
     }
     return searchIndexRef.current;
   }, []);
@@ -1825,9 +1765,7 @@ export function EpubReadalong({
     searchIndexRef.current = null;
     searchCursorRef.current = 0;
     fragmentRangesRef.current = null;
-    sentenceSpanRef.current = null;
     highlightCfiRef.current = null;
-    wordCfiRef.current = null;
     highlightedFragmentRef.current = -1;
     autoNavHrefRef.current = null;
     attachedDocsRef.current = new WeakSet();
@@ -2433,13 +2371,10 @@ export function EpubReadalong({
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    const styles = highlightStyles(readerTheme, precision);
+    const sentenceStyle = sentenceHighlightStyle(readerTheme, precision);
     if (!follow || !syncFragments || fragmentIndex < 0) {
       removeAnnotation(highlightCfiRef.current);
-      removeAnnotation(wordCfiRef.current?.cfi ?? null);
       highlightCfiRef.current = null;
-      wordCfiRef.current = null;
-      sentenceSpanRef.current = null;
       highlightedFragmentRef.current = -1;
       return;
     }
@@ -2479,16 +2414,14 @@ export function EpubReadalong({
     if (highlightedFragmentRef.current === fragmentIndex) {
       const relaid = handledRelayoutRef.current !== relayoutTick;
       if ((highlightThemeRef.current !== readerTheme || relaid) && highlightCfiRef.current) {
-        // Redraw against the current layout; the word marker follows suit.
+        // Redraw against the current layout.
         removeAnnotation(highlightCfiRef.current);
-        removeAnnotation(wordCfiRef.current?.cfi ?? null);
-        wordCfiRef.current = null;
         rendition.annotations.highlight(
           highlightCfiRef.current,
           {},
           () => tapFragment(fragment),
           "readalong-highlight",
-          styles.sentence
+          sentenceStyle
         );
         highlightThemeRef.current = readerTheme;
         handledRelayoutRef.current = relayoutTick;
@@ -2513,21 +2446,13 @@ export function EpubReadalong({
     // Mark the fragment handled up front so a missing sentence doesn't retry
     // on every relocation.
     highlightedFragmentRef.current = fragmentIndex;
-    sentenceSpanRef.current = null;
-    removeAnnotation(wordCfiRef.current?.cfi ?? null);
-    wordCfiRef.current = null;
 
-    const needle = normalizeNeedleWithOffsets(fragment.text);
-    const found = findRangeInSearchIndex(index, needle.text, searchCursorRef.current);
+    const needle = normalizeSyncNeedle(fragment.text);
+    const found = findRangeInSearchIndex(index, needle, searchCursorRef.current);
     if (!found) {
       return;
     }
     searchCursorRef.current = found.endOffset;
-    sentenceSpanRef.current = {
-      fragmentIndex,
-      at: found.endOffset - needle.text.length,
-      offsets: needle.offsets
-    };
 
     let cfi: string;
     try {
@@ -2541,80 +2466,12 @@ export function EpubReadalong({
       {},
       () => tapFragment(fragment),
       "readalong-highlight",
-      styles.sentence
+      sentenceStyle
     );
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(cfi);
   }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
-
-  // Word-level readalong: a second, stronger marker on the narrated word,
-  // placed inside the sentence found above.
-  useEffect(() => {
-    const rendition = renditionRef.current;
-    const clearWord = () => {
-      removeAnnotation(wordCfiRef.current?.cfi ?? null);
-      wordCfiRef.current = null;
-    };
-    if (!follow || !syncFragments || fragmentIndex < 0 || precision !== "word" || !rendition || !isReady) {
-      clearWord();
-      return;
-    }
-    const fragment = syncFragments[fragmentIndex];
-    const sentence = sentenceSpanRef.current;
-    const index = searchIndexRef.current;
-    const wordIndex = activeWordIndex(fragment, positionSeconds);
-    if (wordIndex < 0 || !sentence || sentence.fragmentIndex !== fragmentIndex || !index) {
-      clearWord();
-      return;
-    }
-    const current = wordCfiRef.current;
-    if (
-      current &&
-      current.wordIndex === wordIndex &&
-      current.fragmentIndex === fragmentIndex &&
-      current.theme === readerTheme
-    ) {
-      return;
-    }
-    const [, , offset, length] = fragment.words![wordIndex];
-    const from = sentence.offsets.findIndex((raw) => raw >= offset);
-    let to = from;
-    while (to < sentence.offsets.length && sentence.offsets[to] < offset + length) {
-      to += 1;
-    }
-    if (from < 0 || to <= from) {
-      clearWord();
-      return;
-    }
-    const range = rangeForIndexSpan(index, sentence.at + from, sentence.at + to);
-    const contentsList = ([] as Contents[]).concat(
-      (rendition.getContents() as unknown as Contents[]) ?? []
-    );
-    const contents = contentsList.find((candidate) => candidate?.document === index.doc);
-    if (!range || !contents) {
-      clearWord();
-      return;
-    }
-    let cfi: string;
-    try {
-      cfi = contents.cfiFromRange(range);
-    } catch {
-      clearWord();
-      return;
-    }
-    clearWord();
-    rendition.annotations.highlight(
-      cfi,
-      {},
-      () => tapFragment(fragment),
-      "readalong-word",
-      highlightStyles(readerTheme, precision).word
-    );
-    wordCfiRef.current = { cfi, wordIndex, fragmentIndex, theme: readerTheme };
-    // `location` is not read here, but the sentence marker above is placed in
-    // response to it, and the word marker must follow even while paused.
-  }, [follow, fragmentIndex, isReady, location, positionSeconds, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -2640,12 +2497,7 @@ export function EpubReadalong({
   // Chapter-sync books have no marker but still follow the narrated chapter,
   // so they get the same follow toggle.
   const canFollow = hasSync || !!syncTarget;
-  const followLabel =
-    precision === "word"
-      ? "Following word for word"
-      : precision === "estimated"
-        ? "Following approximately"
-        : "Following by sentence";
+  const followLabel = precision === "estimated" ? "Following approximately" : "Following by sentence";
   const statusLabel = hasSync
     ? follow
       ? fragmentIndex >= 0
@@ -7860,7 +7712,7 @@ function MainApp({
           title={
             selectedSyncPrecise
               ? "Regenerate the narration sync map"
-              : "Align the narration to the text for sentence and word highlighting"
+              : "Align the narration to the text for sentence-exact highlighting"
           }
         >
           {syncJobRunning ? (
@@ -7890,7 +7742,7 @@ function MainApp({
         <p className="readalong-synchint">
           {selectedSyncPrecise
             ? "This book is aligned sentence by sentence against its narration. Re-sync rebuilds that map from the audio and the text — worth doing when either file has been replaced."
-            : "Following is estimated from the chapter list here, so the highlight drifts within a chapter. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, which lets the reader highlight word by word. It runs in the background for everyone on this server and can take a long while on a full-length book."}
+            : "Following is estimated from the chapter list here, so the highlight drifts within a chapter. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, so the highlight lands on the sentence being read. It runs in the background for everyone on this server and can take a long while on a full-length book."}
         </p>
       ) : null}
       {syncJobForBook && syncJobRunning ? (
