@@ -250,31 +250,6 @@ export function findActiveFragmentIndex(fragments: SyncFragment[], seconds: numb
 }
 
 /**
- * The word being narrated inside a fragment, or -1 when the position is
- * before the first timed word or the fragment carries no word timings. A
- * word stays marked until the next one begins.
- */
-export function activeWordIndex(fragment: SyncFragment, seconds: number) {
-  const words = fragment.words;
-  if (!words || words.length === 0) return -1;
-  let low = 0;
-  let high = words.length - 1;
-  let best = -1;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (words[mid][0] <= seconds) {
-      best = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-  if (best < 0) return -1;
-  const activeUntil = words[best + 1]?.[0] ?? Math.max(words[best][1], fragment.endSeconds);
-  return seconds < activeUntil ? best : -1;
-}
-
-/**
  * The haystack index and this needle normalization must collapse text the
  * same way so indexOf offsets map back to DOM positions.
  */
@@ -298,15 +273,16 @@ export function normalizeSyncNeedle(value: string) {
   return out.trim();
 }
 
-export type SyncPrecision = "word" | "sentence" | "estimated";
+export type SyncPrecision = "sentence" | "estimated";
 
-/** What a loaded sync map can drive: a word marker, a sentence marker, or a soft estimate. */
+/**
+ * What a loaded sync map can drive: a sentence marker, or a soft estimate.
+ * Maps carrying word timings still only drive the sentence marker — the
+ * word-by-word marker was dropped as more distracting than it was worth.
+ */
 export function syncMapPrecision(map: SyncMap | null | undefined): SyncPrecision | null {
   if (!map || map.fragments.length === 0) return null;
-  if (map.precision === "estimated") return "estimated";
-  return map.fragments.some((fragment) => fragment.words && fragment.words.length > 0)
-    ? "word"
-    : "sentence";
+  return map.precision === "estimated" ? "estimated" : "sentence";
 }
 
 // ---------------------------------------------------------------------------
@@ -335,10 +311,6 @@ export function readAlongMode(
 }
 
 export const READ_ALONG_MODE_LABELS: Record<ReadAlongMode, { title: string; detail: string }> = {
-  word: {
-    title: "Word-for-word sync",
-    detail: "The narrated word is marked as you listen, and the page turns with the audio."
-  },
   sentence: {
     title: "Sentence sync",
     detail: "The narrated sentence is highlighted, and the page turns with the audio."
