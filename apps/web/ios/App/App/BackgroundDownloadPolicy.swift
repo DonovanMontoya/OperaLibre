@@ -53,6 +53,13 @@ func isApprovedBackgroundMediaPath(_ path: String, basePath: String = "") -> Boo
        components.last == "stream" {
         return true
     }
+    // Offline jobs include ebooks and images alongside the audio tracks.
+    if components.count == 5,
+       components[0] == "api",
+       components[1] == "books",
+       components[3] == "companions" {
+        return true
+    }
     if components.count == 3,
        components[0].caseInsensitiveCompare("Audio") == .orderedSame,
        components.last?.caseInsensitiveCompare("stream") == .orderedSame {

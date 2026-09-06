@@ -6,6 +6,8 @@ struct BackgroundDownloadPolicyTests {
         let acceptedSources = [
             "https://books.example/api/books/book/tracks/track/stream?token=x",
             "http://192.168.1.20:4000/api/books/book/cover?token=x",
+            "https://books.example/api/books/book/companions/ebook?token=x",
+            "https://books.example/api/books/book/sync?token=x",
             "https://jellyfin.example/Audio/item/stream?api_key=x",
             "https://jellyfin.example/Items/item/Download?api_key=x",
             "https://jellyfin.example/Items/item/Images/Primary?api_key=x",
@@ -20,6 +22,14 @@ struct BackgroundDownloadPolicyTests {
             URL(string: "https://books.example/api/books/book/cover")!,
             allowedBy: allowlist
         )) != nil)
+        precondition((try? validatedBackgroundMediaSource(
+            URL(string: "https://books.example/api/books/book/companions/ebook?token=x")!,
+            allowedBy: allowlist
+        )) != nil)
+        precondition((try? validatedBackgroundMediaSource(
+            URL(string: "https://other.example/api/books/book/companions/ebook")!,
+            allowedBy: allowlist
+        )) == nil)
         precondition((try? validatedBackgroundMediaSource(
             URL(string: "https://other.example/api/books/book/cover")!,
             allowedBy: allowlist
@@ -37,6 +47,7 @@ struct BackgroundDownloadPolicyTests {
             "https://host.example/jellyfin/Audio/item/stream?api_key=x",
             "https://host.example/jellyfin/Items/item/Images/Primary",
             "https://host.example/jellyfin/api/books/book/tracks/track/stream",
+            "https://host.example/jellyfin/api/books/book/companions/ebook?token=x",
         ]
         for value in proxiedSources {
             precondition((try? validatedBackgroundMediaSource(
@@ -50,6 +61,8 @@ struct BackgroundDownloadPolicyTests {
             "https://host.example/jellyfinx/Audio/item/stream",
             "https://host.example/jellyfin/System/Configuration",
             "https://host.example/jellyfin/Audio/item/stream/extra",
+            "https://host.example/api/books/book/companions/ebook",
+            "https://host.example/jellyfinx/api/books/book/companions/ebook",
         ]
         for value in proxiedRejections {
             precondition((try? validatedBackgroundMediaSource(
@@ -64,6 +77,9 @@ struct BackgroundDownloadPolicyTests {
             "http://127.0.0.1/admin",
             "https://books.example/api/users",
             "https://books.example/api/books/book/private/cover",
+            "https://books.example/api/books/book/companions",
+            "https://books.example/api/books/book/companions/ebook/extra",
+            "https://books.example/api/books/book/private/ebook",
             "https://jellyfin.example/Items/item/Images/Primary/extra",
         ]
         for value in rejectedSources {
