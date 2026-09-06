@@ -146,11 +146,11 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 
 ### Optional readalong alignment
 
-Leave this blank to search `PATH` for echogarden. When echogarden is unavailable, automatic generation is disabled but user-provided `.sync.json` sidecars still work. See [Library Layout](library-layout.md#sync-maps-sentence-highlighting) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experimental features**; no configuration entry is needed. When generation is unavailable or disabled, user-provided and previously generated `.sync.json` sidecars still work. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-sentence-highlighting) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `alignment_cli_path` | *(empty)* | Path to the echogarden CLI. Administrators can use it to generate sentence-level EPUB narration sync maps from the readalong pane. |
+| `alignment_cli_path` | *(empty)* | Optional path to a manually managed echogarden CLI. It is treated as installed and enabled and is not changed from the Administration panel. When blank, OperaLibre uses an enabled managed add-on instead. |
 
 ### Optional MP4 faststart conversion
 

@@ -618,6 +618,64 @@ async fn an_unsatisfiable_range_is_refused_with_the_file_size() {
 }
 
 // ---------------------------------------------------------------------------
+// Response compression
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn json_responses_are_gzipped_for_a_client_that_accepts_it() {
+    let server = TestServer::start(3).await;
+    let token = server.setup_owner().await;
+    let plain = server.get("/api/books", &token).await;
+
+    let response = server
+        .send(
+            Request::builder()
+                .uri("/api/books")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.header(header::CONTENT_ENCODING), "gzip");
+    assert!(response.body.len() < plain.body.len());
+    let mut inflated = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(response.body.as_slice()),
+        &mut inflated,
+    )
+    .unwrap();
+    assert_eq!(inflated, plain.body);
+}
+
+#[tokio::test]
+async fn an_audio_stream_is_never_compressed_even_when_the_client_accepts_it() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book, track) = server.first_book_and_track(&token).await;
+    let whole = fixture_wav();
+
+    let response = server
+        .send(
+            Request::builder()
+                .uri(format!("/api/books/{book}/tracks/{track}/stream"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip, br")
+                .header(header::RANGE, "bytes=100-199")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.header(header::CONTENT_ENCODING), "");
+    assert_eq!(response.header(header::CONTENT_LENGTH), "100");
+    assert_eq!(response.body, whole[100..200]);
+}
+
+// ---------------------------------------------------------------------------
 // Progress, through the real route
 // ---------------------------------------------------------------------------
 
@@ -847,6 +905,9 @@ async fn progress_is_private_to_each_user() {
 const OWNER_ONLY_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/update/install"),
     ("POST", "/api/frontend-update/install"),
+    ("POST", "/api/experimental-features/readalong-sync/install"),
+    ("PUT", "/api/experimental-features/readalong-sync/enabled"),
+    ("DELETE", "/api/experimental-features/readalong-sync"),
     ("PUT", "/api/users/someone/role"),
     ("PUT", "/api/users/someone/libation-approval"),
 ];
@@ -861,6 +922,7 @@ const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/library/rescan"),
     ("GET", "/api/jobs"),
     ("GET", "/api/library/faststart"),
+    ("GET", "/api/experimental-features/readalong-sync"),
     ("PUT", "/api/users/someone/book-access"),
     ("PUT", "/api/users/someone/libation-access"),
 ];
@@ -2477,7 +2539,7 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
     assert_eq!(again.body, sync.body);
 
     // A long book's map runs to megabytes of sentence text; a client that
-    // accepts gzip gets it compressed, and only on this route.
+    // accepts gzip gets it compressed; document downloads remain untouched.
     let compressed = server
         .send(
             Request::builder()

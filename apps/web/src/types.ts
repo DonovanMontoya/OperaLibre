@@ -349,6 +349,21 @@ export type FrontendUpdateStatus = {
   message: string | null;
 };
 
+export type SyncAddonStatus = {
+  id: "readalong-sync";
+  installed: boolean;
+  enabled: boolean;
+  managed: boolean;
+  installedVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  canInstall: boolean;
+  packageBytes: number | null;
+  releaseUrl: string | null;
+  cliPath: string | null;
+  message: string | null;
+};
+
 export type AuthUser = {
   id: string;
   username: string;

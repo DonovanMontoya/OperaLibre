@@ -1,6 +1,7 @@
 //! Sync maps: serving and generating the text-to-audio alignment a readalong
 //! client follows.
 
+use crate::updates::SyncAddonRuntime;
 use crate::*;
 
 pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
@@ -9,10 +10,6 @@ pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
 /// process killed. Alignment is slow on a long chapter, so this is a ceiling
 /// against a hung CLI, not a budget.
 pub(crate) const ALIGNMENT_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-
-/// Alignment loads a speech model per run and pins a core for the duration.
-/// One book at a time keeps a second request from doubling both.
-static ALIGNMENT_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub(crate) async fn get_sync_map(
     State(state): State<AppState>,
@@ -337,10 +334,13 @@ pub(crate) async fn alignment_status(
     State(state): State<AppState>,
     _: AdminUser,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = &state.alignment_config;
+    let runtime = state
+        .update_manager
+        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .await;
     Ok(Json(serde_json::json!({
-        "enabled": config.enabled(),
-        "cliPath": config.cli_path.as_ref().map(|path| path.to_string_lossy().to_string()),
+        "enabled": runtime.is_some(),
+        "cliPath": runtime.as_ref().map(|runtime| runtime.cli_path.to_string_lossy().to_string()),
     })))
 }
 
@@ -349,11 +349,29 @@ pub(crate) async fn generate_sync_map(
     _: AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    let Some(cli_path) = state.alignment_config.cli_path.clone() else {
+    let lifecycle = state
+        .update_manager
+        .sync_lifecycle
+        .clone()
+        .try_read_owned()
+        .map_err(|_| {
+            ApiError::conflict("The sync add-on is being changed. Try again when it finishes.")
+        })?;
+    let Some(mut runtime) = state
+        .update_manager
+        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .await
+    else {
         return Err(ApiError::bad_request(
-            "Alignment CLI was not found. Set alignment_cli_path in server.config or put echogarden on PATH.",
+            "Follow-along sync generation is not enabled. An owner can install and enable it under Administration → Experimental features.",
         ));
     };
+    runtime.ffmpeg_path = runtime.ffmpeg_path.or_else(|| {
+        state
+            .faststart_tools
+            .as_ref()
+            .map(|tools| tools.ffmpeg.clone())
+    });
 
     let (epub_path, tracks, book_title) = {
         let library = state.library.read().await;
@@ -382,6 +400,15 @@ pub(crate) async fn generate_sync_map(
                         path,
                         title: track.title.clone(),
                         duration_seconds: track.duration_seconds,
+                        chapters: track
+                            .chapters
+                            .iter()
+                            .map(|chapter| SyncChapterInput {
+                                title: chapter.title.clone(),
+                                start_seconds: chapter.start_seconds,
+                                end_seconds: chapter.end_seconds,
+                            })
+                            .collect(),
                     })
                     .ok_or(ApiError::not_found("Track path not found"))
             })
@@ -400,7 +427,13 @@ pub(crate) async fn generate_sync_map(
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
-        let _alignment_guard = ALIGNMENT_LOCK.lock().await;
+        let _lifecycle = lifecycle;
+        let _slot = state_for_job
+            .update_manager
+            .sync_slots
+            .acquire()
+            .await
+            .expect("sync queue stays open for the lifetime of the server");
         update_job_running(&state_for_job, &job_id_for_task).await;
         update_job_output(
             &state_for_job,
@@ -413,7 +446,7 @@ pub(crate) async fn generate_sync_map(
             &state_for_job,
             &job_id_for_task,
             &book_id,
-            &cli_path,
+            &runtime,
             &epub_path,
             &tracks,
         )
@@ -463,13 +496,28 @@ pub(crate) struct SyncTrackInput {
     pub(crate) path: PathBuf,
     pub(crate) title: String,
     pub(crate) duration_seconds: Option<f64>,
+    pub(crate) chapters: Vec<SyncChapterInput>,
+}
+
+pub(crate) struct SyncChapterInput {
+    pub(crate) title: String,
+    pub(crate) start_seconds: f64,
+    pub(crate) end_seconds: Option<f64>,
+}
+
+struct SyncAlignmentScope {
+    track_index: usize,
+    section_range: std::ops::Range<usize>,
+    audio_range: Option<(f64, f64)>,
+    time_offset_seconds: f64,
+    label: String,
 }
 
 pub(crate) async fn run_sync_generation(
     state: &AppState,
     job_id: &str,
     book_id: &str,
-    cli_path: &FsPath,
+    runtime: &SyncAddonRuntime,
     epub_path: &FsPath,
     tracks: &[SyncTrackInput],
 ) -> anyhow::Result<usize> {
@@ -490,36 +538,6 @@ pub(crate) async fn run_sync_generation(
     )
     .await;
 
-    // One scope per audio file: the whole book for single-file audiobooks,
-    // otherwise chapter runs matched through the table of contents.
-    let scopes = if tracks.len() == 1 {
-        vec![alignment::TrackScope {
-            track_index: 0,
-            section_range: 0..epub.sections.len(),
-        }]
-    } else {
-        let titles = tracks
-            .iter()
-            .map(|track| track.title.clone())
-            .collect::<Vec<_>>();
-        let scopes = alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
-            .map_err(|message| anyhow::anyhow!(message))?;
-        for (index, track) in tracks.iter().enumerate() {
-            if !scopes.iter().any(|scope| scope.track_index == index) {
-                update_job_output(
-                    state,
-                    job_id,
-                    &format!(
-                        "Skipping `{}`: it matches no chapter in the EPUB's table of contents.\n",
-                        track.title
-                    ),
-                )
-                .await;
-            }
-        }
-        scopes
-    };
-
     let mut track_start_seconds = vec![0.0f64; tracks.len()];
     for index in 1..tracks.len() {
         let previous_duration = tracks[index - 1].duration_seconds.ok_or_else(|| {
@@ -531,7 +549,88 @@ pub(crate) async fn run_sync_generation(
         track_start_seconds[index] = track_start_seconds[index - 1] + previous_duration;
     }
 
+    // Prefer embedded chapter boundaries for a single large audio file. This
+    // resets the aligner throughout an M4B instead of letting small errors
+    // accumulate over the entire book. Keep the established whole-track path
+    // when chapter metadata, TOC matching, or ffmpeg slicing is unavailable.
+    let scopes = if tracks.len() == 1 {
+        match chapter_alignment_scopes(
+            &tracks[0],
+            &epub.toc,
+            epub.sections.len(),
+            runtime.ffmpeg_path.is_some(),
+        ) {
+            Ok(scopes) => {
+                update_job_output(
+                    state,
+                    job_id,
+                    &format!(
+                        "Matched {} embedded audio chapters; aligning each independently.\n",
+                        scopes.len()
+                    ),
+                )
+                .await;
+                scopes
+            }
+            Err(reason) => {
+                update_job_output(
+                    state,
+                    job_id,
+                    &format!("Using whole-track alignment: {reason}\n"),
+                )
+                .await;
+                vec![SyncAlignmentScope {
+                    track_index: 0,
+                    section_range: 0..epub.sections.len(),
+                    audio_range: None,
+                    time_offset_seconds: 0.0,
+                    label: tracks[0].title.clone(),
+                }]
+            }
+        }
+    } else {
+        let titles = tracks
+            .iter()
+            .map(|track| track.title.clone())
+            .collect::<Vec<_>>();
+        alignment::build_track_scopes(&titles, &epub.toc, epub.sections.len())
+            .map_err(|message| anyhow::anyhow!(message))?
+            .into_iter()
+            .map(|scope| SyncAlignmentScope {
+                track_index: scope.track_index,
+                section_range: scope.section_range,
+                audio_range: None,
+                time_offset_seconds: track_start_seconds[scope.track_index],
+                label: tracks[scope.track_index].title.clone(),
+            })
+            .collect()
+    };
+
+    let recognition = RecognitionSettings::for_language(epub.language.as_deref());
+    if runtime.ffmpeg_path.is_some() {
+        update_job_output(
+            state,
+            job_id,
+            &format!(
+                "Audio longer than {:.0} minutes is aligned in {:.0}-second windows anchored by speech recognition ({}).\n",
+                MAX_SINGLE_PASS_SECONDS / 60.0,
+                WINDOW_SECONDS,
+                recognition.describe()
+            ),
+        )
+        .await;
+    }
+
     let temp_dir = tempfile::tempdir()?;
+    let aligner = Aligner {
+        state,
+        job_id,
+        cli_path: &runtime.cli_path,
+        cli_args: &runtime.cli_args,
+        ffmpeg_path: runtime.ffmpeg_path.as_deref(),
+        temp_dir: temp_dir.path(),
+        recognition: &recognition,
+    };
     let mut fragments = Vec::new();
     for (scope_number, scope) in scopes.iter().enumerate() {
         let track = &tracks[scope.track_index];
@@ -539,14 +638,6 @@ pub(crate) async fn run_sync_generation(
         if transcript.text.trim().is_empty() {
             continue;
         }
-        let transcript_path = temp_dir
-            .path()
-            .join(format!("transcript-{scope_number}.txt"));
-        fs::write(&transcript_path, &transcript.text).await?;
-        let output_path = temp_dir
-            .path()
-            .join(format!("alignment-{scope_number}.json"));
-
         update_job_output(
             state,
             job_id,
@@ -554,66 +645,21 @@ pub(crate) async fn run_sync_generation(
                 "Aligning {} of {}: {} (this can take a while)...\n",
                 scope_number + 1,
                 scopes.len(),
-                track.title
+                scope.label
             ),
         )
         .await;
 
-        // `kill_on_drop` lets the timeout (and a cancelled job) take the
-        // aligner down with it; `temp_dir` is removed on every return path.
-        let output = tokio::time::timeout(
-            ALIGNMENT_COMMAND_TIMEOUT,
-            Command::new(cli_path)
-                .arg("align")
-                .arg(&track.path)
-                .arg(&transcript_path)
-                .arg(&output_path)
-                .arg("--overwrite")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Alignment of `{}` was stopped after {} hours without finishing.",
-                track.title,
-                ALIGNMENT_COMMAND_TIMEOUT.as_secs() / 3600
-            )
-        })?
-        .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail = stderr
-                .lines()
-                .rev()
-                .take(12)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            anyhow::bail!(
-                "Alignment failed for `{}` with status {}:\n{}",
-                track.title,
-                output.status,
-                tail
-            );
-        }
-
-        let timeline_json = fs::read_to_string(&output_path).await?;
-        let entries = alignment::parse_timeline(&timeline_json)?;
-        let track_fragments = alignment::fragments_from_timeline(
-            &entries,
-            &transcript,
-            track_start_seconds[scope.track_index],
-        );
+        let scope_fragments = aligner
+            .align_scope(scope, track, &transcript, scope_number)
+            .await?;
         update_job_output(
             state,
             job_id,
-            &format!("  Matched {} sentences.\n", track_fragments.len()),
+            &format!("  Matched {} sentences.\n", scope_fragments.len()),
         )
         .await;
-        fragments.extend(track_fragments);
+        fragments.extend(scope_fragments);
     }
 
     anyhow::ensure!(
@@ -652,6 +698,543 @@ async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<(), A
     write_bytes_atomic(path, &bytes).await
 }
 
+fn chapter_alignment_scopes(
+    track: &SyncTrackInput,
+    toc: &[alignment::TocEntry],
+    section_count: usize,
+    ffmpeg_available: bool,
+) -> Result<Vec<SyncAlignmentScope>, String> {
+    if !ffmpeg_available {
+        return Err("ffmpeg is unavailable for embedded-chapter slicing.".to_string());
+    }
+    let titles = track
+        .chapters
+        .iter()
+        .map(|chapter| chapter.title.clone())
+        .collect::<Vec<_>>();
+    let matched = alignment::build_chapter_scopes(&titles, toc, section_count)?;
+
+    matched
+        .into_iter()
+        .map(|scope| {
+            let chapter = &track.chapters[scope.chapter_index];
+            let start_seconds = chapter.start_seconds;
+            let end_seconds = chapter
+                .end_seconds
+                .or_else(|| {
+                    track
+                        .chapters
+                        .get(scope.chapter_index + 1)
+                        .map(|next| next.start_seconds)
+                })
+                .or(track.duration_seconds)
+                .ok_or_else(|| format!("Chapter `{}` has no usable end time.", chapter.title))?;
+            if !start_seconds.is_finite()
+                || !end_seconds.is_finite()
+                || start_seconds < 0.0
+                || end_seconds <= start_seconds
+            {
+                return Err(format!(
+                    "Chapter `{}` has an invalid audio time range.",
+                    chapter.title
+                ));
+            }
+            Ok(SyncAlignmentScope {
+                track_index: 0,
+                section_range: scope.section_range,
+                audio_range: Some((start_seconds, end_seconds)),
+                time_offset_seconds: start_seconds,
+                label: chapter.title.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Audio the forced aligner sees at once. Its working set grows with input
+/// length (about 1.4 GB per 1,000 s of audio on a 55-hour test book), so
+/// longer scopes are cut into windows this size, each tied to the transcript
+/// by speech recognition.
+const WINDOW_SECONDS: f64 = 240.0;
+/// A window's closing anchor must end this long before the window does, so
+/// the recognizer had context on both sides of the words it was matched on.
+const WINDOW_MARGIN_SECONDS: f64 = 30.0;
+/// Scopes up to this long are aligned in a single pass. Longer ones are
+/// windowed, and a windowed scope's final stretch is at most this long.
+const MAX_SINGLE_PASS_SECONDS: f64 = WINDOW_SECONDS * 1.5;
+/// How much transcript to search when matching a window's recognized words,
+/// as a multiple of what the window would cover at the scope's average pace.
+const WINDOW_TEXT_LOOKAHEAD: f64 = 1.8;
+
+/// Which recognizer model to anchor windows with. English books get the
+/// English-only model, which is markedly better at the same size.
+struct RecognitionSettings {
+    model: &'static str,
+    language: Option<String>,
+}
+
+impl RecognitionSettings {
+    fn for_language(language: Option<&str>) -> Self {
+        let code = language
+            .and_then(|value| value.split(['-', '_']).next())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        match code {
+            Some(code) if code == "en" => Self {
+                model: "tiny.en",
+                language: Some(code),
+            },
+            Some(code) => Self {
+                model: "tiny",
+                language: Some(code),
+            },
+            None => Self {
+                model: "tiny",
+                language: None,
+            },
+        }
+    }
+
+    fn describe(&self) -> String {
+        match &self.language {
+            Some(language) => format!("whisper {}, language {language}", self.model),
+            None => format!("whisper {}, language detected", self.model),
+        }
+    }
+}
+
+/// Runs the alignment CLI for one job, sharing its temp directory and tools.
+struct Aligner<'a> {
+    state: &'a AppState,
+    job_id: &'a str,
+    cli_path: &'a FsPath,
+    cli_args: &'a [String],
+    ffmpeg_path: Option<&'a FsPath>,
+    temp_dir: &'a FsPath,
+    recognition: &'a RecognitionSettings,
+}
+
+impl Aligner<'_> {
+    async fn align_scope(
+        &self,
+        scope: &SyncAlignmentScope,
+        track: &SyncTrackInput,
+        transcript: &alignment::Transcript,
+        scope_number: usize,
+    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        let (scope_start, scope_end) = match scope.audio_range {
+            Some((start, end)) => (start, Some(end)),
+            None => (0.0, track.duration_seconds),
+        };
+        let windowed = match (self.ffmpeg_path, scope_end) {
+            (Some(ffmpeg), Some(scope_end))
+                if scope_end - scope_start > MAX_SINGLE_PASS_SECONDS =>
+            {
+                Some((ffmpeg, scope_end))
+            }
+            _ => None,
+        };
+        match windowed {
+            Some((ffmpeg, scope_end)) => {
+                self.align_windowed(
+                    scope,
+                    track,
+                    transcript,
+                    scope_number,
+                    ffmpeg,
+                    scope_start,
+                    scope_end,
+                )
+                .await
+            }
+            None => {
+                self.align_single_pass(scope, track, transcript, scope_number)
+                    .await
+            }
+        }
+    }
+
+    /// The established path: one aligner run over the scope's whole audio.
+    async fn align_single_pass(
+        &self,
+        scope: &SyncAlignmentScope,
+        track: &SyncTrackInput,
+        transcript: &alignment::Transcript,
+        scope_number: usize,
+    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        let sliced = match scope.audio_range {
+            Some((start, end)) => {
+                let ffmpeg = self.ffmpeg_path.expect("chapter scopes require ffmpeg");
+                Some(
+                    self.slice(ffmpeg, &track.path, start, end, scope_number, 0, "scope")
+                        .await?,
+                )
+            }
+            None => None,
+        };
+        let audio_path = sliced.as_deref().unwrap_or(&track.path);
+        let fragments = self
+            .align(
+                audio_path,
+                transcript,
+                scope.time_offset_seconds,
+                scope_number,
+                0,
+                &scope.label,
+            )
+            .await;
+        if let Some(path) = sliced {
+            let _ = fs::remove_file(path).await;
+        }
+        fragments
+    }
+
+    /// Walks the scope in windows. Each window is transcribed to find where
+    /// its speech sits in the transcript; the stretch up to the last confident
+    /// sentence end is then force-aligned with exactly its own text, and the
+    /// next window starts there. The recognizer's word timings are used only
+    /// at those anchors.
+    #[allow(clippy::too_many_arguments)]
+    async fn align_windowed(
+        &self,
+        scope: &SyncAlignmentScope,
+        track: &SyncTrackInput,
+        transcript: &alignment::Transcript,
+        scope_number: usize,
+        ffmpeg: &FsPath,
+        scope_start: f64,
+        scope_end: f64,
+    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        // Book time of position zero in this file.
+        let book_offset = scope.time_offset_seconds - scope_start;
+        let text_len = transcript.len_utf16();
+        let pace = text_len as f64 / (scope_end - scope_start);
+        let mut position = scope_start;
+        let mut cursor = 0u64;
+        let mut fragments = Vec::new();
+        let mut windows = 0usize;
+        let mut unanchored = 0usize;
+
+        while position < scope_end - 0.5 && cursor < text_len {
+            windows += 1;
+            let remaining = scope_end - position;
+            let (segment_end, text_end, lead_in) = if remaining <= MAX_SINGLE_PASS_SECONDS {
+                (scope_end, text_len, 0.0)
+            } else {
+                let mut window = WINDOW_SECONDS;
+                let (anchor, window_end) = loop {
+                    let window_end = (position + window).min(scope_end);
+                    let audio = self
+                        .slice(
+                            ffmpeg,
+                            &track.path,
+                            position,
+                            window_end,
+                            scope_number,
+                            windows,
+                            "window",
+                        )
+                        .await?;
+                    let recognized = self.transcribe(&audio, scope_number, windows).await?;
+                    let lookahead =
+                        ((window_end - position) * pace * WINDOW_TEXT_LOOKAHEAD).ceil() as u64;
+                    let anchor = alignment::find_window_anchor(
+                        &recognized,
+                        &transcript.text,
+                        cursor,
+                        lookahead,
+                        window_end - position - WINDOW_MARGIN_SECONDS,
+                    );
+                    if anchor.end.is_some() || window >= WINDOW_SECONDS * 2.0 {
+                        break (anchor, window_end);
+                    }
+                    // Nothing usable: look twice as far once before giving up.
+                    window *= 2.0;
+                };
+                match anchor.end {
+                    Some(end) => (
+                        position + end.seconds,
+                        end.text_end_utf16,
+                        anchor.lead_in_seconds,
+                    ),
+                    None => {
+                        // Fall back to the scope's average pace for one window.
+                        unanchored += 1;
+                        let target = cursor + (WINDOW_SECONDS * pace).ceil() as u64;
+                        let text_end = alignment::sentence_end_before(
+                            &transcript.text,
+                            cursor,
+                            target.min(text_len),
+                        );
+                        (
+                            (position + WINDOW_SECONDS).min(window_end),
+                            text_end,
+                            anchor.lead_in_seconds,
+                        )
+                    }
+                }
+            };
+            let text_end = text_end.clamp(cursor, text_len);
+            anyhow::ensure!(
+                text_end > cursor,
+                "Windowed alignment of `{}` stalled at {:.0} s.",
+                scope.label,
+                position
+            );
+            let segment_start = position + lead_in;
+            if segment_end - segment_start > 0.5 {
+                let audio = self
+                    .slice(
+                        ffmpeg,
+                        &track.path,
+                        segment_start,
+                        segment_end,
+                        scope_number,
+                        windows,
+                        "segment",
+                    )
+                    .await?;
+                let window_transcript = transcript.window(cursor, text_end);
+                let segment_fragments = self
+                    .align(
+                        &audio,
+                        &window_transcript,
+                        book_offset + segment_start,
+                        scope_number,
+                        windows,
+                        &scope.label,
+                    )
+                    .await;
+                let _ = fs::remove_file(audio).await;
+                fragments.extend(segment_fragments?);
+            }
+            position = segment_end;
+            cursor = alignment::skip_whitespace_utf16(&transcript.text, text_end);
+        }
+
+        let note = if unanchored > 0 {
+            format!(" ({unanchored} without a recognized anchor)")
+        } else {
+            String::new()
+        };
+        update_job_output(
+            self.state,
+            self.job_id,
+            &format!("  Aligned in {windows} windows{note}.\n"),
+        )
+        .await;
+        Ok(fragments)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn slice(
+        &self,
+        ffmpeg: &FsPath,
+        source: &FsPath,
+        start_seconds: f64,
+        end_seconds: f64,
+        scope_number: usize,
+        window: usize,
+        kind: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let path = self
+            .temp_dir
+            .join(format!("audio-{scope_number}-{window}-{kind}.wav"));
+        extract_alignment_audio(ffmpeg, source, &path, start_seconds, end_seconds).await?;
+        Ok(path)
+    }
+
+    async fn transcribe(
+        &self,
+        audio_path: &FsPath,
+        scope_number: usize,
+        window: usize,
+    ) -> anyhow::Result<Vec<alignment::RecognizedWord>> {
+        let output_path = self
+            .temp_dir
+            .join(format!("recognition-{scope_number}-{window}.json"));
+        let mut args: Vec<std::ffi::OsString> = vec![
+            "transcribe".into(),
+            audio_path.into(),
+            output_path.as_os_str().into(),
+            "--engine=whisper".into(),
+            format!("--whisper.model={}", self.recognition.model).into(),
+        ];
+        if let Some(language) = &self.recognition.language {
+            args.push(format!("--language={language}").into());
+        }
+        run_alignment_cli(
+            self.cli_path,
+            self.cli_args,
+            self.ffmpeg_path,
+            &args,
+            "Speech recognition",
+        )
+        .await?;
+        let timeline_json = fs::read_to_string(&output_path).await?;
+        let _ = fs::remove_file(&output_path).await;
+        let _ = fs::remove_file(audio_path).await;
+        let entries = alignment::parse_timeline(&timeline_json)?;
+        Ok(alignment::recognized_words(&entries))
+    }
+
+    async fn align(
+        &self,
+        audio_path: &FsPath,
+        transcript: &alignment::Transcript,
+        time_offset_seconds: f64,
+        scope_number: usize,
+        window: usize,
+        label: &str,
+    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        let transcript_path = self
+            .temp_dir
+            .join(format!("transcript-{scope_number}-{window}.txt"));
+        fs::write(&transcript_path, &transcript.text).await?;
+        let output_path = self
+            .temp_dir
+            .join(format!("alignment-{scope_number}-{window}.json"));
+        let args: Vec<std::ffi::OsString> = vec![
+            "align".into(),
+            audio_path.into(),
+            transcript_path.as_os_str().into(),
+            output_path.as_os_str().into(),
+        ];
+        run_alignment_cli(
+            self.cli_path,
+            self.cli_args,
+            self.ffmpeg_path,
+            &args,
+            &format!("Alignment of `{label}`"),
+        )
+        .await?;
+        let timeline_json = fs::read_to_string(&output_path).await?;
+        let _ = fs::remove_file(&output_path).await;
+        let _ = fs::remove_file(&transcript_path).await;
+        let entries = alignment::parse_timeline(&timeline_json)?;
+        Ok(alignment::fragments_from_timeline(
+            &entries,
+            transcript,
+            time_offset_seconds,
+        ))
+    }
+}
+
+async fn run_alignment_cli(
+    cli_path: &FsPath,
+    cli_args: &[String],
+    ffmpeg_path: Option<&FsPath>,
+    args: &[std::ffi::OsString],
+    what: &str,
+) -> anyhow::Result<()> {
+    let mut command = Command::new(cli_path);
+    command.kill_on_drop(true);
+    command.args(cli_args).args(args).arg("--overwrite");
+    if let Some(ffmpeg_dir) = ffmpeg_path.and_then(FsPath::parent) {
+        let mut paths = vec![ffmpeg_dir.to_path_buf()];
+        if let Some(existing) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        command.env("PATH", std::env::join_paths(paths)?);
+    }
+    let output = tokio::time::timeout(ALIGNMENT_COMMAND_TIMEOUT, command.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("{what} exceeded the two-hour command timeout."))?
+        .map_err(|error| anyhow::anyhow!("Failed to run alignment CLI: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr
+            .lines()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!("{what} failed with status {}:\n{}", output.status, tail);
+    }
+    Ok(())
+}
+
+async fn extract_alignment_audio(
+    ffmpeg_path: &FsPath,
+    source_path: &FsPath,
+    output_path: &FsPath,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> anyhow::Result<()> {
+    extract_alignment_audio_with_timeout(
+        ffmpeg_path,
+        source_path,
+        output_path,
+        start_seconds,
+        end_seconds,
+        Duration::from_secs(10 * 60),
+    )
+    .await
+}
+
+async fn extract_alignment_audio_with_timeout(
+    ffmpeg_path: &FsPath,
+    source_path: &FsPath,
+    output_path: &FsPath,
+    start_seconds: f64,
+    end_seconds: f64,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .kill_on_drop(true)
+        .arg("-nostdin")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{start_seconds:.3}"))
+        .arg("-i")
+        .arg(source_path)
+        .arg("-t")
+        .arg(format!("{:.3}", end_seconds - start_seconds))
+        .arg("-map")
+        .arg("0:a:0")
+        .arg("-vn")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(output_path);
+    let output = tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "FFmpeg audio extraction timed out after {:.1} seconds.",
+                timeout.as_secs_f64()
+            )
+        })?
+        .map_err(|error| anyhow::anyhow!("Failed to run ffmpeg for chapter audio: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr
+            .lines()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "ffmpeg failed to extract chapter audio with status {}:\n{}",
+            output.status,
+            tail
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AlignmentConfig {
     pub(crate) cli_path: Option<PathBuf>,
@@ -665,10 +1248,6 @@ impl AlignmentConfig {
             .filter(|path| path.is_file())
             .or_else(find_alignment_cli_on_path);
         Self { cli_path }
-    }
-
-    pub(crate) fn enabled(&self) -> bool {
-        self.cli_path.is_some()
     }
 }
 
@@ -684,4 +1263,416 @@ pub(crate) fn find_alignment_cli_on_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hung_audio_extraction_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("ffmpeg");
+        std::fs::write(&executable, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            extract_alignment_audio_with_timeout(
+                &executable,
+                &root.path().join("input"),
+                &root.path().join("output"),
+                0.0,
+                10.0,
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("audio extraction timed out")
+        );
+    }
+
+    fn chapter(title: &str, start_seconds: f64, end_seconds: Option<f64>) -> SyncChapterInput {
+        SyncChapterInput {
+            title: title.to_string(),
+            start_seconds,
+            end_seconds,
+        }
+    }
+
+    #[test]
+    fn chapter_alignment_uses_embedded_audio_ranges() {
+        let track = SyncTrackInput {
+            path: PathBuf::from("book.m4b"),
+            title: "Book".into(),
+            duration_seconds: Some(95.0),
+            chapters: vec![
+                chapter("Opening Credits", 0.0, Some(5.0)),
+                chapter("Chapter 1", 5.0, Some(45.0)),
+                chapter("Chapter 2", 45.0, None),
+            ],
+        };
+        let toc = vec![
+            alignment::TocEntry {
+                title: "Chapter 1".into(),
+                spine_index: 1,
+            },
+            alignment::TocEntry {
+                title: "Chapter 2".into(),
+                spine_index: 2,
+            },
+        ];
+
+        let scopes = chapter_alignment_scopes(&track, &toc, 3, true).unwrap();
+
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].section_range, 1..2);
+        assert_eq!(scopes[0].audio_range, Some((5.0, 45.0)));
+        assert_eq!(scopes[0].time_offset_seconds, 5.0);
+        assert_eq!(scopes[1].section_range, 2..3);
+        assert_eq!(scopes[1].audio_range, Some((45.0, 95.0)));
+        assert_eq!(scopes[1].time_offset_seconds, 45.0);
+    }
+
+    #[test]
+    fn chapter_alignment_requires_ffmpeg() {
+        let track = SyncTrackInput {
+            path: PathBuf::from("book.m4b"),
+            title: "Book".into(),
+            duration_seconds: Some(60.0),
+            chapters: vec![
+                chapter("Chapter 1", 0.0, Some(30.0)),
+                chapter("Chapter 2", 30.0, Some(60.0)),
+            ],
+        };
+        let toc = vec![
+            alignment::TocEntry {
+                title: "Chapter 1".into(),
+                spine_index: 0,
+            },
+            alignment::TocEntry {
+                title: "Chapter 2".into(),
+                spine_index: 1,
+            },
+        ];
+
+        assert!(chapter_alignment_scopes(&track, &toc, 2, false).is_err());
+    }
+
+    #[test]
+    fn chapter_alignment_rejects_invalid_audio_ranges() {
+        let track = SyncTrackInput {
+            path: PathBuf::from("book.m4b"),
+            title: "Book".into(),
+            duration_seconds: Some(60.0),
+            chapters: vec![
+                chapter("Chapter 1", 0.0, Some(30.0)),
+                chapter("Chapter 2", 30.0, Some(30.0)),
+            ],
+        };
+        let toc = vec![
+            alignment::TocEntry {
+                title: "Chapter 1".into(),
+                spine_index: 0,
+            },
+            alignment::TocEntry {
+                title: "Chapter 2".into(),
+                spine_index: 1,
+            },
+        ];
+
+        assert!(chapter_alignment_scopes(&track, &toc, 2, true).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual real-book probe"]
+    fn manual_real_book_scope_probe() {
+        let audio_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_AUDIO").unwrap());
+        let epub_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_EPUB").unwrap());
+        let metadata = read_track_metadata(&audio_path);
+        let epub = alignment::parse_epub(&std::fs::read(epub_path).unwrap()).unwrap();
+        let track = SyncTrackInput {
+            path: audio_path,
+            title: metadata.title.unwrap_or_else(|| "Book".to_string()),
+            duration_seconds: metadata.duration_seconds,
+            chapters: metadata
+                .chapters
+                .into_iter()
+                .map(|chapter| SyncChapterInput {
+                    title: chapter.title,
+                    start_seconds: chapter.start_seconds,
+                    end_seconds: chapter.end_seconds,
+                })
+                .collect(),
+        };
+
+        let result = chapter_alignment_scopes(&track, &epub.toc, epub.sections.len(), true);
+        println!(
+            "audio_chapters={} epub_toc={} epub_sections={} result={}",
+            track.chapters.len(),
+            epub.toc.len(),
+            epub.sections.len(),
+            match &result {
+                Ok(scopes) => format!("{} scopes", scopes.len()),
+                Err(error) => error.clone(),
+            }
+        );
+        if let Ok(scopes) = result {
+            for scope in scopes.iter().take(5) {
+                println!(
+                    "{} {:?} {:?}",
+                    scope.label, scope.audio_range, scope.section_range
+                );
+            }
+            if let Some(output_path) = std::env::var_os("OPERALIBRE_PROBE_TRANSCRIPT") {
+                let selected = std::env::var("OPERALIBRE_PROBE_SCOPE")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(2);
+                let scope = &scopes[selected];
+                let transcript =
+                    alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
+                std::fs::write(output_path, transcript.text).unwrap();
+                println!(
+                    "selected_scope={selected} label={} audio={:?} sections={:?}",
+                    scope.label, scope.audio_range, scope.section_range
+                );
+            }
+        }
+    }
+
+    /// Drives the windowed aligner with shell-script stand-ins for ffmpeg
+    /// and echogarden. The fake ffmpeg records the requested time range in
+    /// the "audio" file; the fake recognizer replies with the scripted
+    /// narration words inside that range; the fake aligner spaces the
+    /// transcript's sentences evenly across it. Sentences are narrated at a
+    /// constant pace, so even spacing is exact only when the window walk
+    /// hands the aligner precisely the text that was spoken.
+    #[cfg(unix)]
+    mod windowed {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        const HEADING_SECONDS: f64 = 12.0;
+        const SENTENCE_SECONDS: f64 = 4.0;
+
+        fn sentence(index: usize) -> String {
+            format!("Sentence {index} word two three four five six.")
+        }
+
+        fn narrated_start(index: usize) -> f64 {
+            HEADING_SECONDS + index as f64 * SENTENCE_SECONDS
+        }
+
+        /// One `time word` line per spoken word: an unscripted heading, then
+        /// every sentence's eight words half a second apart. Sentences in
+        /// `garbled` are spoken as noise the recognizer cannot place.
+        fn narration(count: usize, garbled: std::ops::Range<usize>) -> String {
+            let mut lines = Vec::new();
+            for (index, word) in "this is a narrated heading for the chapter"
+                .split_whitespace()
+                .enumerate()
+            {
+                lines.push(format!("{:.3} {word}", index as f64 * 0.5));
+            }
+            for index in 0..count {
+                for (position, word) in sentence(index).split_whitespace().enumerate() {
+                    let word = if garbled.contains(&index) {
+                        "blah"
+                    } else {
+                        word.trim_end_matches('.')
+                    };
+                    lines.push(format!(
+                        "{:.3} {word}",
+                        narrated_start(index) + position as f64 * 0.5
+                    ));
+                }
+            }
+            lines.join("\n") + "\n"
+        }
+
+        fn write_script(path: &FsPath, body: &str) {
+            std::fs::write(path, body).unwrap();
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+
+        const FAKE_FFMPEG: &str = r#"#!/bin/sh
+start=0; duration=0; previous=""
+for argument in "$@"; do
+  case "$previous" in -ss) start="$argument";; -t) duration="$argument";; esac
+  previous="$argument"
+done
+printf '%s %s\n' "$start" "$duration" > "$previous"
+"#;
+
+        const FAKE_ECHOGARDEN: &str = r#"#!/bin/sh
+command="$1"; audio="$2"
+read start duration < "$audio"
+case "$command" in
+  transcribe)
+    awk -v s="$start" -v d="$duration" 'BEGIN { printf "["; n = 0 }
+      { t = $1 + 0
+        if (t >= s && t < s + d) {
+          if (n > 0) printf ","
+          printf "{\"type\":\"word\",\"text\":\"%s\",\"startTime\":%.3f,\"endTime\":%.3f}", $2, t - s, t - s + 0.4
+          n++ } }
+      END { printf "]" }' "NARRATION_PATH" > "$3" ;;
+  align)
+    awk -v d="$duration" 'BEGIN { RS = "\001" }
+      { gsub(/\n/, " "); n = split($0, parts, /\. */); m = 0
+        for (i = 1; i <= n; i++) if (parts[i] ~ /[A-Za-z0-9]/) m++
+        printf "["; k = 0
+        for (i = 1; i <= n; i++) {
+          if (parts[i] !~ /[A-Za-z0-9]/) continue
+          gsub(/^ +| +$/, "", parts[i])
+          if (k > 0) printf ","
+          printf "{\"type\":\"sentence\",\"text\":\"%s.\",\"startTime\":%.3f,\"endTime\":%.3f}", parts[i], k * d / m, (k + 1) * d / m
+          k++ }
+        printf "]" }' "$3" > "$4" ;;
+esac
+"#;
+
+        async fn align_fake_book(
+            count: usize,
+            garbled: std::ops::Range<usize>,
+        ) -> (Vec<alignment::SyncFragment>, String) {
+            let root = tempfile::tempdir().unwrap();
+            let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+            let job_id = create_job(&state, "sync-generate").await;
+
+            let narration_path = root.path().join("narration.txt");
+            std::fs::write(&narration_path, narration(count, garbled)).unwrap();
+            let ffmpeg = root.path().join("ffmpeg");
+            write_script(&ffmpeg, FAKE_FFMPEG);
+            let cli = root.path().join("echogarden");
+            write_script(
+                &cli,
+                &FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string()),
+            );
+
+            let half = count / 2;
+            let sections = vec![
+                alignment::SpineSection {
+                    href: "a.html".into(),
+                    text: (0..half).map(sentence).collect::<Vec<_>>().join(" "),
+                },
+                alignment::SpineSection {
+                    href: "b.html".into(),
+                    text: (half..count).map(sentence).collect::<Vec<_>>().join(" "),
+                },
+            ];
+            let transcript = alignment::build_transcript(&sections);
+            let track = SyncTrackInput {
+                path: root.path().join("book.m4b"),
+                title: "Book".into(),
+                // A short tail: the fake aligner spreads silence evenly over
+                // the last segment's sentences, which a real one does not.
+                duration_seconds: Some(narrated_start(count) + 0.5),
+                chapters: Vec::new(),
+            };
+            let scope = SyncAlignmentScope {
+                track_index: 0,
+                section_range: 0..2,
+                audio_range: None,
+                time_offset_seconds: 0.0,
+                label: "Book".into(),
+            };
+            let recognition = RecognitionSettings::for_language(Some("en"));
+            let temp_dir = tempfile::tempdir().unwrap();
+            let aligner = Aligner {
+                state: &state,
+                job_id: &job_id,
+                cli_path: &cli,
+                cli_args: &[],
+                ffmpeg_path: Some(&ffmpeg),
+                temp_dir: temp_dir.path(),
+                recognition: &recognition,
+            };
+
+            let fragments = aligner
+                .align_scope(&scope, &track, &transcript, 0)
+                .await
+                .unwrap();
+            let output = state.jobs.read().await.get(&job_id).unwrap().output.clone();
+            (fragments, output)
+        }
+
+        fn assert_monotonic(fragments: &[alignment::SyncFragment]) {
+            for pair in fragments.windows(2) {
+                assert!(
+                    pair[1].start_seconds >= pair[0].end_seconds - 1e-6,
+                    "fragments overlap or run backwards: {pair:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn windows_are_anchored_by_recognition_and_skip_the_narrated_heading() {
+            let count = 200;
+            let (fragments, output) = align_fake_book(count, 0..0).await;
+
+            assert_eq!(fragments.len(), count);
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                assert_eq!(fragment.text, sentence(index));
+                assert_eq!(
+                    fragment.href,
+                    if index < count / 2 {
+                        "a.html"
+                    } else {
+                        "b.html"
+                    }
+                );
+                let expected = narrated_start(index);
+                assert!(
+                    (fragment.start_seconds - expected).abs() < 0.75,
+                    "sentence {index} starts at {:.2}, narrated at {expected:.2}",
+                    fragment.start_seconds
+                );
+            }
+            // Nothing was aligned onto the unscripted heading.
+            assert!(fragments[0].start_seconds >= HEADING_SECONDS - 0.5);
+            assert!(output.contains(" windows.\n"), "{output}");
+            assert!(!output.contains("without a recognized anchor"), "{output}");
+            let windows: usize = output
+                .split("Aligned in ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|value| value.parse().ok())
+                .unwrap();
+            assert!(windows >= 3, "{output}");
+        }
+
+        #[tokio::test]
+        async fn a_stretch_without_anchors_falls_back_and_resynchronizes_afterwards() {
+            let count = 400;
+            let (fragments, output) = align_fake_book(count, 60..190).await;
+
+            assert_eq!(fragments.len(), count);
+            assert_monotonic(&fragments);
+            assert!(output.contains("without a recognized anchor"), "{output}");
+            // Before the garbled stretch, and well after it once the
+            // recognizer anchors again, timing is exact.
+            for (index, fragment) in fragments
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < 60 || *index >= 260)
+            {
+                let expected = narrated_start(index);
+                assert!(
+                    (fragment.start_seconds - expected).abs() < 0.75,
+                    "sentence {index} starts at {:.2}, narrated at {expected:.2}",
+                    fragment.start_seconds
+                );
+            }
+        }
+    }
 }

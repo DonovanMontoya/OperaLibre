@@ -148,6 +148,8 @@ The first page asks for the initial administrator name and password. The adminis
 
 Use a password you can remember. See [Users & Accounts](users.md) for household accounts and password recovery.
 
+The standard install remains the small playback server. If you want OperaLibre to create sentence-level follow-along timing, the owner can later open **Administration → Experimental features** and install the separate readalong sync add-on. Installing it is optional; playback and imported `.sync.json` maps do not need it.
+
 ## 5. Add audiobooks
 
 The simplest method is:

@@ -109,6 +109,11 @@ jobs:
       - name: Audit production web dependencies
         run: npm audit --omit=dev --audit-level=low
 
+      - name: Verify optional sync add-on dependencies
+        run: |
+          npm ci --prefix addons/readalong-sync --ignore-scripts
+          npm audit --prefix addons/readalong-sync --omit=dev --audit-level=low
+
       - name: Test and build web app
         run: |
           npm test -w @operalibre/web
@@ -312,6 +317,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install optional sync add-on runtime
+        run: npm ci --prefix addons/readalong-sync
+
       - name: Download built frontend
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -334,12 +342,18 @@ jobs:
           server_package="operalibre-${version}-server-${{ matrix.platform }}"
           combined_package="operalibre-${version}-combined-${{ matrix.platform }}"
           update_package="operalibre-${version}-update-${{ matrix.platform }}"
+          sync_package="operalibre-${version}-readalong-sync-${{ matrix.platform }}"
 
           node script/package_release.mjs \
             --kind server \
             --platform "${{ matrix.platform }}" \
             --binary "${{ matrix.executable }}" \
             --output "staging/${server_package}" \
+            --version "${version}"
+
+          node script/package_sync_addon.mjs \
+            --platform "${{ matrix.platform }}" \
+            --output "staging/${sync_package}" \
             --version "${version}"
 
           node script/package_release.mjs \
@@ -364,6 +378,7 @@ jobs:
           tar -C staging -czf "dist/${server_package}.tar.gz" "${server_package}"
           tar -C staging -czf "dist/${combined_package}.tar.gz" "${combined_package}"
           (cd staging && zip -qr "../dist/${update_package}.zip" "${update_package}")
+          (cd staging && zip -qr "../dist/${sync_package}.zip" "${sync_package}")
 
       - name: Package for Windows
         if: runner.os == 'Windows'
@@ -373,12 +388,18 @@ jobs:
           $serverPackage = "operalibre-$version-server-${{ matrix.platform }}"
           $combinedPackage = "operalibre-$version-combined-${{ matrix.platform }}"
           $updatePackage = "operalibre-$version-update-${{ matrix.platform }}"
+          $syncPackage = "operalibre-$version-readalong-sync-${{ matrix.platform }}"
 
           node script/package_release.mjs `
             --kind server `
             --platform "${{ matrix.platform }}" `
             --binary "${{ matrix.executable }}" `
             --output "staging/$serverPackage" `
+            --version "$version"
+
+          node script/package_sync_addon.mjs `
+            --platform "${{ matrix.platform }}" `
+            --output "staging/$syncPackage" `
             --version "$version"
 
           node script/package_release.mjs `
@@ -403,6 +424,7 @@ jobs:
           Compress-Archive -Path "staging/$serverPackage" -DestinationPath "dist/$serverPackage.zip"
           Compress-Archive -Path "staging/$combinedPackage" -DestinationPath "dist/$combinedPackage.zip"
           Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
+          Compress-Archive -Path "staging/$syncPackage" -DestinationPath "dist/$syncPackage.zip"
 
       - name: Upload native release packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

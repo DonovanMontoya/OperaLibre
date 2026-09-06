@@ -32,6 +32,8 @@ curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/scri
 
 It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you, without a system-wide install or an administrator password. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
 
+The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experimental features**; normal playback and existing sync maps do not require it.
+
 For a headless machine, `--server-only` installs the server without the bundled web app and writes background start/stop helper scripts beside it.
 
 Windows and manual installs use the release packages below.
