@@ -366,7 +366,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
         job.completed = max(job.completed, existing.count)
         job.completedRequired = max(job.completedRequired, existing.filter(\.required).count)
-        if job.requiredTotal == 0 || job.completedRequired >= job.requiredTotal {
+        // Optional transfers must settle too; completion cancels remaining tasks.
+        if job.completed >= job.total, job.completedRequired >= job.requiredTotal {
             job.state = "completed"
             job.errors = []
         }
