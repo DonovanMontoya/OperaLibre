@@ -33,9 +33,9 @@ export function writeReadalongEnabled(enabled: boolean, storage?: ReadalongPrefe
 const FOLLOW_SYNC_ENABLED_STORAGE_KEY = "operalibre.readalong.followSync";
 
 /**
- * Whether the reader tries to follow the audiobook: the moving highlight, word
- * marker, tap-to-seek, chapter auto-open, and sync-map generation. A sub-option
- * of the reader, off by default and gated behind a warning, because the
+ * Whether the reader tries to follow the audiobook: the moving sentence
+ * highlight, tap-to-seek, chapter auto-open, and sync-map generation. A
+ * sub-option of the reader, off by default and gated behind a warning, because the
  * following can drift or pull the page while it is still being refined.
  */
 export function readFollowSyncEnabled(storage?: ReadalongPreferenceStorage): boolean {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  activeWordIndex,
   anchorOnPage,
   anchorAfterRelocation,
   describeCompanion,
@@ -91,21 +90,12 @@ describe("sync maps", () => {
     assert.equal(findActiveFragmentIndex(fragments, 9), -1);
   });
 
-  it("marks the narrated word until the next one begins", () => {
-    assert.equal(activeWordIndex(fragments[0], 1), -1);
-    assert.equal(activeWordIndex(fragments[1], 2.9), -1);
-    assert.equal(activeWordIndex(fragments[1], 3), 0);
-    assert.equal(activeWordIndex(fragments[1], 3.8), 0);
-    assert.equal(activeWordIndex(fragments[1], 4.5), 1);
-    assert.equal(activeWordIndex(fragments[1], 5.5), -1);
-  });
-
-  it("tells word, sentence, and estimated maps apart", () => {
+  it("tells sentence and estimated maps apart, and ignores word timings", () => {
     const base: SyncMap = { version: 2, fragments: [fragments[0]] };
     assert.equal(syncMapPrecision(null), null);
     assert.equal(syncMapPrecision({ ...base, fragments: [] }), null);
     assert.equal(syncMapPrecision(base), "sentence");
-    assert.equal(syncMapPrecision({ ...base, fragments }), "word");
+    assert.equal(syncMapPrecision({ ...base, fragments }), "sentence");
     assert.equal(syncMapPrecision({ ...base, precision: "estimated", fragments }), "estimated");
   });
 
@@ -127,7 +117,7 @@ describe("sync maps", () => {
         { readingFile: epub, syncFile: { fileName: "", source: "generated", url: "" } },
         { version: 2, fragments }
       ),
-      "word"
+      "sentence"
     );
   });
 });
