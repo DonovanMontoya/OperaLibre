@@ -23,9 +23,36 @@ test("network failures use durable bytes but cancellation never does", async (t)
   await assert.rejects(revalidatedCompanion("/book.epub", async () => cached, async () => {}, controller.signal), { name: "AbortError" });
 });
 
+test("a deliberately downloaded companion opens durable bytes without a server request", async (t) => {
+  const cached = new TextEncoder().encode("downloaded edition").buffer;
+  const network = t.mock.method(globalThis, "fetch", async () => new Response("server edition"));
+  const data = await revalidatedCompanion("/book.epub", async () => cached, async () => {}, undefined, true);
+  assert.equal(data, cached);
+  assert.equal(network.mock.callCount(), 0);
+});
+
 test("revoked access does not return a cached companion", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 403 }));
   await assert.rejects(revalidatedCompanion("/book.epub", async () => new ArrayBuffer(1), async () => {}), /403/);
+});
+
+test("a missing or unreadable local companion falls back to the server", async (t) => {
+  const network = t.mock.method(globalThis, "fetch", async () => new Response("server edition"));
+  for (const readCached of [async () => null, async () => { throw new Error("disk read failed"); }]) {
+    const data = await revalidatedCompanion("/book.epub", readCached, async () => {}, undefined, true);
+    assert.equal(new TextDecoder().decode(data), "server edition");
+  }
+  assert.equal(network.mock.callCount(), 2);
+});
+
+test("cancelling a local read does not open its bytes or fall back to the server", async (t) => {
+  const controller = new AbortController();
+  const network = t.mock.method(globalThis, "fetch", async () => new Response("server edition"));
+  await assert.rejects(revalidatedCompanion("/book.epub", async () => {
+    controller.abort();
+    return new ArrayBuffer(1);
+  }, async () => {}, controller.signal, true), { name: "AbortError" });
+  assert.equal(network.mock.callCount(), 0);
 });
 
 test("a full cache does not prevent reading freshly downloaded bytes", async (t) => {
