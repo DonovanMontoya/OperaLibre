@@ -11,6 +11,9 @@ pub(crate) struct JobStatus {
     pub(crate) target_id: Option<String>,
     pub(crate) status: String,
     pub(crate) started_at: String,
+    /// When the job left its queue and began doing work. Kept separate from
+    /// `started_at`, which records when the request created the job.
+    pub(crate) running_at: Option<String>,
     pub(crate) finished_at: Option<String>,
     pub(crate) exit_code: Option<i32>,
     pub(crate) output: String,
@@ -145,12 +148,14 @@ pub(crate) async fn create_job_with_state(
     }
 
     let started_at = next_job_timestamp(&jobs).to_string();
+    let running_at = (status == "running").then(|| started_at.clone());
     let job = JobStatus {
         id: id.clone(),
         kind: kind.to_string(),
         target_id,
         status: status.to_string(),
         started_at,
+        running_at,
         finished_at: None,
         exit_code: None,
         output: String::new(),
@@ -356,6 +361,7 @@ pub(crate) fn prune_finished_jobs(jobs: &mut HashMap<String, JobStatus>) {
 pub(crate) async fn update_job_running(state: &AppState, job_id: &str) {
     if let Some(job) = state.jobs.write().await.get_mut(job_id) {
         job.status = "running".to_string();
+        job.running_at = Some(unix_now_millis().to_string());
     }
 }
 

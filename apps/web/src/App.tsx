@@ -7818,7 +7818,8 @@ function MainApp({
       : null;
   })();
   const syncElapsedSeconds = (() => {
-    const startedAt = Number(syncJobForBook?.startedAt);
+    if (syncJobForBook?.status !== "running") return null;
+    const startedAt = Number(syncJobForBook.runningAt ?? syncJobForBook.startedAt);
     return Number.isFinite(startedAt) && startedAt > 0
       ? Math.max(0, (Date.now() - startedAt) / 1000)
       : null;

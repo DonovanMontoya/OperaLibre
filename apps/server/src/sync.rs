@@ -565,16 +565,24 @@ impl ScopeProgress {
 }
 
 /// How long a scope's audio runs, used only to weight the progress bar: a
-/// half-hour chapter should move it further than a two-minute one. Falls back
-/// to equal weights when durations are unknown.
-fn scope_audio_seconds(scope: &SyncAlignmentScope, tracks: &[SyncTrackInput]) -> f64 {
+/// half-hour chapter should move it further than a two-minute one.
+fn scope_audio_seconds(scope: &SyncAlignmentScope, tracks: &[SyncTrackInput]) -> Option<f64> {
     match scope.audio_range {
-        Some((start, end)) => (end - start).max(0.0),
+        Some((start, end)) => (end > start).then_some(end - start),
         None => tracks[scope.track_index]
             .duration_seconds
-            .filter(|seconds| *seconds > 0.0)
-            .unwrap_or(1.0),
+            .filter(|seconds| *seconds > 0.0),
     }
+}
+
+/// Do not mix real seconds with a made-up fallback: if any scope is missing a
+/// duration, equal weights keep that scope from receiving a one-second sliver.
+fn scope_progress_weights(scopes: &[SyncAlignmentScope], tracks: &[SyncTrackInput]) -> Vec<f64> {
+    scopes
+        .iter()
+        .map(|scope| scope_audio_seconds(scope, tracks))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_else(|| vec![1.0; scopes.len()])
 }
 
 pub(crate) async fn run_sync_generation(
@@ -708,10 +716,7 @@ pub(crate) async fn run_sync_generation(
     } else {
         "section"
     };
-    let scope_weights: Vec<f64> = scopes
-        .iter()
-        .map(|scope| scope_audio_seconds(scope, tracks))
-        .collect();
+    let scope_weights = scope_progress_weights(&scopes, tracks);
     let total_weight = scope_weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
     let mut done_weight = 0.0f64;
     let mut fragments = Vec::new();
@@ -1505,6 +1510,35 @@ mod tests {
         ];
 
         assert!(chapter_alignment_scopes(&track, &toc, 2, true).is_err());
+    }
+
+    #[test]
+    fn progress_weights_are_equal_when_any_track_duration_is_unknown() {
+        let tracks = vec![
+            SyncTrackInput {
+                path: PathBuf::from("one.mp3"),
+                title: "One".into(),
+                duration_seconds: Some(3_600.0),
+                chapters: Vec::new(),
+            },
+            SyncTrackInput {
+                path: PathBuf::from("two.mp3"),
+                title: "Two".into(),
+                duration_seconds: None,
+                chapters: Vec::new(),
+            },
+        ];
+        let scopes = (0..2)
+            .map(|track_index| SyncAlignmentScope {
+                track_index,
+                section_range: track_index..track_index + 1,
+                audio_range: None,
+                time_offset_seconds: 0.0,
+                label: tracks[track_index].title.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(scope_progress_weights(&scopes, &tracks), vec![1.0, 1.0]);
     }
 
     #[test]

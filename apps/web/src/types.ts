@@ -322,6 +322,8 @@ export type JobStatus = {
   targetId: string | null;
   status: "running" | "completed" | "failed" | string;
   startedAt: string;
+  /** When a queued job began doing work. Older servers may omit it. */
+  runningAt?: string | null;
   finishedAt: string | null;
   exitCode: number | null;
   output: string;
