@@ -126,6 +126,16 @@ import {
   writePlaybackSpeed
 } from "./playbackSpeed";
 import {
+  formatSleepTimerMinutes,
+  mergeCustomSleepTimer,
+  normalizeSleepTimerMinutes,
+  readCustomSleepTimers,
+  SLEEP_TIMER_MAX_MINUTES,
+  SLEEP_TIMER_MIN_MINUTES,
+  sleepTimerChoices,
+  writeCustomSleepTimers
+} from "./sleepTimer";
+import {
   bookVolumeStorageKey,
   BOOK_GAIN_DB_MAX,
   BOOK_GAIN_DB_MIN,
@@ -322,7 +332,6 @@ import type {
   Track
 } from "./types";
 
-const SLEEP_OPTIONS = [5, 15, 30, 45, 60];
 const APP_STATE_STORAGE_PREFIX = "operalibre.appState";
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
@@ -373,6 +382,22 @@ function readStoredSpeed() {
 function writeStoredSpeed(value: number) {
   try {
     writePlaybackSpeed(window.localStorage, value);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function readStoredCustomSleepTimers() {
+  try {
+    return readCustomSleepTimers(window.localStorage);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredCustomSleepTimers(timers: readonly number[]) {
+  try {
+    writeCustomSleepTimers(window.localStorage, timers);
   } catch {
     // ignore storage failures
   }
@@ -3965,6 +3990,11 @@ function MainApp({
   const gainChainRef = useRef<PlaybackGainChain | null>(null);
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [sleepRemaining, setSleepRemaining] = useState(0);
+  const [customSleepTimers, setCustomSleepTimers] = useState<number[]>(readStoredCustomSleepTimers);
+  const [sleepCustomOpen, setSleepCustomOpen] = useState(false);
+  const [sleepCustomDraft, setSleepCustomDraft] = useState("");
+  const sleepChoices = useMemo(() => sleepTimerChoices(customSleepTimers), [customSleepTimers]);
+  const sleepCustomMinutes = normalizeSleepTimerMinutes(sleepCustomDraft);
   const sleepDeadlineRef = useRef<number | null>(null);
   const sleepRemainingRef = useRef(0);
   useEffect(() => {
@@ -5980,7 +6010,23 @@ function MainApp({
         setPlaybackError(errorMessage(error, "The sleep timer could not be configured."));
       });
     }
+    setSleepCustomOpen(false);
+    setSleepCustomDraft("");
     setNativePlayerSheet(null);
+  }
+
+  /**
+   * A duration the listener typed. It is remembered before being armed so it
+   * stays one tap away tomorrow night, whether or not tonight's timer runs out.
+   */
+  function startCustomSleepTimer(event: React.FormEvent) {
+    event.preventDefault();
+    const minutes = normalizeSleepTimerMinutes(sleepCustomDraft);
+    if (minutes === null) return;
+    const remembered = mergeCustomSleepTimer(customSleepTimers, minutes);
+    setCustomSleepTimers(remembered);
+    writeStoredCustomSleepTimers(remembered);
+    configureSleepTimer(minutes);
   }
 
   useEffect(() => {
@@ -8976,7 +9022,11 @@ function MainApp({
                   >
                     <Gauge size={16} /> {speed}×
                   </button>
-                  <button type="button" onClick={() => setNativePlayerSheet("sleep")}>
+                  <button type="button" onClick={() => {
+                    setSleepCustomOpen(false);
+                    setSleepCustomDraft("");
+                    setNativePlayerSheet("sleep");
+                  }}>
                     <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
                   </button>
                   <button
@@ -9620,16 +9670,44 @@ function MainApp({
                     <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
                     <select
                       id="sleep"
-                      value={sleepMinutes}
-                      onChange={(event) => configureSleepTimer(Number(event.currentTarget.value))}
+                      value={sleepCustomOpen ? "custom" : String(sleepMinutes)}
+                      onChange={(event) => {
+                        const choice = event.currentTarget.value;
+                        if (choice === "custom") {
+                          setSleepCustomDraft(sleepMinutes > 0 ? String(sleepMinutes) : "");
+                          setSleepCustomOpen(true);
+                          return;
+                        }
+                        configureSleepTimer(Number(choice));
+                      }}
                     >
-                      <option value={0}>—</option>
-                      {SLEEP_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {`${option} minutes`}
+                      <option value="0">—</option>
+                      {sleepChoices.map((option) => (
+                        <option key={option} value={String(option)}>
+                          {formatSleepTimerMinutes(option)}
                         </option>
                       ))}
+                      <option value="custom">Custom…</option>
                     </select>
+                    {sleepCustomOpen ? (
+                      <form className="sleep-custom" onSubmit={startCustomSleepTimer}>
+                        <input
+                          type="number"
+                          autoFocus
+                          inputMode="numeric"
+                          enterKeyHint="done"
+                          min={SLEEP_TIMER_MIN_MINUTES}
+                          max={SLEEP_TIMER_MAX_MINUTES}
+                          step={1}
+                          placeholder="Minutes"
+                          aria-label="Custom sleep timer in minutes"
+                          value={sleepCustomDraft}
+                          onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
+                        />
+                        <button type="submit" disabled={sleepCustomMinutes === null}>Set</button>
+                        <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => setSleepCustomOpen(false)}><X size={16} /></button>
+                      </form>
+                    ) : null}
                     {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
                   </section>
                 </>
@@ -10091,14 +10169,14 @@ function MainApp({
             </header>
             <p className="sleep-sheet-hint">The timer only runs while your book is playing.</p>
             <div className="sleep-options">
-              {SLEEP_OPTIONS.map((minutes) => (
+              {!sleepCustomOpen && sleepChoices.map((minutes) => (
                 <button
                   type="button"
                   key={minutes}
                   className={sleepMinutes === minutes && sleepRemaining > 0 ? "selected" : ""}
                   onClick={() => configureSleepTimer(minutes)}
                 >
-                  <span>{minutes === 60 ? "1 hour" : `${minutes} minutes`}</span>
+                  <span>{formatSleepTimerMinutes(minutes)}</span>
                   {sleepMinutes === minutes && sleepRemaining > 0 ? (
                     <em>{formatTime(sleepRemaining)} left</em>
                   ) : (
@@ -10108,13 +10186,48 @@ function MainApp({
               ))}
               <button
                 type="button"
+                aria-expanded={sleepCustomOpen}
+                aria-controls="sleep-custom-editor"
+                onClick={() => setSleepCustomOpen((open) => !open)}
+              >
+                <span>Custom duration</span>
+                {sleepCustomOpen ? <X size={17} /> : <ChevronRight size={17} />}
+              </button>
+              {!sleepCustomOpen && <button
+                type="button"
                 className={`sleep-off ${sleepRemaining === 0 ? "selected" : ""}`}
                 onClick={() => configureSleepTimer(0)}
               >
                 <span>Off</span>
                 {sleepRemaining === 0 ? <em>Selected</em> : <X size={17} />}
-              </button>
+              </button>}
             </div>
+            {sleepCustomOpen ? (
+              <form id="sleep-custom-editor" className="sleep-custom-editor" onSubmit={startCustomSleepTimer}>
+                <label className="eyebrow" htmlFor="sleep-custom-minutes">Duration in minutes</label>
+                <div className="sleep-custom sleep-custom-row">
+                  <input
+                    id="sleep-custom-minutes"
+                    autoFocus
+                    aria-describedby="sleep-custom-hint"
+                    type="number"
+                    inputMode="numeric"
+                    enterKeyHint="done"
+                    min={SLEEP_TIMER_MIN_MINUTES}
+                    max={SLEEP_TIMER_MAX_MINUTES}
+                    step={1}
+                    placeholder="Minutes"
+                    value={sleepCustomDraft}
+                    onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
+                  />
+                  <span className="sleep-custom-unit">min</span>
+                </div>
+                <p id="sleep-custom-hint" className="sleep-sheet-hint">
+                  {SLEEP_TIMER_MIN_MINUTES}–{SLEEP_TIMER_MAX_MINUTES} minutes · Saved for next time
+                </p>
+                <button className="speed-sheet-done" type="submit" disabled={sleepCustomMinutes === null}>Start timer</button>
+              </form>
+            ) : null}
           </section>
         </div>
       ) : null}
