@@ -21,6 +21,10 @@ Audiobooks are mastered at very different levels, so a device volume that suits 
 
 The setting is a boost, not a re-recording: past the point where a book’s loudest passages reach full scale a limiter holds them there, so very large boosts trade some dynamic range for audibility. A frontend hosted separately from the OperaLibre server can only turn a book down, not up — the browser will not let it read the audio closely enough to amplify it.
 
+### Set your own sleep timer
+
+**Nightfall**, on the book’s own page and behind the timer button in the phone player, offers the usual 5, 15, 30, 45, and 60 minute stops. Choose **Custom** and type any length from 1 to 600 minutes when none of those matches the chapter you are in the middle of. Durations you type are kept on that device — the three most recent sit alongside the presets — so a length you use often is one tap away the next night. The countdown only runs while the book is playing.
+
 ## Add books to the library
 
 You can add books in either of these ways:
