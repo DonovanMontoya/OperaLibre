@@ -595,3 +595,24 @@ test("a foregrounded idle session adopts only a strictly newer, materially diffe
   const serverOnly = progress({ updatedAt: String(Date.parse("2026-08-27T12:00:00.000Z")) });
   assert.equal(adoptableServerProgress(null, serverOnly), serverOnly);
 });
+
+
+test("resuming an unmeasurable track preserves the saved track position", () => {
+  for (const durationSeconds of [null, 0, -1]) {
+    assert.deepEqual(
+      resolveProgressLocation(
+        [{ id: "t1", durationSeconds: 3600 }, { id: "t2", durationSeconds }],
+        progress({ trackId: "t2", positionSeconds: 1800, bookPositionSeconds: 5400 })
+      ),
+      { trackId: "t2", positionSeconds: 1800 }
+    );
+  }
+  assert.deepEqual(
+    resolveProgressLocation(
+      [{ id: "t2", durationSeconds: 1200 }],
+      progress({ trackId: "t2", positionSeconds: 1800 })
+    ),
+    { trackId: "t2", positionSeconds: 1200 },
+    "a measured duration still bounds the resume point"
+  );
+});
