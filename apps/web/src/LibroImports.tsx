@@ -18,6 +18,8 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
   const [notice, setNotice] = useState<string | null>(null);
   const initialized = useRef(false);
   const importRevision = useRef<string | null>(null);
+  const booksChanged = useRef(onBooksChanged);
+  booksChanged.current = onBooksChanged;
   const running = status?.job?.status === "running" || status?.job?.status === "queued";
 
   useEffect(() => {
@@ -38,7 +40,7 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
           if (revision !== importRevision.current) {
             const books = await getBooks();
             if (stopped) return;
-            onBooksChanged(books);
+            booksChanged.current(books);
             importRevision.current = revision;
           }
         }
@@ -50,7 +52,7 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
     }
     void refresh();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [onBooksChanged]);
+  }, []);
 
   async function save(nextFolder: string | null) {
     setBusy(true);
@@ -121,8 +123,8 @@ export function LibroImports({ isOwner, onUpload, onBooksChanged }: {
     </section>
 
     <section className="admin-card">
-      <div className="admin-section-head"><div><h2>Other ways to add books</h2><p>Upload audio files from this device, or use the Audible tab for your connected Libation library.</p></div><button type="button" onClick={onUpload}><Upload size={14} /> Upload files</button></div>
-      <p>Imported books use the same library access rules as administrator uploads. Libro.fm sign-in and purchases happen on Libro.fm; listening progress stays in OperaLibre.</p>
+      <div className="admin-section-head"><div><h2>Other ways to add books</h2><p>Upload audio files from this device, or choose Audible under Get books for your connected Libation library.</p></div><button type="button" onClick={onUpload}><Upload size={14} /> Upload files</button></div>
+      <p>Folder imports use the same library access rules as administrator uploads. For direct Libro.fm downloads, connect your account above. Listening progress stays in OperaLibre.</p>
     </section>
   </div>;
 }
