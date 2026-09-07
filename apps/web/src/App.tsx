@@ -44,6 +44,7 @@ import {
   RefreshCcw,
   RotateCcw,
   RotateCw,
+  Rows3,
   Search,
   ServerOff,
   ShieldCheck,
@@ -155,7 +156,13 @@ import {
   writeBookGains,
   writeUnsyncedBookGains
 } from "./bookVolume";
-import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
+import { compactProgressLabel, compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
+import {
+  SHELF_VIEW_MODE_OPTIONS,
+  readStoredShelfViewMode,
+  writeStoredShelfViewMode
+} from "./shelfView";
+import type { ShelfViewMode } from "./shelfView";
 import {
   bookMatchesFacet,
   bookMatchesShelfSearch,
@@ -824,7 +831,6 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
-type ViewMode = "list" | "grid";
 type LibrarySource = "local" | "audible";
 type MetadataEditorState = {
   title: string;
@@ -3903,7 +3909,7 @@ function MainApp({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
-  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
@@ -4028,6 +4034,13 @@ function MainApp({
     setSortReversed(!sortReversed);
     writeStoredValue(`operalibre.sortReversed.${librarySource}`, String(!sortReversed));
   }
+
+  function selectViewMode(mode: ShelfViewMode) {
+    setViewMode(mode);
+    writeStoredShelfViewMode(mode);
+  }
+
+  const isCompactView = viewMode === "compact";
 
   function closeShelfFilters() {
     setFiltersOpen(false);
@@ -8591,22 +8604,21 @@ function MainApp({
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
             <div className="view-toggle" role="group" aria-label="View mode">
-              <button
-                className={viewMode === "list" ? "selected" : ""}
-                onClick={() => setViewMode("list")}
-                aria-label="List view"
-                aria-pressed={viewMode === "list"}
-              >
-                <List size={14} />
-              </button>
-              <button
-                className={viewMode === "grid" ? "selected" : ""}
-                onClick={() => setViewMode("grid")}
-                aria-label="Grid view"
-                aria-pressed={viewMode === "grid"}
-              >
-                <LayoutGrid size={14} />
-              </button>
+              {SHELF_VIEW_MODE_OPTIONS.map((option) => {
+                const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
+                return (
+                  <button
+                    key={option.value}
+                    className={viewMode === option.value ? "selected" : ""}
+                    onClick={() => selectViewMode(option.value)}
+                    aria-label={option.label}
+                    title={option.value === "compact" ? "Compact view · more books per screen" : option.label}
+                    aria-pressed={viewMode === option.value}
+                  >
+                    <Icon size={14} />
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -8995,7 +9007,9 @@ function MainApp({
               </div>
             ) : null}
 
-            <div className={`book-list ${viewMode === "grid" ? "is-grid" : "is-list"}`}>
+            {/* Compact keeps the list layout and only tightens it, so it carries
+                both classes rather than forking every row rule. */}
+            <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
               {visibleBooks.map((book, index) => {
                 const progressPercent = book.progress?.percentComplete ?? 0;
                 const availableOnDevice =
@@ -9011,7 +9025,12 @@ function MainApp({
                     : "Available on this device"
                   : "Available from the server";
                 const unavailableOffline = isOffline && !availableOnDevice;
-                const shared = summarizeSharedProgress(book.sharedProgress);
+                const shared = isCompactView ? null : summarizeSharedProgress(book.sharedProgress);
+                // Compact abbreviates the chip and drops it entirely for a book
+                // nobody has opened; the full wording stays on the tooltip so
+                // shortening it costs a screen reader nothing.
+                const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
+                const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
                 const sortTag = tagForShelfSort(book, shelfFilters.tags);
                 const sortGroup = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
                 const previousSortGroup = index > 0
@@ -9048,40 +9067,61 @@ function MainApp({
                         {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
                         {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
                       </span>
+                      {/* Compact drops the badge row — runtime, shared readers,
+                          series position — and keeps title, byline and progress.
+                          Those tags are what a browsing row is for; a row you are
+                          scanning past a hundred of is not. Read along survives as
+                          a bare glyph: unlike the rest it has no other home on the
+                          shelf, so dropping it would make "does this one have the
+                          text?" unanswerable without opening every book. */}
                       <span className="book-text">
                         <strong>{book.title}</strong>
                         <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                        {sortMode === "series" && book.metadata.seriesPosition ? (
+                        {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
                           <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
                         ) : null}
-                        {sortMode === "tag" && sortTag?.position ? (
+                        {!isCompactView && sortMode === "tag" && sortTag?.position ? (
                           <span className="book-sort-context">
                             Book {sortTag.position} in {sortTag.name}
                           </span>
                         ) : null}
-                        {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
+                        {!isCompactView && formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
                           <span className="book-runtime-tag">
                             <Timer size={11} strokeWidth={1.5} />
                             {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
                           </span>
                         ) : null}
                         {readalongEnabled && book.readingFile ? (
-                          <span className="book-readalong-tag" title="Ebook included: read along while you listen">
+                          <span
+                            className={`book-readalong-tag ${isCompactView ? "is-glyph" : ""}`}
+                            title="Ebook included: read along while you listen"
+                            aria-label={isCompactView ? "Ebook included: read along while you listen" : undefined}
+                          >
                             <BookOpen size={11} strokeWidth={1.6} />
-                            Read along
+                            {isCompactView ? null : "Read along"}
                           </span>
                         ) : readalongEnabled && hasExtras(book) ? (
-                          <span className="book-readalong-tag extras" title="Pictures or a supplement are included">
+                          <span
+                            className={`book-readalong-tag extras ${isCompactView ? "is-glyph" : ""}`}
+                            title="Pictures or a supplement are included"
+                            aria-label={isCompactView ? "Pictures or a supplement are included" : undefined}
+                          >
                             <Images size={11} strokeWidth={1.6} />
-                            Extras
+                            {isCompactView ? null : "Extras"}
                           </span>
                         ) : null}
-                        <span className={`book-progress ${book.progress?.status ?? "notStarted"}`}>
-                          <em>{bookProgressLabel(book)}</em>
-                          {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
-                            <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
-                          ) : null}
-                        </span>
+                        {progressLabel ? (
+                          <span
+                            className={`book-progress ${book.progress?.status ?? "notStarted"}`}
+                            title={compactProgressTitle}
+                            aria-label={compactProgressTitle}
+                          >
+                            <em>{progressLabel}</em>
+                            {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
+                              <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+                            ) : null}
+                          </span>
+                        ) : null}
                         {shared ? (
                           <span
                             className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
