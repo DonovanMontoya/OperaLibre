@@ -107,8 +107,27 @@ pub(crate) async fn import_server_backup(
     Extension(SessionToken(current_session)): Extension<SessionToken>,
     Json(backup): Json<ServerBackup>,
 ) -> Result<Json<RestoreResult>, ApiError> {
-    let _backup_guard = state.backup_lock.lock().await;
     validate_backup_header(&backup)?;
+    // Once accepted, restore owns the database, identity file and caches as
+    // one operation. Dropping an HTTP request (disconnect or timeout) must
+    // not abandon it between the database commit and cache adoption.
+    tokio::spawn(async move {
+        let result = restore_server_backup(state, current_session, backup).await;
+        if let Err(error) = &result {
+            tracing::error!("server backup restore failed: {}", error.message);
+        }
+        result
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Backup restore task failed: {error}")))?
+}
+
+async fn restore_server_backup(
+    state: AppState,
+    current_session: String,
+    backup: ServerBackup,
+) -> Result<Json<RestoreResult>, ApiError> {
+    let _backup_guard = state.backup_lock.lock().await;
     // The identity index is rewritten below, and a scan running at the same
     // time would read the old index and write it back over the restored one.
     // Taken before the state gate: a scan holds the rescan lock while it

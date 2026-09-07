@@ -207,6 +207,9 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_reason_sender.send(reason);
     });
     serve_until_shutdown(serve, shutdown_reason).await?;
+    // A disconnected restore request may still be committing its stores.
+    // Graceful shutdown must let that operation finish before the runtime exits.
+    let _backup_guard = state.backup_lock.lock().await;
     drain_reading_sessions(&state).await;
 
     Ok(())
