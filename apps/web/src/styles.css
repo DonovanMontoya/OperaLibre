@@ -665,6 +665,7 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .library-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: stretch;
 }
@@ -678,7 +679,9 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .library-sort {
-  flex: 1;
+  /* Wide enough to still read as a labelled control when the view toggle
+     wraps below it on a narrow shelf. */
+  flex: 1 1 150px;
   min-width: 0;
   position: relative;
   display: flex;
@@ -745,11 +748,14 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .view-toggle {
   display: flex;
+  margin-left: auto;
   border: 1px solid rgba(217, 181, 116, 0.22);
 }
 
 .view-toggle button {
-  width: 38px;
+  /* Three densities have to share the row with the sort control, so each
+     button is only as wide as its glyph needs. */
+  width: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1592,6 +1598,103 @@ html:not(.native-app) .web-shell > .player-pane {
 .book-list.is-grid .book-availability {
   top: 6px;
   right: 6px;
+}
+
+/* ------------------------------------------------------------------
+   Compact shelf
+
+   The same rows as the list with the air taken out: a smaller spine, the
+   title on one line, and the byline sharing the line below it with
+   progress instead of stacking under a run of badges. A few hundred
+   books is then a scroll rather than an expedition — while the roomy
+   list stays the default for shelves small enough to browse. Compact
+   carries `.is-list` too, so everything here is an override rather than
+   a second layout.
+   ------------------------------------------------------------------ */
+.book-list.is-compact {
+  gap: 0;
+}
+
+.book-list.is-compact .book-row {
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 8px 7px 4px;
+}
+
+.book-list.is-compact .book-row:hover,
+.book-list.is-compact .book-row.active {
+  padding-left: 10px;
+}
+
+.book-list.is-compact .cover-mark {
+  width: 26px;
+}
+
+.book-list.is-compact .book-row .index {
+  padding-top: 0;
+  font-size: 0.62rem;
+}
+
+/* Title takes the full width; byline, the read-along glyph and progress share
+   the line below it. The glyph's column collapses to nothing on the rows that
+   have no ebook, so progress stays hard against the right edge either way. */
+.book-list.is-compact .book-text {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 2px 8px;
+  align-items: center;
+  padding-right: 38px;
+}
+
+.book-list.is-compact .book-availability.server-and-device + .book-text {
+  padding-right: 54px;
+}
+
+.book-list.is-compact .book-text strong {
+  grid-column: 1 / -1;
+  font-size: 0.92rem;
+  -webkit-line-clamp: 1;
+}
+
+.book-list.is-compact .book-text > span:not([class]) {
+  font-size: 0.62rem;
+}
+
+.book-list.is-compact .book-text .book-progress {
+  width: auto;
+  max-width: 100%;
+  height: 15px;
+  padding: 0 7px;
+  justify-self: end;
+}
+
+/* Compact trades the wording for the icon alone — the full sentence stays on
+   the title and aria-label, so the row loses width, not meaning. */
+.book-list.is-compact .book-readalong-tag.is-glyph {
+  gap: 0;
+  justify-self: end;
+}
+
+.book-list.is-compact .book-progress em {
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+}
+
+.book-list.is-compact .book-availability {
+  top: 50%;
+  height: 20px;
+  min-width: 22px;
+  padding: 0 5px;
+  transform: translateY(-50%);
+}
+
+.book-list.is-compact .book-sort-group {
+  margin: 12px 0 3px;
+  padding-bottom: 5px;
+}
+
+.book-list.is-compact .book-sort-group > strong {
+  font-size: 0.88rem;
 }
 
 .book-row .index {
@@ -9060,6 +9163,53 @@ html.native-app .book-text > span:not([class]) {
   color: rgba(241, 231, 208, 0.55);
 }
 
+/* Compact on the phone: the same trade as the web shelf, but the row still
+   has to be a comfortable tap target, so density comes out of the artwork
+   and the type rather than the row's height. */
+html.native-app .book-list.is-compact {
+  gap: 2px;
+}
+
+html.native-app .book-list.is-compact .book-row {
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 48px;
+  padding: 5px 12px;
+}
+
+html.native-app .book-list.is-compact .book-row.active {
+  padding-left: 12px;
+}
+
+html.native-app .book-list.is-compact .cover-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+}
+
+html.native-app .book-list.is-compact .book-text {
+  padding-right: 40px;
+}
+
+html.native-app .book-list.is-compact .book-availability.server-and-device + .book-text {
+  padding-right: 56px;
+}
+
+html.native-app .book-list.is-compact .book-text strong {
+  font-size: 0.95rem;
+}
+
+html.native-app .book-list.is-compact .book-text > span:not([class]) {
+  font-size: 0.78rem;
+}
+
+html.native-app .book-list.is-compact .book-availability {
+  top: 50%;
+  right: 12px;
+  height: 20px;
+  transform: translateY(-50%);
+}
+
 /* ============================================================
    iOS-native pass
    App-native navigation, sheets, controls, touch targets, and
@@ -9143,7 +9293,7 @@ html.native-app .view-toggle {
 }
 
 html.native-app .view-toggle button {
-  width: 46px;
+  width: 42px;
   min-height: 44px;
 }
 
