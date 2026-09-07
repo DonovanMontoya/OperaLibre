@@ -907,7 +907,7 @@ export function AdminPanel({
               <article>
                 <div className="admin-software-version-head">
                   <div>
-                    <span>Follow-along sync generation</span>
+                    <span>Follow along</span>
                     <strong>
                       {syncAddonChecking && !syncAddon
                         ? "Checking…"
@@ -927,9 +927,10 @@ export function AdminPanel({
                   )}
                 </div>
                 <p>
-                  Creates sentence-level EPUB highlighting using local speech recognition and forced
-                  alignment. Audio stays on this server. Jobs run one at a time and can use substantial
-                  CPU, memory, and disk space. On smaller servers, generation may affect playback.
+                  Enables sentence highlighting, sentence seeking, and automatic page turns in the EPUB
+                  reader, including existing sync maps. When disabled, only chapter sync is available.
+                  Creates precise sync maps using local speech recognition and forced alignment. Audio stays
+                  on this server. Jobs run one at a time and can use substantial CPU, memory, and disk space. On smaller servers, generation may affect playback.
                 </p>
                 {syncAddon?.packageBytes ? (
                   <p className="admin-experiment-detail">

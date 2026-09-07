@@ -1,4 +1,5 @@
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
+import { narrationTextOffset } from "./readerPagination";
 import {
   ALargeSmall,
   AlertCircle,
@@ -1478,6 +1479,7 @@ export function EpubReadalong({
   const searchCursorRef = useRef(0);
   const fragmentRangesRef = useRef<{ doc: Document; href: string; ranges: FragmentRange[] } | null>(null);
   const highlightCfiRef = useRef<string | null>(null);
+  const narratedRangeRef = useRef<{ index: DocumentSearchIndex; start: number; length: number; contents: Contents } | null>(null);
   const highlightThemeRef = useRef<ReaderTheme | null>(null);
   const highlightedFragmentRef = useRef(-1);
   const autoNavHrefRef = useRef<string | null>(null);
@@ -1781,6 +1783,7 @@ export function EpubReadalong({
     searchCursorRef.current = 0;
     fragmentRangesRef.current = null;
     highlightCfiRef.current = null;
+    narratedRangeRef.current = null;
     highlightedFragmentRef.current = -1;
     autoNavHrefRef.current = null;
     attachedDocsRef.current = new WeakSet();
@@ -2391,6 +2394,7 @@ export function EpubReadalong({
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
+      narratedRangeRef.current = null;
       return;
     }
     if (!isReady || !rendition || !location) {
@@ -2407,8 +2411,24 @@ export function EpubReadalong({
       return;
     }
     autoNavHrefRef.current = null;
-    // Turns the page to a marker that has ended up off-screen, whether the
-    // narration moved on or the layout changed under it.
+    // Keep the spoken position visible even when a sentence spans pages.
+    // The annotation remains sentence-wide; word timing only guides navigation.
+    const spokenCfi = () => {
+      const target = narratedRangeRef.current;
+      if (!target) return highlightCfiRef.current;
+      const rawOffset = narrationTextOffset(fragment, positionSeconds);
+      const offset = normalizeSyncNeedle(fragment.text.slice(0, rawOffset) + "x").length - 1;
+      const point = target.index.map[target.start + Math.min(offset, target.length - 1)];
+      if (!point) return highlightCfiRef.current;
+      try {
+        const range = target.index.doc.createRange();
+        range.setStart(point.node, point.offset);
+        range.collapse(true);
+        return target.contents.cfiFromRange(range);
+      } catch {
+        return highlightCfiRef.current;
+      }
+    };
     const keepOnPage = (cfi: string) => {
       const EpubCfiClass = epubCfiClassRef.current;
       if (!EpubCfiClass || !location.start?.cfi || !location.end?.cfi) {
@@ -2442,7 +2462,7 @@ export function EpubReadalong({
         handledRelayoutRef.current = relayoutTick;
       }
       if (highlightCfiRef.current) {
-        keepOnPage(highlightCfiRef.current);
+        keepOnPage(spokenCfi() ?? highlightCfiRef.current);
       }
       return;
     }
@@ -2461,6 +2481,7 @@ export function EpubReadalong({
     // Mark the fragment handled up front so a missing sentence doesn't retry
     // on every relocation.
     highlightedFragmentRef.current = fragmentIndex;
+    narratedRangeRef.current = null;
 
     const needle = normalizeSyncNeedle(fragment.text);
     const found = findRangeInSearchIndex(index, needle, searchCursorRef.current);
@@ -2468,6 +2489,7 @@ export function EpubReadalong({
       return;
     }
     searchCursorRef.current = found.endOffset;
+    narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
 
     let cfi: string;
     try {
@@ -2485,8 +2507,8 @@ export function EpubReadalong({
     );
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
-    keepOnPage(cfi);
-  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+    keepOnPage(spokenCfi() ?? cfi);
+  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, positionSeconds, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -2593,17 +2615,20 @@ export function EpubReadalong({
       </button>
     </div>
   );
+  const followActionLabel = hasSync
+    ? (follow ? "Stop following narration" : "Follow narration")
+    : (follow ? "Stop following chapters" : "Follow chapters");
   const followButton = canFollow ? (
     <button
       type="button"
       className={`epub-tool-button ${follow ? "selected" : ""}`}
       onClick={() => (follow ? setFollow(false) : resumeFollowing())}
       aria-pressed={follow}
-      aria-label={follow ? "Stop following narration" : "Follow narration"}
-      title={follow ? "Stop following narration" : "Follow narration"}
+      aria-label={followActionLabel}
+      title={followActionLabel}
     >
       <LocateFixed size={15} />
-      <span>Follow</span>
+      <span>{hasSync ? "Follow" : "Chapter sync"}</span>
     </button>
   ) : null;
   const pinButton =
@@ -2672,7 +2697,7 @@ export function EpubReadalong({
                 className={`epub-icon-button ${follow ? "selected" : ""}`}
                 onClick={() => (follow ? setFollow(false) : resumeFollowing())}
                 aria-pressed={follow}
-                aria-label={follow ? "Stop following narration" : "Follow narration"}
+                aria-label={followActionLabel}
               >
                 <LocateFixed size={19} />
               </button>
@@ -3552,8 +3577,6 @@ function MainApp({
   // sub-option beneath it, off by default and behind a warning.
   const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
   const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
-  // Following only runs when the reader itself is on.
-  const narrationFollowActive = readalongEnabled && followSyncEnabled;
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
     ios ? readStoredAppearanceMode() : "light"
@@ -3891,6 +3914,8 @@ function MainApp({
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
   const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
+  const sentenceFollowAvailable = isOperaLibre && alignmentStatus?.enabled === true;
+  const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
   const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
   const [syncJobError, setSyncJobError] = useState<string | null>(null);
@@ -4453,7 +4478,7 @@ function MainApp({
       ? selectedSyncMap.fragments
       : null;
   const selectedSyncPrecision = syncMapPrecision(selectedSyncMap);
-  const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap) : null;
+  const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
   const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
   const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
   // The web now-playing view hides the details block, so while the selected
@@ -5090,15 +5115,27 @@ function MainApp({
   }, [native, readalongAvailable, readerScope, selectedBookIdForReader]);
 
   useEffect(() => {
-    if (!currentUser.isAdmin) {
-      return;
-    }
-    void getAlignmentStatus()
-      .then(setAlignmentStatus)
-      .catch(() => setAlignmentStatus(null));
-  }, [currentUser.isAdmin]);
+    if (!isOperaLibre || localMode || demoMode) return;
+    let cancelled = false;
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      void getAlignmentStatus()
+        .then((status) => { if (!cancelled) setAlignmentStatus(status); })
+        .catch(() => { /* Keep the last known setting while offline. */ });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [currentUser.id, isOperaLibre, localMode, demoMode]);
 
-  const syncMapBook = readalongOpen && selectedBook?.syncFile ? selectedBook : null;
+  const syncMapBook = narrationFollowActive && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
   const syncMapBookId = syncMapBook?.id ?? null;
   useEffect(() => {
     if (!syncMapBookId) {
@@ -7891,7 +7928,7 @@ function MainApp({
           <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
         </button>
       ) : null}
-      {isOperaLibre && readalongEnabled ? (
+      {isOperaLibre && readalongEnabled && sentenceFollowAvailable ? (
         <button
           type="button"
           role="menuitemcheckbox"
@@ -8047,17 +8084,7 @@ function MainApp({
       ) : null}
       {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
       {syncNotice ? <div className="readalong-genstatus notice">{syncNotice}</div> : null}
-      {currentUser.isAdmin
-      && activeCompanionIsBook
-      && activeCompanion?.extension === "epub"
-      && !selectedSyncPrecise
-      && alignmentStatus
-      && !alignmentStatus.enabled ? (
-        <div className="readalong-genstatus">
-          Following is approximate on this server. An owner can install and enable improved sync
-          under Administration → Experimental features.
-        </div>
-      ) : null}
+
     </>
   );
   const companionTabs =
@@ -8111,7 +8138,7 @@ function MainApp({
           loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
         }
         syncTarget={
-          narrationFollowActive && activeCompanionIsBook && !selectedSyncFragments && isViewingPlayingBook && activeChapter
+          readalongEnabled && activeCompanionIsBook && !(narrationFollowActive && selectedSyncFragments) && isViewingPlayingBook && activeChapter
             ? activeChapter
             : null
         }
@@ -10933,7 +10960,7 @@ function MainApp({
                 <span aria-hidden="true" />
               </button>
             </div>
-            {readalongEnabled ? (
+            {readalongEnabled && sentenceFollowAvailable ? (
               <div className="settings-toggle-row settings-subrow">
                 <span>
                   <strong>Follow the narration</strong>

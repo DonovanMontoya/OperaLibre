@@ -332,7 +332,7 @@ async fn ensure_estimated_sync_map(
 
 pub(crate) async fn alignment_status(
     State(state): State<AppState>,
-    _: AdminUser,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let runtime = state
         .update_manager
@@ -340,7 +340,7 @@ pub(crate) async fn alignment_status(
         .await;
     Ok(Json(serde_json::json!({
         "enabled": runtime.is_some(),
-        "cliPath": runtime.as_ref().map(|runtime| runtime.cli_path.to_string_lossy().to_string()),
+        "cliPath": runtime.as_ref().filter(|_| auth.is_admin).map(|runtime| runtime.cli_path.to_string_lossy().to_string()),
     })))
 }
 
