@@ -249,6 +249,7 @@ import {
   playbackReportingSession,
   removeServerAlias,
   rescanLibrary,
+  refreshLibroAccount,
   saveProgress,
   setBookCompletion,
   setBookVolume,
@@ -346,6 +347,7 @@ import {
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
+import { LibroCatalog } from "./LibroCatalog";
 import { ProfilePage } from "./Profile";
 import { ProgressSharingCard, isNotifiedOfFinishes } from "./ProgressSharing";
 import {
@@ -863,7 +865,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
-type LibrarySource = "local" | "audible";
+type LibrarySource = "local" | "audible" | "libro";
 const LANDSCAPE_QUERY = "(orientation: landscape)";
 // A phone on its side: short enough that the iPad spread never applies.
 const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)";
@@ -902,7 +904,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
-const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible"];
+const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro"];
 
 // "account" only makes sense for the Audible shelf; "series"/"genre"/"progress" only
 // for the local library — an Audible row is a purchase that has not been downloaded yet,
@@ -914,6 +916,7 @@ const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
 const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
+  if (source === "libro") return ["title", "author", "duration"].includes(mode);
   const unsupported = source === "local" ? AUDIBLE_ONLY_SORT_MODES : LOCAL_ONLY_SORT_MODES;
   return !unsupported.includes(mode);
 }
@@ -3960,6 +3963,11 @@ function MainApp({
   // folds back, so the grid it widens into never replaces a saved choice.
   const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
+  const [libroRefreshKey, setLibroRefreshKey] = useState(0);
+  const lastPurchaseSource = useRef<"audible" | "libro">("libro");
+  useEffect(() => {
+    if (librarySource !== "local") lastPurchaseSource.current = librarySource;
+  }, [librarySource]);
   const [searchQuery, setSearchQuery] = useState("");
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
   const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
@@ -7787,7 +7795,7 @@ function MainApp({
     haptic("light");
     // Re-tapping the active Shelf tab is an escape hatch from the Audible
     // catalogue back to the listener's own library.
-    if (tab === "shelf" && nativeTab === "shelf" && librarySource === "audible") {
+    if (tab === "shelf" && nativeTab === "shelf" && librarySource !== "local") {
       showYourLibrary();
     }
     // Reading belongs to the playing book. A book browsed from the shelf stays
@@ -8185,6 +8193,9 @@ function MainApp({
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
       await loadLibationBooks();
+    } else if (librarySource === "libro") {
+      await refreshLibroAccount();
+      setLibroRefreshKey(key => key + 1);
     } else {
       await loadBooks();
     }
@@ -8930,13 +8941,35 @@ function MainApp({
         </div>
 
         <div className="library-toolbar">
+          {isOperaLibre && !localMode && !demoMode ? (
+            <>
+              <div className="source-toggle shelf-navigation" role="group" aria-label="Library navigation">
+                <button type="button" className={librarySource === "local" ? "selected" : ""} onClick={showYourLibrary} aria-pressed={librarySource === "local"}>
+                  <Library size={16} /> Library
+                </button>
+                <button type="button" className={librarySource !== "local" ? "selected" : ""} onClick={() => setLibrarySource(lastPurchaseSource.current === "audible" && !canBrowseLibation ? "libro" : lastPurchaseSource.current)} aria-pressed={librarySource !== "local"}>
+                  <Cloud size={16} /> Get books
+                  {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
+                </button>
+              </div>
+              {librarySource !== "local" ? (
+                <div className="purchase-source">
+                  <label htmlFor="purchase-source">Browse purchases</label>
+                  <select id="purchase-source" value={librarySource} onChange={event => setLibrarySource(event.currentTarget.value === "audible" ? "audible" : "libro")}>
+                    {canBrowseLibation ? <option value="audible">Audible{brokenLibationAccounts.length > 0 ? " — needs attention" : ""}</option> : null}
+                    <option value="libro">Libro.fm</option>
+                  </select>
+                </div>
+              ) : null}
+            </>
+          ) : null}
           <div className="library-search-row">
             <div className="library-search">
               <Search size={14} aria-hidden="true" />
               <input
                 type="search"
                 ref={shelfSearchRef}
-                placeholder={librarySource === "local" ? "Search books, authors, tags…" : "Search Audible titles…"}
+                placeholder={librarySource === "local" ? "Search books, authors, tags…" : librarySource === "libro" ? "Search Libro.fm purchases…" : "Search Audible titles…"}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.currentTarget.value)}
                 aria-label="Search library"
@@ -9119,46 +9152,11 @@ function MainApp({
             <span>
               {librarySource === "local"
                 ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
-                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+                : librarySource === "libro" ? "Libro.fm purchases" : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
             </span>
             <span>{sortOrderLabel}</span>
           </div>
 
-          {canBrowseLibation ? (
-            <div className="source-toggle" role="group" aria-label="Shelf collection">
-              <button
-                type="button"
-                className={librarySource === "local" ? "selected" : ""}
-                onClick={showYourLibrary}
-                aria-pressed={librarySource === "local"}
-                aria-label="Your library: books on the server and this device"
-              >
-                <Library size={13} />
-                <span className="source-toggle-copy">
-                  <strong>Your Library</strong>
-                  <small>Server + device</small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className={librarySource === "audible" ? "selected" : ""}
-                onClick={() => setLibrarySource("audible")}
-                aria-pressed={librarySource === "audible"}
-                aria-label="Audible account purchases"
-              >
-                <Cloud size={13} />
-                <span className="source-toggle-copy">
-                  <strong>Audible</strong>
-                  <small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} need attention` : "Account purchases"}</small>
-                </span>
-                {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? (
-                  <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>
-                    {brokenLibationAccounts.length}
-                  </span>
-                ) : null}
-              </button>
-            </div>
-          ) : null}
         </div>
 
         {carPlaybackBook ? (
@@ -9338,7 +9336,9 @@ function MainApp({
           </section>
         ) : null}
 
-        {librarySource === "local" ? (
+        {librarySource === "libro" ? (
+          <LibroCatalog refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+        ) : librarySource === "local" ? (
           <>
             {localMode && !connectPromptDismissed && !hasUserConfiguredServer() ? (
               <section className="connect-server-card" aria-label="Connect a server">

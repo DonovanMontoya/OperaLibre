@@ -223,6 +223,34 @@ Book identity is byte identity: a re-encode, a different rip, or another edition
 
 Editions are matched to works in tiers: an administrator's manual link, then an exact ASIN, then an exact ISBN, then a normalized title and author whose runtimes agree within 15%. A title and author that agree while the runtimes do not — an abridgement, a dramatization, a missing duration — becomes a **suggestion** for an administrator rather than a silent merge. Manual links and rejections are permanent and survive rescans.
 
+#### Libro.fm accounts and imports
+
+These routes operate only on the authenticated user's Libro.fm connection.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/me/libro` | Connection status, cached purchases, accessible local book IDs, and the user's jobs. Tokens are never returned. |
+| `POST` | `/api/me/libro` | Connect with `{ "email": "…", "password": "…" }`; save the returned token and queue library refresh. Password is not retained. |
+| `DELETE` | `/api/me/libro` | Remove the user's connection and cached purchases; keep imported audio. |
+| `POST` | `/api/me/libro/refresh` | Queue library refresh; returns `{ "jobId": "…" }`. |
+| `POST` | `/api/me/libro/books/{isbn}/import` | Queue one owned purchase for import; grant the importing user access after indexing. |
+
+Jobs use `libro-refresh` and `libro-download`. Imported ISBNs have stable folders
+and `.libro-book.json` metadata sidecars. Library updates preserve manual metadata
+overrides. No account token or signed download URL is returned to the frontend.
+
+The optional watched-folder routes remain administrator tools:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/libro` | Watched server folder, latest import items, last check, error, and latest job. Admin only. |
+| `PUT` | `/api/libro` | Save `{ "folder": "/absolute/server/path" }`, or `null` to stop watching. Owner only. Existing imports are kept. |
+| `POST` | `/api/libro/scan` | Queue a deduplicated import check; returns `{ "jobId": "…" }`. Admin only. |
+
+Imports use the normal upload limits and access rules. Settings and receipts
+are host-local; see [Libro.fm Import](libro.md) for supported layouts and status
+semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
+
 #### Libation (optional)
 
 | Method | Path | Description |
