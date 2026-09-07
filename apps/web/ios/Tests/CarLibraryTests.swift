@@ -90,6 +90,38 @@ struct CarLibraryTests {
         precondition(snapshot.book(withId: "book") != nil, "books are addressable by id")
         precondition(snapshot.book(withId: "missing") == nil, "an unknown id resolves to nothing")
 
+        var drive = CarPlaybackSession(
+            bookId: "book", trackId: "two", positionSeconds: 300,
+            bookPositionSeconds: 1_500, durationSeconds: 3_600, updatedAt: 10,
+            finished: false, intentionalRegression: false
+        )
+        precondition(snapshot.resuming(book(positionSeconds: 100), sessions: [drive]).resumePositionSeconds == 1_500,
+                     "a cold car launch resumes the previous drive without a WebView")
+        var rewind = drive
+        rewind.updatedAt = 20
+        rewind.bookPositionSeconds = 200
+        rewind.intentionalRegression = true
+        precondition(snapshot.resuming(book(positionSeconds: 100), sessions: [rewind, drive]).resumePositionSeconds == 200,
+                     "the newest drive wins even when it deliberately rewound")
+        drive.finished = true
+        precondition(snapshot.resuming(book(positionSeconds: 100), sessions: [drive]).resumePositionSeconds == 0,
+                     "a drive that finished the book restarts it")
+        drive.bookId = "other"
+        precondition(snapshot.resuming(book(positionSeconds: 100), sessions: [drive]).resumePositionSeconds == 100,
+                     "another book's checkpoint cannot change the resume position")
+        var newerSnapshot = snapshot
+        newerSnapshot.updatedAt = 30
+        precondition(newerSnapshot.resuming(book(positionSeconds: 800), sessions: [rewind]).resumePositionSeconds == 800,
+                     "a newer library snapshot supersedes an old drive")
+
+        var shelf = snapshot
+        shelf.books = [book(positionSeconds: 100), book(status: "notStarted", positionSeconds: 0),
+                       book(status: "finished", positionSeconds: 3_600)]
+        let groups = shelf.libraryGroups(maximumItemCount: 2)
+        precondition(groups.map { $0.0 } == ["Reading", "Not started"], "the shared budget preserves shelf order")
+        precondition(groups.reduce(0) { $0 + $1.1.count } == 2, "all sections share one item limit")
+        precondition(shelf.libraryGroups(maximumItemCount: 0).isEmpty, "zero capacity produces no sections")
+
         // The line under each title on the car screen.
         precondition(
             book(positionSeconds: 900).carSubtitle == "An Author · 45m left",

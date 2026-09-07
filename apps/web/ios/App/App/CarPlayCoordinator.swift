@@ -91,6 +91,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     @discardableResult
     func play(book: CarLibraryBook, atBookPosition requested: Double?) -> Bool {
         let snapshot = store.snapshot()
+        let book = snapshot.resuming(book, sessions: store.pendingSessions())
         let position = requested ?? book.resumePositionSeconds
         guard let target = book.target(atBookPosition: position) else { return false }
         // A track whose URL will not resolve is dropped rather than queued: the
