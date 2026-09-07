@@ -13,7 +13,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc -b --noEmit",
-    "test:perf": "tsc -p tsconfig.performance.json && playwright test -c playwright.performance.config.ts"
+    "test:perf": "tsc -p tsconfig.performance.json && playwright test -c playwright.performance.config.ts",
+    "test:lifecycle": "tsc -p tsconfig.lifecycle.json && playwright test -c playwright.lifecycle.config.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",

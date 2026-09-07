@@ -21,7 +21,8 @@
     "test:perf:server": "node script/performance/run.mjs server",
     "test:perf:ios": "node script/performance/run.mjs ios",
     "test:perf:all": "node script/performance/run.mjs all",
-    "perf:compare": "node script/performance/compare.mjs"
+    "perf:compare": "node script/performance/compare.mjs",
+    "test:lifecycle": "cargo build --locked --manifest-path apps/server/Cargo.toml && npm run build -w @operalibre/web && npm run test:lifecycle -w @operalibre/web"
   },
   "devDependencies": {
     "typescript": "^7.0.2"
