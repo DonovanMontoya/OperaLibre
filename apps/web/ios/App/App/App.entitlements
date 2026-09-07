@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		CarPlay audio apps need this entitlement, and Apple grants it per App ID
+		on request (developer.apple.com/contact/carplay). Xcode cannot create a
+		provisioning profile for a device build until it is granted: if a device
+		build fails to sign, drop CODE_SIGN_ENTITLEMENTS from the target's build
+		settings until the request comes back. Simulator builds — including the
+		CarPlay simulator, which is where this is developed — do not need it.
+	-->
+	<key>com.apple.developer.carplay-audio</key>
+	<true/>
+</dict>
+</plist>
