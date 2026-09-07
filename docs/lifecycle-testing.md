@@ -1,6 +1,8 @@
 # Everyday lifecycle testing
 
-Target normal use with up to six simultaneous streams. Use small, disposable libraries; this suite is not a hardware stress test or throughput benchmark.
+Use six simultaneous listeners as a realistic homelab test baseline, not a product limit or a declaration that larger workloads are unsupported. Use small, disposable libraries; this suite is not a hardware stress test or throughput benchmark.
+
+Prioritize real web-client lifecycle validation on Linux. Android APK builds are checked in CI, but builds alone do not validate mobile playback behavior. Native device scenarios below remain separate acceptance checks until an emulator or physical device is available.
 
 ## Automated browser checks
 
