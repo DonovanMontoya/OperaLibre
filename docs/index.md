@@ -38,6 +38,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 - **Multi-reader** — accounts, per-reader progress, Argon2-hashed passwords
 - **Player controls** — playback speed, 15s rewind, 30s skip, sleep timer, OS Media Session
 - **Web and native mobile apps** — installable PWA plus Capacitor projects for Android and iPhone
+- **CarPlay** — browse and play your library from the car screen, downloads included, with no network
 - **Third-party clients** — an Audiobookshelf-compatible API for apps like BookPlayer, plus an OPDS catalog
 - **Optional Audible import** — drive a local [Libation](https://github.com/rmcrackan/Libation) install from the web UI
 
