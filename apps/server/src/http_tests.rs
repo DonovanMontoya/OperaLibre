@@ -15,6 +15,203 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn libro_owned_import_reuses_existing_audio_and_grants_restricted_reader_access() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "purchaser").await;
+    let me = server.get("/api/auth/me", &reader).await.json();
+    let user_id = me["id"].as_str().unwrap();
+    let restricted = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{user_id}/book-access"),
+            &owner,
+            serde_json::json!({"allowedBookIds":[]}),
+        )
+        .await;
+    assert_eq!(restricted.status, StatusCode::OK, "{}", restricted.text());
+    let book = serde_json::json!({"isbn":"9780000000001","title":"Purchased book","authors":["Libro Author"],"publisher":"Libro Publisher","audiobook_info":{"narrators":["Libro Narrator"],"duration":20}});
+    let folder = server.library_root.join("Libro.fm [9780000000001]");
+    std::fs::rename(server.library_root.join("Book 00"), &folder).unwrap();
+    std::fs::write(folder.join(".libro-book.json"), book.to_string()).unwrap();
+    let key: String = Sha256::digest(user_id.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let account_path = server
+        ._root
+        .path()
+        .join("data/libro-accounts")
+        .join(format!("{key}.json"));
+    write_json_atomic(&account_path, &serde_json::json!({"email":"purchaser@example.test","token":"fixture-token-never-sent","books":[book],"synced_at":null})).await.unwrap();
+    assert_eq!(
+        server
+            .get("/api/books", &reader)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let catalog = server.get("/api/me/libro", &reader).await;
+    assert_eq!(catalog.status, StatusCode::OK);
+    assert!(!catalog.text().contains("fixture-token-never-sent"));
+    assert!(
+        !server.get("/api/me/libro", &owner).await.json()["connected"]
+            .as_bool()
+            .unwrap()
+    );
+    let created = server
+        .send_json(
+            "POST",
+            "/api/me/libro/books/9780000000001/import",
+            &reader,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let job_id = created.json()["jobId"].as_str().unwrap().to_owned();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let job = server
+            .get(&format!("/api/jobs/{job_id}"), &reader)
+            .await
+            .json();
+        if job["status"] == "completed" {
+            break;
+        }
+        assert_ne!(job["status"], "failed", "{job}");
+        assert!(tokio::time::Instant::now() < deadline, "import timed out");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let books = server.get("/api/books", &reader).await.json();
+    assert_eq!(books.as_array().unwrap().len(), 1);
+    assert_eq!(books[0]["title"], "Purchased book");
+    assert_eq!(books[0]["author"], "Libro Author");
+    assert_eq!(books[0]["metadata"]["publisher"], "Libro Publisher");
+    let removed = server
+        .send_json("DELETE", "/api/me/libro", &reader, serde_json::json!({}))
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    assert!(!account_path.exists());
+    assert!(folder.join("01 Track.wav").exists());
+}
+
+#[tokio::test]
+async fn libro_import_settings_require_owner_and_readers_cannot_inspect_server_folders() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "libro-reader").await;
+    for (method, uri) in [
+        ("GET", "/api/libro"),
+        ("PUT", "/api/libro"),
+        ("POST", "/api/libro/scan"),
+    ] {
+        let response = server
+            .send(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {reader}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"folder":null}"#))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{method} {uri}: {}",
+            response.text()
+        );
+    }
+    let downloads = server._root.path().join("downloads");
+    std::fs::create_dir(&downloads).unwrap();
+    for folder in [
+        "relative/path".to_string(),
+        server.library_root.to_string_lossy().into_owned(),
+        downloads.to_string_lossy().into_owned(),
+    ] {
+        let valid = folder == downloads.to_string_lossy();
+        let response = server
+            .send(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/libro")
+                    .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "folder": folder }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            response.status,
+            if valid {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "{}",
+            response.text()
+        );
+    }
+    let response = server
+        .send(
+            Request::builder()
+                .uri("/api/libro")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()["folder"],
+        std::fs::canonicalize(&downloads)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    let response = server
+        .send(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/libro")
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"folder":null}"#))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(response.json()["folder"].is_null());
+    assert!(downloads.exists());
+    let created = server.send_json("POST", "/api/users", &owner,
+        serde_json::json!({ "username": "deputy", "password": "deputy-password-1234", "isAdmin": true })).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let admin = server.add_reader_login("deputy").await;
+    assert_eq!(
+        server.get("/api/libro", &admin).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                "/api/libro",
+                &admin,
+                serde_json::json!({"folder":null})
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
@@ -153,6 +350,7 @@ impl TestServer {
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             upload_lock: Arc::new(Mutex::new(())),
+            libro: Arc::new(LibroImports::default()),
             backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
         };
 

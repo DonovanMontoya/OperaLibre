@@ -36,6 +36,14 @@ When an administrator adds an Audible account through the optional Libation inte
 
 ### Audiobook and listening information
 
+When you connect a Libro.fm account, the email and password are sent through your
+selected OperaLibre server to Libro.fm. The server retains the resulting token
+and cached purchase list in its private data directory, not the password. These
+are scoped to your OperaLibre user through the API. Imported audio becomes part
+of the server library and follows its access rules. Disconnecting removes the
+connection and cached purchase list while keeping imported books. Purchase cover
+images may be loaded directly from Libro.fm's image hosts.
+
 The App may receive or create:
 
 - audiobook titles, authors, narrators, descriptions, chapters, cover artwork, and other library metadata;

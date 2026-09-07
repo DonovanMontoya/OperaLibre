@@ -17,6 +17,8 @@ import type {
   LibationAccess,
   LibationAccessStatus,
   LibationBook,
+  LibroImportStatus,
+  LibroAccountStatus,
   LibationDownloadRequest,
   LibationStatus,
   LoginResponse,
@@ -992,6 +994,29 @@ export async function getLibationStatus() {
 
 export async function getLibationBooks() {
   return request<LibationBook[]>("/api/libation/books");
+}
+
+export function getLibroImports() {
+  return request<LibroImportStatus>("/api/libro");
+}
+
+export function getLibroAccount() { return request<LibroAccountStatus>("/api/me/libro"); }
+export function connectLibroAccount(email: string, password: string) {
+  return request<JobCreated>("/api/me/libro", { method: "POST", body: JSON.stringify({ email, password }) });
+}
+export function disconnectLibroAccount() { return request<void>("/api/me/libro", { method: "DELETE" }); }
+export function refreshLibroAccount() { return request<JobCreated>("/api/me/libro/refresh", { method: "POST" }); }
+export function importLibroPurchase(isbn: string) { return request<JobCreated>(`/api/me/libro/books/${encodeURIComponent(isbn)}/import`, { method: "POST" }); }
+
+export function configureLibroImports(folder: string | null) {
+  return request<LibroImportStatus>("/api/libro", {
+    method: "PUT",
+    body: JSON.stringify({ folder })
+  });
+}
+
+export function scanLibroImports() {
+  return request<JobCreated>("/api/libro/scan", { method: "POST" });
 }
 
 export async function getLibationAccess() {

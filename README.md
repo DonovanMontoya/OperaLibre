@@ -18,6 +18,7 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
 - **CarPlay.** The iPhone app browses your shelf, downloads, and books in progress on the car screen and plays them there, from a library snapshot that works with the phone locked and the server out of reach.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
+- **Libro.fm import.** Connect your Libro.fm account, browse purchases, and import selected audiobooks directly into the server. A watched-folder option is also available. See [Libro.fm Import](docs/libro.md).
 - **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
 - **Works with other audiobook apps.** The server speaks an Audiobookshelf-compatible API, so clients such as BookPlayer can connect with a normal account, and publishes an OPDS catalog for generic reading apps.
 - **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.

@@ -62,8 +62,10 @@ import type {
 import { FRONTEND_VERSION } from "./version";
 import { ExperimentSection } from "./ExperimentSection";
 import { SyncJobMonitor } from "./SyncJobMonitor";
+import { LibroImports } from "./LibroImports";
+import { LibroCatalog } from "./LibroCatalog";
 
-type AdminSection = "overview" | "users" | "requests" | "books" | "experiments";
+type AdminSection = "overview" | "users" | "requests" | "books" | "experiments" | "imports";
 type AccountRole = "owner" | "admin" | "reader";
 
 function isRunningJob(job: JobStatus | null) {
@@ -98,6 +100,7 @@ export function AdminPanel({
   onAlignmentChanged: (status: { enabled: boolean; cliPath: string | null }) => void;
 }) {
   const [section, setSection] = useState<AdminSection>("overview");
+  const [folderImportsOpen, setFolderImportsOpen] = useState(false);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [libationRequests, setLibationRequests] = useState<LibationDownloadRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -322,8 +325,8 @@ export function AdminPanel({
   const pendingRequests = libationRequests.filter((request) => request.status === "pending");
   const canApprove = currentUser.isOwner || currentUser.canApproveLibationRequests;
   const adminSections: AdminSection[] = canApprove
-    ? ["overview", "users", "requests", "books", "experiments"]
-    : ["overview", "users", "books", "experiments"];
+    ? ["overview", "users", "requests", "books", "imports", "experiments"]
+    : ["overview", "users", "books", "imports", "experiments"];
   const totalTracks = books.reduce((sum, book) => sum + book.trackCount, 0);
   const totalHours = books.reduce((sum, book) => sum + (book.durationSeconds ?? 0), 0) / 3600;
   const sortedBooks = useMemo(
@@ -684,13 +687,18 @@ export function AdminPanel({
             onClick={() => setSection(item)}
           >
             {item === "overview" ? <Database size={15} /> : item === "users" ? <Users size={15} /> : item === "requests" ? <CloudDownload size={15} /> : item === "experiments" ? <FlaskConical size={15} /> : <BookOpen size={15} />}
-            {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : item === "experiments" ? "Experiments" : "Downloaded books"}
+            {item === "overview" ? "Overview" : item === "users" ? "Users & access" : item === "requests" ? `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ""}` : item === "experiments" ? "Experiments" : item === "imports" ? "Imports" : "Downloaded books"}
           </button>
         ))}
       </nav>
 
       {error ? <p className="admin-message error">{error}</p> : null}
       {notice ? <p className="admin-message success"><Check size={14} /> {notice}</p> : null}
+
+      {section === "imports" ? <div className="admin-content">
+        <LibroCatalog onBooksChanged={onBooksChanged} onOpenBook={onOpenBook} />
+        <details className="libro-folder-optional" onToggle={event => setFolderImportsOpen(event.currentTarget.open)}><summary>Optional: import files from a server folder</summary>{folderImportsOpen ? <LibroImports isOwner={currentUser.isOwner} onUpload={onUpload} onBooksChanged={onBooksChanged} /> : null}</details>
+      </div> : null}
 
       {section === "overview" ? (
         <div className="admin-content">
