@@ -12023,3 +12023,53 @@ html.native-app .recent-row {
   padding-left: 0.9rem;
   border-left: 2px solid rgba(26, 20, 16, 0.12);
 }
+
+/* The car has the player. Says so on the shelf, where the book's own row
+   would otherwise look idle, and offers to bring it back to the phone. */
+.carplay-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(217, 181, 116, 0.18);
+  border-bottom: 1px solid rgba(217, 181, 116, 0.18);
+  background: rgba(217, 181, 116, 0.05);
+}
+
+.carplay-banner-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.carplay-banner-copy strong {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faded);
+}
+
+.carplay-banner-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.carplay-banner button {
+  flex: none;
+  padding: 7px 14px;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  background: var(--gold-soft);
+  color: var(--on-gold);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.carplay-banner button:hover {
+  background: var(--gold);
+}

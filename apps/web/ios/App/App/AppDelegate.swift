@@ -17,6 +17,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             NSLog("Unable to configure audiobook playback audio session: %@", error.localizedDescription)
         }
         BackgroundDownloadManager.shared.prepare()
+        // Wired up before any scene exists: connecting to a car can launch the
+        // app with the CarPlay scene alone, and the coordinator is what keeps
+        // the position from that drive for the app to save later.
+        CarPlayCoordinator.shared.start()
         return true
     }
 

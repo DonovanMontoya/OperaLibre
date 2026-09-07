@@ -16,6 +16,7 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **Per-reader accounts.** Each reader gets their own progress, listening stats, reading log, and a durable completion history that survives a book being deleted or replaced.
 - **Read along.** Read an EPUB, PDF, or text companion beside the audio. Every EPUB follows the narration out of the box — the narrated sentence is highlighted, the page turns with the audio, and tapping a sentence plays from there — and an optional aligner replaces the estimated timings with a map aligned to the narration. Audible picture PDFs are told apart from the book and shown as extras.
 - **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
+- **CarPlay.** The iPhone app browses your shelf, downloads, and books in progress on the car screen and plays them there, from a library snapshot that works with the phone locked and the server out of reach.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
 - **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
 - **Works with other audiobook apps.** The server speaks an Audiobookshelf-compatible API, so clients such as BookPlayer can connect with a normal account, and publishes an OPDS catalog for generic reading apps.
@@ -68,7 +69,7 @@ Open [http://localhost:5173](http://localhost:5173), create the first administra
 Each app packages the same React frontend:
 
 - **Android** (Capacitor, Android 7+): `npm run build:android` produces a debug APK; open in Android Studio with `npm run android:open -w @operalibre/web` for signing and devices.
-- **iPhone** (Capacitor, iOS 15+): `npm run build:ios` produces a simulator build; open in Xcode with `npm run ios:open -w @operalibre/web` for signing and physical phones. Background spoken-audio playback is configured.
+- **iPhone** (Capacitor, iOS 15+): `npm run build:ios` produces a simulator build; open in Xcode with `npm run ios:open -w @operalibre/web` for signing and physical phones. Background spoken-audio playback and CarPlay are configured; CarPlay on a device needs Apple to grant the `com.apple.developer.carplay-audio` entitlement for the App ID (see [Using OperaLibre](docs/using-operalibre.md#carplay)).
 - **macOS** (AppKit/WebKit host): `./script/build_and_run.sh` builds and launches `dist/OperaLibre.app`.
 
 The mobile apps support plain HTTP for local-network and private-overlay servers (including Tailscale `100.x` addresses); use HTTPS for public remote servers.

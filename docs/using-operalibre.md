@@ -90,6 +90,53 @@ The repository also includes a native iPhone app with background spoken-audio pl
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
+#### CarPlay
+
+The iPhone app appears on the car screen once it is connected to CarPlay. It has
+three tabs — **Listening**, **Downloaded**, and **Library** — and tapping a book
+resumes it where you left off. The Now Playing screen carries the usual
+transport, a playback-speed button, and a **Chapters** list under **Up Next**.
+
+A few things worth knowing:
+
+- The car reads a snapshot of your library that the phone app writes as the
+  shelf changes, so **open the app on the phone once** after signing in or
+  adding books. This is also what makes the car screen work when the app was not
+  already running.
+- Books you have downloaded play with no network at all. Books that stream are
+  still listed, marked with a cloud, and need the server to be in reach — which
+  it usually is not once you have driven away.
+- Progress from a drive is saved by the phone app, not by the car, so it reaches
+  the server the next time you open OperaLibre. Your position is kept on the
+  device meanwhile.
+- Starting a book in the car takes over playback; the shelf shows a **Playing in
+  the car** banner with a **Play here** button to bring it back to the phone.
+
+To try it in the CarPlay simulator, build with signing on so the entitlement is
+linked into the binary, then re-sign without it — SpringBoard refuses to launch a
+simulator build whose *signature* claims the CarPlay entitlement, while CarPlay
+only lists apps whose *binary* carries it:
+
+```bash
+xcodebuild -project apps/web/ios/App/App.xcodeproj -scheme App -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath dist/ios-derived \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="" DEVELOPMENT_TEAM="" build
+codesign --force --sign - dist/ios-derived/Build/Products/Debug-iphonesimulator/OperaLibre.app
+```
+
+Install that build, then turn on **I/O › External Displays › CarPlay** in
+Simulator. (`npm run build:ios` signs nothing, so the app runs on the phone
+screen but will not appear on the car's.)
+
+Apple gates CarPlay behind an entitlement it grants per app: request
+`com.apple.developer.carplay-audio` for your App ID at
+[developer.apple.com/contact/carplay](https://developer.apple.com/contact/carplay/).
+Until it is granted, Xcode cannot sign a build for a device — remove
+**CODE_SIGN_ENTITLEMENTS** from the App target's build settings to keep
+installing the app in the meantime. The CarPlay simulator (**I/O › External
+Displays › CarPlay** in Simulator) needs no entitlement.
+
 ### Native Android app
 
 The repository includes a native Android 7+ app. Building it requires Android Studio, an installed Android SDK, and JDK 21:
