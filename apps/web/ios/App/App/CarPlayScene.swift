@@ -106,11 +106,10 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         // Grouped exactly as the shelf groups it — what you are part-way
         // through, then what is waiting, then what is done — so a driver
         // glancing at the car finds the library in the order they know.
-        libraryTemplate.updateSections([
-            section("Reading", snapshot.books.filter { $0.isInProgress }, playingBookId),
-            section("Not started", snapshot.books.filter { !$0.isInProgress && !$0.isFinished }, playingBookId),
-            section("Finished", snapshot.books.filter { $0.isFinished }, playingBookId)
-        ].compactMap { $0 })
+        libraryTemplate.updateSections(
+            snapshot.libraryGroups(maximumItemCount: CPListTemplate.maximumItemCount)
+                .compactMap { section($0.0, $0.1, playingBookId) }
+        )
     }
 
     private func section(

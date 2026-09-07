@@ -27,6 +27,29 @@ struct CarLibrarySnapshot: Codable {
     func book(withId bookId: String) -> CarLibraryBook? {
         books.first { $0.id == bookId }
     }
+
+    func resuming(_ book: CarLibraryBook, sessions: [CarPlaybackSession]) -> CarLibraryBook {
+        guard let session = sessions.filter({
+            $0.bookId == book.id && $0.updatedAt > updatedAt && $0.bookPositionSeconds.isFinite
+        }).max(by: { $0.updatedAt < $1.updatedAt }) else { return book }
+        var resumed = book
+        resumed.positionSeconds = session.bookPositionSeconds
+        resumed.status = session.finished ? "finished" : "inProgress"
+        return resumed
+    }
+
+    func libraryGroups(maximumItemCount: Int) -> [(String, [CarLibraryBook])] {
+        var remaining = max(0, maximumItemCount)
+        return [
+            ("Reading", books.filter { $0.isInProgress }),
+            ("Not started", books.filter { !$0.isInProgress && !$0.isFinished }),
+            ("Finished", books.filter { $0.isFinished })
+        ].compactMap { title, books in
+            let items = Array(books.prefix(remaining))
+            remaining -= items.count
+            return items.isEmpty ? nil : (title, items)
+        }
+    }
 }
 
 struct CarLibraryBook: Codable {
