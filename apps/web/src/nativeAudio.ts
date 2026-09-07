@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { carPlaybackOwnsEngine } from "./carPlay";
 import {
   NativeAudioStateSynchronizer,
   refreshDeclinedTrackChange,
@@ -119,6 +120,17 @@ interface NativeAudioPlugin {
 const NativeAudio = registerPlugin<NativeAudioPlugin>("NativeAudio");
 
 /**
+ * Tearing the player down is the app's to do only while the app is the one
+ * playing. The native player is shared with CarPlay, and a stop() from a web
+ * detach — a track change, a closed player, a reload — would cut off a book the
+ * driver started. The car hands the engine back when the app takes it over.
+ */
+function stopNativeUnlessCarOwns(options?: { releaseSession?: boolean }) {
+  if (carPlaybackOwnsEngine()) return Promise.resolve();
+  return NativeAudio.stop(options).catch(() => undefined);
+}
+
+/**
  * `volume` stays the device level; this is the multiplier AVPlayer applies on
  * top of it, for the book currently loaded.
  */
@@ -138,7 +150,7 @@ export function usesNativeAudioPlayer() {
  */
 export function releaseNativeAudioSession() {
   if (!usesNativeAudioPlayer()) return Promise.resolve();
-  return NativeAudio.stop({ releaseSession: true }).catch(() => undefined);
+  return stopNativeUnlessCarOwns({ releaseSession: true });
 }
 
 export function updateNativeAudioNowPlaying(options: {
@@ -261,7 +273,7 @@ export function attachNativeAudioPlayer(
     audio.muted = false;
     onError(message);
     onFallback();
-    void NativeAudio.stop().catch(() => undefined);
+    void stopNativeUnlessCarOwns();
     if (shouldResume) {
       void audio.play().catch(() => undefined);
     }
@@ -308,7 +320,7 @@ export function attachNativeAudioPlayer(
   const volumeChange = () => safely(NativeAudio.setVolume({ volume: audio.volume }));
   const emptied = () => {
     nativeStateSynchronizer.clear();
-    safely(NativeAudio.stop({ releaseSession: false }));
+    void stopNativeUnlessCarOwns({ releaseSession: false });
   };
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
@@ -438,6 +450,6 @@ export function attachNativeAudioPlayer(
     // Keep the audio session: this cleanup runs on every track change, and
     // the next attach is moments away. App.tsx releases it when the player
     // closes with nothing to follow.
-    void NativeAudio.stop({ releaseSession: false }).catch(() => undefined);
+    void stopNativeUnlessCarOwns({ releaseSession: false });
   };
 }
