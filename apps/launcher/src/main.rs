@@ -420,18 +420,22 @@ fn apply_update_inner(arguments: &[std::ffi::OsString]) -> Result<(), String> {
             .as_secs()
             .to_string(),
     );
-    fs::create_dir_all(&backup_root)
-        .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))?;
-
     let server_name = server_binary_name();
     let install_server = install_root.join(server_name);
     let install_web = install_root.join("web");
     let install_version = install_root.join("VERSION.txt");
-    move_if_exists(&install_server, &backup_root.join(server_name))?;
-    if includes_web {
-        move_if_exists(&install_web, &backup_root.join("web"))?;
+    if let Err(staging_error) = stage_installed_files(&install_root, &backup_root, includes_web) {
+        let restart = start_server(&install_root, false).and_then(require_ready_start);
+        return Err(match restart {
+            Ok(()) => format!(
+                "Could not prepare the update; the previous server was restarted: {staging_error}"
+            ),
+            Err(restart_error) => format!(
+                "Could not prepare the update ({staging_error}), and could not restart the previous server ({restart_error}). Check {}.",
+                backup_root.display()
+            ),
+        });
     }
-    move_if_exists(&install_version, &backup_root.join("VERSION.txt"))?;
 
     let install_result = (|| {
         move_required(&package_root.join(server_name), &install_server)?;
@@ -637,6 +641,50 @@ fn move_required(source: &Path, destination: &Path) -> Result<(), String> {
         return Err(format!("The update is missing {}.", source.display()));
     }
     move_if_exists(source, destination)
+}
+
+fn stage_installed_files(
+    install_root: &Path,
+    backup_root: &Path,
+    includes_web: bool,
+) -> Result<(), String> {
+    fs::create_dir_all(backup_root)
+        .map_err(|error| format!("Could not create {}: {error}", backup_root.display()))?;
+    let mut moved = Vec::new();
+    for name in [server_binary_name(), "web", "VERSION.txt"] {
+        if name == "web" && !includes_web {
+            continue;
+        }
+        let source = install_root.join(name);
+        if !source.exists() {
+            continue;
+        }
+        if let Err(error) = move_required(&source, &backup_root.join(name)) {
+            // Staging can fail after moving only part of the installation.
+            // Full rollback deletes installed files first, so use the journal
+            // here to leave every file not yet backed up alone.
+            let mut restore_errors = Vec::new();
+            for moved_name in moved.into_iter().rev() {
+                if let Err(restore_error) = move_required(
+                    &backup_root.join(moved_name),
+                    &install_root.join(moved_name),
+                ) {
+                    restore_errors.push(restore_error);
+                }
+            }
+            return if restore_errors.is_empty() {
+                Err(error)
+            } else {
+                Err(format!(
+                    "{error}; restoring staged files also failed: {}. Backups remain in {}.",
+                    restore_errors.join("; "),
+                    backup_root.display()
+                ))
+            };
+        }
+        moved.push(name);
+    }
+    Ok(())
 }
 
 fn rollback_update(
@@ -1003,6 +1051,79 @@ fn show_message(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_only_staging_leaves_web_and_absent_version_alone() {
+        let root = std::env::temp_dir().join(format!(
+            "operalibre-server-only-staging-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let install = root.join("install");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(install.join("web")).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+        std::fs::write(install.join("web/index.html"), "keep web").unwrap();
+
+        super::stage_installed_files(&install, &backup, false).unwrap();
+        assert!(!install.join(super::server_binary_name()).exists());
+        assert_eq!(
+            std::fs::read_to_string(backup.join(super::server_binary_name())).unwrap(),
+            "old server"
+        );
+        assert_eq!(
+            std::fs::read_to_string(install.join("web/index.html")).unwrap(),
+            "keep web"
+        );
+        assert!(!backup.join("VERSION.txt").exists());
+        assert!(!backup.join("web").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_update_staging_restores_only_files_already_moved() {
+        for failed_name in ["web", "VERSION.txt"] {
+            let root = std::env::temp_dir().join(format!(
+                "operalibre-staging-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let install = root.join("install");
+            let backup = root.join("backup");
+            std::fs::create_dir_all(install.join("web")).unwrap();
+            std::fs::create_dir_all(backup.join(failed_name)).unwrap();
+            std::fs::write(backup.join(failed_name).join("occupied"), "keep").unwrap();
+            std::fs::write(install.join(super::server_binary_name()), "old server").unwrap();
+            std::fs::write(install.join("web/index.html"), "old web").unwrap();
+            std::fs::write(install.join("VERSION.txt"), "old version").unwrap();
+
+            assert!(super::stage_installed_files(&install, &backup, true).is_err());
+            assert_eq!(
+                std::fs::read_to_string(install.join(super::server_binary_name())).unwrap(),
+                "old server"
+            );
+            assert_eq!(
+                std::fs::read_to_string(install.join("web/index.html")).unwrap(),
+                "old web"
+            );
+            assert_eq!(
+                std::fs::read_to_string(install.join("VERSION.txt")).unwrap(),
+                "old version"
+            );
+            assert_eq!(
+                std::fs::read_to_string(backup.join(failed_name).join("occupied")).unwrap(),
+                "keep"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn completion_is_published_while_handoff_is_still_locked() {
         let root = std::env::temp_dir().join(format!(
