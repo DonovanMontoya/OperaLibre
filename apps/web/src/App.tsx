@@ -9026,7 +9026,7 @@ function MainApp({
             >
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
-            <div className="view-toggle" role="group" aria-label="View mode">
+            {librarySource !== "libro" ? <div className="view-toggle" role="group" aria-label="View mode">
               {SHELF_VIEW_MODE_OPTIONS.map((option) => {
                 const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
                 return (
@@ -9042,7 +9042,7 @@ function MainApp({
                   </button>
                 );
               })}
-            </div>
+            </div> : null}
           </div>
 
           {showShelfFilters && filtersOpen ? (
