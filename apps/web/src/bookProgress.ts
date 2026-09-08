@@ -54,7 +54,7 @@ export function compactProgressLabel(book: Pick<Book, "progress">): string | nul
   if (status === "finished") return READING_STATUS_LABELS.finished;
   const percent = book.progress?.percentComplete;
   if (percent === null || percent === undefined) return "Started";
-  return `${Math.min(100, Math.max(0, Math.round(percent)))}%`;
+  return `${Math.min(99, Math.max(1, Math.round(percent)))}%`;
 }
 
 /** Groups the shelf by status; callers break the tie themselves, as with every other sort. */

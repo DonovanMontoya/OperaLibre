@@ -107,9 +107,13 @@ test("a book part-way through reads as a percentage, rounded to a whole one", ()
   assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: 41.5 })), "42%");
 });
 
-test("a percentage outside 0–100 is clamped rather than shown as it arrived", () => {
-  assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: 128 })), "100%");
-  assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: -4 })), "0%");
+test("an in-progress book stays between 1–99% even at rounding boundaries", () => {
+  for (const percentComplete of [-4, 0, 0.1, 0.49]) {
+    assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete })), "1%");
+  }
+  for (const percentComplete of [99.5, 99.9, 100, 128]) {
+    assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete })), "99%");
+  }
 });
 
 test("progress with no percentage yet still shows the book has been started", () => {
