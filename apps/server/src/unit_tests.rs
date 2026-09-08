@@ -6142,3 +6142,28 @@ fn nonpositive_prefix_durations_do_not_discard_reported_book_positions() {
         3630.0
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn job_list_filters_by_kind_and_preserves_unfiltered_listing() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let sync_id = super::create_job(&state, "sync-generate").await;
+    super::create_job(&state, "library-scan").await;
+    for (kind, expected) in [(None, 2), (Some("sync-generate"), 1), (Some("unknown"), 0)] {
+        let list = super::list_jobs(
+            super::State(state.clone()),
+            super::AdminUser(admin_user()),
+            super::Query(super::ListJobsQuery {
+                kind: kind.map(str::to_owned),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(list.len(), expected);
+        if kind == Some("sync-generate") {
+            assert_eq!(list[0].id, sync_id);
+        }
+    }
+}

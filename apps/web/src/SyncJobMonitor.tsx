@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listJobs } from "./api";
+import { jobElapsedMinutes } from "./jobTiming";
 import type { Book, JobStatus } from "./types";
 
 function jobOrder(job: JobStatus) {
@@ -18,7 +19,7 @@ export function SyncJobMonitor({ books, onOpenBook }: {
     let timer: number | undefined;
     async function refresh() {
       try {
-        const next = await listJobs();
+        const next = await listJobs("sync-generate");
         if (cancelled) return;
         setJobs(next.filter((job) => job.kind === "sync-generate").sort((a, b) =>
           jobOrder(a) - jobOrder(b)
@@ -52,8 +53,7 @@ export function SyncJobMonitor({ books, onOpenBook }: {
           const fraction = job.progress?.fraction;
           const percent = typeof fraction === "number" && Number.isFinite(fraction)
             ? Math.round(Math.max(0, Math.min(1, fraction)) * 100) : null;
-          const started = Number(job.runningAt);
-          const elapsed = job.status === "running" && started > 0 ? Math.max(0, Math.floor((Date.now() - started) / 60000)) : null;
+          const elapsed = jobElapsedMinutes(job, Date.now());
           return (
             <article className="admin-sync-job" key={job.id}>
               <div className="admin-sync-job-heading">
