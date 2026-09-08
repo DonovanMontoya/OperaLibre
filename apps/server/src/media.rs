@@ -557,8 +557,9 @@ pub(crate) fn sweep_download_temp_dir(download_temp_dir: &FsPath) -> io::Result<
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !(name.starts_with(DOWNLOAD_TEMP_PREFIX) && name.ends_with(DOWNLOAD_TEMP_SUFFIX))
-            || !entry.file_type()?.is_file()
+        if !(name.starts_with(DOWNLOAD_TEMP_PREFIX)
+            && name.ends_with(DOWNLOAD_TEMP_SUFFIX)
+            && entry.file_type()?.is_file())
         {
             continue;
         }
