@@ -10,6 +10,7 @@ import {
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
   shelfFacetKey,
+  shelfDownloadScanKey,
   tagForShelfSort,
   toggleShelfFacet,
   updateShelfFacetCounts
@@ -131,6 +132,23 @@ test("the downloaded filter only narrows the shelf when selected", () => {
   assert.equal(bookMatchesShelfDownload(false, false), true);
   assert.equal(bookMatchesShelfDownload(true, true), true);
   assert.equal(bookMatchesShelfDownload(false, true), false);
+});
+
+test("removing a merged imported copy invalidates the native download scan", () => {
+  const downloaded = book() as Book;
+  downloaded.id = "server-book";
+  downloaded.deviceBookId = "device-book";
+  downloaded.tracks = [{ localFilePath: "device-library/device-book/track.m4b" }] as Book["tracks"];
+
+  const serverOnly = {
+    ...downloaded,
+    deviceBookId: undefined,
+    tracks: downloaded.tracks.map((track) => ({ ...track, localFilePath: undefined }))
+  };
+  assert.notEqual(shelfDownloadScanKey([downloaded]), shelfDownloadScanKey([serverOnly]));
+
+  const progressOnly = { ...downloaded, progress: progress("inProgress") };
+  assert.equal(shelfDownloadScanKey([downloaded]), shelfDownloadScanKey([progressOnly]));
 });
 
 test("search reaches the tag and genre a book carries, not just its title", () => {
