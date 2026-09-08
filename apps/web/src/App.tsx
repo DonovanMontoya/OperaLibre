@@ -1,6 +1,6 @@
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { narrationTextOffset } from "./readerPagination";
-import { readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
+import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
   AlertCircle,
@@ -3918,10 +3918,11 @@ function MainApp({
   const cachedAlignmentStatus = useMemo(() => readAlignmentPreference(alignmentScope), [alignmentScope]);
   const [alignmentState, setAlignmentState] = useState(() => ({ scope: alignmentScope, status: cachedAlignmentStatus }));
   const alignmentStatus = alignmentState.scope === alignmentScope ? alignmentState.status : cachedAlignmentStatus;
-  const updateAlignmentStatus = useCallback((status: AlignmentStatus) => {
+  const alignmentStatusUpdater = useMemo(() => createAlignmentStatusUpdater((status) => {
     writeAlignmentPreference(alignmentScope, status);
     setAlignmentState({ scope: alignmentScope, status });
-  }, [alignmentScope]);
+  }), [alignmentScope]);
+  const updateAlignmentStatus = alignmentStatusUpdater.update;
   const sentenceFollowAvailable = isOperaLibre && !localMode && !demoMode && alignmentStatus?.enabled === true;
   const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
   const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
@@ -5124,24 +5125,21 @@ function MainApp({
 
   useEffect(() => {
     if (!isOperaLibre || localMode || demoMode) return;
-    let cancelled = false;
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
-      void getAlignmentStatus()
-        .then((status) => { if (!cancelled) updateAlignmentStatus(status); })
-        .catch(() => { /* Keep the last known setting while offline. */ });
+      void alignmentStatusUpdater.refresh(getAlignmentStatus);
     };
     refresh();
     const timer = window.setInterval(refresh, 30_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
-      cancelled = true;
+      alignmentStatusUpdater.invalidate();
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [currentUser.id, isOperaLibre, localMode, demoMode, updateAlignmentStatus]);
+  }, [currentUser.id, isOperaLibre, localMode, demoMode, alignmentStatusUpdater]);
 
   const syncMapBook = narrationFollowActive && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
   const syncMapBookId = syncMapBook?.id ?? null;
