@@ -8361,7 +8361,7 @@ function MainApp({
         <div className="pane-title">
           <div>
             <span className="eyebrow"><Library size={13} /> The Collection</span>
-            <h1>Audio <span className="amp">&amp;</span> Books</h1>
+            <h1>OperaLibre</h1>
           </div>
           <div className="pane-actions">
             {native ? (
