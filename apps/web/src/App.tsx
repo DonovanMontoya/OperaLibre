@@ -165,6 +165,7 @@ import {
 import type { ShelfViewMode } from "./shelfView";
 import {
   bookMatchesFacet,
+  bookMatchesShelfDownload,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   countActiveShelfFilters,
@@ -172,6 +173,7 @@ import {
   EMPTY_SHELF_FILTERS,
   SHELF_FACET_PREVIEW_COUNT,
   SHELF_STATUS_OPTIONS,
+  shelfDownloadScanKey,
   tagForShelfSort,
   toggleShelfFacet,
   updateShelfFacetCounts
@@ -4060,7 +4062,7 @@ function MainApp({
     tags: countShelfFacet(books, "tags")
   }), [books]);
 
-  // Each book scored once against every filter axis separately. Keeping the four
+  // Each book scored once against every filter axis separately. Keeping the five
   // verdicts apart is what lets the panel count a group over the books the
   // *other* groups allow without walking the library again per chip.
   const shelfMatches = useMemo(() => {
@@ -4069,10 +4071,19 @@ function MainApp({
       book,
       search: bookMatchesShelfSearch(book, query),
       status: bookMatchesShelfStatus(book, shelfFilters.status),
+      availableOnDevice:
+        demoMode
+        || localMode
+        || book.source === "device"
+        || !!book.deviceBookId
+        || downloadedBookIds.has(book.id),
       genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
       tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
+    })).map((match) => ({
+      ...match,
+      downloaded: bookMatchesShelfDownload(match.availableOnDevice, shelfFilters.downloadedOnly)
     }));
-  }, [books, searchQuery, shelfFilters]);
+  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, shelfFilters]);
 
   const shelfFacets = useMemo(() => {
     const forGenres: Book[] = [];
@@ -4083,18 +4094,23 @@ function MainApp({
       notStarted: 0,
       finished: 0
     };
+    let downloadedCount = 0;
     for (const match of shelfMatches) {
-      if (match.search && match.status && match.tags) forGenres.push(match.book);
-      if (match.search && match.status && match.genres) forTags.push(match.book);
-      if (match.search && match.genres && match.tags) {
+      if (match.search && match.status && match.tags && match.downloaded) forGenres.push(match.book);
+      if (match.search && match.status && match.genres && match.downloaded) forTags.push(match.book);
+      if (match.search && match.genres && match.tags && match.downloaded) {
         statusCounts.all += 1;
         statusCounts[readingStatus(match.book)] += 1;
+      }
+      if (match.search && match.status && match.genres && match.tags && match.availableOnDevice) {
+        downloadedCount += 1;
       }
     }
     return {
       genres: updateShelfFacetCounts(allShelfFacets.genres, forGenres, "genres"),
       tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
-      statusCounts
+      statusCounts,
+      downloadedCount
     };
   }, [allShelfFacets, shelfMatches]);
 
@@ -4119,6 +4135,14 @@ function MainApp({
         clear: () => setShelfFilters((filters) => ({ ...filters, status: "all" }))
       });
     }
+    if (shelfFilters.downloadedOnly) {
+      chips.push({
+        id: "availability:downloaded",
+        caption: "Availability",
+        label: "Downloaded on Device",
+        clear: () => setShelfFilters((filters) => ({ ...filters, downloadedOnly: false }))
+      });
+    }
     for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
       const caption = group === "genres" ? "Genre" : "Tag";
       for (const key of shelfFilters[group]) {
@@ -4141,7 +4165,7 @@ function MainApp({
 
   const visibleBooks = useMemo(() => {
     const filtered = shelfMatches
-      .filter((match) => match.search && match.status && match.genres && match.tags)
+      .filter((match) => match.search && match.status && match.downloaded && match.genres && match.tags)
       .map((match) => match.book);
 
     const sorted = [...filtered];
@@ -4306,6 +4330,7 @@ function MainApp({
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
+  const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
   booksRef.current = books;
   const playbackTrackIdsKey = useMemo(
@@ -4854,10 +4879,11 @@ function MainApp({
     if (!Capacitor.isNativePlatform() || !books.length) return;
     void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
-    // Keyed on ids: re-statting every downloaded file each time a progress
-    // save rebuilds `books` kept the iOS filesystem busy for no reason.
+    // Keyed on book ids and local-file identity: progress/metadata updates do
+    // not re-stat every track, but removing a merged imported copy rechecks the
+    // surviving server book even though its id stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookIdsKey]);
+  }, [downloadScanKey]);
 
   /**
    * What the car needs to know about, reduced to the parts it acts on.
@@ -8658,6 +8684,27 @@ function MainApp({
                         </button>
                       );
                     })}
+                  </div>
+                </div>
+
+                <div className="shelf-facet shelf-facet-availability">
+                  <div className="shelf-facet-heading">
+                    <span className="shelf-facet-title">Availability</span>
+                  </div>
+                  <div className="shelf-facet-chips" role="group" aria-label="Filter by availability">
+                    <button
+                      type="button"
+                      className={`facet-chip ${shelfFilters.downloadedOnly ? "selected" : ""}`}
+                      aria-pressed={shelfFilters.downloadedOnly}
+                      disabled={shelfFacets.downloadedCount === 0 && !shelfFilters.downloadedOnly}
+                      onClick={() => setShelfFilters({
+                        ...shelfFilters,
+                        downloadedOnly: !shelfFilters.downloadedOnly
+                      })}
+                    >
+                      <span className="facet-chip-label">Downloaded on Device</span>
+                      <em>{shelfFacets.downloadedCount}</em>
+                    </button>
                   </div>
                 </div>
 
