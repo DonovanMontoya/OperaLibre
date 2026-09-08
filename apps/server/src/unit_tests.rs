@@ -6114,3 +6114,31 @@ async fn account_lockouts_layer_a_fast_pair_lock_under_a_username_ceiling() {
     .expect_err("the username ceiling refuses the sign-in");
     assert_eq!(refused.status, super::StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[test]
+fn nonpositive_prefix_durations_do_not_discard_reported_book_positions() {
+    for duration in [None, Some(0.0), Some(-1.0)] {
+        let book = book_with_tracks(
+            None,
+            vec![
+                track_with_duration("t1", 0, duration),
+                track_with_duration("t2", 1, Some(3600.0)),
+            ],
+        );
+        assert_eq!(
+            super::validated_book_position_seconds(&book, &book.tracks[1], 30.0, Some(7230.0)),
+            7230.0
+        );
+    }
+    let book = book_with_tracks(
+        None,
+        vec![
+            track_with_duration("t1", 0, Some(3600.0)),
+            track_with_duration("t2", 1, Some(3600.0)),
+        ],
+    );
+    assert_eq!(
+        super::validated_book_position_seconds(&book, &book.tracks[1], 30.0, Some(99999.0)),
+        3630.0
+    );
+}
