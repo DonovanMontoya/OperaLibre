@@ -18,6 +18,7 @@ use tower::ServiceExt;
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
+    state: AppState,
     /// Where the scanned library lives, for tests that grow it mid-flight.
     library_root: PathBuf,
     /// Held so the temporary directory outlives the server.
@@ -152,14 +153,15 @@ impl TestServer {
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             upload_lock: Arc::new(Mutex::new(())),
-            backup_lock: Arc::new(Mutex::new(())),
+            backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
         };
 
         rescan_library(&state).await.unwrap();
 
         let library_root = state.library_root.clone();
         Self {
-            router: build_router(state, None, &[]).unwrap(),
+            router: build_router(state.clone(), None, &[]).unwrap(),
+            state,
             library_root,
             _root: root,
         }
@@ -3136,6 +3138,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
     rescan_library(&state).await.unwrap();
     let server = TestServer {
         router: build_router(state.clone(), None, &[]).unwrap(),
+        state: state.clone(),
         library_root,
         _root: root,
     };
@@ -3187,6 +3190,104 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
 
 #[path = "performance_tests.rs"]
 mod performance_tests;
+
+#[tokio::test]
+async fn disconnecting_during_restore_cannot_leave_database_and_account_cache_disagreeing() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let backup = server.get("/api/admin/backup", &owner).await;
+    assert_eq!(backup.status, StatusCode::OK);
+    let removed_reader = server.add_reader(&owner, "created-after-backup").await;
+
+    // Hold cache adoption after the database commit, using a real cache lock
+    // rather than timing the disconnect against disk speed.
+    let cache_reader = server.state.users.read().await;
+    assert_eq!(cache_reader.users.len(), 2);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/admin/backup")
+        .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(backup.body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 51234))));
+    let restore = tokio::spawn(server.router.clone().oneshot(request));
+    let database = rusqlite::Connection::open_with_flags(
+        &server.state.database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let users: i64 = database
+                .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
+                .unwrap();
+            if users == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("restore reaches its database commit");
+    restore.abort();
+    assert!(restore.await.unwrap_err().is_cancelled());
+    drop(cache_reader);
+
+    // Wait for the restore's state gate to reopen. The disconnected caller
+    // must not abandon the remaining cache adoption work.
+    let restored = tokio::time::timeout(
+        Duration::from_secs(5),
+        server.state.database.quiesce_state(),
+    )
+    .await
+    .expect("restore completes after its caller disconnects");
+    drop(restored);
+    let users = server.get("/api/users", &owner).await;
+    assert_eq!(users.status, StatusCode::OK);
+    assert_eq!(users.json().as_array().unwrap().len(), 1);
+    assert_eq!(
+        server.get("/api/auth/me", &removed_reader).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn update_handoff_rejects_backups_and_restores_without_changing_accounts() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let backup = server.get("/api/admin/backup", &owner).await.json();
+    server.add_reader(&owner, "keep-after-update-handoff").await;
+    let guard = server.state.backup_lock.lock().await;
+    let update = server
+        .send_json("POST", "/api/update/install", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(update.status, StatusCode::CONFLICT, "{}", update.text());
+    drop(guard);
+
+    server.state.backup_lock.lock().await.update_started = true;
+    for response in [
+        server.get("/api/admin/backup", &owner).await,
+        server
+            .send_json("POST", "/api/admin/backup", &owner, backup)
+            .await,
+    ] {
+        assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+        assert!(response.text().contains("restarting for an update"));
+    }
+    assert_eq!(
+        server
+            .get("/api/users", &owner)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
 
 #[tokio::test]
 async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cursors() {
