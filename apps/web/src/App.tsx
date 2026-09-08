@@ -173,6 +173,7 @@ import {
   EMPTY_SHELF_FILTERS,
   SHELF_FACET_PREVIEW_COUNT,
   SHELF_STATUS_OPTIONS,
+  shelfDownloadScanKey,
   tagForShelfSort,
   toggleShelfFacet,
   updateShelfFacetCounts
@@ -4329,6 +4330,7 @@ function MainApp({
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
+  const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
   booksRef.current = books;
   const playbackTrackIdsKey = useMemo(
@@ -4877,10 +4879,11 @@ function MainApp({
     if (!Capacitor.isNativePlatform() || !books.length) return;
     void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
-    // Keyed on ids: re-statting every downloaded file each time a progress
-    // save rebuilds `books` kept the iOS filesystem busy for no reason.
+    // Keyed on book ids and local-file identity: progress/metadata updates do
+    // not re-stat every track, but removing a merged imported copy rechecks the
+    // surviving server book even though its id stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookIdsKey]);
+  }, [downloadScanKey]);
 
   /**
    * What the car needs to know about, reduced to the parts it acts on.

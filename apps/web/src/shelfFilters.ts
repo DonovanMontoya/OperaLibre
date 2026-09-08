@@ -94,6 +94,18 @@ export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedO
   return !downloadedOnly || availableOnDevice;
 }
 
+/**
+ * Recheck native files when the source of a device copy changes, while keeping
+ * progress and metadata updates from repeatedly touching the filesystem.
+ */
+export function shelfDownloadScanKey(books: Book[]) {
+  return JSON.stringify(books.map((book) => [
+    book.id,
+    book.deviceBookId ?? null,
+    book.tracks.map((track) => track.localFilePath ?? null)
+  ]));
+}
+
 /** `query` is already trimmed and lower-cased by the caller; empty matches all. */
 export function bookMatchesShelfSearch(book: Book, query: string) {
   if (!query) return true;
