@@ -10183,6 +10183,36 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   font-size: 0.72rem;
 }
 
+.admin-experiment-section {
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+  padding-top: 12px;
+  min-width: 0;
+}
+
+.admin-experiment-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+.admin-experiment-section > summary::-webkit-details-marker { display: none; }
+.admin-experiment-section > summary svg { transform: rotate(-90deg); }
+.admin-experiment-section[open] > summary svg { transform: rotate(0); }
+.admin-experiment-section > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.admin-experiment-section-content { padding-top: 14px; }
+.admin-sync-monitor, .admin-sync-jobs, .admin-sync-job { display: grid; gap: 10px; min-width: 0; }
+.admin-sync-job { padding: 12px; border: 1px solid rgba(var(--ink-rgb), 0.12); border-radius: 8px; }
+.admin-sync-job-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.admin-sync-job-heading > button { white-space: normal; text-align: left; }
+.admin-sync-job-heading > strong, .admin-sync-job-heading > button { overflow-wrap: anywhere; min-width: 0; }
+.admin-sync-job-state { font-size: 0.72rem; color: var(--ink-faded); }
+.admin-sync-job progress { width: 100%; height: 7px; accent-color: var(--ink); }
+.admin-sync-job p { overflow-wrap: anywhere; }
+.admin-sync-job .admin-sync-job-error { color: #b33a2e; }
+
 .admin-software-update {
   display: grid;
   gap: 10px;
