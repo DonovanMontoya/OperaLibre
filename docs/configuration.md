@@ -146,7 +146,7 @@ Leave both blank to disable. See [Libation / Audible Import](libation.md) for th
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experimental features**; no configuration entry is needed. When generation is unavailable or disabled, user-provided and previously generated `.sync.json` sidecars still work. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-sentence-highlighting) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experimental features**; no configuration entry is needed. Sentence following requires the experiment to be enabled and the reader to opt in, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |

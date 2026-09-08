@@ -1,5 +1,6 @@
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { narrationTextOffset } from "./readerPagination";
+import { readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
   AlertCircle,
@@ -3913,8 +3914,15 @@ function MainApp({
   const [readalongOpen, setReadalongOpen] = useState(false);
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
-  const [alignmentStatus, setAlignmentStatus] = useState<AlignmentStatus | null>(null);
-  const sentenceFollowAvailable = isOperaLibre && alignmentStatus?.enabled === true;
+  const alignmentScope = getServerStorageKey();
+  const cachedAlignmentStatus = useMemo(() => readAlignmentPreference(alignmentScope), [alignmentScope]);
+  const [alignmentState, setAlignmentState] = useState(() => ({ scope: alignmentScope, status: cachedAlignmentStatus }));
+  const alignmentStatus = alignmentState.scope === alignmentScope ? alignmentState.status : cachedAlignmentStatus;
+  const updateAlignmentStatus = useCallback((status: AlignmentStatus) => {
+    writeAlignmentPreference(alignmentScope, status);
+    setAlignmentState({ scope: alignmentScope, status });
+  }, [alignmentScope]);
+  const sentenceFollowAvailable = isOperaLibre && !localMode && !demoMode && alignmentStatus?.enabled === true;
   const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
   const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
@@ -5120,7 +5128,7 @@ function MainApp({
     const refresh = () => {
       if (document.visibilityState === "hidden") return;
       void getAlignmentStatus()
-        .then((status) => { if (!cancelled) setAlignmentStatus(status); })
+        .then((status) => { if (!cancelled) updateAlignmentStatus(status); })
         .catch(() => { /* Keep the last known setting while offline. */ });
     };
     refresh();
@@ -5133,7 +5141,7 @@ function MainApp({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [currentUser.id, isOperaLibre, localMode, demoMode]);
+  }, [currentUser.id, isOperaLibre, localMode, demoMode, updateAlignmentStatus]);
 
   const syncMapBook = narrationFollowActive && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
   const syncMapBookId = syncMapBook?.id ?? null;
@@ -10772,7 +10780,7 @@ function MainApp({
           onRescan={refreshLibrary}
           onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
-          onAlignmentChanged={setAlignmentStatus}
+          onAlignmentChanged={updateAlignmentStatus}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
             setUsersModalOpen(false);
@@ -11193,7 +11201,7 @@ function MainApp({
           onRescan={refreshLibrary}
           onBeforeLibraryMutation={prepareForAdminLibraryMutation}
           onBooksChanged={applyAdminLibraryChange}
-          onAlignmentChanged={setAlignmentStatus}
+          onAlignmentChanged={updateAlignmentStatus}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
             openNativeTab("shelf");
