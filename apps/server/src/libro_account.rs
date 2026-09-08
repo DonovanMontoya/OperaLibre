@@ -710,7 +710,7 @@ async fn acquire_book(
             .await
             .ok()
             .and_then(|b| serde_json::from_slice::<LibroBook>(&b).ok());
-        if !existing.is_some_and(|b| b.isbn == book.isbn) {
+        if existing.is_none_or(|b| b.isbn != book.isbn) {
             return Err(ApiError::conflict(
                 "An existing library folder conflicts with this import. Nothing was overwritten.",
             ));
