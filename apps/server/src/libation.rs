@@ -907,18 +907,18 @@ pub(crate) async fn initialize_managed_libation_profile(
     let books_path = library_root.to_string_lossy().to_string();
     let in_progress_path = in_progress_dir.to_string_lossy().to_string();
     let mut changed = false;
-    if !settings
+    if settings
         .get("Books")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty())
+        .is_none_or(|value| value.trim().is_empty())
     {
         settings.insert("Books".to_string(), serde_json::Value::String(books_path));
         changed = true;
     }
-    if !settings
+    if settings
         .get("InProgress")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty())
+        .is_none_or(|value| value.trim().is_empty())
     {
         settings.insert(
             "InProgress".to_string(),
