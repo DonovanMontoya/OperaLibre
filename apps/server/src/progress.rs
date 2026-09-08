@@ -803,7 +803,11 @@ pub(crate) fn validated_book_position_seconds(
         .tracks
         .iter()
         .take_while(|candidate| candidate.id != track.id)
-        .all(|candidate| candidate.duration_seconds.is_some());
+        .all(|candidate| {
+            candidate
+                .duration_seconds
+                .is_some_and(|duration| duration > 0.0)
+        });
     if prefix_is_known {
         book_position_seconds(book, track, position_seconds)
     } else {
