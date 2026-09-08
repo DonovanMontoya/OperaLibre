@@ -60,6 +60,8 @@ import type {
   UpdateStatus
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
+import { ExperimentSection } from "./ExperimentSection";
+import { SyncJobMonitor } from "./SyncJobMonitor";
 
 type AdminSection = "overview" | "users" | "requests" | "books" | "experiments";
 type AccountRole = "owner" | "admin" | "reader";
@@ -903,7 +905,7 @@ export function AdminPanel({
               </div>
             </div>
 
-            <div className="admin-experiment-list" aria-live="polite">
+            <div className="admin-experiment-list">
               <article>
                 <div className="admin-software-version-head">
                   <div>
@@ -979,6 +981,9 @@ export function AdminPanel({
                     </a>
                   ) : null}
                 </div>
+                <ExperimentSection title="Sync activity">
+                  <SyncJobMonitor books={books} onOpenBook={onOpenBook} />
+                </ExperimentSection>
               </article>
             </div>
           </section>
