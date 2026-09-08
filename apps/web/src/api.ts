@@ -1148,8 +1148,9 @@ export async function getJob(jobId: string) {
   return request<JobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
-export async function listJobs() {
-  return request<JobStatus[]>("/api/jobs");
+export async function listJobs(kind?: string) {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return request<JobStatus[]>(`/api/jobs${query}`);
 }
 
 function appendMediaToken(path: string) {
