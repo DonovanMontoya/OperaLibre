@@ -576,6 +576,25 @@ pub(crate) async fn books_with_progress(
     state: &AppState,
     auth: &AuthUser,
 ) -> Result<Vec<Book>, ApiError> {
+    let books = state
+        .library
+        .read()
+        .await
+        .books
+        .iter()
+        .filter(|book| can_access_book(auth, &book.id))
+        .cloned()
+        .collect();
+    enrich_books_with_progress(state, auth, books).await
+}
+
+/// Enrich an already-authorized selection so a page costs only its own
+/// metadata copies and progress summaries, regardless of catalogue size.
+pub(crate) async fn enrich_books_with_progress(
+    state: &AppState,
+    auth: &AuthUser,
+    books: Vec<Book>,
+) -> Result<Vec<Book>, ApiError> {
     let own_progress = state.progress.list_for_user(&auth.id).await?;
     let own_gains = state.book_settings.list_for_user(&auth.id).await?;
     let sharers = progress_sharers(state, auth).await;
@@ -583,10 +602,8 @@ pub(crate) async fn books_with_progress(
         .progress
         .list_for_users(&sharers.iter().map(|(id, _)| id.clone()).collect())
         .await?;
-    let books = state.library.read().await.books.clone();
     Ok(books
         .into_iter()
-        .filter(|book| can_access_book(auth, &book.id))
         .map(|mut book| {
             book.progress = own_progress
                 .get(&book.id)
@@ -803,7 +820,11 @@ pub(crate) fn validated_book_position_seconds(
         .tracks
         .iter()
         .take_while(|candidate| candidate.id != track.id)
-        .all(|candidate| candidate.duration_seconds.is_some());
+        .all(|candidate| {
+            candidate
+                .duration_seconds
+                .is_some_and(|duration| duration > 0.0)
+        });
     if prefix_is_known {
         book_position_seconds(book, track, position_seconds)
     } else {

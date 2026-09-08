@@ -28,7 +28,8 @@ tempfile = "3"
 tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 rayon = "1.11"
-rusqlite = { version = "0.37", features = ["bundled"] }
+# Session timestamps use checked u64/SQLite INTEGER conversions.
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 tower-http = { version = "0.7", features = ["compression-gzip", "cors", "fs", "timeout", "trace"] }

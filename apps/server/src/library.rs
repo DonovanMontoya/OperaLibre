@@ -508,28 +508,33 @@ pub(crate) async fn list_books(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     ensure_startup_scan_finished(&state).await?;
-    let mut books = books_with_progress(&state, &auth).await?;
-
-    // Paging is by the id of the last book seen rather than by offset: a
-    // rescan between two pages can insert or remove a book, and an offset
-    // would then skip or repeat one.
-    let mut next_cursor = None;
-    if let Some(limit) = query.limit {
-        if let Some(cursor) = query.cursor.as_deref() {
-            // A cursor for a book this listener can no longer see - it was
-            // removed, or access was revoked - restarts rather than fails,
-            // which is the behaviour a paging client can actually recover
-            // from mid-scroll.
-            if let Some(index) = books.iter().position(|book| book.id == cursor) {
-                books.drain(..=index);
-            }
-        }
-        let limit = limit.clamp(1, MAX_BOOKS_PAGE);
-        if books.len() > limit {
-            books.truncate(limit);
-            next_cursor = books.last().map(|book| book.id.clone());
-        }
-    }
+    let (books, next_cursor) = {
+        let library = state.library.read().await;
+        // A missing or inaccessible cursor restarts the walk. Select from
+        // one catalogue snapshot before copying metadata or adding progress.
+        let start = query
+            .limit
+            .and(query.cursor.as_deref())
+            .and_then(|cursor| {
+                library
+                    .books
+                    .iter()
+                    .position(|book| book.id == cursor && can_access_book(&auth, &book.id))
+            })
+            .map_or(0, |index| index + 1);
+        let mut visible = library.books[start..]
+            .iter()
+            .filter(|book| can_access_book(&auth, &book.id));
+        let limit = query
+            .limit
+            .map_or(usize::MAX, |limit| limit.clamp(1, MAX_BOOKS_PAGE));
+        let books: Vec<Book> = visible.by_ref().take(limit).cloned().collect();
+        let next_cursor = visible
+            .next()
+            .and_then(|_| books.last().map(|book| book.id.clone()));
+        (books, next_cursor)
+    };
+    let books = enrich_books_with_progress(&state, &auth, books).await?;
 
     // The tag covers the response as it was actually built, so a change to a
     // shared listener's position or to a volume gain invalidates it too. It
