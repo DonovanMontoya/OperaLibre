@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compactProgressLabel,
   compareReadingStatus,
   readingStatus,
   readingStatusLabel,
@@ -94,4 +95,33 @@ test("a book marked finished early still sorts as finished", () => {
   });
   assert.equal(readingStatus(marked), "finished");
   assert.ok(compareReadingStatus(marked, withStatus("inProgress")) > 0);
+});
+
+test("the compact chip says nothing about a book nobody has opened", () => {
+  assert.equal(compactProgressLabel(withStatus("notStarted")), null);
+  assert.equal(compactProgressLabel({ progress: null }), null);
+});
+
+test("a book part-way through reads as a percentage, rounded to a whole one", () => {
+  assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: 41.4 })), "41%");
+  assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: 41.5 })), "42%");
+});
+
+test("an in-progress book stays between 1–99% even at rounding boundaries", () => {
+  for (const percentComplete of [-4, 0, 0.1, 0.49]) {
+    assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete })), "1%");
+  }
+  for (const percentComplete of [99.5, 99.9, 100, 128]) {
+    assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete })), "99%");
+  }
+});
+
+test("progress with no percentage yet still shows the book has been started", () => {
+  assert.equal(compactProgressLabel(withStatus("inProgress", { percentComplete: null })), "Started");
+});
+
+test("a finished book keeps the word, not a bare 100%", () => {
+  assert.equal(compactProgressLabel(withStatus("finished", { percentComplete: 100 })), "Finished");
+  // Finished is the server's verdict; a stale percentage does not overturn it.
+  assert.equal(compactProgressLabel(withStatus("finished", { percentComplete: 92 })), "Finished");
 });
