@@ -53,8 +53,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     source.write_text(SERVER)
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
-    for fails in (False, True):
-        root = scratch / str(fails)
+    for scenario in ("success", "startup-failure", "staging-failure"):
+        fails = scenario == "startup-failure"
+        root = scratch / scenario
         package = root / "package"
         for directory in (root / "data", root / "web", package / "web"):
             directory.mkdir(parents=True)
@@ -68,6 +69,9 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             shutil.copy2(binary, destination)
         for destination in (root / "operalibre-service", package / "operalibre-updater"):
             shutil.copy2(LAUNCHER, destination)
+        if scenario == "staging-failure":
+            # Backup preparation fails before any new files are installed.
+            (root / "data/update-backups").write_text("not a directory")
         env = dict(os.environ, TEST_PORT=str(port))
         if fails:
             env["TEST_FAIL_NEW"] = "1"
@@ -80,6 +84,15 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             until(lambda: (root / "data/update.lock").exists())
             old.terminate()
             old.wait(timeout=5)
+            if scenario == "staging-failure":
+                assert updater.wait(timeout=20) == 1
+                result = (root / "data/update-result.txt").read_text()
+                assert result.startswith("Failed:"), result
+                assert "previous server was restarted" in result, result
+                assert (root / "VERSION.txt").read_text().strip() == "1.0.0"
+                until(lambda: healthy(port))
+                print("PASS: backup preparation failure restarts the previous server", flush=True)
+                continue
             until(lambda: (root / "VERSION.txt").exists() and (root / "VERSION.txt").read_text().strip() == "2.0.0")
             assert not (root / "data/update-result.txt").exists()
             # Deliberately request takeover before readiness, reproducing the

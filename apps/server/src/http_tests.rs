@@ -3288,3 +3288,78 @@ async fn update_handoff_rejects_backups_and_restores_without_changing_accounts()
         2
     );
 }
+
+#[tokio::test]
+async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cursors() {
+    let server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "paged-progress").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let books = server.get("/api/books", &owner).await.json();
+    let selected = books[1]["id"].as_str().unwrap();
+    let later = books[3]["id"].as_str().unwrap();
+    let hidden = books[2]["id"].as_str().unwrap();
+    let track = books[1]["tracks"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                &format!("/api/users/{reader_id}/book-access"),
+                &owner,
+                serde_json::json!({"allowedBookIds": [selected, later]})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    save_position(&server, &owner, selected, track, 1.0, serde_json::json!({})).await;
+    save_position(
+        &server,
+        &reader,
+        selected,
+        track,
+        2.0,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                &format!("/api/books/{selected}/volume"),
+                &reader,
+                serde_json::json!({"volumeGain": 2.5})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    let full = server.get("/api/books", &reader).await.json();
+    assert_eq!(full[0]["progress"]["bookPositionSeconds"], 2.0);
+    assert_eq!(full[0]["volumeGain"], 2.5);
+    assert_eq!(full[0]["sharedProgress"].as_array().unwrap().len(), 1);
+    for uri in [
+        "/api/books?limit=1".to_string(),
+        format!("/api/books?limit=1&cursor={hidden}"),
+    ] {
+        let page = server.get(&uri, &reader).await;
+        assert_eq!(page.status, StatusCode::OK);
+        assert_eq!(page.json(), serde_json::json!([full[0]]));
+        assert_eq!(
+            page.header(axum::http::HeaderName::from_static("x-next-cursor")),
+            selected
+        );
+    }
+    let last = server
+        .get(&format!("/api/books?limit=1&cursor={selected}"), &reader)
+        .await;
+    assert_eq!(last.json(), serde_json::json!([full[1]]));
+    assert!(
+        last.header(axum::http::HeaderName::from_static("x-next-cursor"))
+            .is_empty()
+    );
+}

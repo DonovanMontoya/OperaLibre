@@ -9,7 +9,8 @@ import {
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
 import { fileExtension, storedMediaExtension } from "./mediaFiles";
-import { optionalCompanionDownload, revalidatedCompanion } from "./companionCache";
+import { revalidatedCompanion } from "./companionCache";
+import { downloadWebBook } from "./offlineDownload";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
 
 const DB_NAME = "operalibre-offline";
@@ -403,55 +404,15 @@ export async function downloadBookForOffline(
     return;
   }
 
-  // Records written by this attempt, so an abort or failure part-way leaves
-  // no half-downloaded book behind that `isBookDownloaded` would then have to
-  // explain.
-  const written: string[] = [];
-  try {
-    let completed = 0;
-    for (const track of book.tracks) {
-      const response = await fetch(resolveUrl(track.downloadUrl ?? track.streamUrl), { signal });
-      if (!response.ok) throw new Error(`Could not download ${track.title} (${response.status}).`);
-      const key = mediaKey(book.id, `track:${track.id}`);
-      await write("media", { key, blob: await response.blob() });
-      written.push(key);
-      completed += 1;
-      onProgress(completed, total);
-    }
-    if (book.coverArtUrl) {
-      const response = await fetch(resolveUrl(book.coverArtUrl), { signal });
-      if (response.ok) {
-        const key = mediaKey(book.id, "cover");
-        await write("media", { key, blob: await response.blob() });
-        written.push(key);
-      }
-    }
-    // The ebook and pictures, so a downloaded book can be read offline too.
-    // A companion that will not come down is not worth failing the book for.
-    for (const companion of book.companions ?? []) {
-      await optionalCompanionDownload(async () => {
-        const response = await fetch(resolveUrl(companion.url), { signal });
-        if (response.ok) {
-          const key = mediaKey(book.id, companionMediaKind(companion));
-          await write("media", { key, blob: await response.blob() });
-          written.push(key);
-        }
-      }, signal);
-    }
-    if (book.syncFile) {
-      await optionalCompanionDownload(async () => {
-        const response = await fetch(resolveUrl(book.syncFile!.url), { signal });
-        if (response.ok) {
-          const key = mediaKey(book.id, SYNC_MAP_KIND);
-          await write("media", { key, blob: await response.blob() });
-          written.push(key);
-        }
-      }, signal);
-    }
-  } catch (error) {
-    await Promise.all(written.map((key) => removeRecord("media", key).catch(() => undefined)));
-    throw error;
-  }
+  const prefix = mediaKey(book.id, "");
+  await downloadWebBook(
+    book,
+    resolveUrl,
+    (kind, blob) => write("media", { key: prefix + kind, blob }),
+    (kind) => removeRecord("media", prefix + kind),
+    onProgress,
+    signal
+  );
 }
 
 export async function removeBookDownload(book: Book) {
