@@ -53,7 +53,7 @@ An iPhone TestFlight build is also available: https://testflight.apple.com/join/
 
 ## Build and run from source
 
-You need Node.js 20+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if needed.
+You need Node.js 22.12+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if needed.
 
 ```bash
 npm install
