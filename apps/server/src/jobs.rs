@@ -66,12 +66,22 @@ pub(crate) struct JobCreated {
     pub(crate) job_id: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ListJobsQuery {
+    pub(crate) kind: Option<String>,
+}
+
 pub(crate) async fn list_jobs(
     State(state): State<AppState>,
     _: AdminUser,
+    Query(query): Query<ListJobsQuery>,
 ) -> Result<Json<Vec<JobStatus>>, ApiError> {
     let jobs = state.jobs.read().await;
-    let mut list: Vec<JobStatus> = jobs.values().map(job_for_list).collect();
+    let mut list: Vec<JobStatus> = jobs
+        .values()
+        .filter(|job| query.kind.as_ref().is_none_or(|kind| &job.kind == kind))
+        .map(job_for_list)
+        .collect();
     list.sort_by_key(|job| std::cmp::Reverse(job_started_timestamp(job)));
     Ok(Json(list))
 }
