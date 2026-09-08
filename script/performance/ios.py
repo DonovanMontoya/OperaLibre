@@ -25,7 +25,10 @@ files += [ROOT / 'apps/web/ios/Tests/PerformanceTests.swift']
 refs = [add('PBXFileReference', f'lastKnownFileType = sourcecode.swift; path = {quote(p)}; sourceTree = "<absolute>";') for p in files]
 builds = [add('PBXBuildFile', f'fileRef = {ref};') for ref in refs]
 source = add('PBXSourcesBuildPhase', f'buildActionMask = 2147483647; files = ({",".join(builds)}); runOnlyForDeploymentPostprocessing = 0;')
-version = json.loads((ROOT / 'node_modules/@capacitor/ios/package.json').read_text())['version']
+# Resolve from the consuming workspace so both nested and hoisted installs work.
+version = subprocess.check_output(
+    ['node', '-p', "require('@capacitor/ios/package.json').version"],
+    cwd=ROOT / 'apps/web', text=True).strip()
 package = add('XCRemoteSwiftPackageReference', f'repositoryURL = "https://github.com/ionic-team/capacitor-swift-pm.git"; requirement = {{kind = exactVersion; version = {quote(version)};}};')
 product = add('XCSwiftPackageProductDependency', f'package = {package}; productName = Capacitor;')
 framework = add('PBXBuildFile', f'productRef = {product};')
