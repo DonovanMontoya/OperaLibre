@@ -40,6 +40,23 @@ export function readingStatusRank(status: ReadingStatus) {
   return READING_STATUS_ORDER.indexOf(status);
 }
 
+/**
+ * The compact shelf's progress chip. A percentage rather than a time remaining,
+ * and nothing at all for a book you have never opened: "Not started" on every
+ * row is the least useful thing a dense shelf can spend its width on — it is the
+ * default, and its absence says it just as well. Callers keep the full wording
+ * on the chip's title/aria-label so the short form never costs a screen reader
+ * anything.
+ */
+export function compactProgressLabel(book: Pick<Book, "progress">): string | null {
+  const status = readingStatus(book);
+  if (status === "notStarted") return null;
+  if (status === "finished") return READING_STATUS_LABELS.finished;
+  const percent = book.progress?.percentComplete;
+  if (percent === null || percent === undefined) return "Started";
+  return `${Math.min(99, Math.max(1, Math.round(percent)))}%`;
+}
+
 /** Groups the shelf by status; callers break the tie themselves, as with every other sort. */
 export function compareReadingStatus(a: Pick<Book, "progress">, b: Pick<Book, "progress">) {
   return readingStatusRank(readingStatus(a)) - readingStatusRank(readingStatus(b));
