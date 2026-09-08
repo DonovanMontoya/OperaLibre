@@ -407,6 +407,11 @@ html:not(.native-app) .web-shell > .player-pane {
   align-content: start;
 }
 
+.shelf-facet-availability {
+  padding-top: 15px;
+  border-top: 1px solid rgba(217, 181, 116, 0.14);
+}
+
 .shelf-facet-heading {
   display: flex;
   align-items: baseline;

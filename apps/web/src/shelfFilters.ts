@@ -16,6 +16,7 @@ export type ShelfStatusFilter = ReadingStatus | "all";
 
 export type ShelfFilters = {
   status: ShelfStatusFilter;
+  downloadedOnly: boolean;
   genres: string[];
   tags: string[];
 };
@@ -27,7 +28,12 @@ export type ShelfFacetValue = { key: string; label: string };
 
 export type ShelfFacetOption = ShelfFacetValue & { count: number };
 
-export const EMPTY_SHELF_FILTERS: ShelfFilters = { status: "all", genres: [], tags: [] };
+export const EMPTY_SHELF_FILTERS: ShelfFilters = {
+  status: "all",
+  downloadedOnly: false,
+  genres: [],
+  tags: []
+};
 
 export const SHELF_STATUS_OPTIONS: { value: ShelfStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -82,6 +88,10 @@ export function bookMatchesFacet(book: Book, group: ShelfFacetGroupKey, selected
 
 export function bookMatchesShelfStatus(book: Book, status: ShelfStatusFilter) {
   return status === "all" || readingStatus(book) === status;
+}
+
+export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedOnly: boolean) {
+  return !downloadedOnly || availableOnDevice;
 }
 
 /** `query` is already trimmed and lower-cased by the caller; empty matches all. */
@@ -142,7 +152,10 @@ export function tagForShelfSort(book: Book, selected: string[]) {
 }
 
 export function countActiveShelfFilters(filters: ShelfFilters) {
-  return (filters.status === "all" ? 0 : 1) + filters.genres.length + filters.tags.length;
+  return (filters.status === "all" ? 0 : 1)
+    + (filters.downloadedOnly ? 1 : 0)
+    + filters.genres.length
+    + filters.tags.length;
 }
 
 export function toggleShelfFacet(

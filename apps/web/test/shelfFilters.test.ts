@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   bookFacetValues,
   bookMatchesFacet,
+  bookMatchesShelfDownload,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   countActiveShelfFilters,
@@ -125,6 +126,13 @@ test("the status filter passes everything only while it is set to all", () => {
   assert.equal(bookMatchesShelfStatus(untouched, "notStarted"), true);
 });
 
+test("the downloaded filter only narrows the shelf when selected", () => {
+  assert.equal(bookMatchesShelfDownload(true, false), true);
+  assert.equal(bookMatchesShelfDownload(false, false), true);
+  assert.equal(bookMatchesShelfDownload(true, true), true);
+  assert.equal(bookMatchesShelfDownload(false, true), false);
+});
+
 test("search reaches the tag and genre a book carries, not just its title", () => {
   const shelf = book({
     title: "Elantris",
@@ -148,6 +156,7 @@ test("toggling a chip adds it, then takes it back off, without touching the othe
   assert.deepEqual(withGenre.genres, ["fantasy"]);
   assert.deepEqual(withGenre.tags, []);
   assert.equal(withGenre.status, "all");
+  assert.equal(withGenre.downloadedOnly, false);
 
   const withTag = toggleShelfFacet(withGenre, "tags", "cosmere");
   assert.deepEqual(withTag.genres, ["fantasy"]);
@@ -160,18 +169,32 @@ test("toggling a chip adds it, then takes it back off, without touching the othe
 
 test("toggling leaves the filters it was given untouched", () => {
   // The panel holds these in React state and compares by identity.
-  const before: ShelfFilters = { status: "finished", genres: ["fantasy"], tags: [] };
+  const before: ShelfFilters = {
+    status: "finished",
+    downloadedOnly: true,
+    genres: ["fantasy"],
+    tags: []
+  };
   const after = toggleShelfFacet(before, "genres", "mystery");
   assert.deepEqual(before.genres, ["fantasy"]);
   assert.notEqual(after.genres, before.genres);
   assert.equal(after.status, "finished");
+  assert.equal(after.downloadedOnly, true);
 });
 
 test("the badge counts every chip that is on, and nothing when none are", () => {
   assert.equal(countActiveShelfFilters(EMPTY_SHELF_FILTERS), 0);
-  assert.equal(countActiveShelfFilters({ status: "finished", genres: [], tags: [] }), 1);
   assert.equal(
-    countActiveShelfFilters({ status: "inProgress", genres: ["fantasy", "mystery"], tags: ["cosmere"] }),
+    countActiveShelfFilters({ status: "finished", downloadedOnly: true, genres: [], tags: [] }),
+    2
+  );
+  assert.equal(
+    countActiveShelfFilters({
+      status: "inProgress",
+      downloadedOnly: false,
+      genres: ["fantasy", "mystery"],
+      tags: ["cosmere"]
+    }),
     4
   );
 });
