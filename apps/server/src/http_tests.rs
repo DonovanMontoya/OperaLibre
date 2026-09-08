@@ -153,7 +153,7 @@ impl TestServer {
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             upload_lock: Arc::new(Mutex::new(())),
-            backup_lock: Arc::new(Mutex::new(())),
+            backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
         };
 
         rescan_library(&state).await.unwrap();
@@ -3251,5 +3251,40 @@ async fn disconnecting_during_restore_cannot_leave_database_and_account_cache_di
     assert_eq!(
         server.get("/api/auth/me", &removed_reader).await.status,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn update_handoff_rejects_backups_and_restores_without_changing_accounts() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let backup = server.get("/api/admin/backup", &owner).await.json();
+    server.add_reader(&owner, "keep-after-update-handoff").await;
+    let guard = server.state.backup_lock.lock().await;
+    let update = server
+        .send_json("POST", "/api/update/install", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(update.status, StatusCode::CONFLICT, "{}", update.text());
+    drop(guard);
+
+    server.state.backup_lock.lock().await.update_started = true;
+    for response in [
+        server.get("/api/admin/backup", &owner).await,
+        server
+            .send_json("POST", "/api/admin/backup", &owner, backup)
+            .await,
+    ] {
+        assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+        assert!(response.text().contains("restarting for an update"));
+    }
+    assert_eq!(
+        server
+            .get("/api/users", &owner)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
 }

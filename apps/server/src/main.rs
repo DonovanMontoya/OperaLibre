@@ -207,8 +207,8 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_reason_sender.send(reason);
     });
     serve_until_shutdown(serve, shutdown_reason).await?;
-    // A disconnected restore request may still be committing its stores.
-    // Graceful shutdown must let that operation finish before the runtime exits.
+    // Signal shutdown waits for detached restores. Update initiation excludes
+    // them before launching the updater, so its exit deadline is not extended.
     let _backup_guard = state.backup_lock.lock().await;
     drain_reading_sessions(&state).await;
 
@@ -616,6 +616,6 @@ fn build_app_state(
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         upload_lock: Arc::new(Mutex::new(())),
-        backup_lock: Arc::new(Mutex::new(())),
+        backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
     })
 }
