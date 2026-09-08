@@ -336,7 +336,11 @@ export function resolveProgressLocation(
 
   const savedTrack = tracks.find((track) => track.id === progress.trackId);
   if (savedTrack) {
-    const upperBound = savedTrack.durationSeconds ?? progress.positionSeconds;
+    // Older offline catalogues and imported files can carry zero when the
+    // duration could not be measured. Only a positive length bounds a seek.
+    const upperBound = savedTrack.durationSeconds !== null && savedTrack.durationSeconds > 0
+      ? savedTrack.durationSeconds
+      : progress.positionSeconds;
     return {
       trackId: savedTrack.id,
       positionSeconds: Math.max(0, Math.min(progress.positionSeconds, upperBound))
