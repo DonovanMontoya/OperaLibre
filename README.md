@@ -14,7 +14,7 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **Your files, your library.** Scans a folder of `.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff` files with rich tag, chapter, and cover-art extraction.
 - **A full player.** Seekable streaming, playback speed, sleep timer, 15/30-second skips, and OS-level media controls.
 - **Per-reader accounts.** Each reader gets their own progress, listening stats, reading log, and a durable completion history that survives a book being deleted or replaced.
-- **Read along.** Read an EPUB, PDF, or text companion beside the audio. Every EPUB follows the narration out of the box — the narrated sentence is highlighted, the page turns with the audio, and tapping a sentence plays from there — and an optional aligner replaces the estimated timings with a map aligned to the narration. Audible picture PDFs are told apart from the book and shown as extras.
+- **Read along.** Read an EPUB, PDF, or text companion beside the audio. EPUBs support chapter sync. Enable the server’s follow-along experiment and opt in on your device for sentence highlighting, automatic page turns, and sentence seeking. The optional aligner replaces estimated timings with a map aligned to the narration. Audible picture PDFs are told apart from the book and shown as extras.
 - **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
 - **CarPlay.** The iPhone app browses your shelf, downloads, and books in progress on the car screen and plays them there, from a library snapshot that works with the phone locked and the server out of reach.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/scri
 
 It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you, without a system-wide install or an administrator password. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
 
-The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experimental features**; normal playback and existing sync maps do not require it.
+The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experimental features**; normal playback and chapter sync remain available with it disabled. Disabling the experiment keeps existing sync maps but pauses sentence following until it is enabled again.
 
 For a headless machine, `--server-only` installs the server without the bundled web app and writes background start/stop helper scripts beside it.
 

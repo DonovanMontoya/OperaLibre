@@ -277,8 +277,8 @@ export type SyncPrecision = "sentence" | "estimated";
 
 /**
  * What a loaded sync map can drive: a sentence marker, or a soft estimate.
- * Maps carrying word timings still only drive the sentence marker — the
- * word-by-word marker was dropped as more distracting than it was worth.
+ * Word timings guide page turns within a sentence; the visible marker
+ * always highlights the whole sentence.
  */
 export function syncMapPrecision(map: SyncMap | null | undefined): SyncPrecision | null {
   if (!map || map.fragments.length === 0) return null;
@@ -297,11 +297,13 @@ export type ReadAlongMode = SyncPrecision | "chapter" | "text";
  */
 export function readAlongMode(
   book: Pick<Book, "readingFile" | "syncFile">,
-  map?: SyncMap | null
+  map?: SyncMap | null,
+  sentenceFollowAvailable = true
 ): ReadAlongMode | null {
   const file = book.readingFile;
   if (!file) return null;
   if (file.extension.toLowerCase() !== "epub") return "text";
+  if (!sentenceFollowAvailable) return "chapter";
   const precision = syncMapPrecision(map);
   if (precision) return precision;
   const source = book.syncFile?.source;

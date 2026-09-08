@@ -252,3 +252,10 @@ describe("is the remembered place on this page", () => {
     assert.equal(anchorOnPage("12", { start: "10", end: "20" }, throwing), false);
   });
 });
+
+it("disabled sentence experiment caps existing and cached EPUB maps at chapter sync", () => {
+  const book = { readingFile: { extension: "epub" }, syncFile: { source: "generated" } } as Parameters<typeof readAlongMode>[0];
+  assert.equal(readAlongMode(book, null, false), "chapter");
+  assert.equal(readAlongMode(book, { version: 1, precision: "sentence", fragments: [] }, false), "chapter");
+  assert.equal(readAlongMode(book, null, true), "sentence");
+});

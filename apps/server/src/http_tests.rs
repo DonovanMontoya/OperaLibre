@@ -3363,3 +3363,15 @@ async fn paged_books_keep_progress_gains_and_sharing_and_ignore_inaccessible_cur
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn readers_can_check_whether_sentence_following_is_enabled() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "listener").await;
+    let response = server.get("/api/alignment/status", &reader).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let status = response.json();
+    assert_eq!(status["enabled"], false);
+    assert!(status["cliPath"].is_null());
+}
