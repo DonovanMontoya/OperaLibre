@@ -1620,7 +1620,7 @@ exit 0
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
         upload_lock: super::Arc::new(super::Mutex::new(())),
-        backup_lock: super::Arc::new(super::Mutex::new(())),
+        backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),
     };
     (state, log_path)
 }

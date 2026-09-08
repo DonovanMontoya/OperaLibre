@@ -19,6 +19,23 @@ pub(crate) const MAX_BACKUP_BODY_BYTES: usize = 256 * 1024 * 1024;
 const BACKUP_KIND: &str = "operalibre-server-backup";
 const BACKUP_FORMAT_VERSION: u32 = 1;
 
+/// An update must exclude backups before the updater's exit deadline starts.
+#[derive(Default)]
+pub(crate) struct BackupLifecycle {
+    pub(crate) update_started: bool,
+}
+
+impl BackupLifecycle {
+    pub(crate) fn ensure_available(&self) -> Result<(), ApiError> {
+        if self.update_started {
+            return Err(ApiError::conflict(
+                "The server is restarting for an update. Retry after it restarts.",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ServerBackup {
@@ -86,6 +103,7 @@ pub(crate) async fn export_server_backup(
     _: OwnerUser,
 ) -> Result<Response, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
+    _backup_guard.ensure_available()?;
     let _state_guard = state.database.quiesce_state().await;
     let backup = build_backup(&state).await?;
     let contents = serde_json::to_vec_pretty(&backup)?;
@@ -128,6 +146,7 @@ async fn restore_server_backup(
     backup: ServerBackup,
 ) -> Result<Json<RestoreResult>, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
+    _backup_guard.ensure_available()?;
     // The identity index is rewritten below, and a scan running at the same
     // time would read the old index and write it back over the restored one.
     // Taken before the state gate: a scan holds the rescan lock while it

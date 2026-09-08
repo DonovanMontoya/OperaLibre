@@ -77,8 +77,8 @@ pub(crate) struct AppState {
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
-    /// Serializes backup snapshots and destructive restores.
-    pub(crate) backup_lock: Arc<Mutex<()>>,
+    /// Excludes backups and restores from the updater handoff through shutdown.
+    pub(crate) backup_lock: Arc<Mutex<BackupLifecycle>>,
 }
 
 /// Assemble the full application router.
@@ -520,14 +520,34 @@ pub(crate) async fn install_update(
     State(state): State<AppState>,
     _: OwnerUser,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
-    let started =
+    let started = prepare_update_handoff(&state.backup_lock, async {
         state.update_manager.install().await.map_err(|error| {
             ApiError::bad_request(format!("Could not install the update: {error}"))
-        })?;
+        })
+    })
+    .await?;
     // The updater waits for this process, so let `main` own the exit. That
     // runs the reading-session drain after this response has been accepted.
     let _ = state.shutdown.send(());
     Ok(Json(started))
+}
+
+async fn prepare_update_handoff(
+    backup_lock: &Mutex<BackupLifecycle>,
+    install: impl std::future::Future<Output = Result<updates::UpdateInstallStarted, ApiError>>,
+) -> Result<updates::UpdateInstallStarted, ApiError> {
+    let mut backup = backup_lock.try_lock().map_err(|_| {
+        ApiError::conflict(
+            "A backup or restore is in progress. Wait for it to finish before updating.",
+        )
+    })?;
+    backup.ensure_available()?;
+    // Hold exclusion throughout preparation, before the updater is launched.
+    // Failed or cancelled preparations release it; a successful launch prevents
+    // queued/new backups from starting during the bounded shutdown drain.
+    let started = install.await?;
+    backup.update_started = true;
+    Ok(started)
 }
 
 pub(crate) async fn frontend_update_status(
@@ -736,4 +756,82 @@ fn directory_size(path: &FsPath) -> u64 {
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+#[cfg(test)]
+mod update_handoff_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn active_restore_refuses_update_before_launching_the_updater() {
+        let lock = Mutex::new(BackupLifecycle::default());
+        let _restore = lock.lock().await;
+        let error = prepare_update_handoff(&lock, async {
+            panic!("must not start the updater while a restore owns the lock")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn failed_or_cancelled_update_preparation_allows_backups_again() {
+        let lock = Arc::new(Mutex::new(BackupLifecycle::default()));
+        assert!(
+            prepare_update_handoff(&lock, async {
+                Err(ApiError::bad_request("package preparation failed"))
+            })
+            .await
+            .is_err()
+        );
+        assert!(lock.lock().await.ensure_available().is_ok());
+
+        let (entered, preparing) = tokio::sync::oneshot::channel();
+        let task_lock = lock.clone();
+        let task = tokio::spawn(async move {
+            prepare_update_handoff(&task_lock, async {
+                entered.send(()).unwrap();
+                std::future::pending().await
+            })
+            .await
+        });
+        preparing.await.unwrap();
+        assert!(lock.try_lock().is_err());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(lock.lock().await.ensure_available().is_ok());
+    }
+
+    #[tokio::test]
+    async fn successful_update_rejects_backups_waiting_during_preparation() {
+        let lock = Arc::new(Mutex::new(BackupLifecycle::default()));
+        let (entered, preparing) = tokio::sync::oneshot::channel();
+        let (launch, ready_to_launch) = tokio::sync::oneshot::channel();
+        let task_lock = lock.clone();
+        let task = tokio::spawn(async move {
+            prepare_update_handoff(&task_lock, async {
+                entered.send(()).unwrap();
+                ready_to_launch.await.unwrap();
+                Ok(updates::UpdateInstallStarted {
+                    version: "1.2.3".into(),
+                    restarting: true,
+                })
+            })
+            .await
+        });
+        preparing.await.unwrap();
+        let backup = lock.lock();
+        tokio::pin!(backup);
+        tokio::select! {
+            biased;
+            _ = &mut backup => panic!("backup acquired exclusion during preparation"),
+            _ = std::future::ready(()) => {}
+        }
+        launch.send(()).unwrap();
+        assert!(task.await.unwrap().unwrap().restarting);
+        let error = backup.await.ensure_available().unwrap_err();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        // Shutdown can acquire the lock immediately; no restore is active.
+        assert!(lock.try_lock().is_ok());
+    }
 }
