@@ -214,7 +214,13 @@ OperaLibre can be used as a client for an existing Jellyfin audiobook library; n
 2. Enter the Jellyfin address. The common local address is `http://localhost:8096`; on a phone, use the server’s LAN address instead.
 3. Sign in with a normal Jellyfin user account.
 
-In Jellyfin mode, OperaLibre lists and streams audiobooks, groups multi-file albums, shows cover art and chapters, and syncs resume position with Jellyfin. OperaLibre-only administration, uploading, Libation, metadata editing, readalong, and the reader ledger are not available in this mode.
+In Jellyfin mode, OperaLibre lists and streams audiobooks, groups multi-file albums, shows cover art and chapters, and syncs resume position with Jellyfin. Playback speed, sleep timers, and local volume adjustment remain available. OperaLibre-only administration, uploading, Libation, metadata editing, server readalong, and the reader ledger are not available in this mode.
+
+Use a **Books** library in Jellyfin and give your account access to it. Audiobooks stored as music are not included. Audio streams use the original file: the browser or device must support its format; OperaLibre does not currently negotiate Jellyfin transcoding.
+
+When your Jellyfin account permits downloads, iOS and Android offer offline audio downloads. The web app offers **Download tracks** with individual file links; it does not create a book ZIP or an offline web library. Download permission also applies to Jellyfin administrators. A previously cached account with unknown permission needs an online sign-in refresh before new downloads are offered; existing offline copies remain available.
+
+Audiobookshelf is not yet a supported server connection in these apps. OperaLibre's `/abs` endpoints serve compatible clients connecting to an OperaLibre server.
 
 ## macOS app
 

@@ -1,3 +1,5 @@
+import { createPlaybackReporter } from "./playbackReporting";
+import type { ServerBackend, ProgressWrite, ProgressWriteOptions } from "./serverBackend";
 import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import type {
@@ -37,6 +39,7 @@ import {
   pingJellyfin,
   refreshJellyfinProgress,
   reportJellyfinPlaybackStart,
+  reportJellyfinPlaybackStop,
   saveJellyfinProgress,
   setJellyfinBookCompletion
 } from "./jellyfin";
@@ -497,7 +500,14 @@ type RequestOptions = RequestInit & {
   ignoreUnauthorized?: boolean;
 };
 
+function requireOperaLibreServer() {
+  if (getServerType() !== "operalibre") {
+    throw new ApiError("This feature requires an OperaLibre server.", 400);
+  }
+}
+
 async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30_000): Promise<T> {
+  requireOperaLibreServer();
   const { ignoreUnauthorized = false, ...init } = options ?? {};
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && init?.body && !(init.body instanceof FormData)) {
@@ -578,37 +588,17 @@ export async function setupAdmin(username: string, password: string, setupToken?
 }
 
 export async function login(username: string, password: string) {
-  if (getServerType() === "jellyfin") {
-    return loginToJellyfin(currentApiBase(), username, password);
-  }
-  return request<LoginResponse>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ username, password })
-  });
+  return currentBackend().login(username, password);
 }
 
 export async function logout() {
   if (isDemoMode()) return { ok: true };
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (token) {
-      await logoutFromJellyfin(currentApiBase(), token);
-    }
-    return { ok: true };
-  }
-  return request<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
+  return currentBackend().logout();
 }
 
 export async function getMe() {
   if (isDemoMode()) return DEMO_USER;
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      throw new ApiError("Not signed in.", 401);
-    }
-    return getJellyfinUser(currentApiBase(), token);
-  }
-  return request<AuthUser>("/api/auth/me");
+  return currentBackend().user();
 }
 
 export async function getProfileStats() {
@@ -696,6 +686,7 @@ function authenticatedHeaders(headers?: HeadersInit) {
 }
 
 export async function downloadServerBackup(): Promise<{ blob: Blob; filename: string }> {
+  requireOperaLibreServer();
   const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     headers: authenticatedHeaders(),
     cache: "no-store",
@@ -718,6 +709,7 @@ export async function downloadServerBackup(): Promise<{ blob: Blob; filename: st
 }
 
 export async function restoreServerBackup(file: File): Promise<ServerRestoreResult> {
+  requireOperaLibreServer();
   const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     method: "POST",
     headers: authenticatedHeaders({ "Content-Type": "application/json" }),
@@ -870,16 +862,7 @@ export async function changePassword(
 
 export async function getBooks() {
   if (isDemoMode()) return getDemoBooks();
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      throw new ApiError("Not signed in.", 401);
-    }
-    return getJellyfinBooks(currentApiBase(), token);
-  }
-  // Library loading is part of native startup. Fail promptly so MainApp can
-  // show its cached library instead of waiting on an unreachable VPN route.
-  return request<Book[]>("/api/books", undefined, STARTUP_TIMEOUT_MS);
+  return currentBackend().books();
 }
 
 export async function updateBookMetadata(bookId: string, metadata: BookMetadataUpdate) {
@@ -897,24 +880,7 @@ export async function setBookCompletion(
   if (isDemoMode()) {
     return setDemoBookCompletion(book, finished, finalProgress);
   }
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      throw new ApiError("Not signed in.", 401);
-    }
-    return setJellyfinBookCompletion(currentApiBase(), token, book, finished, finalProgress);
-  }
-  return request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
-    method: "PUT",
-    body: JSON.stringify({
-      finished,
-      ...finalProgress,
-      // Only the player reaching the end creates a dated completion. The
-      // manual button sends status alone, because it says nothing about when
-      // the book was actually read.
-      ...(finalProgress ? { tzOffsetMinutes: tzOffsetMinutes() } : {})
-    })
-  });
+  return currentBackend().completion(book, finished, finalProgress);
 }
 
 /**
@@ -966,56 +932,21 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
  */
 export async function getProgress(bookId: string, timeoutMs?: number) {
   if (isDemoMode()) return getDemoProgress(bookId);
-  if (getServerType() === "jellyfin") {
-    return getCachedJellyfinProgress(bookId);
-  }
-  return request<Progress | null>(
-    `/api/books/${encodeURIComponent(bookId)}/progress`,
-    undefined,
-    timeoutMs
-  );
+  return currentBackend().progress(bookId, timeoutMs);
 }
 
-/**
- * Foreground adoption asks the backend for the truth right now, so it cannot
- * settle for Jellyfin's library-fetch cache the way `getProgress` does — a
- * stale cached copy is exactly the position it is trying to move off.
- */
+/** Foreground adoption must read the backend now, not its library cache. */
 export async function getFreshProgress(book: Book, timeoutMs?: number) {
   if (isDemoMode()) return getDemoProgress(book.id);
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      throw new ApiError("Not signed in.", 401);
-    }
-    return refreshJellyfinProgress(currentApiBase(), token, book, timeoutMs);
-  }
-  return request<Progress | null>(
-    `/api/books/${encodeURIComponent(book.id)}/progress`,
-    undefined,
-    timeoutMs
-  );
+  return currentBackend().freshProgress(book, timeoutMs);
 }
 
-export async function saveProgress(
-  bookId: string,
-  progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
-    & Partial<Pick<Progress, "updatedAt">>,
-  options?: {
-    isPaused?: boolean;
-    intentionalRegression?: boolean;
-    intentionalSeek?: boolean;
-    signal?: AbortSignal;
-  }
-) {
+export async function saveProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
   if (isDemoMode()) return saveDemoProgress(bookId, progress);
-  if (getServerType() === "jellyfin") {
-    const token = getStoredToken();
-    if (!token) {
-      throw new ApiError("Not signed in.", 401);
-    }
-    return saveJellyfinProgress(currentApiBase(), token, bookId, progress, options?.isPaused);
-  }
+  return currentBackend().saveProgress(bookId, progress, options);
+}
+
+async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, options?: ProgressWriteOptions) {
   // The server keeps the copy with the newest client timestamp; sending it
   // lets a replayed offline checkpoint be rejected instead of rolling back
   // progress another device saved more recently. intentionalRegression marks
@@ -1164,17 +1095,13 @@ function appendMediaToken(path: string) {
 
 export function mediaUrl(path: string) {
   if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
-  return `${currentApiBase()}${
-    getServerType() === "jellyfin"
-      ? jellyfinMediaPath(path, getStoredMediaToken())
-      : appendMediaToken(path)
-  }`;
+  return `${currentApiBase()}${currentBackend().mediaPath(path)}`;
 }
 
 export function bookDownloadUrl(bookId: string) {
   if (isDemoMode()) return "#";
-  if (getServerType() === "jellyfin") {
-    return mediaUrl(`/Items/${encodeURIComponent(bookId)}/Download`);
+  if (getServerType() !== "operalibre") {
+    throw new ApiError("This server supports individual track downloads, not book archives.", 400);
   }
   return `${currentApiBase()}${appendMediaToken(`/api/books/${encodeURIComponent(bookId)}/download`)}`;
 }
@@ -1186,17 +1113,92 @@ export async function deleteDownloadedBook(bookId: string) {
 }
 
 export function readalongUrl(path: string) {
-  if (isDemoMode() && isDemoMediaPath(path)) return demoMediaUrl(path);
-  return `${currentApiBase()}${appendMediaToken(path)}`;
+  return mediaUrl(path);
 }
 
-export async function reportPlaybackStarted(itemId: string, positionSeconds: number) {
-  if (getServerType() !== "jellyfin") {
-    return;
-  }
+let playbackReporterContext: {
+  base: string;
+  token: string;
+  reporter: ReturnType<typeof createPlaybackReporter>;
+} | null = null;
+
+/** Capture credentials now: cleanup must never report an old track to a new server. */
+export function playbackReportingSession(itemId: string) {
+  if (isDemoMode() || isLocalMode() || getServerType() !== "jellyfin") return null;
+  const base = currentApiBase();
   const token = getStoredToken();
-  if (!token) {
-    return;
+  if (!token) return null;
+  const reporter = jellyfinPlaybackReporter(base, token);
+  return {
+    start: (position: number) => reporter.start(itemId, position).catch(() => undefined),
+    stop: (position: number) => reporter.stop(itemId, position).catch(() => undefined)
+  };
+}
+
+function jellyfinPlaybackReporter(base: string, token: string) {
+  if (playbackReporterContext?.base !== base || playbackReporterContext?.token !== token) {
+    playbackReporterContext = {
+      base, token,
+      reporter: createPlaybackReporter((event, id, position) => event === "start"
+        ? reportJellyfinPlaybackStart(base, token, id, position)
+        : reportJellyfinPlaybackStop(base, token, id, position))
+    };
   }
-  await reportJellyfinPlaybackStart(currentApiBase(), token, itemId, positionSeconds);
+  return playbackReporterContext.reporter;
+}
+
+function jellyfinToken() {
+  const token = getStoredToken();
+  if (!token) throw new ApiError("Not signed in.", 401);
+  return token;
+}
+
+const serverBackends: Record<ServerType, ServerBackend> = {
+  operalibre: {
+    login: (username, password) => request<LoginResponse>("/api/auth/login", {
+      method: "POST", body: JSON.stringify({ username, password })
+    }),
+    logout: () => request("/api/auth/logout", { method: "POST" }),
+    user: () => request<AuthUser>("/api/auth/me"),
+    // Startup falls back to cached books promptly when a server is unreachable.
+    books: () => request<Book[]>("/api/books", undefined, STARTUP_TIMEOUT_MS),
+    progress: (id, timeout) => request<Progress | null>(`/api/books/${encodeURIComponent(id)}/progress`, undefined, timeout),
+    freshProgress: (book, timeout) => serverBackends.operalibre.progress(book.id, timeout),
+    saveProgress: saveOperaLibreProgress,
+    completion: (book, finished, progress) => request<BookProgress>(`/api/books/${encodeURIComponent(book.id)}/completion`, {
+      method: "PUT",
+      // Only natural completion supplies progress and creates a dated reading event.
+      body: JSON.stringify({ finished, ...progress, ...(progress ? { tzOffsetMinutes: tzOffsetMinutes() } : {}) })
+    }),
+    mediaPath: appendMediaToken
+  },
+  jellyfin: {
+    login: (username, password) => loginToJellyfin(currentApiBase(), username, password),
+    logout: async () => {
+      const token = getStoredToken();
+      if (token) await logoutFromJellyfin(currentApiBase(), token);
+      return { ok: true };
+    },
+    user: () => getJellyfinUser(currentApiBase(), jellyfinToken()),
+    books: () => getJellyfinBooks(currentApiBase(), jellyfinToken()),
+    progress: async (id) => getCachedJellyfinProgress(id),
+    freshProgress: (book, timeout) => refreshJellyfinProgress(currentApiBase(), jellyfinToken(), book, timeout),
+    saveProgress: (id, progress, options) => {
+      const base = currentApiBase();
+      const token = jellyfinToken();
+      return jellyfinPlaybackReporter(base, token).write(() =>
+        saveJellyfinProgress(base, token, id, progress, options?.isPaused, options?.signal));
+    },
+    completion: (book, finished, progress) => {
+      const base = currentApiBase();
+      const token = jellyfinToken();
+      return jellyfinPlaybackReporter(base, token).write(() =>
+        setJellyfinBookCompletion(base, token, book, finished, progress));
+    },
+    mediaPath: (path) => jellyfinMediaPath(path, getStoredMediaToken())
+  }
+};
+
+function currentBackend(): ServerBackend {
+  return serverBackends[getServerType()];
 }

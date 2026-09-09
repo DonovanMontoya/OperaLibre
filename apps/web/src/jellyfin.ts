@@ -12,6 +12,7 @@ async function fetchWithTimeout(url: string, init?: RequestInit) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const abort = () => controller.abort();
+  if (init?.signal?.aborted) controller.abort();
   init?.signal?.addEventListener("abort", abort, { once: true });
   try {
     return await fetch(url, { ...init, signal: controller.signal });
@@ -25,7 +26,7 @@ type JellyfinUser = {
   Id?: string;
   Name?: string | null;
   LastLoginDate?: string | null;
-  Policy?: { IsAdministrator?: boolean };
+  Policy?: { IsAdministrator?: boolean; EnableContentDownloading?: boolean };
 };
 
 type JellyfinUserData = {
@@ -149,7 +150,9 @@ function seconds(ticks: number | null | undefined) {
 }
 
 function ticks(value: number | null | undefined) {
-  return Math.max(0, Math.round((value ?? 0) * TICKS_PER_SECOND));
+  const result = Math.round((value ?? 0) * TICKS_PER_SECOND);
+  if (!Number.isFinite(result)) throw new Error("Playback position must be finite.");
+  return Math.max(0, result);
 }
 
 function mapUser(user: JellyfinUser): AuthUser {
@@ -161,6 +164,7 @@ function mapUser(user: JellyfinUser): AuthUser {
     username: user.Name,
     isAdmin: user.Policy?.IsAdministrator ?? false,
     isOwner: false,
+    canDownload: user.Policy?.EnableContentDownloading === true,
     canApproveLibationRequests: false,
     allowedBookIds: null,
     libationAccess: "approval",
@@ -439,6 +443,7 @@ export async function getJellyfinBooks(baseUrl: string, token: string) {
     includeItemTypes: "AudioBook",
     fields: [
       "Path",
+      "MediaSources",
       "Overview",
       "Genres",
       "People",
@@ -529,9 +534,11 @@ export async function saveJellyfinProgress(
   token: string,
   bookId: string,
   progress: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">,
-  isPaused = false
+  isPaused = false,
+  signal?: AbortSignal
 ) {
   await jellyfinRequest<void>(baseUrl, "/Sessions/Playing/Progress", token, {
+    signal,
     method: "POST",
     body: JSON.stringify({
       ItemId: progress.trackId,
@@ -608,4 +615,12 @@ export function jellyfinMediaPath(path: string, token: string | null) {
   }
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}api_key=${encodeURIComponent(token)}`;
+}
+
+export async function reportJellyfinPlaybackStop(baseUrl: string, token: string, itemId: string, positionSeconds: number) {
+  await jellyfinRequest<void>(baseUrl, "/Sessions/Playing/Stopped", token, {
+    method: "POST",
+    // Omitting PositionTicks makes Jellyfin assume the whole item was played.
+    body: JSON.stringify({ ItemId: itemId, PositionTicks: ticks(positionSeconds) })
+  });
 }
