@@ -12310,3 +12310,17 @@ html.native-app .recent-row {
 .rivalry-symbol { font-size: 24px; color: var(--ink-faded); }
 @media (max-width: 700px) { .achievement-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .achievement-card { padding: 14px; } }
 @media (max-width: 420px) { .achievements-heading { align-items: flex-start; } .achievement-tally > strong { font-size: 28px; } .achievement-tally > span { max-width: 80px; } .achievement-card-top { flex-wrap: wrap; } .ledger-rivalries { padding: 16px; } }
+
+/* Jellyfin serves tracks individually; keep long books out of the action row. */
+.track-downloads { position: relative; }
+.track-downloads summary { cursor: pointer; list-style: none; }
+.track-downloads summary::-webkit-details-marker { display: none; }
+.track-downloads ul {
+  max-height: 12rem;
+  max-width: 22rem;
+  overflow-y: auto;
+  margin: .5rem 0;
+  padding-left: 1.25rem;
+}
+.track-downloads li { margin: .35rem 0; overflow-wrap: anywhere; }
+.track-downloads a { color: inherit; }
