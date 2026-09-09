@@ -126,6 +126,7 @@ pub(crate) fn build_router(
         .route("/api/opds", get(opds_root))
         .route("/api/opds/books", get(opds_books))
         // The Audiobookshelf-shaped surface those clients actually use.
+        .route("/abs/logout", post(logout))
         .route("/abs/api/me", get(abs_me))
         .route("/abs/api/libraries", get(abs_libraries))
         .route(
