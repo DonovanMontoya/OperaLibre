@@ -1895,6 +1895,9 @@ async fn an_audiobookshelf_client_can_sign_in_and_browse() {
     let libraries = server.get("/abs/api/libraries", &token).await.json();
     assert_eq!(libraries["libraries"][0]["id"], super::ABS_LIBRARY_ID);
     assert_eq!(libraries["libraries"][0]["mediaType"], "book");
+    assert_eq!(libraries["libraries"][0]["folders"], serde_json::json!([]));
+    assert_eq!(libraries["libraries"][0]["displayOrder"], 1);
+    assert_eq!(libraries["libraries"][0]["icon"], "audiobookshelf");
 
     let items = server
         .get(
@@ -2079,6 +2082,12 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
     assert!((listed["progress"].as_f64().unwrap() - 0.7).abs() < 0.01);
     assert!((listed["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(listed["isFinished"], true);
+    assert_eq!(
+        listed["userMediaProgress"]["currentTime"],
+        listed["currentTime"]
+    );
+    assert_eq!(listed["userMediaProgress"]["progress"], listed["progress"]);
+    assert_eq!(listed["userMediaProgress"]["isFinished"], true);
 
     let detailed = server
         .get(&format!("/abs/api/items/{book}"), &token)
@@ -3374,4 +3383,110 @@ async fn readers_can_check_whether_sentence_following_is_enabled() {
     let status = response.json();
     assert_eq!(status["enabled"], false);
     assert!(status["cliPath"].is_null());
+}
+
+#[tokio::test]
+async fn audiobookshelf_metadata_uses_the_clients_nested_fields() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    {
+        let mut library = server.state.library.write().await;
+        let book = &mut library.books[0];
+        book.author = Some("Test Author".into());
+        book.narrator = Some("Test Narrator".into());
+        book.metadata.series = Some("Test Series".into());
+        book.metadata.series_position = Some("2.5".into());
+        book.tags = vec![BookTag {
+            name: "Favorite".into(),
+            position: None,
+        }];
+    }
+    let items = server
+        .get("/abs/api/libraries/operalibre/items", &token)
+        .await
+        .json();
+    let item = &items["results"][0];
+    assert_eq!(item["media"]["metadata"]["series"][0]["id"], "Test Series");
+    assert_eq!(item["media"]["metadata"]["series"][0]["sequence"], "2.5");
+    assert_eq!(
+        item["media"]["metadata"]["authors"][0]["name"],
+        "Test Author"
+    );
+    assert_eq!(item["media"]["metadata"]["narrators"][0], "Test Narrator");
+    assert_eq!(item["media"]["tags"], serde_json::json!(["Favorite"]));
+    let facets = server
+        .get("/abs/api/libraries/operalibre/filterdata", &token)
+        .await
+        .json();
+    assert_eq!(
+        facets["series"][0]["id"],
+        item["media"]["metadata"]["series"][0]["id"]
+    );
+    let filter = general_purpose::STANDARD.encode("Test Series");
+    let filtered = server
+        .get(
+            &format!("/abs/api/libraries/operalibre/items?filter=series.{filter}"),
+            &token,
+        )
+        .await
+        .json();
+    assert_eq!(filtered["total"], 1);
+    let logout = server
+        .send_json("POST", "/abs/logout", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(logout.status, StatusCode::OK);
+    assert_eq!(
+        server.get("/abs/api/libraries", &token).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// Run on macOS with a checkout of BookPlayer. The external harness compiles
+/// its upstream decoders, then talks to this real, isolated HTTP listener.
+#[tokio::test]
+#[ignore = "requires Swift and BOOKPLAYER_CHECKOUT; see script/test-bookplayer-compat.py"]
+async fn bookplayer_live_contract() {
+    let checkout = std::env::var("BOOKPLAYER_CHECKOUT").expect("set BOOKPLAYER_CHECKOUT");
+    let server = TestServer::start(2).await;
+    server.setup_owner().await;
+    {
+        let mut library = server.state.library.write().await;
+        for book in &mut library.books {
+            book.metadata.series = Some("Test Series".into());
+            book.metadata.series_position = Some("2.5".into());
+            book.tags = vec![BookTag {
+                name: "Favorite".into(),
+                position: None,
+            }];
+        }
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = server.router.clone();
+    let serving = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let result = tokio::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../script/test-bookplayer-compat.py"
+        ))
+        .arg(checkout)
+        .arg(format!("http://{address}/abs"))
+        .output()
+        .await
+        .unwrap();
+    serving.abort();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&result.stdout));
 }
