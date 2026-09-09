@@ -1,4 +1,5 @@
 type WakeLockSentinelLike = {
+  readonly released: boolean;
   release(): Promise<void>;
   addEventListener(type: "release", listener: () => void, options?: AddEventListenerOptions): void;
 };
@@ -18,6 +19,7 @@ export function createScreenAwakeController(
   let disposed = false;
   let sentinel: WakeLockSentinelLike | null = null;
   let requestPending = false;
+  let reacquireAfterPending = false;
 
   const acquire = async () => {
     if (
@@ -34,7 +36,12 @@ export function createScreenAwakeController(
     requestPending = true;
     try {
       const acquired = await wakeLock.request("screen");
-      if (disposed || !readingActive) {
+      if (
+        disposed
+        || !readingActive
+        || documentRef.visibilityState !== "visible"
+        || acquired.released
+      ) {
         await acquired.release();
         return;
       }
@@ -46,6 +53,10 @@ export function createScreenAwakeController(
       // Wake lock is optional and can be denied by the OS or browser.
     } finally {
       requestPending = false;
+      if (reacquireAfterPending) {
+        reacquireAfterPending = false;
+        void acquire();
+      }
     }
   };
 
@@ -56,7 +67,10 @@ export function createScreenAwakeController(
   };
 
   const handleVisibilityChange = () => {
-    if (documentRef.visibilityState === "visible") void acquire();
+    if (documentRef.visibilityState === "visible") {
+      if (requestPending) reacquireAfterPending = true;
+      else void acquire();
+    }
     else release();
   };
   documentRef.addEventListener("visibilitychange", handleVisibilityChange);
