@@ -20,6 +20,7 @@ function fixture() {
       assert.equal(type, "screen");
       requests += 1;
       return {
+        released: false,
         async release() { releases += 1; },
         addEventListener() {}
       };
@@ -80,5 +81,30 @@ test("releases in the background and reacquires when reading resumes", async () 
   state.setVisibility("visible");
   await settle();
   assert.deepEqual(state.counts(), { requests: 2, releases: 1 });
+  controller.dispose();
+});
+
+test("does not retain a wake lock that resolves after the reader is hidden", async () => {
+  const state = fixture();
+  let resolveRequest: ((sentinel: {
+    released: boolean;
+    release(): Promise<void>;
+    addEventListener(): void;
+  }) => void) | null = null;
+  let releases = 0;
+  const controller = createScreenAwakeController(state.documentRef, {
+    request: () => new Promise((resolve) => { resolveRequest = resolve; })
+  });
+
+  controller.setReadingActive(true);
+  state.setVisibility("hidden");
+  resolveRequest?.({
+    released: false,
+    async release() { releases += 1; },
+    addEventListener() {}
+  });
+  await settle();
+
+  assert.equal(releases, 1);
   controller.dispose();
 });
