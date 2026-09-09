@@ -92,7 +92,7 @@ export function readingAchievements(
       title,
       `Finish ${target === 1 ? "your first book" : `${target} books`}.`,
       "Milestones",
-      stats.booksFinished,
+      finished.length,
       target,
       "books"
     );
