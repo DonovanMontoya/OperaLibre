@@ -1,18 +1,29 @@
 import { ArrowLeft, Headphones } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { getProfileStats, mediaUrl } from "./api";
+import { getProfileStats, getServerStorageKey, isNetworkError, mediaUrl } from "./api";
+import { Achievements } from "./Achievements";
+import { readingStatus } from "./bookProgress";
+import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
+import {
+  deriveDeviceProfileStats,
+  readCachedProfileStats,
+  writeCachedProfileStats
+} from "./profileCache";
 import { ProgressSharingCard } from "./ProgressSharing";
 import { progressTimestamp, splitRoundedHours } from "./reliability";
-import type { AuthUser, ProfileRecentBook, ProfileStats, StreakDay } from "./types";
+import type { AuthUser, Book, ProfileRecentBook, ProfileStats, StreakDay } from "./types";
 
 type ProfilePageProps = {
   user: AuthUser;
+  books: Book[];
   onClose: () => void;
   onOpenBook: (bookId: string) => void;
   onUserChanged: (user: AuthUser) => void;
   onSharingChanged: () => void;
   /** Jellyfin has no shared-progress concept, so the control is hidden there. */
   sharingAvailable: boolean;
+  /** A device-only library has no profile endpoint, so its ledger uses local progress. */
+  deviceOnly?: boolean;
 };
 
 function relativeTime(value: string | null) {
@@ -55,26 +66,69 @@ function measuringSinceLabel(value: string | null) {
 
 export function ProfilePage({
   user,
+  books,
   onClose,
   onOpenBook,
   onUserChanged,
   onSharingChanged,
-  sharingAvailable
+  sharingAvailable,
+  deviceOnly = false
 }: ProfilePageProps) {
-  const [stats, setStats] = useState<ProfileStats | null>(null);
+  const serverScope = getServerStorageKey();
+  const [initialSnapshot] = useState(() =>
+    readCachedProfileStats(window.localStorage, serverScope, user.id)
+  );
+  const [stats, setStats] = useState<ProfileStats | null>(initialSnapshot?.stats ?? null);
+  const [cachedAt, setCachedAt] = useState<string | null>(initialSnapshot?.cachedAt ?? null);
+  const [offlineSource, setOfflineSource] = useState<"cache" | "device" | null>(
+    deviceOnly ? "device" : null
+  );
+  const [refreshRequest, setRefreshRequest] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialSnapshot);
+
+  useEffect(() => {
+    if (deviceOnly) return;
+    const refresh = () => setRefreshRequest((request) => request + 1);
+    window.addEventListener("online", refresh);
+    return () => window.removeEventListener("online", refresh);
+  }, [deviceOnly]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (deviceOnly) {
+      setLoading(false);
+      setError(null);
+      setOfflineSource("device");
+      return () => {
+        cancelled = true;
+      };
+    }
+    const cached = readCachedProfileStats(window.localStorage, serverScope, user.id);
+    setStats(cached?.stats ?? null);
+    setCachedAt(cached?.cachedAt ?? null);
+    setLoading(!cached);
     setError(null);
     getProfileStats()
       .then((next) => {
-        if (!cancelled) setStats(next);
+        if (cancelled) return;
+        const snapshot = writeCachedProfileStats(
+          window.localStorage,
+          serverScope,
+          user.id,
+          next
+        );
+        setStats(next);
+        setCachedAt(snapshot.cachedAt);
+        setOfflineSource(null);
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (cached && isNetworkError(err)) {
+          setOfflineSource("cache");
+        } else if (isNetworkError(err)) {
+          setOfflineSource("device");
+        } else {
           setError(err instanceof Error ? err.message : "Could not load profile.");
         }
       })
@@ -84,24 +138,32 @@ export function ProfilePage({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [deviceOnly, refreshRequest, serverScope, user.id]);
+
+  const deviceStats = useMemo(() => deriveDeviceProfileStats(books), [books]);
+  const displayedStats = offlineSource === "device" ? deviceStats : stats;
 
   const monogram = user.username.slice(0, 1).toUpperCase();
 
   const weeks = useMemo<StreakDay[][]>(() => {
-    if (!stats) return [];
-    const days = [...stats.streakCalendar];
+    if (!displayedStats) return [];
+    const days = [...displayedStats.streakCalendar];
     const columns: StreakDay[][] = [];
     for (let i = 0; i < days.length; i += 7) {
       columns.push(days.slice(i, i + 7));
     }
     return columns;
-  }, [stats]);
+  }, [displayedStats]);
 
   const joined = joinDate(user.createdAt);
-  const lastSeen = stats ? relativeTime(stats.lastListenedAt) : null;
-  const hours = stats ? splitRoundedHours(stats.totalHoursRead) : { whole: "0", minutes: 0 };
-  const measuringSince = stats ? measuringSinceLabel(stats.measuringSince) : null;
+  const lastSeen = displayedStats ? relativeTime(displayedStats.lastListenedAt) : null;
+  const hours = displayedStats
+    ? splitRoundedHours(displayedStats.totalHoursRead)
+    : { whole: "0", minutes: 0 };
+  const measuringSince = displayedStats
+    ? measuringSinceLabel(displayedStats.measuringSince)
+    : null;
+  const deviceInProgress = books.filter((book) => readingStatus(book) === "inProgress").length;
 
   return (
     <main className="profile-shell" onClick={onClose}>
@@ -118,8 +180,15 @@ export function ProfilePage({
         <p className="profile-status">Loading…</p>
       ) : error ? (
         <p className="profile-status error">{error}</p>
-      ) : stats ? (
+      ) : displayedStats ? (
         <>
+          {offlineSource ? (
+            <p className="profile-status profile-offline-status" role="status">
+              {offlineSource === "cache"
+                ? `Offline · last synced ${relativeTime(cachedAt) ?? "previously"}`
+                : `${deviceOnly ? "On-device" : "Offline"} ledger · based on progress saved here`}
+            </p>
+          ) : null}
           <header className="profile-head">
             <div className="profile-mono" aria-hidden="true">{monogram}</div>
             <div className="profile-id">
@@ -145,39 +214,67 @@ export function ProfilePage({
                 </span>
               </span>
               <span className="headline-label">
-                {measuringSince ? `Listened since ${measuringSince}` : "Listened, all time"}
+                {offlineSource === "device"
+                  ? "Progress saved on this device"
+                  : measuringSince
+                    ? `Listened since ${measuringSince}`
+                    : "Listened, all time"}
               </span>
             </div>
             <dl className="headline-secondary">
               <div>
                 <dt>Books finished</dt>
-                <dd>{stats.booksFinished}</dd>
+                <dd>{displayedStats.booksFinished}</dd>
               </div>
-              <div>
-                <dt>Current streak</dt>
-                <dd>
-                  {stats.currentStreakDays}
-                  <span className="dd-unit">d</span>
-                </dd>
-              </div>
-              <div>
-                <dt>Longest streak</dt>
-                <dd>
-                  {stats.longestStreakDays}
-                  <span className="dd-unit">d</span>
-                </dd>
-              </div>
-              <div>
-                <dt>Per active day</dt>
-                <dd>
-                  {Math.round(stats.avgDailyMinutes)}
-                  <span className="dd-unit">m</span>
-                </dd>
-              </div>
+              {offlineSource === "device" ? (
+                <>
+                  <div>
+                    <dt>In progress</dt>
+                    <dd>{deviceInProgress}</dd>
+                  </div>
+                  <div>
+                    <dt>Books on shelf</dt>
+                    <dd>{books.length}</dd>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <dt>Current streak</dt>
+                    <dd>
+                      {displayedStats.currentStreakDays}
+                      <span className="dd-unit">d</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Longest streak</dt>
+                    <dd>
+                      {displayedStats.longestStreakDays}
+                      <span className="dd-unit">d</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Per active day</dt>
+                    <dd>
+                      {Math.round(displayedStats.avgDailyMinutes)}
+                      <span className="dd-unit">m</span>
+                    </dd>
+                  </div>
+                </>
+              )}
             </dl>
           </section>
 
-          <section className="profile-calendar">
+          <Achievements
+            books={books}
+            stats={displayedStats}
+            user={user}
+            onOpenBook={onOpenBook}
+            includeDeviceBooks={offlineSource === "device"}
+            rivalriesAvailable={offlineSource === null}
+          />
+
+          {offlineSource !== "device" ? <section className="profile-calendar">
             <header>
               <h2>Listening</h2>
               <span>Last 8 weeks</span>
@@ -210,33 +307,38 @@ export function ProfilePage({
                 ))}
               </div>
             </div>
-          </section>
+          </section> : null}
 
-          {(stats.favoriteNarrator || stats.favoriteGenre) && (
+          {(displayedStats.favoriteNarrator || displayedStats.favoriteGenre) && (
             <section className="profile-favorites">
-              {stats.favoriteNarrator ? (
+              {displayedStats.favoriteNarrator ? (
                 <div>
                   <span>Most-listened narrator</span>
-                  <strong>{stats.favoriteNarrator}</strong>
+                  <strong>{displayedStats.favoriteNarrator}</strong>
                 </div>
               ) : null}
-              {stats.favoriteGenre ? (
+              {displayedStats.favoriteGenre ? (
                 <div>
                   <span>Most-listened genre</span>
-                  <strong>{stats.favoriteGenre}</strong>
+                  <strong>{displayedStats.favoriteGenre}</strong>
                 </div>
               ) : null}
             </section>
           )}
 
-          {stats.recentBooks.length > 0 ? (
+          {displayedStats.recentBooks.length > 0 ? (
             <section className="profile-recent">
               <header>
                 <h2>Recent</h2>
               </header>
               <ul>
-                {stats.recentBooks.map((book) => (
-                  <RecentRow key={book.id} book={book} onOpen={() => onOpenBook(book.id)} />
+                {displayedStats.recentBooks.map((book) => (
+                  <RecentRow
+                    key={book.id}
+                    book={book}
+                    cachedBook={books.find((candidate) => candidate.id === book.id)}
+                    onOpen={() => onOpenBook(book.id)}
+                  />
                 ))}
               </ul>
             </section>
@@ -256,7 +358,34 @@ export function ProfilePage({
   );
 }
 
-function RecentRow({ book, onOpen }: { book: ProfileRecentBook; onOpen: () => void }) {
+function RecentRow({
+  book,
+  cachedBook,
+  onOpen
+}: {
+  book: ProfileRecentBook;
+  cachedBook?: Book;
+  onOpen: () => void;
+}) {
+  const [offlineCoverUrl, setOfflineCoverUrl] = useState<string | null>(null);
+  const [coverFailed, setCoverFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    let resolvedUrl: string | null = null;
+    setCoverFailed(false);
+    if (cachedBook) {
+      void getOfflineCoverUrl(cachedBook).then((url) => {
+        resolvedUrl = url;
+        if (active) setOfflineCoverUrl(url);
+        else releaseOfflineMediaUrl(url);
+      }).catch(() => undefined);
+    }
+    return () => {
+      active = false;
+      releaseOfflineMediaUrl(resolvedUrl);
+    };
+  }, [cachedBook]);
+
   // hoursRead is the furthest point reached in the book, not time at the
   // headphones — a scrub forward moves it without any listening. Word it as a
   // position so it cannot be read as a second, contradictory listening total.
@@ -270,8 +399,13 @@ function RecentRow({ book, onOpen }: { book: ProfileRecentBook; onOpen: () => vo
   return (
     <li>
       <button type="button" className="recent-row" onClick={onOpen}>
-        {book.coverArtUrl ? (
-          <img className="recent-cover" src={mediaUrl(book.coverArtUrl)} alt="" />
+        {(offlineCoverUrl || book.coverArtUrl) && !coverFailed ? (
+          <img
+            className="recent-cover"
+            src={offlineCoverUrl ?? mediaUrl(book.coverArtUrl!)}
+            alt=""
+            onError={() => setCoverFailed(true)}
+          />
         ) : (
           <span className="recent-cover placeholder" aria-hidden="true">
             <Headphones size={18} strokeWidth={1.25} />
