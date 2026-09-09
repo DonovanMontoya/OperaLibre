@@ -1,4 +1,4 @@
-import { playbackReportPosition } from "./playbackReporting";
+import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { narrationTextOffset } from "./readerPagination";
@@ -4333,25 +4333,34 @@ function MainApp({
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
   const playbackReportRef = useRef<{ stop: () => Promise<unknown> } | null>(null);
+  const playbackTransitions = useMemo(createPlaybackTransitions, []);
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrackKey || playbackBook?.source === "device") return;
     const session = playbackReportingSession(currentTrackKey);
     if (!session) return;
     let lastPosition = audio.currentTime;
+    let disposed = false;
+    let startScheduled = false;
     const positionForReport = () => playbackReportPosition(currentTrackKey, pendingSeekRef.current, lastPosition);
     const rememberPosition = () => {
       if (Number.isFinite(audio.currentTime)) lastPosition = Math.max(0, audio.currentTime);
     };
     const startIfReady = () => {
       rememberPosition();
-      if (!playbackTouchedRef.current
-        || restoredProgressBookId.current !== playbackBookKey
-        || resumeReconciliationBookIdRef.current === playbackBookKey
-        || (pendingSeekRef.current && pendingSeekRef.current.trackId !== currentTrackKey)
-        || (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused)) return;
-      const reportPosition = positionForReport();
-      if (reportPosition !== null) void session.start(reportPosition);
+      if (startScheduled) return;
+      startScheduled = true;
+      void playbackTransitions.ready().then(async () => {
+        // Recheck after the old track drains: this element may have been
+        // replaced again, or the listener may have paused while waiting.
+        if (disposed || !playbackTouchedRef.current
+          || restoredProgressBookId.current !== playbackBookKey
+          || resumeReconciliationBookIdRef.current === playbackBookKey
+          || (pendingSeekRef.current && pendingSeekRef.current.trackId !== currentTrackKey)
+          || (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused)) return;
+        const reportPosition = positionForReport();
+        if (reportPosition !== null) await session.start(reportPosition);
+      }).finally(() => { startScheduled = false; });
     };
     const reporting = {
       stop: () => {
@@ -4364,16 +4373,19 @@ function MainApp({
     audio.addEventListener("timeupdate", startIfReady);
     audio.addEventListener("seeked", rememberPosition);
     return () => {
+      disposed = true;
       audio.removeEventListener("play", startIfReady);
       audio.removeEventListener("timeupdate", startIfReady);
       audio.removeEventListener("seeked", rememberPosition);
-      void reporting.stop();
+      // The application queue can hold a newer checkpoint behind an in-flight
+      // request. Drain that queue before stop, and hold the next start behind it.
+      void playbackTransitions.stopAfterProgress(() => progressSaveDrainPromiseRef.current, reporting.stop);
       if (playbackReportRef.current === reporting) playbackReportRef.current = null;
     };
     // Capture the element and credentials for this track. A timeupdate retries a
     // start deferred by restore/reconciliation without reporting optimistic progress.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, playbackBookKey, currentUser.id, nativeAudio]);
+  }, [currentTrackKey, playbackBookKey, currentUser.id, nativeAudio, playbackTransitions]);
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);

@@ -35,3 +35,19 @@ export function createPlaybackReporter(send: (event: "start" | "stop", itemId: s
     }
   };
 }
+
+/** Track transitions wait outside the report queue so progress can still drain. */
+export function createPlaybackTransitions() {
+  let pending: Promise<unknown> = Promise.resolve();
+  return {
+    ready: () => pending,
+    stopAfterProgress(drain: () => Promise<unknown> | null, stop: () => Promise<unknown>) {
+      pending = pending
+        .then(drain)
+        .catch(() => undefined)
+        .then(stop)
+        .catch(() => undefined);
+      return pending;
+    }
+  };
+}

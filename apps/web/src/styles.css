@@ -6624,7 +6624,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   }
 }
 
-/* =====================================================
+/* ============================================================
    Native mobile shell
    Everything below is scoped to html.native-app, which is only
    set inside the Capacitor build. The web app is untouched.
@@ -7274,7 +7274,7 @@ html.native-app .profile-shell {
   padding-bottom: 40px;
 }
 
-/* =====================================================
+/* ============================================================
    Modern mobile refinements
    A more contemporary, cover-forward take on the native shell —
    rounded surfaces, soft shadows, room to breathe — keeping the
@@ -8087,7 +8087,7 @@ html.native-app .has-native-player.native-player-view-now .native-now-playing {
   }
 }
 
-/* =====================================================
+/* ============================================================
    Web listening room
 
    The native apps' cover-forward player is useful at every screen size.
@@ -9225,7 +9225,7 @@ html.native-app .book-list.is-compact .book-availability {
   transform: translateY(-50%);
 }
 
-/* =====================================================
+/* ============================================================
    iOS-native pass
    App-native navigation, sheets, controls, touch targets, and
    interactions. Scoped to html.native-app so the web and macOS
@@ -11698,7 +11698,7 @@ html.native-app .recent-row {
   }
 }
 
-/* =====================================================
+/* ============================================================
    iPad — regular-width native layout
 
    The phone shell stacks the library and player panes as
