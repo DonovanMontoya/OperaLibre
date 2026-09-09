@@ -1,9 +1,9 @@
 //! An Audiobookshelf-shaped API, for third-party players.
 //!
-//! Prologue, ShelfPlayer, Voice and friends already speak Audiobookshelf. This
-//! module answers the subset of that API those clients use to sign in, browse
-//! a library, play a book, and sync a position — so they work against an
-//! OperaLibre server without anyone writing a client.
+//! This module exposes discovery, sign-in, browsing, downloads, direct-play
+//! descriptors, and per-item progress. Compatibility depends on which parts
+//! of Audiobookshelf a client uses; full session synchronization, authorization
+//! discovery, and socket events are not implemented. See docs/client-compatibility.md.
 //!
 //! It is mounted under `/abs`, not at the root: Audiobookshelf puts `/api/me`
 //! and `/login` where OperaLibre already has its own, and quietly changing the
@@ -76,6 +76,17 @@ pub(crate) struct AbsLibrary {
     name: String,
     media_type: &'static str,
     provider: &'static str,
+    folders: Vec<AbsLibraryFolder>,
+    display_order: usize,
+    icon: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsLibraryFolder {
+    id: &'static str,
+    full_path: &'static str,
+    library_id: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,8 +101,8 @@ pub(crate) struct AbsLibraryItem {
     id: String,
     library_id: &'static str,
     media_type: &'static str,
-    // BookPlayer's current ABS integration reads these summary values from
-    // the item itself before opening the full nested media object.
+    // Retain the flat aliases for older clients. Current ABS clients read
+    // metadata and progress from the nested media/userMediaProgress fields.
     kind: &'static str,
     title: String,
     author_name: Option<String>,
@@ -108,10 +119,19 @@ pub(crate) struct AbsLibraryItem {
     /// BookPlayer's detail decoder expects the expanded Audiobookshelf item
     /// to carry the files at the item level as well as inside `media`.
     library_files: Vec<AbsLibraryFile>,
+    user_media_progress: Option<AbsItemProgress>,
     media: AbsMedia,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AbsItemProgress {
+    progress: f64,
+    current_time: f64,
+    is_finished: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AbsSeriesReference {
     id: String,
@@ -124,6 +144,7 @@ pub(crate) struct AbsSeriesReference {
 pub(crate) struct AbsMedia {
     id: String,
     metadata: AbsMetadata,
+    tags: Vec<String>,
     cover_path: Option<String>,
     duration: f64,
     num_tracks: usize,
@@ -137,6 +158,10 @@ pub(crate) struct AbsMedia {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AbsMetadata {
     title: String,
+    subtitle: Option<String>,
+    authors: Vec<AbsNamedEntity>,
+    narrators: Vec<String>,
+    series: Vec<AbsSeriesReference>,
     author_name: Option<String>,
     narrator_name: Option<String>,
     description: Option<String>,
@@ -402,7 +427,7 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
         .as_ref()
         .map(|name| {
             vec![AbsSeriesReference {
-                id: stable_id(&format!("abs-series:{name}")),
+                id: name.clone(),
                 name: name.clone(),
                 sequence: book.metadata.series_position.clone(),
             }]
@@ -429,7 +454,7 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
         narrator_name: book.narrator.clone(),
         duration,
         subtitle: book.metadata.subtitle.clone(),
-        series,
+        series: series.clone(),
         // OperaLibre does not currently retain library-item creation/update
         // timestamps, so leave these optional ABS fields honest.
         added_at: None,
@@ -455,10 +480,30 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
         } else {
             Vec::new()
         },
+        user_media_progress: book.progress.as_ref().map(|saved| AbsItemProgress {
+            progress: saved
+                .percent_complete
+                .map(|percent| percent / 100.0)
+                .unwrap_or(0.0),
+            current_time: saved.book_position_seconds,
+            is_finished: matches!(saved.status, BookProgressStatus::Finished),
+        }),
         media: AbsMedia {
+            tags: book.tags.iter().map(|tag| tag.name.clone()).collect(),
             id: book.id.clone(),
             metadata: AbsMetadata {
                 title: book.title.clone(),
+                subtitle: book.metadata.subtitle.clone(),
+                authors: book
+                    .author
+                    .iter()
+                    .map(|name| AbsNamedEntity {
+                        id: name.clone(),
+                        name: name.clone(),
+                    })
+                    .collect(),
+                narrators: book.narrator.iter().cloned().collect(),
+                series,
                 author_name: book.author.clone(),
                 narrator_name: book.narrator.clone(),
                 description: book.description.clone(),
@@ -594,6 +639,11 @@ pub(crate) async fn abs_libraries(
             name,
             media_type: "book",
             provider: "audible",
+            // Browsing clients require these fields. The virtual library
+            // does not expose the host's filesystem layout.
+            folders: Vec::new(),
+            display_order: 1,
+            icon: "audiobookshelf",
         }],
     })
 }
