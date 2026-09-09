@@ -7872,7 +7872,7 @@ function MainApp({
     }
   }
 
-  const showLedgerTab = native && isOperaLibre && !localMode;
+  const showLedgerTab = native && isOperaLibre;
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
@@ -7917,7 +7917,7 @@ function MainApp({
             : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         </span>
       </div>
-      {isOperaLibre && !localMode ? (
+      {isOperaLibre ? (
         <button
           type="button"
           role="menuitem"
@@ -10840,6 +10840,7 @@ function MainApp({
 
       {isOperaLibre && profileOpen ? (
         <ProfilePage
+          books={books}
           user={currentUser}
           onClose={() => setProfileOpen(false)}
           onOpenBook={(bookId) => {
@@ -10850,6 +10851,7 @@ function MainApp({
           onUserChanged={onCurrentUserChanged}
           onSharingChanged={() => void loadBooks()}
           sharingAvailable={sharedProgressAvailable && !native}
+          deviceOnly={localMode}
         />
       ) : null}
 
@@ -10948,6 +10950,7 @@ function MainApp({
 
       {showLedgerTab && nativeTab === "ledger" ? (
         <ProfilePage
+          books={books}
           user={currentUser}
           onClose={() => openNativeTab("reading")}
           onOpenBook={(bookId) => {
@@ -10956,6 +10959,7 @@ function MainApp({
           onUserChanged={onCurrentUserChanged}
           onSharingChanged={() => void loadBooks()}
           sharingAvailable={sharedProgressAvailable && !native}
+          deviceOnly={localMode}
         />
       ) : null}
 
