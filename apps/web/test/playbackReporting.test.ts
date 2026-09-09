@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPlaybackReporter, playbackReportPosition } from "../src/playbackReporting.ts";
+import { createPlaybackReporter, createPlaybackTransitions, playbackReportPosition } from "../src/playbackReporting.ts";
 
 test("a delayed start finishes before stop and the next track starts", async () => {
   const events: string[] = [];
@@ -64,4 +64,24 @@ test("stop reporting preserves a queued seek instead of the stale media clock", 
   assert.equal(playbackReportPosition("track", { trackId: "track", positionSeconds: 0 }, 750), 0);
   assert.equal(playbackReportPosition("old", { trackId: "next", positionSeconds: 0 }, 750), 750);
   assert.equal(playbackReportPosition("track", null, NaN), null);
+});
+
+
+test("a final checkpoint waiting in the app queue lands before stop and the next start", async () => {
+  const events: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const reporter = createPlaybackReporter(async (event, id) => { events.push(`${event}:${id}`); });
+  const transitions = createPlaybackTransitions();
+  await reporter.start("first", 100);
+  // The app's drain only submits checkpoint 2 after checkpoint 1 settles.
+  const appDrain = (async () => {
+    await reporter.write(async () => { await gate; events.push("progress:100"); });
+    await reporter.write(async () => { events.push("progress:120"); });
+  })();
+  const stopped = transitions.stopAfterProgress(() => appDrain, () => reporter.stop("first", 120));
+  const started = transitions.ready().then(() => reporter.start("second", 0));
+  release();
+  await Promise.all([appDrain, stopped, started]);
+  assert.deepEqual(events, ["start:first", "progress:100", "progress:120", "stop:first", "start:second"]);
 });
