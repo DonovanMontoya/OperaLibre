@@ -53,6 +53,21 @@ test("epics require finished status and use runtime, not position or measured li
   );
   assert.equal(awards.find((a) => a.id === "listening-24")?.current, 0);
 });
+test("completion milestones follow current eligible book progress", () => {
+  const books = [
+    book("server", { progress: progress("finished") }),
+    book("local", { source: "device", progress: progress("finished") })
+  ];
+  const staleStats = { ...stats, booksFinished: 0 };
+  assert.equal(
+    readingAchievements(books, staleStats).find((a) => a.id === "finished-1")?.current,
+    1
+  );
+  assert.equal(
+    readingAchievements(books, staleStats, true).find((a) => a.id === "finished-1")?.current,
+    2
+  );
+});
 test("metadata normalizes case, ignores blanks and duplicate genres, excludes device books", () => {
   const books = [
     book("one", {

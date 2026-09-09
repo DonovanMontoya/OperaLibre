@@ -83,8 +83,16 @@ export function ProfilePage({
   const [offlineSource, setOfflineSource] = useState<"cache" | "device" | null>(
     deviceOnly ? "device" : null
   );
+  const [refreshRequest, setRefreshRequest] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!initialSnapshot);
+
+  useEffect(() => {
+    if (deviceOnly) return;
+    const refresh = () => setRefreshRequest((request) => request + 1);
+    window.addEventListener("online", refresh);
+    return () => window.removeEventListener("online", refresh);
+  }, [deviceOnly]);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,7 +108,6 @@ export function ProfilePage({
     setStats(cached?.stats ?? null);
     setCachedAt(cached?.cachedAt ?? null);
     setLoading(!cached);
-    setOfflineSource(null);
     setError(null);
     getProfileStats()
       .then((next) => {
@@ -131,7 +138,7 @@ export function ProfilePage({
     return () => {
       cancelled = true;
     };
-  }, [deviceOnly, serverScope, user.id]);
+  }, [deviceOnly, refreshRequest, serverScope, user.id]);
 
   const deviceStats = useMemo(() => deriveDeviceProfileStats(books), [books]);
   const displayedStats = offlineSource === "device" ? deviceStats : stats;
