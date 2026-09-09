@@ -1,3 +1,5 @@
+import { playbackReportPosition } from "./playbackReporting";
+import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { narrationTextOffset } from "./readerPagination";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
@@ -233,7 +235,7 @@ import {
   clearSyncAnchors,
   reconnectUsingServerAliases,
   requestLibationBook,
-  reportPlaybackStarted,
+  playbackReportingSession,
   removeServerAlias,
   rescanLibrary,
   saveProgress,
@@ -3574,11 +3576,12 @@ function MainApp({
   const isOperaLibre = getServerType() === "operalibre";
   const demoMode = isDemoMode();
   const localMode = isLocalMode();
+  const capabilities = serverCapabilities(getServerType(), currentUser, { local: localMode, demo: demoMode });
   const native = Capacitor.isNativePlatform();
   const ios = native && document.documentElement.classList.contains("platform-ios");
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
-  const sharedProgressAvailable = isOperaLibre && !demoMode && !localMode;
+  const sharedProgressAvailable = capabilities.sharedActivity;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
@@ -3648,7 +3651,7 @@ function MainApp({
   // then treat already-announced finishes as new and banner them again.
   const finishRequestRef = useRef(0);
   const finishFeedAvailable =
-    isOperaLibre && !demoMode && !localMode && isNotifiedOfFinishes(currentUser);
+    capabilities.sharedActivity && isNotifiedOfFinishes(currentUser);
 
   useEffect(() => {
     if (!finishFeedAvailable) {
@@ -3931,7 +3934,7 @@ function MainApp({
     setAlignmentState({ scope: alignmentScope, status });
   }), [alignmentScope]);
   const updateAlignmentStatus = alignmentStatusUpdater.update;
-  const sentenceFollowAvailable = isOperaLibre && !localMode && !demoMode && alignmentStatus?.enabled === true;
+  const sentenceFollowAvailable = capabilities.sentenceAlignment && alignmentStatus?.enabled === true;
   const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
   const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
   const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
@@ -3962,7 +3965,7 @@ function MainApp({
   const refreshLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-sync");
   const downloadAllLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-liberate-all");
   const isRefreshingAudible = libationRefreshPending || !!refreshLibationJob;
-  const canBrowseLibation = isOperaLibre && (currentUser.isAdmin || (native && !!libationStatus?.enabled));
+  const canBrowseLibation = capabilities.imports && (currentUser.isAdmin || (native && !!libationStatus?.enabled));
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -4329,6 +4332,48 @@ function MainApp({
   // identity would tear down the <audio> src mid-playback every few seconds.
   const playbackBookKey = playbackBook?.id ?? null;
   const currentTrackKey = currentTrack?.id ?? null;
+  const playbackReportRef = useRef<{ stop: () => Promise<unknown> } | null>(null);
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrackKey || playbackBook?.source === "device") return;
+    const session = playbackReportingSession(currentTrackKey);
+    if (!session) return;
+    let lastPosition = audio.currentTime;
+    const positionForReport = () => playbackReportPosition(currentTrackKey, pendingSeekRef.current, lastPosition);
+    const rememberPosition = () => {
+      if (Number.isFinite(audio.currentTime)) lastPosition = Math.max(0, audio.currentTime);
+    };
+    const startIfReady = () => {
+      rememberPosition();
+      if (!playbackTouchedRef.current
+        || restoredProgressBookId.current !== playbackBookKey
+        || resumeReconciliationBookIdRef.current === playbackBookKey
+        || (pendingSeekRef.current && pendingSeekRef.current.trackId !== currentTrackKey)
+        || (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused)) return;
+      const reportPosition = positionForReport();
+      if (reportPosition !== null) void session.start(reportPosition);
+    };
+    const reporting = {
+      stop: () => {
+        const reportPosition = positionForReport();
+        return reportPosition === null ? Promise.resolve() : session.stop(reportPosition);
+      }
+    };
+    playbackReportRef.current = reporting;
+    audio.addEventListener("play", startIfReady);
+    audio.addEventListener("timeupdate", startIfReady);
+    audio.addEventListener("seeked", rememberPosition);
+    return () => {
+      audio.removeEventListener("play", startIfReady);
+      audio.removeEventListener("timeupdate", startIfReady);
+      audio.removeEventListener("seeked", rememberPosition);
+      void reporting.stop();
+      if (playbackReportRef.current === reporting) playbackReportRef.current = null;
+    };
+    // Capture the element and credentials for this track. A timeupdate retries a
+    // start deferred by restore/reconciliation without reporting optimistic progress.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrackKey, playbackBookKey, currentUser.id, nativeAudio]);
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
@@ -6609,16 +6654,24 @@ function MainApp({
     setCompletionPendingBookId(book.id);
     setCompletionError(null);
     try {
-      if (resetToUnplayed) {
-        // Stop this session from immediately writing its old media clock over
-        // the deliberate reset. If a checkpoint is already in flight, let it
-        // settle before the reset becomes the server's newest revision.
-        playbackTouchedRef.current = false;
+      const closingActiveBook = playbackBookId === book.id && (finished || resetToUnplayed);
+      const reporting = closingActiveBook ? playbackReportRef.current : null;
+      if (closingActiveBook || resetToUnplayed) {
+        // Freeze playback before any asynchronous reports. Otherwise a slow stop
+        // could let a new progress write land after the deliberate completion/reset.
+        if (closingActiveBook) {
+          playbackTouchedRef.current = false;
+          nativePlaybackPlayingRef.current = false;
+          pausePlayback(audioRef.current);
+          setIsPlaying(false);
+        }
         queuedProgressSaves.current.delete(book.id);
-        if (playbackBookId === book.id) pausePlayback(audioRef.current);
         progressSaveAbortController.current?.abort();
         await progressSaveDrainPromiseRef.current;
         queuedProgressSaves.current.delete(book.id);
+        // Drain the stop before changing completion. Teardown then has nothing
+        // left to report and cannot restore an old media clock after a reset.
+        await reporting?.stop();
       }
       const completedProgress: Progress | null = finalProgress
         ? {
@@ -6683,7 +6736,7 @@ function MainApp({
         }
         return next;
       });
-      if (playbackBookId === book.id && (finished || resetToUnplayed)) {
+      if (playbackBookIdRef.current === book.id && (finished || resetToUnplayed)) {
         clearPlaybackSession();
       }
       return true;
@@ -6728,6 +6781,7 @@ function MainApp({
   }
 
   async function downloadForOffline(book: Book) {
+    if (!capabilities.downloads) return;
     if (activeDownloadIdsRef.current.has(book.id)) return;
     activeDownloadIdsRef.current.add(book.id);
     const abortController = new AbortController();
@@ -7872,7 +7926,7 @@ function MainApp({
     }
   }
 
-  const showLedgerTab = native && isOperaLibre;
+  const showLedgerTab = native && capabilities.statistics;
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
@@ -7917,7 +7971,7 @@ function MainApp({
             : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
         </span>
       </div>
-      {isOperaLibre ? (
+      {capabilities.statistics ? (
         <button
           type="button"
           role="menuitem"
@@ -7933,7 +7987,7 @@ function MainApp({
           <ScrollText size={14} /> Reader's ledger
         </button>
       ) : null}
-      {isOperaLibre && currentUser.isAdmin ? (
+      {capabilities.administration ? (
         <button
           type="button"
           role="menuitem"
@@ -7949,7 +8003,7 @@ function MainApp({
           <UserCog size={14} /> Administration
         </button>
       ) : null}
-      {isOperaLibre && currentUser.isAdmin && brokenLibationAccounts.length > 0 ? (
+      {capabilities.administration && brokenLibationAccounts.length > 0 ? (
         <button
           type="button"
           role="menuitem"
@@ -7963,7 +8017,7 @@ function MainApp({
           <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
-      {isOperaLibre ? (
+      {capabilities.readingFiles ? (
         <button
           type="button"
           role="menuitemcheckbox"
@@ -7973,7 +8027,7 @@ function MainApp({
           <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
         </button>
       ) : null}
-      {isOperaLibre && readalongEnabled && sentenceFollowAvailable ? (
+      {readalongEnabled && sentenceFollowAvailable ? (
         <button
           type="button"
           role="menuitemcheckbox"
@@ -8344,7 +8398,7 @@ function MainApp({
           const message = code === MediaError.MEDIA_ERR_DECODE
             ? "This audio file could not be decoded."
             : code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-              ? "This audio format is not supported on this device."
+              ? isOperaLibre ? "This audio format is not supported on this device." : "This device cannot play the original Jellyfin audio file. Try an MP3 or AAC version; automatic conversion is not available."
               : code === MediaError.MEDIA_ERR_NETWORK
                 ? "Playback lost its connection to the audiobook server."
                 : "This audio track could not be loaded.";
@@ -8383,15 +8437,6 @@ function MainApp({
           if (nativeAudio) nativePlaybackPlayingRef.current = true;
           setPlaybackError(null);
           setIsPlaying(true);
-          if (
-            currentTrack &&
-            audioRef.current &&
-            playbackBook &&
-            playbackBook.source !== "device" &&
-            restoredProgressBookId.current === playbackBook.id
-          ) {
-            void reportPlaybackStarted(currentTrack.id, audioRef.current.currentTime);
-          }
         }}
         onPause={() => {
           // Anything that plays after a pause is a fresh action, never the
@@ -8446,7 +8491,7 @@ function MainApp({
                 {deviceImport ? <LoaderCircle size={16} className="spin-icon" /> : <FolderOpen size={16} />}
               </button>
             ) : null}
-            {isOperaLibre && currentUser.isAdmin ? (
+            {capabilities.uploads ? (
               <button
                 className="icon-button"
                 aria-label="Upload audiobook"
@@ -8524,7 +8569,7 @@ function MainApp({
             ) : null}
             <button
               className="icon-button"
-              aria-label={isOperaLibre && currentUser.isAdmin ? "Rescan library" : "Refresh library"}
+              aria-label={capabilities.administration ? "Rescan library" : "Refresh library"}
               onClick={() => void refreshLibrary()}
             >
               <RefreshCcw size={16} />
@@ -9026,7 +9071,7 @@ function MainApp({
             {error ? <div className="empty-state error">{error}</div> : null}
             {!isLoading && !error && books.length === 0 ? (
               <div className="empty-state device-empty-state">
-                <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : "No audiobooks found in the configured library folder."}</span>
+                <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : !isOperaLibre ? "No audiobooks are available to this account. Add audiobooks to a Books library in Jellyfin and check this account’s library access. Music libraries are not included." : "No audiobooks found in the configured library folder."}</span>
                 {native ? (
                   <button type="button" className="download-btn" onClick={() => void importFromDevice()}>
                     <FolderOpen size={14} /> Choose audiobook files
@@ -9587,7 +9632,7 @@ function MainApp({
                     <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
                   </span>
                   <div className="heading-actions">
-                    {isOperaLibre && currentUser.isAdmin && selectedBook.source !== "device" ? (
+                    {capabilities.metadataEditing && selectedBook.source !== "device" ? (
                       <button
                         className="download-btn"
                         type="button"
@@ -9667,7 +9712,7 @@ function MainApp({
                         <CircleCheck size={13} />
                         <span>On device</span>
                       </span>
-                    ) : Capacitor.isNativePlatform() ? (
+                    ) : Capacitor.isNativePlatform() && (capabilities.downloads || downloadedBookIds.has(selectedBook.id) || selectedDownload) ? (
                       <button
                         className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
                           selectedDownload ? "downloading" : ""
@@ -9701,7 +9746,7 @@ function MainApp({
                               : "Download"}
                         </span>
                       </button>
-                    ) : isOperaLibre ? (
+                    ) : capabilities.bookArchive ? (
                       <a
                         className="download-btn"
                         href={bookDownloadUrl(selectedBook.id)}
@@ -9711,6 +9756,18 @@ function MainApp({
                         <Download size={13} />
                         <span>Download</span>
                       </a>
+                    ) : !native && capabilities.downloads ? (
+                      <details className="track-downloads">
+                        <summary className="download-btn"><Download size={13} /> Download tracks</summary>
+                        <ul>
+                          {selectedBook.tracks.map((track) => (
+                            <li key={track.id}>
+                              <a href={mediaUrl(track.downloadUrl ?? track.streamUrl)}
+                                target="_blank" rel="noreferrer" download>{track.title}</a>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
                     ) : null}
                     {Capacitor.isNativePlatform() && downloadStatus?.bookId === selectedBook.id ? (
                       <span className="download-status">{downloadStatus.message}</span>
@@ -10184,7 +10241,11 @@ function MainApp({
             ) : (
               <>
                 <h2>An empty <em>shelf</em></h2>
-                <p>Start the server with OPERALIBRE_LIBRARY pointed at your files.</p>
+                <p>{localMode
+                  ? "Choose audiobook files from this device to start listening."
+                  : isOperaLibre
+                    ? "Add audiobook files to your server’s library folder, then refresh the library."
+                    : "Check your Jellyfin Books library and this account’s access, then refresh the library."}</p>
               </>
             )}
           </div>
@@ -10838,7 +10899,7 @@ function MainApp({
         </div>
       ) : null}
 
-      {isOperaLibre && profileOpen ? (
+      {capabilities.statistics && profileOpen ? (
         <ProfilePage
           books={books}
           user={currentUser}
@@ -10855,7 +10916,7 @@ function MainApp({
         />
       ) : null}
 
-      {isOperaLibre && currentUser.isAdmin && !native && usersModalOpen ? (
+      {capabilities.administration && !native && usersModalOpen ? (
         <AdminPanel
           currentUser={currentUser}
           books={administrableBooks}
@@ -10875,7 +10936,7 @@ function MainApp({
         />
       ) : null}
 
-      {isOperaLibre && currentUser.isAdmin && uploadModalOpen ? (
+      {capabilities.uploads && uploadModalOpen ? (
         <div className="modal-scrim" role="presentation">
           <form
             className="modal-card upload-audiobook-card"
@@ -11258,7 +11319,7 @@ function MainApp({
                   <span>Connect a server</span>
                 </button>
               ) : null}
-              {isOperaLibre && currentUser.isAdmin ? (
+              {capabilities.administration ? (
                 <>
                   <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
                     <Upload size={13} />
@@ -11282,7 +11343,7 @@ function MainApp({
         </section>
       ) : null}
 
-      {native && isOperaLibre && currentUser.isAdmin && nativeTab === "admin" ? (
+      {native && capabilities.administration && nativeTab === "admin" ? (
         <AdminPanel
           currentUser={currentUser}
           books={administrableBooks}
@@ -11339,7 +11400,7 @@ function MainApp({
               <span>Ledger</span>
             </button>
           ) : null}
-          {isOperaLibre && currentUser.isAdmin ? (
+          {capabilities.administration ? (
             <button
               type="button"
               className={`spine-tab ${nativeTab === "admin" ? "active" : ""}`}

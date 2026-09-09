@@ -381,6 +381,8 @@ export type SyncAddonStatus = {
 };
 
 export type AuthUser = {
+  /** Jellyfin download permission; unknown cached accounts must refresh first. */
+  canDownload?: boolean;
   id: string;
   username: string;
   isAdmin: boolean;
