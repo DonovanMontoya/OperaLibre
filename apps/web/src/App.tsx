@@ -97,6 +97,7 @@ import {
   type ReaderThemeChoice
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
+import { createScreenAwakeController } from "./screenAwake";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { syncMapCacheReducer } from "./syncMapCache";
@@ -5199,6 +5200,13 @@ function MainApp({
   // A book the listener was reading along with reopens its reader when it is
   // selected again; a book with nothing to read closes it.
   const selectedBookIdForReader = selectedBook?.id ?? null;
+  const ebookReaderOpen = readalongOpen && activeCompanion?.extension === "epub" && !showGallery;
+  useEffect(() => {
+    const screenAwake = createScreenAwakeController();
+    screenAwake.setReadingActive(ebookReaderOpen);
+    return () => screenAwake.dispose();
+  }, [ebookReaderOpen]);
+
   useEffect(() => {
     if (!selectedBookIdForReader || !readalongAvailable) {
       setReadalongOpen(false);
