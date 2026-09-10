@@ -262,6 +262,12 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             return
         }
         do {
+            if info.allowedOrigin == "libro-device" {
+                let size = (try FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.int64Value ?? 0
+                guard let finalURL = response.url, isLibroDownloadURL(finalURL),
+                      size > 0, size <= maximumBackgroundDownloadBytes,
+                      response.expectedContentLength < 0 || size == response.expectedContentLength else { throw DownloadError.invalidFiles }
+            }
             guard let destinationValue = URL(string: info.destination) else {
                 throw DownloadError.invalidDestination
             }
@@ -315,6 +321,12 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         totalBytesExpectedToWrite: Int64
     ) {
         if totalBytesWritten > maximumBackgroundDownloadBytes {
+            downloadTask.cancel()
+        }
+        if taskInfo(downloadTask)?.allowedOrigin == "libro-device",
+           let root = try? backgroundOfflineMediaRoot(),
+           let free = (try? FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize]) as? NSNumber,
+           free.int64Value < 256 * 1024 * 1024 {
             downloadTask.cancel()
         }
     }
@@ -515,7 +527,7 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
             let title = call.getString("title"),
             let serverOriginValue = call.getString("serverOrigin"),
             let serverOriginUrl = URL(string: serverOriginValue),
-            let allowlist = BackgroundDownloadAllowlist(serverAddress: serverOriginUrl),
+            let serverAllowlist = BackgroundDownloadAllowlist(serverAddress: serverOriginUrl),
             let values = call.getArray("files", JSObject.self),
             !values.isEmpty
         else {
@@ -524,6 +536,8 @@ public class BackgroundDownloadsPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         do {
+            let allowlist = call.getString("provider") == "libro"
+                ? BackgroundDownloadAllowlist(origin: "libro-device", basePath: "") : serverAllowlist
             let files = try values.map { value -> BackgroundDownloadFile in
                 guard
                     let sourceValue = value["url"] as? String,

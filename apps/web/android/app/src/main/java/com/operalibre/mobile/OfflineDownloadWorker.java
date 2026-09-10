@@ -209,7 +209,8 @@ public class OfflineDownloadWorker extends Worker {
         int completedRequired,
         int requiredTotal
     ) throws Exception {
-        HttpURLConnection connection = openWithSameOriginRedirects(new URL(source));
+        boolean libro = "libro".equals(job.optString("provider"));
+        HttpURLConnection connection = openWithSameOriginRedirects(new URL(source), libro);
         try {
             long expected = connection.getContentLengthLong();
             long received = 0;
@@ -222,6 +223,9 @@ public class OfflineDownloadWorker extends Worker {
                 int count;
                 while ((count = input.read(buffer)) != -1) {
                     if (isStopped()) throw new InterruptedException("Download stopped.");
+                    if (libro && (received + count > 25L * 1024 * 1024 * 1024 || destination.getUsableSpace() < 256L * 1024 * 1024)) {
+                        throw new IllegalStateException("Not enough space or download exceeds the 25 GiB limit.");
+                    }
                     output.write(buffer, 0, count);
                     received += count;
                     long now = System.currentTimeMillis();
@@ -239,6 +243,9 @@ public class OfflineDownloadWorker extends Worker {
                     }
                 }
             }
+            if (libro && (received == 0 || (expected >= 0 && expected != received))) {
+                throw new IllegalStateException("The Libro.fm download was incomplete. Retry it.");
+            }
         } finally {
             connection.disconnect();
         }
@@ -252,9 +259,10 @@ public class OfflineDownloadWorker extends Worker {
      * to whatever host a redirect names. Only hops that stay on the original
      * scheme, host, and port are followed.
      */
-    private static HttpURLConnection openWithSameOriginRedirects(URL original) throws Exception {
+    private static HttpURLConnection openWithSameOriginRedirects(URL original, boolean libro) throws Exception {
         URL url = original;
         for (int hop = 0; ; hop++) {
+            if (libro && !LibroDevicePlugin.allowedDownload(url)) throw new SecurityException("Unsupported Libro.fm download address.");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(60_000);
             connection.setReadTimeout(600_000);
@@ -280,7 +288,7 @@ public class OfflineDownloadWorker extends Worker {
                 throw new IllegalStateException("The server redirected the download too many times.");
             }
             URL next = new URL(url, location);
-            if (!sameOrigin(original, next)) {
+            if (libro ? !LibroDevicePlugin.allowedDownload(next) : !sameOrigin(original, next)) {
                 throw new SecurityException("The server redirected the download to another address.");
             }
             url = next;
