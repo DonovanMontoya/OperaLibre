@@ -89,9 +89,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// the position falls in, so the engine rolls from one track to the next
     /// without the app being awake to feed it.
     @discardableResult
-    func play(book: CarLibraryBook, atBookPosition requested: Double?) -> Bool {
+    func play(book: CarLibraryBook, atBookPosition requested: Double?, restorePendingSession: Bool = true) -> Bool {
         let snapshot = store.snapshot()
-        let book = snapshot.resuming(book, sessions: store.pendingSessions())
+        let book = restorePendingSession ? snapshot.resuming(book, sessions: store.pendingSessions()) : book
         let position = requested ?? book.resumePositionSeconds
         guard let target = book.target(atBookPosition: position) else { return false }
         // A track whose URL will not resolve is dropped rather than queued: the
@@ -173,6 +173,38 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// phone's, and its progress keeps being saved the way it always was.
     func resume() {
         engine.play()
+    }
+
+    /// Siri shares the car's native ownership and progress handoff, even when
+    /// no car or WebView is connected. All access runs on the main actor.
+    @MainActor
+    func resumeAudiobook() -> Bool {
+        let snapshot = store.snapshot()
+        if engine.status.isLoaded, let book = currentBook() {
+            if let duration = book.durationSeconds, engine.status.bookPositionSeconds >= duration - 1 {
+                return false
+            }
+            engine.play()
+            return true
+        }
+        // The engine checkpoint is account/server scoped. Pending car records
+        // contain only book IDs, so they cannot identify Siri's last session.
+        var sessions: [CarPlaybackSession] = []
+        for book in snapshot.books {
+            guard let checkpoint = engine.recoveryState(forScope: snapshot.recoveryScopeKey(forBookId: book.id)) else { continue }
+            sessions.append(CarPlaybackSession(
+                bookId: book.id, trackId: checkpoint.trackId,
+                positionSeconds: checkpoint.positionSeconds,
+                bookPositionSeconds: checkpoint.bookPositionSeconds,
+                durationSeconds: checkpoint.durationSeconds,
+                updatedAt: checkpoint.updatedAt, finished: false,
+                intentionalRegression: false
+            ))
+        }
+        guard let book = snapshot.audiobookToResume(sessions: sessions) else { return false }
+        // This book already includes the freshest checkpoint. Passing nil keeps
+        // the handoff classified as a resume, rather than a deliberate rewind.
+        return play(book: book, atBookPosition: nil, restorePendingSession: false)
     }
 
     func libraryDidChange() {

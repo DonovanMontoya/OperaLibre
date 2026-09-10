@@ -26,6 +26,7 @@
 		A17B00272E32000100B6D001 /* CarPlayScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00262E32000100B6D001 /* CarPlayScene.swift */; };
 		A17B00292E32000100B6D001 /* CarPlayBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00282E32000100B6D001 /* CarPlayBridge.swift */; };
 		A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002A2E32000100B6D001 /* SceneDelegate.swift */; };
+		A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +51,7 @@
 		A17B00262E32000100B6D001 /* CarPlayScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayScene.swift; sourceTree = "<group>"; };
 		A17B00282E32000100B6D001 /* CarPlayBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayBridge.swift; sourceTree = "<group>"; };
 		A17B002A2E32000100B6D001 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B002C2E32000100B6D001 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -98,6 +100,7 @@
 				A17B00262E32000100B6D001 /* CarPlayScene.swift */,
 				A17B00282E32000100B6D001 /* CarPlayBridge.swift */,
 				A17B002A2E32000100B6D001 /* SceneDelegate.swift */,
+				A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -202,6 +205,7 @@
 				A17B00272E32000100B6D001 /* CarPlayScene.swift in Sources */,
 				A17B00292E32000100B6D001 /* CarPlayBridge.swift in Sources */,
 				A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */,
+				A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
