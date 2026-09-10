@@ -17,6 +17,7 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "CarPlayBridge"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "setLibrary", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearLibrary", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "acknowledgeSessions", returnType: CAPPluginReturnPromise)
     ]
@@ -49,9 +50,18 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("The car library snapshot could not be read.")
             return
         }
-        CarLibraryStore.shared.save(snapshot)
-        coordinator.libraryDidChange()
-        call.resolve()
+        DispatchQueue.main.async {
+            CarLibraryStore.shared.save(snapshot)
+            self.coordinator.libraryDidChange()
+            call.resolve()
+        }
+    }
+
+    @objc public func clearLibrary(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.coordinator.clearLibrary()
+            call.resolve()
+        }
     }
 
     @objc public func getState(_ call: CAPPluginCall) {

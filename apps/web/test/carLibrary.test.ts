@@ -2,11 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCarLibrarySnapshot,
+  CarLibraryAccess,
   carSessionIsWorthSaving,
   parseCarSessions,
   type CarPlaybackSession
 } from "../src/carLibrary.ts";
 import type { Book, Chapter, Track } from "../src/types.ts";
+
+test("sign-out blocks a late library snapshot and the next account cannot publish the old scope", async () => {
+  const access = new CarLibraryAccess();
+  access.begin("server:alice");
+  assert.equal(access.allows("server:alice"), true);
+  let complete!: () => void;
+  const pending = new Promise<void>((resolve) => { complete = resolve; });
+  const lateSnapshot = pending.then(() => access.allows("server:alice"));
+  access.end();
+  complete();
+  assert.equal(await lateSnapshot, false);
+  access.begin("server:bob");
+  assert.equal(access.allows("server:alice"), false);
+  assert.equal(access.allows("server:bob"), true);
+  access.begin("other-server:bob");
+  assert.equal(access.allows("server:bob"), false);
+});
 
 function track(overrides: Partial<Track> = {}): Track {
   return {

@@ -1,6 +1,15 @@
 import { buildChapterSegments } from "./chapters.ts";
 import type { Book, Track } from "./types.ts";
 
+/** Stops late snapshot work from republishing a library after sign-out. */
+export class CarLibraryAccess {
+  private scope: string | null = null;
+
+  begin(scope: string) { this.scope = scope; }
+  end() { this.scope = null; }
+  allows(scope: string) { return this.scope !== null && this.scope === scope; }
+}
+
 /**
  * The library as the car sees it, and the progress a drive leaves behind.
  *

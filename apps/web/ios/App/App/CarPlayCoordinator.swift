@@ -211,6 +211,17 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         onLibraryChange?()
     }
 
+    func clearLibrary() {
+        // Drop ownership before stopping, so the stop checkpoint cannot create
+        // a new pending session belonging to the account we just left.
+        carOwnedBookId = nil
+        store.clear()
+        engine.stop(releaseSession: true)
+        notifyWeb("carPlaybackEnded", data: [:])
+        onLibraryChange?()
+        onPlaybackChange?()
+    }
+
     func togglePlayPause() {
         if engine.status.isPlaying {
             engine.pause()
