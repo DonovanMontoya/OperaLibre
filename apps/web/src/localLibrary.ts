@@ -50,10 +50,6 @@ function writeJson(key: string, value: unknown) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function naturalCompare(a: PickedFile, b: PickedFile) {
-  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-}
-
 function extension(name: string) {
   return name.split(".").pop()?.toLowerCase() ?? "";
 }
@@ -414,14 +410,28 @@ export async function importAudiobookFromDevice(
   const picked = await importStep("The file picker could not be opened", () =>
     FilePicker.pickFiles({ limit: 0, readData: false })
   );
-  const files = picked.files
+  return importDeviceAudioFiles(picked.files, onProgress);
+}
+
+export async function importDeviceAudioFiles(
+  input: (Pick<PickedFile, "name" | "path"> & { mimeType?: string })[],
+  onProgress?: (completed: number, total: number) => void,
+  provider?: { isbn: string; title: string; author: string; narrator: string }
+): Promise<Book> {
+  if (!Capacitor.isNativePlatform()) throw new Error("Device imports require a native app.");
+  if (provider && !/^[0-9X]{10,13}$/.test(provider.isbn)) throw new Error("Invalid book identifier.");
+  const providerId = provider ? `device:libro:${provider.isbn}` : null;
+  const existing = storedBooks().find(book => book.id === providerId);
+  if (existing) return existing;
+  const files = input
     .filter((file) => isSupportedAudioFileName(file.name) || !!file.mimeType?.startsWith("audio/"))
-    .sort(naturalCompare);
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   if (!files.length) throw new Error("Choose at least one supported audiobook audio file.");
   if (files.some((file) => !file.path)) throw new Error("The file picker did not provide access to one or more files.");
 
-  const id = `device:${crypto.randomUUID()}`;
-  const directory = `${LIBRARY_ROOT}/${sanitizeSegment(id)}`;
+  const id = providerId ?? `device:${crypto.randomUUID()}`;
+  // Random staging directory prevents a retry after process death from overwriting files.
+  const directory = `${LIBRARY_ROOT}/${sanitizeSegment(id)}-${crypto.randomUUID()}`;
   await importStep("The book folder could not be created", () =>
     Filesystem.mkdir({ path: directory, directory: Directory.Data, recursive: true })
   );
@@ -445,6 +455,9 @@ export async function importAudiobookFromDevice(
       // The container's own duration is exact and free; the audio element is
       // only needed for files whose tags do not carry one.
       const durationSeconds = tags?.durationSeconds ?? (await mediaDuration(path));
+      if (provider && (durationSeconds === null || !Number.isFinite(durationSeconds) || durationSeconds <= 0)) {
+        throw new Error("Downloaded audio has no readable duration. Retry the book.");
+      }
       const trackId = `${id}:track:${index + 1}`;
       const track: Track = {
         id: trackId,
@@ -476,11 +489,11 @@ export async function importAudiobookFromDevice(
     // A single file names the whole book; across several files only the album
     // does, because each file's own title is just that part's name.
     title:
-      tagTitle(bookTags?.album) ??
+      provider?.title ?? tagTitle(bookTags?.album) ??
       (files.length === 1 ? tagTitle(bookTags?.title) : null) ??
       inferredTitle(files[0].name),
-    author: bookTags?.author ?? null,
-    narrator: bookTags?.narrator ?? null,
+    author: provider?.author || bookTags?.author || null,
+    narrator: provider?.narrator || bookTags?.narrator || null,
     durationSeconds: knownDuration ? tracks.reduce((sum, track) => sum + (track.durationSeconds ?? 0), 0) : null,
     trackCount: tracks.length,
     coverArtUrl: null,

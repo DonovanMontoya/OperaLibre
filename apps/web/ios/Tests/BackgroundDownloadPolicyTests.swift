@@ -3,6 +3,15 @@ import Foundation
 @main
 struct BackgroundDownloadPolicyTests {
     static func main() throws {
+        let libro = BackgroundDownloadAllowlist(origin: "libro-device", basePath: "")
+        for source in ["https://assets.libro.fm/book.m4b", "https://books.s3.amazonaws.com/part.zip", "https://example.cloudfront.net/book"] {
+            precondition((try? validatedBackgroundMediaSource(URL(string: source)!, allowedBy: libro)) != nil)
+        }
+        for source in ["http://assets.libro.fm/book", "https://libro.fm.evil.test/book", "https://localhost/book", "https://user:secret@libro.fm/book", "https://libro.fm:8000/book"] {
+            precondition((try? validatedBackgroundMediaSource(URL(string: source)!, allowedBy: libro)) == nil)
+        }
+        let server = BackgroundDownloadAllowlist(serverAddress: URL(string: "https://books.example")!)!
+        precondition((try? validatedBackgroundMediaSource(URL(string: "https://assets.libro.fm/book.m4b")!, allowedBy: server)) == nil)
         let acceptedSources = [
             "https://books.example/api/books/book/tracks/track/stream?token=x",
             "http://192.168.1.20:4000/api/books/book/cover?token=x",

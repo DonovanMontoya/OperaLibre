@@ -37,6 +37,42 @@ These endpoints are not a documented public developer API and may change.
 Catalog and download behavior is covered with fixtures; a real account is needed
 to verify compatibility with Libro.fm's current authentication and delivery service.
 
+## Native device downloads without a server
+
+On iPhone or Android, open **Get books → Libro.fm** and select **This device**.
+In local-library mode this is the only destination. Internet is needed to sign
+in, refresh purchases, and download, but no OperaLibre server is used. Completed
+local books play offline. Plain-browser downloads are not supported.
+
+The device connection is separate from the server connection. Credentials are
+never copied between them, and an unreachable server never silently changes the
+destination. Anyone using the same app installation can see its device connection
+and cached purchases, regardless of the selected server account. Disconnect the
+device connection before handing the device to another person.
+
+**Download to device** queues one book at a time, preferring M4B and falling back
+to MP3 archives. Reopen Get books after a background transfer to finish extraction
+and local-library indexing. Cancel stops queued/transferring downloads; final
+extraction/indexing finishes before cancellation can be processed. Retry obtains
+fresh signed URLs. An OS force-stop may pause transfers until the app reopens.
+
+Each downloaded file and the total extracted audio are capped at 25 GiB, with a
+256 MiB free-space reserve during transfer/extraction. Unsafe archive paths,
+duplicate filenames, and invalid audio duration are rejected. Final import copies
+audio into the local library: allow space for archives, extracted audio, and that
+copy. A process interruption during final copying can leave unindexed staging
+files; automatic cleanup of those orphaned copies is not yet included.
+
+iOS stores the token in a device-only Keychain item. Android uses an Android
+Keystore key to encrypt it in non-backed-up app storage. The password is not
+saved; automatic Capacitor bridge payload logging is disabled. Catalog metadata
+is cached locally. Native download jobs retain temporary signed URLs, not bearer
+tokens. Disconnect removes the connection and cached purchase list but keeps
+imported books and listening history. Device books never upload automatically.
+
+iOS MP3 extraction uses [ZIPFoundation](https://github.com/weichsel/ZIPFoundation),
+pinned independently of Capacitor's generated package file.
+
 ## Optional watched folder
 
 If you already download books yourself, expand **Optional: import files from a
