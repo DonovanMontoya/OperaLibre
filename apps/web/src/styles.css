@@ -2116,13 +2116,6 @@ img.large-cover {
   overflow-wrap: anywhere;
 }
 
-.book-heading h2 em {
-  font-family: "Instrument Serif", serif;
-  font-weight: 400;
-  font-style: italic;
-  color: var(--oxblood);
-}
-
 .book-heading p {
   margin: 0;
   font-family: "Fraunces", serif;
