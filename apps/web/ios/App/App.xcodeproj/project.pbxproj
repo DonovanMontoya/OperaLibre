@@ -27,6 +27,7 @@
 		A17B00292E32000100B6D001 /* CarPlayBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00282E32000100B6D001 /* CarPlayBridge.swift */; };
 		A17B002B2E32000100B6D001 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B002A2E32000100B6D001 /* SceneDelegate.swift */; };
 		A17B00312E32000100B6D001 /* AudiobookShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */; };
+		A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17B00322E32000100B6D001 /* NativeTabs.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,6 +54,7 @@
 		A17B002A2E32000100B6D001 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		A17B00302E32000100B6D001 /* AudiobookShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookShortcuts.swift; sourceTree = "<group>"; };
 		A17B002C2E32000100B6D001 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
+		A17B00322E32000100B6D001 /* NativeTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTabs.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,6 +94,7 @@
 				A17B00102E32000100B6D001 /* BackgroundDownloads.swift */,
 				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
 				A17B00122E32000100B6D001 /* ViewController.swift */,
+				A17B00322E32000100B6D001 /* NativeTabs.swift */,
 				A17B00142E32000100B6D001 /* NativeAudio.swift */,
 				A17B00202E32000100B6D001 /* AudiobookPlayer.swift */,
 				A17B00222E32000100B6D001 /* CarLibrary.swift */,
@@ -197,6 +200,7 @@
 				A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */,
 				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
 				A17B00132E32000100B6D001 /* ViewController.swift in Sources */,
+				A17B00332E32000100B6D001 /* NativeTabs.swift in Sources */,
 				A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */,
 				A17B00212E32000100B6D001 /* AudiobookPlayer.swift in Sources */,
 				A17B00232E32000100B6D001 /* CarLibrary.swift in Sources */,

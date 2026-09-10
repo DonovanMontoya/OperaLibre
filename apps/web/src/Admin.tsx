@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import {
+  ArrowLeft,
   ArrowUpCircle,
   BookOpen,
   Check,
@@ -80,6 +81,7 @@ export function AdminPanel({
   currentUser,
   books,
   onClose,
+  onBack,
   onUpload,
   onRescan,
   onOpenBook,
@@ -90,6 +92,7 @@ export function AdminPanel({
   currentUser: AuthUser;
   books: Book[];
   onClose?: () => void;
+  onBack?: () => void;
   onUpload: () => void;
   onRescan: () => Promise<void>;
   onOpenBook?: (bookId: string) => void;
@@ -664,6 +667,11 @@ export function AdminPanel({
     <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
       <header className="admin-head">
         <div>
+          {onBack ? <div className="admin-back">
+            <button type="button" className="download-btn" onClick={onBack}>
+              <ArrowLeft size={15} /><span>Back to Settings</span>
+            </button>
+          </div> : null}
           <span className="eyebrow"><ShieldCheck size={13} /> Administration</span>
           <h1>Library control room</h1>
           <p>Manage accounts, permissions, and the books available from this server.</p>
