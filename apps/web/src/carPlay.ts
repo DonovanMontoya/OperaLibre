@@ -15,6 +15,7 @@ export type {
   CarPlaybackSession
 } from "./carLibrary.ts";
 import {
+  CarLibraryAccess,
   parseCarSessions,
   type CarLibrarySnapshot,
   type CarPlaybackSession
@@ -34,6 +35,7 @@ interface CarPlayBridgePlugin {
    * honest than hand-walking dictionaries through the bridge.
    */
   setLibrary(options: { snapshot: string }): Promise<void>;
+  clearLibrary(): Promise<void>;
   getState(): Promise<{ connected: boolean; carOwnedBookId?: string; sessions: string }>;
   acknowledgeSessions(options: {
     sessions: Array<{ bookId: string; updatedAt: number }>;
@@ -87,8 +89,20 @@ export function releaseCarPlaybackOwnership() {
   carOwnedBookId = null;
 }
 
+const libraryAccess = new CarLibraryAccess();
+
+export function beginCarLibrarySession(scope: string) {
+  libraryAccess.begin(scope);
+}
+
+export async function clearCarLibrary() {
+  libraryAccess.end();
+  releaseCarPlaybackOwnership();
+  if (supportsCarPlay()) await CarPlayBridge.clearLibrary();
+}
+
 export async function syncCarLibrary(snapshot: CarLibrarySnapshot) {
-  if (!supportsCarPlay()) return;
+  if (!supportsCarPlay() || !libraryAccess.allows(snapshot.scopePrefix)) return;
   await CarPlayBridge.setLibrary({ snapshot: JSON.stringify(snapshot) });
 }
 
