@@ -7,9 +7,11 @@ final class CarLibraryStore {
     static let shared = CarLibraryStore()
 
     private let queue = DispatchQueue(label: "com.operalibre.car-library", qos: .userInitiated)
+    private let snapshotQueue = DispatchQueue(label: "com.operalibre.car-library.snapshot", qos: .userInitiated)
     private let sessionsKey = "operalibre.car-playback-sessions.v1"
     private let artworkSourcesKey = "operalibre.car-artwork-sources.v1"
     private var cachedSnapshot: CarLibrarySnapshot?
+    private let invalidatedKey = "operalibre.car-library-invalidated"
     private var artworkMemoryCache: [String: UIImage] = [:]
     private var placeholderCache: [String: UIImage] = [:]
 
@@ -41,6 +43,7 @@ final class CarLibraryStore {
 
     func snapshot() -> CarLibrarySnapshot {
         if let cachedSnapshot { return cachedSnapshot }
+        guard !UserDefaults.standard.bool(forKey: invalidatedKey) else { return .empty }
         guard
             let snapshotURL,
             let data = try? Data(contentsOf: snapshotURL),
@@ -53,10 +56,25 @@ final class CarLibraryStore {
     func save(_ snapshot: CarLibrarySnapshot) {
         cachedSnapshot = snapshot
         guard let snapshotURL, let data = try? JSONEncoder().encode(snapshot) else { return }
-        queue.async {
-            try? data.write(to: snapshotURL, options: .atomic)
+        snapshotQueue.async {
+            do {
+                try data.write(to: snapshotURL, options: .atomic)
+                UserDefaults.standard.set(false, forKey: self.invalidatedKey)
+            } catch { }
         }
         cacheArtwork(for: snapshot)
+    }
+
+    /// Drain older writes before invalidating disk state, so a queued snapshot
+    /// cannot restore a signed-out library after the bridge acknowledges logout.
+    func clear() {
+        cachedSnapshot = .empty
+        snapshotQueue.sync {
+            UserDefaults.standard.set(true, forKey: invalidatedKey)
+            if let snapshotURL { try? FileManager.default.removeItem(at: snapshotURL) }
+        }
+        persistSessions([])
+        artworkMemoryCache.removeAll()
     }
 
     // MARK: - Sessions

@@ -114,6 +114,34 @@ struct CarLibraryTests {
         precondition(newerSnapshot.resuming(book(positionSeconds: 800), sessions: [rewind]).resumePositionSeconds == 800,
                      "a newer library snapshot supersedes an old drive")
 
+        // Siri must restore the last device session without selecting another
+        // account's book or silently restarting a completed audiobook.
+        precondition(snapshot.audiobookToResume(sessions: [rewind])?.positionSeconds == 200,
+                     "Siri restores a recent deliberate rewind")
+        precondition(newerSnapshot.audiobookToResume(sessions: [rewind])?.positionSeconds == 0,
+                     "a refreshed shelf position supersedes older device progress")
+        precondition(CarLibrarySnapshot.empty.audiobookToResume(sessions: [rewind]) == nil,
+                     "signed out snapshots cannot resume")
+        var siriShelf = snapshot
+        var otherBook = book(positionSeconds: 700)
+        otherBook.id = "other"
+        siriShelf.books.append(otherBook)
+        precondition(siriShelf.audiobookToResume(sessions: []) == nil,
+                     "multiple in-progress books require a known last session")
+        precondition(siriShelf.audiobookToResume(sessions: [rewind])?.id == "book",
+                     "last playback identifies a book on an ambiguous shelf")
+        var completed = rewind
+        completed.finished = true
+        precondition(siriShelf.audiobookToResume(sessions: [completed]) == nil,
+                     "finishing the latest book does not start a different one")
+        completed.finished = false
+        completed.bookPositionSeconds = 3_600
+        precondition(siriShelf.audiobookToResume(sessions: [completed]) == nil,
+                     "an end-of-book checkpoint cannot silently restart")
+        siriShelf.books = [empty]
+        precondition(siriShelf.audiobookToResume(sessions: []) == nil,
+                     "books without audio cannot resume")
+
         var shelf = snapshot
         shelf.books = [book(positionSeconds: 100), book(status: "notStarted", positionSeconds: 0),
                        book(status: "finished", positionSeconds: 3_600)]

@@ -298,6 +298,8 @@ import {
 import {
   acknowledgeCarSessions,
   addCarPlayListener,
+  beginCarLibrarySession,
+  clearCarLibrary,
   carPlaybackOwnsEngine,
   getCarPlayState,
   releaseCarPlaybackOwnership,
@@ -3377,6 +3379,7 @@ export default function App() {
     try {
       const status = await getAuthStatus();
       if (status.setupRequired) {
+        await clearCarLibrary();
         setStoredToken(null);
         setAuthState({
           phase: "setup",
@@ -3395,6 +3398,7 @@ export default function App() {
       }
       const token = getStoredToken();
       if (!token) {
+        await clearCarLibrary();
         setAuthState({ phase: "login" });
         return;
       }
@@ -3414,6 +3418,7 @@ export default function App() {
           setAuthState(offlineUser ? { phase: "ready", user: offlineUser } : { phase: "login" });
           return;
         }
+        await clearCarLibrary();
         setStoredToken(null);
         setAuthState({ phase: "login" });
       }
@@ -3429,6 +3434,7 @@ export default function App() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      void clearCarLibrary().catch(console.error);
       setStoredToken(null);
       setAuthState({ phase: "login" });
     });
@@ -3497,7 +3503,8 @@ export default function App() {
           cacheOfflineUser(response.user);
           setAuthState({ phase: "ready", user: response.user });
         }}
-        onChangeServer={() => {
+        onChangeServer={async () => {
+          await clearCarLibrary();
           setStoredToken(null);
           clearServerUrl();
           setAuthState({ phase: "server" });
@@ -3510,11 +3517,13 @@ export default function App() {
     <MainApp
       currentUser={authState.user}
       onCurrentUserChanged={handleCurrentUserChanged}
-      onConnectServer={() => {
+      onConnectServer={async () => {
+        await clearCarLibrary();
         exitLocalMode();
         setAuthState({ phase: "server", returnToLocal: true });
       }}
       onLogout={async () => {
+        await clearCarLibrary();
         if (isLocalMode()) {
           exitLocalMode();
           setAuthState({ phase: "server" });
@@ -4967,6 +4976,10 @@ function MainApp({
   const carPlaybackBook = carPlaybackBookId
     ? books.find((book) => book.id === carPlaybackBookId) ?? null
     : null;
+
+  useEffect(() => {
+    beginCarLibrarySession(`${getServerStorageKey()}:${currentUser.id}`);
+  }, [currentUser.id]);
 
   useEffect(() => {
     if (!supportsCarPlay() || carLibrarySignature === "") return;
@@ -8865,7 +8878,7 @@ function MainApp({
         {carPlaybackBook ? (
           <section className="carplay-banner">
             <div className="carplay-banner-copy">
-              <strong>Playing in the car</strong>
+              <strong>Audiobook playing</strong>
               <span>{carPlaybackBook.title}</span>
             </div>
             <button
@@ -8875,7 +8888,7 @@ function MainApp({
                 resumeSelectedBook(carPlaybackBook);
               }}
             >
-              Play here
+              Open player
             </button>
           </section>
         ) : null}
