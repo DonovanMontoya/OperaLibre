@@ -1910,13 +1910,12 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         let mut title = book_title_for_group(&group_key, &grouped_files, &metadata);
 
         // The first track carrying a picture supplies the book's cover.
-        let cover_art_url = grouped_files
+        let embedded_cover = grouped_files
             .iter()
-            .find_map(|file_path| covers_by_path.remove(file_path))
-            .map(|cover| {
-                extracted_covers.push((book_id.clone(), cover));
-                format!("/api/books/{book_id}/cover")
-            });
+            .find_map(|file_path| covers_by_path.remove(file_path));
+        let cover_art_url = embedded_cover
+            .as_ref()
+            .map(|_| format!("/api/books/{book_id}/cover"));
         let mut metadata_summary = merge_metadata_summary(&metadata);
         if let Some(sidecar) = libation_sidecar_for_group(&group_key, &grouped_files) {
             // A Libation sidecar is a direct Audible record for this download,
@@ -1943,7 +1942,11 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
         }
-        let companion_candidates = discover_candidates(&group_key, &grouped_files, &title);
+        let companion_candidates =
+            discover_candidates(&group_key, &grouped_files, &title, embedded_cover.as_ref());
+        if let Some(cover) = embedded_cover {
+            extracted_covers.push((book_id.clone(), cover));
+        }
         let sync_file = find_sync_file(
             &book_id,
             &group_key,

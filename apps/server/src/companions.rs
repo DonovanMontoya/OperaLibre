@@ -141,6 +141,7 @@ pub(crate) fn discover_candidates(
     group_key: &FsPath,
     grouped_files: &[PathBuf],
     book_title: &str,
+    embedded_cover: Option<&ScannedCover>,
 ) -> Vec<PathBuf> {
     let is_folder_book = group_key.is_dir();
     let Some(search_dir) = (if is_folder_book {
@@ -169,20 +170,51 @@ pub(crate) fn discover_candidates(
         .map(|entry| entry.into_path())
         .filter(|path| is_document(path) || is_image(path))
         .filter(|path| {
-            if is_folder_book {
-                return true;
-            }
             let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
                 return false;
             };
             let stem_key = normalize_match_key(stem);
-            Some(&stem_key) == group_stem.as_ref()
-                || stem_key == title_key
-                || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key)
+            let matches_book = !stem_key.is_empty()
+                && (Some(&stem_key) == group_stem.as_ref()
+                    || stem_key == title_key
+                    || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key));
+            // Exporters commonly name the loose cover after the audio or book.
+            // Keep identically named documents: those are reading companions.
+            if is_image(path) && (matches_book || duplicates_cover(path, embedded_cover)) {
+                return false;
+            }
+            is_folder_book || matches_book
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|path| natural_path_key(path));
     candidates
+}
+
+/// Recognize an arbitrarily named, byte-identical export of the embedded art.
+/// Bound reads and retain uncertain images as extras instead of hiding them.
+fn duplicates_cover(path: &FsPath, cover: Option<&ScannedCover>) -> bool {
+    const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
+    let Some(cover) = cover else { return false };
+    if cover.len == 0 || cover.len > MAX_COVER_BYTES {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() == cover.len)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(file, MAX_COVER_BYTES + 1),
+        &mut bytes,
+    )
+    .is_ok()
+        && bytes.len() as u64 == cover.len
+        && bytes_etag(&bytes) == cover.etag
 }
 
 /// Reads a document to find out how much text and how many pictures it
@@ -622,6 +654,59 @@ mod tests {
         assert!(is_image(FsPath::new("/lib/Book/map-of-the-north.png")));
         assert!(is_document(FsPath::new("/lib/Book/Book.EPUB")));
         assert!(!is_document(FsPath::new("/lib/Book/Book.metadata.json")));
+    }
+
+    #[test]
+    fn discovery_skips_book_named_images_and_exact_cover_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Folder Name");
+        std::fs::create_dir(&folder).unwrap();
+        let art = b"embedded cover bytes";
+        let cover = ScannedCover {
+            mime_type: "image/jpeg".into(),
+            etag: bytes_etag(art),
+            len: art.len() as u64,
+            source: folder.join("Audio Name.m4b"),
+        };
+        for name in [
+            "Folder Name.png",
+            "Audio Name.JPG",
+            "Book Title.webp",
+            "cover.jpg",
+            "Book Title.epub",
+            "Book Title.pdf",
+            "map.png",
+        ] {
+            std::fs::write(folder.join(name), b"other content").unwrap();
+        }
+        std::fs::write(folder.join("exported-art.jpeg"), art).unwrap();
+        // Equal size alone must not hide a genuine illustration.
+        std::fs::write(folder.join("illustration.jpg"), vec![b'x'; art.len()]).unwrap();
+        let audio = vec![cover.source.clone()];
+        let names = discover_candidates(&folder, &audio, "Book Title", Some(&cover))
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "Book Title.epub",
+                "Book Title.pdf",
+                "illustration.jpg",
+                "map.png"
+            ]
+        );
+        assert!(
+            discover_candidates(&folder, &audio, "Book Title", None)
+                .contains(&folder.join("exported-art.jpeg"))
+        );
+        // At the shared library root, same-stem documents still belong to this
+        // book, but its same-stem image is artwork and unrelated files stay out.
+        let names = discover_candidates(&audio[0], &audio, "Book Title", None)
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Book Title.epub", "Book Title.pdf"]);
     }
 
     #[test]
