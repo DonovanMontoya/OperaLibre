@@ -9157,7 +9157,7 @@ function MainApp({
                       </div>
                     ) : null}
                     <button
-                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
+                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
                       onClick={() => {
                         selectBook(book);
                         setLibraryOpen(false);
