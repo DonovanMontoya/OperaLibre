@@ -7020,6 +7020,20 @@ html.native-app .game-reset { display: grid; place-items: center; width: 38px; h
   html.native-app .game-card { padding: 10px; }
 }
 
+/* Tall phones still have a short play area after the safe areas, tabs and
+   mini-player are reserved. Keep the portrait heading on one line instead
+   of waiting for the raw viewport to fall below the short-screen cutoff.
+   Give that space to the measured board frames; a board minimum would bring
+   back the overlap with the message and keyboard. */
+@media (orientation: portrait) and (max-width: 599px) {
+  html.native-app .games-shell { padding-top: calc(var(--status-h) + 8px); }
+  html.native-app .games-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  html.native-app .games-head h1 { margin: 0; font-size: 1.4rem; }
+  html.native-app .games-head p { display: none; }
+  html.native-app .games-switcher { margin: 8px 0; }
+  html.native-app .game-card { padding: 10px; }
+}
+
 html.native-app .word-game { flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 /* Same trick as the match board: the frame is the flexible row, and the board
    derives its width from the measured height so it can never overflow. A 5×6
