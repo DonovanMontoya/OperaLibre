@@ -264,7 +264,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         do {
             if info.allowedOrigin == "libro-device" {
                 let size = (try FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.int64Value ?? 0
-                guard size > 0, size <= maximumBackgroundDownloadBytes,
+                guard let finalURL = response.url, isLibroDownloadURL(finalURL),
+                      size > 0, size <= maximumBackgroundDownloadBytes,
                       response.expectedContentLength < 0 || size == response.expectedContentLength else { throw DownloadError.invalidFiles }
             }
             guard let destinationValue = URL(string: info.destination) else {

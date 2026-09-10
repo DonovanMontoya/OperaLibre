@@ -50,7 +50,15 @@ public class LibroDevicePlugin extends Plugin {
     private JSONObject connection() throws Exception {
         File file = credentialFile();
         if (!file.exists()) return null;
-        JSONObject envelope = new JSONObject(new String(java.nio.file.Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+        JSONObject envelope;
+        try (InputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (output.size() + count > 65536) throw new ProviderError("The stored connection is invalid. Disconnect and reconnect.");
+                output.write(buffer, 0, count);
+            }
+            envelope = new JSONObject(output.toString("UTF-8"));
+        }
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)));
         return new JSONObject(new String(cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP)), StandardCharsets.UTF_8));
@@ -61,7 +69,8 @@ public class LibroDevicePlugin extends Plugin {
             .put("data", Base64.encodeToString(cipher.doFinal(value.toString().getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP));
         File temp = new File(getContext().getNoBackupFilesDir(), "libro-connection.tmp");
         try (FileOutputStream output = new FileOutputStream(temp)) { output.write(envelope.toString().getBytes(StandardCharsets.UTF_8)); output.getFD().sync(); }
-        java.nio.file.Files.move(temp.toPath(), credentialFile().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        // POSIX rename is atomic and available on API 21+, unlike java.nio.file (26+).
+        android.system.Os.rename(temp.getAbsolutePath(), credentialFile().getAbsolutePath());
     }
     private JSONObject api(String path, String token, JSONObject body) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL("https://libro.fm/" + path).openConnection();
