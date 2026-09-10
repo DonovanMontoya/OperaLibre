@@ -63,7 +63,7 @@ A "companion" is any document or picture that sits beside a book's audio. Docume
 - `.txt`
 - `.html` / `.htm`
 
-Loose pictures (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`) are collected into a gallery. Files named `cover`, `folder`, `front`, `back`, `thumb`, `artwork`, or `poster` are treated as artwork and skipped.
+Loose pictures (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`) are collected into a gallery. Files named `cover`, `folder`, `front`, `back`, `thumb`, `artwork`, or `poster` are treated as artwork and skipped. Images whose names match the audio file, book title, or book folder are also treated as covers, as are byte-identical copies of the embedded cover (up to 16 MiB). These files do not trigger the **Extras included** marker. Other images and companion documents remain available as extras or reading material. Rescan the library to update existing books.
 
 ### Which files belong to a book
 
