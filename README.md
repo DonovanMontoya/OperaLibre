@@ -82,6 +82,7 @@ The server owns scanning, authentication, metadata, cover art, readalong files, 
 
 - [Install a Release](docs/installing-a-release.md) — plain-language installation guide
 - [Using OperaLibre](docs/using-operalibre.md) — phones, readers, uploads, readalong, Jellyfin, Audible
+- [iOS Release Changelog](docs/ios-changelog.md) — iPhone and iPad release history, starting with 1.1.0 (0)
 - [Configuration](docs/configuration.md) — every `server.config` option
 - [Library Layout](docs/library-layout.md) — how folders, files, and companions are organized
 - [Users](docs/users.md) — accounts, sessions, and administration

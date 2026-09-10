@@ -54,6 +54,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 8. [API Reference](api.md) — HTTP endpoints exposed by the server
 9. [Deployment](deployment.md) — running on a home server or LAN
 10. [Troubleshooting](troubleshooting.md) — common problems and fixes
+11. [iOS Release Changelog](ios-changelog.md) — iPhone and iPad versions and build notes
 
 ## Architecture
 
