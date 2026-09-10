@@ -11822,15 +11822,34 @@ html.native-app .recent-row {
     background-repeat: repeat-y, no-repeat;
   }
 
-  /* Both destinations are the same spread; the tab only decides
-     what the recto is showing. */
-  html.native-app .native-shell.tab-reading .mini-player,
-  html.native-app .native-shell.tab-shelf .mini-player {
+  /* The recto carries the full transport whenever it is showing the
+     book that is playing, so the floating ribbon would only repeat
+     it. Any other time — inspecting a different title while
+     something else plays — the mini-player is the only transport
+     there is, so it stays, docked over the recto. */
+  html.native-app .native-shell.tab-shelf > .player-pane.has-native-player ~ .mini-player,
+  html.native-app .native-shell.tab-reading > .player-pane.has-native-player ~ .mini-player {
     display: none;
   }
 
-  /* The library is never left, so there is nothing to go back to. */
-  html.native-app .native-player-return,
+  html.native-app .native-shell.has-mini-player.tab-shelf
+    > .player-pane:not(.has-native-player) ~ .mini-player,
+  html.native-app .native-shell.has-mini-player.tab-reading
+    > .player-pane:not(.has-native-player) ~ .mini-player {
+    display: grid;
+    left: calc(var(--verso-w) + var(--gutter) / 2);
+    right: max(16px, env(safe-area-inset-right));
+  }
+
+  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
+    padding-bottom: calc(var(--mini-player-height) + 24px);
+  }
+
+  /* "Back to Library" is the shelf's own variant of this button and
+     the library never left, so only that one goes. The Reading tab
+     renders the same element as "Back to Now Playing", which is the
+     way back to the transport from a book page and has to stay. */
+  html.native-app .native-shell.tab-shelf .native-player-return,
   html.native-app .library-open-btn {
     display: none;
   }
@@ -11865,12 +11884,6 @@ html.native-app .recent-row {
   }
 
   html.native-app .native-shell > .library-pane::before {
-    display: none;
-  }
-
-  /* Selecting a title is a change of page on the recto, not a
-     navigation away from the shelf. */
-  html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
     display: none;
   }
 
