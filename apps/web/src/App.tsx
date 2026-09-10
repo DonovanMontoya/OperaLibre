@@ -49,7 +49,6 @@ import {
   Rows3,
   Search,
   ServerOff,
-  ShieldCheck,
   Smartphone,
   Settings,
   SkipBack,
@@ -275,6 +274,8 @@ import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
 import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
+import { nativeTabItems, nativeTabSelection, type NativeTab } from "./nativeTabs";
+import { useNativeTabs } from "./useNativeTabs";
 import {
   disableRotationLock,
   enableRotationLock,
@@ -370,7 +371,6 @@ const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
-type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
 type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
 type DeviceDownloadActivity = {
   bookId: string;
@@ -7960,6 +7960,14 @@ function MainApp({
   }
 
   const showLedgerTab = native && capabilities.statistics;
+  const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
+    currentUser.isAdmin ? brokenLibationAccounts.length : 0);
+  const nativeTabsReady = useNativeTabs({
+    tabs: iosTabs,
+    selected: nativeTabSelection(nativeTab, iosTabs),
+    visible: !readalongOpen,
+    appearance: appearanceMode
+  }, openNativeTab);
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
@@ -8894,95 +8902,90 @@ function MainApp({
         ) : null}
 
         {currentUser.isAdmin && librarySource === "audible" ? (
-          <section className="libation-panel">
-            <div className="libation-status">
-              {libationStatus?.enabled ? <Cloud size={15} /> : <ServerOff size={15} />}
-              <span>
-                {libationStatus?.enabled
-                  ? libationStatus.authenticated
-                    ? "Libation ready"
-                    : "Libation needs sign-in"
-                  : "Libation not configured"}
-              </span>
-            </div>
-
-            {libationMessage ? <p>{libationMessage}</p> : null}
-
-            <p>Audible accounts are added and reconnected in Libation.</p>
-
-            <div className="libation-account-toolbar">
-              <label>
-                <span>Browsing</span>
-                <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
-                  <option value="all">All accounts</option>
-                  {libationStatus?.accounts.map((account) => (
-                    <option key={account.id} value={account.id}>{account.name || account.accountId}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            {libationStatus?.accounts.length ? (
-              <div className="account-list">
-                {libationStatus.accounts.map((account) => (
-                  <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
-                    <span className="account-health-icon">
-                      {account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}
-                    </span>
-                    <span className="account-list-copy">
-                      <strong>{account.name || account.accountId}</strong>
-                      <small>
-                        {account.locale.toUpperCase()}
-                        {account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}
-                      </small>
-                      {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
-                    </span>
-                  </article>
-                ))}
+          <section className="libation-panel audible-compact">
+            <div className="audible-toolbar">
+              <div className="libation-account-toolbar">
+                <label>
+                  <span className="sr-only">Audible account</span>
+                  <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
+                    <option value="all">All accounts</option>
+                    {libationStatus?.accounts.map((account) => (
+                      <option key={account.id} value={account.id}>{account.name || account.accountId}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
-            ) : null}
 
-            <div className="libation-actions">
-              <button
-                type="button"
-                onClick={() => void startLibationSync()}
-                aria-busy={isRefreshingAudible}
-                disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}
-              >
-                {refreshLibationJob?.status === "queued" ? (
-                  <List size={13} />
-                ) : isRefreshingAudible ? (
-                  <LoaderCircle size={13} className="spin-icon" />
-                ) : (
-                  <RefreshCcw size={13} />
-                )}
-                <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
-              </button>
-              {currentUser.libationAccess === "direct" ? <button
-                type="button"
-                onClick={() => void startAllLiberation()}
-                aria-busy={libationAllPending || !!downloadAllLibationJob}
-                disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}
-              >
-                {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
-                <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
-              </button> : null}
+              <div className="libation-actions">
+                <button
+                  type="button"
+                  onClick={() => void startLibationSync()}
+                  aria-busy={isRefreshingAudible}
+                  disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}
+                >
+                  {refreshLibationJob?.status === "queued" ? (
+                    <List size={13} />
+                  ) : isRefreshingAudible ? (
+                    <LoaderCircle size={13} className="spin-icon" />
+                  ) : (
+                    <RefreshCcw size={13} />
+                  )}
+                  <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : "Refresh"}</span>
+                </button>
+              </div>
             </div>
+            {libationMessage ? <p role="status">{libationMessage}</p> : null}
+            {(libationStatus && (!libationStatus.enabled || !libationStatus.authenticated || brokenLibationAccounts.length > 0)) ? (
+              <p className="audible-attention" role="status"><AlertCircle size={14} />
+                {!libationStatus?.enabled ? "Audible is not configured." : brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention. Open Accounts & downloads to reconnect.` : "Sign in through Libation to connect your Audible account."}
+              </p>
+            ) : null}
+            <details className="audible-management">
+              <summary>Accounts &amp; downloads <ChevronDown size={15} /></summary>
+              <div className="audible-management-body">
+                <p>Add or reconnect accounts in Libation.</p>
+                {libationStatus?.accounts.length ? (
+                  <div className="account-list">
+                    {libationStatus.accounts.map((account) => (
+                      <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
+                        <span className="account-health-icon">
+                          {account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}
+                        </span>
+                        <span className="account-list-copy">
+                          <strong>{account.name || account.accountId}</strong>
+                          <small>
+                            {account.locale.toUpperCase()}
+                            {account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}
+                          </small>
+                          {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
+                        </span>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
 
-            <p className="libation-help">
-              Refresh checks Audible for new purchases. Administrator refreshes are unrestricted
-              {libationStatus?.autoRefreshHours
-                ? `, and the server also checks automatically every ${libationStatus.autoRefreshHours} hours.`
-                : "."}
-            </p>
+                <div className="libation-actions">
+                  {currentUser.libationAccess === "direct" ? <button
+                    type="button"
+                    onClick={() => void startAllLiberation()}
+                    aria-busy={libationAllPending || !!downloadAllLibationJob}
+                    disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}
+                  >
+                    {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
+                    <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
+                  </button> : null}
+                </div>
+                <p>{libationStatus?.autoRefreshHours ? `Checks for new purchases automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh to check for new purchases."}</p>
+              </div>
+            </details>
 
             {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
                 ? libationBooks.find((book) => book.catalogId === job.targetId)?.title
                 : null;
               return (
-              <div key={job.id} className={`job-card ${job.status}`}>
-                <div className="job-card-head">
+              <details key={job.id} className={`job-card audible-job ${job.status}`}>
+                <summary className="job-card-head">
                   <span className="job-state">
                     {job.status === "queued" ? (
                       <List size={13} />
@@ -8995,8 +8998,9 @@ function MainApp({
                     )}
                     {jobStateLabel(job)}
                   </span>
-                  <strong>{targetTitle ?? jobTitle(job)}</strong>
-                </div>
+                  <strong>{targetTitle ?? (job.kind === "libation-sync" && job.status === "completed" ? "Library refreshed" : jobTitle(job))}</strong>
+                  <ChevronDown size={15} />
+                </summary>
                 <p>{jobSummary(job)}</p>
                 <dl className="job-meta">
                   <div>
@@ -9013,7 +9017,7 @@ function MainApp({
                 {!isPendingJob(job) || job.error ? (
                   <pre className="job-output">{jobDetailLines(job).join("\n")}</pre>
                 ) : null}
-              </div>
+              </details>
               );
             })}
           </section>
@@ -11052,8 +11056,17 @@ function MainApp({
       {native && nativeTab === "settings" ? (
         <section className="settings-shell" aria-label="Settings">
           <header className="settings-head">
-            <span className="eyebrow"><Settings size={13} /> The Study</span>
-            <h1>Settings</h1>
+            <div className="settings-heading">
+              <span className="eyebrow"><Settings size={13} /> The Study</span>
+              <h1>Settings</h1>
+            </div>
+            {capabilities.administration ? (
+              <button type="button" className="settings-admin-button" onClick={() => openNativeTab("admin")}>
+                <UserCog size={18} strokeWidth={1.6} />
+                <span>Administration</span>
+                <ChevronRight size={15} />
+              </button>
+            ) : null}
           </header>
 
           <section className="settings-card">
@@ -11348,10 +11361,6 @@ function MainApp({
                     <Upload size={13} />
                     <span>Upload audiobook</span>
                   </button>
-                  <button type="button" className="download-btn" onClick={() => openNativeTab("admin")}>
-                    <UserCog size={13} />
-                    <span>Administration</span>
-                  </button>
                 </>
               ) : null}
               <button type="button" className="download-btn" onClick={() => {
@@ -11368,6 +11377,7 @@ function MainApp({
 
       {native && capabilities.administration && nativeTab === "admin" ? (
         <AdminPanel
+          onBack={() => openNativeTab("settings")}
           currentUser={currentUser}
           books={administrableBooks}
           onUpload={() => setUploadModalOpen(true)}
@@ -11382,7 +11392,7 @@ function MainApp({
         />
       ) : null}
 
-      {native ? (
+      {native && !nativeTabsReady ? (
         <nav className="spine-tabs" aria-label="Primary">
           <button
             type="button"
@@ -11423,21 +11433,10 @@ function MainApp({
               <span>Ledger</span>
             </button>
           ) : null}
-          {capabilities.administration ? (
-            <button
-              type="button"
-              className={`spine-tab ${nativeTab === "admin" ? "active" : ""}`}
-              aria-current={nativeTab === "admin" ? "page" : undefined}
-              onClick={() => openNativeTab("admin")}
-            >
-              <ShieldCheck size={20} strokeWidth={1.6} />
-              <span>Admin</span>
-            </button>
-          ) : null}
           <button
             type="button"
-            className={`spine-tab ${nativeTab === "settings" ? "active" : ""}`}
-            aria-current={nativeTab === "settings" ? "page" : undefined}
+            className={`spine-tab ${(nativeTab === "settings" || nativeTab === "admin") ? "active" : ""}`}
+            aria-current={(nativeTab === "settings" || nativeTab === "admin") ? "page" : undefined}
             onClick={() => openNativeTab("settings")}
           >
             <Settings size={20} strokeWidth={1.6} />

@@ -10140,7 +10140,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-message.error { color: #7b2018; background: rgba(160, 49, 34, 0.1); }
 .admin-message.success { color: #315b3c; background: rgba(55, 112, 71, 0.1); }
 
-.admin-update-actions { display: flex; gap: 8px; }
+.admin-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .admin-update-actions button,
 .admin-update-actions a {
   display: inline-flex;
@@ -10331,8 +10331,13 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   text-transform: uppercase;
 }
 
+.admin-experiment-list { min-width: 0; }
+
 .admin-experiment-list > article {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  overflow-wrap: anywhere;
   gap: 12px;
   padding: 16px;
   border: 1px solid rgba(var(--ink-rgb), 0.1);
@@ -10669,6 +10674,12 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-quick-actions, .admin-section-head { align-items: flex-start; flex-direction: column; }
   .admin-update-actions { width: 100%; }
   .admin-update-actions button, .admin-update-actions a { flex: 1; }
+  .admin-experiment-list .admin-update-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-experiment-list .admin-update-actions > * { min-width: 0; }
+  .admin-experiment-list .admin-software-version-head { flex-wrap: wrap; }
   .admin-software-head { align-items: stretch; flex-direction: column; }
   .admin-backup-actions { width: 100%; }
   .admin-backup-actions button { flex: 1; }
@@ -10703,10 +10714,37 @@ html.native-app .admin-shell:not(.admin-overlay) {
 }
 
 .settings-head {
-  display: grid;
-  justify-items: start;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   margin-bottom: 6px;
+}
+
+.settings-heading { display: grid; gap: 6px; }
+
+.settings-admin-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid rgba(184, 137, 58, 0.4);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(var(--lift-soft-rgb), 0.8), rgba(184, 137, 58, 0.09));
+  box-shadow: inset 0 1px 0 rgba(var(--sheen-rgb), 0.6);
+  color: var(--ink);
+  font-family: "Instrument Serif", serif;
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+
+.settings-admin-button > svg { flex: 0 0 auto; color: var(--oxblood); }
+.settings-admin-button:active { background: rgba(184, 137, 58, 0.18); }
+@media (max-width: 360px) {
+  .settings-admin-button { gap: 5px; padding-inline: 9px; font-size: 0.95rem; }
+  .settings-admin-button > svg:last-child { display: none; }
 }
 
 .settings-head h1 {
@@ -12600,3 +12638,153 @@ html.native-app .recent-row {
 }
 .track-downloads li { margin: .35rem 0; overflow-wrap: anywhere; }
 .track-downloads a { color: inherit; }
+
+/* UIKit sizes the web viewport inside the selected tab's safe content area. */
+html.native-app.uikit-tabs {
+  --tabs-h: 0px;
+}
+
+.admin-back { margin-bottom: 16px; }
+
+/* Spend the room above and below the phone player on its artwork and controls.
+   The artwork's existing shrinkable grid track still protects short screens. */
+@media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+    max-width: min(78vw, 320px);
+    max-height: min(37vh, 100%);
+  }
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+    width: min(78vw, 320px);
+  }
+  html.native-app .native-now-play { width: 88px; height: 88px; flex-shrink: 0; }
+  html.native-app .native-now-play svg { width: 38px; height: 38px; }
+  html.native-app .native-now-transport .native-now-seek { height: 58px; }
+  html.native-app .native-now-utility button { min-height: 50px; }
+  html.native-app .native-now-copy h2 { font-size: clamp(1.35rem, 5.6vw, 1.7rem); }
+}
+
+@media (min-width: 720px) and (min-height: 500px) {
+  html.native-app .native-now-play { width: 104px; height: 104px; flex-shrink: 0; }
+  html.native-app .native-now-play svg { width: 44px; height: 44px; }
+  html.native-app .native-now-transport .native-now-seek { flex-basis: 56px; width: 56px; height: 64px; }
+  html.native-app .native-now-utility button { min-height: 62px; font-size: 0.64rem; }
+  html.native-app .native-now-utility button svg { width: 22px; height: 22px; }
+  html.native-app .native-now-time-row { font-size: 0.78rem; }
+}
+@media (min-width: 720px) and (orientation: portrait) {
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+    max-width: min(100%, 420px);
+    max-height: min(42vh, 100%);
+  }
+  html.native-app .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+    width: min(100%, 420px);
+  }
+}
+
+/* Ledger: a reading dashboard, with habits ahead of milestones. */
+html.native-app:not(.dark-mode) .profile-shell { background: #f5f2eb; }
+.profile-page.ledger-dashboard {
+  --ledger-base: #f5f2eb;
+  --ledger-surface: #fffdf8;
+  --ledger-line: rgba(var(--ink-rgb), .11);
+  background: var(--ledger-base);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  gap: 28px;
+  border-radius: 24px;
+}
+.dark-mode .profile-page.ledger-dashboard { --ledger-base: #17120f; --ledger-surface: #241e19; }
+html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 1080px; margin: 0 auto; }
+.ledger-dashboard .profile-head { gap: 14px; }
+.ledger-dashboard .profile-mono { width: 48px; height: 48px; flex: 0 0 48px; border-radius: 16px; font: 600 20px -apple-system, BlinkMacSystemFont, sans-serif; background: rgba(184,137,58,.16); color: var(--ink); }
+.ledger-dashboard .profile-id h1 { font-size: 32px; line-height: 1.1; }
+.ledger-dashboard .ledger-owner { display: block; margin-top: 6px; font-size: 14px; color: var(--ink-soft); }
+.ledger-dashboard .profile-id p { font: inherit; font-size: 12px; line-height: 1.5; margin-top: 5px; }
+.ledger-dashboard .profile-headline { background: #241c17; border-radius: 22px; border: 0; padding: 24px; gap: 24px; align-items: center; }
+.ledger-dashboard .headline-primary { padding: 0; border: 0; gap: 10px; }
+.ledger-dashboard .headline-value { font: 500 clamp(44px, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: #f1e7d0; }
+.ledger-dashboard .headline-unit { font-size: .4em; color: #d9b574; }
+.ledger-dashboard .headline-label { font: inherit; font-size: 12px; line-height: 1.5; color: #c7b9a8; }
+.ledger-dashboard .headline-secondary { gap: 20px 16px; }
+.ledger-dashboard .headline-secondary > div { gap: 7px; }
+.ledger-dashboard .headline-secondary dd { font: 500 27px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: #f1e7d0; font-variant-numeric: tabular-nums; }
+.ledger-dashboard .headline-secondary dt { font: inherit; font-size: 12px; line-height: 1.4; color: #c7b9a8; }
+.ledger-dashboard .headline-secondary .dd-unit { color: #d9b574; }
+.ledger-dashboard .profile-calendar { padding: 22px; background: var(--ledger-surface); border: 1px solid var(--ledger-line); border-radius: 18px; }
+.ledger-dashboard .profile-calendar h2, .ledger-dashboard .profile-recent h2 { font: 600 19px/1.3 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.025em; }
+.ledger-dashboard .profile-calendar header span { font: inherit; font-size: 12px; }
+.ledger-dashboard .calendar-weekdays { font: inherit; font-size: 10px; }
+.ledger-dashboard .calendar-weeks { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 5px; }
+.ledger-dashboard .calendar-week { gap: 5px; }
+.ledger-dashboard .calendar-cell { width: 100%; height: 20px; border-radius: 4px; border: 0; padding: 0; }
+.ledger-dashboard button.calendar-cell { cursor: pointer; }
+.ledger-dashboard .calendar-cell[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 1px; }
+.ledger-dashboard .calendar-weekdays { gap: 5px; }
+.ledger-dashboard .calendar-weekdays span { height: 20px; }
+.calendar-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.calendar-footer p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-faded); }
+.calendar-legend { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--ink-faded); }
+.ledger-dashboard .calendar-legend .calendar-cell { width: 10px; height: 10px; border-radius: 3px; }
+.ledger-dashboard .profile-favorites { padding: 0; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ledger-dashboard .profile-favorites > div { min-width: 0; gap: 6px; }
+.ledger-dashboard .profile-favorites span, .ledger-dashboard .profile-favorites strong { font-family: inherit; font-style: normal; }
+.ledger-dashboard .profile-favorites span { font-size: 12px; }
+.ledger-dashboard .profile-favorites strong { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
+.ledger-dashboard .ledger-achievements { margin: 0; padding-top: 26px; border-color: var(--ledger-line); }
+.ledger-dashboard .achievements-heading { gap: 14px; }
+.ledger-dashboard .achievements-heading h2 { font: 600 21px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; margin: 0 0 7px; letter-spacing: -.025em; }
+.ledger-dashboard .achievements-heading p { margin: 0; font-size: 12px; }
+.ledger-dashboard .achievement-tally > strong { font-size: 25px; font-weight: 600; letter-spacing: -.04em; }
+.ledger-dashboard .achievement-tally strong span { font-size: 15px; }
+.ledger-dashboard .achievement-tally > span { font-size: 10px; }
+.ledger-dashboard .achievement-filters { width: fit-content; padding: 4px; border-radius: 12px; background: rgba(var(--ink-rgb), .055); gap: 2px; margin: 20px 0 16px; }
+.ledger-dashboard .achievement-filters button { border: 0; border-radius: 9px; min-height: 36px; padding: 8px 14px; font-weight: 500; }
+.ledger-dashboard .achievement-filters button[aria-pressed="true"] { background: var(--ledger-surface); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+.ledger-dashboard .achievement-card { border-radius: 16px; padding: 18px; background: var(--ledger-surface); border-color: var(--ledger-line); }
+.ledger-dashboard .achievement-card.is-earned { border-color: rgba(184,137,58,.4); background: var(--ledger-surface); }
+.ledger-dashboard .achievement-seal { width: 38px; height: 38px; border: 0; border-radius: 12px; background: rgba(var(--ink-rgb), .06); }
+.ledger-dashboard .is-earned .achievement-seal { background: rgba(184,137,58,.2); color: var(--ink); box-shadow: none; }
+.ledger-dashboard .achievement-state { font-size: 10px; }
+.ledger-dashboard .achievement-card h3 { font-size: 15px; font-weight: 600; margin: 14px 0 7px; }
+.ledger-dashboard .achievement-card p { font-size: 12px; line-height: 1.5; }
+.ledger-dashboard .achievement-progress { font-variant-numeric: tabular-nums; }
+.ledger-dashboard .achievement-progress progress { height: 5px; }
+.ledger-dashboard .achievement-evidence { line-height: 1.5; }
+.ledger-dashboard .ledger-rivalries { background: transparent; border-radius: 16px; border-color: var(--ledger-line); }
+.ledger-dashboard .ledger-rivalries h3 { font-size: 17px; font-weight: 600; }
+.ledger-dashboard .recent-text strong, .ledger-dashboard .recent-text span, .ledger-dashboard .recent-time { font-family: inherit; }
+.ledger-dashboard button:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 3px; }
+@media (max-width: 720px) {
+  .ledger-dashboard .profile-headline { grid-template-columns: 1fr; gap: 22px; padding: 22px; }
+  .ledger-dashboard .headline-primary { border-bottom: 1px solid #514439; padding-bottom: 20px; }
+  .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ledger-dashboard .profile-calendar { padding: 18px; }
+  .ledger-dashboard .achievement-card { padding: 14px; }
+}
+
+/* Audible browsing keeps management and diagnostic detail out of the book list. */
+.libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
+.audible-compact .libation-account-toolbar { display: block; flex: 1; min-width: 0; }
+.audible-compact .libation-account-toolbar label { display: block; font: inherit; letter-spacing: 0; text-transform: none; }
+.audible-compact .libation-account-toolbar select { width: 100%; min-height: 44px; border-radius: 12px; font: inherit; font-size: 14px; font-style: normal; padding: 10px 12px; }
+.audible-compact .libation-actions { display: flex; flex-wrap: wrap; margin: 0; }
+.audible-compact .libation-actions button { min-height: 44px; padding: 10px 14px; border-radius: 12px; font: inherit; font-size: 13px; letter-spacing: 0; text-transform: none; }
+.audible-compact p { font: inherit; font-size: 13px; line-height: 1.5; }
+.audible-compact summary { cursor: pointer; list-style: none; }
+.audible-compact summary::-webkit-details-marker { display: none; }
+.audible-management > summary { display: flex; justify-content: space-between; align-items: center; min-height: 44px; color: var(--gold-soft); font-size: 13px; }
+.audible-management-body { display: grid; gap: 12px; padding: 8px 0 14px; }
+.audible-compact .account-list article { border: 0; border-radius: 10px; padding: 10px; }
+.audible-compact .account-list-copy { font: inherit; font-size: 13px; letter-spacing: 0; }
+.audible-compact .account-list-copy em { white-space: normal; }
+.audible-compact .audible-job { padding: 0; border: 0; background: none; min-width: 0; }
+.audible-compact .job-card-head { display: flex; flex-wrap: nowrap; gap: 8px; min-height: 44px; }
+.audible-compact .job-card-head strong { flex: 1; min-width: 0; font: inherit; font-size: 13px; overflow-wrap: anywhere; }
+.audible-compact .job-state { font: inherit; font-size: 11px; letter-spacing: 0; text-transform: none; }
+.audible-compact .job-card-head > svg { flex-shrink: 0; }
+.audible-compact details[open] > summary > svg:last-child { transform: rotate(180deg); }
+.audible-compact .job-meta { margin: 10px 0; }
+.audible-compact .job-output { max-height: 220px; overflow: auto; }
+.audible-compact .audible-attention { display: flex; align-items: flex-start; gap: 8px; color: var(--gold-soft); }
+.audible-attention svg { flex-shrink: 0; margin-top: 3px; }
+.audible-compact summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; border-radius: 6px; }
