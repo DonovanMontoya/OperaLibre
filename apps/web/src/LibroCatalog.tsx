@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { BookOpen, CloudDownload, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus } from "./types";
+import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
+
+const serverBackend = { status: getLibroAccount, connect: connectLibroAccount, disconnect: disconnectLibroAccount,
+  refresh: refreshLibroAccount, import: importLibroPurchase, books: getBooks };
 
 const active = (job: JobStatus) => job.status === "running" || job.status === "queued";
 
-export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode = "title", reversed = false, refreshKey = 0 }: {
+export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode = "title", reversed = false, refreshKey = 0, device = false }: {
+  device?: boolean;
   refreshKey?: number;
   onBooksChanged: (books: Book[]) => void;
   onOpenBook?: (id: string) => void;
@@ -13,6 +18,7 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
   sortMode?: string;
   reversed?: boolean;
 }) {
+  const backend = device ? libroDeviceBackend : serverBackend;
   const [account, setAccount] = useState<LibroAccountStatus | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -32,14 +38,14 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
     async function poll() {
       let delay = 15000;
       try {
-        const next = await getLibroAccount();
+        const next = await backend.status();
         if (stopped) return;
         setAccount(next);
         setPollError(null);
         if (next.jobs.some(active)) delay = 2000;
         const newDownloads = next.jobs.filter(job => job.kind === "libro-download" && job.status === "completed" && !completed.current.has(job.id));
         if (newDownloads.length) {
-          const books = await getBooks();
+          const books = await backend.books();
           if (stopped) return;
           booksChanged.current(books);
           newDownloads.forEach(job => completed.current.add(job.id));
@@ -53,14 +59,14 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
     }
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [refreshTick, refreshKey]);
+  }, [refreshTick, refreshKey, backend]);
 
   async function act(key: string, action: () => Promise<unknown>) {
     setBusy(key);
     setError(null);
     try {
       await action();
-      setAccount(await getLibroAccount());
+      setAccount(await backend.status());
       setRefreshTick(tick => tick + 1);
       if (key === "connect") setReconnect(false);
     } catch (err) {
@@ -83,17 +89,18 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
     <header className="libro-catalog-head">
       <div><h2>Libro.fm</h2><p>{account?.connected ? account.email : "Connect your account to browse and import your purchases."}</p></div>
       {account?.connected ? <div className="libro-catalog-actions">
-        <button type="button" disabled={!!busy || loadingLibrary} onClick={() => void act("refresh", refreshLibroAccount)}>{loadingLibrary ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />} Refresh</button>
+        <button type="button" disabled={!!busy || loadingLibrary} onClick={() => void act("refresh", backend.refresh)}>{loadingLibrary ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />} Refresh</button>
         <button type="button" disabled={!!busy} onClick={() => { setEmail(account.email ?? ""); setReconnect(!reconnect); }}>Reconnect</button>
-        <button type="button" disabled={!!busy || account.jobs.some(active)} onClick={() => void act("disconnect", disconnectLibroAccount)}>Disconnect</button>
+        <button type="button" disabled={!!busy || account.jobs.some(active)} onClick={() => void act("disconnect", backend.disconnect)}>Disconnect</button>
       </div> : null}
     </header>
     {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
-    {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => connectLibroAccount(email, password)); }}>
+    {device ? <p className="libro-catalog-summary">Downloads stay on this device. Internet is needed to connect and download; no OperaLibre server is used. Open this screen after a background download to finish adding the book.</p> : null}
+    {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
       <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
       <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
       <button type="submit" disabled={!!busy}>{busy === "connect" ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} Connect Libro.fm</button>
-      <p>Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library.</p>
+      <p>{device ? "Your sign-in goes directly from this device to Libro.fm. The token is kept in native secure storage, not sent to your server. This device connection and its cached purchases are shared by anyone using this app on this device. Disconnect before handing the device to another person." : "Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library."}</p>
     </form> : null}
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
     {account?.connected ? <>
@@ -109,9 +116,10 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
           <div className="libro-purchase-cover">{cover ? <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <BookOpen size={24} />}</div>
           <div className="libro-purchase-copy"><h3>{book.title}</h3><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
+            {device && importing ? <button type="button" disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel download</button> : null}
           </div>
           {book.localBookId ? <button type="button" onClick={() => onOpenBook?.(book.localBookId!)} disabled={!onOpenBook}><BookOpen size={15} /> In library</button>
-            : <button type="button" disabled={!!busy || importing} onClick={() => void act(book.isbn, () => importLibroPurchase(book.isbn))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Importing…" : "Import"}</button>}
+            : <button type="button" disabled={!!busy || importing} onClick={() => void act(book.isbn, () => backend.import(book.isbn))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Importing…" : device ? "Download to device" : "Import"}</button>}
         </li>;
       })}</ul>
     </> : null}

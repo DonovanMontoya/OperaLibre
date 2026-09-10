@@ -107,10 +107,20 @@ func validatedBackgroundMediaSource(
     _ source: URL,
     allowedBy allowlist: BackgroundDownloadAllowlist
 ) throws -> URL {
+    if allowlist.origin == "libro-device" {
+        guard isLibroDownloadURL(source) else { throw BackgroundDownloadPolicyError.invalidSource }
+        return source
+    }
     guard normalizedBackgroundDownloadOrigin(source) == allowlist.origin else {
         throw BackgroundDownloadPolicyError.invalidSource
     }
     return try validatedBackgroundMediaSource(source, basePath: allowlist.basePath)
+}
+
+func isLibroDownloadURL(_ url: URL) -> Bool {
+    guard url.scheme == "https", url.user == nil, url.password == nil,
+          url.port == nil || url.port == 443, let host = url.host?.lowercased() else { return false }
+    return host == "libro.fm" || host.hasSuffix(".libro.fm") || host.hasSuffix(".amazonaws.com") || host.hasSuffix(".cloudfront.net")
 }
 
 func backgroundOfflineMediaRoot() throws -> URL {

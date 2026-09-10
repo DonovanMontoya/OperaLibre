@@ -36,13 +36,23 @@ When an administrator adds an Audible account through the optional Libation inte
 
 ### Audiobook and listening information
 
-When you connect a Libro.fm account, the email and password are sent through your
+When you connect a Libro.fm account for server imports, the email and password are sent through your
 selected OperaLibre server to Libro.fm. The server retains the resulting token
 and cached purchase list in its private data directory, not the password. These
 are scoped to your OperaLibre user through the API. Imported audio becomes part
 of the server library and follows its access rules. Disconnecting removes the
 connection and cached purchase list while keeping imported books. Purchase cover
 images may be loaded directly from Libro.fm's image hosts.
+
+When you choose **This device** in the native app, Libro.fm sign-in, catalog
+requests, and audio downloads go directly from the device to Libro.fm and its
+delivery hosts, without an OperaLibre server. The password is not saved. The token
+is stored in iOS Keychain or encrypted with an Android Keystore key in app-private,
+non-backed-up storage. Purchase metadata and import status are cached locally;
+native background jobs retain temporary signed download URLs. This device
+connection is shared by users of the app installation, not scoped to a server
+login. Disconnect removes the connection/cache while leaving imported audio and
+listening history. Device imports are not automatically uploaded to a server.
 
 The App may receive or create:
 

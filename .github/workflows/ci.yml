@@ -123,6 +123,9 @@ jobs:
       - name: Build unsigned release APK
         run: npm run build:android -- release
 
+      - name: Test Android download policy
+        run: cd apps/web/android && ./gradlew testDebugUnitTest
+
       - name: Upload unsigned APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -139,3 +142,8 @@ jobs:
 
       - name: Build
         run: swift build
+
+      - name: Test iOS background download policy
+        run: |
+          swiftc apps/web/ios/App/App/BackgroundDownloadPolicy.swift apps/web/ios/Tests/BackgroundDownloadPolicyTests.swift -o "$RUNNER_TEMP/background-policy-tests"
+          "$RUNNER_TEMP/background-policy-tests"

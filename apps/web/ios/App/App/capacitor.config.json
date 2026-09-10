@@ -3,7 +3,7 @@
 	"appName": "OperaLibre",
 	"webDir": "dist",
 	"backgroundColor": "#f1e7d0",
-	"loggingBehavior": "production",
+	"loggingBehavior": "none",
 	"android": {
 		"allowMixedContent": true,
 		"backgroundColor": "#f1e7d0"
