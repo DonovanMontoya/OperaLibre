@@ -90,6 +90,24 @@ The repository also includes a native iPhone app with background spoken-audio pl
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
+#### Siri and Shortcuts
+
+On iOS 16 or later, say **“Siri, resume OperaLibre,”** **“Siri, resume my
+audiobook in OperaLibre,”** or **“Siri, resume my book in OperaLibre.”**
+The **Resume Audiobook** action is also available
+in Apple's Shortcuts app. To use **“Siri, resume my audiobook”** without the
+app name, create a personal shortcut named **Resume my audiobook** and add
+OperaLibre's **Resume Audiobook** action.
+
+Open OperaLibre and play a book once before using Siri. Resume uses the loaded
+player, or the last book's saved position on this device after a cold launch.
+If there is no recent playback record and several books are in progress, open
+the app to choose one. Finished books are not automatically restarted.
+Downloaded books can resume offline; streaming needs access to your server
+and a valid saved media URL. Cold launches use the device's cached library;
+open the app to refresh changes made on another device. Listening progress
+from Siri is kept locally and reconciled with the server when the app opens.
+
 #### CarPlay
 
 The iPhone app appears on the car screen once it is connected to CarPlay. It has
@@ -109,8 +127,8 @@ A few things worth knowing:
 - Progress from a drive is saved by the phone app, not by the car, so it reaches
   the server the next time you open OperaLibre. Your position is kept on the
   device meanwhile.
-- Starting a book in the car takes over playback; the shelf shows a **Playing in
-  the car** banner with a **Play here** button to bring it back to the phone.
+- Starting a book in the car takes over playback; the shelf shows an **Audiobook
+  playing** banner with an **Open player** button to bring it back to the phone.
 
 To try it in the CarPlay simulator, build with signing on so the entitlement is
 linked into the binary, then re-sign without it — SpringBoard refuses to launch a

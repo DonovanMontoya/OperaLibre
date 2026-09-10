@@ -8865,7 +8865,7 @@ function MainApp({
         {carPlaybackBook ? (
           <section className="carplay-banner">
             <div className="carplay-banner-copy">
-              <strong>Playing in the car</strong>
+              <strong>Audiobook playing</strong>
               <span>{carPlaybackBook.title}</span>
             </div>
             <button
@@ -8875,7 +8875,7 @@ function MainApp({
                 resumeSelectedBook(carPlaybackBook);
               }}
             >
-              Play here
+              Open player
             </button>
           </section>
         ) : null}
