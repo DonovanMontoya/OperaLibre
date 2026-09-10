@@ -156,10 +156,13 @@ pub(crate) fn discover_candidates(
         .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
         .map(normalize_match_key)
         .collect::<Vec<_>>();
-    let group_stem = group_key
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .map(normalize_match_key);
+    let group_stem = (if is_folder_book {
+        group_key.file_name()
+    } else {
+        group_key.file_stem()
+    })
+    .and_then(|name| name.to_str())
+    .map(normalize_match_key);
     let title_key = normalize_match_key(book_title);
 
     let mut candidates = WalkDir::new(&search_dir)
@@ -659,7 +662,7 @@ mod tests {
     #[test]
     fn discovery_skips_book_named_images_and_exact_cover_copies() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Folder Name");
+        let folder = dir.path().join("Folder. Name");
         std::fs::create_dir(&folder).unwrap();
         let art = b"embedded cover bytes";
         let cover = ScannedCover {
@@ -669,7 +672,7 @@ mod tests {
             source: folder.join("Audio Name.m4b"),
         };
         for name in [
-            "Folder Name.png",
+            "Folder. Name.png",
             "Audio Name.JPG",
             "Book Title.webp",
             "cover.jpg",

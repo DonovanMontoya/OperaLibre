@@ -2453,6 +2453,39 @@ async fn exported_cover_alone_does_not_create_companions() {
     assert!(book["readingFile"].is_null());
 }
 
+#[tokio::test]
+async fn overridden_title_cover_is_excluded_after_rescan() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+    let response = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{book_id}/metadata"),
+            &token,
+            serde_json::json!({ "title": "Edited Title", "genres": [] }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[
+                ("Edited Title.jpg", vec![0xff, 0xd8]),
+                ("map.png", vec![0x89, b'P', b'N', b'G']),
+            ],
+        )
+        .await;
+    let response = server.get("/api/books", &token).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let books = response.json();
+    let book = &books.as_array().unwrap()[0];
+    assert_eq!(book["title"], "Edited Title");
+    let companions = book["companions"].as_array().unwrap();
+    assert_eq!(companions.len(), 1);
+    assert_eq!(companions[0]["fileName"], "map.png");
+}
+
 /// An Audible download often lands a picture PDF beside the audio. The book
 /// response must call the EPUB the book and the PDF a supplement, serve both,
 /// and offer an estimated sync map for the EPUB without any aligner.
