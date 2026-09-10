@@ -9800,17 +9800,7 @@ function MainApp({
                     ) : null}
                   </div>
                 </div>
-                <h2>
-                  {selectedBook.title.split(" ").map((word, i, arr) => {
-                    const isLast = i === arr.length - 1;
-                    return (
-                      <span key={i}>
-                        {isLast ? <em>{word}</em> : word}
-                        {isLast ? "" : " "}
-                      </span>
-                    );
-                  })}
-                </h2>
+                <h2>{selectedBook.title}</h2>
                 <p className="book-credits">
                   {selectedBook.author ? <span>{selectedBook.author}</span> : null}
                   {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
