@@ -11702,14 +11702,30 @@ html.native-app .recent-row {
 }
 
 /* ============================================================
-   iPad — regular-width native layout
+   iPad — the open codex
 
-   The phone shell stacks the library and player panes as
-   full-screen tab pages. Keep that distinction on iPad: Shelf is
-   a library-first catalogue and Reading is a dedicated player.
-   Selecting a title from Shelf temporarily opens a two-column
-   master/detail desk without turning the Reading tab into a
-   duplicate of Shelf.
+   A phone is a pocket remote and shows one screen at a time. An
+   iPad is held the way a book is held, so at regular width the
+   shell stops being a stack of tab pages and becomes a single
+   opened volume: the bound spine on the verso carrying the
+   collection, the paper recto carrying whatever is being read or
+   heard. The two are joined by a real gutter — both pages fall
+   into the fold — and the tab bar is left exactly as the phone
+   draws it, spanning the foot of the spread.
+
+   Consequences that follow from the metaphor, and are the reason
+   this block is not just the browser layout at tablet size:
+     · the library never disappears, so "back to library" and the
+       floating mini-player both go away;
+     · the shelf is set as an index — flat rules, no cards — and
+       the book now playing is marked with a silk ribbon rather
+       than a second highlight competing with the selection;
+     · the reading page has asymmetric margins (tight at the
+       gutter, generous at the fore-edge) and a running head, the
+       way a printed page does;
+     · nothing floats above the page: the playback card loses its
+       raised surface and its cover is mounted as a tipped-in
+       plate instead.
 
    Gated on height as well as width so an iPhone held in
    landscape (up to 932pt wide, but under 500pt tall) keeps the
@@ -11719,28 +11735,37 @@ html.native-app .recent-row {
    ============================================================ */
 @media (min-width: 720px) and (min-height: 500px) {
   html.native-app {
-    --ipad-pane-w: clamp(300px, 32vw, 400px);
+    /* The verso is sized to hold a two-line title at the shelf's
+       list size without hyphenating. */
+    --verso-w: clamp(316px, 30vw, 396px);
+    /* Half of the fold's visible width falls on each page. */
+    --gutter: 30px;
+    --gutter-margin: clamp(26px, 3vw, 46px);
+    --fore-edge: clamp(34px, 5vw, 84px);
   }
 
-  html.native-app .native-shell {
+  /* --- The spread ------------------------------------------------ */
+
+  html.native-app .native-shell.tab-shelf,
+  html.native-app .native-shell.tab-reading {
+    position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: var(--verso-w) minmax(0, 1fr);
     min-height: var(--native-viewport-height);
   }
 
-  html.native-app .native-shell.tab-shelf.library-book-open {
-    grid-template-columns: var(--ipad-pane-w) minmax(0, 1fr);
-  }
-
-  /* Shelf and Reading remain separate destinations. The only split view is
-     Shelf's selected-book detail page, where both columns are useful. */
   html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-shelf > .player-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
   html.native-app .native-shell.tab-reading > .player-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .library-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
     position: relative;
     inset: auto;
-    height: var(--native-viewport-height);
+    grid-row: 1;
+    /* The tail of the binding is a fixed bar over the spread, so
+       the pages stop above it rather than scrolling behind it. */
+    height: calc(var(--native-viewport-height) - var(--tabs-h));
     opacity: 1;
     visibility: visible;
     transform: none;
@@ -11748,76 +11773,328 @@ html.native-app .recent-row {
     transition: none;
   }
 
-  html.native-app .native-shell.tab-shelf:not(.library-book-open) > .library-pane,
-  html.native-app .native-shell.tab-reading > .player-pane {
-    grid-column: 1 / -1;
-  }
-
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
     grid-column: 1;
   }
 
+  html.native-app .native-shell.tab-shelf > .player-pane,
+  html.native-app .native-shell.tab-reading > .player-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
     grid-column: 2;
   }
 
-  html.native-app .native-shell.tab-shelf > .library-pane {
-    border-right: 1px solid #000;
-    box-shadow: inset -10px 0 24px rgba(0, 0, 0, 0.55);
+  /* The fold. Both pages curve into it, so the shadow is drawn
+     across the seam rather than as a border on either page, and
+     the binding thread is stitched down the middle of it. */
+  html.native-app .native-shell.tab-shelf::after,
+  html.native-app .native-shell.tab-reading::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    /* Stops at the tab bar rather than running under it. The bar is
+       frosted (backdrop-filter), so anything left behind it gets
+       blurred up into the bar as a smudge at the seam. */
+    bottom: var(--tabs-h);
+    left: calc(var(--verso-w) - var(--gutter) / 2);
+    width: var(--gutter);
+    z-index: 4;
+    pointer-events: none;
+    background-image:
+      repeating-linear-gradient(
+        180deg,
+        rgba(217, 181, 116, 0.38) 0 12px,
+        rgba(217, 181, 116, 0) 12px 26px
+      ),
+      linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0) 0%,
+        rgba(0, 0, 0, 0.42) 30%,
+        rgba(0, 0, 0, 0.9) 47%,
+        rgba(0, 0, 0, 0.96) 50%,
+        rgba(58, 38, 22, 0.5) 53%,
+        rgba(58, 38, 22, 0.16) 74%,
+        rgba(58, 38, 22, 0) 100%
+      );
+    background-size: 1.5px 26px, 100% 100%;
+    background-position: center top, 0 0;
+    background-repeat: repeat-y, no-repeat;
   }
 
-  /* Shelf owns the mini-player, so its catalogue clears the transport.
-     In master/detail mode the transport moves to the detail column and the
-     library only needs to clear the tab bar. */
-  html.native-app .native-shell.tab-shelf:not(.library-book-open) > .library-pane {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
-  }
-
-  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
-    padding-bottom: calc(var(--tabs-h) + 24px);
-  }
-
-  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
-  }
-
-  html.native-app .native-shell.tab-reading > .player-pane {
-    padding-bottom: calc(var(--tabs-h) + 24px);
-  }
-
-  /* The dedicated Reading screen already contains every transport control.
-     Shelf keeps the compact player, full-width in catalogue mode and docked
-     to the detail column when a selected book is open. */
-  html.native-app .native-shell.tab-reading .mini-player {
+  /* The recto carries the full transport whenever it is showing the
+     book that is playing, so the floating ribbon would only repeat
+     it. Any other time — inspecting a different title while
+     something else plays — the mini-player is the only transport
+     there is, so it stays, docked over the recto. */
+  html.native-app .native-shell.tab-shelf > .player-pane.has-native-player ~ .mini-player,
+  html.native-app .native-shell.tab-reading > .player-pane.has-native-player ~ .mini-player {
     display: none;
   }
 
-  html.native-app .native-shell.tab-shelf:not(.library-book-open) .mini-player {
-    left: max(16px, env(safe-area-inset-left));
+  html.native-app .native-shell.has-mini-player.tab-shelf
+    > .player-pane:not(.has-native-player) ~ .mini-player,
+  html.native-app .native-shell.has-mini-player.tab-reading
+    > .player-pane:not(.has-native-player) ~ .mini-player {
+    display: grid;
+    left: calc(var(--verso-w) + var(--gutter) / 2);
     right: max(16px, env(safe-area-inset-right));
   }
 
-  html.native-app .native-shell.tab-shelf.library-book-open .mini-player {
-    left: calc(var(--ipad-pane-w) + 16px);
-    right: 16px;
+  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
+    padding-bottom: calc(var(--mini-player-height) + 24px);
   }
 
-  /* The library remains visible beside its selected-book detail page. */
-  html.native-app .native-shell.tab-shelf.library-book-open .native-player-return {
+  /* "Back to Library" is the shelf's own variant of this button and
+     the library never left, so only that one goes. The Reading tab
+     renders the same element as "Back to Now Playing", which is the
+     way back to the transport from a book page and has to stay. */
+  html.native-app .native-shell.tab-shelf .native-player-return,
+  html.native-app .library-open-btn {
     display: none;
   }
 
-  /* Use the newly available catalogue width instead of stretching each
-     list row from edge to edge. */
-  html.native-app .native-shell.tab-shelf:not(.library-book-open) .book-list.is-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 8px;
+  html.native-app .native-shell .ios-status-veil {
+    background: linear-gradient(
+      90deg,
+      rgba(16, 10, 7, 0.62) 0 var(--verso-w),
+      rgba(241, 231, 208, 0.72) var(--verso-w)
+    );
   }
 
-  /* The native book heading centres itself in a single column because a
-     phone has no room for anything else. The player column does, so lay the
-     cover beside the copy the way the browser build always has. */
+  /* --- Verso: the collection ------------------------------------- */
+
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+    padding: calc(var(--status-h) + 24px) calc(var(--gutter) / 2 + 12px) 28px
+      max(24px, env(safe-area-inset-left));
+    border-right: 0;
+    /* Leather grain, darkening as the page turns into the fold. */
+    background-image:
+      linear-gradient(90deg, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.55) 100%),
+      linear-gradient(180deg, #241a12 0%, #100a06 100%),
+      repeating-linear-gradient(
+        0deg,
+        rgba(255, 255, 255, 0.012) 0 2px,
+        transparent 2px 4px
+      );
+    background-blend-mode: normal, normal, overlay;
+    box-shadow: none;
+  }
+
+  html.native-app .native-shell > .library-pane::before {
+    display: none;
+  }
+
+  html.native-app .pane-title {
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 12px;
+  }
+
+  /* Portrait and Stage Manager leave the verso too narrow for the
+     wordmark and its three actions on one line. */
+  @media (max-width: 1030px) {
+    html.native-app .pane-title {
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+  }
+
+  html.native-app .library-pane h1 {
+    margin: 8px 0 0;
+    font-size: clamp(1.9rem, 3.4vw, 2.3rem);
+  }
+
+  /* The shelf is set as an index: hairlines between entries, no
+     card for each row. Selection is a warm wash plus a gold rule
+     at the fore-edge, the way a reader's finger marks a column. */
+  html.native-app .native-shell .book-list.is-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  html.native-app .native-shell .book-list.is-list .book-row {
+    padding: 13px 26px 13px 10px;
+    border-radius: 0;
+    border-top: 1px solid rgba(217, 181, 116, 0.13);
+    background: none;
+  }
+
+  html.native-app .native-shell .book-list.is-list .book-row:last-child {
+    border-bottom: 1px solid rgba(217, 181, 116, 0.13);
+  }
+
+  html.native-app .native-shell .book-list.is-list .book-row.active {
+    padding-left: 10px;
+    background: linear-gradient(
+      90deg,
+      rgba(217, 181, 116, 0.13),
+      rgba(217, 181, 116, 0.03)
+    );
+    box-shadow: inset 3px 0 0 var(--gold);
+  }
+
+  html.native-app .native-shell .book-list.is-list .book-availability {
+    top: 10px;
+    right: 26px;
+  }
+
+  /* The reading ribbon. Bound into the gutter, laid across the
+     entry that is playing, so the spread says what is selected and
+     what is sounding at the same time without two highlights
+     fighting each other. */
+  html.native-app .native-shell .book-list.is-list .book-row.playing::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 0;
+    width: 26px;
+    height: 21px;
+    margin-top: -10.5px;
+    background:
+      linear-gradient(180deg, rgba(217, 181, 116, 0.85) 0 1px, rgba(217, 181, 116, 0) 1px),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 46%),
+      linear-gradient(90deg, var(--oxblood-deep), var(--oxblood));
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 11px 50%);
+    box-shadow: -6px 0 12px -8px rgba(0, 0, 0, 0.9);
+    transform-origin: right center;
+    animation: ipad-ribbon 0.42s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+  }
+
+  @keyframes ipad-ribbon {
+    from { transform: scaleX(0); }
+    to { transform: scaleX(1); }
+  }
+
+  /* --- Recto: the page ------------------------------------------- */
+
+  html.native-app .native-shell.tab-shelf > .player-pane,
+  html.native-app .native-shell.tab-reading > .player-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .player-pane {
+    padding: calc(var(--status-h) + 22px) max(var(--fore-edge), env(safe-area-inset-right))
+      30px calc(var(--gutter) / 2 + var(--gutter-margin));
+    background-image: linear-gradient(
+      90deg,
+      rgba(58, 38, 22, 0.07) 0,
+      rgba(58, 38, 22, 0) calc(var(--gutter-margin) + 30px)
+    );
+  }
+
+  html.native-app .native-shell > .player-pane::before {
+    display: none;
+  }
+
+  /* A running head belongs on every page of a book, including the
+     one being listened to — so both states of the recto keep it.
+     It sits after the playback card in source order, so on the
+     listening page it is pulled back to the top. */
+  html.native-app .native-shell.tab-shelf .folio,
+  html.native-app .native-shell.tab-reading .folio,
+  html.native-app .native-shell .has-native-player.native-player-view-now > .folio {
+    display: flex;
+  }
+
+  html.native-app .native-shell .native-player-view-now > .folio {
+    order: -1;
+  }
+
+  html.native-app .native-shell > .player-pane.has-native-player.native-player-view-now {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  html.native-app .native-shell .folio {
+    flex: 0 0 auto;
+    font-family: "Instrument Serif", serif;
+    font-size: 1.02rem;
+    font-style: italic;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: rgba(var(--ink-rgb), 0.62);
+    padding-bottom: 13px;
+    border-bottom: 1px solid rgba(184, 137, 58, 0.4);
+  }
+
+  html.native-app .native-shell .folio span:last-child {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.62rem;
+    font-style: normal;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(var(--ink-rgb), 0.42);
+  }
+
+  html.native-app .native-shell .folio .dot {
+    color: var(--gold);
+  }
+
+  /* Nothing floats above the page: the playback surface is printed
+     on it. */
+  html.native-app .native-shell .native-player-view-now .native-now-playing {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+    margin: 0;
+    padding: clamp(20px, 4vh, 46px) 0 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    align-content: center;
+  }
+
+  /* The cover is mounted like a tipped-in plate — cream mat, gold
+     keyline, square corners — rather than a rounded app tile. */
+  html.native-app .native-shell .native-now-artwork .large-cover {
+    border-radius: 7px;
+    background-image: none;
+    background-color: rgba(var(--sheet-rgb), 0.94);
+    box-shadow:
+      0 0 0 7px rgba(var(--sheet-rgb), 0.94),
+      0 0 0 8px rgba(184, 137, 58, 0.42),
+      0 30px 52px -34px rgba(39, 24, 14, 0.82);
+  }
+
+  html.native-app .native-shell .native-now-artwork {
+    padding: 11px;
+  }
+
+  /* Chapter titles are set at page scale, not at control-label
+     scale, and range left from the gutter. */
+  html.native-app .native-shell .native-now-copy h2 {
+    max-width: 19ch;
+    margin: 0 0 -0.08em;
+    font-size: clamp(1.9rem, 3.1vw, 2.85rem);
+    font-weight: 380;
+    line-height: 1.04;
+    letter-spacing: -0.015em;
+  }
+
+  html.native-app .native-shell .native-now-copy p {
+    font-size: 1.24rem;
+  }
+
+  /* The running head names the page and the ribbon in the spine
+     names what is sounding, so the book page's own state label has
+     nothing left to say. */
+  html.native-app .native-shell .book-heading .eyebrow {
+    display: none;
+  }
+
+  /* Book details and the shelf's book page get the same page
+     measure so the two states of the recto sit on one grid. */
+  html.native-app .native-shell .book-description,
+  html.native-app .native-shell .metadata-strip {
+    max-width: 68ch;
+  }
+
   html.native-app .book-heading {
     grid-template-columns: auto minmax(0, 1fr);
     justify-items: start;
@@ -11830,24 +12107,24 @@ html.native-app .recent-row {
     text-align: left;
   }
 
-  html.native-app .large-cover {
-    width: clamp(120px, 16vw, 200px);
-  }
-
   html.native-app .book-heading h2 {
     margin: 14px 0 12px;
     font-size: clamp(2.2rem, 3.4vw, 3.1rem);
     max-width: 20ch;
   }
 
+  html.native-app .large-cover {
+    width: clamp(120px, 16vw, 200px);
+  }
+
   html.native-app .metadata-strip {
     justify-content: flex-start;
   }
 
-  /* The book page reached from the shelf squeezes the hero harder still, to
-     stay clear of the mini-player on a phone. Undo that too — these
-     selectors are more specific than the block above, so they need
-     restating rather than inheriting it. */
+  /* The phone shrinks this hero to clear its mini-player. The recto
+     has neither the mini-player nor the width problem, and these
+     selectors are the more specific ones, so they are restated
+     rather than inherited. */
   html.native-app .native-shell.tab-shelf.library-book-open .book-heading {
     grid-template-columns: auto minmax(0, 1fr);
     align-items: end;
@@ -11861,6 +12138,7 @@ html.native-app .recent-row {
   }
 
   html.native-app .native-shell.tab-shelf.library-book-open .book-heading h2 {
+    max-width: 20ch;
     margin: 14px 0 12px;
     font-size: clamp(2.2rem, 3.4vw, 3.1rem);
     line-height: 1.04;
@@ -11878,22 +12156,10 @@ html.native-app .recent-row {
     font-size: 0.6rem;
   }
 
-  /* Only Shelf's book-detail state spans differently coloured columns.
-     The primary Shelf and Reading destinations retain their own tint. */
-  html.native-app .native-shell.tab-shelf.library-book-open .ios-status-veil {
-    background: linear-gradient(
-      90deg,
-      rgba(16, 10, 7, 0.55) 0 var(--ipad-pane-w),
-      rgba(241, 231, 208, 0.72) var(--ipad-pane-w)
-    );
-  }
-
-  html.native-app .native-shell.tab-shelf:not(.library-book-open) .ios-status-veil {
-    background: rgba(16, 10, 7, 0.55);
-  }
-
-  html.native-app .native-shell.tab-reading .ios-status-veil {
-    background: rgba(241, 231, 208, 0.72);
+  @media (prefers-reduced-motion: reduce) {
+    html.native-app .native-shell .book-list.is-list .book-row.playing::after {
+      animation: none;
+    }
   }
 }
 
