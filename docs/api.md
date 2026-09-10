@@ -257,17 +257,20 @@ The server publishes an [OPDS](https://opds.io/) catalog so generic reading apps
 | `GET` | `/api/opds` | Navigation-feed root. |
 | `GET` | `/api/opds/books` | Acquisition feed, one entry per book with per-track download links. |
 
-Both feeds authenticate with the media token as a `?token=` query parameter (HTTP Basic is not supported), so the catalog URL to paste into an OPDS client is `http://server:4000/api/opds?token=...`.
+Both feeds authenticate with the media token as a `?token=` query parameter (HTTP Basic is not supported), so the catalog URL to paste into an OPDS client is `http://server:4000/api/opds?token=...`. Bearer authentication is also accepted. The feed supplies separate track acquisitions; a client must support audio downloads and multiple tracks to import a complete audiobook. OPDS does not synchronize playback progress. BookPlayer currently has no OPDS connector; use its Audiobookshelf connection below.
 
 ## Audiobookshelf-compatible API (`/abs`)
 
-The server also speaks a subset of the [Audiobookshelf](https://www.audiobookshelf.org/) API under the `/abs` prefix, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. Point the client at `http://server:4000/abs` and sign in with a normal OperaLibre account.
+The server implements a subset of the [Audiobookshelf](https://www.audiobookshelf.org/) API under the `/abs` prefix. In BookPlayer, choose an Audiobookshelf connection, enter `http://server:4000/abs` (or your HTTPS address ending in `/abs`), and sign in with a normal OperaLibre account. The server root and the OPDS URL are not the Audiobookshelf base URL.
+
+Compatibility is client-specific. BookPlayer response decoding and its browse/download HTTP contracts have been tested against a temporary server; the full iOS app and physical-device playback have not been verified. The official Audiobookshelf app requires additional endpoints, including authorization and playback-session synchronization, which are not implemented. See the [compatibility audit](client-compatibility.md) for exact coverage and remaining gaps.
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/abs/status` | Server status for client validation. Public. |
 | `GET` | `/abs/ping` | Connectivity check. Public. |
 | `POST` | `/abs/login` | Sign in; returns an Audiobookshelf-shaped user object and the default library id. Public. |
+| `POST` | `/abs/logout` | Revoke the caller's session token. |
 | `GET` | `/abs/api/me` | The current user with media progress and token. |
 | `GET` | `/abs/api/libraries` | The single synthetic library. |
 | `GET` | `/abs/api/libraries/{library_id}/items` | Paged, filterable library items (author, series, narrator, genre, and tag filters are supported). |
