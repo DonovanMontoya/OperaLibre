@@ -86,6 +86,7 @@ export function ProfilePage({
   const [refreshRequest, setRefreshRequest] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!initialSnapshot);
+  const [selectedDay, setSelectedDay] = useState<StreakDay | null>(null);
 
   useEffect(() => {
     if (deviceOnly) return;
@@ -168,7 +169,7 @@ export function ProfilePage({
   return (
     <main className="profile-shell" onClick={onClose}>
       <article
-        className="profile-page"
+        className="profile-page ledger-dashboard"
         onClick={(event) => event.stopPropagation()}
       >
       <button type="button" className="profile-back" onClick={onClose}>
@@ -192,7 +193,8 @@ export function ProfilePage({
           <header className="profile-head">
             <div className="profile-mono" aria-hidden="true">{monogram}</div>
             <div className="profile-id">
-              <h1>{user.username}</h1>
+              <h1>Ledger</h1>
+              <span className="ledger-owner">{user.username}’s reading activity</span>
               <p>
                 {[
                   joined ? `Joined ${joined}` : null,
@@ -265,18 +267,9 @@ export function ProfilePage({
             </dl>
           </section>
 
-          <Achievements
-            books={books}
-            stats={displayedStats}
-            user={user}
-            onOpenBook={onOpenBook}
-            includeDeviceBooks={offlineSource === "device"}
-            rivalriesAvailable={offlineSource === null}
-          />
-
           {offlineSource !== "device" ? <section className="profile-calendar">
             <header>
-              <h2>Listening</h2>
+              <h2>Listening habits</h2>
               <span>Last 8 weeks</span>
             </header>
             <div className="calendar-grid">
@@ -296,15 +289,27 @@ export function ProfilePage({
                       const tier =
                         day.minutes <= 0 ? 0 : Math.min(4, Math.ceil(day.minutes / 20));
                       return (
-                        <span
+                        <button
+                          type="button"
                           key={day.date}
                           className={`calendar-cell tier-${tier}`}
+                          aria-label={`${day.date}: ${Math.round(day.minutes)} minutes listened`}
+                          aria-pressed={selectedDay?.date === day.date}
                           title={`${day.date} · ${Math.round(day.minutes)} min`}
+                          onClick={() => setSelectedDay(day)}
                         />
                       );
                     })}
                   </div>
                 ))}
+              </div>
+            </div>
+            <div className="calendar-footer">
+              <p aria-live="polite">{selectedDay
+                ? `${selectedDay.date} · ${Math.round(selectedDay.minutes)} minutes listened`
+                : "Select a day to see your listening time."}</p>
+              <div className="calendar-legend" aria-label="Color intensity indicates listening time">
+                <span>Less</span>{[0, 1, 2, 3, 4].map(tier => <i key={tier} className={`calendar-cell tier-${tier}`} />)}<span>More</span>
               </div>
             </div>
           </section> : null}
@@ -325,6 +330,15 @@ export function ProfilePage({
               ) : null}
             </section>
           )}
+
+          <Achievements
+            books={books}
+            stats={displayedStats}
+            user={user}
+            onOpenBook={onOpenBook}
+            includeDeviceBooks={offlineSource === "device"}
+            rivalriesAvailable={offlineSource === null}
+          />
 
           {displayedStats.recentBooks.length > 0 ? (
             <section className="profile-recent">

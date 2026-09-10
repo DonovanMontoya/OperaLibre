@@ -1,4 +1,4 @@
-import { Award, BookOpen, Check, Compass, Flame, Users } from "lucide-react";
+import { BookOpen, Check, Compass, Flame, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { readingAchievements, readingRivalries } from "./readingAchievements";
 import type { AuthUser, Book, ProfileStats } from "./types";
@@ -46,11 +46,8 @@ export function Achievements({
     >
       <header className="achievements-heading">
         <div>
-          <span className="section-label">
-            <Award size={14} /> Your reading story
-          </span>
-          <h2 id="achievements-heading">Small rituals. Epic journeys.</h2>
-          <p>Every finished story leaves a mark.</p>
+          <h2 id="achievements-heading">Achievements</h2>
+          <p>Milestones from your reading activity.</p>
         </div>
         <div className="achievement-tally">
           <strong>
@@ -140,13 +137,12 @@ export function Achievements({
       <section className="ledger-rivalries" aria-labelledby="rivalries-heading">
         <header>
           <Users size={19} />
-          <h3 id="rivalries-heading">A little friendly competition</h3>
+          <h3 id="rivalries-heading">Reading together</h3>
           <span>{rivalriesAvailable ? "Live standings" : "Online standings"}</span>
         </header>
         <p>
-          Share a story. Set the pace. Leads reflect current progress, and can
-          change as fellow readers catch up. Series standings count finished
-          books in your library.
+          Compare progress with readers who share their activity. Series standings
+          count finished books in your library.
         </p>
         {!rivalriesAvailable ? (
           <p className="achievement-note">
