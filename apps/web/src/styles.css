@@ -10374,7 +10374,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-sync-job-heading > button { white-space: normal; text-align: left; }
 .admin-sync-job-heading > strong, .admin-sync-job-heading > button { overflow-wrap: anywhere; min-width: 0; }
 .admin-sync-job-state { font-size: 0.72rem; color: var(--ink-faded); }
-.admin-sync-job progress { width: 100%; height: 7px; accent-color: var(--ink); }
+.admin-sync-job .sync-progress { max-width: none; }
 .admin-sync-job p { overflow-wrap: anywhere; }
 .admin-sync-job .admin-sync-job-error { color: #b33a2e; }
 
@@ -10644,6 +10644,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
   inset: 0 0 var(--tabs-h);
   z-index: 48;
   overflow: auto;
+  /* Keep a flick inside the panel instead of chaining into the page behind it,
+     which reads as a stutter at the ends of the list on iOS. */
+  overscroll-behavior: contain;
   padding: calc(var(--status-h) + 22px) max(18px, env(safe-area-inset-right)) 48px max(18px, env(safe-area-inset-left));
   background: var(--paper);
 }
