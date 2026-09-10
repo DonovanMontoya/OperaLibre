@@ -1942,11 +1942,6 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if book_chapters.is_empty() && tracks.len() > 1 {
             book_chapters = derive_track_chapters(&tracks);
         }
-        let companion_candidates =
-            discover_candidates(&group_key, &grouped_files, &title, embedded_cover.as_ref());
-        if let Some(cover) = embedded_cover {
-            extracted_covers.push((book_id.clone(), cover));
-        }
         let sync_file = find_sync_file(
             &book_id,
             &group_key,
@@ -1983,6 +1978,15 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         };
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
+        }
+        let companion_candidates = discover_candidates(
+            &group_key,
+            &grouped_files,
+            &book.title,
+            embedded_cover.as_ref(),
+        );
+        if let Some(cover) = embedded_cover {
+            extracted_covers.push((book_id.clone(), cover));
         }
         pending_companions.push((books.len(), companion_candidates));
         books.push(book);
