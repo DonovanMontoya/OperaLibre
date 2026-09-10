@@ -28,6 +28,26 @@ struct CarLibrarySnapshot: Codable {
         books.first { $0.id == bookId }
     }
 
+    /// Resume must identify a book, never pick an arbitrary title from the shelf.
+    /// Callers supply only playback records belonging to this snapshot's scope.
+    func audiobookToResume(sessions: [CarPlaybackSession]) -> CarLibraryBook? {
+        guard !scopePrefix.isEmpty else { return nil }
+        let latest = sessions.filter { book(withId: $0.bookId) != nil }
+            .max { $0.updatedAt < $1.updatedAt }
+        let candidate: CarLibraryBook?
+        if let latest, let book = book(withId: latest.bookId) {
+            candidate = resuming(book, sessions: sessions)
+        } else {
+            let reading = books.filter { $0.isInProgress }
+            candidate = reading.count == 1 ? reading.first : nil
+        }
+        guard let candidate, !candidate.isFinished, !candidate.tracks.isEmpty,
+              candidate.positionSeconds.isFinite,
+              candidate.positionSeconds == 0 || candidate.resumePositionSeconds > 0
+        else { return nil }
+        return candidate
+    }
+
     func resuming(_ book: CarLibraryBook, sessions: [CarPlaybackSession]) -> CarLibraryBook {
         guard let session = sessions.filter({
             $0.bookId == book.id && $0.updatedAt > updatedAt && $0.bookPositionSeconds.isFinite
