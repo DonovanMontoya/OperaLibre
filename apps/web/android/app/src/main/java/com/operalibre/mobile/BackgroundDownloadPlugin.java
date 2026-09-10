@@ -50,6 +50,7 @@ public class BackgroundDownloadPlugin extends Plugin {
                 if (files.getJSONObject(index).optBoolean("required", true)) requiredTotal++;
             }
             JSONObject job = new JSONObject()
+                .put("provider", "libro".equals(call.getString("provider")) ? "libro" : "server")
                 .put("title", title)
                 .put("state", "queued")
                 .put("files", files)

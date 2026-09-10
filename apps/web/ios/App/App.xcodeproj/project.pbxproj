@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B17000012E32000100B6D001 /* LibroDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17000022E32000100B6D001 /* LibroDevice.swift */; };
+		B17000032E32000100B6D001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B17000042E32000100B6D001 /* ZIPFoundation */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
@@ -29,6 +31,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		B17000022E32000100B6D001 /* LibroDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibroDevice.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* OperaLibre.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OperaLibre.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -59,6 +62,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				B17000032E32000100B6D001 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,6 +92,7 @@
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				A17B00102E32000100B6D001 /* BackgroundDownloads.swift */,
+				B17000022E32000100B6D001 /* LibroDevice.swift */,
 				A17B00162E32000100B6D001 /* BackgroundDownloadPolicy.swift */,
 				A17B00122E32000100B6D001 /* ViewController.swift */,
 				A17B00142E32000100B6D001 /* NativeAudio.swift */,
@@ -126,6 +131,7 @@
 			);
 			name = App;
 			packageProductDependencies = (
+				B17000042E32000100B6D001 /* ZIPFoundation */,
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
 			);
 			productName = App;
@@ -158,6 +164,7 @@
 			);
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
+				B17000052E32000100B6D001 /* ZIPFoundation */,
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
@@ -192,6 +199,7 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				A17B00112E32000100B6D001 /* BackgroundDownloads.swift in Sources */,
+				B17000012E32000100B6D001 /* LibroDevice.swift in Sources */,
 				A17B00172E32000100B6D001 /* BackgroundDownloadPolicy.swift in Sources */,
 				A17B00132E32000100B6D001 /* ViewController.swift in Sources */,
 				A17B00152E32000100B6D001 /* NativeAudio.swift in Sources */,
@@ -415,12 +423,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		B17000042E32000100B6D001 /* ZIPFoundation */ = {isa = XCSwiftPackageProductDependency; package = B17000052E32000100B6D001; productName = ZIPFoundation; };
 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
 			productName = "CapApp-SPM";
 		};
 /* End XCSwiftPackageProductDependency section */
+		B17000052E32000100B6D001 /* ZIPFoundation */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/weichsel/ZIPFoundation.git"; requirement = {kind = exactVersion; version = 0.9.20; }; };
 	};
 	rootObject = 504EC2FC1FED79650016851F /* Project object */;
 }

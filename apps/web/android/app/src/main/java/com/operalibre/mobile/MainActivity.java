@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(BackgroundDownloadPlugin.class);
+        registerPlugin(LibroDevicePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
