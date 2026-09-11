@@ -104,8 +104,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         let ids = items.compactMap { $0["id"] as? String }
         let tabsChanged = ids != identifiers
         if tabsChanged {
-            // Reset the content insets before UIKit discards a selected host.
-            layoutContent(in: self)
+            // Keep the current tab-bar clearance while UIKit swaps hosts. The
+            // replacement selected host may not be attached until a later
+            // layout pass; expanding the sibling WebView to the root here
+            // lets it cover the native bar in the meantime. The new host's
+            // layout callback refreshes these insets once it is attached.
             identifiers = ids
             hosts = Dictionary(uniqueKeysWithValues: items.enumerated().compactMap { index, item in
                 guard let id = item["id"] as? String else { return nil }
@@ -175,11 +178,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     func hide() {
         loadViewIfNeeded()
-        layoutContent(in: self)
         navigationVisible = false
+        navigation.view.isHidden = true
+        layoutContent(in: self)
         content.view.isHidden = false
         setNeedsStatusBarAppearanceUpdate()
-        navigation.view.isHidden = true
     }
 
     override func viewDidLayoutSubviews() {
@@ -194,7 +197,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     private func updateContentInsets() {
         guard contentConstraints.count == 4, let host = layoutHost else { return }
-        let frame: CGRect
+        var frame: CGRect
         if host === self {
             frame = view.bounds
         } else {
@@ -202,6 +205,22 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             // callback supplies the final safe area once the transition lands.
             guard host.viewIfLoaded?.isDescendant(of: view) == true else { return }
             frame = host.view.convert(host.view.safeAreaLayoutGuide.layoutFrame, to: view)
+        }
+        // Replacing UITabs can briefly leave the selected host's safe area
+        // unaware of the floating tab bar (notably on iOS 26). The WebView is
+        // above the tab controller, so explicitly keep it out of the bar's
+        // real frame instead of trusting that transient safe-area value.
+        if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
+            let tabBarFrame = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
+            if tabBarFrame.intersects(view.bounds), tabBarFrame.width >= view.bounds.width / 2 {
+                if tabBarFrame.midY >= view.bounds.midY {
+                    frame.size.height = max(0, min(frame.maxY, tabBarFrame.minY) - frame.minY)
+                } else {
+                    let bottom = frame.maxY
+                    frame.origin.y = max(frame.minY, tabBarFrame.maxY)
+                    frame.size.height = max(0, bottom - frame.minY)
+                }
+            }
         }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]
