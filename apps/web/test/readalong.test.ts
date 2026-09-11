@@ -90,6 +90,14 @@ describe("sync maps", () => {
     assert.equal(findActiveFragmentIndex(fragments, 9), -1);
   });
 
+  it("can switch a few syllables early without shortening the final sentence", () => {
+    assert.equal(findActiveFragmentIndex(fragments, 2.49, 0.5), 0);
+    assert.equal(findActiveFragmentIndex(fragments, 2.5, 0.5), 1);
+    assert.equal(findActiveFragmentIndex(fragments, 5.5, 0.5), 2);
+    assert.equal(findActiveFragmentIndex(fragments, 7.9, 0.5), 2);
+    assert.equal(findActiveFragmentIndex(fragments, 8, 0.5), -1);
+  });
+
   it("tells sentence and estimated maps apart, and ignores word timings", () => {
     const base: SyncMap = { version: 2, fragments: [fragments[0]] };
     assert.equal(syncMapPrecision(null), null);

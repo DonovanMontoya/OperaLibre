@@ -5760,6 +5760,38 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   background: rgba(184, 137, 58, 0.18);
 }
 
+.user-menu-follow-aggressiveness {
+  display: grid;
+  gap: 2px;
+  padding: 0.45rem 0.6rem 0.55rem;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.user-menu-follow-aggressiveness > div,
+.user-menu-follow-aggressiveness > small {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.user-menu-follow-aggressiveness label {
+  font-family: "Fraunces", serif;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.user-menu-follow-aggressiveness output,
+.user-menu-follow-aggressiveness > small {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.03em;
+  color: var(--ink-faded);
+}
+
+.user-menu-follow-aggressiveness input[type="range"] {
+  height: 18px;
+}
+
 .modal-scrim {
   position: fixed;
   inset: 0;
@@ -10821,6 +10853,45 @@ html.native-app .admin-shell:not(.admin-overlay) {
   margin-top: 10px;
   padding-left: 14px;
   border-left: 2px solid rgba(var(--ink-rgb), 0.14);
+}
+
+.settings-follow-group {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+}
+
+.follow-aggressiveness {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding-right: 2px;
+}
+
+.follow-aggressiveness-heading,
+.follow-aggressiveness-labels {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.follow-aggressiveness-heading label {
+  font-family: "Fraunces", serif;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.follow-aggressiveness-heading output,
+.follow-aggressiveness-labels {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-faded);
+}
+
+.follow-aggressiveness > input[type="range"] {
+  height: 20px;
 }
 
 .settings-warning {
