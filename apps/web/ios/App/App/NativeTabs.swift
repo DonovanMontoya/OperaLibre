@@ -28,6 +28,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var navigationVisible = false
     private var configuring = false
     private var requestedSelection: String?
+    private var cover: UIView?
     // Matches the web shell's spine, gold-soft, paper, and oxblood tokens.
     private let spine = UIColor(red: 26 / 255, green: 20 / 255, blue: 16 / 255, alpha: 1)
     private let brass = UIColor(red: 217 / 255, green: 181 / 255, blue: 116 / 255, alpha: 1)
@@ -93,6 +94,12 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
 
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String) {
         loadViewIfNeeded()
+        if visible != navigationVisible && navigation.parent != nil {
+            // Showing or hiding the bar resizes the web view, and the page
+            // reflows over several frames as its safe area and viewport catch
+            // up. Hold the last frame until the page reveals itself.
+            coverContent()
+        }
         overrideUserInterfaceStyle = appearance == "dark" ? .dark : appearance == "light" ? .light : .unspecified
         configuring = true
         defer { configuring = false }
@@ -185,6 +192,28 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         setNeedsStatusBarAppearanceUpdate()
     }
 
+    func reveal() {
+        guard let cover else { return }
+        self.cover = nil
+        UIView.animate(withDuration: 0.22, delay: 0, options: .curveEaseOut) {
+            cover.alpha = 0
+        } completion: { _ in
+            cover.removeFromSuperview()
+        }
+    }
+
+    private func coverContent() {
+        guard cover == nil, let snapshot = view.snapshotView(afterScreenUpdates: false) else { return }
+        snapshot.frame = view.bounds
+        snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(snapshot)
+        cover = snapshot
+        // Never leave a stale frame over the app if the page never reports in.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak snapshot] in
+            if let self, let snapshot, self.cover === snapshot { self.reveal() }
+        }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateContentInsets()
@@ -268,7 +297,8 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "NativeTabs"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "configure", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "hide", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "hide", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "reveal", returnType: CAPPluginReturnPromise)
     ]
 
     private var controller: NativeTabsController? {
@@ -300,6 +330,13 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func hide(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             self?.controller?.hide()
+            call.resolve()
+        }
+    }
+
+    @objc public func reveal(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            self?.controller?.reveal()
             call.resolve()
         }
     }
