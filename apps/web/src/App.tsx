@@ -613,7 +613,10 @@ function BookVolumeControl({
               type="button"
               className={preset === position ? "selected" : ""}
               aria-label={preset === 0 ? "Original level" : `Plus ${preset} decibels`}
-              onClick={() => onChange(preset)}
+              onClick={() => {
+                if (preset !== position) haptic("light");
+                onChange(preset);
+              }}
             >
               {preset === 0 ? "0" : `+${preset}`}
             </button>
@@ -6791,6 +6794,7 @@ function MainApp({
   function markBookUnplayed(book: Book) {
     const firstTrack = book.tracks[0];
     if (!firstTrack || completionPendingBookId === book.id) return;
+    haptic("light");
     setCompletionError(null);
     setUnplayedConfirmationBookId(book.id);
   }
@@ -7330,6 +7334,16 @@ function MainApp({
     setNativePlayerView("now");
   }
 
+  function openNativePlayerSheet(sheet: Exclude<NativePlayerSheet, null>) {
+    haptic("light");
+    setNativePlayerSheet(sheet);
+  }
+
+  function closeNativePlayerSheet() {
+    haptic("light");
+    setNativePlayerSheet(null);
+  }
+
   function beginBookDetailsBackSwipe(event: React.TouchEvent<HTMLElement>) {
     if (!native || nativeTab !== "shelf" || nativePlayerView !== "details") {
       return;
@@ -7417,6 +7431,7 @@ function MainApp({
    * checkpoint, cached, listed and server copies before seeking.
    */
   async function playSelectedBook(book: Book) {
+    haptic("medium");
     if (!shouldResumeSavedPosition(book.progress)) {
       // The listing summary can lag the server (a cached shelf, a session on
       // another device since the last refresh). Before "Begin this reading"
@@ -7482,6 +7497,7 @@ function MainApp({
       return;
     }
 
+    haptic("light");
     void persistProgress();
     seekBookPositionInBook(selectedBook, chapter.startSeconds, true);
     if (native) {
@@ -7511,6 +7527,7 @@ function MainApp({
     const target = chapterElapsed > 5 || index <= 0
       ? activeChapter
       : chapterSegments[index - 1];
+    haptic("light");
     seekBookPositionInBook(playbackBook, target.startSeconds, true);
   }
 
@@ -7522,6 +7539,7 @@ function MainApp({
     const index = chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id);
     const target = chapterSegments[index + 1];
     if (target) {
+      haptic("light");
       seekBookPositionInBook(playbackBook, target.startSeconds, true);
     }
   }
@@ -8311,7 +8329,7 @@ function MainApp({
                 sleepRemaining,
                 onToggle: togglePlayback,
                 onSkip: seekBy,
-                onOpen: (sheet) => setNativePlayerSheet(sheet)
+                onOpen: openNativePlayerSheet
               }
             : null
         }
@@ -9501,14 +9519,14 @@ function MainApp({
                 <div className="native-now-utility">
                   <button
                     type="button"
-                    onClick={() => setNativePlayerSheet("speed")}
+                    onClick={() => openNativePlayerSheet("speed")}
                   >
                     <Gauge size={16} /> {speed}×
                   </button>
                   <button type="button" onClick={() => {
                     setSleepCustomOpen(false);
                     setSleepCustomDraft("");
-                    setNativePlayerSheet("sleep");
+                    openNativePlayerSheet("sleep");
                   }}>
                     <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
                   </button>
@@ -9516,8 +9534,7 @@ function MainApp({
                     type="button"
                     onClick={() => {
                       if (playbackBook) setSelectedBookId(playbackBook.id);
-                      haptic("light");
-                      setNativePlayerSheet("details");
+                      openNativePlayerSheet("details");
                     }}
                   >
                     <Bookmark size={16} /> Details
@@ -9526,7 +9543,7 @@ function MainApp({
                     type="button"
                     onClick={() => {
                       if (playbackBook) setSelectedBookId(playbackBook.id);
-                      setNativePlayerSheet("chapters");
+                      openNativePlayerSheet("chapters");
                     }}
                   >
                     <ListMusic size={16} /> Chapters
@@ -9553,7 +9570,7 @@ function MainApp({
                           <span className="web-now-panel-kicker"><ScrollText size={13} /> Edition</span>
                           <h3 id="web-now-about-title">About this book</h3>
                         </div>
-                        <button type="button" onClick={() => setNativePlayerSheet("details")}>View details</button>
+                        <button type="button" onClick={() => openNativePlayerSheet("details")}>View details</button>
                       </header>
                       <p>
                         {playbackDescription
@@ -9612,7 +9629,7 @@ function MainApp({
                           <span className="web-now-panel-kicker"><ListMusic size={13} /> Contents</span>
                           <h3 id="web-now-up-next-title">Up next</h3>
                         </div>
-                        <button type="button" onClick={() => setNativePlayerSheet("chapters")}>All chapters</button>
+                        <button type="button" onClick={() => openNativePlayerSheet("chapters")}>All chapters</button>
                       </header>
                       {upcomingChapters.length > 0 ? (
                         <div className="web-now-chapter-list">
@@ -9646,6 +9663,7 @@ function MainApp({
                     returnToLibrary();
                     return;
                   }
+                  haptic("light");
                   openPlaybackView("now");
                 }}
               >
@@ -9673,7 +9691,10 @@ function MainApp({
                       <button
                         className="download-btn"
                         type="button"
-                        onClick={() => openMetadataEditor(selectedBook)}
+                        onClick={() => {
+                          haptic("light");
+                          openMetadataEditor(selectedBook);
+                        }}
                         aria-label={`Edit info for ${selectedBook.title}`}
                       >
                         <Pencil size={13} />
@@ -9731,7 +9752,11 @@ function MainApp({
                       <button
                         className={`download-btn ${readalongOpen ? "active" : ""}`}
                         type="button"
-                        onClick={() => (readalongOpen ? closeReadalong() : openReadalong(selectedBook))}
+                        onClick={() => {
+                          haptic("light");
+                          if (readalongOpen) closeReadalong();
+                          else openReadalong(selectedBook);
+                        }}
                         aria-pressed={readalongOpen}
                         aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
                       >
@@ -9755,13 +9780,14 @@ function MainApp({
                           selectedDownload ? "downloading" : ""
                         }`}
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          haptic("light");
                           void (selectedDownload
                             ? cancelOfflineDownload(selectedBook)
                             : downloadedBookIds.has(selectedBook.id)
                               ? removeOfflineDownload(selectedBook)
-                              : downloadForOffline(selectedBook))
-                        }
+                              : downloadForOffline(selectedBook));
+                        }}
                         aria-label={
                           selectedDownload
                             ? `Cancel download of ${selectedBook.title}`
@@ -9876,7 +9902,10 @@ function MainApp({
                     className="book-description-toggle"
                     aria-controls="selected-book-description"
                     aria-expanded={descriptionExpanded}
-                    onClick={() => setDescriptionExpanded((expanded) => !expanded)}
+                    onClick={() => {
+                      haptic("light");
+                      setDescriptionExpanded((expanded) => !expanded);
+                    }}
                   >
                     {descriptionExpanded ? "Less" : "More"}
                   </button>
@@ -9912,7 +9941,14 @@ function MainApp({
                           .join(" · ")}
                   </span>
                 </div>
-                <button type="button" className="download-btn active" onClick={() => openReadalong(selectedBook)}>
+                <button
+                  type="button"
+                  className="download-btn active"
+                  onClick={() => {
+                    haptic("light");
+                    openReadalong(selectedBook);
+                  }}
+                >
                   {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
                   <span>{selectedBook.readingFile ? "Open reader" : "View extras"}</span>
                 </button>
@@ -10190,7 +10226,7 @@ function MainApp({
                           onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
                         />
                         <button type="submit" disabled={sleepCustomMinutes === null}>Set</button>
-                        <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => setSleepCustomOpen(false)}><X size={16} /></button>
+                        <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => { haptic("light"); setSleepCustomOpen(false); }}><X size={16} /></button>
                       </form>
                     ) : null}
                     {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
@@ -10221,10 +10257,13 @@ function MainApp({
                   type="button"
                   className="track-list-header track-list-toggle"
                   aria-expanded={chaptersOpen}
-                  onClick={() => setChaptersOpen((open) => {
-                    if (open) setShowChapterJumpTop(false);
-                    return !open;
-                  })}
+                  onClick={() => {
+                    haptic("light");
+                    setChaptersOpen((open) => {
+                      if (open) setShowChapterJumpTop(false);
+                      return !open;
+                    });
+                  }}
                 >
                   <span className="title-of-contents">Embedded Chapters</span>
                   <span className="section-label">
@@ -10376,6 +10415,7 @@ function MainApp({
                 aria-label="Cancel marking book unplayed"
                 disabled={completionPendingBookId === unplayedConfirmationBook.id}
                 onClick={() => {
+                  haptic("light");
                   setUnplayedConfirmationBookId(null);
                   setCompletionError(null);
                 }}
@@ -10402,6 +10442,7 @@ function MainApp({
                 autoFocus
                 disabled={completionPendingBookId === unplayedConfirmationBook.id}
                 onClick={() => {
+                  haptic("light");
                   setUnplayedConfirmationBookId(null);
                   setCompletionError(null);
                 }}
@@ -10437,7 +10478,7 @@ function MainApp({
             <div className="details-sheet-grabber" aria-hidden="true" />
             <header className="details-sheet-header">
               <span className="eyebrow"><Bookmark size={13} /> Listening edition</span>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
                 <X size={18} />
               </button>
             </header>
@@ -10530,6 +10571,7 @@ function MainApp({
                 type="button"
                 className="details-sheet-full"
                 onClick={() => {
+                  haptic("light");
                   setNativePlayerSheet(null);
                   openPlaybackView("details");
                 }}
@@ -10556,7 +10598,7 @@ function MainApp({
                 <span className="eyebrow"><Gauge size={13} /> Cadence</span>
                 <h2 id="speed-sheet-title">Playback</h2>
               </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
                 <X size={18} />
               </button>
             </header>
@@ -10612,7 +10654,7 @@ function MainApp({
                 <span className="eyebrow"><ListMusic size={13} /> Contents</span>
                 <h2 id="chapter-sheet-title">Chapters</h2>
               </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
                 <X size={18} />
               </button>
             </header>
@@ -10652,7 +10694,7 @@ function MainApp({
                 <span className="eyebrow"><Timer size={13} /> Nightfall</span>
                 <h2 id="sleep-sheet-title">Sleep Timer</h2>
               </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setNativePlayerSheet(null)}>
+              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
                 <X size={18} />
               </button>
             </header>
@@ -10677,7 +10719,10 @@ function MainApp({
                 type="button"
                 aria-expanded={sleepCustomOpen}
                 aria-controls="sleep-custom-editor"
-                onClick={() => setSleepCustomOpen((open) => !open)}
+                onClick={() => {
+                  haptic("light");
+                  setSleepCustomOpen((open) => !open);
+                }}
               >
                 <span>Custom duration</span>
                 {sleepCustomOpen ? <X size={17} /> : <ChevronRight size={17} />}
