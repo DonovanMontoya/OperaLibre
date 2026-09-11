@@ -4777,6 +4777,8 @@ function MainApp({
           startupNavigationResolved.current = true;
           if (native) {
             setNativeTab(next ? "reading" : "shelf");
+            // The stored selection may be a book last browsed on the shelf.
+            if (next) setSelectedBookId(next);
             // A restored Reading tab still needs its saved track and position.
             // Revealing it here paints the first track at 0:00 before the
             // progress effect below resolves the real checkpoint.
@@ -7694,6 +7696,9 @@ function MainApp({
     if (tab === "shelf" && nativeTab === "shelf" && librarySource === "audible") {
       showYourLibrary();
     }
+    // Reading belongs to the playing book. A book browsed from the shelf stays
+    // selected after its details page closes and must not follow into the tab.
+    if (tab === "reading" && playbackBook) setSelectedBookId(playbackBook.id);
     setNativeTab(tab);
     if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
   }
