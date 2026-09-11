@@ -1,6 +1,7 @@
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
+import { Dialog } from "@capacitor/dialog";
 import { narrationTextOffset } from "./readerPagination";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
@@ -249,6 +250,7 @@ import {
   updateBookMetadata
 } from "./api";
 import type { ServerAlias } from "./api";
+import { hasPreciseSync, syncConfirmationMessage } from "./syncGeneration";
 import {
   cacheLibrary,
   cacheOfflineUser,
@@ -4030,6 +4032,7 @@ function MainApp({
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<DeviceNotice | null>(null);
   const [unplayedConfirmationBookId, setUnplayedConfirmationBookId] = useState<string | null>(null);
+  const [syncConfirmationBook, setSyncConfirmationBook] = useState<Book | null>(null);
   // Native jobs are persisted and serialized by iOS; this map only mirrors
   // their current queue/progress for the UI.
   const [activeDownloads, setActiveDownloads] = useState<Record<string, DeviceDownloadActivity>>({});
@@ -4610,8 +4613,7 @@ function MainApp({
     && isViewingPlayingBook
     && readalongOpen
     && (!!activeCompanion || showGallery);
-  const selectedSyncPrecise =
-    selectedBook?.syncFile?.source === "sidecar" || selectedBook?.syncFile?.source === "generated";
+  const selectedSyncPrecise = hasPreciseSync(selectedBook);
   const canGenerateSync =
     currentUser.isAdmin &&
     !!alignmentStatus?.enabled &&
@@ -4715,6 +4717,28 @@ function MainApp({
     } catch (error) {
       setSyncJobError(errorMessage(error, "Could not start readalong sync generation."));
     }
+  }
+
+  async function requestSyncGeneration(book: Book) {
+    if (!hasPreciseSync(book)) {
+      await startSyncGeneration(book);
+      return;
+    }
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const { value } = await Dialog.confirm({
+          title: "Re-sync this book?",
+          message: syncConfirmationMessage(book),
+          okButtonTitle: "Start re-sync",
+          cancelButtonTitle: "Not now"
+        });
+        if (value) await startSyncGeneration(book);
+      } catch (error) {
+        setSyncJobError(errorMessage(error, "Could not open the re-sync confirmation."));
+      }
+      return;
+    }
+    setSyncConfirmationBook(book);
   }
 
   const loadBooks = useCallback(async () => {
@@ -8164,7 +8188,7 @@ function MainApp({
           type="button"
           className="download-btn"
           disabled={syncJobRunning}
-          onClick={() => void startSyncGeneration(selectedBook)}
+          onClick={() => void requestSyncGeneration(selectedBook)}
           title={
             selectedSyncPrecise
               ? "Regenerate the narration sync map"
@@ -10386,6 +10410,62 @@ function MainApp({
             ) : null}
           </div>
         </aside>
+      ) : null}
+
+      {syncConfirmationBook ? (
+        <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
+          <section
+            className="modal-card unplayed-confirm-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sync-confirm-title"
+            aria-describedby="sync-confirm-description"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSyncConfirmationBook(null);
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow"><Sparkles size={13} /> Follow along</span>
+                <h2 id="sync-confirm-title">Re-sync this book?</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Cancel re-sync"
+                onClick={() => setSyncConfirmationBook(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p id="sync-confirm-description" className="unplayed-confirm-copy">
+              <strong>{syncConfirmationBook.title}</strong> already has sentence-by-sentence
+              narration sync. Rebuilding it can take a long time. Start only if the audio or text
+              changed, or the current sync needs replacing.
+            </p>
+            <div className="unplayed-confirm-actions">
+              <button
+                type="button"
+                className="unplayed-confirm-cancel"
+                autoFocus
+                onClick={() => setSyncConfirmationBook(null)}
+              >
+                Not now
+              </button>
+              <button
+                type="button"
+                className="unplayed-confirm-submit"
+                onClick={() => {
+                  const book = syncConfirmationBook;
+                  setSyncConfirmationBook(null);
+                  void startSyncGeneration(book);
+                }}
+              >
+                <Sparkles size={15} /> Start re-sync
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       {unplayedConfirmationBook ? (
