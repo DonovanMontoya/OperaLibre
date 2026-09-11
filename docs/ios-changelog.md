@@ -19,6 +19,9 @@ No changes recorded yet.
 Distributed via App Store Connect (TestFlight) on September 10, 2026. Source
 commit: `ea152c2`.
 
+- CarPlay audio is now signed with the granted `com.apple.developer.carplay-audio`
+  entitlement; this is the first archive built with it included, rather than
+  omitted for lack of a matching provisioning profile.
 - Replaced the web tab strip with native iOS tab bar navigation; iPad now
   combines Shelf and Reading into one destination so every section fits
   without a "More" tab, and administration moved into Settings.
