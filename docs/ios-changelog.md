@@ -14,6 +14,22 @@ independently of the server releases.
 
 No changes recorded yet.
 
+## 1.2.0 (15)
+
+Distributed via App Store Connect (TestFlight) on September 10, 2026. Source
+commit: `ea152c2`.
+
+- Replaced the web tab strip with native iOS tab bar navigation; iPad now
+  combines Shelf and Reading into one destination so every section fits
+  without a "More" tab, and administration moved into Settings.
+- Added Siri Shortcuts to resume the current audiobook by voice.
+- Native audiobook access (CarPlay and offline playback) is now invalidated
+  immediately on sign-out, so a session can no longer keep playing after
+  leaving the account.
+- Fixed the Sync activity panel stuttering during long library scans.
+- Fixed inconsistent book title styling across screens.
+- Fixed cramped spacing in the reading game board on portrait iPhone.
+
 ## 1.1.0 (0)
 
 Tracking started: September 8, 2026.
