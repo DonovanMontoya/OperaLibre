@@ -3936,6 +3936,8 @@ function MainApp({
   const filterToggleRef = useRef<HTMLButtonElement | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
+  // The native reader stays up while UIKit brings the tab bar back.
+  const [readerClosing, setReaderClosing] = useState(false);
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
   const alignmentScope = getServerStorageKey();
@@ -4659,7 +4661,13 @@ function MainApp({
   }
 
   function closeReadalong() {
-    setReadalongOpen(false);
+    // Removing the full-screen reader before the tab bar returns shows the
+    // Reading page at full height, then again as the web view shrinks.
+    if (immersiveEpub && nativeTabsReady) {
+      setReaderClosing(true);
+    } else {
+      setReadalongOpen(false);
+    }
     if (selectedBook) {
       writeReaderOpenFlag(selectedBook.id, false);
     }
@@ -7980,12 +7988,17 @@ function MainApp({
   const showLedgerTab = native && capabilities.statistics;
   const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
-  const nativeTabsReady = useNativeTabs({
+  const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
     tabs: iosTabs,
     selected: nativeTabSelection(nativeTab, iosTabs),
-    visible: !readalongOpen,
+    visible: !readalongOpen || readerClosing,
     appearance: appearanceMode
   }, openNativeTab);
+  useEffect(() => {
+    if (!readerClosing || (nativeTabsReady && !nativeTabsShown)) return;
+    setReaderClosing(false);
+    setReadalongOpen(false);
+  }, [nativeTabsReady, nativeTabsShown, readerClosing]);
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "audible") {
@@ -8351,7 +8364,9 @@ function MainApp({
 
   const readalongPanelElement =
     readalongOpen && selectedBook && (activeCompanion || showGallery) ? immersiveEpub ? (
-      epubReaderElement
+      // Mount once UIKit has removed the tab bar, so the book lays out a
+      // single time at full screen instead of again as the web view grows.
+      nativeTabsReady && nativeTabsShown ? null : epubReaderElement
     ) : (
       <section
         className="readalong-panel"
