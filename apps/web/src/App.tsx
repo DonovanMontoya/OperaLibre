@@ -99,7 +99,17 @@ import {
 import { readerDebugLog, shortCfi } from "./readerDebug";
 import { createScreenAwakeController } from "./screenAwake";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
-import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from "react";
 import { syncMapCacheReducer } from "./syncMapCache";
 import { createPortal } from "react-dom";
 import {
@@ -344,10 +354,15 @@ import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifica
 import { GamesPage } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import {
+  FOLLOW_AGGRESSIVENESS_LABELS,
+  FOLLOW_AGGRESSIVENESS_LEAD_SECONDS,
   readReadalongEnabled,
   writeReadalongEnabled,
   readFollowSyncEnabled,
-  writeFollowSyncEnabled
+  writeFollowSyncEnabled,
+  readFollowAggressiveness,
+  writeFollowAggressiveness,
+  type FollowAggressiveness
 } from "./readalongPreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
@@ -1442,6 +1457,7 @@ export function EpubReadalong({
   syncFragments,
   precision,
   positionSeconds,
+  followLeadSeconds = 0,
   onSeekTo,
   onPinNarration,
   immersive = false,
@@ -1464,6 +1480,8 @@ export function EpubReadalong({
   syncFragments: SyncFragment[] | null;
   precision: SyncPrecision | null;
   positionSeconds: number;
+  /** A small optional lead for switching to the next narrated sentence. */
+  followLeadSeconds?: number;
   onSeekTo?: (seconds: number) => void;
   /** "The narrator is reading this sentence now": re-times an estimated map. */
   onPinNarration?: (fragment: { href: string; text: string }) => void;
@@ -2387,9 +2405,9 @@ export function EpubReadalong({
   const fragmentIndex = useMemo(
     () =>
       syncFragments && syncFragments.length > 0
-        ? findActiveFragmentIndex(syncFragments, positionSeconds)
+        ? findActiveFragmentIndex(syncFragments, positionSeconds, followLeadSeconds)
         : -1,
-    [positionSeconds, syncFragments]
+    [followLeadSeconds, positionSeconds, syncFragments]
   );
 
   const removeAnnotation = useCallback((cfi: string | null) => {
@@ -3604,6 +3622,7 @@ function MainApp({
   // sub-option beneath it, off by default and behind a warning.
   const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
   const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
+  const [followAggressiveness, setFollowAggressiveness] = useState(readFollowAggressiveness);
   const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
     ios ? readStoredAppearanceMode() : "light"
@@ -7734,6 +7753,13 @@ function MainApp({
     setFollowSyncEnabled(enabled);
   }
 
+  function updateFollowAggressiveness(value: FollowAggressiveness) {
+    if (value === followAggressiveness) return;
+    writeFollowAggressiveness(value);
+    setFollowAggressiveness(value);
+    selectionHaptic("change");
+  }
+
   async function refreshLibrary() {
     setIsLoading(true);
     if (localMode) {
@@ -8139,6 +8165,30 @@ function MainApp({
           <LocateFixed size={14} /> Follow narration: {followSyncEnabled ? "On" : "Off"} (experimental)
         </button>
       ) : null}
+      {!native && readalongEnabled && sentenceFollowAvailable && followSyncEnabled ? (
+        <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
+          <div>
+            <label id="menu-follow-aggressiveness-label" htmlFor="menu-follow-aggressiveness">
+              Aggressiveness
+            </label>
+            <output htmlFor="menu-follow-aggressiveness">
+              {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+            </output>
+          </div>
+          <input
+            id="menu-follow-aggressiveness"
+            type="range"
+            min="0"
+            max="2"
+            step="1"
+            value={followAggressiveness}
+            style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+            aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+            onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+          />
+          <small>Current timing <span>A little ahead</span></small>
+        </div>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -8345,6 +8395,7 @@ function MainApp({
         syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
         precision={narrationFollowActive && activeCompanionIsBook ? selectedSyncPrecision : null}
         positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
+        followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
         onSeekTo={
           narrationFollowActive
             ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
@@ -11300,25 +11351,52 @@ function MainApp({
               </button>
             </div>
             {readalongEnabled && sentenceFollowAvailable ? (
-              <div className="settings-toggle-row settings-subrow">
-                <span>
-                  <strong>Follow the narration</strong>
-                  <small>Highlights the sentence being read and turns the page with the audio.</small>
-                  <small className="settings-warning">
-                    Experimental: the highlight can drift, and turning it on may move the page to match
-                    the audio while you read.
-                  </small>
-                </span>
-                <button
-                  type="button"
-                  className="settings-switch"
-                  role="switch"
-                  aria-checked={followSyncEnabled}
-                  aria-label="Follow the narration"
-                  onClick={toggleFollowSyncEnabled}
-                >
-                  <span aria-hidden="true" />
-                </button>
+              <div className="settings-subrow settings-follow-group">
+                <div className="settings-toggle-row">
+                  <span>
+                    <strong>Follow the narration</strong>
+                    <small>Highlights the sentence being read and turns the page with the audio.</small>
+                    <small className="settings-warning">
+                      Experimental: the highlight can drift, and turning it on may move the page to match
+                      the audio while you read.
+                    </small>
+                  </span>
+                  <button
+                    type="button"
+                    className="settings-switch"
+                    role="switch"
+                    aria-checked={followSyncEnabled}
+                    aria-label="Follow the narration"
+                    onClick={toggleFollowSyncEnabled}
+                  >
+                    <span aria-hidden="true" />
+                  </button>
+                </div>
+                {followSyncEnabled ? (
+                  <div className="follow-aggressiveness">
+                    <div className="follow-aggressiveness-heading">
+                      <label htmlFor="follow-aggressiveness">Aggressiveness</label>
+                      <output htmlFor="follow-aggressiveness" aria-live="polite">
+                        {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                      </output>
+                    </div>
+                    <input
+                      id="follow-aggressiveness"
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="1"
+                      value={followAggressiveness}
+                      style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+                      aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                      onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+                    />
+                    <div className="follow-aggressiveness-labels" aria-hidden="true">
+                      <span>Current timing</span>
+                      <span>A little ahead</span>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </section>

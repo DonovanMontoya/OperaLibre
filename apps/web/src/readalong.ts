@@ -229,13 +229,19 @@ export function hrefsMatch(displayedHref: string, fragmentHref: string) {
  * fragment stays active through the silence before the next one so the
  * marker does not flicker off between sentences.
  */
-export function findActiveFragmentIndex(fragments: SyncFragment[], seconds: number) {
+export function findActiveFragmentIndex(
+  fragments: SyncFragment[],
+  seconds: number,
+  leadSeconds = 0
+) {
+  const boundedLead = Number.isFinite(leadSeconds) ? Math.max(0, leadSeconds) : 0;
+  const selectionSeconds = seconds + boundedLead;
   let low = 0;
   let high = fragments.length - 1;
   let best = -1;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    if (fragments[mid].startSeconds <= seconds) {
+    if (fragments[mid].startSeconds <= selectionSeconds) {
       best = mid;
       low = mid + 1;
     } else {
@@ -245,8 +251,10 @@ export function findActiveFragmentIndex(fragments: SyncFragment[], seconds: numb
   if (best < 0) {
     return -1;
   }
-  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds;
-  return seconds < activeUntil ? best : -1;
+  // Advancing sentence selection should not make the final highlight disappear
+  // before its real end time.
+  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds + boundedLead;
+  return selectionSeconds < activeUntil ? best : -1;
 }
 
 /**
