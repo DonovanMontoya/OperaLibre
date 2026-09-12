@@ -308,6 +308,8 @@ import {
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
 } from "./nativeAudio";
+import { NativeForegroundSyncGate } from "./nativeAudioState";
+import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
   acknowledgeCarSessions,
   addCarPlayListener,
@@ -4027,6 +4029,14 @@ function MainApp({
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
+  // Native AVPlayer sends its definitive clock only after foregrounding. Keep
+  // the server-adoption path behind that handoff, otherwise an older server
+  // revision can replace a lock-screen rewind before its native event reaches
+  // the resumed WebView.
+  const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
+  const foregroundProgressSyncRef = useRef<ReturnType<typeof createForegroundProgressSync> | null>(null);
+  const foregroundProgressActionsRef = useRef({ nativeAudio, persistProgress, adoptNewerServerProgress });
+  foregroundProgressActionsRef.current = { nativeAudio, persistProgress, adoptNewerServerProgress };
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in
@@ -6020,6 +6030,9 @@ function MainApp({
         sleepDeadlineRef.current = null;
         setSleepMinutes(0);
         setSleepRemaining(0);
+      },
+      () => {
+        foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
   }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -6336,25 +6349,16 @@ function MainApp({
   }
 
   useEffect(() => {
-    const saveBeforeLeaving = () => {
-      void persistProgress();
-    };
-    const syncWhenVisibilityChanges = () => {
-      if (document.visibilityState === "hidden") {
-        void persistProgress();
-      } else if (document.visibilityState === "visible") {
-        void adoptNewerServerProgress();
-      }
-    };
-
-    window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
-
+    const sync = createForegroundProgressSync(
+      nativeForegroundSyncGateRef.current,
+      () => foregroundProgressActionsRef.current
+    );
+    foregroundProgressSyncRef.current = sync;
     return () => {
-      window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
+      sync.dispose();
+      foregroundProgressSyncRef.current = null;
     };
-  }, [playbackBook, currentTrack, activeTrackIndex]);
+  }, []);
 
   function persistProgress(): Promise<void> {
     if (
@@ -6664,7 +6668,9 @@ function MainApp({
       !audio ||
       restoredProgressBookId.current !== book.id ||
       resumeReconciliationBookIdRef.current === book.id ||
-      foregroundAdoptInFlightRef.current
+      foregroundAdoptInFlightRef.current ||
+      document.visibilityState !== "visible" ||
+      (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
     ) {
       return;
     }
@@ -6672,6 +6678,7 @@ function MainApp({
     if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
       return;
     }
+    const foregroundGeneration = nativeForegroundSyncGateRef.current.generation;
     const actionVersion = playbackActionVersionRef.current;
     const mutationVersion = progressMutationVersion.current;
     const sessionVersion = playbackSessionVersion.current;
@@ -6681,6 +6688,9 @@ function MainApp({
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||
+        document.visibilityState !== "visible" ||
+        nativeForegroundSyncGateRef.current.generation !== foregroundGeneration ||
+        (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) ||
         restoredProgressBookId.current !== book.id ||
         playbackActionVersionRef.current !== actionVersion ||
         progressMutationVersion.current !== mutationVersion ||
@@ -6707,6 +6717,11 @@ function MainApp({
       );
     } finally {
       foregroundAdoptInFlightRef.current = false;
+      // A later resume may have tried while this obsolete request still held
+      // the in-flight guard. Give that handoff a fresh read of the server.
+      if (nativeForegroundSyncGateRef.current.generation !== foregroundGeneration) {
+        void foregroundProgressActionsRef.current.adoptNewerServerProgress();
+      }
     }
   }
 
