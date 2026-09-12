@@ -6901,6 +6901,12 @@ html.native-app .ios-status-veil {
   backdrop-filter: blur(16px) saturate(1.04);
 }
 
+/* An iPad's clock sits in a thin strip with no island to crowd, and the
+   veil there only reads as a smudged band across the top of every screen.
+   Use the actual device class so Split View still qualifies and Android
+   tablets keep their own status treatment. */
+html.native-app .native-shell.device-ipad > .ios-status-veil { display: none; }
+
 /* --- The spine tab bar --- */
 html.native-app .spine-tabs {
   position: fixed;
