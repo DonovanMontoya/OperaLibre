@@ -159,3 +159,21 @@ test("the outgoing track's pause cannot park the next track's context", async ()
   assert.equal(contexts[0].pendingSuspend, null);
   assert.equal(contexts[0].state, "running");
 });
+
+test("the next track starting while the ended track's suspend is in flight still plays", async () => {
+  const contexts = fakeWebAudio();
+  const { PlaybackGainChain } = await import("../src/playbackGain.ts");
+  const chain = new PlaybackGainChain();
+  const outgoing = fakeElement();
+  const incoming = fakeElement();
+  chain.attach(outgoing as unknown as HTMLAudioElement);
+  outgoing.emit("play");
+  outgoing.emit("ended");
+  const context = contexts[0];
+
+  chain.attach(incoming as unknown as HTMLAudioElement);
+  incoming.emit("play");
+  context.pendingSuspend?.();
+  await settle();
+  assert.equal(context.state, "running");
+});

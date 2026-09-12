@@ -122,13 +122,15 @@ export class PlaybackGainChain {
       const park = () => {
         if (this.chain?.element !== element || !element.paused) return;
         if (context.state !== "running") return;
-        // A quick pause-then-play lands `play` while the suspend is still in
-        // flight and the context still reads "running", so check again once
+        // A quick pause-then-play, or the next track starting after this one
+        // ended, lands `play` while the suspend is still in flight and the
+        // context still reads "running". Check whichever element is routed once
         // it settles rather than leave a playing book silent.
         void context
           .suspend()
           .then(() => {
-            if (this.chain?.element === element && !element.paused) this.resume();
+            const routed = this.chain?.element;
+            if (routed && !routed.paused) this.resume();
           })
           .catch(() => undefined);
       };
