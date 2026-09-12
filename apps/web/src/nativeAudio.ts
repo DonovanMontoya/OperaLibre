@@ -227,7 +227,8 @@ export function attachNativeAudioPlayer(
     isPlaying: boolean
   ) => boolean | void,
   onIntentionalSeek: () => void,
-  onSleepTimerEnded: () => void
+  onSleepTimerEnded: () => void,
+  onStateSynchronized: () => void
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -247,7 +248,7 @@ export function attachNativeAudioPlayer(
   // trackChanged when startup becomes ready; the tick re-offers it instead.
   let declinedTrackChange: NativeAudioTrackChange | null = null;
   const listenerHandles: PluginListenerHandle[] = [];
-  const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio);
+  const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio, onStateSynchronized);
 
   const offerTrackChange = (change: NativeAudioTrackChange) => {
     const accepted = onTrackChanged(

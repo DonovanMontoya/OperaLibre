@@ -70,6 +70,8 @@ pub(crate) struct MetadataOverrideStore {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookMetadataOverride {
+    /// Explicitly uploaded reading copy, relative to the book's folder.
+    pub(crate) ebook_file_name: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
     pub(crate) narrator: Option<String>,
@@ -596,6 +598,10 @@ pub(crate) async fn update_book_metadata(
     state
         .metadata_overrides
         .mutate(|overrides| {
+            metadata_override.ebook_file_name = overrides
+                .books
+                .get(&book_id)
+                .and_then(|existing| existing.ebook_file_name.clone());
             if metadata_override.tags.is_none() {
                 metadata_override.tags = overrides
                     .books
@@ -672,6 +678,7 @@ pub(crate) fn metadata_override_from_update(
     };
 
     Ok(BookMetadataOverride {
+        ebook_file_name: None,
         title: Some(title),
         author: update.author.map(|value| clean_metadata_text(&value)),
         narrator: update.narrator.map(|value| clean_metadata_text(&value)),
@@ -1683,6 +1690,11 @@ fn note_shrink_observation(
 
 pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
+    rescan_library_locked(state).await
+}
+
+/// Caller holds rescan_lock across publishing files and refreshing the catalogue.
+pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()> {
     let scan_root = state.library_root.clone();
     let (groups, walk_errors) = tokio::task::spawn_blocking(move || {
         let walk = walk_audio_files_checked(&scan_root);
@@ -1971,12 +1983,45 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
         }
-        let companion_candidates = discover_candidates(
+        let mut companion_candidates = discover_candidates(
             &group_key,
             &grouped_files,
             &book.title,
             embedded_cover.as_ref(),
         );
+        // Explicit pairing is authoritative even when a root-level audio stem
+        // normalizes to nothing (for example, `---.wav`) and cannot pass the
+        // heuristic companion-name matcher.
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book_id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            .filter(|name| sanitize_filename(name) == *name)
+        {
+            // Folder books already include every adjacent document. For a
+            // root-level book, enumerate the trusted library directory and
+            // compare names instead of constructing a path from stored data.
+            let paired_path = (!group_key.is_dir())
+                .then(|| {
+                    WalkDir::new(group_key.parent().unwrap_or(&state.library_root))
+                        .max_depth(1)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .find(|entry| {
+                            entry.file_type().is_file()
+                                && entry.file_name().to_str() == Some(name)
+                                && is_document(entry.path())
+                        })
+                        .map(walkdir::DirEntry::into_path)
+                })
+                .flatten();
+            if let Some(paired_path) = paired_path
+                && !companion_candidates.contains(&paired_path)
+            {
+                companion_candidates.push(paired_path);
+                companion_candidates.sort_by_key(|path| natural_path_key(path));
+            }
+        }
         if let Some(cover) = embedded_cover {
             extracted_covers.push((book_id.clone(), cover));
         }
@@ -2011,6 +2056,20 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .into_iter()
             .map(|(companion, _)| companion)
             .collect();
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book.id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            && let Some(index) = book
+                .companions
+                .iter()
+                .position(|file| file.file_name == name && file.extension == "epub")
+        {
+            book.companions[index].kind = CompanionKind::Book;
+            // Stable preference among EPUBs, including pre-existing supplements.
+            let paired = book.companions.remove(index);
+            book.companions.insert(0, paired);
+        }
         book.reading_file = primary_reading_file(&book.companions).map(|companion| ReadingFile {
             id: companion.id.clone(),
             file_name: companion.file_name.clone(),

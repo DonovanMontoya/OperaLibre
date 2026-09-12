@@ -67,9 +67,11 @@ export function refreshDeclinedTrackChange(
 export class NativeAudioStateSynchronizer {
   private pendingState: NativeAudioClockState | null = null;
   private readonly audio: NativeAudioClock;
+  private readonly onSynchronized: () => void;
 
-  constructor(audio: NativeAudioClock) {
+  constructor(audio: NativeAudioClock, onSynchronized: () => void = () => {}) {
     this.audio = audio;
+    this.onSynchronized = onSynchronized;
   }
 
   receive(state: NativeAudioClockState, wasPlaying: boolean) {
@@ -80,17 +82,91 @@ export class NativeAudioStateSynchronizer {
       return wasPlaying;
     }
     this.pendingState = null;
-    return reflectNativeAudioState(this.audio, state, wasPlaying);
+    const isPlaying = reflectNativeAudioState(this.audio, state, wasPlaying);
+    this.onSynchronized();
+    return isPlaying;
   }
 
   afterSeek(wasPlaying: boolean) {
     if (!this.pendingState || this.audio.seeking) return wasPlaying;
     const state = this.pendingState;
     this.pendingState = null;
-    return reflectNativeAudioState(this.audio, state, wasPlaying);
+    const isPlaying = reflectNativeAudioState(this.audio, state, wasPlaying);
+    this.onSynchronized();
+    return isPlaying;
   }
 
   clear() {
     this.pendingState = null;
+  }
+}
+
+export const NATIVE_FOREGROUND_SYNC_TIMEOUT_MS = 5000;
+
+/**
+ * Prevent a foreground server refresh from beating the native player's
+ * deferred foreground state. AVPlayer continues to own the audible clock
+ * while WKWebView is suspended, so its first state event after a background
+ * transition must be processed before an idle web session can adopt another
+ * device's server checkpoint. The wait is bounded: a player that never
+ * reports must not strand server adoption for the rest of the session.
+ */
+export class NativeForegroundSyncGate {
+  private awaitingForeground = false;
+  private backgroundGeneration = 0;
+
+  private deadlineMs: number | null = null;
+  private readonly now: () => number;
+  private readonly timeoutMs: number;
+
+  constructor(now: () => number = Date.now, timeoutMs = NATIVE_FOREGROUND_SYNC_TIMEOUT_MS) {
+    this.now = now;
+    this.timeoutMs = timeoutMs;
+  }
+
+  get generation() { return this.backgroundGeneration; }
+
+  backgrounded() {
+    this.backgroundGeneration += 1;
+    this.awaitingForeground = true;
+    this.deadlineMs = null;
+  }
+
+  /**
+   * The grace period covers the WebView resume, not the background stay, which
+   * may last hours. Start it only once the document is visible again.
+   */
+  foregrounded() {
+    if (!this.awaitingForeground) return;
+    this.awaitingForeground = false;
+    this.deadlineMs = this.now() + this.timeoutMs;
+  }
+
+  shouldDeferServerAdoption() {
+    if (this.awaitingForeground) return true;
+    if (this.deadlineMs === null) return false;
+    // A paused or idle AVPlayer may never emit a foreground state, and a
+    // superseded seek can swallow the release its "seeked" handler owed.
+    // Expire rather than deferring server adoption for the rest of the session.
+    if (this.now() >= this.deadlineMs) {
+      this.deadlineMs = null;
+      return false;
+    }
+    return true;
+  }
+
+  /** Milliseconds left before the wait expires, for scheduling a retry. */
+  msUntilDeadline() {
+    if (!this.shouldDeferServerAdoption() || this.deadlineMs === null) return 0;
+    return Math.max(0, this.deadlineMs - this.now());
+  }
+
+  nativeStateReceived() {
+    // A tick before visibility resumes cannot acknowledge the next handoff.
+    if (this.awaitingForeground) return false;
+    const wasAwaiting = this.shouldDeferServerAdoption();
+    this.awaitingForeground = false;
+    this.deadlineMs = null;
+    return wasAwaiting;
   }
 }

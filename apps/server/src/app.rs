@@ -316,6 +316,10 @@ pub(crate) fn build_router(
             "/api/library/upload",
             post(upload_audiobook).layer(DefaultBodyLimit::disable()),
         )
+        .route(
+            "/api/books/{book_id}/ebook",
+            post(upload_ebook).layer(DefaultBodyLimit::disable()),
+        )
         .route("/api/library/rescan", post(rescan))
         .route("/api/update/install", post(install_update))
         .route(
