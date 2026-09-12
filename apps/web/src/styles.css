@@ -12912,6 +12912,77 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   .ledger-dashboard .achievement-card { padding: 14px; }
 }
 
+/* A landscape iPad reads the Ledger as a dashboard rather than a long phone
+   column: the totals card and the habits calendar share the first row at
+   matching heights, and the lists below run in more columns at a tighter
+   scale. Everything keeps its source order, so a missing section simply
+   closes up. */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
+  html.native-app .profile-page.ledger-dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 14px 18px;
+    max-width: 1240px;
+    padding-top: calc(var(--status-h) + 8px);
+    padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right));
+  }
+  html.native-app .ledger-dashboard > * { grid-column: 1 / -1; min-width: 0; }
+  html.native-app .ledger-dashboard > .profile-headline,
+  html.native-app .ledger-dashboard > .profile-calendar { grid-column: auto; }
+
+  .ledger-dashboard .profile-head { gap: 12px; }
+  .ledger-dashboard .profile-mono { width: 38px; height: 38px; flex-basis: 38px; font-size: 16px; border-radius: 12px; }
+  .ledger-dashboard .profile-id h1 { font-size: 24px; }
+  .ledger-dashboard .ledger-owner { margin-top: 3px; font-size: 13px; }
+  .ledger-dashboard .profile-id p { margin-top: 2px; font-size: 11px; }
+
+  /* The total on the left, its four companions in a square beside it. */
+  .ledger-dashboard .profile-headline { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 22px; padding: 18px 20px; border-radius: 18px; }
+  .ledger-dashboard .headline-primary { padding: 0 22px 0 0; border-right: 1px solid #514439; }
+  .ledger-dashboard .headline-value { font-size: clamp(42px, 4.4vw, 54px); }
+  .ledger-dashboard .headline-label { font-size: 11px; }
+  .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 14px; }
+  .ledger-dashboard .headline-secondary > div { gap: 4px; }
+  .ledger-dashboard .headline-secondary dd { font-size: 22px; }
+  .ledger-dashboard .headline-secondary dt { font-size: 11px; }
+
+  .ledger-dashboard .profile-calendar { display: flex; flex-direction: column; justify-content: space-between; padding: 14px 16px; border-radius: 16px; }
+  .ledger-dashboard .profile-calendar header { margin-bottom: 8px; }
+  .ledger-dashboard .profile-calendar h2 { font-size: 16px; }
+  .ledger-dashboard .calendar-weeks,
+  .ledger-dashboard .calendar-week,
+  .ledger-dashboard .calendar-weekdays { gap: 4px; }
+  .ledger-dashboard .calendar-cell,
+  .ledger-dashboard .calendar-weekdays span { height: 15px; }
+  .ledger-dashboard .calendar-footer { margin-top: 8px; }
+
+  .ledger-dashboard .profile-favorites { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; padding: 0 4px; }
+  .ledger-dashboard .profile-favorites > div { gap: 2px; }
+  .ledger-dashboard .profile-favorites span { font-size: 11px; }
+  .ledger-dashboard .profile-favorites strong { font-size: 14px; }
+
+  .ledger-dashboard .ledger-achievements { padding-top: 16px; }
+  .ledger-dashboard .achievements-heading h2 { font-size: 18px; margin-bottom: 3px; }
+  .ledger-dashboard .achievements-heading p { font-size: 11px; }
+  .ledger-dashboard .achievement-tally > strong { font-size: 21px; }
+  .ledger-dashboard .achievement-filters { margin: 10px 0; }
+  .ledger-dashboard .achievement-filters button { min-height: 32px; padding: 6px 12px; }
+  .ledger-dashboard .achievement-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .ledger-dashboard .achievement-card { padding: 12px 14px; border-radius: 14px; }
+  .ledger-dashboard .achievement-seal { width: 30px; height: 30px; border-radius: 10px; }
+  .ledger-dashboard .achievement-card h3 { font-size: 14px; margin: 9px 0 4px; }
+  .ledger-dashboard .achievement-card p { font-size: 11px; line-height: 1.4; }
+
+  /* Recent books pair up rather than running one to a line. */
+  .ledger-dashboard .profile-recent header { margin-bottom: 6px; }
+  .ledger-dashboard .profile-recent h2 { font-size: 16px; }
+  .ledger-dashboard .profile-recent ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  .ledger-dashboard .profile-recent li:nth-last-child(2):nth-child(odd) { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
+  .ledger-dashboard .recent-row { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; padding: 8px 0; }
+  .ledger-dashboard .recent-cover { width: 36px; height: 36px; }
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
