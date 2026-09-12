@@ -36,9 +36,12 @@ import {
   LocateFixed,
   LogOut,
   Maximize2,
+  Minimize2,
   Minus,
   Moon,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pause,
   Pencil,
   Play,
@@ -860,6 +863,8 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
 type LibrarySource = "local" | "audible";
+/** Which pages of the iPad Shelf spread are showing. */
+type ShelfLayout = "split" | "player" | "library";
 type MetadataEditorState = {
   title: string;
   author: string;
@@ -3892,6 +3897,12 @@ function MainApp({
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
+  // iPad's two-page Shelf can give the whole screen to either page: the
+  // player alone, or the collection alone at its larger grid.
+  const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
+  // The view the collection had before it was widened, restored when it
+  // folds back, so the grid it widens into never replaces a saved choice.
+  const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
@@ -4033,8 +4044,21 @@ function MainApp({
   }
 
   function selectViewMode(mode: ShelfViewMode) {
+    viewBeforeWideShelfRef.current = null;
     setViewMode(mode);
     writeStoredShelfViewMode(mode);
+  }
+
+  function changeShelfLayout(next: ShelfLayout) {
+    if (next === shelfLayout) return;
+    if (next === "library") {
+      viewBeforeWideShelfRef.current = viewMode;
+      setViewMode("grid");
+    } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
+      setViewMode(viewBeforeWideShelfRef.current);
+      viewBeforeWideShelfRef.current = null;
+    }
+    setShelfLayout(next);
   }
 
   const isCompactView = viewMode === "compact";
@@ -7300,6 +7324,7 @@ function MainApp({
   }
 
   function selectBook(book: Book) {
+    if (shelfLayout === "library") changeShelfLayout("split");
     setSelectedBookId(book.id);
     setNativePlayerView(book.id === playbackBook?.id ? "now" : "details");
     if (native) {
@@ -7312,6 +7337,7 @@ function MainApp({
   }
 
   function openBookDetails(bookId: string) {
+    if (shelfLayout === "library") changeShelfLayout("split");
     setSelectedBookId(bookId);
     setNativePlayerView("details");
     if (native) {
@@ -8040,7 +8066,7 @@ function MainApp({
     const observer = new MutationObserver(read);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, [native, nativeTab]);
+  }, [native, nativeTab, shelfLayout]);
   const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
     tabs: iosTabs,
     selected: nativeTabSelection(nativeTab, iosTabs),
@@ -8513,12 +8539,26 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab}${ipad ? " device-ipad" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
+          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
       {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
+      {native && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
+        <button
+          type="button"
+          className="shelf-reveal-button"
+          aria-label="Show the shelf"
+          onClick={() => {
+            haptic("light");
+            changeShelfLayout("split");
+          }}
+        >
+          <PanelLeftOpen size={17} />
+          <span>Shelf</span>
+        </button>
+      ) : null}
       <audio
         key={currentTrackKey ?? "no-track"}
         ref={audioRef}
@@ -8613,6 +8653,51 @@ function MainApp({
             <span className="eyebrow"><Library size={13} /> The Collection</span>
             <h1>OperaLibre</h1>
           </div>
+          {native ? (
+            <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
+              {shelfLayout === "library" ? (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Show the player beside the shelf"
+                  title="Show the player"
+                  onClick={() => {
+                    haptic("light");
+                    changeShelfLayout("split");
+                  }}
+                >
+                  <Minimize2 size={16} />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Hide the shelf"
+                    title="Hide the shelf"
+                    onClick={() => {
+                      haptic("light");
+                      changeShelfLayout("player");
+                    }}
+                  >
+                    <PanelLeftClose size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Expand the shelf to full screen"
+                    title="Expand the shelf"
+                    onClick={() => {
+                      haptic("light");
+                      changeShelfLayout("library");
+                    }}
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
           <div className="pane-actions">
             {native ? (
               <button
