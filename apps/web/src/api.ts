@@ -925,6 +925,16 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
   );
 }
 
+export async function uploadEbook(bookId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return request<Book[]>(
+    `/api/books/${encodeURIComponent(bookId)}/ebook`,
+    { method: "POST", body },
+    24 * 60 * 60 * 1_000
+  );
+}
+
 /**
  * `timeoutMs` caps the fetch and aborts it — a startup read that can fall
  * back to a local copy should neither wait the client's default 30 s nor

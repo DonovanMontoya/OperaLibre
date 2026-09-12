@@ -76,6 +76,8 @@ pub(crate) struct MetadataOverrideStore {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookMetadataOverride {
+    /// Explicitly uploaded reading copy, relative to the book's folder.
+    pub(crate) ebook_file_name: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
     pub(crate) narrator: Option<String>,
@@ -604,6 +606,10 @@ pub(crate) async fn update_book_metadata(
     state
         .metadata_overrides
         .mutate(|overrides| {
+            metadata_override.ebook_file_name = overrides
+                .books
+                .get(&book_id)
+                .and_then(|existing| existing.ebook_file_name.clone());
             if metadata_override.tags.is_none() {
                 metadata_override.tags = overrides
                     .books
@@ -680,6 +686,7 @@ pub(crate) fn metadata_override_from_update(
     };
 
     Ok(BookMetadataOverride {
+        ebook_file_name: None,
         title: Some(title),
         author: update.author.map(|value| clean_metadata_text(&value)),
         narrator: update.narrator.map(|value| clean_metadata_text(&value)),
@@ -1691,6 +1698,11 @@ fn note_shrink_observation(
 
 pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
+    rescan_library_locked(state).await
+}
+
+/// Caller holds rescan_lock across publishing files and refreshing the catalogue.
+pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()> {
     let scan_root = state.library_root.clone();
     let (groups, walk_errors) = tokio::task::spawn_blocking(move || {
         let walk = walk_audio_files_checked(&scan_root);
@@ -2019,6 +2031,20 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .into_iter()
             .map(|(companion, _)| companion)
             .collect();
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book.id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            && let Some(index) = book
+                .companions
+                .iter()
+                .position(|file| file.file_name == name && file.extension == "epub")
+        {
+            book.companions[index].kind = CompanionKind::Book;
+            // Stable preference among EPUBs, including pre-existing supplements.
+            let paired = book.companions.remove(index);
+            book.companions.insert(0, paired);
+        }
         book.reading_file = primary_reading_file(&book.companions).map(|companion| ReadingFile {
             id: companion.id.clone(),
             file_name: companion.file_name.clone(),
