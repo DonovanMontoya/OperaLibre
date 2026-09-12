@@ -2258,6 +2258,32 @@ fn find_companion_file(
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
 /// sidecar beside the audiobook wins, then a server-generated file in the
 /// sync data directory.
+/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
+/// the fragments are tokenized and discarded, so probing a map that runs to
+/// megabytes costs no allocation. A file that cannot be read or parsed is not
+/// an alignment, so a book is never advertised as followable on the strength
+/// of its file name alone.
+fn is_aligned_sync_map(path: &FsPath) -> bool {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        #[serde(default)]
+        precision: Option<String>,
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(probe) = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)) else {
+        return false;
+    };
+    // Version 1 files carry no precision and were always aligned.
+    probe
+        .precision
+        .as_deref()
+        .unwrap_or(alignment::PRECISION_SENTENCE)
+        == alignment::PRECISION_SENTENCE
+}
+
 pub(crate) fn find_sync_file(
     book_id: &str,
     group_key: &FsPath,
@@ -2286,7 +2312,7 @@ pub(crate) fn find_sync_file(
                 .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
         },
     );
-    if let Some(selected) = sidecar {
+    if let Some(selected) = sidecar.filter(|path| is_aligned_sync_map(path)) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: selected
@@ -2302,7 +2328,7 @@ pub(crate) fn find_sync_file(
     }
 
     let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    if generated.is_file() {
+    if generated.is_file() && is_aligned_sync_map(&generated) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: generated
