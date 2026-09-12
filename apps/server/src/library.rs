@@ -2314,14 +2314,6 @@ fn find_companion_file(
         .cloned()
 }
 
-/// Finds a readalong sync map for a book: a user-provided `.sync.json`
-/// sidecar beside the audiobook wins, then a server-generated file in the
-/// sync data directory.
-/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
-/// the fragments are tokenized and discarded, so probing a map that runs to
-/// megabytes costs no allocation. A file that cannot be read or parsed is not
-/// an alignment, so a book is never advertised as followable on the strength
-/// of its file name alone.
 /// Whether an id may be joined into a path. The scan mints plain tokens, so
 /// anything carrying a separator or a parent reference is refused rather than
 /// allowed to name a file outside the directory it is joined to.
@@ -2332,6 +2324,11 @@ pub(crate) fn is_plain_file_token(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
+/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
+/// the fragments are tokenized and discarded, so probing a map that runs to
+/// megabytes costs no allocation. A file that cannot be read or parsed is not
+/// an alignment, so a book is never advertised as followable on the strength
+/// of its file name alone.
 fn is_aligned_sync_map(path: &FsPath) -> bool {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2353,6 +2350,9 @@ fn is_aligned_sync_map(path: &FsPath) -> bool {
         == alignment::PRECISION_SENTENCE
 }
 
+/// Finds a readalong sync map for a book: a user-provided `.sync.json`
+/// sidecar beside the audiobook wins, then a server-generated file in the
+/// sync data directory.
 pub(crate) fn find_sync_file(
     book_id: &str,
     group_key: &FsPath,
