@@ -44,11 +44,7 @@ pub(crate) async fn get_sync_map(
 /// plain token (the scan mints hex ids), so it cannot name anything but the
 /// book's files inside that directory.
 pub(crate) fn sync_file_book_id(id: &str) -> Result<String, ApiError> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
+    if !is_plain_file_token(id) {
         return Err(ApiError::internal("The book id cannot name a sync file."));
     }
     Ok(id.to_string())
