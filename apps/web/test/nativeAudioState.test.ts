@@ -21,6 +21,20 @@ test("a foreground server refresh waits for the deferred native clock", () => {
   assert.equal(gate.nativeStateReceived(), false);
 });
 
+test("a silent native player stops deferring once the wait expires", () => {
+  let now = 1000;
+  const gate = new NativeForegroundSyncGate(() => now, 5000);
+
+  gate.backgrounded();
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+
+  // A paused or idle AVPlayer may never emit a foreground state, and an
+  // aborted seek can swallow the release its "seeked" handler owed.
+  now += 5000;
+  assert.equal(gate.shouldDeferServerAdoption(), false);
+  assert.equal(gate.nativeStateReceived(), false);
+});
+
 test("foreground pause persists the newer native clock", () => {
   const events: Array<{ type: string; position: number }> = [];
   const audio = {
