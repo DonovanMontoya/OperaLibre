@@ -2,10 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  NativeForegroundSyncGate,
   NativeAudioStateSynchronizer,
   reflectNativeAudioState,
   refreshDeclinedTrackChange
 } from "../src/nativeAudioState.ts";
+
+test("a foreground server refresh waits for the deferred native clock", () => {
+  const gate = new NativeForegroundSyncGate();
+
+  gate.backgrounded();
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+
+  // The old server checkpoint must not be adopted in the gap between the
+  // WebView becoming visible and AVPlayer delivering its foreground state.
+  assert.equal(gate.nativeStateReceived(), true);
+  assert.equal(gate.shouldDeferServerAdoption(), false);
+  assert.equal(gate.nativeStateReceived(), false);
+});
 
 test("foreground pause persists the newer native clock", () => {
   const events: Array<{ type: string; position: number }> = [];
