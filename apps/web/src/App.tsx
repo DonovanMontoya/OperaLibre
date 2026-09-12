@@ -4061,6 +4061,22 @@ function MainApp({
     setShelfLayout(next);
   }
 
+  useEffect(() => {
+    if (!native) return;
+    const wideShelf = window.matchMedia("(min-width: 720px) and (min-height: 500px)");
+    const restoreSplitLayout = () => {
+      if (wideShelf.matches || shelfLayout === "split") return;
+      if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
+        setViewMode(viewBeforeWideShelfRef.current);
+        viewBeforeWideShelfRef.current = null;
+      }
+      setShelfLayout("split");
+    };
+    restoreSplitLayout();
+    wideShelf.addEventListener("change", restoreSplitLayout);
+    return () => wideShelf.removeEventListener("change", restoreSplitLayout);
+  }, [native, shelfLayout]);
+
   const isCompactView = viewMode === "compact";
 
   function closeShelfFilters() {
@@ -7393,6 +7409,7 @@ function MainApp({
   }
 
   function openPlaybackView(view: "now" | "details" | "chapters") {
+    if (shelfLayout === "library") changeShelfLayout("split");
     if (playbackBook) {
       setSelectedBookId(playbackBook.id);
     }
@@ -7694,7 +7711,10 @@ function MainApp({
     }
     // Reading belongs to the playing book. A book browsed from the shelf stays
     // selected after its details page closes and must not follow into the tab.
-    if (tab === "reading" && playbackBook) setSelectedBookId(playbackBook.id);
+    if (tab === "reading") {
+      if (shelfLayout === "library") changeShelfLayout("split");
+      if (playbackBook) setSelectedBookId(playbackBook.id);
+    }
     setNativeTab(tab);
     if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
   }
