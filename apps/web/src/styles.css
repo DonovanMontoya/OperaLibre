@@ -12989,20 +12989,20 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
    up into that band — each opens with a row exactly as tall as the bar's
    clearance — while anything that spans the middle still clears the bar. */
 @media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
-  html.native-app {
+  html.native-app .native-shell.device-ipad {
     --clock-h: env(safe-area-inset-top);
     --bar-band: var(--native-tabs-top, 0px);
   }
 
   /* Shelf: the verso is narrower than the gap beside the bar. */
-  html.native-app .native-shell.tab-shelf > .library-pane,
-  html.native-app .native-shell.tab-reading > .library-pane,
-  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+  html.native-app .native-shell.device-ipad.tab-shelf > .library-pane,
+  html.native-app .native-shell.device-ipad.tab-reading > .library-pane,
+  html.native-app .native-shell.device-ipad.tab-shelf.library-book-open > .library-pane {
     padding-top: calc(var(--clock-h) + 18px);
   }
 
   /* Ledger: the heading fills the band on the left. */
-  html.native-app .profile-page.ledger-dashboard {
+  html.native-app .native-shell.device-ipad .profile-page.ledger-dashboard {
     padding-top: calc(var(--clock-h) + 6px);
   }
   html.native-app .native-shell.device-ipad .ledger-dashboard > .profile-head {
