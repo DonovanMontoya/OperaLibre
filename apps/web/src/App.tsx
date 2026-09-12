@@ -253,6 +253,7 @@ import {
   setUnauthorizedHandler,
   syncLibationLibrary,
   uploadAudiobook,
+  uploadEbook,
   updateBookMetadata
 } from "./api";
 import type { ServerAlias } from "./api";
@@ -305,6 +306,8 @@ import {
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
 } from "./nativeAudio";
+import { NativeForegroundSyncGate } from "./nativeAudioState";
+import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
   acknowledgeCarSessions,
   addCarPlayListener,
@@ -3524,6 +3527,8 @@ const UPLOAD_FILE_ACCEPT = [
   "audio/*"
 ].join(",");
 
+const EPUB_FILE_ACCEPT = ".epub,application/epub+zip";
+
 /**
  * Remembers that the reader waved off the shelf's connect-a-server card. Kept
  * separate from the server keys in api.ts: it describes the pitch, not the
@@ -3945,6 +3950,10 @@ function MainApp({
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [ebookUploadBook, setEbookUploadBook] = useState<Book | null>(null);
+  const [ebookUploadFile, setEbookUploadFile] = useState<File | null>(null);
+  const [ebookUploadBusy, setEbookUploadBusy] = useState(false);
+  const [ebookUploadError, setEbookUploadError] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [metadataEditOpen, setMetadataEditOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
@@ -3963,6 +3972,14 @@ function MainApp({
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
+  // Native AVPlayer sends its definitive clock only after foregrounding. Keep
+  // the server-adoption path behind that handoff, otherwise an older server
+  // revision can replace a lock-screen rewind before its native event reaches
+  // the resumed WebView.
+  const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
+  const foregroundProgressSyncRef = useRef<ReturnType<typeof createForegroundProgressSync> | null>(null);
+  const foregroundProgressActionsRef = useRef({ nativeAudio, persistProgress, adoptNewerServerProgress });
+  foregroundProgressActionsRef.current = { nativeAudio, persistProgress, adoptNewerServerProgress };
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in
@@ -5936,6 +5953,9 @@ function MainApp({
         sleepDeadlineRef.current = null;
         setSleepMinutes(0);
         setSleepRemaining(0);
+      },
+      () => {
+        foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
   }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -6252,25 +6272,16 @@ function MainApp({
   }
 
   useEffect(() => {
-    const saveBeforeLeaving = () => {
-      void persistProgress();
-    };
-    const syncWhenVisibilityChanges = () => {
-      if (document.visibilityState === "hidden") {
-        void persistProgress();
-      } else if (document.visibilityState === "visible") {
-        void adoptNewerServerProgress();
-      }
-    };
-
-    window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
-
+    const sync = createForegroundProgressSync(
+      nativeForegroundSyncGateRef.current,
+      () => foregroundProgressActionsRef.current
+    );
+    foregroundProgressSyncRef.current = sync;
     return () => {
-      window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
+      sync.dispose();
+      foregroundProgressSyncRef.current = null;
     };
-  }, [playbackBook, currentTrack, activeTrackIndex]);
+  }, []);
 
   function persistProgress(): Promise<void> {
     if (
@@ -6580,7 +6591,9 @@ function MainApp({
       !audio ||
       restoredProgressBookId.current !== book.id ||
       resumeReconciliationBookIdRef.current === book.id ||
-      foregroundAdoptInFlightRef.current
+      foregroundAdoptInFlightRef.current ||
+      document.visibilityState !== "visible" ||
+      (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
     ) {
       return;
     }
@@ -6588,6 +6601,7 @@ function MainApp({
     if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
       return;
     }
+    const foregroundGeneration = nativeForegroundSyncGateRef.current.generation;
     const actionVersion = playbackActionVersionRef.current;
     const mutationVersion = progressMutationVersion.current;
     const sessionVersion = playbackSessionVersion.current;
@@ -6597,6 +6611,9 @@ function MainApp({
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||
+        document.visibilityState !== "visible" ||
+        nativeForegroundSyncGateRef.current.generation !== foregroundGeneration ||
+        (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) ||
         restoredProgressBookId.current !== book.id ||
         playbackActionVersionRef.current !== actionVersion ||
         progressMutationVersion.current !== mutationVersion ||
@@ -6623,6 +6640,11 @@ function MainApp({
       );
     } finally {
       foregroundAdoptInFlightRef.current = false;
+      // A later resume may have tried while this obsolete request still held
+      // the in-flight guard. Give that handoff a fresh read of the server.
+      if (nativeForegroundSyncGateRef.current.generation !== foregroundGeneration) {
+        void foregroundProgressActionsRef.current.adoptNewerServerProgress();
+      }
     }
   }
 
@@ -7799,6 +7821,46 @@ function MainApp({
       setUploadError(errorMessage(error, "The audiobook could not be uploaded."));
     } finally {
       setUploadBusy(false);
+    }
+  }
+
+  function chooseEbookUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0] ?? null;
+    const error = file && !file.name.toLowerCase().endsWith(".epub")
+      ? "Choose an EPUB (.epub) file."
+      : file && (file.size === 0 || file.size > 64 * 1024 * 1024)
+        ? "Choose a non-empty EPUB up to 64 MiB." : null;
+    setEbookUploadFile(error ? null : file);
+    setEbookUploadError(error);
+  }
+
+  async function submitEbookUpload(event: React.FormEvent) {
+    event.preventDefault();
+    if (!ebookUploadBook || !ebookUploadFile || !ebookUploadFile.name.toLowerCase().endsWith(".epub")) {
+      setEbookUploadError("Choose an EPUB (.epub) file.");
+      return;
+    }
+    setEbookUploadBusy(true);
+    setEbookUploadError(null);
+    try {
+      const nextBooks = await uploadEbook(ebookUploadBook.id, ebookUploadFile);
+      const paired = nextBooks.find((book) => book.id === ebookUploadBook.id);
+      if (!paired?.readingFile || paired.readingFile.extension !== "epub") {
+        throw new Error("The server has not paired the EPUB yet. Refresh the library to check its status.");
+      }
+      // Upload responses may arrive after playback or device-library updates.
+      // Adopt only the paired files; keep current progress and local books.
+      setBooks((existing) => existing.map((book) => book.id === paired.id ? {
+        ...book, readingFile: paired.readingFile, companions: paired.companions, syncFile: paired.syncFile
+      } : book));
+      setIsOffline(false);
+      setError(null);
+      setEbookUploadBook(null);
+      setEbookUploadFile(null);
+    } catch (error) {
+      setEbookUploadError(errorMessage(error, "The EPUB could not be uploaded."));
+    } finally {
+      setEbookUploadBusy(false);
     }
   }
 
@@ -9691,6 +9753,22 @@ function MainApp({
                         <span>Edit Info</span>
                       </button>
                     ) : null}
+                    {capabilities.uploads && selectedBook.readingFile?.extension !== "epub" && selectedBook.source !== "device" ? (
+                      <button
+                        className="download-btn"
+                        type="button"
+                        onClick={() => {
+                          haptic("light");
+                          setEbookUploadBook(selectedBook);
+                          setEbookUploadFile(null);
+                          setEbookUploadError(null);
+                        }}
+                        aria-label={`Upload matching ebook for ${selectedBook.title}`}
+                      >
+                        <BookOpen size={13} />
+                        <span>Add EPUB</span>
+                      </button>
+                    ) : null}
                     <button
                       className={`download-btn ${
                         selectedBook.progress?.status === "finished" ? "active" : ""
@@ -11121,6 +11199,57 @@ function MainApp({
               <button type="submit" disabled={uploadBusy || uploadFiles.length === 0}>
                 {uploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
                 {uploadBusy ? "Uploading…" : "Upload to library"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {capabilities.uploads && ebookUploadBook ? (
+        <div className="modal-scrim" role="presentation">
+          <form
+            className="modal-card upload-audiobook-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upload-ebook-title"
+            onSubmit={submitEbookUpload}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow"><BookOpen size={13} /> Pair with this audiobook</span>
+                <h2 id="upload-ebook-title">Add matching EPUB</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close ebook upload"
+                disabled={ebookUploadBusy}
+                onClick={() => setEbookUploadBook(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="upload-audiobook-hint">
+              Upload the EPUB for <strong>{ebookUploadBook.title}</strong>. It stays beside this audiobook and becomes its reading copy.
+            </p>
+            <label className="upload-file-picker">
+              <BookOpen size={22} />
+              <strong>{ebookUploadFile ? ebookUploadFile.name : "Choose EPUB file"}</strong>
+              <span>Unencrypted EPUB · up to 64 MiB</span>
+              <input
+                type="file"
+                accept={native ? undefined : EPUB_FILE_ACCEPT}
+                required
+                disabled={ebookUploadBusy}
+                onChange={chooseEbookUpload}
+              />
+            </label>
+            {ebookUploadError ? <p className="metadata-edit-error">{ebookUploadError}</p> : null}
+            <div className="metadata-edit-actions">
+              <button type="button" disabled={ebookUploadBusy} onClick={() => setEbookUploadBook(null)}>Cancel</button>
+              <button type="submit" disabled={ebookUploadBusy || !ebookUploadFile}>
+                {ebookUploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
+                {ebookUploadBusy ? "Uploading…" : "Add EPUB"}
               </button>
             </div>
           </form>
