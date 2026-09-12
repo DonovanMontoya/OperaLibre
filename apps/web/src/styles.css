@@ -7334,7 +7334,7 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
      right at full-size keys. */
   html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 16px; place-items: center start; }
   html.native-app .word-board,
-  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px, 82cqh); }
+  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px); }
   @supports (width: 1cqh) {
     html.native-app .word-board,
     html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px, 82cqh); }
