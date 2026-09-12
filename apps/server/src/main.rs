@@ -87,6 +87,7 @@ mod reading;
 mod reading_log;
 mod storage;
 mod sync;
+mod sync_schedule;
 #[cfg(test)]
 mod unit_tests;
 mod updates;
@@ -195,6 +196,7 @@ async fn main() -> anyhow::Result<()> {
     start_startup_scan(state.clone()).await;
     schedule_automatic_libation_refresh(state.clone());
     schedule_reading_session_sweeper(state.clone());
+    sync_schedule::start(state.clone());
 
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
     let shutdown = state.shutdown.subscribe();
@@ -555,6 +557,7 @@ fn build_app_state(
             config.port,
         )?,
         sync_dir: config.data_dir.join("sync"),
+        sync_schedule_lock: Arc::new(Mutex::new(())),
         covers_dir: config.data_dir.join("covers"),
         database: database.clone(),
         database_path,
