@@ -11912,7 +11912,7 @@ html.native-app .recent-row {
    View windows fall back to the single-pane navigation.
    ============================================================ */
 @media (min-width: 720px) and (min-height: 500px) {
-  html.native-app .native-shell.device-ipad {
+  html.native-app {
     /* The verso is sized to hold a two-line title at the shelf's
        list size without hyphenating. */
     --verso-w: clamp(316px, 30vw, 396px);
@@ -11949,9 +11949,9 @@ html.native-app .recent-row {
     transition: none;
   }
 
-  html.native-app .native-shell.device-ipad.tab-shelf > .library-pane,
-  html.native-app .native-shell.device-ipad.tab-reading > .library-pane,
-  html.native-app .native-shell.device-ipad.tab-shelf.library-book-open > .library-pane {
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
     grid-column: 1;
   }
 
