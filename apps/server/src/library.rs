@@ -2263,6 +2263,16 @@ fn find_companion_file(
 /// megabytes costs no allocation. A file that cannot be read or parsed is not
 /// an alignment, so a book is never advertised as followable on the strength
 /// of its file name alone.
+/// Whether an id may be joined into a path. The scan mints plain tokens, so
+/// anything carrying a separator or a parent reference is refused rather than
+/// allowed to name a file outside the directory it is joined to.
+pub(crate) fn is_plain_file_token(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
 fn is_aligned_sync_map(path: &FsPath) -> bool {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2327,6 +2337,9 @@ pub(crate) fn find_sync_file(
         });
     }
 
+    if !is_plain_file_token(book_id) {
+        return None;
+    }
     let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
     if generated.is_file() && is_aligned_sync_map(&generated) {
         return Some(DiscoveredSyncFile {

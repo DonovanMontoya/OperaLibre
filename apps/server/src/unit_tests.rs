@@ -4950,6 +4950,12 @@ fn sync_files_are_only_named_after_plain_book_ids() {
             crate::sync::sync_file_book_id(bad).is_err(),
             "{bad:?} was accepted"
         );
+        // The scan builds the same path from the same id, so it refuses on
+        // the shared predicate rather than a check of its own.
+        assert!(
+            !crate::library::is_plain_file_token(bad),
+            "{bad:?} was accepted for a scanned path"
+        );
     }
 }
 
