@@ -79,6 +79,8 @@ mod http_tests;
 mod jobs;
 mod libation;
 mod library;
+mod libro;
+mod libro_account;
 mod media;
 mod migrate;
 mod opds;
@@ -107,6 +109,8 @@ use faststart_jobs::*;
 use jobs::*;
 use libation::*;
 use library::*;
+use libro::*;
+use libro_account::*;
 use media::*;
 use migrate::*;
 use opds::*;
@@ -194,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
     // retries it on a backoff, and any other trigger's rescan counts too.
     start_startup_scan(state.clone()).await;
     schedule_automatic_libation_refresh(state.clone());
+    schedule_libro_imports(state.clone());
     schedule_reading_session_sweeper(state.clone());
 
     let (shutdown_reason_sender, shutdown_reason) = tokio::sync::oneshot::channel();
@@ -616,6 +621,7 @@ fn build_app_state(
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         upload_lock: Arc::new(Mutex::new(())),
+        libro: Arc::new(LibroImports::default()),
         backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
     })
 }

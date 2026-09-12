@@ -257,6 +257,35 @@ export type LibationStatus = {
   manualRefreshesPerHour: number;
 };
 
+export type LibroImportStatus = {
+  folder: string | null;
+  lastChecked: string | null;
+  error: string | null;
+  job: JobStatus | null;
+  items: {
+    name: string;
+    status: "waiting" | "imported" | "review" | "missing";
+    detail: string;
+    importedAt: string | null;
+  }[];
+};
+
+export type LibroAccountStatus = {
+  connected: boolean;
+  email: string | null;
+  syncedAt: string | null;
+  jobs: JobStatus[];
+  books: {
+    isbn: string;
+    title: string;
+    authors: string[];
+    cover_url: string | null;
+    audiobook_info: { narrators: string[]; duration: number | null };
+    description: string;
+    localBookId: string | null;
+  }[];
+};
+
 export type LibationBook = {
   catalogId: string;
   profileId: string;

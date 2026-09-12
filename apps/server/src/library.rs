@@ -1929,6 +1929,37 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             .as_ref()
             .map(|_| format!("/api/books/{book_id}/cover"));
         let mut metadata_summary = merge_metadata_summary(&metadata);
+        if let Some(imported) = libro_metadata_for_group(&group_key) {
+            title = clean_imported_title(&imported.title);
+            if let Some(first) = metadata.first_mut() {
+                if !imported.authors.is_empty() {
+                    first.author = Some(imported.authors.join(", "));
+                }
+                if !imported.audiobook_info.narrators.is_empty() {
+                    first.narrator = Some(imported.audiobook_info.narrators.join(", "));
+                }
+            }
+            let summary = MetadataSummary {
+                description: (!imported.description.is_empty()).then_some(imported.description),
+                publisher: (!imported.publisher.is_empty()).then_some(imported.publisher),
+                published_date: (!imported.publication_date.is_empty())
+                    .then_some(imported.publication_date),
+                series: imported.series,
+                series_position: imported.series_num.map(|n| {
+                    n.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| n.to_string())
+                }),
+                genres: imported.genres.into_iter().map(|g| g.name).collect(),
+                raw_fields: vec![MetadataField {
+                    key: "ISBN".into(),
+                    value: imported.isbn,
+                    description: None,
+                }],
+                ..Default::default()
+            };
+            metadata_summary = merge_two_summaries(summary, metadata_summary);
+        }
         if let Some(sidecar) = libation_sidecar_for_group(&group_key, &grouped_files) {
             // A Libation sidecar is a direct Audible record for this download,
             // so it intentionally wins over lossy container tags. User edits

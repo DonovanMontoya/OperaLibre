@@ -77,6 +77,7 @@ pub(crate) struct AppState {
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
+    pub(crate) libro: Arc<LibroImports>,
     /// Excludes backups and restores from the updater handoff through shutdown.
     pub(crate) backup_lock: Arc<Mutex<BackupLifecycle>>,
 }
@@ -199,6 +200,19 @@ pub(crate) fn build_router(
             get(faststart_status).post(start_faststart_conversion),
         )
         .route("/api/libation/status", get(libation_status))
+        .route("/api/libro", get(libro_status).put(configure_libro))
+        .route("/api/libro/scan", post(scan_libro))
+        .route(
+            "/api/me/libro",
+            get(get_libro_account)
+                .post(connect_libro_account)
+                .delete(disconnect_libro_account),
+        )
+        .route("/api/me/libro/refresh", post(refresh_libro_account))
+        .route(
+            "/api/me/libro/books/{isbn}/import",
+            post(import_libro_purchase),
+        )
         .route(
             "/api/libation/accounts/login/start",
             post(start_libation_account_login),

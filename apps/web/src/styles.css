@@ -784,11 +784,13 @@ html:not(.native-app) .web-shell > .player-pane {
 
 .source-toggle {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   border: 1px solid rgba(217, 181, 116, 0.22);
 }
 
 .source-toggle button {
+  min-width: 0;
   min-height: 48px;
   padding: 7px 10px;
   display: inline-flex;
@@ -804,32 +806,6 @@ html:not(.native-app) .web-shell > .player-pane {
   border-right: 1px solid rgba(217, 181, 116, 0.22);
 }
 
-.source-toggle-copy {
-  min-width: 0;
-  display: grid;
-  gap: 1px;
-  text-align: left;
-}
-
-.source-toggle-copy strong,
-.source-toggle-copy small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-toggle-copy strong {
-  font: inherit;
-}
-
-.source-toggle-copy small {
-  font-size: 0.56rem;
-  font-weight: 400;
-  letter-spacing: 0.035em;
-  text-transform: none;
-  opacity: 0.72;
-}
-
 .source-toggle button:last-child {
   border-right: 0;
 }
@@ -842,6 +818,58 @@ html:not(.native-app) .web-shell > .player-pane {
   color: var(--on-gold);
   background: var(--gold-soft);
 }
+
+/* Task navigation stays above search; stores belong only to Get books. */
+.source-toggle.shelf-navigation {
+  padding: 0;
+  gap: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(217, 181, 116, 0.25);
+  border-radius: 0;
+  background: none;
+}
+
+.source-toggle.shelf-navigation button {
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  font-family: "Fraunces", "Times New Roman", serif;
+  font-size: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.source-toggle.shelf-navigation button.selected {
+  color: var(--gold-soft);
+  background: none;
+  border-bottom-color: var(--gold-soft);
+}
+
+.shelf-navigation .source-health-badge { margin-left: 0; }
+
+.purchase-source { display: grid; gap: 7px; min-width: 0; }
+.purchase-source label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  color: rgba(241, 231, 208, 0.65);
+}
+.purchase-source select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid rgba(217, 181, 116, 0.3);
+  border-radius: 4px;
+  color: var(--gold-soft);
+  background: var(--spine);
+  font-size: 0.95rem;
+  color-scheme: dark;
+}
+.shelf-navigation button:focus-visible,
+.purchase-source select:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
 
 .source-health-badge {
   margin-left: auto;
@@ -9496,7 +9524,7 @@ html.native-app .control-section select {
 }
 
 /* --- iOS-style segmented source switch --- */
-html.native-app .source-toggle {
+html.native-app .source-toggle:not(.shelf-navigation) {
   padding: 3px;
   gap: 3px;
   border: 1px solid rgba(217, 181, 116, 0.16);
@@ -9504,7 +9532,7 @@ html.native-app .source-toggle {
   background: rgba(255, 255, 255, 0.05);
 }
 
-html.native-app .source-toggle button {
+html.native-app .source-toggle:not(.shelf-navigation) button {
   min-height: 48px;
   border-right: 0;
   border-radius: 999px;
@@ -10133,6 +10161,7 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 
 .admin-nav button {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -10144,6 +10173,9 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
   background: transparent;
   font: 600 0.69rem "JetBrains Mono", monospace;
   letter-spacing: 0.04em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -10700,7 +10732,8 @@ html.native-app .admin-shell:not(.admin-overlay) {
 @media (max-width: 760px) {
   .admin-overlay { padding: 22px 15px 40px; }
   .admin-head h1 { font-size: 2.5rem; }
-  .admin-nav button { font-size: 0.6rem; padding: 6px; }
+  .admin-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .admin-nav button { min-height: 44px; font-size: 0.75rem; line-height: 1.4; padding: 10px 12px; }
   .admin-nav button svg { display: none; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-user-layout { grid-template-columns: 1fr; }
@@ -10727,6 +10760,10 @@ html.native-app .admin-shell:not(.admin-overlay) {
   .admin-request .admin-row-actions { grid-column: 1 / -1; padding-left: 0; }
   .admin-book-checks { grid-template-columns: 1fr; }
   .admin-library-row .admin-delete-book span { display: none; }
+}
+
+@media (max-width: 480px) {
+  .admin-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Below the modal scrim (z 50) so Manage readers opens on top. */
@@ -12597,6 +12634,86 @@ html.native-app .recent-row {
   padding: 0.6rem 0.35rem 0.35rem;
   font: italic 0.85rem/1.4 "Fraunces", serif;
   color: var(--ink-faded);
+}
+
+/* Libro.fm setup and import activity share the administration palette. */
+.libro-imports { display: grid; gap: 14px; }
+.libro-imports .admin-card { min-width: 0; }
+.libro-folder-optional { margin-top: 18px; }
+.libro-folder-optional > summary { cursor: pointer; padding: 12px 0; }
+.libro-catalog {
+  --catalog-ink: var(--paper);
+  --catalog-muted: rgba(241, 231, 208, 0.7);
+  --catalog-border: rgba(217, 181, 116, 0.25);
+  --catalog-surface: rgba(255, 255, 255, 0.04);
+  padding: 18px 14px;
+  color: var(--catalog-ink);
+  text-align: left;
+  min-width: 0;
+}
+.admin-shell .libro-catalog {
+  --catalog-ink: var(--ink);
+  --catalog-muted: var(--ink-faded);
+  --catalog-border: rgba(var(--ink-rgb), 0.2);
+  --catalog-surface: rgba(var(--lift-rgb), 0.72);
+  border: 1px solid var(--catalog-border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.libro-catalog-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; }
+.libro-catalog h2 { margin: 0 0 6px; font: 400 1.8rem "Instrument Serif", serif; }
+.libro-catalog p { margin: 5px 0; color: var(--catalog-muted); line-height: 1.5; overflow-wrap: anywhere; }
+.libro-catalog button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 10px 12px; border: 1px solid var(--catalog-border); border-radius: 8px; background: var(--catalog-surface); color: var(--catalog-ink); font: 500 0.75rem "JetBrains Mono", monospace; cursor: pointer; }
+.libro-catalog button:hover:not(:disabled) { background: var(--gold-soft); color: var(--on-gold); }
+.libro-catalog button:focus-visible, .libro-catalog input:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
+.libro-catalog button:disabled { opacity: 0.6; cursor: default; }
+.libro-catalog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.libro-connect { display: grid; gap: 14px; max-width: 32rem; }
+.libro-connect label { display: grid; gap: 6px; font-size: 0.85rem; }
+.libro-catalog input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--catalog-border); border-radius: 8px; background: var(--catalog-surface); color: var(--catalog-ink); font: inherit; }
+.libro-connect > p { font-size: 0.8rem; }
+.libro-catalog-search { display: flex; align-items: center; gap: 10px; }
+.libro-catalog-summary { font-size: 0.8rem; padding: 10px 0; }
+.libro-catalog .libro-catalog-error { padding: 10px; border: 1px solid var(--catalog-border); border-left: 3px solid var(--gold-soft); color: var(--catalog-ink); }
+.libro-purchases { list-style: none; padding: 0; margin: 0; }
+.libro-purchases > li { display: grid; grid-template-columns: 50px minmax(0, 1fr) auto; align-items: start; gap: 12px; padding: 16px 0; border-top: 1px solid var(--catalog-border); }
+.libro-purchase-cover { display: grid; place-items: center; aspect-ratio: 1; border-radius: 5px; overflow: hidden; background: var(--catalog-surface); }
+.libro-purchase-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.libro-purchase-copy { min-width: 0; overflow-wrap: anywhere; }
+.libro-purchase-copy h3 { margin: 0; font-size: 1rem; line-height: 1.3; }
+.libro-purchase-copy p, .libro-purchase-copy small { font-size: 0.8rem; color: var(--catalog-muted); }
+@media (max-width: 480px) {
+  .source-toggle button { padding: 8px 6px; justify-content: center; gap: 4px; letter-spacing: 0.03em; }
+  .source-toggle button > svg { display: none; }
+  .libro-purchases > li { grid-template-columns: 44px minmax(0, 1fr); }
+  .libro-purchases > li > button { grid-column: 2; justify-self: start; }
+}
+.libro-intro > h2 { margin-bottom: 0.5rem; }
+.libro-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; padding: 0 0 0 1.3rem; margin: 1.5rem 0; }
+.libro-steps li { padding-left: 0.25rem; }
+.libro-steps li::marker { color: var(--ink-faded); }
+.libro-steps strong, .libro-steps span { display: block; }
+.libro-steps span { margin-top: 0.5rem; font-size: 0.88rem; line-height: 1.6; color: var(--ink-faded); }
+.libro-external { display: inline-flex; align-items: center; gap: 0.5rem; }
+.libro-folder-form { display: grid; gap: 0.6rem; }
+.libro-folder-form > input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid rgba(var(--ink-rgb), 0.22); border-radius: 8px; color: var(--ink); background: rgba(var(--field-rgb), 0.65); font: inherit; }
+.libro-folder-form > input:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 2px; }
+.libro-folder-form > p { margin: 0; font-size: 0.85rem; color: var(--ink-faded); }
+.libro-actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 0.4rem; }
+.libro-badge { display: inline-flex; flex-shrink: 0; width: fit-content; border: 1px solid currentColor; border-radius: 2rem; padding: 0.3rem 0.6rem; font-size: 0.75rem; line-height: 1.3; color: var(--ink-faded); }
+.libro-badge.imported { color: var(--ink); }
+.libro-badge.review, .libro-badge.missing { color: var(--oxblood); }
+.libro-activity { list-style: none; padding: 0; margin: 0; }
+.libro-activity li { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; border-top: 1px solid rgba(var(--ink-rgb), 0.15); padding: 1rem 0; }
+.libro-activity li > div { min-width: 0; overflow-wrap: anywhere; }
+.libro-activity p { margin: 0.4rem 0; font-size: 0.85rem; color: var(--ink-faded); }
+.libro-activity small { color: var(--ink-faded); }
+.libro-empty { display: grid; justify-items: center; padding: 1.5rem; text-align: center; color: var(--ink-faded); }
+.libro-empty p { max-width: 30rem; line-height: 1.6; }
+@media (max-width: 640px) {
+  .libro-steps { grid-template-columns: 1fr; gap: 1rem; }
+  .libro-activity li { flex-direction: column; gap: 0.65rem; }
+  .libro-imports .admin-section-head { flex-wrap: wrap; }
 }
 
 /* The two finish settings sit under the sharing switch they depend on. */
