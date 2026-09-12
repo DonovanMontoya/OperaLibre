@@ -1549,6 +1549,7 @@ exit 0
         faststart_tools: None,
         update_manager: super::updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
         sync_dir: data_dir.join("sync"),
+        sync_schedule_lock: super::Arc::new(super::Mutex::new(())),
         covers_dir: data_dir.join("covers"),
         database: database.clone(),
         database_path: data_dir.join("operalibre.db"),

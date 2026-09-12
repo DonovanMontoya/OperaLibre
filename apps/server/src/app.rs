@@ -26,6 +26,7 @@ pub(crate) struct AppState {
     pub(crate) faststart_tools: Option<faststart::Tools>,
     pub(crate) update_manager: updates::UpdateManager,
     pub(crate) sync_dir: PathBuf,
+    pub(crate) sync_schedule_lock: Arc<Mutex<()>>,
     /// Where cover art extracted during the scan is kept.
     pub(crate) covers_dir: PathBuf,
     /// Shared database handle whose state gate quiesces every writer during a
@@ -261,6 +262,16 @@ pub(crate) fn build_router(
             post(generate_sync_map),
         )
         .route("/api/alignment/status", get(alignment_status))
+        .route("/api/sync-schedules", get(sync_schedule::list))
+        .route(
+            "/api/sync-sweep",
+            get(sync_schedule::sweep).put(sync_schedule::set_sweep),
+        )
+        .route("/api/sync-sweep/run", post(sync_schedule::run_sweep_now))
+        .route(
+            "/api/sync-schedules/{book_id}",
+            put(sync_schedule::schedule).delete(sync_schedule::cancel),
+        )
         .route(
             "/api/books/{book_id}/progress",
             get(get_progress).put(update_progress),

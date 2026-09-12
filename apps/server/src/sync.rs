@@ -69,6 +69,13 @@ pub(crate) async fn generate_sync_map(
     _: AdminUser,
     Path(book_id): Path<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
+    enqueue_sync_map(state, book_id).await
+}
+
+pub(crate) async fn enqueue_sync_map(
+    state: AppState,
+    book_id: String,
+) -> Result<Json<JobCreated>, ApiError> {
     let lifecycle = state
         .update_manager
         .sync_lifecycle
