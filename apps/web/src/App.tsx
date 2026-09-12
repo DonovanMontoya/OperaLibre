@@ -289,6 +289,7 @@ import { useNativeTabs } from "./useNativeTabs";
 import {
   disableRotationLock,
   enableRotationLock,
+  isIPadNavigator,
   isRotationLockAvailable,
   readStoredRotationLock
 } from "./rotationLock";
@@ -3553,6 +3554,7 @@ function MainApp({
   const capabilities = serverCapabilities(getServerType(), currentUser, { local: localMode, demo: demoMode });
   const native = Capacitor.isNativePlatform();
   const ios = native && document.documentElement.classList.contains("platform-ios");
+  const ipad = ios && isIPadNavigator(window.navigator);
   // Shared reading is an OperaLibre-server feature: Jellyfin keeps its own user
   // data, and demo/local libraries have no other listeners to compare against.
   const sharedProgressAvailable = capabilities.sharedActivity;
@@ -8511,7 +8513,7 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
+          ? `shell native-shell tab-${nativeTab}${ipad ? " device-ipad" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
