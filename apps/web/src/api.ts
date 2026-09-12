@@ -1197,3 +1197,55 @@ const serverBackends: Record<ServerType, ServerBackend> = {
 function currentBackend(): ServerBackend {
   return serverBackends[getServerType()];
 }
+
+export type SyncSchedule = {
+  bookId: string;
+  runAt: number;
+  status: "scheduled" | "dispatching" | "submitted" | "completed" | "failed" | "missed";
+  jobId: string | null;
+  error: string | null;
+};
+
+export function listSyncSchedules() {
+  return request<SyncSchedule[]>("/api/sync-schedules");
+}
+
+export function scheduleBookSync(bookId: string, runAt: number) {
+  return request<SyncSchedule>(`/api/sync-schedules/${encodeURIComponent(bookId)}`, {
+    method: "PUT", body: JSON.stringify({ runAt }),
+  });
+}
+
+export function cancelBookSyncSchedule(bookId: string) {
+  return request<void>(`/api/sync-schedules/${encodeURIComponent(bookId)}`, { method: "DELETE" });
+}
+
+/** The nightly library sweep, plus what it would queue if it ran now. */
+export type SyncSweep = {
+  enabled: boolean;
+  /** The recurring wall-clock rule and its server-calculated next instant. */
+  localTime: string;
+  timeZone: string;
+  nextRunAt: number;
+  lastRunAt: number | null;
+  lastQueued: number | null;
+  lastError: string | null;
+  pendingCount: number;
+  eligibleCount: number;
+};
+
+export type SyncSweepRun = { queued: number; skipped: number; error: string | null };
+
+export function getSyncSweep() {
+  return request<SyncSweep>("/api/sync-sweep");
+}
+
+export function setSyncSweep(enabled: boolean, localTime: string, timeZone: string) {
+  return request<SyncSweep>("/api/sync-sweep", {
+    method: "PUT", body: JSON.stringify({ enabled, localTime, timeZone }),
+  });
+}
+
+export function runSyncSweep() {
+  return request<SyncSweepRun>("/api/sync-sweep/run", { method: "POST" });
+}
