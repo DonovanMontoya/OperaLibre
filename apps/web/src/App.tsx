@@ -309,6 +309,7 @@ import {
   type NativeAudioQueueTrack
 } from "./nativeAudio";
 import { NativeForegroundSyncGate } from "./nativeAudioState";
+import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
   acknowledgeCarSessions,
   addCarPlayListener,
@@ -4033,10 +4034,9 @@ function MainApp({
   // revision can replace a lock-screen rewind before its native event reaches
   // the resumed WebView.
   const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
-  // A native player that never reports (paused, idle) would otherwise leave the
-  // deferred foreground adoption with nothing to run it. Retry when the wait
-  // expires; the native state event cancels the timer if it arrives first.
-  const nativeForegroundAdoptTimerRef = useRef<number | null>(null);
+  const foregroundProgressSyncRef = useRef<ReturnType<typeof createForegroundProgressSync> | null>(null);
+  const foregroundProgressActionsRef = useRef({ nativeAudio, persistProgress, adoptNewerServerProgress });
+  foregroundProgressActionsRef.current = { nativeAudio, persistProgress, adoptNewerServerProgress };
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in
@@ -6032,11 +6032,7 @@ function MainApp({
         setSleepRemaining(0);
       },
       () => {
-        if (!nativeForegroundSyncGateRef.current.nativeStateReceived()) return;
-        cancelNativeForegroundAdoptRetry();
-        if (document.visibilityState === "visible") {
-          void adoptNewerServerProgress();
-        }
+        foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
   }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -6353,55 +6349,16 @@ function MainApp({
   }
 
   useEffect(() => {
-    const saveBeforeLeaving = () => {
-      void persistProgress();
-    };
-    const syncWhenVisibilityChanges = () => {
-      if (document.visibilityState === "hidden") {
-        if (nativeAudio) nativeForegroundSyncGateRef.current.backgrounded();
-        cancelNativeForegroundAdoptRetry();
-        void persistProgress();
-      } else if (document.visibilityState === "visible") {
-        if (nativeAudio) {
-          nativeForegroundSyncGateRef.current.foregrounded();
-          if (nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) {
-            scheduleNativeForegroundAdoptRetry(
-              nativeForegroundSyncGateRef.current.msUntilDeadline()
-            );
-            return;
-          }
-        }
-        void adoptNewerServerProgress();
-      }
-    };
-
-    window.addEventListener("pagehide", saveBeforeLeaving);
-    document.addEventListener("visibilitychange", syncWhenVisibilityChanges);
-
+    const sync = createForegroundProgressSync(
+      nativeForegroundSyncGateRef.current,
+      () => foregroundProgressActionsRef.current
+    );
+    foregroundProgressSyncRef.current = sync;
     return () => {
-      window.removeEventListener("pagehide", saveBeforeLeaving);
-      document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
-      cancelNativeForegroundAdoptRetry();
+      sync.dispose();
+      foregroundProgressSyncRef.current = null;
     };
-  }, [playbackBook, currentTrack, activeTrackIndex]);
-
-  function cancelNativeForegroundAdoptRetry() {
-    if (nativeForegroundAdoptTimerRef.current === null) return;
-    window.clearTimeout(nativeForegroundAdoptTimerRef.current);
-    nativeForegroundAdoptTimerRef.current = null;
-  }
-
-  function scheduleNativeForegroundAdoptRetry(delayMs: number) {
-    cancelNativeForegroundAdoptRetry();
-    nativeForegroundAdoptTimerRef.current = window.setTimeout(() => {
-      nativeForegroundAdoptTimerRef.current = null;
-      if (document.visibilityState !== "visible") return;
-      // Reads the gate again so a state that landed in the meantime, or a
-      // fresh background transition, keeps its own deferral.
-      if (nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) return;
-      void adoptNewerServerProgress();
-    }, delayMs);
-  }
+  }, []);
 
   function persistProgress(): Promise<void> {
     if (
@@ -6711,8 +6668,9 @@ function MainApp({
       !audio ||
       restoredProgressBookId.current !== book.id ||
       resumeReconciliationBookIdRef.current === book.id ||
-      foregroundAdoptInFlightRef.current
-      || (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
+      foregroundAdoptInFlightRef.current ||
+      document.visibilityState !== "visible" ||
+      (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
     ) {
       return;
     }
@@ -6720,6 +6678,7 @@ function MainApp({
     if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
       return;
     }
+    const foregroundGeneration = nativeForegroundSyncGateRef.current.generation;
     const actionVersion = playbackActionVersionRef.current;
     const mutationVersion = progressMutationVersion.current;
     const sessionVersion = playbackSessionVersion.current;
@@ -6729,6 +6688,9 @@ function MainApp({
       const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
       if (
         !server ||
+        document.visibilityState !== "visible" ||
+        nativeForegroundSyncGateRef.current.generation !== foregroundGeneration ||
+        (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) ||
         restoredProgressBookId.current !== book.id ||
         playbackActionVersionRef.current !== actionVersion ||
         progressMutationVersion.current !== mutationVersion ||
@@ -6755,6 +6717,11 @@ function MainApp({
       );
     } finally {
       foregroundAdoptInFlightRef.current = false;
+      // A later resume may have tried while this obsolete request still held
+      // the in-flight guard. Give that handoff a fresh read of the server.
+      if (nativeForegroundSyncGateRef.current.generation !== foregroundGeneration) {
+        void foregroundProgressActionsRef.current.adoptNewerServerProgress();
+      }
     }
   }
 

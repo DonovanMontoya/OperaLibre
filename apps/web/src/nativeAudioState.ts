@@ -67,9 +67,11 @@ export function refreshDeclinedTrackChange(
 export class NativeAudioStateSynchronizer {
   private pendingState: NativeAudioClockState | null = null;
   private readonly audio: NativeAudioClock;
+  private readonly onSynchronized: () => void;
 
-  constructor(audio: NativeAudioClock) {
+  constructor(audio: NativeAudioClock, onSynchronized: () => void = () => {}) {
     this.audio = audio;
+    this.onSynchronized = onSynchronized;
   }
 
   receive(state: NativeAudioClockState, wasPlaying: boolean) {
@@ -80,14 +82,18 @@ export class NativeAudioStateSynchronizer {
       return wasPlaying;
     }
     this.pendingState = null;
-    return reflectNativeAudioState(this.audio, state, wasPlaying);
+    const isPlaying = reflectNativeAudioState(this.audio, state, wasPlaying);
+    this.onSynchronized();
+    return isPlaying;
   }
 
   afterSeek(wasPlaying: boolean) {
     if (!this.pendingState || this.audio.seeking) return wasPlaying;
     const state = this.pendingState;
     this.pendingState = null;
-    return reflectNativeAudioState(this.audio, state, wasPlaying);
+    const isPlaying = reflectNativeAudioState(this.audio, state, wasPlaying);
+    this.onSynchronized();
+    return isPlaying;
   }
 
   clear() {
@@ -107,6 +113,8 @@ export const NATIVE_FOREGROUND_SYNC_TIMEOUT_MS = 5000;
  */
 export class NativeForegroundSyncGate {
   private awaitingForeground = false;
+  private backgroundGeneration = 0;
+
   private deadlineMs: number | null = null;
   private readonly now: () => number;
   private readonly timeoutMs: number;
@@ -116,7 +124,10 @@ export class NativeForegroundSyncGate {
     this.timeoutMs = timeoutMs;
   }
 
+  get generation() { return this.backgroundGeneration; }
+
   backgrounded() {
+    this.backgroundGeneration += 1;
     this.awaitingForeground = true;
     this.deadlineMs = null;
   }
@@ -151,6 +162,8 @@ export class NativeForegroundSyncGate {
   }
 
   nativeStateReceived() {
+    // A tick before visibility resumes cannot acknowledge the next handoff.
+    if (this.awaitingForeground) return false;
     const wasAwaiting = this.shouldDeferServerAdoption();
     this.awaitingForeground = false;
     this.deadlineMs = null;

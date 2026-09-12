@@ -23,6 +23,61 @@ test("a foreground server refresh waits for the deferred native clock", () => {
   assert.equal(gate.nativeStateReceived(), false);
 });
 
+test("a web seek alone cannot acknowledge the foreground native clock", () => {
+  const gate = new NativeForegroundSyncGate();
+  const audio = { currentTime: 120, seeking: false, dispatchEvent: () => true };
+  const synchronizer = new NativeAudioStateSynchronizer(audio, () => gate.nativeStateReceived());
+  gate.backgrounded();
+  gate.foregrounded();
+
+  synchronizer.afterSeek(false);
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+  audio.seeking = true;
+  synchronizer.receive({ positionSeconds: 90, isPlaying: false }, false);
+  synchronizer.afterSeek(false);
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+  audio.seeking = false;
+  synchronizer.afterSeek(false);
+  assert.equal(audio.currentTime, 90);
+  assert.equal(gate.shouldDeferServerAdoption(), false);
+});
+
+test("a cleared buffered state cannot acknowledge the handoff", () => {
+  let acknowledgements = 0;
+  const audio = { currentTime: 120, seeking: true, dispatchEvent: () => true };
+  const synchronizer = new NativeAudioStateSynchronizer(audio, () => { acknowledgements += 1; });
+  synchronizer.receive({ positionSeconds: 90, isPlaying: false }, false);
+  synchronizer.clear();
+  audio.seeking = false;
+  synchronizer.afterSeek(false);
+  assert.equal(acknowledgements, 0);
+});
+
+test("native acknowledgement follows the corrected clock and pause persistence", () => {
+  const events: string[] = [];
+  const audio = {
+    currentTime: 120,
+    seeking: false,
+    dispatchEvent(event: Event) {
+      events.push(`${event.type}:${this.currentTime}`);
+      return true;
+    }
+  };
+  const synchronizer = new NativeAudioStateSynchronizer(audio, () => { events.push("acknowledged"); });
+  synchronizer.receive({ positionSeconds: 90, isPlaying: false }, true);
+  assert.deepEqual(events, ["pause:90", "timeupdate:90", "acknowledged"]);
+});
+
+test("hidden native ticks cannot release the next foreground wait", () => {
+  const gate = new NativeForegroundSyncGate();
+  const generation = gate.generation;
+  gate.backgrounded();
+  assert.notEqual(gate.generation, generation);
+  assert.equal(gate.nativeStateReceived(), false);
+  gate.foregrounded();
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+});
+
 test("a silent native player stops deferring once the wait expires", () => {
   let now = 1000;
   const gate = new NativeForegroundSyncGate(() => now, 5000);

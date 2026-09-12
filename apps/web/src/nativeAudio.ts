@@ -248,7 +248,7 @@ export function attachNativeAudioPlayer(
   // trackChanged when startup becomes ready; the tick re-offers it instead.
   let declinedTrackChange: NativeAudioTrackChange | null = null;
   const listenerHandles: PluginListenerHandle[] = [];
-  const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio);
+  const nativeStateSynchronizer = new NativeAudioStateSynchronizer(audio, onStateSynchronized);
 
   const offerTrackChange = (change: NativeAudioTrackChange) => {
     const accepted = onTrackChanged(
@@ -325,9 +325,6 @@ export function attachNativeAudioPlayer(
   };
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
-    // A foreground state held while the control element was seeking becomes
-    // authoritative only here, after afterSeek() applies its buffered clock.
-    onStateSynchronized();
   };
 
   audio.muted = true;
@@ -371,9 +368,7 @@ export function attachNativeAudioPlayer(
     // starting or stopping the muted HTML decoder during app transitions.
     // AVPlayer is authoritative. Apply its clock before a synthetic pause can
     // make React persist the stale pre-background HTML position.
-    const wasSeeking = audio.seeking;
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
-    if (!wasSeeking) onStateSynchronized();
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
