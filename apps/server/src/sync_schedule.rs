@@ -147,11 +147,9 @@ fn next_occurrence(local_time: &str, time_zone: &str, now: u64) -> Result<u64, A
         let requested = date.and_time(time);
         match zone.from_local_datetime(&requested) {
             LocalResult::Ambiguous(first, second) => {
-                for candidate in [first.min(second), first.max(second)] {
-                    let instant = timestamp_millis(candidate)?;
-                    if instant > now {
-                        return Ok(instant);
-                    }
+                let instant = timestamp_millis(first.min(second))?;
+                if instant > now {
+                    return Ok(instant);
                 }
             }
             _ => {
@@ -648,6 +646,29 @@ mod tests {
         assert_eq!(
             next.date_naive(),
             NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn enabling_during_fall_back_waits_for_the_next_local_night() {
+        let zone: Tz = "America/New_York".parse().unwrap();
+        let now = zone
+            .with_ymd_and_hms(2026, 11, 1, 1, 30, 0)
+            .earliest()
+            .unwrap();
+        let next = next_occurrence(
+            "01:00",
+            "America/New_York",
+            u64::try_from(now.timestamp_millis()).unwrap(),
+        )
+        .unwrap();
+        let next = utc_at(next).unwrap().with_timezone(&zone);
+        assert_eq!(
+            next.naive_local(),
+            NaiveDate::from_ymd_opt(2026, 11, 2)
+                .unwrap()
+                .and_hms_opt(1, 0, 0)
+                .unwrap()
         );
     }
 }
