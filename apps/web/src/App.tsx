@@ -257,6 +257,7 @@ import {
   setUnauthorizedHandler,
   syncLibationLibrary,
   uploadAudiobook,
+  uploadEbook,
   updateBookMetadata
 } from "./api";
 import type { ServerAlias } from "./api";
@@ -3590,6 +3591,8 @@ const UPLOAD_FILE_ACCEPT = [
   "audio/*"
 ].join(",");
 
+const EPUB_FILE_ACCEPT = ".epub,application/epub+zip";
+
 /**
  * Remembers that the reader waved off the shelf's connect-a-server card. Kept
  * separate from the server keys in api.ts: it describes the pitch, not the
@@ -4011,6 +4014,10 @@ function MainApp({
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [ebookUploadBook, setEbookUploadBook] = useState<Book | null>(null);
+  const [ebookUploadFile, setEbookUploadFile] = useState<File | null>(null);
+  const [ebookUploadBusy, setEbookUploadBusy] = useState(false);
+  const [ebookUploadError, setEbookUploadError] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [metadataEditOpen, setMetadataEditOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
@@ -7901,6 +7908,46 @@ function MainApp({
     }
   }
 
+  function chooseEbookUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0] ?? null;
+    const error = file && !file.name.toLowerCase().endsWith(".epub")
+      ? "Choose an EPUB (.epub) file."
+      : file && (file.size === 0 || file.size > 64 * 1024 * 1024)
+        ? "Choose a non-empty EPUB up to 64 MiB." : null;
+    setEbookUploadFile(error ? null : file);
+    setEbookUploadError(error);
+  }
+
+  async function submitEbookUpload(event: React.FormEvent) {
+    event.preventDefault();
+    if (!ebookUploadBook || !ebookUploadFile || !ebookUploadFile.name.toLowerCase().endsWith(".epub")) {
+      setEbookUploadError("Choose an EPUB (.epub) file.");
+      return;
+    }
+    setEbookUploadBusy(true);
+    setEbookUploadError(null);
+    try {
+      const nextBooks = await uploadEbook(ebookUploadBook.id, ebookUploadFile);
+      const paired = nextBooks.find((book) => book.id === ebookUploadBook.id);
+      if (!paired?.readingFile || paired.readingFile.extension !== "epub") {
+        throw new Error("The server has not paired the EPUB yet. Refresh the library to check its status.");
+      }
+      // Upload responses may arrive after playback or device-library updates.
+      // Adopt only the paired files; keep current progress and local books.
+      setBooks((existing) => existing.map((book) => book.id === paired.id ? {
+        ...book, readingFile: paired.readingFile, companions: paired.companions, syncFile: paired.syncFile
+      } : book));
+      setIsOffline(false);
+      setError(null);
+      setEbookUploadBook(null);
+      setEbookUploadFile(null);
+    } catch (error) {
+      setEbookUploadError(errorMessage(error, "The EPUB could not be uploaded."));
+    } finally {
+      setEbookUploadBusy(false);
+    }
+  }
+
   function trackLibationJob(job: JobStatus) {
     // Any jobs response already in flight may have been captured before this
     // POST reached the server. Invalidate it so it cannot erase the optimistic
@@ -9811,6 +9858,22 @@ function MainApp({
                         <span>Edit Info</span>
                       </button>
                     ) : null}
+                    {capabilities.uploads && selectedBook.readingFile?.extension !== "epub" && selectedBook.source !== "device" ? (
+                      <button
+                        className="download-btn"
+                        type="button"
+                        onClick={() => {
+                          haptic("light");
+                          setEbookUploadBook(selectedBook);
+                          setEbookUploadFile(null);
+                          setEbookUploadError(null);
+                        }}
+                        aria-label={`Upload matching ebook for ${selectedBook.title}`}
+                      >
+                        <BookOpen size={13} />
+                        <span>Add EPUB</span>
+                      </button>
+                    ) : null}
                     <button
                       className={`download-btn ${
                         selectedBook.progress?.status === "finished" ? "active" : ""
@@ -11241,6 +11304,57 @@ function MainApp({
               <button type="submit" disabled={uploadBusy || uploadFiles.length === 0}>
                 {uploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
                 {uploadBusy ? "Uploading…" : "Upload to library"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {capabilities.uploads && ebookUploadBook ? (
+        <div className="modal-scrim" role="presentation">
+          <form
+            className="modal-card upload-audiobook-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upload-ebook-title"
+            onSubmit={submitEbookUpload}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow"><BookOpen size={13} /> Pair with this audiobook</span>
+                <h2 id="upload-ebook-title">Add matching EPUB</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close ebook upload"
+                disabled={ebookUploadBusy}
+                onClick={() => setEbookUploadBook(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="upload-audiobook-hint">
+              Upload the EPUB for <strong>{ebookUploadBook.title}</strong>. It stays beside this audiobook and becomes its reading copy.
+            </p>
+            <label className="upload-file-picker">
+              <BookOpen size={22} />
+              <strong>{ebookUploadFile ? ebookUploadFile.name : "Choose EPUB file"}</strong>
+              <span>Unencrypted EPUB · up to 64 MiB</span>
+              <input
+                type="file"
+                accept={native ? undefined : EPUB_FILE_ACCEPT}
+                required
+                disabled={ebookUploadBusy}
+                onChange={chooseEbookUpload}
+              />
+            </label>
+            {ebookUploadError ? <p className="metadata-edit-error">{ebookUploadError}</p> : null}
+            <div className="metadata-edit-actions">
+              <button type="button" disabled={ebookUploadBusy} onClick={() => setEbookUploadBook(null)}>Cancel</button>
+              <button type="submit" disabled={ebookUploadBusy || !ebookUploadFile}>
+                {ebookUploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
+                {ebookUploadBusy ? "Uploading…" : "Add EPUB"}
               </button>
             </div>
           </form>

@@ -307,6 +307,35 @@ impl TestServer {
         .await
     }
 
+    async fn upload_ebook(
+        &self,
+        book_id: &str,
+        token: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> TestResponse {
+        let boundary = "operalibre-ebook-test-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/epub+zip\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(&bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/books/{book_id}/ebook"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Drops companion files into the first book's folder and rescans.
     async fn add_companions_to_first_book(&self, token: &str, files: &[(&str, Vec<u8>)]) {
         let folder = self.library_root.join("Book 00");
@@ -340,6 +369,338 @@ impl TestServer {
                 .to_string(),
         )
     }
+}
+
+#[tokio::test]
+async fn an_owner_can_upload_a_matching_epub_to_a_book() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+    let response = server
+        .upload_ebook(
+            &book_id,
+            &token,
+            "Reading Copy.epub",
+            alignment::build_test_epub(),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+
+    let books = response.json();
+    let book = books
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|book| book["id"].as_str() == Some(book_id.as_str()))
+        .unwrap();
+    assert_eq!(book["readingFile"]["fileName"], "Reading Copy.epub");
+    assert_eq!(book["readingFile"]["extension"], "epub");
+    assert!(
+        server
+            .library_root
+            .join("Book 00")
+            .join("Reading Copy.epub")
+            .is_file()
+    );
+}
+
+#[tokio::test]
+async fn ebook_pairing_preserves_short_text_metadata_and_progress_after_rescan() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, track) = server.first_book_and_track(&owner).await;
+    let progress = server.send_json("PUT", &format!("/api/books/{id}/progress"), &owner,
+        serde_json::json!({"trackId": track, "positionSeconds": 4.0, "bookPositionSeconds": 4.0})).await;
+    assert_eq!(progress.status, StatusCode::OK, "{}", progress.text());
+    let before = server.get(&format!("/api/books/{id}"), &owner).await.json();
+    let response = server
+        .upload_ebook(
+            &id,
+            &owner,
+            "short.epub",
+            alignment::build_test_epub_with_text("<p>Hi.</p>", "<p>Bye.</p>"),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let edited = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{id}/metadata"),
+            &owner,
+            serde_json::json!({"title": "Changed title", "genres": []}),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text());
+    rescan_library(&server.state).await.unwrap();
+    let after = server.get(&format!("/api/books/{id}"), &owner).await.json();
+    assert_eq!(after["readingFile"]["fileName"], "short.epub");
+    assert_eq!(after["title"], "Changed title");
+    assert_eq!(after["progress"], before["progress"]);
+    assert_eq!(after["tracks"], before["tracks"]);
+    let served = server
+        .get(&format!("/api/books/{id}/readalong"), &owner)
+        .await;
+    assert_eq!(served.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn ebook_upload_rejects_bad_files_and_cleans_staging() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    for (name, bytes) in [
+        ("empty.epub", vec![]),
+        ("wrong.pdf", alignment::build_test_epub()),
+        ("broken.epub", b"not a zip".to_vec()),
+        ("no-text.epub", alignment::build_test_epub_with_text("", "")),
+        (
+            "expanded.epub",
+            alignment::build_test_epub_with_text(&"x".repeat(8 * 1024 * 1024 + 1), ""),
+        ),
+    ] {
+        let response = server.upload_ebook(&id, &owner, name, bytes).await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{name}: {}",
+            response.text()
+        );
+        assert_eq!(
+            std::fs::read_dir(server.library_root.join("Book 00"))
+                .unwrap()
+                .count(),
+            2
+        );
+        assert!(
+            !server
+                .state
+                .metadata_overrides
+                .read()
+                .await
+                .books
+                .contains_key(&id)
+        );
+    }
+}
+
+#[tokio::test]
+async fn ebook_upload_enforces_auth_limits_and_existing_pair() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "reader").await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    for (token, expected) in [
+        ("invalid", StatusCode::UNAUTHORIZED),
+        (reader.as_str(), StatusCode::FORBIDDEN),
+    ] {
+        assert_eq!(
+            server
+                .upload_ebook(&id, token, "book.epub", alignment::build_test_epub())
+                .await
+                .status,
+            expected
+        );
+    }
+    assert_eq!(
+        server
+            .upload_ebook("missing", &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    server.state.max_upload_bytes = Some(10);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server
+            .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        std::fs::read_dir(server.library_root.join("Book 00"))
+            .unwrap()
+            .count(),
+        2
+    );
+    server.state.max_upload_bytes = None;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server
+            .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .upload_ebook(&id, &owner, "another.epub", alignment::build_test_epub())
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert!(!server.library_root.join("Book 00/another.epub").exists());
+}
+
+#[tokio::test]
+async fn ebook_upload_never_overwrites_an_existing_file() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let destination = server.library_root.join("Book 00/book.epub");
+    // External importer wrote a file the catalogue has not scanned yet.
+    std::fs::write(&destination, b"original").unwrap();
+    let response = server
+        .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+    assert_eq!(std::fs::read(destination).unwrap(), b"original");
+    assert_eq!(
+        std::fs::read_dir(server.library_root.join("Book 00"))
+            .unwrap()
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn ebook_upload_pairs_root_file_without_touching_neighbor() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    std::fs::write(server.library_root.join("First.wav"), fixture_wav()).unwrap();
+    let mut second = fixture_wav();
+    *second.last_mut().unwrap() = 1;
+    std::fs::write(server.library_root.join("Second.wav"), second).unwrap();
+    rescan_library(&server.state).await.unwrap();
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let response = server
+        .upload_ebook(&id, &owner, "arbitrary.EPUB", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let books = response.json();
+    let books = books.as_array().unwrap();
+    assert_eq!(books[0]["readingFile"]["fileName"], "First.epub");
+    assert!(books[1]["readingFile"].is_null());
+}
+
+#[tokio::test]
+async fn ebook_upload_can_upgrade_a_non_epub_reading_copy() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    // A text companion already supplies readingFile; the new explicit EPUB wins.
+    server
+        .add_companions_to_first_book(&owner, &[("book.txt", vec![b'a'; 20_000])])
+        .await;
+    assert_eq!(
+        server.get(&format!("/api/books/{id}"), &owner).await.json()["readingFile"]["extension"],
+        "txt"
+    );
+    let response = server
+        .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert_eq!(response.json()[0]["readingFile"]["extension"], "epub");
+    assert!(server.library_root.join("Book 00/book.txt").is_file());
+}
+
+#[tokio::test]
+async fn ebook_upload_rejects_truncated_and_multiple_file_bodies() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let file = alignment::build_test_epub();
+    for ending in [b"".as_slice(), b"\r\n--test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"second.epub\"\r\n\r\nsecond\r\n--test--\r\n"] {
+        let mut bytes = b"--test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"book.epub\"\r\n\r\n".to_vec();
+        bytes.extend_from_slice(&file);
+        bytes.extend_from_slice(ending);
+        let response = server.send(Request::builder().method("POST").uri(format!("/api/books/{id}/ebook"))
+            .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=test")
+            .body(Body::from(bytes)).unwrap()).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{}", response.text());
+        assert_eq!(std::fs::read_dir(server.library_root.join("Book 00")).unwrap().count(), 2);
+    }
+}
+
+#[tokio::test]
+async fn ebook_upload_refuses_existing_sync_map() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    server
+        .state
+        .library
+        .write()
+        .await
+        .sync_paths
+        .insert(id.clone(), PathBuf::from("existing.sync.json"));
+    let response = server
+        .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert_eq!(
+        std::fs::read_dir(server.library_root.join("Book 00"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn ebook_upload_cancellation_removes_staged_bytes() {
+    let server = Arc::new(TestServer::start(1).await);
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let scan_guard = server.state.rescan_lock.lock().await;
+    let task_server = server.clone();
+    let task = tokio::spawn(async move {
+        task_server
+            .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+            .await
+    });
+    // The full suite runs hundreds of async tests concurrently on slower CI
+    // hosts, so this is a liveness ceiling rather than a scheduling assertion.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_dir(server.library_root.join("Book 00"))
+                .unwrap()
+                .count()
+                > 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    drop(scan_guard);
+    assert_eq!(
+        std::fs::read_dir(server.library_root.join("Book 00"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ebook_upload_does_not_follow_a_dangling_destination_symlink() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let target = server._root.path().join("outside.epub");
+    let destination = server.library_root.join("Book 00/book.epub");
+    std::os::unix::fs::symlink(&target, &destination).unwrap();
+    let response = server
+        .upload_ebook(&id, &owner, "book.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert!(destination.is_symlink());
+    assert!(!target.exists());
 }
 
 struct TestResponse {
