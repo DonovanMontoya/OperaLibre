@@ -281,16 +281,19 @@ export function normalizeSyncNeedle(value: string) {
   return out.trim();
 }
 
-export type SyncPrecision = "sentence" | "estimated";
+export type SyncPrecision = "sentence";
 
 /**
- * What a loaded sync map can drive: a sentence marker, or a soft estimate.
- * Word timings guide page turns within a sentence; the visible marker
- * always highlights the whole sentence.
+ * What a loaded sync map can drive. Only a forced alignment is followed, so
+ * anything else — including an interpolated map a device downloaded before
+ * this rule existed — reads as unfollowable. Word timings guide page turns
+ * within a sentence; the visible marker always highlights the whole sentence.
  */
 export function syncMapPrecision(map: SyncMap | null | undefined): SyncPrecision | null {
   if (!map || map.fragments.length === 0) return null;
-  return map.precision === "estimated" ? "estimated" : "sentence";
+  // Version 1 files carry no precision and were always aligned.
+  const precision = map.precision ?? "sentence";
+  return precision === "sentence" ? "sentence" : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,11 +315,10 @@ export function readAlongMode(
   if (!file) return null;
   if (file.extension.toLowerCase() !== "epub") return "text";
   if (!sentenceFollowAvailable) return "chapter";
-  const precision = syncMapPrecision(map);
-  if (precision) return precision;
+  // A loaded map is the truth; the book's promise only stands in until then.
+  if (map) return syncMapPrecision(map) ?? "chapter";
   const source = book.syncFile?.source;
   if (source === "sidecar" || source === "generated") return "sentence";
-  if (source === "estimated") return "estimated";
   return "chapter";
 }
 
@@ -324,10 +326,6 @@ export const READ_ALONG_MODE_LABELS: Record<ReadAlongMode, { title: string; deta
   sentence: {
     title: "Sentence sync",
     detail: "The narrated sentence is highlighted, and the page turns with the audio."
-  },
-  estimated: {
-    title: "Approximate sync",
-    detail: "Sentences are timed from the chapter list, so the marker can run a few lines ahead or behind."
   },
   chapter: {
     title: "Chapter sync",

@@ -61,12 +61,6 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
-/// Marks a sync map the server interpolated rather than aligned:
-/// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
-/// fingerprint covers the EPUB and the chapter list, so a changed companion
-/// or re-chaptered audio produces a fresh estimate.
-pub(crate) const ESTIMATED_SYNC_INFIX: &str = ".estimate";
-
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct MetadataOverrideStore {
@@ -383,9 +377,7 @@ pub(crate) struct ReadingFile {
 pub(crate) struct SyncFile {
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
-    /// by the alignment job into the server's data directory, `estimated`
-    /// when the server interpolates one from the EPUB and the chapter list
-    /// on request.
+    /// by the alignment job into the server's data directory.
     pub(crate) source: String,
     pub(crate) url: String,
 }
@@ -2026,19 +2018,6 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             content_type: companion.content_type.clone(),
             url: format!("/api/books/{}/readalong", book.id),
         });
-        // An EPUB can always be followed approximately: the sync route
-        // estimates a map from the chapter list when nothing better exists.
-        let has_epub_text = book
-            .reading_file
-            .as_ref()
-            .is_some_and(|reading_file| reading_file.extension == "epub");
-        if book.sync_file.is_none() && has_epub_text {
-            book.sync_file = Some(SyncFile {
-                file_name: format!("{}{ESTIMATED_SYNC_INFIX}{SYNC_SIDECAR_SUFFIX}", book.id),
-                source: "estimated".to_string(),
-                url: format!("/api/books/{}/sync", book.id),
-            });
-        }
     }
 
     // Reaching here means the scan was trustworthy: a suspect one returned
