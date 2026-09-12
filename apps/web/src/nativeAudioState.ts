@@ -94,3 +94,32 @@ export class NativeAudioStateSynchronizer {
     this.pendingState = null;
   }
 }
+
+/**
+ * Prevent a foreground server refresh from beating the native player's
+ * deferred foreground state. AVPlayer continues to own the audible clock
+ * while WKWebView is suspended, so its first state event after a background
+ * transition must be processed before an idle web session can adopt another
+ * device's server checkpoint.
+ */
+export class NativeForegroundSyncGate {
+  private awaitingNativeState = false;
+
+  backgrounded() {
+    this.awaitingNativeState = true;
+  }
+
+  shouldDeferServerAdoption() {
+    return this.awaitingNativeState;
+  }
+
+  nativeStateReceived() {
+    const wasAwaiting = this.awaitingNativeState;
+    this.awaitingNativeState = false;
+    return wasAwaiting;
+  }
+
+  clear() {
+    this.awaitingNativeState = false;
+  }
+}

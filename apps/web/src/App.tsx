@@ -308,6 +308,7 @@ import {
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
 } from "./nativeAudio";
+import { NativeForegroundSyncGate } from "./nativeAudioState";
 import {
   acknowledgeCarSessions,
   addCarPlayListener,
@@ -4027,6 +4028,11 @@ function MainApp({
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
+  // Native AVPlayer sends its definitive clock only after foregrounding. Keep
+  // the server-adoption path behind that handoff, otherwise an older server
+  // revision can replace a lock-screen rewind before its native event reaches
+  // the resumed WebView.
+  const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in
@@ -6020,6 +6026,12 @@ function MainApp({
         sleepDeadlineRef.current = null;
         setSleepMinutes(0);
         setSleepRemaining(0);
+      },
+      () => {
+        if (!nativeForegroundSyncGateRef.current.nativeStateReceived()) return;
+        if (document.visibilityState === "visible") {
+          void adoptNewerServerProgress();
+        }
       }
     );
   }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
@@ -6341,8 +6353,12 @@ function MainApp({
     };
     const syncWhenVisibilityChanges = () => {
       if (document.visibilityState === "hidden") {
+        if (nativeAudio) nativeForegroundSyncGateRef.current.backgrounded();
         void persistProgress();
       } else if (document.visibilityState === "visible") {
+        if (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) {
+          return;
+        }
         void adoptNewerServerProgress();
       }
     };
@@ -6665,6 +6681,7 @@ function MainApp({
       restoredProgressBookId.current !== book.id ||
       resumeReconciliationBookIdRef.current === book.id ||
       foregroundAdoptInFlightRef.current
+      || (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption())
     ) {
       return;
     }

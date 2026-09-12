@@ -227,7 +227,8 @@ export function attachNativeAudioPlayer(
     isPlaying: boolean
   ) => boolean | void,
   onIntentionalSeek: () => void,
-  onSleepTimerEnded: () => void
+  onSleepTimerEnded: () => void,
+  onStateSynchronized: () => void
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
@@ -324,6 +325,9 @@ export function attachNativeAudioPlayer(
   };
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
+    // A foreground state held while the control element was seeking becomes
+    // authoritative only here, after afterSeek() applies its buffered clock.
+    onStateSynchronized();
   };
 
   audio.muted = true;
@@ -367,7 +371,9 @@ export function attachNativeAudioPlayer(
     // starting or stopping the muted HTML decoder during app transitions.
     // AVPlayer is authoritative. Apply its clock before a synthetic pause can
     // make React persist the stale pre-background HTML position.
+    const wasSeeking = audio.seeking;
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
+    if (!wasSeeking) onStateSynchronized();
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
