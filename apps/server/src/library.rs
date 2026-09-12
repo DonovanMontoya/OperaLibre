@@ -61,12 +61,6 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
-/// Marks a sync map the server interpolated rather than aligned:
-/// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
-/// fingerprint covers the EPUB and the chapter list, so a changed companion
-/// or re-chaptered audio produces a fresh estimate.
-pub(crate) const ESTIMATED_SYNC_INFIX: &str = ".estimate";
-
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct MetadataOverrideStore {
@@ -76,6 +70,8 @@ pub(crate) struct MetadataOverrideStore {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BookMetadataOverride {
+    /// Explicitly uploaded reading copy, relative to the book's folder.
+    pub(crate) ebook_file_name: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
     pub(crate) narrator: Option<String>,
@@ -383,9 +379,7 @@ pub(crate) struct ReadingFile {
 pub(crate) struct SyncFile {
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
-    /// by the alignment job into the server's data directory, `estimated`
-    /// when the server interpolates one from the EPUB and the chapter list
-    /// on request.
+    /// by the alignment job into the server's data directory.
     pub(crate) source: String,
     pub(crate) url: String,
 }
@@ -604,6 +598,10 @@ pub(crate) async fn update_book_metadata(
     state
         .metadata_overrides
         .mutate(|overrides| {
+            metadata_override.ebook_file_name = overrides
+                .books
+                .get(&book_id)
+                .and_then(|existing| existing.ebook_file_name.clone());
             if metadata_override.tags.is_none() {
                 metadata_override.tags = overrides
                     .books
@@ -680,6 +678,7 @@ pub(crate) fn metadata_override_from_update(
     };
 
     Ok(BookMetadataOverride {
+        ebook_file_name: None,
         title: Some(title),
         author: update.author.map(|value| clean_metadata_text(&value)),
         narrator: update.narrator.map(|value| clean_metadata_text(&value)),
@@ -1691,6 +1690,11 @@ fn note_shrink_observation(
 
 pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
     let _rescan_guard = state.rescan_lock.lock().await;
+    rescan_library_locked(state).await
+}
+
+/// Caller holds rescan_lock across publishing files and refreshing the catalogue.
+pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()> {
     let scan_root = state.library_root.clone();
     let (groups, walk_errors) = tokio::task::spawn_blocking(move || {
         let walk = walk_audio_files_checked(&scan_root);
@@ -1979,12 +1983,45 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
         }
-        let companion_candidates = discover_candidates(
+        let mut companion_candidates = discover_candidates(
             &group_key,
             &grouped_files,
             &book.title,
             embedded_cover.as_ref(),
         );
+        // Explicit pairing is authoritative even when a root-level audio stem
+        // normalizes to nothing (for example, `---.wav`) and cannot pass the
+        // heuristic companion-name matcher.
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book_id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            .filter(|name| sanitize_filename(name) == *name)
+        {
+            // Folder books already include every adjacent document. For a
+            // root-level book, enumerate the trusted library directory and
+            // compare names instead of constructing a path from stored data.
+            let paired_path = (!group_key.is_dir())
+                .then(|| {
+                    WalkDir::new(group_key.parent().unwrap_or(&state.library_root))
+                        .max_depth(1)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .find(|entry| {
+                            entry.file_type().is_file()
+                                && entry.file_name().to_str() == Some(name)
+                                && is_document(entry.path())
+                        })
+                        .map(walkdir::DirEntry::into_path)
+                })
+                .flatten();
+            if let Some(paired_path) = paired_path
+                && !companion_candidates.contains(&paired_path)
+            {
+                companion_candidates.push(paired_path);
+                companion_candidates.sort_by_key(|path| natural_path_key(path));
+            }
+        }
         if let Some(cover) = embedded_cover {
             extracted_covers.push((book_id.clone(), cover));
         }
@@ -2019,6 +2056,20 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             .into_iter()
             .map(|(companion, _)| companion)
             .collect();
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book.id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            && let Some(index) = book
+                .companions
+                .iter()
+                .position(|file| file.file_name == name && file.extension == "epub")
+        {
+            book.companions[index].kind = CompanionKind::Book;
+            // Stable preference among EPUBs, including pre-existing supplements.
+            let paired = book.companions.remove(index);
+            book.companions.insert(0, paired);
+        }
         book.reading_file = primary_reading_file(&book.companions).map(|companion| ReadingFile {
             id: companion.id.clone(),
             file_name: companion.file_name.clone(),
@@ -2026,19 +2077,6 @@ pub(crate) async fn rescan_library(state: &AppState) -> anyhow::Result<()> {
             content_type: companion.content_type.clone(),
             url: format!("/api/books/{}/readalong", book.id),
         });
-        // An EPUB can always be followed approximately: the sync route
-        // estimates a map from the chapter list when nothing better exists.
-        let has_epub_text = book
-            .reading_file
-            .as_ref()
-            .is_some_and(|reading_file| reading_file.extension == "epub");
-        if book.sync_file.is_none() && has_epub_text {
-            book.sync_file = Some(SyncFile {
-                file_name: format!("{}{ESTIMATED_SYNC_INFIX}{SYNC_SIDECAR_SUFFIX}", book.id),
-                source: "estimated".to_string(),
-                url: format!("/api/books/{}/sync", book.id),
-            });
-        }
     }
 
     // Reaching here means the scan was trustworthy: a suspect one returned
@@ -2276,6 +2314,42 @@ fn find_companion_file(
         .cloned()
 }
 
+/// Whether an id may be joined into a path. The scan mints plain tokens, so
+/// anything carrying a separator or a parent reference is refused rather than
+/// allowed to name a file outside the directory it is joined to.
+pub(crate) fn is_plain_file_token(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
+/// the fragments are tokenized and discarded, so probing a map that runs to
+/// megabytes costs no allocation. A file that cannot be read or parsed is not
+/// an alignment, so a book is never advertised as followable on the strength
+/// of its file name alone.
+fn is_aligned_sync_map(path: &FsPath) -> bool {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        #[serde(default)]
+        precision: Option<String>,
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(probe) = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)) else {
+        return false;
+    };
+    // Version 1 files carry no precision and were always aligned.
+    probe
+        .precision
+        .as_deref()
+        .unwrap_or(alignment::PRECISION_SENTENCE)
+        == alignment::PRECISION_SENTENCE
+}
+
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
 /// sidecar beside the audiobook wins, then a server-generated file in the
 /// sync data directory.
@@ -2307,7 +2381,7 @@ pub(crate) fn find_sync_file(
                 .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
         },
     );
-    if let Some(selected) = sidecar {
+    if let Some(selected) = sidecar.filter(|path| is_aligned_sync_map(path)) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: selected
@@ -2322,8 +2396,11 @@ pub(crate) fn find_sync_file(
         });
     }
 
+    if !is_plain_file_token(book_id) {
+        return None;
+    }
     let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    if generated.is_file() {
+    if generated.is_file() && is_aligned_sync_map(&generated) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: generated

@@ -113,11 +113,8 @@ export type CompanionFile = {
 
 export type SyncFile = {
   fileName: string;
-  /**
-   * `sidecar` and `generated` are forced alignments; `estimated` means the
-   * server will interpolate a map from the chapter list on request.
-   */
-  source: "sidecar" | "generated" | "estimated" | string;
+  /** `sidecar` and `generated` are both forced alignments. */
+  source: "sidecar" | "generated" | string;
   url: string;
 };
 
@@ -136,17 +133,9 @@ export type SyncMap = {
   version: number;
   generator?: string | null;
   generatedAt?: string | null;
-  /** `sentence` for a forced alignment, `estimated` for an interpolation; absent in version 1. */
-  precision?: "sentence" | "estimated" | string | null;
-  /** For an estimate: audio chapters pinned to the table of contents. Zero means one whole-book guess. */
-  anchorCount?: number | null;
-  /** For an estimate: listener-placed "Sync here" anchors that re-timed its chapters. */
-  manualAnchorCount?: number | null;
+  /** `sentence` for a forced alignment; absent in version 1. Anything else is not followed. */
+  precision?: "sentence" | string | null;
   fragments: SyncFragment[];
-};
-
-export type SyncAnchorSummary = {
-  anchorCount: number;
 };
 
 export type AlignmentStatus = {

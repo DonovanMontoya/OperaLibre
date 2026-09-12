@@ -52,6 +52,54 @@ test('pause, reload and server crash preserve accounts, library identity and pro
   await expect(page.locator('.book-row')).toHaveCount(2);
 });
 
+for (const resumedBeforeResponse of [false, true]) {
+  test(`a stale foreground response ${resumedBeforeResponse ? 'retries after another resume' : 'cannot seek while hidden'}`, async ({ page, server }) => {
+    const book = await setup(page, server);
+    await play(page);
+    const saved = await seekAndPause(page);
+    await expect.poll(async () => Math.abs((await server.progress(book.id))!.positionSeconds - saved)).toBeLessThan(1);
+    await page.reload();
+    await expectResume(page, saved);
+    // This restored, untouched player must not write over another device.
+    const remote = await server.json(`/api/books/${book.id}/progress`, 'PUT', {
+      trackId: book.tracks[0].id,
+      positionSeconds: 90,
+      bookPositionSeconds: 90,
+      durationSeconds: 180,
+      intentionalSeek: true
+    });
+    let requests = 0;
+    let release!: () => void;
+    let requested!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { requested = resolve; });
+    await page.route(`**/api/books/${book.id}/progress`, async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      requests += 1;
+      requested();
+      await held;
+      await route.fulfill({ json: remote });
+    });
+    const visibility = (value: 'visible' | 'hidden') => page.evaluate(state => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, value);
+    await visibility('hidden');
+    await visibility('visible');
+    await started;
+    await visibility('hidden');
+    if (resumedBeforeResponse) await visibility('visible');
+    release();
+    await page.waitForLoadState('networkidle');
+    if (!resumedBeforeResponse) {
+      await expectResume(page, saved);
+      await visibility('visible');
+    }
+    await expectResume(page, 90);
+    expect(requests).toBe(2);
+  });
+}
+
 test('offline pause survives tab closure and synchronizes after reconnect', async ({ page, context, server }) => {
   const book = await setup(page, server);
   await play(page);

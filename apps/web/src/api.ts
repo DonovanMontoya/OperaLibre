@@ -4,7 +4,6 @@ import { Capacitor } from "@capacitor/core";
 import { ApiError } from "./apiError";
 import type {
   AlignmentStatus,
-  SyncAnchorSummary,
   AuthStatus,
   AuthUser,
   Book,
@@ -925,6 +924,16 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
   );
 }
 
+export async function uploadEbook(bookId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return request<Book[]>(
+    `/api/books/${encodeURIComponent(bookId)}/ebook`,
+    { method: "POST", body },
+    24 * 60 * 60 * 1_000
+  );
+}
+
 /**
  * `timeoutMs` caps the fetch and aborts it — a startup read that can fall
  * back to a local copy should neither wait the client's default 30 s nor
@@ -1030,27 +1039,13 @@ export async function liberateAllLibationBooks() {
   return request<JobCreated>("/api/libation/liberate-all", { method: "POST" });
 }
 
-export async function getSyncMap(bookId: string) {
-  return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`);
+export async function getSyncMap(bookId: string, signal?: AbortSignal) {
+  return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`, { signal });
 }
 
 export async function generateSyncMap(bookId: string) {
   return request<JobCreated>(`/api/books/${encodeURIComponent(bookId)}/sync/generate`, {
     method: "POST"
-  });
-}
-
-/** "The narrator is reading this sentence at this second": re-times the book's estimated sync map. */
-export async function addSyncAnchor(bookId: string, anchor: { href: string; text: string; seconds: number }) {
-  return request<SyncAnchorSummary>(`/api/books/${encodeURIComponent(bookId)}/sync/anchors`, {
-    method: "POST",
-    body: JSON.stringify(anchor)
-  });
-}
-
-export async function clearSyncAnchors(bookId: string) {
-  return request<SyncAnchorSummary>(`/api/books/${encodeURIComponent(bookId)}/sync/anchors`, {
-    method: "DELETE"
   });
 }
 

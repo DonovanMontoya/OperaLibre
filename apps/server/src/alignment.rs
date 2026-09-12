@@ -10,11 +10,9 @@ use std::io::Read;
 /// optional word timings inside each sentence; a version 1 file still reads.
 pub const SYNC_MAP_VERSION: u32 = 2;
 
-/// How the map's timings were produced, which decides how the reader shows
-/// them: a forced alignment can drive a word marker, an estimate only a
-/// soft sentence marker.
+/// How the map's timings were produced. Only a forced alignment is ever
+/// served, so this is always `sentence`.
 pub const PRECISION_SENTENCE: &str = "sentence";
-pub const PRECISION_ESTIMATED: &str = "estimated";
 
 /// The `.sync.json` sidecar format. Fragments are sentence-level spans of the
 /// audiobook mapped to a spine document (`href`, as written in the OPF
@@ -27,27 +25,11 @@ pub struct SyncMap {
     pub generator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
-    /// `sentence` for a forced alignment, `estimated` for an interpolation.
-    /// Absent in version 1 files, which were always aligned.
+    /// `sentence` for a forced alignment. Absent in version 1 files, which
+    /// were always aligned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<String>,
-    /// For an estimate: how many audio chapters were pinned to a table of
-    /// contents entry. Zero means the whole book was interpolated in one
-    /// piece, which drifts more.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor_count: Option<usize>,
-    /// For an estimate: how many listener-placed anchors ("Sync here")
-    /// re-timed the text inside its chapters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual_anchor_count: Option<usize>,
     pub fragments: Vec<SyncFragment>,
-}
-
-impl SyncMap {
-    #[cfg(test)]
-    pub fn is_estimated(&self) -> bool {
-        self.precision.as_deref() == Some(PRECISION_ESTIMATED)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,14 +84,15 @@ pub struct EpubDocument {
 pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
+    let mut remaining = 64 * 1024 * 1024;
 
-    let container = read_zip_text(&mut archive, "META-INF/container.xml")
+    let container = read_zip_text(&mut archive, "META-INF/container.xml", &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB is missing META-INF/container.xml"))?;
     let opf_path = find_tags(&container, "rootfile")
         .iter()
         .find_map(|tag| attr_value(tag, "full-path"))
         .ok_or_else(|| anyhow::anyhow!("EPUB container.xml has no rootfile full-path"))?;
-    let opf = read_zip_text(&mut archive, &opf_path)
+    let opf = read_zip_text(&mut archive, &opf_path, &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB package document `{opf_path}` was not found"))?;
     let opf_dir = parent_dir(&opf_path);
 
@@ -149,7 +132,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             continue;
         }
         let document_path = resolve_href(&opf_dir, &item.href);
-        let Some(document) = read_zip_text(&mut archive, &document_path) else {
+        let Some(document) = read_zip_text(&mut archive, &document_path, &mut remaining)? else {
             continue;
         };
         let text = html_to_text(&document);
@@ -167,7 +150,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
         .find(|item| item.properties.split_whitespace().any(|p| p == "nav"));
     if let Some(nav_item) = nav_item {
         let nav_path = resolve_href(&opf_dir, &nav_item.href);
-        if let Some(nav_document) = read_zip_text(&mut archive, &nav_path) {
+        if let Some(nav_document) = read_zip_text(&mut archive, &nav_path, &mut remaining)? {
             let nav_dir = parent_dir(&nav_path);
             toc_links = parse_nav_links(&nav_document, &nav_dir);
         }
@@ -178,7 +161,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             .find(|item| item.media_type == "application/x-dtbncx+xml");
         if let Some(ncx_item) = ncx_item {
             let ncx_path = resolve_href(&opf_dir, &ncx_item.href);
-            if let Some(ncx_document) = read_zip_text(&mut archive, &ncx_path) {
+            if let Some(ncx_document) = read_zip_text(&mut archive, &ncx_path, &mut remaining)? {
                 let ncx_dir = parent_dir(&ncx_path);
                 toc_links = parse_ncx_links(&ncx_document, &ncx_dir);
             }
@@ -223,14 +206,26 @@ fn element_text(xml: &str, name: &str) -> Option<String> {
 fn read_zip_text<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     path: &str,
-) -> Option<String> {
-    let index = archive
+    remaining: &mut u64,
+) -> anyhow::Result<Option<String>> {
+    let Some(index) = archive
         .index_for_name(path)
-        .or_else(|| archive.index_for_name(&percent_decode(path)))?;
-    let mut file = archive.by_index(index).ok()?;
+        .or_else(|| archive.index_for_name(&percent_decode(path)))
+    else {
+        return Ok(None);
+    };
+    let file = archive.by_index(index)?;
+    // Count every read, including repeated spine references to the same entry.
+    let limit = (*remaining).min(8 * 1024 * 1024);
+    anyhow::ensure!(file.size() <= limit, "EPUB text exceeds the reading limit.");
     let mut contents = String::new();
-    file.read_to_string(&mut contents).ok()?;
-    Some(contents)
+    file.take(limit + 1).read_to_string(&mut contents)?;
+    anyhow::ensure!(
+        contents.len() as u64 <= limit,
+        "EPUB text exceeds the reading limit."
+    );
+    *remaining -= contents.len() as u64;
+    Ok(Some(contents))
 }
 
 fn parent_dir(path: &str) -> String {
@@ -1840,510 +1835,6 @@ pub fn label_match_score(target: &ParsedLabel, item: &ParsedLabel) -> u32 {
     score
 }
 
-// ---------------------------------------------------------------------------
-// Estimated sync maps
-// ---------------------------------------------------------------------------
-
-/// One chapter of the audio, in book-absolute seconds.
-#[derive(Debug, Clone)]
-pub struct AudioChapter {
-    pub title: String,
-    pub start_seconds: f64,
-    pub end_seconds: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sentence {
-    pub href: String,
-    pub text: String,
-    pub paragraph_start: bool,
-}
-
-/// Splits a section's extracted text into sentences. Every piece is a
-/// verbatim, whitespace-collapsed substring of the document, which is what
-/// lets the reader find it again on the page.
-pub fn split_sentences(href: &str, text: &str) -> Vec<Sentence> {
-    let mut out = Vec::new();
-    for paragraph in text.split("\n\n") {
-        let paragraph = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
-        if paragraph.is_empty() {
-            continue;
-        }
-        let mut paragraph_start = true;
-        for sentence in split_paragraph(&paragraph) {
-            out.push(Sentence {
-                href: href.to_string(),
-                text: sentence,
-                paragraph_start,
-            });
-            paragraph_start = false;
-        }
-    }
-    out
-}
-
-/// Cuts a paragraph after a terminator (and any closing quote or bracket
-/// that follows it) when whitespace comes next. `3.5` and `e.g.` are not cut
-/// because no space follows the stop; `Mr. Smith` is, which only makes one
-/// sentence into two short ones.
-fn split_paragraph(paragraph: &str) -> Vec<String> {
-    let chars: Vec<char> = paragraph.chars().collect();
-    let mut sentences = Vec::new();
-    let mut start = 0;
-    let mut index = 0;
-    while index < chars.len() {
-        if matches!(chars[index], '.' | '!' | '?' | '…') {
-            let mut end = index + 1;
-            while end < chars.len()
-                && matches!(
-                    chars[end],
-                    '.' | '!' | '?' | '"' | '\'' | '”' | '’' | ')' | ']' | '»'
-                )
-            {
-                end += 1;
-            }
-            if end >= chars.len() || chars[end].is_whitespace() {
-                let sentence: String = chars[start..end].iter().collect();
-                let sentence = sentence.trim();
-                if !sentence.is_empty() {
-                    sentences.push(sentence.to_string());
-                }
-                start = end;
-                index = end;
-                continue;
-            }
-        }
-        index += 1;
-    }
-    let tail: String = chars[start..].iter().collect();
-    let tail = tail.trim();
-    if !tail.is_empty() {
-        sentences.push(tail.to_string());
-    }
-    sentences
-}
-
-// ---------------------------------------------------------------------------
-// Reading model: how long a narrator spends on text
-// ---------------------------------------------------------------------------
-
-/// What in a stretch of text costs a narrator time.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct TextFeatures {
-    /// UTF-16 units of text.
-    pub chars: f64,
-    pub sentences: f64,
-    pub paragraphs: f64,
-    /// Units of text inside spoken lines, which narrators pace differently.
-    pub dialogue_chars: f64,
-}
-
-impl TextFeatures {
-    fn add(&mut self, other: &TextFeatures) {
-        self.chars += other.chars;
-        self.sentences += other.sentences;
-        self.paragraphs += other.paragraphs;
-        self.dialogue_chars += other.dialogue_chars;
-    }
-}
-
-#[cfg(test)]
-pub fn sentence_features_for_test(sentence: &Sentence) -> TextFeatures {
-    sentence_features(sentence)
-}
-
-fn sentence_features(sentence: &Sentence) -> TextFeatures {
-    let chars = sentence.text.encode_utf16().count() as f64;
-    let dialogue = sentence
-        .text
-        .chars()
-        .next()
-        .is_some_and(|c| matches!(c, '"' | '“' | '‘' | '\'' | '«' | '—'));
-    TextFeatures {
-        chars,
-        sentences: 1.0,
-        paragraphs: if sentence.paragraph_start { 1.0 } else { 0.0 },
-        dialogue_chars: if dialogue { chars } else { 0.0 },
-    }
-}
-
-/// Seconds a narrator spends per unit of text. The defaults are a typical
-/// audiobook pace — about 150 words a minute with a beat at every full stop
-/// and a longer one at every paragraph. `fit` calibrates them to one book's
-/// narrator from its chapters' known lengths.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReadingModel {
-    pub char_seconds: f64,
-    pub sentence_seconds: f64,
-    pub paragraph_seconds: f64,
-    /// Seconds per character of dialogue on top of (or, negative, instead
-    /// of) the plain rate.
-    pub dialogue_char_seconds: f64,
-}
-
-impl Default for ReadingModel {
-    fn default() -> Self {
-        Self {
-            char_seconds: 1.0 / 14.0,
-            sentence_seconds: 0.45,
-            paragraph_seconds: 0.9,
-            dialogue_char_seconds: 0.0,
-        }
-    }
-}
-
-/// Fewer chapters than this and a fit is more noise than narrator.
-const MIN_FIT_SAMPLES: usize = 8;
-
-impl ReadingModel {
-    pub fn seconds(&self, features: &TextFeatures) -> f64 {
-        (self.char_seconds * features.chars
-            + self.sentence_seconds * features.sentences
-            + self.paragraph_seconds * features.paragraphs
-            + self.dialogue_char_seconds * features.dialogue_chars)
-            .max(0.05)
-    }
-
-    fn as_array(&self) -> [f64; 4] {
-        [
-            self.char_seconds,
-            self.sentence_seconds,
-            self.paragraph_seconds,
-            self.dialogue_char_seconds,
-        ]
-    }
-
-    /// Least squares over `(text, seconds)` samples — one per audio chapter
-    /// pinned to its text — pulled gently toward the defaults so a book with
-    /// a few odd chapters (credits folded into one, a map page into another)
-    /// cannot produce a nonsense pace. Every rate is then clamped to what a
-    /// human narrator can do.
-    pub fn fit(samples: &[(TextFeatures, f64)]) -> ReadingModel {
-        let prior = ReadingModel::default();
-        let usable = samples
-            .iter()
-            .filter(|(features, seconds)| features.chars > 0.0 && *seconds > 0.0)
-            .collect::<Vec<_>>();
-        if usable.len() < MIN_FIT_SAMPLES {
-            return prior;
-        }
-        let rows = usable
-            .iter()
-            .map(|(features, seconds)| {
-                (
-                    [
-                        features.chars,
-                        features.sentences,
-                        features.paragraphs,
-                        features.dialogue_chars,
-                    ],
-                    *seconds,
-                )
-            })
-            .collect::<Vec<_>>();
-        let prior_values = prior.as_array();
-        // Ridge toward the prior. Each rate's pull is a small share of that
-        // feature's own energy in the data, so an error of `d` in the rate
-        // costs the same whether it comes from the data or from the prior,
-        // and the strength does not depend on units.
-        const PRIOR_SHARE: f64 = 0.03;
-        let mut normal = [[0.0f64; 4]; 4];
-        let mut rhs = [0.0f64; 4];
-        for (x, y) in &rows {
-            for i in 0..4 {
-                rhs[i] += x[i] * y;
-                for j in 0..4 {
-                    normal[i][j] += x[i] * x[j];
-                }
-            }
-        }
-        for i in 0..4 {
-            let energy = rows.iter().map(|(x, _)| x[i] * x[i]).sum::<f64>();
-            let pull = PRIOR_SHARE * energy.max(1.0);
-            normal[i][i] += pull;
-            rhs[i] += pull * prior_values[i];
-        }
-        let Some(solution) = solve_4x4(normal, rhs) else {
-            return prior;
-        };
-        ReadingModel {
-            char_seconds: solution[0].clamp(0.045, 0.12),
-            sentence_seconds: solution[1].clamp(0.0, 1.5),
-            paragraph_seconds: solution[2].clamp(0.0, 3.0),
-            dialogue_char_seconds: solution[3].clamp(-0.03, 0.03),
-        }
-    }
-}
-
-/// Gaussian elimination with partial pivoting; `None` for a singular system.
-fn solve_4x4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
-    for column in 0..4 {
-        let pivot =
-            (column..4).max_by(|x, y| a[*x][column].abs().total_cmp(&a[*y][column].abs()))?;
-        if a[pivot][column].abs() < 1e-12 {
-            return None;
-        }
-        a.swap(column, pivot);
-        b.swap(column, pivot);
-        for row in column + 1..4 {
-            let factor = a[row][column] / a[column][column];
-            let pivot_row = a[column];
-            for (k, value) in a[row].iter_mut().enumerate().skip(column) {
-                *value -= factor * pivot_row[k];
-            }
-            b[row] -= factor * b[column];
-        }
-    }
-    let mut x = [0.0; 4];
-    for row in (0..4).rev() {
-        let mut sum = b[row];
-        for k in row + 1..4 {
-            sum -= a[row][k] * x[k];
-        }
-        x[row] = sum / a[row][row];
-    }
-    x.iter().all(|v| v.is_finite()).then_some(x)
-}
-
-// ---------------------------------------------------------------------------
-// Estimated sync maps
-// ---------------------------------------------------------------------------
-
-/// A stretch of audio pinned to a run of spine sections.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EstimateAnchor {
-    pub start_seconds: f64,
-    pub end_seconds: f64,
-    pub section_range: std::ops::Range<usize>,
-}
-
-/// A listener's correction: "this sentence is being read at this second".
-/// Placed from the reader while listening, and kept with the book so every
-/// later estimate is timed through it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManualAnchor {
-    pub href: String,
-    pub text: String,
-    pub seconds: f64,
-}
-
-/// Pins the audio's chapters to the EPUB's chapters. An audio chapter that
-/// matches nothing (credits, an unnamed split) folds into the anchor before
-/// it; table-of-contents entries between two matches fold into the earlier
-/// one. With no match at all the whole book is one anchor, minus the
-/// apparatus sections a narrator never reads.
-pub fn estimate_anchors(
-    epub: &EpubDocument,
-    chapters: &[AudioChapter],
-    book_duration_seconds: f64,
-) -> (Vec<EstimateAnchor>, usize) {
-    if !chapters.is_empty() && !epub.toc.is_empty() {
-        let targets = chapters
-            .iter()
-            .map(|chapter| parse_label(&chapter.title))
-            .collect::<Vec<_>>();
-        let items = epub
-            .toc
-            .iter()
-            .map(|entry| parse_label(&entry.title))
-            .collect::<Vec<_>>();
-        let pairs = anchor_pairs(&match_in_order(&targets, &items), &epub.toc);
-        if !pairs.is_empty() {
-            let book_end = chapters
-                .last()
-                .map(|chapter| chapter.end_seconds)
-                .unwrap_or(book_duration_seconds)
-                .max(book_duration_seconds);
-            let anchors = pairs
-                .iter()
-                .enumerate()
-                .map(|(position, (chapter_index, spine_index))| {
-                    let next = pairs.get(position + 1);
-                    EstimateAnchor {
-                        start_seconds: chapters[*chapter_index].start_seconds,
-                        end_seconds: next
-                            .map(|(next_chapter, _)| chapters[*next_chapter].start_seconds)
-                            .unwrap_or(book_end),
-                        section_range: *spine_index
-                            ..next
-                                .map(|(_, next_spine)| *next_spine)
-                                .unwrap_or(epub.sections.len()),
-                    }
-                })
-                .collect::<Vec<_>>();
-            let count = anchors.len();
-            return (anchors, count);
-        }
-    }
-    if book_duration_seconds <= 0.0 {
-        return (Vec::new(), 0);
-    }
-    (
-        vec![EstimateAnchor {
-            start_seconds: 0.0,
-            end_seconds: book_duration_seconds,
-            section_range: 0..epub.sections.len(),
-        }],
-        0,
-    )
-}
-
-/// Spine indices the table of contents labels as apparatus (title page,
-/// copyright, contents), which the narrator does not read.
-fn apparatus_sections(epub: &EpubDocument) -> std::collections::HashSet<usize> {
-    epub.toc
-        .iter()
-        .filter(|entry| is_apparatus(&parse_label(&entry.title)))
-        .map(|entry| entry.spine_index)
-        .collect()
-}
-
-/// The chapter anchors with their sentences, and the narrator model fitted
-/// to them. Shared by the estimate and by the diagnostics.
-pub struct EstimatePlan {
-    pub anchors: Vec<(EstimateAnchor, Vec<Sentence>)>,
-    pub anchor_count: usize,
-    pub model: ReadingModel,
-}
-
-pub fn plan_estimate(
-    epub: &EpubDocument,
-    chapters: &[AudioChapter],
-    book_duration_seconds: f64,
-) -> EstimatePlan {
-    let (anchors, anchor_count) = estimate_anchors(epub, chapters, book_duration_seconds);
-    let skipped = if anchor_count == 0 {
-        apparatus_sections(epub)
-    } else {
-        Default::default()
-    };
-    let anchors = anchors
-        .into_iter()
-        .map(|anchor| {
-            let sentences = anchor
-                .section_range
-                .clone()
-                .filter(|index| !skipped.contains(index))
-                .filter_map(|index| epub.sections.get(index))
-                .flat_map(|section| split_sentences(&section.href, &section.text))
-                .collect::<Vec<_>>();
-            (anchor, sentences)
-        })
-        .collect::<Vec<_>>();
-    let samples = anchors
-        .iter()
-        .map(|(anchor, sentences)| {
-            let mut features = TextFeatures::default();
-            for sentence in sentences {
-                features.add(&sentence_features(sentence));
-            }
-            (features, anchor.end_seconds - anchor.start_seconds)
-        })
-        .collect::<Vec<_>>();
-    let model = if anchor_count >= MIN_FIT_SAMPLES {
-        ReadingModel::fit(&samples)
-    } else {
-        ReadingModel::default()
-    };
-    EstimatePlan {
-        anchors,
-        anchor_count,
-        model,
-    }
-}
-
-/// Times every sentence of the EPUB by interpolation: each anchor's audio
-/// span is shared out among its sentences in proportion to the seconds the
-/// narrator model gives them. Narration speed is steady enough within a
-/// chapter that this lands within a few sentences of the truth — good enough
-/// to keep the page and paragraph in step, not to mark a word — and a
-/// listener's manual anchors split a chapter into shorter spans that drift
-/// less.
-pub fn estimate_sync_map(
-    epub: &EpubDocument,
-    chapters: &[AudioChapter],
-    book_duration_seconds: f64,
-    manual_anchors: &[ManualAnchor],
-) -> Result<SyncMap, String> {
-    let plan = plan_estimate(epub, chapters, book_duration_seconds);
-    if plan.anchors.is_empty() {
-        return Err("The book's length is unknown, so its text cannot be timed.".to_string());
-    }
-    let mut fragments = Vec::new();
-    let mut manual_used = 0;
-    for (anchor, sentences) in &plan.anchors {
-        let span = anchor.end_seconds - anchor.start_seconds;
-        if sentences.is_empty() || span <= 0.0 {
-            continue;
-        }
-        // Listener anchors inside this chapter. Text order and time order
-        // must agree; when two anchors contradict each other the newer tap
-        // (later in the list) wins, since it is the listener's correction.
-        let candidates = manual_anchors
-            .iter()
-            .filter(|pin| pin.seconds > anchor.start_seconds && pin.seconds < anchor.end_seconds)
-            .filter_map(|pin| {
-                sentences
-                    .iter()
-                    .position(|sentence| sentence.href == pin.href && sentence.text == pin.text)
-                    .filter(|index| *index > 0)
-                    .map(|index| (index, pin.seconds))
-            })
-            .collect::<Vec<_>>();
-        let mut pins: Vec<(usize, f64)> = Vec::new();
-        for (index, seconds) in candidates.into_iter().rev() {
-            let consistent = pins.iter().all(|(other_index, other_seconds)| {
-                index != *other_index
-                    && seconds != *other_seconds
-                    && ((index < *other_index) == (seconds < *other_seconds))
-            });
-            if consistent {
-                pins.push((index, seconds));
-            }
-        }
-        pins.sort_by_key(|pin| pin.0);
-        manual_used += pins.len();
-        let mut boundaries: Vec<(usize, f64)> = vec![(0, anchor.start_seconds)];
-        boundaries.extend(pins);
-        boundaries.push((sentences.len(), anchor.end_seconds));
-        for window in boundaries.windows(2) {
-            let (from, start) = window[0];
-            let (to, end) = window[1];
-            let slice = &sentences[from..to];
-            let total: f64 = slice
-                .iter()
-                .map(|sentence| plan.model.seconds(&sentence_features(sentence)))
-                .sum();
-            let mut cursor = start;
-            for sentence in slice {
-                let duration =
-                    (end - start) * plan.model.seconds(&sentence_features(sentence)) / total;
-                fragments.push(SyncFragment {
-                    start_seconds: round_millis(cursor),
-                    end_seconds: round_millis(cursor + duration),
-                    href: sentence.href.clone(),
-                    text: sentence.text.clone(),
-                    words: Vec::new(),
-                });
-                cursor += duration;
-            }
-        }
-    }
-    if fragments.is_empty() {
-        return Err("No readable sentences were found in the EPUB.".to_string());
-    }
-    Ok(SyncMap {
-        version: SYNC_MAP_VERSION,
-        generator: Some("estimate".to_string()),
-        generated_at: None,
-        precision: Some(PRECISION_ESTIMATED.to_string()),
-        anchor_count: Some(plan.anchor_count),
-        manual_anchor_count: Some(manual_used),
-        fragments,
-    })
-}
-
 /// A two-chapter EPUB with a navigation document, for tests across the
 /// crate: the alignment, the companion classifier, and the HTTP routes.
 #[cfg(test)]
@@ -2416,6 +1907,18 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn epub_text_budget_counts_repeated_reads() {
+        let bytes = super::build_test_epub();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut remaining = 512;
+        super::read_zip_text(&mut archive, "OEBPS/text/ch1.xhtml", &mut remaining).unwrap();
+        assert!(remaining < 512);
+        remaining = 1;
+        assert!(
+            super::read_zip_text(&mut archive, "OEBPS/text/ch1.xhtml", &mut remaining).is_err()
+        );
+    }
     use super::*;
 
     #[test]
@@ -2885,8 +2388,6 @@ The dog barked loudly at the cat. Go away said the cat.",
             generator: Some("echogarden".into()),
             generated_at: None,
             precision: Some(PRECISION_SENTENCE.into()),
-            anchor_count: None,
-            manual_anchor_count: None,
             fragments: vec![SyncFragment {
                 start_seconds: 1.5,
                 end_seconds: 3.25,
@@ -2901,11 +2402,9 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(parsed.fragments[0].words, vec![WordTiming(1.5, 3.25, 0, 5)]);
         assert!(json.contains("startSeconds"));
         assert!(json.contains("\"words\":[[1.5,3.25,0,5]]"));
-        assert!(!parsed.is_estimated());
     }
 
-    /// Maps written before precision and word timings existed still load,
-    /// and read as aligned rather than estimated.
+    /// Maps written before precision and word timings existed still load.
     #[test]
     fn a_version_one_sync_map_still_reads() {
         let json = r#"{"version":1,"generator":"echogarden","fragments":[
@@ -2914,7 +2413,6 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(parsed.fragments.len(), 1);
         assert!(parsed.fragments[0].words.is_empty());
         assert!(parsed.precision.is_none());
-        assert!(!parsed.is_estimated());
         assert!(!serde_json::to_string(&parsed).unwrap().contains("words"));
     }
 
@@ -3097,206 +2595,5 @@ The dog barked loudly at the cat. Go away said the cat.",
                 },
             ]
         );
-    }
-
-    #[test]
-    fn sentences_split_on_stops_but_not_inside_numbers() {
-        let sentences = split_sentences(
-            "a.xhtml",
-            "Chapter 1\n\nIt was 3.5 miles. \"Really?\" she asked… He nodded.\n\nThe end",
-        );
-        let texts = sentences
-            .iter()
-            .map(|sentence| sentence.text.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            texts,
-            vec![
-                "Chapter 1",
-                "It was 3.5 miles.",
-                "\"Really?\"",
-                "she asked…",
-                "He nodded.",
-                "The end"
-            ]
-        );
-        assert!(sentences[0].paragraph_start);
-        assert!(sentences[1].paragraph_start);
-        assert!(!sentences[2].paragraph_start);
-        assert!(sentences[5].paragraph_start);
-    }
-
-    /// The estimate pins each audio chapter to its chapter of text and shares
-    /// the chapter's seconds among its sentences; credits with no text fold
-    /// into the neighbouring chapter's span rather than breaking the map.
-    #[test]
-    fn an_estimated_map_follows_the_chapters_and_stays_monotonic() {
-        let epub = parse_epub(&build_test_epub()).unwrap();
-        let chapters = vec![
-            AudioChapter {
-                title: "Opening Credits".into(),
-                start_seconds: 0.0,
-                end_seconds: 5.0,
-            },
-            AudioChapter {
-                title: "Chapter One".into(),
-                start_seconds: 5.0,
-                end_seconds: 65.0,
-            },
-            AudioChapter {
-                title: "Chapter Two".into(),
-                start_seconds: 65.0,
-                end_seconds: 125.0,
-            },
-        ];
-        let map = estimate_sync_map(&epub, &chapters, 125.0, &[]).unwrap();
-        assert!(map.is_estimated());
-        assert_eq!(map.anchor_count, Some(2));
-        assert_eq!(map.manual_anchor_count, Some(0));
-        assert_eq!(map.fragments[0].start_seconds, 5.0);
-        assert_eq!(map.fragments[0].href, "text/ch1.xhtml");
-        assert_eq!(map.fragments[0].text, "Chapter 1");
-        let river = map
-            .fragments
-            .iter()
-            .find(|fragment| fragment.href == "text/ch2.xhtml")
-            .unwrap();
-        assert_eq!(river.start_seconds, 65.0);
-        for pair in map.fragments.windows(2) {
-            assert!(pair[0].end_seconds <= pair[1].start_seconds + 0.001);
-            assert!(pair[0].start_seconds < pair[0].end_seconds);
-        }
-        assert_eq!(map.fragments.last().unwrap().end_seconds, 125.0);
-        for fragment in &map.fragments {
-            assert!(fragment.words.is_empty());
-        }
-    }
-
-    #[test]
-    fn an_estimate_without_chapters_spreads_the_whole_book() {
-        let epub = parse_epub(&build_test_epub()).unwrap();
-        let map = estimate_sync_map(&epub, &[], 100.0, &[]).unwrap();
-        assert_eq!(map.anchor_count, Some(0));
-        assert_eq!(map.fragments[0].start_seconds, 0.0);
-        assert_eq!(map.fragments.last().unwrap().end_seconds, 100.0);
-        assert!(estimate_sync_map(&epub, &[], 0.0, &[]).is_err());
-    }
-
-    /// A listener who taps "this sentence is being read now" re-times the
-    /// chapter through that point; a pin that runs backwards is ignored.
-    #[test]
-    fn a_manual_anchor_retimes_the_sentences_around_it() {
-        let epub = parse_epub(&build_test_epub()).unwrap();
-        let chapters = vec![AudioChapter {
-            title: "Chapter One".into(),
-            start_seconds: 0.0,
-            end_seconds: 100.0,
-        }];
-        let plain = estimate_sync_map(&epub, &chapters, 100.0, &[]).unwrap();
-        // Chapter one: "Chapter 1", "The meadow was quiet.", "Bees drifted between flowers."
-        let bees = plain
-            .fragments
-            .iter()
-            .find(|fragment| fragment.text.starts_with("Bees"))
-            .unwrap();
-        assert!(bees.start_seconds < 80.0, "{}", bees.start_seconds);
-        let pinned = estimate_sync_map(
-            &epub,
-            &chapters,
-            100.0,
-            &[
-                ManualAnchor {
-                    href: "text/ch1.xhtml".into(),
-                    text: "Bees drifted between flowers.".into(),
-                    seconds: 80.0,
-                },
-                ManualAnchor {
-                    href: "text/ch1.xhtml".into(),
-                    text: "The meadow was quiet.".into(),
-                    seconds: 90.0,
-                },
-            ],
-        )
-        .unwrap();
-        // The two taps contradict each other (the meadow cannot be read
-        // after the bees); the newer one, at 90 s, wins.
-        assert_eq!(pinned.manual_anchor_count, Some(1));
-        let meadow = pinned
-            .fragments
-            .iter()
-            .find(|fragment| fragment.text.starts_with("The meadow"))
-            .unwrap();
-        assert_eq!(meadow.start_seconds, 90.0);
-        let bees = pinned
-            .fragments
-            .iter()
-            .find(|fragment| fragment.text.starts_with("Bees"))
-            .unwrap();
-        assert!(bees.start_seconds > 90.0);
-        let alone = estimate_sync_map(
-            &epub,
-            &chapters,
-            100.0,
-            &[ManualAnchor {
-                href: "text/ch1.xhtml".into(),
-                text: "Bees drifted between flowers.".into(),
-                seconds: 80.0,
-            }],
-        )
-        .unwrap();
-        let bees = alone
-            .fragments
-            .iter()
-            .find(|fragment| fragment.text.starts_with("Bees"))
-            .unwrap();
-        assert_eq!(bees.start_seconds, 80.0);
-        for pair in pinned.fragments.windows(2) {
-            assert!(pair[0].end_seconds <= pair[1].start_seconds + 0.001);
-        }
-    }
-
-    /// With enough chapters the pace is learned from the book; a synthetic
-    /// narrator who takes long paragraph pauses is recovered, and an
-    /// implausible fit is clamped rather than trusted.
-    #[test]
-    fn the_reading_model_is_fitted_from_chapter_lengths() {
-        let truth = ReadingModel {
-            char_seconds: 0.09,
-            sentence_seconds: 0.3,
-            paragraph_seconds: 2.0,
-            dialogue_char_seconds: -0.01,
-        };
-        // Chapters that vary independently in length, sentence length,
-        // paragraph length, and how much of them is dialogue.
-        let mut seed: u64 = 12345;
-        let mut next = move || {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((seed >> 33) % 1000) as f64 / 1000.0
-        };
-        let samples = (0..60)
-            .map(|_| {
-                let chars = 5_000.0 + 20_000.0 * next();
-                let features = TextFeatures {
-                    chars,
-                    sentences: chars / (40.0 + 60.0 * next()),
-                    paragraphs: chars / (150.0 + 500.0 * next()),
-                    dialogue_chars: chars * (0.05 + 0.6 * next()),
-                };
-                (features, truth.seconds(&features))
-            })
-            .collect::<Vec<_>>();
-        let fitted = ReadingModel::fit(&samples);
-        assert!(
-            (fitted.char_seconds - truth.char_seconds).abs() < 0.01,
-            "{fitted:?}"
-        );
-        assert!(
-            (fitted.paragraph_seconds - truth.paragraph_seconds).abs() < 0.6,
-            "{fitted:?}"
-        );
-        assert!(fitted.dialogue_char_seconds < 0.0, "{fitted:?}");
-        assert_eq!(ReadingModel::fit(&samples[..3]), ReadingModel::default());
     }
 }
