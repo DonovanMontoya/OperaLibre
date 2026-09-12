@@ -4033,6 +4033,10 @@ function MainApp({
   // revision can replace a lock-screen rewind before its native event reaches
   // the resumed WebView.
   const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
+  // A native player that never reports (paused, idle) would otherwise leave the
+  // deferred foreground adoption with nothing to run it. Retry when the wait
+  // expires; the native state event cancels the timer if it arrives first.
+  const nativeForegroundAdoptTimerRef = useRef<number | null>(null);
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in
@@ -6029,6 +6033,7 @@ function MainApp({
       },
       () => {
         if (!nativeForegroundSyncGateRef.current.nativeStateReceived()) return;
+        cancelNativeForegroundAdoptRetry();
         if (document.visibilityState === "visible") {
           void adoptNewerServerProgress();
         }
@@ -6354,10 +6359,17 @@ function MainApp({
     const syncWhenVisibilityChanges = () => {
       if (document.visibilityState === "hidden") {
         if (nativeAudio) nativeForegroundSyncGateRef.current.backgrounded();
+        cancelNativeForegroundAdoptRetry();
         void persistProgress();
       } else if (document.visibilityState === "visible") {
-        if (nativeAudio && nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) {
-          return;
+        if (nativeAudio) {
+          nativeForegroundSyncGateRef.current.foregrounded();
+          if (nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) {
+            scheduleNativeForegroundAdoptRetry(
+              nativeForegroundSyncGateRef.current.msUntilDeadline()
+            );
+            return;
+          }
         }
         void adoptNewerServerProgress();
       }
@@ -6369,8 +6381,27 @@ function MainApp({
     return () => {
       window.removeEventListener("pagehide", saveBeforeLeaving);
       document.removeEventListener("visibilitychange", syncWhenVisibilityChanges);
+      cancelNativeForegroundAdoptRetry();
     };
   }, [playbackBook, currentTrack, activeTrackIndex]);
+
+  function cancelNativeForegroundAdoptRetry() {
+    if (nativeForegroundAdoptTimerRef.current === null) return;
+    window.clearTimeout(nativeForegroundAdoptTimerRef.current);
+    nativeForegroundAdoptTimerRef.current = null;
+  }
+
+  function scheduleNativeForegroundAdoptRetry(delayMs: number) {
+    cancelNativeForegroundAdoptRetry();
+    nativeForegroundAdoptTimerRef.current = window.setTimeout(() => {
+      nativeForegroundAdoptTimerRef.current = null;
+      if (document.visibilityState !== "visible") return;
+      // Reads the gate again so a state that landed in the meantime, or a
+      // fresh background transition, keeps its own deferral.
+      if (nativeForegroundSyncGateRef.current.shouldDeferServerAdoption()) return;
+      void adoptNewerServerProgress();
+    }, delayMs);
+  }
 
   function persistProgress(): Promise<void> {
     if (

@@ -13,9 +13,11 @@ test("a foreground server refresh waits for the deferred native clock", () => {
 
   gate.backgrounded();
   assert.equal(gate.shouldDeferServerAdoption(), true);
+  gate.foregrounded();
 
   // The old server checkpoint must not be adopted in the gap between the
   // WebView becoming visible and AVPlayer delivering its foreground state.
+  assert.equal(gate.shouldDeferServerAdoption(), true);
   assert.equal(gate.nativeStateReceived(), true);
   assert.equal(gate.shouldDeferServerAdoption(), false);
   assert.equal(gate.nativeStateReceived(), false);
@@ -26,13 +28,43 @@ test("a silent native player stops deferring once the wait expires", () => {
   const gate = new NativeForegroundSyncGate(() => now, 5000);
 
   gate.backgrounded();
-  assert.equal(gate.shouldDeferServerAdoption(), true);
+  gate.foregrounded();
+  assert.equal(gate.msUntilDeadline(), 5000);
 
   // A paused or idle AVPlayer may never emit a foreground state, and an
   // aborted seek can swallow the release its "seeked" handler owed.
   now += 5000;
   assert.equal(gate.shouldDeferServerAdoption(), false);
+  assert.equal(gate.msUntilDeadline(), 0);
   assert.equal(gate.nativeStateReceived(), false);
+});
+
+test("the grace period covers the resume, not the length of the background stay", () => {
+  let now = 1000;
+  const gate = new NativeForegroundSyncGate(() => now, 5000);
+
+  gate.backgrounded();
+  // Hours on the lock screen must not burn the window the WebView needs to
+  // hear AVPlayer's foreground state.
+  now += 60 * 60 * 1000;
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+
+  gate.foregrounded();
+  assert.equal(gate.shouldDeferServerAdoption(), true);
+  assert.equal(gate.msUntilDeadline(), 5000);
+  assert.equal(gate.nativeStateReceived(), true);
+});
+
+test("a second foreground without a new background stay does not rearm the wait", () => {
+  let now = 1000;
+  const gate = new NativeForegroundSyncGate(() => now, 5000);
+
+  gate.backgrounded();
+  gate.foregrounded();
+  assert.equal(gate.nativeStateReceived(), true);
+
+  gate.foregrounded();
+  assert.equal(gate.shouldDeferServerAdoption(), false);
 });
 
 test("foreground pause persists the newer native clock", () => {
