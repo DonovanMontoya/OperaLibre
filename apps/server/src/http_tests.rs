@@ -92,6 +92,7 @@ impl TestServer {
             faststart_tools: None,
             update_manager: updates::UpdateManager::new(data_dir.clone(), None, 4000).unwrap(),
             sync_dir: data_dir.join("sync"),
+            sync_schedule_lock: Arc::new(Mutex::new(())),
             covers_dir: data_dir.join("covers"),
             database: database.clone(),
             database_path: data_dir.join("operalibre.db"),
@@ -1299,6 +1300,12 @@ const OWNER_ONLY_ROUTES: &[(&str, &str)] = &[
 /// A wrong path here cannot silently pass: an unmatched route answers 404 from
 /// the API catch-all, which fails the 403 assertion.
 const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/sync-schedules"),
+    ("GET", "/api/sync-sweep"),
+    ("PUT", "/api/sync-sweep"),
+    ("POST", "/api/sync-sweep/run"),
+    ("PUT", "/api/sync-schedules/book"),
+    ("DELETE", "/api/sync-schedules/book"),
     ("GET", "/api/users"),
     ("POST", "/api/users"),
     ("POST", "/api/library/rescan"),
@@ -3961,4 +3968,312 @@ async fn bookplayer_live_contract() {
         String::from_utf8_lossy(&result.stderr)
     );
     println!("{}", String::from_utf8_lossy(&result.stdout));
+}
+
+#[tokio::test]
+async fn sync_schedules_persist_replace_cancel_and_validate() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let uri = format!("/api/sync-schedules/{book_id}");
+    let future = unix_now_millis() + 3_600_000;
+    let request = serde_json::json!({"runAt": future});
+    // Audio without a companion cannot be scheduled.
+    assert_eq!(
+        server
+            .send_json("PUT", &uri, &owner, request.clone())
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+    }
+    // A configured file is sufficient to make the runtime available; it is
+    // never executed because all requests below target future times.
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let saved = server.send_json("PUT", &uri, &owner, request).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    assert_eq!(saved.json()["status"], "scheduled");
+    // Rebuilding the router and schedule lock simulates a fresh process;
+    // the schedule is read from its durable file, not a task-local cache.
+    server.state.sync_schedule_lock = Arc::new(Mutex::new(()));
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let listed = server.get("/api/sync-schedules", &owner).await.json();
+    assert_eq!(listed[0]["runAt"], future);
+    let replacement = future + 60_000;
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                &uri,
+                &owner,
+                serde_json::json!({"runAt": replacement})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let listed = server.get("/api/sync-schedules", &owner).await.json();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["runAt"], replacement);
+    assert_eq!(
+        server
+            .send_json("PUT", &uri, &owner, serde_json::json!({"runAt": 1}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        server
+            .send_json("DELETE", &uri, &owner, serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json(),
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
+async fn sync_schedules_skip_missed_starts_and_recover_interrupted_dispatch() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let now = unix_now_millis();
+    let entry = |id: &str, run_at: u64, status: &str| {
+        serde_json::json!({
+            "bookId": id, "runAt": run_at, "status": status, "jobId": null, "error": null,
+        })
+    };
+    let path = server
+        .state
+        .database_path
+        .with_file_name("sync-schedules.json");
+    write_json_atomic(
+        &path,
+        &serde_json::json!([
+            entry("future", now + 60_000, "scheduled"),
+            entry("late", now - 16 * 60_000, "scheduled"),
+            entry("interrupted", now, "dispatching"),
+            entry("disabled", now, "scheduled"),
+            entry("lost-queue", now, "submitted"),
+        ]),
+    )
+    .await
+    .unwrap();
+    sync_schedule::tick(&server.state).await.unwrap();
+    let listed = server.get("/api/sync-schedules", &owner).await.json();
+    assert_eq!(listed[0]["status"], "scheduled");
+    assert_eq!(listed[1]["status"], "missed");
+    assert_eq!(listed[2]["status"], "failed");
+    assert_eq!(listed[3]["status"], "failed");
+    assert_eq!(listed[4]["status"], "failed");
+    assert!(server.state.jobs.read().await.is_empty());
+    sync_schedule::tick(&server.state).await.unwrap();
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json(),
+        listed
+    );
+}
+
+#[tokio::test]
+async fn due_sync_schedule_joins_existing_job_once_and_records_completion() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("book.epub"));
+    }
+    let (job_id, _) =
+        create_queued_job(&server.state, "sync-generate", Some(book_id.clone())).await;
+    let path = server
+        .state
+        .database_path
+        .with_file_name("sync-schedules.json");
+    write_json_atomic(&path, &serde_json::json!([{
+        "bookId": book_id, "runAt": unix_now_millis(), "status": "scheduled", "jobId": null, "error": null,
+    }])).await.unwrap();
+    sync_schedule::tick(&server.state).await.unwrap();
+    let first = server.get("/api/sync-schedules", &owner).await.json();
+    assert_eq!(first[0]["status"], "submitted");
+    assert_eq!(first[0]["jobId"], job_id);
+    sync_schedule::tick(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await.len(), 1);
+    assert_eq!(
+        server
+            .send_json(
+                "DELETE",
+                &format!("/api/sync-schedules/{book_id}"),
+                &owner,
+                serde_json::json!({})
+            )
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    update_job_finished(&server.state, &job_id, "completed", Some(0), None).await;
+    sync_schedule::tick(&server.state).await.unwrap();
+    assert_eq!(
+        server.get("/api/sync-schedules", &owner).await.json()[0]["status"],
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn the_nightly_sweep_counts_only_books_that_still_need_alignment() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    // Audio alone is not eligible: the sweep needs an EPUB companion.
+    let status = server.get("/api/sync-sweep", &owner).await.json();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["eligibleCount"], 0);
+    assert_eq!(status["pendingCount"], 0);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+    }
+    let status = server.get("/api/sync-sweep", &owner).await.json();
+    assert_eq!(status["eligibleCount"], 1);
+    assert_eq!(status["pendingCount"], 1);
+    // An interpolated map is not alignment, so the book still needs a sync.
+    for (source, pending) in [("estimated", 1), ("sidecar", 0), ("generated", 0)] {
+        server.state.library.write().await.books[0].sync_file = Some(SyncFile {
+            file_name: "book.json".into(),
+            source: source.into(),
+            url: "/sync".into(),
+        });
+        let status = server.get("/api/sync-sweep", &owner).await.json();
+        assert_eq!(status["pendingCount"], pending, "source {source}");
+        assert_eq!(status["eligibleCount"], 1);
+    }
+    // Running without the add-on enabled is refused rather than queueing.
+    let refused = server
+        .send_json("POST", "/api/sync-sweep/run", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(!book_id.is_empty());
+}
+
+#[tokio::test]
+async fn the_sweep_rule_persists_and_rejects_impossible_start_times() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    for request in [
+        serde_json::json!({"enabled": true, "localTime": "25:00", "timeZone": "America/New_York"}),
+        serde_json::json!({"enabled": true, "localTime": "01:00", "timeZone": "Not/A_Zone"}),
+    ] {
+        assert_eq!(
+            server
+                .send_json("PUT", "/api/sync-sweep", &owner, request)
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let saved = server
+        .send_json(
+            "PUT",
+            "/api/sync-sweep",
+            &owner,
+            serde_json::json!({
+                "enabled": true,
+                "localTime": "01:00",
+                "timeZone": "America/New_York"
+            }),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let saved = saved.json();
+    assert_eq!(saved["localTime"], "01:00");
+    assert_eq!(saved["timeZone"], "America/New_York");
+    assert!(saved["nextRunAt"].as_u64().unwrap() > unix_now_millis());
+    // A fresh process reads the rule back from its durable file.
+    server.state.sync_schedule_lock = Arc::new(Mutex::new(()));
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    let reloaded = server.get("/api/sync-sweep", &owner).await.json();
+    assert_eq!(reloaded["enabled"], true);
+    assert_eq!(reloaded["nextRunAt"], saved["nextRunAt"]);
+    // Turning the sweep off keeps the time, so switching it back on can reuse it.
+    server
+        .send_json(
+            "PUT",
+            "/api/sync-sweep",
+            &owner,
+            serde_json::json!({
+                "enabled": false,
+                "localTime": "01:00",
+                "timeZone": "America/New_York"
+            }),
+        )
+        .await;
+    let disabled = server.get("/api/sync-sweep", &owner).await.json();
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["nextRunAt"], saved["nextRunAt"]);
+}
+
+#[tokio::test]
+async fn a_missed_nightly_sweep_records_the_skip_and_schedules_only_the_next_night() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let path = server.state.database_path.with_file_name("sync-sweep.json");
+    let old_run = unix_now_millis() - 3 * 24 * 60 * 60 * 1000;
+    write_json_atomic(
+        &path,
+        &serde_json::json!({
+            "enabled": true,
+            "localTime": "01:00",
+            "timeZone": "America/New_York",
+            "nextRunAt": old_run,
+            "lastRunAt": null,
+            "lastQueued": null,
+            "lastError": null
+        }),
+    )
+    .await
+    .unwrap();
+
+    sync_schedule::tick(&server.state).await.unwrap();
+
+    let status = server.get("/api/sync-sweep", &owner).await.json();
+    assert!(status["nextRunAt"].as_u64().unwrap() > unix_now_millis());
+    assert!(status["lastRunAt"].is_null());
+    assert!(
+        status["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("missed a nightly sweep")
+    );
+    assert!(server.state.jobs.read().await.is_empty());
 }

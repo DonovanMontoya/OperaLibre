@@ -10428,7 +10428,7 @@ html.native-app .profile-back {
 .admin-sync-job-state { font-size: 0.72rem; color: var(--ink-faded); }
 .admin-sync-job .sync-progress { max-width: none; }
 .admin-sync-job p { overflow-wrap: anywhere; }
-.admin-sync-job .admin-sync-job-error { color: #b33a2e; }
+.admin-sync-job .admin-sync-job-error { color: var(--sync-fail); }
 
 .admin-software-update {
   display: grid;
@@ -12882,3 +12882,312 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .audible-compact .audible-attention { display: flex; align-items: flex-start; gap: 8px; color: var(--gold-soft); }
 .audible-attention svg { flex-shrink: 0; margin-top: 3px; }
 .audible-compact summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; border-radius: 6px; }
+
+/* The library-wide sweep leads the dashboard: one button for "now" and one
+   rule for "every night". */
+.admin-sync-sweep-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 13px 14px;
+  border: 1px solid rgba(var(--ink-rgb), 0.12);
+  border-radius: 10px;
+  background: var(--sync-tile);
+}
+
+.admin-sync-monitor button.admin-sync-sweep-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  min-height: 38px;
+  padding: 8px 15px;
+  font-size: 0.72rem;
+}
+
+.admin-sync-sweep-nightly {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--ink-faded);
+  font-size: 0.78rem;
+}
+
+.admin-sync-sweep-nightly > label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.admin-sync-time-zone { color: var(--ink-faded); font-size: 0.68rem; }
+.admin-sync-sweep-nightly input[type="checkbox"] { accent-color: var(--oxblood); width: 15px; height: 15px; }
+.admin-sync-sweep-nightly input[type="checkbox"]:disabled { cursor: not-allowed; }
+
+.admin-sync-sweep-nightly input[type="time"] {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 6px;
+  color: var(--ink);
+  background: rgba(var(--ink-rgb), 0.03);
+  font: inherit;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-sync-sweep-nightly input[type="time"]:disabled { opacity: 0.5; }
+.admin-sync-monitor .admin-sync-sweep-outcome { color: var(--sync-done); font-size: 0.76rem; margin: 0; }
+
+@media (max-width: 700px) {
+  .admin-sync-sweep-nightly { margin-left: 0; }
+  .admin-sync-monitor button.admin-sync-sweep-run { width: 100%; justify-content: center; }
+}
+
+/* Follow along library: compact book rows within two quiet columns. */
+.admin-sync-monitor {
+  /* Job states carry meaning, so they get their own tones rather than a
+     second shade of faded ink. Kept beside the palette the admin cards
+     already use for "Enabled" and error text. */
+  --sync-done: #315b3c;
+  --sync-done-bg: rgba(55, 112, 71, 0.1);
+  --sync-fail: #b33a2e;
+  --sync-fail-bg: rgba(179, 58, 46, 0.09);
+  --sync-live: var(--oxblood);
+  --sync-live-bg: rgba(156, 104, 21, 0.14);
+  /* --paper does not flip on the dark iOS theme, so tiles carry their own
+     lift instead of borrowing it. */
+  --sync-tile: rgba(255, 255, 255, 0.5);
+  gap: 18px;
+}
+
+html.native-app.platform-ios.dark-mode .admin-sync-monitor {
+  --sync-done: #86c194;
+  --sync-done-bg: rgba(134, 193, 148, 0.14);
+  --sync-fail: #e2867a;
+  --sync-fail-bg: rgba(226, 134, 122, 0.13);
+  --sync-live-bg: rgba(201, 154, 75, 0.16);
+  --sync-tile: rgba(255, 255, 255, 0.045);
+}
+
+/* At-a-glance counts: what is done, what is waiting, what is running. */
+.admin-sync-summary {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  border-radius: 10px;
+  background: var(--sync-tile);
+  overflow: hidden;
+}
+
+/* Tiles share hairlines by pulling their own border under the container's,
+   so a wrapped row leaves no stray edge and no empty cell. */
+.admin-sync-stat {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 96px;
+  padding: 11px 13px;
+  margin: -1px 0 0 -1px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+  border-left: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.admin-sync-monitor .admin-sync-stat dt {
+  color: var(--ink-faded);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.admin-sync-monitor .admin-sync-stat dd {
+  margin: 0;
+  font: 400 1.3rem "Instrument Serif", serif;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.admin-sync-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(var(--ink-rgb), 0.05);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.admin-sync-notice svg { flex-shrink: 0; margin-top: 1px; opacity: 0.7; }
+.admin-sync-monitor .admin-sync-notice-warn { color: var(--sync-fail); background: var(--sync-fail-bg); }
+.admin-sync-monitor .admin-sync-notice-warn svg { opacity: 1; }
+
+.admin-sync-panel { display: grid; gap: 10px; min-width: 0; }
+
+.admin-sync-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.14);
+}
+
+.admin-sync-panel-head h4 { margin: 0; font-size: 0.88rem; }
+.admin-sync-panel-status { font-size: 0.72rem; color: var(--ink-faded); font-variant-numeric: tabular-nums; }
+
+/* Filtering matters once a library outgrows the two visible columns. */
+.admin-sync-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid rgba(var(--ink-rgb), 0.16);
+  border-radius: 999px;
+  color: var(--ink-faded);
+  background: rgba(var(--ink-rgb), 0.03);
+}
+
+.admin-sync-search:focus-within { border-color: rgba(var(--ink-rgb), 0.35); }
+.admin-sync-search svg { flex-shrink: 0; }
+
+.admin-sync-search input {
+  width: 170px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.76rem;
+}
+
+.admin-sync-search input:focus { outline: none; }
+
+/* Job cards: state first, then the one number that changes while you watch. */
+.admin-sync-monitor .admin-sync-job { gap: 8px; background: rgba(var(--ink-rgb), 0.025); }
+.admin-sync-monitor .admin-sync-job p { margin: 0; }
+.admin-sync-monitor .admin-sync-job-running { border-color: rgba(var(--ink-rgb), 0.22); background: rgba(var(--ink-rgb), 0.045); }
+.admin-sync-monitor .admin-sync-job-failed { border-color: var(--sync-fail-bg); background: var(--sync-fail-bg); }
+
+.admin-sync-job-state {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--ink-faded);
+  background: rgba(var(--ink-rgb), 0.07);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.admin-sync-job-state-running { color: var(--sync-live); background: var(--sync-live-bg); }
+.admin-sync-job-state-done { color: var(--sync-done); background: var(--sync-done-bg); }
+.admin-sync-job-state-failed { color: var(--sync-fail); background: var(--sync-fail-bg); }
+
+.admin-sync-job-meter { display: flex; align-items: center; gap: 10px; }
+
+.admin-sync-job-meter progress {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb), 0.12);
+  accent-color: var(--sync-live);
+}
+
+.admin-sync-job-meter progress::-webkit-progress-bar { border-radius: 999px; background: rgba(var(--ink-rgb), 0.12); }
+.admin-sync-job-meter progress::-webkit-progress-value { border-radius: 999px; background: var(--sync-live); }
+.admin-sync-job-meter progress::-moz-progress-bar { border-radius: 999px; background: var(--sync-live); }
+
+.admin-sync-job-percent {
+  flex-shrink: 0;
+  min-width: 34px;
+  text-align: right;
+  color: var(--ink-faded);
+  font: 600 0.7rem "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-sync-monitor .admin-sync-job-step { color: var(--ink-faded); font-size: 0.75rem; }
+.admin-sync-job-failure { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.admin-sync-monitor .admin-sync-job-failure p { flex: 1; min-width: 180px; font-size: 0.75rem; }
+.admin-sync-monitor .admin-sync-job-failure button { padding: 6px 10px; min-height: 32px; font-size: 0.68rem; gap: 5px; }
+
+/* Follow along library: compact book rows within two quiet columns. */
+.admin-sync-library { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 2px 0 0; }
+.admin-sync-book-group { min-width: 0; }
+.admin-sync-book-group > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; padding: 4px 0 10px; border-bottom: 1px solid rgba(var(--ink-rgb), 0.18); font-size: 0.82rem; font-weight: 600; }
+.admin-sync-book-group > summary::-webkit-details-marker { display: none; }
+.admin-sync-book-group > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.admin-sync-book-group > summary svg:first-child { color: var(--ink-faded); }
+.admin-sync-count { padding: 2px 7px; border-radius: 999px; background: rgba(var(--ink-rgb), 0.08); color: var(--ink-faded); font: 600 0.62rem "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
+.admin-sync-chevron { margin-left: auto; color: var(--ink-faded); transform: rotate(-90deg); }
+.admin-sync-book-group[open] .admin-sync-chevron { transform: rotate(0); }
+
+/* The gutter is reserved whether or not the column scrolls, so the two
+   columns stay aligned and a clipped row reads as "more below" rather than
+   as a rendering fault. */
+.admin-sync-book-list {
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+.admin-sync-book-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; }
+.admin-sync-book-info { display: grid; gap: 4px; min-width: 0; }
+.admin-sync-monitor button.admin-sync-book-link { display: inline-flex; align-items: baseline; justify-content: flex-start; gap: 6px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--ink); font-family: inherit; font-size: 0.9rem; font-weight: 600; letter-spacing: normal; text-transform: none; text-align: left; white-space: normal; overflow-wrap: anywhere; min-height: 24px; }
+.admin-sync-monitor button.admin-sync-book-link:hover { color: var(--oxblood); text-decoration: underline; transform: none; }
+.admin-sync-book-link svg { flex-shrink: 0; opacity: 0.4; }
+.admin-sync-book-entry:hover .admin-sync-book-link svg { opacity: 0.75; }
+.admin-sync-author { color: var(--ink-faded); font-size: 0.75rem; }
+
+.admin-sync-state-active {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--ink-faded);
+  background: rgba(var(--ink-rgb), 0.07);
+  font: 600 0.56rem "JetBrains Mono", monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-sync-monitor .admin-sync-empty { padding: 14px 0; color: var(--ink-faded); font-size: 0.8rem; }
+.admin-sync-book-entry { border-bottom: 1px solid rgba(var(--ink-rgb), 0.09); }
+.admin-sync-book-entry:last-child { border-bottom: 0; }
+.admin-sync-book-group[open] .admin-sync-book-list { border-bottom: 1px solid rgba(var(--ink-rgb), 0.18); }
+.admin-sync-book-actions { display: flex; align-items: center; flex-shrink: 0; gap: 5px; }
+.admin-sync-monitor .admin-sync-book-actions button { padding: 6px 9px; min-height: 32px; font-size: 0.68rem; gap: 5px; }
+.admin-sync-monitor .admin-sync-book-actions .admin-sync-schedule-button { padding: 7px; }
+
+/* A pending start and the way to call it off belong on one line together. */
+.admin-sync-scheduled { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; padding: 7px 10px; border-radius: 7px; background: rgba(var(--ink-rgb), 0.05); font-size: 0.72rem; color: var(--ink-faded); }
+.admin-sync-scheduled > span { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.admin-sync-scheduled em { font-style: normal; opacity: 0.75; }
+.admin-sync-monitor .admin-sync-scheduled button { font-size: 0.72rem; font-weight: 500; }
+.admin-sync-schedule-form { display: grid; gap: 10px; padding: 12px; margin-bottom: 12px; border-radius: 8px; background: rgba(var(--ink-rgb), 0.04); }
+.admin-sync-schedule-form label { font-size: 0.75rem; }
+.admin-sync-schedule-form input { width: 100%; min-width: 0; box-sizing: border-box; min-height: 40px; padding: 8px 10px; border: 1px solid rgba(var(--ink-rgb), 0.2); border-radius: 6px; color: var(--ink); background: rgba(255, 255, 255, 0.35); font: inherit; font-size: 0.85rem; }
+.admin-sync-schedule-form > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-sync-monitor .admin-sync-schedule-form p { margin: 0; font-size: 0.72rem; }
+.admin-sync-monitor .admin-sync-schedule-error { font-size: 0.72rem; color: var(--sync-fail); margin: 0 0 12px; }
+.admin-sync-book-list:has(.admin-sync-schedule-form) { max-height: none; }
+
+@media (max-width: 700px) {
+  .admin-sync-library { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .admin-sync-book-row { align-items: flex-start; }
+  .admin-sync-book-actions { justify-content: flex-end; max-width: 120px; }
+  .admin-sync-search { width: 100%; }
+  .admin-sync-search input { width: 100%; }
+}
