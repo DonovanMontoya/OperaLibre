@@ -584,6 +584,25 @@ async fn ebook_upload_pairs_root_file_without_touching_neighbor() {
 }
 
 #[tokio::test]
+async fn ebook_upload_pairs_a_root_file_with_an_empty_normalized_stem() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    std::fs::write(server.library_root.join("---.wav"), fixture_wav()).unwrap();
+    rescan_library(&server.state).await.unwrap();
+    let (id, _) = server.first_book_and_track(&owner).await;
+
+    let response = server
+        .upload_ebook(&id, &owner, "arbitrary.epub", alignment::build_test_epub())
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert_eq!(response.json()[0]["readingFile"]["fileName"], "---.epub");
+
+    rescan_library(&server.state).await.unwrap();
+    let book = server.get(&format!("/api/books/{id}"), &owner).await.json();
+    assert_eq!(book["readingFile"]["fileName"], "---.epub");
+}
+
+#[tokio::test]
 async fn ebook_upload_can_upgrade_a_non_epub_reading_copy() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

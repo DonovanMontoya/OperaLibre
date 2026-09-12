@@ -1991,12 +1991,34 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
         if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
             apply_book_metadata_override(&mut book, metadata_override);
         }
-        let companion_candidates = discover_candidates(
+        let mut companion_candidates = discover_candidates(
             &group_key,
             &grouped_files,
             &book.title,
             embedded_cover.as_ref(),
         );
+        // Explicit pairing is authoritative even when a root-level audio stem
+        // normalizes to nothing (for example, `---.wav`) and cannot pass the
+        // heuristic companion-name matcher.
+        if let Some(name) = metadata_overrides
+            .books
+            .get(&book_id)
+            .and_then(|entry| entry.ebook_file_name.as_deref())
+            .filter(|name| sanitize_filename(name) == *name)
+        {
+            let paired_path = if group_key.is_dir() {
+                group_key.join(name)
+            } else {
+                group_key.parent().unwrap_or(&state.library_root).join(name)
+            };
+            if paired_path.is_file()
+                && is_document(&paired_path)
+                && !companion_candidates.contains(&paired_path)
+            {
+                companion_candidates.push(paired_path);
+                companion_candidates.sort_by_key(|path| natural_path_key(path));
+            }
+        }
         if let Some(cover) = embedded_cover {
             extracted_covers.push((book_id.clone(), cover));
         }
