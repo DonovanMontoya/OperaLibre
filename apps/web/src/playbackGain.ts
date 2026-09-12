@@ -114,6 +114,31 @@ export class PlaybackGainChain {
       this.chain = { context, source, gain, limiter, limiting: false, element };
       this.route();
       this.resume();
+      // WebKit keeps rendering the source node's last buffer while the element
+      // is paused, so a running context replays the final word or two on a
+      // loop. Parking the context whenever the element stops leaves nothing to
+      // repeat. Only the element still routed may park it: a track change
+      // pauses the outgoing element after the next one may already be playing.
+      const park = () => {
+        if (this.chain?.element !== element || !element.paused) return;
+        if (context.state !== "running") return;
+        // A quick pause-then-play, or the next track starting after this one
+        // ended, lands `play` while the suspend is still in flight and the
+        // context still reads "running". Check whichever element is routed once
+        // it settles rather than leave a playing book silent.
+        void context
+          .suspend()
+          .then(() => {
+            const routed = this.chain?.element;
+            if (routed && !routed.paused) this.resume();
+          })
+          .catch(() => undefined);
+      };
+      element.addEventListener("pause", park);
+      element.addEventListener("ended", park);
+      element.addEventListener("play", () => {
+        if (this.chain?.element === element) this.resume();
+      });
       return true;
     } catch (error) {
       // Only a missing engine is permanent. One element refusing to be tapped —
@@ -156,8 +181,9 @@ export class PlaybackGainChain {
   }
 
   /**
-   * Autoplay policy suspends the context until a gesture, and iOS interrupts it
-   * outright for a phone call. Anything that is not running is worth nudging.
+   * Autoplay policy suspends the context until a gesture, iOS interrupts it
+   * outright for a phone call, and a paused element parks it on purpose.
+   * Anything that is not running is worth nudging.
    */
   resume() {
     const context = this.context;
