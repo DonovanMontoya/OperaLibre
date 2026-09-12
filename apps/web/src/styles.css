@@ -11996,20 +11996,14 @@ html.native-app .recent-row {
     display: none;
   }
 
+  /* The verso is a fixed share of the window, so whether the wordmark
+     and its actions share a line depends on how many actions there
+     are, not the viewport. Wrap the actions under it when they don't
+     fit rather than pushing them past the fold. */
   html.native-app .pane-title {
     align-items: center;
-    flex-wrap: nowrap;
-    gap: 12px;
-  }
-
-  /* Portrait and Stage Manager leave the verso too narrow for the
-     wordmark and its three actions on one line. */
-  @media (max-width: 1030px) {
-    html.native-app .pane-title {
-      align-items: flex-start;
-      flex-wrap: wrap;
-      gap: 14px;
-    }
+    flex-wrap: wrap;
+    gap: 14px 12px;
   }
 
   html.native-app .library-pane h1 {
