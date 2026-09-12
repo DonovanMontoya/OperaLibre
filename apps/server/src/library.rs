@@ -2006,13 +2006,24 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             .and_then(|entry| entry.ebook_file_name.as_deref())
             .filter(|name| sanitize_filename(name) == *name)
         {
-            let paired_path = if group_key.is_dir() {
-                group_key.join(name)
-            } else {
-                group_key.parent().unwrap_or(&state.library_root).join(name)
-            };
-            if paired_path.is_file()
-                && is_document(&paired_path)
+            // Folder books already include every adjacent document. For a
+            // root-level book, enumerate the trusted library directory and
+            // compare names instead of constructing a path from stored data.
+            let paired_path = (!group_key.is_dir())
+                .then(|| {
+                    WalkDir::new(group_key.parent().unwrap_or(&state.library_root))
+                        .max_depth(1)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .find(|entry| {
+                            entry.file_type().is_file()
+                                && entry.file_name().to_str() == Some(name)
+                                && is_document(entry.path())
+                        })
+                        .map(walkdir::DirEntry::into_path)
+                })
+                .flatten();
+            if let Some(paired_path) = paired_path
                 && !companion_candidates.contains(&paired_path)
             {
                 companion_candidates.push(paired_path);
