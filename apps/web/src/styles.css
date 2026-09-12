@@ -6857,6 +6857,40 @@ html.native-app .native-shell > .library-pane::before {
   display: none;
 }
 
+/* --- Screen colors the shell shares with UIKit ---
+   Each tab names the tone it carries at the edges of the screen: --native-chrome
+   is handed to the tab controller, which paints the strip under the web view
+   and behind the bar with it, and --native-veil is the translucent version the
+   page lays under the status bar. Naming both here keeps the native frame and
+   the page one surface instead of a page letterboxed in black. */
+html.native-app .native-shell {
+  --native-chrome: #f1e7d0;
+  --native-veil: rgba(241, 231, 208, 0.72);
+}
+
+html.native-app.platform-ios.dark-mode .native-shell {
+  --native-chrome: #17120f;
+  --native-veil: rgba(23, 18, 15, 0.78);
+}
+
+html.native-app:not(.dark-mode) .native-shell.tab-ledger {
+  --native-chrome: #f5f2eb;
+  --native-veil: rgba(245, 242, 235, 0.72);
+}
+
+/* The shelf and the games parlour are dark in either appearance. */
+html.native-app .native-shell.tab-shelf,
+html.native-app.platform-ios.dark-mode .native-shell.tab-shelf {
+  --native-chrome: #100a06;
+  --native-veil: rgba(16, 10, 7, 0.55);
+}
+
+html.native-app .native-shell.tab-games,
+html.native-app.platform-ios.dark-mode .native-shell.tab-games {
+  --native-chrome: #0f0b08;
+  --native-veil: rgba(15, 11, 8, 0.55);
+}
+
 /* --- Notch / Dynamic Island veil --- */
 html.native-app .ios-status-veil {
   position: fixed;
@@ -6866,18 +6900,10 @@ html.native-app .ios-status-veil {
   height: var(--status-h);
   z-index: 90;
   pointer-events: none;
+  background: var(--native-veil);
   -webkit-backdrop-filter: blur(14px) saturate(1.1);
   backdrop-filter: blur(14px) saturate(1.1);
   transition: background 0.26s ease;
-}
-
-html.native-app .native-shell.tab-reading .ios-status-veil {
-  background: rgba(241, 231, 208, 0.72);
-}
-
-html.native-app .native-shell.tab-shelf .ios-status-veil,
-html.native-app .native-shell.tab-ledger .ios-status-veil {
-  background: rgba(16, 10, 7, 0.55);
 }
 
 /* --- The spine tab bar --- */
@@ -10954,13 +10980,6 @@ html.native-app.platform-ios.dark-mode .admin-overlay,
 html.native-app.platform-ios.dark-mode .native-launch-placeholder {
   background-color: #17120f;
   background-image: none;
-}
-
-html.native-app.platform-ios.dark-mode .native-shell.tab-reading .ios-status-veil,
-html.native-app.platform-ios.dark-mode .native-shell.tab-ledger .ios-status-veil,
-html.native-app.platform-ios.dark-mode .native-shell.tab-settings .ios-status-veil,
-html.native-app.platform-ios.dark-mode .native-shell.tab-admin .ios-status-veil {
-  background: rgba(23, 18, 15, 0.78);
 }
 
 html.native-app.platform-ios.dark-mode .settings-card,

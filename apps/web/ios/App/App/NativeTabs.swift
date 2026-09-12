@@ -15,6 +15,24 @@ private final class NativeTabContentHost: UIViewController {
     }
 }
 
+/// The web shell sends its screen colors as `#rrggbb`, the one spelling the
+/// stylesheet uses for them.
+private func chromeColor(_ hex: String) -> UIColor? {
+    var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.hasPrefix("#") { text.removeFirst() }
+    guard text.count == 6, let value = UInt32(text, radix: 16) else { return nil }
+    return UIColor(red: CGFloat((value >> 16) & 0xff) / 255, green: CGFloat((value >> 8) & 0xff) / 255,
+                   blue: CGFloat(value & 0xff) / 255, alpha: 1)
+}
+
+/// Rec. 709 luma, deciding the same way the shell does whether a surface
+/// carries ink or paper on top of it.
+private func isDarkChrome(_ color: UIColor) -> Bool {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return true }
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5
+}
+
 /// UIKit owns tab selection and safe-area layout. A single sibling bridge fills
 /// the selected host's content area, preserving playback and keyboard focus
 /// without reloading or reparenting the web view on navigation changes.
@@ -29,6 +47,15 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var configuring = false
     private var requestedSelection: String?
     private var cover: UIView?
+    // The color the visible screen carries at its edges. The web shell sends
+    // it with every tab change so the band around the bar belongs to the page
+    // instead of framing it in a foreign color.
+    private var chrome: UIColor?
+    private var chromeIsDark = true
+    // The launch screen is parchment, and the shell cannot report its color
+    // until the web view has loaded. Restoring the last one hands the two
+    // straight to each other instead of flashing the container between them.
+    private static let chromeKey = "operalibre.nativeChrome"
     // Matches the web shell's spine, gold-soft, paper, and oxblood tokens.
     private let spine = UIColor(red: 26 / 255, green: 20 / 255, blue: 16 / 255, alpha: 1)
     private let brass = UIColor(red: 217 / 255, green: 181 / 255, blue: 116 / 255, alpha: 1)
@@ -47,29 +74,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         super.viewDidLoad()
         view.backgroundColor = spine
         navigation.view.backgroundColor = spine
-        // Only the navigation material is dark. The sibling web view still
-        // follows the user's light/dark/system preference.
-        navigation.overrideUserInterfaceStyle = .dark
-        navigation.view.tintColor = brass
-        let appearance = UITabBarAppearance()
-        appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = spine
-        appearance.shadowColor = .clear
-        for item in [appearance.stackedLayoutAppearance, appearance.inlineLayoutAppearance,
-                     appearance.compactInlineLayoutAppearance] {
-            item.normal.iconColor = parchment.withAlphaComponent(0.75)
-            item.normal.titleTextAttributes = [.foregroundColor: parchment.withAlphaComponent(0.75)]
-            item.selected.iconColor = brass
-            item.selected.titleTextAttributes = [.foregroundColor: brass]
-            item.normal.badgeBackgroundColor = oxblood
-            item.normal.badgeTextAttributes = [.foregroundColor: parchment]
-            item.selected.badgeBackgroundColor = oxblood
-            item.selected.badgeTextAttributes = [.foregroundColor: parchment]
-        }
-        navigation.tabBar.standardAppearance = appearance
-        navigation.tabBar.scrollEdgeAppearance = appearance
-        navigation.tabBar.tintColor = brass
-        navigation.tabBar.unselectedItemTintColor = parchment.withAlphaComponent(0.75)
+        applyBarTint()
+        applyChrome(UserDefaults.standard.string(forKey: Self.chromeKey))
         navigation.delegate = self
         if #available(iOS 18.0, *) { navigation.mode = .tabBar }
         addChild(content)
@@ -87,13 +93,17 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     }
 
     override var childForStatusBarStyle: UIViewController? { navigationVisible ? nil : content }
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    // The clock sits over the page itself, so it reads against the screen the
+    // selected tab shows rather than against the container behind it.
+    override var preferredStatusBarStyle: UIStatusBarStyle { chromeIsDark ? .lightContent : .darkContent }
     override var childForStatusBarHidden: UIViewController? { content }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { content.supportedInterfaceOrientations }
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { content.preferredInterfaceOrientationForPresentation }
 
-    func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String) {
+    func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
+                   chrome: String?) {
         loadViewIfNeeded()
+        applyChrome(chrome)
         if visible != navigationVisible && navigation.parent != nil {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
@@ -183,6 +193,56 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         }
     }
 
+    /// The bar is glass over the screen it belongs to, so its labels take the
+    /// page's own ink: gold on the dark shelf and parlour, oxblood — the same
+    /// red as the play control — on the paper screens.
+    private func applyBarTint() {
+        let selected = chromeIsDark ? brass : oxblood
+        // Ink and spine are the same tone in the palette; on paper it reads
+        // as the text color rather than as the shelf's board.
+        let resting = (chromeIsDark ? parchment : spine).withAlphaComponent(0.75)
+        navigation.overrideUserInterfaceStyle = chromeIsDark ? .dark : .light
+        navigation.view.tintColor = selected
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+        appearance.shadowColor = .clear
+        for item in [appearance.stackedLayoutAppearance, appearance.inlineLayoutAppearance,
+                     appearance.compactInlineLayoutAppearance] {
+            item.normal.iconColor = resting
+            item.normal.titleTextAttributes = [.foregroundColor: resting]
+            item.selected.iconColor = selected
+            item.selected.titleTextAttributes = [.foregroundColor: selected]
+            item.normal.badgeBackgroundColor = oxblood
+            item.normal.badgeTextAttributes = [.foregroundColor: parchment]
+            item.selected.badgeBackgroundColor = oxblood
+            item.selected.badgeTextAttributes = [.foregroundColor: parchment]
+        }
+        navigation.tabBar.standardAppearance = appearance
+        navigation.tabBar.scrollEdgeAppearance = appearance
+        navigation.tabBar.tintColor = selected
+        navigation.tabBar.unselectedItemTintColor = resting
+    }
+
+    /// Paint the container in the color the selected screen carries. Crossing
+    /// it over the same beat as the shell's tab fade keeps the seam at the
+    /// status bar and above the bar from flashing the previous screen's tone.
+    private func applyChrome(_ hex: String?) {
+        guard let hex, let color = chromeColor(hex), color != chrome else { return }
+        let first = chrome == nil
+        chrome = color
+        UserDefaults.standard.set(hex, forKey: Self.chromeKey)
+        let dark = isDarkChrome(color)
+        let flipped = dark != chromeIsDark
+        chromeIsDark = dark
+        if flipped { applyBarTint() }
+        let paint = {
+            self.view.backgroundColor = color
+            self.navigation.view.backgroundColor = color
+            self.setNeedsStatusBarAppearanceUpdate()
+        }
+        if first { paint() } else { UIView.animate(withDuration: 0.26, animations: paint) }
+    }
+
     func hide() {
         loadViewIfNeeded()
         navigationVisible = false
@@ -234,6 +294,14 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             // callback supplies the final safe area once the transition lands.
             guard host.viewIfLoaded?.isDescendant(of: view) == true else { return }
             frame = host.view.convert(host.view.safeAreaLayoutGuide.layoutFrame, to: view)
+        }
+        // The status bar belongs to the page. Stopping the web view below it
+        // would leave a band of container color across the top of every
+        // screen; the shell already reserves the inset and lays its own
+        // blurred veil under the clock.
+        if frame.minY > view.bounds.minY {
+            frame.size.height += frame.minY - view.bounds.minY
+            frame.origin.y = view.bounds.minY
         }
         // Replacing UITabs can briefly leave the selected host's safe area
         // unaware of the floating tab bar (notably on iOS 26). The WebView is
@@ -322,7 +390,8 @@ public final class NativeTabsPlugin: CAPPlugin, CAPBridgedPlugin {
             controller.configure(items: items, selected: selected,
                                  visible: call.getBool("visible") ?? false,
                                  blocked: call.getBool("blocked") ?? false,
-                                 appearance: call.getString("appearance") ?? "system")
+                                 appearance: call.getString("appearance") ?? "system",
+                                 chrome: call.getString("chrome"))
             call.resolve()
         }
     }
