@@ -18,10 +18,19 @@ private final class NativeTabContentHost: UIViewController {
 /// Holds the tab controller over the page. Only the bar itself takes touches;
 /// everything else belongs to the web view spanning the whole screen beneath.
 private final class TabsOverlayView: UIView {
-    weak var bar: UIView?
+    /// The clear views that only frame the page: the tab hosts. iPad's floating
+    /// bar is not a descendant of `UITabBarController.tabBar`, so the bar is
+    /// found by exclusion — whatever is not the page's frame or one of its
+    /// full-screen containers.
+    var hostViews: () -> [UIView] = { [] }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let hit = super.hitTest(point, with: event), let bar, hit.isDescendant(of: bar) else { return nil }
+        guard let hit = super.hitTest(point, with: event), hit !== self else { return nil }
+        for host in hostViews() where host === hit || hit.isDescendant(of: host) || host.isDescendant(of: hit) {
+            return nil
+        }
+        let frame = hit.convert(hit.bounds, to: self)
+        if frame.width >= bounds.width * 0.9 && frame.height >= bounds.height * 0.9 { return nil }
         return hit
     }
 }
@@ -59,6 +68,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var configuring = false
     private var requestedSelection: String?
     private var cover: UIView?
+    // Last top-bar clearance handed to the page; -1 until it has one.
+    private var sentTopClearance: CGFloat = -1
     // The color the visible screen carries, sent with every tab change. The
     // page covers the window, so this shows only where it cannot reach — a
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
@@ -110,7 +121,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         tabsOverlay.frame = view.bounds
         tabsOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         tabsOverlay.backgroundColor = .clear
-        tabsOverlay.bar = navigation.tabBar
+        tabsOverlay.hostViews = { [weak self] in self?.hosts.values.compactMap(\.viewIfLoaded) ?? [] }
         view.addSubview(tabsOverlay)
         layoutContent(in: self)
     }
@@ -126,6 +137,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     func configure(items: [JSObject], selected: String, visible: Bool, blocked: Bool, appearance: String,
                    chrome: String?, bar: String?) {
         loadViewIfNeeded()
+        // The page may have reloaded and lost the clearance it was sent.
+        sentTopClearance = -1
         applyChrome(chrome, bar: bar)
         if visible != navigationVisible && navigation.parent != nil {
             // Showing or hiding the bar resizes the web view, and the page
@@ -333,28 +346,36 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // strip of container color to butt against. Only the horizontal safe
         // area still trims the web view, keeping text out of the notch in
         // landscape.
+        let hostSafeTop = frame.minY
         frame.origin.y = view.bounds.minY
         frame.size.height = view.bounds.height
         var clearance: CGFloat = 0
+        var topClearance: CGFloat = 0
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
             let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
-            if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2 {
-                if bar.midY >= view.bounds.midY {
-                    // The page keeps its own content clear of the floating bar
-                    // through the bottom safe area, the same inset it already
-                    // reserves for the home indicator.
-                    clearance = view.bounds.maxY - bar.minY
-                } else {
-                    // iPad hangs the bar at the top of the window, where the
-                    // page has no room to run behind it.
-                    frame.origin.y = bar.maxY
-                    frame.size.height = view.bounds.maxY - bar.maxY
-                }
+            if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
+                // The page keeps its own content clear of the floating bar
+                // through the bottom safe area, the same inset it already
+                // reserves for the home indicator.
+                clearance = view.bounds.maxY - bar.minY
+            }
+            if host !== self {
+                // iPad hangs its floating bar from the top of the window, in a
+                // view of its own rather than `tabBar`. UIKit reserves it in
+                // the host's top safe area. The page learns the height as a
+                // variable rather than a safe-area inset, so its content clears
+                // the bar while the clock's veil stays the clock's height.
+                topClearance = max(0, (hostSafeTop - view.safeAreaInsets.top).rounded())
             }
         }
         let reserved = max(0, clearance - view.safeAreaInsets.bottom)
         if abs(content.additionalSafeAreaInsets.bottom - reserved) > 0.5 {
             content.additionalSafeAreaInsets.bottom = reserved
+        }
+        if topClearance != sentTopClearance, let webView = content.webView {
+            sentTopClearance = topClearance
+            webView.evaluateJavaScript(
+                "document.documentElement.style.setProperty('--native-tabs-top', '\(Int(topClearance))px')")
         }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]

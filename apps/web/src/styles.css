@@ -6647,7 +6647,9 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
    ============================================================ */
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
-  --status-h: env(safe-area-inset-top);
+  /* iPad's floating tab bar hangs below the clock; the iOS shell reports its
+     height as --native-tabs-top so screens pad past both. */
+  --status-h: calc(env(safe-area-inset-top) + var(--native-tabs-top, 0px));
   /* Fallback matching the slim transport ribbon (40px cover + 16px padding +
      border). JavaScript overwrites it with the measured height, but the
      measurement is 0 while the ribbon is display:none (e.g. Reading tab). */
@@ -6886,7 +6888,9 @@ html.native-app .ios-status-veil {
   top: 0;
   left: 0;
   right: 0;
-  height: var(--status-h);
+  /* Only the clock, never the iPad tab bar included in --status-h: the bar
+     is its own glass, and a veil under it reads as a blurred band. */
+  height: env(safe-area-inset-top);
   z-index: 90;
   pointer-events: none;
   /* Blur only. Every tint it could carry is a shade off the page running
