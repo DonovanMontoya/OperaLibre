@@ -95,31 +95,45 @@ export class NativeAudioStateSynchronizer {
   }
 }
 
+export const NATIVE_FOREGROUND_SYNC_TIMEOUT_MS = 5000;
+
 /**
  * Prevent a foreground server refresh from beating the native player's
  * deferred foreground state. AVPlayer continues to own the audible clock
  * while WKWebView is suspended, so its first state event after a background
  * transition must be processed before an idle web session can adopt another
- * device's server checkpoint.
+ * device's server checkpoint. The wait is bounded: a player that never
+ * reports must not strand server adoption for the rest of the session.
  */
 export class NativeForegroundSyncGate {
-  private awaitingNativeState = false;
+  private deadlineMs: number | null = null;
+  private readonly now: () => number;
+  private readonly timeoutMs: number;
+
+  constructor(now: () => number = Date.now, timeoutMs = NATIVE_FOREGROUND_SYNC_TIMEOUT_MS) {
+    this.now = now;
+    this.timeoutMs = timeoutMs;
+  }
 
   backgrounded() {
-    this.awaitingNativeState = true;
+    this.deadlineMs = this.now() + this.timeoutMs;
   }
 
   shouldDeferServerAdoption() {
-    return this.awaitingNativeState;
+    if (this.deadlineMs === null) return false;
+    // An idle or paused AVPlayer may never emit a foreground state, and a
+    // superseded seek can swallow the release that its "seeked" handler owed.
+    // Expire rather than deferring server adoption for the rest of the session.
+    if (this.now() >= this.deadlineMs) {
+      this.deadlineMs = null;
+      return false;
+    }
+    return true;
   }
 
   nativeStateReceived() {
-    const wasAwaiting = this.awaitingNativeState;
-    this.awaitingNativeState = false;
+    const wasAwaiting = this.shouldDeferServerAdoption();
+    this.deadlineMs = null;
     return wasAwaiting;
-  }
-
-  clear() {
-    this.awaitingNativeState = false;
   }
 }
