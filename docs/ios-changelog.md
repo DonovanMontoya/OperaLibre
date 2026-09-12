@@ -12,7 +12,24 @@ independently of the server releases.
 
 ## Unreleased
 
-No changes recorded yet.
+- Follow Along can now use an uploaded matching EPUB, with a confirmation before
+  a potentially time-consuming re-sync. Narration timing can also be tuned to
+  match your listening preference. ([#126](https://github.com/DonovanMontoya/OperaLibre/pull/126),
+  [#121](https://github.com/DonovanMontoya/OperaLibre/pull/121),
+  [#120](https://github.com/DonovanMontoya/OperaLibre/pull/120))
+- The reader opens and closes more smoothly, stays focused on the audiobook
+  that is playing, and keeps the native tab bar visible while using games.
+  ([#123](https://github.com/DonovanMontoya/OperaLibre/pull/123),
+  [#122](https://github.com/DonovanMontoya/OperaLibre/pull/122),
+  [#119](https://github.com/DonovanMontoya/OperaLibre/pull/119))
+- Playback controls now give consistent haptic feedback, and the iPad mini
+  landscape player fits without requiring a scroll.
+  ([#118](https://github.com/DonovanMontoya/OperaLibre/pull/118),
+  [#117](https://github.com/DonovanMontoya/OperaLibre/pull/117))
+- Improved recovery when returning to the iOS app so native playback progress
+  stays aligned after foregrounding. ([#125](https://github.com/DonovanMontoya/OperaLibre/pull/125))
+- Each iOS section now carries its own color through the native app shell.
+  ([#129](https://github.com/DonovanMontoya/OperaLibre/pull/129))
 
 ## 1.2.0 (15)
 
