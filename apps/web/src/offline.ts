@@ -515,6 +515,40 @@ export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
   }
 }
 
+/**
+ * Re-persists a freshly fetched map over the copy a downloaded book carries.
+ * That copy is otherwise written once, at download time, so a book downloaded
+ * before its narration had been aligned would never gain a usable map offline
+ * until it was downloaded again. Best effort: a cache that cannot be refreshed
+ * must not fail the reader, which already has the map in hand.
+ */
+export async function saveOfflineSyncMap(book: Book, map: SyncMap): Promise<void> {
+  try {
+    if (!(await isBookDownloaded(book))) return;
+    const json = JSON.stringify(map);
+    if (Capacitor.isNativePlatform()) {
+      await migrateLegacyBookDirectory(book);
+      await Filesystem.mkdir({
+        path: bookDirectory(book.id),
+        directory: MEDIA_DIRECTORY,
+        recursive: true
+      }).catch(() => undefined);
+      await Filesystem.writeFile({
+        path: syncMapFilePath(book),
+        directory: MEDIA_DIRECTORY,
+        data: toBase64(new TextEncoder().encode(json).buffer as ArrayBuffer)
+      });
+      return;
+    }
+    await write("media", {
+      key: mediaKey(book.id, SYNC_MAP_KIND),
+      blob: new Blob([json], { type: "application/json" })
+    });
+  } catch {
+    // Left as it was; the next open tries again.
+  }
+}
+
 export function releaseOfflineMediaUrl(url: string | null) {
   if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
 }
