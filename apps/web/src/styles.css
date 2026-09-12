@@ -12984,6 +12984,50 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   html.native-app .ledger-dashboard .recent-cover { width: 36px; height: 36px; }
 }
 
+/* Landscape iPads hang the tab bar in the middle of the top edge, leaving the
+   band either side of it empty. Headings that sit at a screen's edges move
+   up into that band — each opens with a row exactly as tall as the bar's
+   clearance — while anything that spans the middle still clears the bar. */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
+  html.native-app {
+    --clock-h: env(safe-area-inset-top);
+    --bar-band: var(--native-tabs-top, 0px);
+  }
+
+  /* Shelf: the verso is narrower than the gap beside the bar. */
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+    padding-top: calc(var(--clock-h) + 18px);
+  }
+
+  /* Ledger: the heading fills the band on the left. */
+  html.native-app .profile-page.ledger-dashboard {
+    padding-top: calc(var(--clock-h) + 6px);
+  }
+  html.native-app .ledger-dashboard > .profile-head {
+    min-height: var(--bar-band);
+  }
+
+  /* Games: the reading column starts in the band; the board and keyboard,
+     which reach under the bar, keep clear of it. */
+  html.native-app .games-shell {
+    padding-top: calc(var(--clock-h) + 10px);
+  }
+  html.native-app .match-board-frame,
+  html.native-app .word-keys {
+    margin-top: var(--bar-band);
+  }
+
+  /* Settings: title left and Administration right frame the bar. */
+  html.native-app .settings-shell {
+    padding-top: calc(var(--clock-h) + 6px);
+  }
+  html.native-app .settings-head {
+    min-height: var(--bar-band);
+  }
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
