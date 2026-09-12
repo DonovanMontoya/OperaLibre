@@ -80,6 +80,7 @@ import {
   anchorAfterRelocation,
   anchorOnPage,
   readerStorageKey,
+  repeatedNarratedPageTurn,
   shouldOpenPlayingChapter,
   syncMapPrecision,
 } from "./readalong";
@@ -1579,7 +1580,7 @@ export function EpubReadalong({
   // epub.js lands on that same page again the sentence sits on a page
   // boundary it cannot show, and asking again would only redraw the page on
   // every position update.
-  const lastKeepRef = useRef<{ cfi: string; from: string } | null>(null);
+  const lastKeepRef = useRef<{ cfi: string; from: string; layout: number } | null>(null);
   const setFollow = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
     if (typeof value === "boolean") {
       followRef.current = value;
@@ -2477,10 +2478,10 @@ export function EpubReadalong({
         ) {
           const from = location.start.cfi;
           const last = lastKeepRef.current;
-          if (!followRef.current || (last && last.cfi === cfi && last.from === from)) {
+          if (!followRef.current || repeatedNarratedPageTurn(last, cfi, from, relayoutTick)) {
             return;
           }
-          lastKeepRef.current = { cfi, from };
+          lastKeepRef.current = { cfi, from, layout: relayoutTick };
           readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
           void rendition.display(cfi);
         }
