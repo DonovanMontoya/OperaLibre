@@ -102,14 +102,15 @@ pub struct EpubDocument {
 pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
+    let mut remaining = 64 * 1024 * 1024;
 
-    let container = read_zip_text(&mut archive, "META-INF/container.xml")
+    let container = read_zip_text(&mut archive, "META-INF/container.xml", &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB is missing META-INF/container.xml"))?;
     let opf_path = find_tags(&container, "rootfile")
         .iter()
         .find_map(|tag| attr_value(tag, "full-path"))
         .ok_or_else(|| anyhow::anyhow!("EPUB container.xml has no rootfile full-path"))?;
-    let opf = read_zip_text(&mut archive, &opf_path)
+    let opf = read_zip_text(&mut archive, &opf_path, &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB package document `{opf_path}` was not found"))?;
     let opf_dir = parent_dir(&opf_path);
 
@@ -149,7 +150,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             continue;
         }
         let document_path = resolve_href(&opf_dir, &item.href);
-        let Some(document) = read_zip_text(&mut archive, &document_path) else {
+        let Some(document) = read_zip_text(&mut archive, &document_path, &mut remaining)? else {
             continue;
         };
         let text = html_to_text(&document);
@@ -167,7 +168,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
         .find(|item| item.properties.split_whitespace().any(|p| p == "nav"));
     if let Some(nav_item) = nav_item {
         let nav_path = resolve_href(&opf_dir, &nav_item.href);
-        if let Some(nav_document) = read_zip_text(&mut archive, &nav_path) {
+        if let Some(nav_document) = read_zip_text(&mut archive, &nav_path, &mut remaining)? {
             let nav_dir = parent_dir(&nav_path);
             toc_links = parse_nav_links(&nav_document, &nav_dir);
         }
@@ -178,7 +179,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             .find(|item| item.media_type == "application/x-dtbncx+xml");
         if let Some(ncx_item) = ncx_item {
             let ncx_path = resolve_href(&opf_dir, &ncx_item.href);
-            if let Some(ncx_document) = read_zip_text(&mut archive, &ncx_path) {
+            if let Some(ncx_document) = read_zip_text(&mut archive, &ncx_path, &mut remaining)? {
                 let ncx_dir = parent_dir(&ncx_path);
                 toc_links = parse_ncx_links(&ncx_document, &ncx_dir);
             }
@@ -223,14 +224,26 @@ fn element_text(xml: &str, name: &str) -> Option<String> {
 fn read_zip_text<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     path: &str,
-) -> Option<String> {
-    let index = archive
+    remaining: &mut u64,
+) -> anyhow::Result<Option<String>> {
+    let Some(index) = archive
         .index_for_name(path)
-        .or_else(|| archive.index_for_name(&percent_decode(path)))?;
-    let mut file = archive.by_index(index).ok()?;
+        .or_else(|| archive.index_for_name(&percent_decode(path)))
+    else {
+        return Ok(None);
+    };
+    let file = archive.by_index(index)?;
+    // Count every read, including repeated spine references to the same entry.
+    let limit = (*remaining).min(8 * 1024 * 1024);
+    anyhow::ensure!(file.size() <= limit, "EPUB text exceeds the reading limit.");
     let mut contents = String::new();
-    file.read_to_string(&mut contents).ok()?;
-    Some(contents)
+    file.take(limit + 1).read_to_string(&mut contents)?;
+    anyhow::ensure!(
+        contents.len() as u64 <= limit,
+        "EPUB text exceeds the reading limit."
+    );
+    *remaining -= contents.len() as u64;
+    Ok(Some(contents))
 }
 
 fn parent_dir(path: &str) -> String {
@@ -2416,6 +2429,18 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn epub_text_budget_counts_repeated_reads() {
+        let bytes = super::build_test_epub();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut remaining = 512;
+        super::read_zip_text(&mut archive, "OEBPS/text/ch1.xhtml", &mut remaining).unwrap();
+        assert!(remaining < 512);
+        remaining = 1;
+        assert!(
+            super::read_zip_text(&mut archive, "OEBPS/text/ch1.xhtml", &mut remaining).is_err()
+        );
+    }
     use super::*;
 
     #[test]
