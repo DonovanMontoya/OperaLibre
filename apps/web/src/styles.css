@@ -6647,7 +6647,9 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
    ============================================================ */
 html.native-app {
   --tabs-h: calc(54px + env(safe-area-inset-bottom));
-  --status-h: env(safe-area-inset-top);
+  /* iPad's floating tab bar hangs below the clock; the iOS shell reports its
+     height as --native-tabs-top so screens pad past both. */
+  --status-h: calc(env(safe-area-inset-top) + var(--native-tabs-top, 0px));
   /* Fallback matching the slim transport ribbon (40px cover + 16px padding +
      border). JavaScript overwrites it with the measured height, but the
      measurement is 0 while the ribbon is display:none (e.g. Reading tab). */
@@ -6886,7 +6888,9 @@ html.native-app .ios-status-veil {
   top: 0;
   left: 0;
   right: 0;
-  height: var(--status-h);
+  /* Only the clock, never the iPad tab bar included in --status-h: the bar
+     is its own glass, and a veil under it reads as a blurred band. */
+  height: env(safe-area-inset-top);
   z-index: 90;
   pointer-events: none;
   /* Blur only. Every tint it could carry is a shade off the page running
@@ -6895,6 +6899,12 @@ html.native-app .ios-status-veil {
      scrolls up behind the clock. */
   -webkit-backdrop-filter: blur(16px) saturate(1.04);
   backdrop-filter: blur(16px) saturate(1.04);
+}
+
+/* An iPad's clock sits in a thin strip with no island to crowd, and the
+   veil there only reads as a smudged band across the top of every screen. */
+@media (min-width: 720px) and (min-height: 500px) {
+  html.native-app .ios-status-veil { display: none; }
 }
 
 /* --- The spine tab bar --- */
@@ -7236,19 +7246,35 @@ html.native-app .match-message { display: inline-block; animation: match-message
 }
 html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,231,208,.36); text-align: center; font-size: .66rem; }
 
-/* Landscape iPads have enough width to make the parlour a desk instead of a
-   taller phone screen: game selection stays in a quiet left rail and the
-   active board gets a broad, full-height play surface. The height gate keeps
-   short iPhone landscape layouts on their compact phone treatment. */
+/* Landscape iPads are held by their sides, so the play surface belongs under
+   a thumb: the board (or Word Grid's keyboard) runs full height against the
+   right edge, and everything read rather than touched — the parlour heading,
+   game picker, title, tallies and hint — shares one column on the left. The
+   game card dissolves (display: contents) so its pieces join the shell's grid
+   directly. The height gate keeps short iPhone landscape layouts on their
+   compact phone treatment. */
 @media (orientation: landscape) and (min-width: 800px) and (min-height: 500px) {
   html.native-app .games-shell {
+    /* The height the play column has, so the square board's column can be
+       exactly as wide as the board is tall. */
+    --games-play-h: calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - 26px);
     display: grid;
-    grid-template-columns: minmax(190px, 0.58fr) minmax(0, 1.42fr);
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    column-gap: clamp(20px, 3vw, 48px);
-    padding-top: calc(var(--status-h) + 20px);
-    padding-bottom: calc(var(--tabs-h) + 20px);
+    grid-template-columns: minmax(0, 1fr) min(var(--games-play-h), 64vw);
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto;
+    column-gap: clamp(24px, 3vw, 44px);
+    padding-top: calc(var(--status-h) + 10px);
+    padding-bottom: calc(var(--tabs-h) + 16px);
   }
+
+  html.native-app .native-shell.has-mini-player .games-shell {
+    --games-play-h: calc(var(--native-viewport-height) - var(--status-h) - var(--tabs-h) - var(--mini-player-height) - 26px);
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 16px);
+  }
+
+  html.native-app .games-shell > .game-card { display: contents; }
+  /* A keyboard is wider than it is tall; where :has is available it takes a
+     broader column than the square board needs. */
+  html.native-app .games-shell:has(> .word-game) { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
 
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
   html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
@@ -7256,34 +7282,71 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .games-switcher {
     grid-column: 1;
     grid-row: 2;
-    grid-template-columns: 1fr;
     align-self: start;
-    margin: 18px 0 0;
+    margin: 16px 0 0;
     padding: 5px;
   }
 
   html.native-app .games-switcher button {
     justify-content: flex-start;
-    min-height: 48px;
+    min-height: 46px;
     padding-inline: 13px;
   }
 
-  html.native-app .game-card {
-    grid-column: 2;
-    grid-row: 1 / 4;
-    align-self: stretch;
+  html.native-app .game-card .game-title-row {
+    grid-column: 1;
+    grid-row: 3;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(217, 181, 116, 0.14);
+  }
+
+  html.native-app .game-card .game-message {
+    grid-column: 1;
+    grid-row: 7;
+    margin: 12px 2px 0;
+    text-align: left;
+    line-height: 1.45;
   }
 
   html.native-app .games-privacy {
     grid-column: 1;
-    grid-row: 3;
-    margin: 0 4px 4px;
+    grid-row: 8;
+    margin: 10px 2px 2px;
     text-align: left;
   }
 
-  html.native-app .word-board { width: min(100%, 360px, 82cqh); }
-  html.native-app .word-key { max-width: 48px; min-height: 48px; }
-  html.native-app .word-key.wide { max-width: 72px; }
+  /* Chapter Match: tallies under the title, the board flush right. */
+  html.native-app .match-record { grid-column: 1; grid-row: 4; margin: 18px 2px 0; }
+  html.native-app .match-score { grid-column: 1; grid-row: 5; flex-direction: column; align-items: flex-start; gap: 6px; margin: 14px 2px 0; }
+  html.native-app .match-score strong { font-size: 2.2rem; transform-origin: left center; }
+  html.native-app .match-board-frame { grid-column: 2; grid-row: 1 / -1; min-height: 0; place-items: center end; }
+  html.native-app .match-board { gap: 5px; padding: 8px; border-radius: 18px; }
+  html.native-app .match-piece { border-radius: 12px; font-size: clamp(1.1rem, 2.4vw, 1.7rem); }
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board { width: min(100%, var(--games-play-h)); }
+  @supports (width: 1cqh) {
+    html.native-app .match-board,
+    html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+  }
+
+  /* Word Grid: the guesses read on the left, the keyboard types on the
+     right at full-size keys. */
+  html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 16px; place-items: center start; }
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px, 82cqh); }
+  @supports (width: 1cqh) {
+    html.native-app .word-board,
+    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 360px, 82cqh); }
+  }
+  html.native-app .word-tile { font-size: clamp(1.1rem, 2.2vw, 1.7rem); }
+  /* The guesses share the left column with the reading chrome; the tagline
+     gives its line back to them. */
+  html.native-app .games-shell:has(> .word-game) .games-head p { display: none; }
+  html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 10px; }
+  html.native-app .word-keys-row { gap: 7px; }
+  html.native-app .word-key { max-width: 58px; min-height: 64px; border-radius: 10px; font-size: 1.05rem; }
+  html.native-app .word-key.wide { max-width: 96px; font-size: .8rem; }
 }
 
 /* Room for the ribbon when it's showing over the shelf list. */
@@ -10751,6 +10814,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
   animation: profile-fade-in 0.2s ease both;
 }
 
+/* Groups the cards for wide layouts; elsewhere it adds no box of its own. */
+.settings-cards { display: contents; }
+
 .settings-head {
   display: flex;
   align-items: center;
@@ -11992,20 +12058,14 @@ html.native-app .recent-row {
     display: none;
   }
 
+  /* The verso is a fixed share of the window, so whether the wordmark
+     and its actions share a line depends on how many actions there
+     are, not the viewport. Wrap the actions under it when they don't
+     fit rather than pushing them past the fold. */
   html.native-app .pane-title {
     align-items: center;
-    flex-wrap: nowrap;
-    gap: 12px;
-  }
-
-  /* Portrait and Stage Manager leave the verso too narrow for the
-     wordmark and its three actions on one line. */
-  @media (max-width: 1030px) {
-    html.native-app .pane-title {
-      align-items: flex-start;
-      flex-wrap: wrap;
-      gap: 14px;
-    }
+    flex-wrap: wrap;
+    gap: 14px 12px;
   }
 
   html.native-app .library-pane h1 {
@@ -12853,6 +12913,234 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ledger-dashboard .profile-calendar { padding: 18px; }
   .ledger-dashboard .achievement-card { padding: 14px; }
+}
+
+/* A landscape iPad reads the Ledger as a dashboard rather than a long phone
+   column: the totals card and the habits calendar share the first row at
+   matching heights, and the lists below run in more columns at a tighter
+   scale. Everything keeps its source order, so a missing section simply
+   closes up. */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
+  html.native-app .profile-page.ledger-dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 14px 18px;
+    max-width: 1240px;
+    padding-top: calc(var(--status-h) + 8px);
+    padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right));
+  }
+  html.native-app .ledger-dashboard > * { grid-column: 1 / -1; min-width: 0; }
+  html.native-app .ledger-dashboard > .profile-headline,
+  html.native-app .ledger-dashboard > .profile-calendar { grid-column: auto; }
+
+  .ledger-dashboard .profile-head { gap: 12px; }
+  .ledger-dashboard .profile-mono { width: 38px; height: 38px; flex-basis: 38px; font-size: 16px; border-radius: 12px; }
+  .ledger-dashboard .profile-id h1 { font-size: 24px; }
+  .ledger-dashboard .ledger-owner { margin-top: 3px; font-size: 13px; }
+  .ledger-dashboard .profile-id p { margin-top: 2px; font-size: 11px; }
+
+  /* The total on the left, its four companions in a square beside it. */
+  .ledger-dashboard .profile-headline { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 22px; padding: 18px 20px; border-radius: 18px; }
+  .ledger-dashboard .headline-primary { padding: 0 22px 0 0; border-right: 1px solid #514439; }
+  .ledger-dashboard .headline-value { font-size: clamp(42px, 4.4vw, 54px); }
+  .ledger-dashboard .headline-label { font-size: 11px; }
+  .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 14px; }
+  .ledger-dashboard .headline-secondary > div { gap: 4px; }
+  .ledger-dashboard .headline-secondary dd { font-size: 22px; }
+  .ledger-dashboard .headline-secondary dt { font-size: 11px; }
+
+  .ledger-dashboard .profile-calendar { display: flex; flex-direction: column; justify-content: space-between; padding: 14px 16px; border-radius: 16px; }
+  .ledger-dashboard .profile-calendar header { margin-bottom: 8px; }
+  .ledger-dashboard .profile-calendar h2 { font-size: 16px; }
+  .ledger-dashboard .calendar-weeks,
+  .ledger-dashboard .calendar-week,
+  .ledger-dashboard .calendar-weekdays { gap: 4px; }
+  .ledger-dashboard .calendar-cell,
+  .ledger-dashboard .calendar-weekdays span { height: 15px; }
+  .ledger-dashboard .calendar-footer { margin-top: 8px; }
+
+  .ledger-dashboard .profile-favorites { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; padding: 0 4px; }
+  .ledger-dashboard .profile-favorites > div { gap: 2px; }
+  .ledger-dashboard .profile-favorites span { font-size: 11px; }
+  .ledger-dashboard .profile-favorites strong { font-size: 14px; }
+
+  .ledger-dashboard .ledger-achievements { padding-top: 16px; }
+  .ledger-dashboard .achievements-heading h2 { font-size: 18px; margin-bottom: 3px; }
+  .ledger-dashboard .achievements-heading p { font-size: 11px; }
+  .ledger-dashboard .achievement-tally > strong { font-size: 21px; }
+  .ledger-dashboard .achievement-filters { margin: 10px 0; }
+  .ledger-dashboard .achievement-filters button { min-height: 32px; padding: 6px 12px; }
+  .ledger-dashboard .achievement-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .ledger-dashboard .achievement-card { padding: 12px 14px; border-radius: 14px; }
+  .ledger-dashboard .achievement-seal { width: 30px; height: 30px; border-radius: 10px; }
+  .ledger-dashboard .achievement-card h3 { font-size: 14px; margin: 9px 0 4px; }
+  .ledger-dashboard .achievement-card p { font-size: 11px; line-height: 1.4; }
+
+  /* Recent books pair up rather than running one to a line. */
+  .ledger-dashboard .profile-recent header { margin-bottom: 6px; }
+  .ledger-dashboard .profile-recent h2 { font-size: 16px; }
+  .ledger-dashboard .profile-recent ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  .ledger-dashboard .profile-recent li:nth-last-child(2):nth-child(odd) { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
+  .ledger-dashboard .recent-row { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; padding: 8px 0; }
+  .ledger-dashboard .recent-cover { width: 36px; height: 36px; }
+}
+
+/* Landscape iPads hang the tab bar in the middle of the top edge, leaving the
+   band either side of it empty. Headings that sit at a screen's edges move
+   up into that band — each opens with a row exactly as tall as the bar's
+   clearance — while anything that spans the middle still clears the bar. */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
+  html.native-app {
+    --clock-h: env(safe-area-inset-top);
+    --bar-band: var(--native-tabs-top, 0px);
+  }
+
+  /* Shelf: the verso is narrower than the gap beside the bar. */
+  html.native-app .native-shell.tab-shelf > .library-pane,
+  html.native-app .native-shell.tab-reading > .library-pane,
+  html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
+    padding-top: calc(var(--clock-h) + 18px);
+  }
+
+  /* Ledger: the heading fills the band on the left. */
+  html.native-app .profile-page.ledger-dashboard {
+    padding-top: calc(var(--clock-h) + 6px);
+  }
+  html.native-app .ledger-dashboard > .profile-head {
+    min-height: var(--bar-band);
+  }
+
+  /* Games: the reading column starts in the band; the board and keyboard,
+     which reach under the bar, keep clear of it. */
+  html.native-app .games-shell {
+    padding-top: calc(var(--clock-h) + 10px);
+  }
+  html.native-app .match-board-frame,
+  html.native-app .word-keys {
+    margin-top: var(--bar-band);
+  }
+
+  /* Settings: title left and Administration right frame the bar, and the
+     cards set in two columns below it. */
+  html.native-app .settings-shell {
+    gap: 0;
+    padding-top: calc(var(--clock-h) + 6px);
+    padding-inline: max(28px, env(safe-area-inset-left)) max(28px, env(safe-area-inset-right));
+  }
+  html.native-app .settings-head {
+    min-height: var(--bar-band);
+    margin-bottom: 14px;
+  }
+  html.native-app .settings-head h1 { font-size: 2.1rem; }
+  html.native-app .settings-cards {
+    display: block;
+    column-count: 2;
+    column-gap: 18px;
+  }
+  /* Inline-level cards carry their bottom margin inside their own line, so
+     a column never opens with the previous column's leftover spacing. */
+  html.native-app .settings-cards > * {
+    display: inline-grid;
+    width: 100%;
+    vertical-align: top;
+    break-inside: avoid;
+    margin-bottom: 18px;
+  }
+}
+
+/* The Shelf spread's own layout switches. They only mean something where
+   the collection and the player share the screen — on iPad that is the Shelf
+   tab, whether the web shell calls it shelf or reading underneath. */
+.shelf-layout-controls,
+.shelf-reveal-button {
+  display: none;
+}
+
+@media (min-width: 720px) and (min-height: 500px) {
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading) .shelf-layout-controls {
+    display: flex;
+    gap: 6px;
+    flex: none;
+  }
+  html.native-app .shelf-layout-controls .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Player alone: the recto takes both pages, and a tab at the top left
+     brings the collection back. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player > .library-pane {
+    display: none;
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player > .player-pane {
+    grid-column: 1 / -1;
+    padding-left: max(var(--fore-edge), env(safe-area-inset-left));
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player.has-mini-player
+    > .player-pane:not(.has-native-player) ~ .mini-player {
+    left: max(16px, env(safe-area-inset-left));
+  }
+
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player .shelf-reveal-button {
+    position: fixed;
+    z-index: 30;
+    top: calc(env(safe-area-inset-top) + 12px);
+    left: max(18px, env(safe-area-inset-left));
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 8px 14px 8px 11px;
+    border: 1px solid rgba(217, 181, 116, 0.4);
+    border-radius: 999px;
+    color: var(--gold-soft);
+    background: #1a1410;
+    box-shadow: 0 10px 24px -16px #000;
+    font: 600 0.7rem "JetBrains Mono", monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  /* Collection alone: the verso spreads across both pages at a larger grid,
+     with the playing book in the floating transport. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library > .player-pane {
+    display: none;
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library > .library-pane {
+    grid-column: 1 / -1;
+    padding-right: max(24px, env(safe-area-inset-right));
+    padding-bottom: calc(var(--tabs-h) + 28px);
+    background-image: linear-gradient(180deg, #241a12 0%, #100a06 100%);
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library.has-mini-player > .library-pane {
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 36px);
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library .book-list.is-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 26px 22px;
+  }
+  html.native-app .native-shell.has-mini-player:is(.tab-shelf, .tab-reading).shelf-library > .player-pane ~ .mini-player {
+    display: grid;
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+  }
+
+  /* With the collection put away, the screen is the player's paper, and the
+     clock and bar take its tone instead of the shelf's. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player {
+    --native-chrome: #f1e7d0;
+    --native-bar: #e1d7c1;
+  }
+  html.native-app.platform-ios.dark-mode .native-shell:is(.tab-shelf, .tab-reading).shelf-player {
+    --native-chrome: #17120f;
+    --native-bar: #17120f;
+  }
+
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player::after,
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library::after {
+    display: none;
+  }
 }
 
 /* Audible browsing keeps management and diagnostic detail out of the book list. */

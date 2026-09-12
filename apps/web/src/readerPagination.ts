@@ -29,3 +29,33 @@ export function narrationTextOffset(fragment: SyncFragment, seconds: number): nu
   }
   return offset;
 }
+
+export type PageGesture = "next" | "prev" | "tap" | null;
+
+// A thumb holding the device sweeps in an arc, so a turn is judged by which
+// way the finger mostly travelled rather than by staying inside a straight
+// band. A short, quick flick counts too; a slow short drift does not.
+const TAP_SLOP_PX = 12;
+const TAP_MAX_MS = 600;
+const TURN_DISTANCE_PX = 36;
+const FLICK_DISTANCE_PX = 18;
+const FLICK_SPEED_PX_PER_MS = 0.35;
+const HORIZONTAL_RATIO = 1.15;
+
+/** What a finger that went down and came up on the page asked for. */
+export function classifyPageGesture(deltaX: number, deltaY: number, durationMs: number): PageGesture {
+  const across = Math.abs(deltaX);
+  const down = Math.abs(deltaY);
+  if (across <= TAP_SLOP_PX && down <= TAP_SLOP_PX) {
+    return durationMs <= TAP_MAX_MS ? "tap" : null;
+  }
+  if (across < down * HORIZONTAL_RATIO) {
+    return null;
+  }
+  const flick = across >= FLICK_DISTANCE_PX && across / Math.max(durationMs, 1) >= FLICK_SPEED_PX_PER_MS;
+  if (across < TURN_DISTANCE_PX && !flick) {
+    return null;
+  }
+  // Pages sit side by side: dragging the page leftward brings the next one in.
+  return deltaX < 0 ? "next" : "prev";
+}

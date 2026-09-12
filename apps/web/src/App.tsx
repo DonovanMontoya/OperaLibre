@@ -2,7 +2,7 @@ import { createPlaybackTransitions, playbackReportPosition } from "./playbackRep
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
-import { narrationTextOffset } from "./readerPagination";
+import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
@@ -36,9 +36,12 @@ import {
   LocateFixed,
   LogOut,
   Maximize2,
+  Minimize2,
   Minus,
   Moon,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pause,
   Pencil,
   Play,
@@ -859,6 +862,8 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
 type LibrarySource = "local" | "audible";
+/** Which pages of the iPad Shelf spread are showing. */
+type ShelfLayout = "split" | "player" | "library";
 type MetadataEditorState = {
   title: string;
   author: string;
@@ -1571,9 +1576,22 @@ export function EpubReadalong({
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
   const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  // Follow as of the latest decision rather than the latest render. A page
+  // turned by hand stops following at once; an effect still holding the
+  // rendered value must not move the page back before React catches up.
+  const followRef = useRef(follow);
+  // The page a narration turn last left from, and where it was sent. When
+  // epub.js lands on that same page again the sentence sits on a page
+  // boundary it cannot show, and asking again would only redraw the page on
+  // every position update.
+  const lastKeepRef = useRef<{ cfi: string; from: string } | null>(null);
   const setFollow = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    if (typeof value === "boolean") {
+      followRef.current = value;
+    }
     setFollowState((prev) => {
       const next = typeof value === "function" ? value(prev) : value;
+      followRef.current = next;
       writeStoredValue("operalibre.readerFollow", next ? "1" : "0");
       return next;
     });
@@ -1651,15 +1669,19 @@ export function EpubReadalong({
   }, [sheet]);
 
   const resumeFollowing = useCallback(() => {
+    readerDebugLog("follow on");
     highlightedFragmentRef.current = -1;
+    lastKeepRef.current = null;
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
   }, []);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
+    readerDebugLog(`tap seek ${Math.round(fragment.startSeconds)}s ${fragment.href}`);
     onSeekToRef.current?.(fragment.startSeconds);
     highlightedFragmentRef.current = -1;
+    lastKeepRef.current = null;
     setFollow(true);
   }, []);
 
@@ -1748,9 +1770,21 @@ export function EpubReadalong({
   );
 
   // A horizontal swipe on the overlay turns the page as well.
-  const overlaySwipeRef = useRef<{ x: number; y: number } | null>(null);
+  const overlaySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    overlaySwipeRef.current = { x: event.clientX, y: event.clientY };
+    overlaySwipeRef.current = { x: event.clientX, y: event.clientY, at: performance.now() };
+    // Keep the lift on this layer even if the finger ends over the bars.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is a nicety; the gesture still resolves where it lifts.
+    }
+  }, []);
+  const handleOverlayPointerCancel = useCallback(() => {
+    if (overlaySwipeRef.current) {
+      readerDebugLog("gesture cancelled");
+    }
+    overlaySwipeRef.current = null;
   }, []);
   const handleOverlayPointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1763,15 +1797,19 @@ export function EpubReadalong({
       }
       const deltaX = event.clientX - start.x;
       const deltaY = event.clientY - start.y;
-      if (Math.abs(deltaX) > 55 && Math.abs(deltaY) < 45) {
-        navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+      const duration = performance.now() - start.at;
+      const gesture = classifyPageGesture(deltaX, deltaY, duration);
+      if (gesture === "next" || gesture === "prev") {
+        navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
         return;
       }
-      if (Math.abs(deltaX) < 16 && Math.abs(deltaY) < 16) {
+      if (gesture === "tap") {
         handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+        return;
       }
+      readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
     },
-    [handleOverlayTap]
+    [handleOverlayTap, navigateByHand]
   );
 
   useEffect(() => {
@@ -1929,10 +1967,12 @@ export function EpubReadalong({
       }
       const deltaX = touch.clientX - start.x;
       const deltaY = touch.clientY - start.y;
+      const duration = performance.now() - start.at;
+      const gesture = classifyPageGesture(deltaX, deltaY, duration);
       // iOS withholds the click for a touch whose move was cancelled (the
       // scroll lock above), and a finger rarely lands perfectly still, so a
       // tap is recognised here rather than waited for as a click.
-      if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && performance.now() - start.at < 600) {
+      if (gesture === "tap") {
         const target = event.target as Element | null;
         if (target?.closest?.("a, button, input, textarea, select")) {
           return;
@@ -1944,10 +1984,11 @@ export function EpubReadalong({
         }
         return;
       }
-      if (Math.abs(deltaX) < 60 || Math.abs(deltaY) > 50) {
+      if (gesture === null) {
+        readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
         return;
       }
-      navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+      navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "ArrowRight" || event.key === "PageDown") {
@@ -2369,7 +2410,7 @@ export function EpubReadalong({
     if (!syncTarget || !isReady || toc.length === 0) {
       return;
     }
-    if (!shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
+    if (!followRef.current || !shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
       return;
     }
     const href = findTocHrefForChapterTitle(toc, syncTarget.title);
@@ -2420,9 +2461,10 @@ export function EpubReadalong({
     const fragment = syncFragments[fragmentIndex];
     const currentHref = location.start?.href ?? "";
     if (!hrefsMatch(currentHref, fragment.href)) {
-      if (autoNavHrefRef.current !== fragment.href) {
+      if (autoNavHrefRef.current !== fragment.href && followRef.current) {
         autoNavHrefRef.current = fragment.href;
         highlightedFragmentRef.current = -1;
+        readerDebugLog(`follow chapter ${fragment.href}`);
         void rendition.display(fragment.href);
       }
       return;
@@ -2457,6 +2499,13 @@ export function EpubReadalong({
           comparator.compare(cfi, location.end.cfi) >= 0 ||
           comparator.compare(cfi, location.start.cfi) < 0
         ) {
+          const from = location.start.cfi;
+          const last = lastKeepRef.current;
+          if (!followRef.current || (last && last.cfi === cfi && last.from === from)) {
+            return;
+          }
+          lastKeepRef.current = { cfi, from };
+          readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
           void rendition.display(cfi);
         }
       } catch {
@@ -2788,6 +2837,7 @@ export function EpubReadalong({
             className="epub-tapzones"
             onPointerDown={handleOverlayPointerDown}
             onPointerUp={handleOverlayPointerUp}
+            onPointerCancel={handleOverlayPointerCancel}
             aria-hidden="true"
           >
             <span className="epub-tapzone epub-tapzone-prev" />
@@ -3890,6 +3940,12 @@ function MainApp({
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
+  // iPad's two-page Shelf can give the whole screen to either page: the
+  // player alone, or the collection alone at its larger grid.
+  const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
+  // The view the collection had before it was widened, restored when it
+  // folds back, so the grid it widens into never replaces a saved choice.
+  const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [searchQuery, setSearchQuery] = useState("");
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
@@ -4031,8 +4087,21 @@ function MainApp({
   }
 
   function selectViewMode(mode: ShelfViewMode) {
+    viewBeforeWideShelfRef.current = null;
     setViewMode(mode);
     writeStoredShelfViewMode(mode);
+  }
+
+  function changeShelfLayout(next: ShelfLayout) {
+    if (next === shelfLayout) return;
+    if (next === "library") {
+      viewBeforeWideShelfRef.current = viewMode;
+      setViewMode("grid");
+    } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
+      setViewMode(viewBeforeWideShelfRef.current);
+      viewBeforeWideShelfRef.current = null;
+    }
+    setShelfLayout(next);
   }
 
   const isCompactView = viewMode === "compact";
@@ -7298,6 +7367,7 @@ function MainApp({
   }
 
   function selectBook(book: Book) {
+    if (shelfLayout === "library") changeShelfLayout("split");
     setSelectedBookId(book.id);
     setNativePlayerView(book.id === playbackBook?.id ? "now" : "details");
     if (native) {
@@ -7310,6 +7380,7 @@ function MainApp({
   }
 
   function openBookDetails(bookId: string) {
+    if (shelfLayout === "library") changeShelfLayout("split");
     setSelectedBookId(bookId);
     setNativePlayerView("details");
     if (native) {
@@ -8038,7 +8109,7 @@ function MainApp({
     const observer = new MutationObserver(read);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, [native, nativeTab]);
+  }, [native, nativeTab, shelfLayout]);
   const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
     tabs: iosTabs,
     selected: nativeTabSelection(nativeTab, iosTabs),
@@ -8511,12 +8582,26 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
+          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
       {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
+      {native && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
+        <button
+          type="button"
+          className="shelf-reveal-button"
+          aria-label="Show the shelf"
+          onClick={() => {
+            haptic("light");
+            changeShelfLayout("split");
+          }}
+        >
+          <PanelLeftOpen size={17} />
+          <span>Shelf</span>
+        </button>
+      ) : null}
       <audio
         key={currentTrackKey ?? "no-track"}
         ref={audioRef}
@@ -8611,6 +8696,51 @@ function MainApp({
             <span className="eyebrow"><Library size={13} /> The Collection</span>
             <h1>OperaLibre</h1>
           </div>
+          {native ? (
+            <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
+              {shelfLayout === "library" ? (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Show the player beside the shelf"
+                  title="Show the player"
+                  onClick={() => {
+                    haptic("light");
+                    changeShelfLayout("split");
+                  }}
+                >
+                  <Minimize2 size={16} />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Hide the shelf"
+                    title="Hide the shelf"
+                    onClick={() => {
+                      haptic("light");
+                      changeShelfLayout("player");
+                    }}
+                  >
+                    <PanelLeftClose size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Expand the shelf to full screen"
+                    title="Expand the shelf"
+                    onClick={() => {
+                      haptic("light");
+                      changeShelfLayout("library");
+                    }}
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
           <div className="pane-actions">
             {native ? (
               <button
@@ -11309,336 +11439,340 @@ function MainApp({
             ) : null}
           </header>
 
-          <section className="settings-card">
-            <span className="section-label"><Gauge size={13} /> Playback</span>
-            <div className="settings-field">
-              <span className="settings-label">Cadence</span>
-              <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
-              <p className="settings-hint">Applies to every book and is remembered on this device.</p>
-            </div>
-          </section>
-
-          {ios || rotationLockAvailable ? <section className="settings-card">
-            <span className="section-label"><Smartphone size={13} /> Display</span>
-            {ios ? <div className="settings-toggle-row settings-appearance-row">
-              <span>
-                <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
-                <small>System follows your device's light or dark theme.</small>
-              </span>
-              <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
-                {(["light", "dark", "system"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    role="radio"
-                    aria-checked={appearanceMode === mode}
-                    className={appearanceMode === mode ? "selected" : undefined}
-                    onClick={() => updateAppearanceMode(mode)}
-                  >
-                    {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
-                  </button>
-                ))}
+          {/* Grouped so a wide screen can set the cards in columns; on a phone the
+              wrapper steps aside and they stack in the shell as before. */}
+          <div className="settings-cards">
+            <section className="settings-card">
+              <span className="section-label"><Gauge size={13} /> Playback</span>
+              <div className="settings-field">
+                <span className="settings-label">Cadence</span>
+                <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
+                <p className="settings-hint">Applies to every book and is remembered on this device.</p>
               </div>
-            </div> : null}
-            {rotationLockAvailable ? <div className="settings-toggle-row">
-              <span>
-                <strong>Rotation lock</strong>
-                <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
-              </span>
-              <button
-                type="button"
-                className="settings-switch"
-                role="switch"
-                aria-checked={rotationLockEnabled}
-                aria-label="Rotation lock"
-                disabled={rotationLockBusy}
-                onClick={() => void toggleRotationLock()}
-              >
-                <span aria-hidden="true" />
-              </button>
-            </div> : null}
-            {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
-          </section> : null}
+            </section>
 
-          <section className="settings-card">
-            <span className="section-label"><Gamepad2 size={13} /> Extras</span>
-            <div className="settings-toggle-row">
-              <span>
-                <strong>Games tab</strong>
-                <small>Shows optional, on-device games in the bottom navigation.</small>
-              </span>
-              <button
-                type="button"
-                className="settings-switch"
-                role="switch"
-                aria-checked={gamesEnabled}
-                aria-label="Games tab"
-                onClick={toggleGamesEnabled}
-              >
-                <span aria-hidden="true" />
-              </button>
-            </div>
-            <div className="settings-toggle-row">
-              <span>
-                <strong>Ebook reader (beta)</strong>
-                <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
-              </span>
-              <button
-                type="button"
-                className="settings-switch"
-                role="switch"
-                aria-checked={readalongEnabled}
-                aria-label="Ebook reader"
-                onClick={toggleReadalongEnabled}
-              >
-                <span aria-hidden="true" />
-              </button>
-            </div>
-            {readalongEnabled && sentenceFollowAvailable ? (
-              <div className="settings-subrow settings-follow-group">
-                <div className="settings-toggle-row">
-                  <span>
-                    <strong>Follow the narration</strong>
-                    <small>Highlights the sentence being read and turns the page with the audio.</small>
-                    <small className="settings-warning">
-                      Experimental: the highlight can drift, and turning it on may move the page to match
-                      the audio while you read.
-                    </small>
-                  </span>
-                  <button
-                    type="button"
-                    className="settings-switch"
-                    role="switch"
-                    aria-checked={followSyncEnabled}
-                    aria-label="Follow the narration"
-                    onClick={toggleFollowSyncEnabled}
-                  >
-                    <span aria-hidden="true" />
-                  </button>
+            {ios || rotationLockAvailable ? <section className="settings-card">
+              <span className="section-label"><Smartphone size={13} /> Display</span>
+              {ios ? <div className="settings-toggle-row settings-appearance-row">
+                <span>
+                  <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
+                  <small>System follows your device's light or dark theme.</small>
+                </span>
+                <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
+                  {(["light", "dark", "system"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={appearanceMode === mode}
+                      className={appearanceMode === mode ? "selected" : undefined}
+                      onClick={() => updateAppearanceMode(mode)}
+                    >
+                      {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
+                    </button>
+                  ))}
                 </div>
-                {followSyncEnabled ? (
-                  <div className="follow-aggressiveness">
-                    <div className="follow-aggressiveness-heading">
-                      <label htmlFor="follow-aggressiveness">Aggressiveness</label>
-                      <output htmlFor="follow-aggressiveness" aria-live="polite">
-                        {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                      </output>
-                    </div>
-                    <input
-                      id="follow-aggressiveness"
-                      type="range"
-                      min="0"
-                      max="2"
-                      step="1"
-                      value={followAggressiveness}
-                      style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-                      aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                      onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-                    />
-                    <div className="follow-aggressiveness-labels" aria-hidden="true">
-                      <span>Current timing</span>
-                      <span>A little ahead</span>
-                    </div>
-                  </div>
-                ) : null}
+              </div> : null}
+              {rotationLockAvailable ? <div className="settings-toggle-row">
+                <span>
+                  <strong>Rotation lock</strong>
+                  <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
+                </span>
+                <button
+                  type="button"
+                  className="settings-switch"
+                  role="switch"
+                  aria-checked={rotationLockEnabled}
+                  aria-label="Rotation lock"
+                  disabled={rotationLockBusy}
+                  onClick={() => void toggleRotationLock()}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </div> : null}
+              {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
+            </section> : null}
+
+            <section className="settings-card">
+              <span className="section-label"><Gamepad2 size={13} /> Extras</span>
+              <div className="settings-toggle-row">
+                <span>
+                  <strong>Games tab</strong>
+                  <small>Shows optional, on-device games in the bottom navigation.</small>
+                </span>
+                <button
+                  type="button"
+                  className="settings-switch"
+                  role="switch"
+                  aria-checked={gamesEnabled}
+                  aria-label="Games tab"
+                  onClick={toggleGamesEnabled}
+                >
+                  <span aria-hidden="true" />
+                </button>
               </div>
-            ) : null}
-          </section>
-
-          {sharedProgressAvailable ? (
-            <ProgressSharingCard
-              user={currentUser}
-              onUserChanged={onCurrentUserChanged}
-              onSharingChanged={() => void loadBooks()}
-            />
-          ) : null}
-
-          <section className="settings-card">
-            <span className="section-label"><FolderOpen size={13} /> On this device</span>
-            <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
-              {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
-              <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
-            </button>
-            {getDeviceBooks().length ? (
-              <div className="settings-downloads">
-                {getDeviceBooks().map((book) => (
-                  <div key={book.id} className="settings-download-row">
-                    <strong>{book.title}</strong>
-                    <button type="button" className="download-btn" onClick={() => void deleteDeviceBook(book)}>
-                      <Trash2 size={13} /><span>Remove</span>
+              <div className="settings-toggle-row">
+                <span>
+                  <strong>Ebook reader (beta)</strong>
+                  <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
+                </span>
+                <button
+                  type="button"
+                  className="settings-switch"
+                  role="switch"
+                  aria-checked={readalongEnabled}
+                  aria-label="Ebook reader"
+                  onClick={toggleReadalongEnabled}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </div>
+              {readalongEnabled && sentenceFollowAvailable ? (
+                <div className="settings-subrow settings-follow-group">
+                  <div className="settings-toggle-row">
+                    <span>
+                      <strong>Follow the narration</strong>
+                      <small>Highlights the sentence being read and turns the page with the audio.</small>
+                      <small className="settings-warning">
+                        Experimental: the highlight can drift, and turning it on may move the page to match
+                        the audio while you read.
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      className="settings-switch"
+                      role="switch"
+                      aria-checked={followSyncEnabled}
+                      aria-label="Follow the narration"
+                      onClick={toggleFollowSyncEnabled}
+                    >
+                      <span aria-hidden="true" />
                     </button>
                   </div>
-                ))}
-              </div>
-            ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
-            {downloadStatus ? <p className="settings-hint">{downloadStatus.message}</p> : null}
-          </section>
+                  {followSyncEnabled ? (
+                    <div className="follow-aggressiveness">
+                      <div className="follow-aggressiveness-heading">
+                        <label htmlFor="follow-aggressiveness">Aggressiveness</label>
+                        <output htmlFor="follow-aggressiveness" aria-live="polite">
+                          {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                        </output>
+                      </div>
+                      <input
+                        id="follow-aggressiveness"
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="1"
+                        value={followAggressiveness}
+                        style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+                        aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                        onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+                      />
+                      <div className="follow-aggressiveness-labels" aria-hidden="true">
+                        <span>Current timing</span>
+                        <span>A little ahead</span>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
 
-          {!localMode ? <section className="settings-card">
-            <span className="section-label"><Download size={13} /> Server downloads</span>
-            {demoMode ? (
-              <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
-            ) : (
-              <>
-                {deviceDownloadQueue.length > 0 ? (
-                  <div className="settings-downloads" aria-label="Download queue">
-                    {deviceDownloadQueue.map((activity, index) => {
-                      const title = activity.title || "Audiobook";
-                      return (
-                        <div key={activity.bookId} className="settings-download-row">
-                          <strong>{title}</strong>
-                          <span className="download-status">
-                            {activity.state === "queued"
-                              ? `Queued${index > 0 ? ` · ${index + 1}` : ""}`
-                              : activity.fraction === null
-                                ? "Starting…"
-                                : `${Math.round(activity.fraction * 100)}%`}
-                          </span>
-                          <button
-                            type="button"
-                            className="download-btn"
-                            onClick={() => void cancelOfflineDownload({ id: activity.bookId, title })}
-                            aria-label={`Cancel download of ${title}`}
-                          >
-                            <X size={13} />
-                            <span>Cancel</span>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                {books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
-                  <div className="settings-downloads">
-                    {books
-                      .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
-                      .map((book) => (
-                        <div key={book.id} className="settings-download-row">
-                          <strong>{book.title}</strong>
-                          <button
-                            type="button"
-                            className="download-btn"
-                            onClick={() => void removeOfflineDownload(book)}
-                            aria-label={`Remove downloaded copy of ${book.title}`}
-                          >
-                            <Trash2 size={13} />
-                            <span>Remove</span>
-                          </button>
-                        </div>
-                      ))}
-                  </div>
-                ) : deviceDownloadQueue.length === 0 ? (
-                  <p className="settings-hint">No books are downloaded for offline listening yet.</p>
-                ) : null}
-              </>
-            )}
-          </section> : null}
+            {sharedProgressAvailable ? (
+              <ProgressSharingCard
+                user={currentUser}
+                onUserChanged={onCurrentUserChanged}
+                onSharingChanged={() => void loadBooks()}
+              />
+            ) : null}
 
-          <section className="settings-card">
-            <span className="section-label"><Network size={13} /> Connection</span>
-            <div className="settings-kv">
-              <span>Server</span>
-              <span className="settings-value">
-                {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `${isOperaLibre ? "OperaLibre" : "Jellyfin"} · ${getServerUrl()}`}
-              </span>
-            </div>
-            <div className="settings-kv">
-              <span>Signed in as</span>
-              <span className="settings-value">
-                {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"}
-              </span>
-            </div>
-            {!demoMode && !localMode ? <div className="server-aliases">
-              <span className="settings-label">Address aliases</span>
-              <p className="settings-hint">
-                Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
-              </p>
-              {[
-                { id: "primary", name: "Original address", url: getServerIdentityUrl() },
-                ...serverAliases
-              ].map((alias) => {
-                const active = alias.url === getServerUrl();
-                return (
-                  <div className="server-alias-row" key={alias.id}>
-                    <span>
-                      <strong>{alias.name}</strong>
-                      <small>{alias.url}</small>
-                    </span>
-                    <div>
-                      <button
-                        type="button"
-                        className="download-btn"
-                        disabled={active || switchingAliasId !== null}
-                        onClick={() => void switchToAlias(alias)}
-                      >
-                        {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : "Use"}
+            <section className="settings-card">
+              <span className="section-label"><FolderOpen size={13} /> On this device</span>
+              <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
+                {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
+                <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
+              </button>
+              {getDeviceBooks().length ? (
+                <div className="settings-downloads">
+                  {getDeviceBooks().map((book) => (
+                    <div key={book.id} className="settings-download-row">
+                      <strong>{book.title}</strong>
+                      <button type="button" className="download-btn" onClick={() => void deleteDeviceBook(book)}>
+                        <Trash2 size={13} /><span>Remove</span>
                       </button>
-                      {alias.id !== "primary" ? (
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
+              {downloadStatus ? <p className="settings-hint">{downloadStatus.message}</p> : null}
+            </section>
+
+            {!localMode ? <section className="settings-card">
+              <span className="section-label"><Download size={13} /> Server downloads</span>
+              {demoMode ? (
+                <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
+              ) : (
+                <>
+                  {deviceDownloadQueue.length > 0 ? (
+                    <div className="settings-downloads" aria-label="Download queue">
+                      {deviceDownloadQueue.map((activity, index) => {
+                        const title = activity.title || "Audiobook";
+                        return (
+                          <div key={activity.bookId} className="settings-download-row">
+                            <strong>{title}</strong>
+                            <span className="download-status">
+                              {activity.state === "queued"
+                                ? `Queued${index > 0 ? ` · ${index + 1}` : ""}`
+                                : activity.fraction === null
+                                  ? "Starting…"
+                                  : `${Math.round(activity.fraction * 100)}%`}
+                            </span>
+                            <button
+                              type="button"
+                              className="download-btn"
+                              onClick={() => void cancelOfflineDownload({ id: activity.bookId, title })}
+                              aria-label={`Cancel download of ${title}`}
+                            >
+                              <X size={13} />
+                              <span>Cancel</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
+                    <div className="settings-downloads">
+                      {books
+                        .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
+                        .map((book) => (
+                          <div key={book.id} className="settings-download-row">
+                            <strong>{book.title}</strong>
+                            <button
+                              type="button"
+                              className="download-btn"
+                              onClick={() => void removeOfflineDownload(book)}
+                              aria-label={`Remove downloaded copy of ${book.title}`}
+                            >
+                              <Trash2 size={13} />
+                              <span>Remove</span>
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  ) : deviceDownloadQueue.length === 0 ? (
+                    <p className="settings-hint">No books are downloaded for offline listening yet.</p>
+                  ) : null}
+                </>
+              )}
+            </section> : null}
+
+            <section className="settings-card">
+              <span className="section-label"><Network size={13} /> Connection</span>
+              <div className="settings-kv">
+                <span>Server</span>
+                <span className="settings-value">
+                  {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `${isOperaLibre ? "OperaLibre" : "Jellyfin"} · ${getServerUrl()}`}
+                </span>
+              </div>
+              <div className="settings-kv">
+                <span>Signed in as</span>
+                <span className="settings-value">
+                  {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"}
+                </span>
+              </div>
+              {!demoMode && !localMode ? <div className="server-aliases">
+                <span className="settings-label">Address aliases</span>
+                <p className="settings-hint">
+                  Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
+                </p>
+                {[
+                  { id: "primary", name: "Original address", url: getServerIdentityUrl() },
+                  ...serverAliases
+                ].map((alias) => {
+                  const active = alias.url === getServerUrl();
+                  return (
+                    <div className="server-alias-row" key={alias.id}>
+                      <span>
+                        <strong>{alias.name}</strong>
+                        <small>{alias.url}</small>
+                      </span>
+                      <div>
                         <button
                           type="button"
-                          className="icon-btn"
-                          aria-label={`Remove ${alias.name} alias`}
-                          onClick={() => {
-                            removeServerAlias(alias.id);
-                            setServerAliases(getServerAliases());
-                          }}
+                          className="download-btn"
+                          disabled={active || switchingAliasId !== null}
+                          onClick={() => void switchToAlias(alias)}
                         >
-                          <Trash2 size={13} />
+                          {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : "Use"}
                         </button>
-                      ) : null}
+                        {alias.id !== "primary" ? (
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            aria-label={`Remove ${alias.name} alias`}
+                            onClick={() => {
+                              removeServerAlias(alias.id);
+                              setServerAliases(getServerAliases());
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-              <form className="server-alias-form" onSubmit={saveAlias}>
-                <input
-                  value={aliasName}
-                  onChange={(event) => setAliasName(event.currentTarget.value)}
-                  placeholder="Name (Tailscale)"
-                  aria-label="Alias name"
-                  required
-                />
-                <input
-                  value={aliasUrl}
-                  onChange={(event) => setAliasUrl(event.currentTarget.value)}
-                  placeholder="http://100.x.x.x:4000"
-                  aria-label="Alias server address"
-                  inputMode="url"
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  required
-                />
-                <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
-              </form>
-              {aliasError ? <p className="auth-error">{aliasError}</p> : null}
-            </div> : null}
-            <div className="settings-actions">
-              {localMode ? (
-                <button type="button" className="download-btn connection-primary" onClick={() => {
-                  pausePlayback(audioRef.current);
-                  onConnectServer();
-                }}>
-                  <Network size={13} />
-                  <span>Connect a server</span>
-                </button>
-              ) : null}
-              {capabilities.administration ? (
-                <>
-                  <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
-                    <Upload size={13} />
-                    <span>Upload audiobook</span>
+                  );
+                })}
+                <form className="server-alias-form" onSubmit={saveAlias}>
+                  <input
+                    value={aliasName}
+                    onChange={(event) => setAliasName(event.currentTarget.value)}
+                    placeholder="Name (Tailscale)"
+                    aria-label="Alias name"
+                    required
+                  />
+                  <input
+                    value={aliasUrl}
+                    onChange={(event) => setAliasUrl(event.currentTarget.value)}
+                    placeholder="http://100.x.x.x:4000"
+                    aria-label="Alias server address"
+                    inputMode="url"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    required
+                  />
+                  <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
+                </form>
+                {aliasError ? <p className="auth-error">{aliasError}</p> : null}
+              </div> : null}
+              <div className="settings-actions">
+                {localMode ? (
+                  <button type="button" className="download-btn connection-primary" onClick={() => {
+                    pausePlayback(audioRef.current);
+                    onConnectServer();
+                  }}>
+                    <Network size={13} />
+                    <span>Connect a server</span>
                   </button>
-                </>
-              ) : null}
-              <button type="button" className="download-btn" onClick={() => {
-                pausePlayback(audioRef.current);
-                void onLogout();
-              }}>
-                <LogOut size={13} />
-                <span>{localMode ? "Leave local mode" : "Sign out"}</span>
-              </button>
-            </div>
-          </section>
+                ) : null}
+                {capabilities.administration ? (
+                  <>
+                    <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
+                      <Upload size={13} />
+                      <span>Upload audiobook</span>
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className="download-btn" onClick={() => {
+                  pausePlayback(audioRef.current);
+                  void onLogout();
+                }}>
+                  <LogOut size={13} />
+                  <span>{localMode ? "Leave local mode" : "Sign out"}</span>
+                </button>
+              </div>
+            </section>
+          </div>
         </section>
       ) : null}
 
