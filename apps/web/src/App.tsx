@@ -286,7 +286,7 @@ import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
 import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
 import type { AppearanceMode } from "./appearance";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
-import { nativeChrome, nativeTabItems, nativeTabSelection, type NativeTab } from "./nativeTabs";
+import { nativeShellColor, nativeTabItems, nativeTabSelection, type NativeTab } from "./nativeTabs";
 import { useNativeTabs } from "./useNativeTabs";
 import {
   disableRotationLock,
@@ -8044,11 +8044,15 @@ function MainApp({
   const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
   const [chrome, setChrome] = useState<string | undefined>(undefined);
-  // The tab class carries the screen's color, and the appearance switch flips
-  // the palette on the document, so watch both for the tone UIKit should hold.
+  const [barTint, setBarTint] = useState<string | undefined>(undefined);
+  // The tab class carries the screen's colors, and the appearance switch flips
+  // the palette on the document, so watch both for the tones UIKit should hold.
   useEffect(() => {
     if (!native) return;
-    const read = () => setChrome(nativeChrome(shellRef.current));
+    const read = () => {
+      setChrome(nativeShellColor(shellRef.current, "--native-chrome"));
+      setBarTint(nativeShellColor(shellRef.current, "--native-bar"));
+    };
     read();
     const observer = new MutationObserver(read);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
@@ -8059,7 +8063,8 @@ function MainApp({
     selected: nativeTabSelection(nativeTab, iosTabs),
     visible: !readalongOpen || readerClosing,
     appearance: appearanceMode,
-    chrome
+    chrome,
+    bar: barTint
   }, openNativeTab);
   useEffect(() => {
     if (!readerClosing || (nativeTabsReady && !nativeTabsShown)) return;

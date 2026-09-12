@@ -8,16 +8,19 @@ export type NativeTabsState = {
   visible: boolean;
   blocked?: boolean;
   appearance: AppearanceMode;
-  /** `#rrggbb` the selected screen carries at its edges, for UIKit to paint
-   *  the strip under the web view and behind the bar. */
+  /** `#rrggbb` the selected screen shows where the page cannot reach, and
+   *  which sets the status bar's polarity. */
   chrome?: string;
+  /** `#rrggbb` tint for the floating bar's glass, so it passes for a pane of
+   *  the page it floats over. */
+  bar?: string;
 };
 
-/** The shell publishes each screen's edge tone as --native-chrome. Reading it
- *  back keeps the color in the stylesheet with the rest of the palette. */
-export function nativeChrome(shell: Element | null): string | undefined {
+/** The shell publishes each screen's tones as custom properties. Reading them
+ *  back keeps the colors in the stylesheet with the rest of the palette. */
+export function nativeShellColor(shell: Element | null, name: string): string | undefined {
   if (!shell) return undefined;
-  const value = getComputedStyle(shell).getPropertyValue("--native-chrome").trim();
+  const value = getComputedStyle(shell).getPropertyValue(name).trim();
   return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
 }
 

@@ -6709,7 +6709,6 @@ html.native-app .native-shell > .library-pane,
 html.native-app .native-shell > .player-pane {
   position: fixed;
   inset: 0;
-  bottom: var(--tabs-h);
   width: auto;
   max-width: none;
   transform: none;
@@ -6809,13 +6808,13 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-heading .book-ru
 /* Give each screen room for the notch on top and the spine bar below. */
 html.native-app .native-shell > .library-pane {
   padding: calc(var(--status-h) + 22px)
-    max(20px, env(safe-area-inset-right)) 40px
+    max(20px, env(safe-area-inset-right)) calc(var(--tabs-h) + 40px)
     max(20px, env(safe-area-inset-left));
 }
 
 html.native-app .native-shell > .player-pane {
   padding: calc(var(--status-h) + 18px)
-    max(20px, env(safe-area-inset-right)) 40px
+    max(20px, env(safe-area-inset-right)) calc(var(--tabs-h) + 40px)
     max(20px, env(safe-area-inset-left));
 }
 
@@ -6857,38 +6856,40 @@ html.native-app .native-shell > .library-pane::before {
   display: none;
 }
 
-/* --- Screen colors the shell shares with UIKit ---
-   Each tab names the tone it carries at the edges of the screen: --native-chrome
-   is handed to the tab controller, which paints the strip under the web view
-   and behind the bar with it, and --native-veil is the translucent version the
-   page lays under the status bar. Naming both here keeps the native frame and
-   the page one surface instead of a page letterboxed in black. */
+/* --- The color each screen hands to UIKit ---
+   The page covers the screen, so this is what shows only where the page
+   cannot reach: behind the window during a rotation, above an iPad's
+   top-hung bar, and under the launch screen before the shell has loaded.
+   UIKit also reads it to decide whether the clock is set in ink or paper. */
 html.native-app .native-shell {
   --native-chrome: #f1e7d0;
-  --native-veil: rgba(241, 231, 208, 0.72);
+  /* What the bar's glass is tinted with. The paper screens sit a shade deeper
+     than their base tone once the grain and the gold wash are over them, so
+     the bar takes the deeper reading and passes for the same sheet. */
+  --native-bar: #e1d7c1;
 }
 
 html.native-app.platform-ios.dark-mode .native-shell {
   --native-chrome: #17120f;
-  --native-veil: rgba(23, 18, 15, 0.78);
+  --native-bar: #17120f;
 }
 
 html.native-app:not(.dark-mode) .native-shell.tab-ledger {
   --native-chrome: #f5f2eb;
-  --native-veil: rgba(245, 242, 235, 0.72);
+  --native-bar: #f5f2eb;
 }
 
 /* The shelf and the games parlour are dark in either appearance. */
 html.native-app .native-shell.tab-shelf,
 html.native-app.platform-ios.dark-mode .native-shell.tab-shelf {
   --native-chrome: #100a06;
-  --native-veil: rgba(16, 10, 7, 0.55);
+  --native-bar: #100a06;
 }
 
 html.native-app .native-shell.tab-games,
 html.native-app.platform-ios.dark-mode .native-shell.tab-games {
   --native-chrome: #0f0b08;
-  --native-veil: rgba(15, 11, 8, 0.55);
+  --native-bar: #0f0b08;
 }
 
 /* --- Notch / Dynamic Island veil --- */
@@ -6900,10 +6901,12 @@ html.native-app .ios-status-veil {
   height: var(--status-h);
   z-index: 90;
   pointer-events: none;
-  background: var(--native-veil);
-  -webkit-backdrop-filter: blur(14px) saturate(1.1);
-  backdrop-filter: blur(14px) saturate(1.1);
-  transition: background 0.26s ease;
+  /* Blur only. Every tint it could carry is a shade off the page running
+     underneath, and that difference reads as a bar across the top. Blurring
+     the page against itself keeps the color exactly and still smears whatever
+     scrolls up behind the clock. */
+  -webkit-backdrop-filter: blur(16px) saturate(1.04);
+  backdrop-filter: blur(16px) saturate(1.04);
 }
 
 /* --- The spine tab bar --- */
@@ -7006,12 +7009,12 @@ html.native-app .native-shell.tab-games .mini-player {
 /* --- Games: quiet, tactile diversions that remain entirely on-device. --- */
 html.native-app .games-shell {
   position: fixed;
-  inset: 0 0 var(--tabs-h);
+  inset: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   overscroll-behavior: none;
-  padding: calc(var(--status-h) + 14px) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+  padding: calc(var(--status-h) + 14px) max(16px, env(safe-area-inset-right)) calc(var(--tabs-h) + 10px) max(16px, env(safe-area-inset-left));
   color: var(--paper);
   background:
     radial-gradient(circle at 85% 8%, rgba(184, 137, 58, 0.16), transparent 28%),
@@ -7022,7 +7025,7 @@ html.native-app .games-shell {
 /* The parlour surface runs all the way down behind the floating mini-player;
    only the content clears it, so no light strip shows through beneath. */
 html.native-app .native-shell.has-mini-player .games-shell {
-  padding-bottom: calc(var(--mini-player-height) + 20px);
+  padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 20px);
 }
 
 html.native-app .games-head { flex: none; }
@@ -7245,8 +7248,6 @@ html.native-app .match-message { display: inline-block; animation: match-message
 }
 html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,231,208,.36); text-align: center; font-size: .66rem; }
 
-html.native-app .native-shell.tab-games .ios-status-veil { background: rgba(18, 12, 8, 0.66); }
-
 /* Landscape iPads have enough width to make the parlour a desk instead of a
    taller phone screen: game selection stays in a quiet left rail and the
    active board gets a broad, full-height play surface. The height gate keeps
@@ -7334,7 +7335,7 @@ html.native-app .segmented button {
 
 /* --- Ledger tab sits above the spine bar, below the notch veil --- */
 html.native-app .profile-shell {
-  bottom: var(--tabs-h);
+  bottom: 0;
   padding-top: calc(var(--status-h) + 20px);
   padding-bottom: 40px;
 }
@@ -10058,10 +10059,6 @@ html.native-app .server-type-grid button {
 }
 
 /* --- Ledger is a full-bleed screen, not a modal card --- */
-html.native-app .native-shell.tab-ledger .ios-status-veil {
-  background: rgba(241, 231, 208, 0.72);
-}
-
 html.native-app .profile-shell {
   display: block;
   padding: 0;
@@ -10073,19 +10070,14 @@ html.native-app .profile-page {
   min-height: 100%;
   border-radius: 0;
   box-shadow: none;
-  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right)) 56px
-    max(20px, env(safe-area-inset-left));
+  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right))
+    calc(var(--tabs-h) + 56px) max(20px, env(safe-area-inset-left));
   gap: 32px;
 }
 
 /* The Ledger is a tab, not a pushed screen — no back affordance. */
 html.native-app .profile-back {
   display: none;
-}
-
-/* --- Settings tab: a full-bleed paper screen like the ledger --- */
-html.native-app .native-shell.tab-settings .ios-status-veil {
-  background: rgba(241, 231, 208, 0.72);
 }
 
 /* --- Administration --- */
@@ -10710,16 +10702,15 @@ html.native-app .native-shell.tab-settings .ios-status-veil {
 .admin-grant-count { display: flex; align-items: center; gap: 5px; color: var(--ink-faded); }
 .admin-empty { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 28px; color: var(--ink-faded); }
 
-html.native-app .native-shell.tab-admin .ios-status-veil { background: rgba(241, 231, 208, 0.72); }
 html.native-app .admin-shell:not(.admin-overlay) {
   position: fixed;
-  inset: 0 0 var(--tabs-h);
+  inset: 0;
   z-index: 48;
   overflow: auto;
   /* Keep a flick inside the panel instead of chaining into the page behind it,
      which reads as a stutter at the ends of the list on iOS. */
   overscroll-behavior: contain;
-  padding: calc(var(--status-h) + 22px) max(18px, env(safe-area-inset-right)) 48px max(18px, env(safe-area-inset-left));
+  padding: calc(var(--status-h) + 22px) max(18px, env(safe-area-inset-right)) calc(var(--tabs-h) + 48px) max(18px, env(safe-area-inset-left));
   background: var(--paper);
 }
 
@@ -10759,7 +10750,6 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .settings-shell {
   position: fixed;
   inset: 0;
-  bottom: var(--tabs-h);
   z-index: 48;
   overflow-y: auto;
   overflow-x: hidden;
@@ -10767,8 +10757,8 @@ html.native-app .admin-shell:not(.admin-overlay) {
   flex-direction: column;
   gap: 16px;
   background: var(--paper);
-  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right)) 56px
-    max(20px, env(safe-area-inset-left));
+  padding: calc(var(--status-h) + 24px) max(20px, env(safe-area-inset-right))
+    calc(var(--tabs-h) + 56px) max(20px, env(safe-area-inset-left));
   text-align: left;
   animation: profile-fade-in 0.2s ease both;
 }
@@ -11900,9 +11890,7 @@ html.native-app .recent-row {
     position: relative;
     inset: auto;
     grid-row: 1;
-    /* The tail of the binding is a fixed bar over the spread, so
-       the pages stop above it rather than scrolling behind it. */
-    height: calc(var(--native-viewport-height) - var(--tabs-h));
+    height: var(--native-viewport-height);
     opacity: 1;
     visibility: visible;
     transform: none;
@@ -11991,21 +11979,13 @@ html.native-app .recent-row {
     display: none;
   }
 
-  html.native-app .native-shell .ios-status-veil {
-    background: linear-gradient(
-      90deg,
-      rgba(16, 10, 7, 0.62) 0 var(--verso-w),
-      rgba(241, 231, 208, 0.72) var(--verso-w)
-    );
-  }
-
   /* --- Verso: the collection ------------------------------------- */
 
   html.native-app .native-shell.tab-shelf > .library-pane,
   html.native-app .native-shell.tab-reading > .library-pane,
   html.native-app .native-shell.tab-shelf.library-book-open > .library-pane {
-    padding: calc(var(--status-h) + 24px) calc(var(--gutter) / 2 + 12px) 28px
-      max(24px, env(safe-area-inset-left));
+    padding: calc(var(--status-h) + 24px) calc(var(--gutter) / 2 + 12px)
+      calc(var(--tabs-h) + 28px) max(24px, env(safe-area-inset-left));
     border-right: 0;
     /* Leather grain, darkening as the page turns into the fold. */
     background-image:
@@ -12731,9 +12711,11 @@ html.native-app .recent-row {
 .track-downloads li { margin: .35rem 0; overflow-wrap: anywhere; }
 .track-downloads a { color: inherit; }
 
-/* UIKit sizes the web viewport inside the selected tab's safe content area. */
+/* UIKit floats its bar over the page rather than beside it: the web view
+   spans the whole screen, and the bar's clearance arrives as the bottom safe
+   area. Screens run their background under it and pad their content past it. */
 html.native-app.uikit-tabs {
-  --tabs-h: 0px;
+  --tabs-h: env(safe-area-inset-bottom);
 }
 
 .admin-back { margin-bottom: 16px; }
