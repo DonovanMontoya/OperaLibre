@@ -142,7 +142,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
               if (sweep?.enabled) void saveRule(true, event.target.value);
             }}
           />
-          <span className="admin-sync-time-zone">{sweep?.enabled ? sweep.timeZone : localTimeZone}</span>
+          <span className="admin-sync-time-zone">{sweep?.timeZone || localTimeZone}</span>
         </div>
       </div>
       <p className="admin-experiment-detail">
@@ -173,6 +173,10 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const [schedulingBook, setSchedulingBook] = useState<string | null>(null);
   const [scheduledTime, setScheduledTime] = useState("");
   const [query, setQuery] = useState("");
+  const [feed, setFeed] = useState<Feed | null>(null);
+  const [libraryBooks, setLibraryBooks] = useState(books);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   function openSchedule(bookId: string) {
@@ -218,6 +222,12 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         if (!cancelled) { setSchedules(next); setScheduleError(null); }
       } catch (err) {
         if (!cancelled) setScheduleError(err instanceof Error ? err.message : "Could not load schedules.");
+      }
+      try {
+        const freshBooks = await getBooks();
+        if (!cancelled) { setLibraryBooks(freshBooks); setLibraryError(null); }
+      } catch {
+        if (!cancelled) setLibraryError("Could not refresh book sync status. Showing the last received library; retrying automatically…");
       } finally {
         if (!cancelled) timer = window.setTimeout(() => void refresh(), 15000);
       }
@@ -226,10 +236,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [revision]);
 
-  const [feed, setFeed] = useState<Feed | null>(null);
-  const [libraryBooks, setLibraryBooks] = useState(books);
-  const [libraryError, setLibraryError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setLibraryBooks(books), [books]);
 
   useEffect(() => {
     let cancelled = false;
@@ -238,7 +245,6 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
     // reading it back out of React state.
     let seen: Feed | null = null;
     let inFlight = false;
-    let librarySignature: string | null = null;
 
     function schedule(delay: number) {
       window.clearTimeout(timer);
@@ -261,20 +267,6 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
           setFeed(seen);
         }
         setError(null);
-        // Refresh persistent map metadata on opening and after jobs change state,
-        // without fetching the whole library on every progress tick.
-        const signature = JSON.stringify(next.map((job) => [job.id, job.status]).sort());
-        if (signature !== librarySignature) {
-          try {
-            const freshBooks = await getBooks();
-            if (cancelled) return;
-            setLibraryBooks(freshBooks);
-            setLibraryError(null);
-            librarySignature = signature;
-          } catch {
-            if (!cancelled) setLibraryError("Could not refresh book sync status. Showing the last received library; retrying automatically…");
-          }
-        }
         schedule(syncJobPollDelay(next));
       } catch (err) {
         if (cancelled) return;
