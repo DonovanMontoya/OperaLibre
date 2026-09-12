@@ -5250,32 +5250,35 @@ function MainApp({
     if (!syncMapBookId) {
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     void (async () => {
       const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-      if (cancelled) return null;
+      if (signal.aborted) return null;
       if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
       // Show the downloaded map immediately while checking in the background
       // for an alignment that finished after this book came down.
-      return getSyncMap(syncMapBookId);
+      return getSyncMap(syncMapBookId, signal);
     })()
       .then((map) => {
+        if (signal.aborted) return;
         // Write the newer map back over the downloaded copy, which is
         // otherwise only ever written once, when the book was downloaded.
-        if (map && syncMapBook) void saveOfflineSyncMap(syncMapBook, map);
-        if (!cancelled) {
+        if (map && syncMapBook) void saveOfflineSyncMap(syncMapBook, map, signal);
+        if (!signal.aborted) {
           dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map });
         }
       })
       .catch(async () => {
+        if (signal.aborted) return;
         // No server in reach: a downloaded book carries its own sync map.
         const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-        if (!cancelled) {
+        if (!signal.aborted) {
           dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
     // Updating the visible map must not cancel its own background refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps

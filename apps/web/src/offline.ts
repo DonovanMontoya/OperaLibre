@@ -522,26 +522,33 @@ export async function getOfflineSyncMap(book: Book): Promise<SyncMap | null> {
  * until it was downloaded again. Best effort: a cache that cannot be refreshed
  * must not fail the reader, which already has the map in hand.
  */
-export async function saveOfflineSyncMap(book: Book, map: SyncMap): Promise<void> {
+export async function saveOfflineSyncMap(book: Book, map: SyncMap, signal?: AbortSignal): Promise<void> {
+  // Freeze the destination before yielding: changing servers must never move
+  // an in-flight write into the new server's cache.
+  const scope = getServerStorageKey();
+  const directory = bookDirectory(book.id);
+  const path = syncMapFilePath(book);
+  const key = mediaKey(book.id, SYNC_MAP_KIND);
+  const isCurrent = () => !signal?.aborted && getServerStorageKey() === scope;
   try {
-    if (!(await isBookDownloaded(book))) return;
+    if (!isCurrent() || !(await isBookDownloaded(book)) || !isCurrent()) return;
     const json = JSON.stringify(map);
     if (Capacitor.isNativePlatform()) {
-      await migrateLegacyBookDirectory(book);
       await Filesystem.mkdir({
-        path: bookDirectory(book.id),
+        path: directory,
         directory: MEDIA_DIRECTORY,
         recursive: true
       }).catch(() => undefined);
+      if (!isCurrent()) return;
       await Filesystem.writeFile({
-        path: syncMapFilePath(book),
+        path,
         directory: MEDIA_DIRECTORY,
         data: toBase64(new TextEncoder().encode(json).buffer as ArrayBuffer)
       });
       return;
     }
     await write("media", {
-      key: mediaKey(book.id, SYNC_MAP_KIND),
+      key,
       blob: new Blob([json], { type: "application/json" })
     });
   } catch {

@@ -1039,8 +1039,8 @@ export async function liberateAllLibationBooks() {
   return request<JobCreated>("/api/libation/liberate-all", { method: "POST" });
 }
 
-export async function getSyncMap(bookId: string) {
-  return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`);
+export async function getSyncMap(bookId: string, signal?: AbortSignal) {
+  return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`, { signal });
 }
 
 export async function generateSyncMap(bookId: string) {
