@@ -2867,10 +2867,11 @@ async fn overridden_title_cover_is_excluded_after_rescan() {
 }
 
 /// An Audible download often lands a picture PDF beside the audio. The book
-/// response must call the EPUB the book and the PDF a supplement, serve both,
-/// and offer an estimated sync map for the EPUB without any aligner.
+/// response must call the EPUB the book and the PDF a supplement, and serve
+/// both. Without a forced alignment the book offers no sync map at all: an
+/// interpolated guess is worse than following by chapter.
 #[tokio::test]
-async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_map() {
+async fn companions_are_classified_and_served_without_a_sync_map() {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
     let long_text = "<h1>Chapter 1</h1>".to_string()
@@ -2932,7 +2933,11 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
     assert_eq!(pdf["imageCount"], 4);
     assert_eq!(pdf["textCharacters"], 0);
     assert_eq!(book["readingFile"]["extension"], "epub");
-    assert_eq!(book["syncFile"]["source"], "estimated");
+    assert!(
+        book["syncFile"].is_null(),
+        "an unaligned book must not advertise follow-along: {}",
+        book["syncFile"]
+    );
 
     let pdf_id = pdf["id"].as_str().unwrap();
     let response = server
@@ -2958,51 +2963,12 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
         "application/epub+zip"
     );
 
+    // Nothing has aligned this book, so there is no map to follow.
     let sync = server
         .get(&format!("/api/books/{book_id}/sync"), &token)
         .await;
-    assert_eq!(sync.status, StatusCode::OK, "{}", sync.text());
-    let map = sync.json();
-    assert_eq!(map["precision"], "estimated");
-    assert_eq!(map["version"], alignment::SYNC_MAP_VERSION);
-    let fragments = map["fragments"].as_array().unwrap();
-    assert!(
-        fragments.len() > 60,
-        "one fragment per sentence: {}",
-        fragments.len()
-    );
-    assert_eq!(fragments[0]["text"], "Chapter 1");
-    assert_eq!(fragments[0]["href"], "text/ch1.xhtml");
-    let last = fragments.last().unwrap();
-    assert!(last["endSeconds"].as_f64().unwrap() > 0.0);
+    assert_eq!(sync.status, StatusCode::NOT_FOUND, "{}", sync.text());
 
-    // The estimate is kept, and a second request serves the same file.
-    let again = server
-        .get(&format!("/api/books/{book_id}/sync"), &token)
-        .await;
-    assert_eq!(again.status, StatusCode::OK);
-    assert_eq!(again.body, sync.body);
-
-    // A long book's map runs to megabytes of sentence text; a client that
-    // accepts gzip gets it compressed; document downloads remain untouched.
-    let compressed = server
-        .send(
-            Request::builder()
-                .uri(format!("/api/books/{book_id}/sync"))
-                .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                .header(header::ACCEPT_ENCODING, "gzip")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-    assert_eq!(compressed.status, StatusCode::OK);
-    assert_eq!(compressed.header(header::CONTENT_ENCODING), "gzip");
-    assert!(
-        compressed.body.len() < sync.body.len() / 2,
-        "{} vs {}",
-        compressed.body.len(),
-        sync.body.len()
-    );
     let readalong_compressed = server
         .send(
             Request::builder()
@@ -3015,6 +2981,72 @@ async fn companions_are_classified_served_and_the_epub_gets_an_estimated_sync_ma
         .await;
     assert_eq!(readalong_compressed.status, StatusCode::OK);
     assert_eq!(readalong_compressed.header(header::CONTENT_ENCODING), "");
+}
+
+/// A sync sidecar, written beside the audio for the scan to find. Long enough
+/// that compressing it is worthwhile.
+fn build_test_sync_sidecar(fragment_count: usize, precision: &str) -> Vec<u8> {
+    let fragments = (0..fragment_count)
+        .map(|index| {
+            let start = index as f64 * 3.0;
+            serde_json::json!({
+                "startSeconds": start,
+                "endSeconds": start + 3.0,
+                "href": "text/ch1.xhtml",
+                "text": format!(
+                    "The meadow was quiet in the early morning light, and the bees drifted between the flowers, sentence {index}."
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_vec(&serde_json::json!({
+        "version": alignment::SYNC_MAP_VERSION,
+        "generator": "echogarden",
+        "precision": precision,
+        "fragments": fragments,
+    }))
+    .unwrap()
+}
+
+/// A `.sync.json` beside the audio is only an alignment if it says so. One
+/// carrying an interpolated map must not make the book advertise follow-along:
+/// the reader would fetch it, reject it and fall back to chapter sync anyway,
+/// and it would be downloaded for offline use for nothing.
+#[tokio::test]
+async fn an_estimated_sidecar_does_not_advertise_follow_along() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    server
+        .add_companions_to_first_book(
+            &token,
+            &[
+                (
+                    "Book 00.epub",
+                    alignment::build_test_epub_with_text(
+                        &long_chapter_text(),
+                        "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                    ),
+                ),
+                ("Book 00.sync.json", build_test_sync_sidecar(8, "estimated")),
+            ],
+        )
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+
+    let books = server.get("/api/books", &token).await;
+    assert_eq!(books.status, StatusCode::OK, "{}", books.text());
+    let books = books.json();
+    let book = &books.as_array().unwrap()[0];
+    assert!(
+        book["syncFile"].is_null(),
+        "an interpolated sidecar is not an alignment: {}",
+        book["syncFile"]
+    );
+
+    let sync = server
+        .get(&format!("/api/books/{book_id}/sync"), &token)
+        .await;
+    assert_eq!(sync.status, StatusCode::NOT_FOUND, "{}", sync.text());
 }
 
 /// Enough prose that the classifier calls the EPUB the book being narrated
@@ -3034,13 +3066,19 @@ async fn companions_and_sync_maps_are_revalidated_rather_than_refetched() {
     server
         .add_companions_to_first_book(
             &token,
-            &[(
-                "Book 00.epub",
-                alignment::build_test_epub_with_text(
-                    &long_chapter_text(),
-                    "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+            &[
+                (
+                    "Book 00.epub",
+                    alignment::build_test_epub_with_text(
+                        &long_chapter_text(),
+                        "<h1>Chapter 2</h1><p>The river ran fast and cold.</p>",
+                    ),
                 ),
-            )],
+                (
+                    "Book 00.sync.json",
+                    build_test_sync_sidecar(400, alignment::PRECISION_SENTENCE),
+                ),
+            ],
         )
         .await;
     let (book_id, _) = server.first_book_and_track(&token).await;
@@ -3050,7 +3088,7 @@ async fn companions_and_sync_maps_are_revalidated_rather_than_refetched() {
         format!("/api/books/{book_id}/sync"),
     ] {
         let first = server.get(&path, &token).await;
-        assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+        assert_eq!(first.status, StatusCode::OK, "{path}: {}", first.text());
         let etag = first.header(header::ETAG);
         assert!(!etag.is_empty(), "{path} carries no validator");
         assert_eq!(first.header(header::CACHE_CONTROL), "private, no-cache");

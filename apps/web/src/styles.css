@@ -2859,10 +2859,6 @@ img.large-cover {
   background: color-mix(in srgb, var(--reader-surface) 94%, transparent);
 }
 
-.epub-footer.pinning {
-  border-top-color: var(--oxblood);
-}
-
 .epub-hint {
   margin: 0;
   font-family: "JetBrains Mono", monospace;
@@ -2870,10 +2866,6 @@ img.large-cover {
   letter-spacing: 0.06em;
   line-height: 1.5;
   color: var(--reader-muted);
-}
-
-.epub-footer.pinning .epub-hint {
-  color: var(--oxblood);
 }
 
 .epub-footer-action {
@@ -3116,10 +3108,6 @@ img.large-cover {
   font-weight: 700;
   line-height: 1;
   color: var(--oxblood);
-}
-
-.epub-audiobar.pinning .epub-audiobar-extras {
-  display: none;
 }
 
 .epub-skip small {

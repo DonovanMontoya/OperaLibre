@@ -61,12 +61,6 @@ pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 pub(crate) const SYNC_SIDECAR_SUFFIX: &str = ".sync.json";
-/// Marks a sync map the server interpolated rather than aligned:
-/// `{book_id}.estimate-{fingerprint}.sync.json` in the sync directory. The
-/// fingerprint covers the EPUB and the chapter list, so a changed companion
-/// or re-chaptered audio produces a fresh estimate.
-pub(crate) const ESTIMATED_SYNC_INFIX: &str = ".estimate";
-
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct MetadataOverrideStore {
@@ -385,9 +379,7 @@ pub(crate) struct ReadingFile {
 pub(crate) struct SyncFile {
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
-    /// by the alignment job into the server's data directory, `estimated`
-    /// when the server interpolates one from the EPUB and the chapter list
-    /// on request.
+    /// by the alignment job into the server's data directory.
     pub(crate) source: String,
     pub(crate) url: String,
 }
@@ -2085,19 +2077,6 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             content_type: companion.content_type.clone(),
             url: format!("/api/books/{}/readalong", book.id),
         });
-        // An EPUB can always be followed approximately: the sync route
-        // estimates a map from the chapter list when nothing better exists.
-        let has_epub_text = book
-            .reading_file
-            .as_ref()
-            .is_some_and(|reading_file| reading_file.extension == "epub");
-        if book.sync_file.is_none() && has_epub_text {
-            book.sync_file = Some(SyncFile {
-                file_name: format!("{}{ESTIMATED_SYNC_INFIX}{SYNC_SIDECAR_SUFFIX}", book.id),
-                source: "estimated".to_string(),
-                url: format!("/api/books/{}/sync", book.id),
-            });
-        }
     }
 
     // Reaching here means the scan was trustworthy: a suspect one returned
@@ -2335,6 +2314,42 @@ fn find_companion_file(
         .cloned()
 }
 
+/// Whether an id may be joined into a path. The scan mints plain tokens, so
+/// anything carrying a separator or a parent reference is refused rather than
+/// allowed to name a file outside the directory it is joined to.
+pub(crate) fn is_plain_file_token(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
+/// the fragments are tokenized and discarded, so probing a map that runs to
+/// megabytes costs no allocation. A file that cannot be read or parsed is not
+/// an alignment, so a book is never advertised as followable on the strength
+/// of its file name alone.
+fn is_aligned_sync_map(path: &FsPath) -> bool {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Probe {
+        #[serde(default)]
+        precision: Option<String>,
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(probe) = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)) else {
+        return false;
+    };
+    // Version 1 files carry no precision and were always aligned.
+    probe
+        .precision
+        .as_deref()
+        .unwrap_or(alignment::PRECISION_SENTENCE)
+        == alignment::PRECISION_SENTENCE
+}
+
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
 /// sidecar beside the audiobook wins, then a server-generated file in the
 /// sync data directory.
@@ -2366,7 +2381,7 @@ pub(crate) fn find_sync_file(
                 .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
         },
     );
-    if let Some(selected) = sidecar {
+    if let Some(selected) = sidecar.filter(|path| is_aligned_sync_map(path)) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: selected
@@ -2381,8 +2396,11 @@ pub(crate) fn find_sync_file(
         });
     }
 
+    if !is_plain_file_token(book_id) {
+        return None;
+    }
     let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    if generated.is_file() {
+    if generated.is_file() && is_aligned_sync_map(&generated) {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
                 file_name: generated

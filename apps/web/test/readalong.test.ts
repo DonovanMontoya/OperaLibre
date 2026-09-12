@@ -98,13 +98,14 @@ describe("sync maps", () => {
     assert.equal(findActiveFragmentIndex(fragments, 8, 0.5), -1);
   });
 
-  it("tells sentence and estimated maps apart, and ignores word timings", () => {
+  it("follows only a forced alignment, and ignores word timings", () => {
     const base: SyncMap = { version: 2, fragments: [fragments[0]] };
     assert.equal(syncMapPrecision(null), null);
     assert.equal(syncMapPrecision({ ...base, fragments: [] }), null);
     assert.equal(syncMapPrecision(base), "sentence");
     assert.equal(syncMapPrecision({ ...base, fragments }), "sentence");
-    assert.equal(syncMapPrecision({ ...base, precision: "estimated", fragments }), "estimated");
+    // A map a device cached before estimates were dropped is not followed.
+    assert.equal(syncMapPrecision({ ...base, precision: "estimated", fragments }), null);
   });
 
   it("describes what the reader can do before and after the map loads", () => {
@@ -114,7 +115,7 @@ describe("sync maps", () => {
     assert.equal(readAlongMode({ readingFile: epub, syncFile: null }), "chapter");
     assert.equal(
       readAlongMode({ readingFile: epub, syncFile: { fileName: "", source: "estimated", url: "" } }),
-      "estimated"
+      "chapter"
     );
     assert.equal(
       readAlongMode({ readingFile: epub, syncFile: { fileName: "", source: "generated", url: "" } }),
@@ -126,6 +127,15 @@ describe("sync maps", () => {
         { version: 2, fragments }
       ),
       "sentence"
+    );
+    // An estimated map that reached the device falls back to chapter sync
+    // even though the book still advertises an alignment.
+    assert.equal(
+      readAlongMode(
+        { readingFile: epub, syncFile: { fileName: "", source: "generated", url: "" } },
+        { version: 2, precision: "estimated", fragments }
+      ),
+      "chapter"
     );
   });
 });
