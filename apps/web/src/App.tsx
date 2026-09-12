@@ -2,7 +2,7 @@ import { createPlaybackTransitions, playbackReportPosition } from "./playbackRep
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
-import { narrationTextOffset } from "./readerPagination";
+import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
@@ -1766,9 +1766,21 @@ export function EpubReadalong({
   );
 
   // A horizontal swipe on the overlay turns the page as well.
-  const overlaySwipeRef = useRef<{ x: number; y: number } | null>(null);
+  const overlaySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const handleOverlayPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    overlaySwipeRef.current = { x: event.clientX, y: event.clientY };
+    overlaySwipeRef.current = { x: event.clientX, y: event.clientY, at: performance.now() };
+    // Keep the lift on this layer even if the finger ends over the bars.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is a nicety; the gesture still resolves where it lifts.
+    }
+  }, []);
+  const handleOverlayPointerCancel = useCallback(() => {
+    if (overlaySwipeRef.current) {
+      readerDebugLog("gesture cancelled");
+    }
+    overlaySwipeRef.current = null;
   }, []);
   const handleOverlayPointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1781,15 +1793,19 @@ export function EpubReadalong({
       }
       const deltaX = event.clientX - start.x;
       const deltaY = event.clientY - start.y;
-      if (Math.abs(deltaX) > 55 && Math.abs(deltaY) < 45) {
-        navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+      const duration = performance.now() - start.at;
+      const gesture = classifyPageGesture(deltaX, deltaY, duration);
+      if (gesture === "next" || gesture === "prev") {
+        navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
         return;
       }
-      if (Math.abs(deltaX) < 16 && Math.abs(deltaY) < 16) {
+      if (gesture === "tap") {
         handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+        return;
       }
+      readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
     },
-    [handleOverlayTap]
+    [handleOverlayTap, navigateByHand]
   );
 
   useEffect(() => {
@@ -1947,10 +1963,12 @@ export function EpubReadalong({
       }
       const deltaX = touch.clientX - start.x;
       const deltaY = touch.clientY - start.y;
+      const duration = performance.now() - start.at;
+      const gesture = classifyPageGesture(deltaX, deltaY, duration);
       // iOS withholds the click for a touch whose move was cancelled (the
       // scroll lock above), and a finger rarely lands perfectly still, so a
       // tap is recognised here rather than waited for as a click.
-      if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12 && performance.now() - start.at < 600) {
+      if (gesture === "tap") {
         const target = event.target as Element | null;
         if (target?.closest?.("a, button, input, textarea, select")) {
           return;
@@ -1962,10 +1980,11 @@ export function EpubReadalong({
         }
         return;
       }
-      if (Math.abs(deltaX) < 60 || Math.abs(deltaY) > 50) {
+      if (gesture === null) {
+        readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
         return;
       }
-      navigateByHand(() => (deltaX < 0 ? rendition?.next() : rendition?.prev()));
+      navigateByHand(() => (gesture === "next" ? rendition?.next() : rendition?.prev()));
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "ArrowRight" || event.key === "PageDown") {
@@ -2814,6 +2833,7 @@ export function EpubReadalong({
             className="epub-tapzones"
             onPointerDown={handleOverlayPointerDown}
             onPointerUp={handleOverlayPointerUp}
+            onPointerCancel={handleOverlayPointerCancel}
             aria-hidden="true"
           >
             <span className="epub-tapzone epub-tapzone-prev" />
