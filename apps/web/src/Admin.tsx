@@ -989,8 +989,8 @@ export function AdminPanel({
                     </a>
                   ) : null}
                 </div>
-                <ExperimentSection title="Sync activity">
-                  <SyncJobMonitor books={books} onOpenBook={onOpenBook} />
+                <ExperimentSection title="Sync books and activity">
+                  <SyncJobMonitor books={books} onOpenBook={onOpenBook} syncEnabled={syncAddon?.enabled === true} />
                 </ExperimentSection>
               </article>
             </div>
