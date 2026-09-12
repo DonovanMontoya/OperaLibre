@@ -339,10 +339,13 @@ pub(crate) fn open_contained_file(
     }
 
     let canonical_path = std::fs::canonicalize(file_path)?;
+    // A root that does not exist yet (the sync directory on a server that has
+    // never aligned a book) drops out rather than failing every lookup. This
+    // only ever shrinks the allowed set.
     let canonical_roots = allowed_roots
         .iter()
-        .map(std::fs::canonicalize)
-        .collect::<Result<Vec<_>, _>>()?;
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
     if !canonical_roots
         .iter()
         .any(|root| canonical_path != *root && canonical_path.starts_with(root))

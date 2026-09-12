@@ -18,7 +18,6 @@ import {
   ChevronRight,
   CircleCheck,
   Cloud,
-  Crosshair,
   CloudDownload,
   Download,
   ExternalLink,
@@ -83,7 +82,6 @@ import {
   readerStorageKey,
   shouldOpenPlayingChapter,
   syncMapPrecision,
-  type SyncPrecision
 } from "./readalong";
 import {
   READER_THEME_CHOICES,
@@ -242,8 +240,6 @@ import {
   mediaUrl,
   pingServer,
   readalongUrl,
-  addSyncAnchor,
-  clearSyncAnchors,
   reconnectUsingServerAliases,
   requestLibationBook,
   playbackReportingSession,
@@ -275,6 +271,7 @@ import {
   getOfflineCoverUrl,
   getOfflineCompanionUrl,
   getOfflineSyncMap,
+  saveOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
@@ -1441,12 +1438,11 @@ function caretAtPoint(doc: Document, x: number, y: number): { node: Node; offset
 }
 
 /** Marker colours for the narrated sentence, per reading theme. */
-function sentenceHighlightStyle(theme: ReaderTheme, precision: SyncPrecision | null) {
+function sentenceHighlightStyle(theme: ReaderTheme) {
   // The night page is dark, so the marker must lighten instead of darken.
-  const soft = precision === "estimated";
   return theme === "night"
-    ? { fill: "#e8b64c", "fill-opacity": soft ? "0.22" : "0.4", "mix-blend-mode": "screen" }
-    : { fill: "#d9a441", "fill-opacity": soft ? "0.18" : "0.32", "mix-blend-mode": "multiply" };
+    ? { fill: "#e8b64c", "fill-opacity": "0.4", "mix-blend-mode": "screen" }
+    : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
 }
 
 export function EpubReadalong({
@@ -1458,11 +1454,9 @@ export function EpubReadalong({
   listeningChapter,
   syncTarget,
   syncFragments,
-  precision,
   positionSeconds,
   followLeadSeconds = 0,
   onSeekTo,
-  onPinNarration,
   immersive = false,
   onClose,
   chapterTitle = null,
@@ -1481,13 +1475,10 @@ export function EpubReadalong({
   listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
-  precision: SyncPrecision | null;
   positionSeconds: number;
   /** A small optional lead for switching to the next narrated sentence. */
   followLeadSeconds?: number;
   onSeekTo?: (seconds: number) => void;
-  /** "The narrator is reading this sentence now": re-times an estimated map. */
-  onPinNarration?: (fragment: { href: string; text: string }) => void;
   /** A full-screen reading surface with its own bars and sheets (the native app). */
   immersive?: boolean;
   onClose?: () => void;
@@ -1548,12 +1539,6 @@ export function EpubReadalong({
   const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
   const onSeekToRef = useRef(onSeekTo);
   const loadBytesRef = useRef(loadBytes);
-  const onPinNarrationRef = useRef(onPinNarration);
-  // Set while the listener is choosing the sentence being narrated: the next
-  // tap places a sync anchor instead of seeking.
-  const [pinning, setPinning] = useState(false);
-  const pinningRef = useRef(false);
-  pinningRef.current = pinning;
   // Bumped whenever the page reflows (text size, zoom, window resize): the
   // markers were measured against the old layout and the narrated sentence
   // may have moved to another page.
@@ -1576,7 +1561,6 @@ export function EpubReadalong({
   syncTargetRef.current = syncTarget;
   onSeekToRef.current = onSeekTo;
   loadBytesRef.current = loadBytes;
-  onPinNarrationRef.current = onPinNarration;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
@@ -1673,14 +1657,7 @@ export function EpubReadalong({
     setFollow(true);
   }, []);
 
-  // What a tap on a sentence does: seek there, or, while pinning, tell the
-  // server the narrator is reading it now.
   const tapFragment = useCallback((fragment: SyncFragment) => {
-    if (pinningRef.current) {
-      setPinning(false);
-      onPinNarrationRef.current?.({ href: fragment.href, text: fragment.text });
-      return;
-    }
     onSeekToRef.current?.(fragment.startSeconds);
     highlightedFragmentRef.current = -1;
     setFollow(true);
@@ -2429,7 +2406,7 @@ export function EpubReadalong({
   // it on screen, following page turns and chapter boundaries.
   useEffect(() => {
     const rendition = renditionRef.current;
-    const sentenceStyle = sentenceHighlightStyle(readerTheme, precision);
+    const sentenceStyle = sentenceHighlightStyle(readerTheme);
     if (!follow || !syncFragments || fragmentIndex < 0) {
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
@@ -2548,7 +2525,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, positionSeconds, precision, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -2574,7 +2551,7 @@ export function EpubReadalong({
   // Chapter-sync books have no marker but still follow the narrated chapter,
   // so they get the same follow toggle.
   const canFollow = hasSync || !!syncTarget;
-  const followLabel = precision === "estimated" ? "Following approximately" : "Following by sentence";
+  const followLabel = "Following by sentence";
   const statusLabel = hasSync
     ? follow
       ? fragmentIndex >= 0
@@ -2591,13 +2568,9 @@ export function EpubReadalong({
       ? `Page ${location.start.displayed.page} of ${location.start.displayed.total}`
       : null;
   const chapterLabel = chapterTitle ?? currentTocItem?.label?.trim() ?? null;
-  const hint = pinning
-    ? "Tap the sentence the narrator is reading right now."
-    : awayFromNarration
-      ? "Reading freely. The narration marker is off while you turn pages yourself."
-      : precision === "estimated"
-        ? "Approximate sync: the marker is timed from the chapter list. Tap any sentence to play from there; if the marker drifts, use Sync here to pin it to the narrator."
-        : "Tap any sentence to play from there. Turning a page pauses following.";
+  const hint = awayFromNarration
+    ? "Reading freely. The narration marker is off while you turn pages yourself."
+    : "Tap any sentence to play from there. Turning a page pauses following.";
   const goToHref = (href: string) => {
     setActiveHref(href);
     syncedTargetRef.current = null;
@@ -2671,24 +2644,6 @@ export function EpubReadalong({
       <span>{hasSync ? "Follow" : "Chapter sync"}</span>
     </button>
   ) : null;
-  const pinButton =
-    hasSync && precision === "estimated" && onPinNarration ? (
-      <button
-        type="button"
-        className={`epub-tool-button ${pinning ? "selected" : ""}`}
-        onClick={() => {
-          setPinning((active) => !active);
-          setSheet(null);
-        }}
-        aria-pressed={pinning}
-        aria-label={pinning ? "Cancel sync adjustment" : "Adjust sync to the narrator"}
-        title="The marker has drifted? Tap this, then tap the sentence being read."
-      >
-        <Crosshair size={15} />
-        <span>Sync here</span>
-      </button>
-    ) : null;
-
   // The page itself. It must keep its place in the tree between the inline
   // and full-screen layouts: epub.js is attached to this very element.
   const stage = (
@@ -2712,7 +2667,7 @@ export function EpubReadalong({
 
   const reader = (
     <div
-      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""} ${precision === "estimated" ? "estimated" : ""}`}
+      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""}`}
       tabIndex={0}
       onKeyDown={handleReaderKeyDown}
     >
@@ -2787,7 +2742,6 @@ export function EpubReadalong({
           <div className="epub-preferences" aria-label="Reader appearance">
             {themeOptions}
             {fontControls}
-            {pinButton}
             {followButton}
             <button
               type="button"
@@ -2865,7 +2819,7 @@ export function EpubReadalong({
             <span>{pageInfo ?? locationLabel}</span>
           </div>
           {playback ? (
-            <div className={`epub-audiobar ${pinning ? "pinning" : ""}`}>
+            <div className="epub-audiobar">
               <button type="button" className="epub-icon-button epub-skip" onClick={() => playback.onSkip(-15)} aria-label="Back 15 seconds">
                 <RotateCcw size={19} />
                 <small>15</small>
@@ -2883,17 +2837,7 @@ export function EpubReadalong({
                 <small>30</small>
               </button>
               <div className="epub-audiobar-status" role="status">
-                {pinning ? (
-                  <>
-                    <span>Tap the sentence being read</span>
-                    <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
-                      <X size={14} />
-                      <span>Cancel</span>
-                    </button>
-                  </>
-                ) : (
-                  <span className="epub-audiobar-time">{positionLabel ?? ""}</span>
-                )}
+                <span className="epub-audiobar-time">{positionLabel ?? ""}</span>
               </div>
               {/* The rest of the player without leaving the page: the app's own
                   speed, sleep, and chapter sheets open over the reader. */}
@@ -2930,14 +2874,9 @@ export function EpubReadalong({
       ) : hasSync ? (
         // Guidance and the way back live in a bar under the page, never over
         // the words: a listener reading ahead must keep every line legible.
-        <div className={`epub-footer ${pinning ? "pinning" : ""}`}>
+        <div className="epub-footer">
           <p className="epub-hint" role="status">{hint}</p>
-          {pinning ? (
-            <button type="button" className="epub-footer-action" onClick={() => setPinning(false)}>
-              <X size={14} />
-              <span>Cancel</span>
-            </button>
-          ) : awayFromNarration ? (
+          {awayFromNarration ? (
             <button type="button" className="epub-footer-action" onClick={resumeFollowing}>
               <Undo2 size={14} />
               <span>Return to narration</span>
@@ -3008,10 +2947,7 @@ export function EpubReadalong({
                     <h3>Narration</h3>
                     {canFollow ? (
                       <>
-                        <div className="epub-sheet-row">
-                          {followButton}
-                          {pinButton}
-                        </div>
+                        <div className="epub-sheet-row">{followButton}</div>
                         <p className="epub-sheet-hint">
                           {hasSync
                             ? hint
@@ -4631,11 +4567,14 @@ function MainApp({
   };
   const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
   const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
+  // Only a forced alignment drives the marker. A map that is not one — an
+  // interpolated map a device cached before those were dropped — is left out
+  // entirely, so the reader falls back to chapter sync instead of following
+  // timings that do not match the narration.
   const selectedSyncFragments =
-    isViewingPlayingBook && selectedSyncMap && selectedSyncMap.fragments.length > 0
+    isViewingPlayingBook && selectedSyncMap && syncMapPrecision(selectedSyncMap) === "sentence"
       ? selectedSyncMap.fragments
       : null;
-  const selectedSyncPrecision = syncMapPrecision(selectedSyncMap);
   const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
   const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
   const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
@@ -4714,32 +4653,6 @@ function MainApp({
   /** Forget a book's loaded sync map so the next look at the reader refetches it. */
   function forgetSyncMap(bookId: string) {
     dispatchSyncMap({ type: "invalidate", bookId });
-  }
-
-  async function pinNarration(book: Book, fragment: { href: string; text: string }) {
-    setSyncJobError(null);
-    setSyncNotice(null);
-    try {
-      const summary = await addSyncAnchor(book.id, { ...fragment, seconds: bookPosition });
-      forgetSyncMap(book.id);
-      setSyncNotice(
-        `Sync adjusted here. Sentences around this point are re-timed for everyone (${summary.anchorCount} ${summary.anchorCount === 1 ? "adjustment" : "adjustments"} on this book).`
-      );
-    } catch (error) {
-      setSyncJobError(errorMessage(error, "Could not adjust the sync."));
-    }
-  }
-
-  async function clearNarrationPins(book: Book) {
-    setSyncJobError(null);
-    setSyncNotice(null);
-    try {
-      await clearSyncAnchors(book.id);
-      forgetSyncMap(book.id);
-      setSyncNotice("Sync adjustments cleared. The estimate is back to the chapter list alone.");
-    } catch (error) {
-      setSyncJobError(errorMessage(error, "Could not clear the sync adjustments."));
-    }
   }
 
   async function startSyncGeneration(book: Book) {
@@ -5337,29 +5250,35 @@ function MainApp({
     if (!syncMapBookId) {
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     void (async () => {
       const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-      if (cancelled) return null;
+      if (signal.aborted) return null;
       if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
-      // Show the downloaded map immediately while checking for new alignment
-      // or manual corrections in the background.
-      return getSyncMap(syncMapBookId);
+      // Show the downloaded map immediately while checking in the background
+      // for an alignment that finished after this book came down.
+      return getSyncMap(syncMapBookId, signal);
     })()
       .then((map) => {
-        if (!cancelled) {
+        if (signal.aborted) return;
+        // Write the newer map back over the downloaded copy, which is
+        // otherwise only ever written once, when the book was downloaded.
+        if (map && syncMapBook) void saveOfflineSyncMap(syncMapBook, map, signal);
+        if (!signal.aborted) {
           dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map });
         }
       })
       .catch(async () => {
+        if (signal.aborted) return;
         // No server in reach: a downloaded book carries its own sync map.
         const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-        if (!cancelled) {
+        if (!signal.aborted) {
           dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
     // Updating the visible map must not cancel its own background refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8333,17 +8252,6 @@ function MainApp({
           <span>{selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
         </button>
       ) : null}
-      {currentUser.isAdmin && activeCompanionIsBook && (selectedSyncMap?.manualAnchorCount ?? 0) > 0 ? (
-        <button
-          type="button"
-          className="download-btn"
-          onClick={() => void clearNarrationPins(selectedBook)}
-          title="Forget every Sync here adjustment on this book"
-        >
-          <RotateCcw size={13} />
-          <span>Clear adjustments</span>
-        </button>
-      ) : null}
     </>
   ) : null;
   const readerSyncMessages = (
@@ -8352,7 +8260,7 @@ function MainApp({
         <p className="readalong-synchint">
           {selectedSyncPrecise
             ? "This book is aligned sentence by sentence against its narration. Re-sync rebuilds that map from the audio and the text — worth doing when either file has been replaced."
-            : "Following is estimated from the chapter list here, so the highlight drifts within a chapter. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, so the highlight lands on the sentence being read. It runs in the background for everyone on this server and can take a long while on a full-length book."}
+            : "This book has no alignment yet, so the reader only opens to the chapter being played. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, so the highlight lands on the sentence being read. It runs in the background for everyone on this server and can take a long while on a full-length book."}
         </p>
       ) : null}
       {syncJobForBook && syncJobRunning ? (
@@ -8455,17 +8363,11 @@ function MainApp({
             : null
         }
         syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
-        precision={narrationFollowActive && activeCompanionIsBook ? selectedSyncPrecision : null}
         positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
         followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
         onSeekTo={
           narrationFollowActive
             ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
-            : undefined
-        }
-        onPinNarration={
-          narrationFollowActive && activeCompanionIsBook && isViewingPlayingBook && selectedSyncPrecision === "estimated"
-            ? (fragment) => void pinNarration(selectedBook, fragment)
             : undefined
         }
         immersive={native}
@@ -8530,11 +8432,7 @@ function MainApp({
               {showGallery
                 ? "Loose pictures found beside the audio"
                 : activeCompanion
-                  ? `${activeCompanionIsBook && selectedReadAlongMode ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title} · ` : ""}${describeCompanion(activeCompanion)}${
-                      activeCompanionIsBook && selectedSyncMap?.manualAnchorCount
-                        ? ` · ${selectedSyncMap.manualAnchorCount} sync ${selectedSyncMap.manualAnchorCount === 1 ? "adjustment" : "adjustments"}`
-                        : ""
-                    }`
+                  ? `${activeCompanionIsBook && selectedReadAlongMode ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title} · ` : ""}${describeCompanion(activeCompanion)}`
                   : null}
             </span>
           </div>

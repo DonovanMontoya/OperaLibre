@@ -260,10 +260,6 @@ pub(crate) fn build_router(
             "/api/books/{book_id}/sync/generate",
             post(generate_sync_map),
         )
-        .route(
-            "/api/books/{book_id}/sync/anchors",
-            post(add_sync_anchor).delete(clear_sync_anchors),
-        )
         .route("/api/alignment/status", get(alignment_status))
         .route(
             "/api/books/{book_id}/progress",
