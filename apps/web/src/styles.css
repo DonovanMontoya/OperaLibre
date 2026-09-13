@@ -13644,16 +13644,17 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
 
 /* ===================== Landscape administration =====================
    Like Settings on its side: the heading, notices and section list keep a
-   column of their own, with the list held in view while the chosen
-   section scrolls beside it. */
+   column of their own that stays put, and the chosen section scrolls in the
+   column beside it. */
 @media (orientation: landscape) and (min-width: 700px) {
   html.native-app .admin-shell:not(.admin-overlay) {
     display: grid;
     grid-template-columns: clamp(180px, 22vw, 250px) minmax(0, 1fr);
     grid-template-rows: auto auto auto minmax(0, 1fr);
     column-gap: clamp(18px, 3vw, 36px);
-    align-content: start;
+    overflow: hidden;
     padding-top: max(12px, calc(var(--status-h) + 12px));
+    padding-bottom: 0;
   }
   html.native-app .admin-shell:not(.admin-overlay) > * {
     grid-column: 2;
@@ -13682,8 +13683,8 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
     grid-column: 1;
     grid-row: 4;
     align-self: start;
-    position: sticky;
-    top: 0;
+    max-height: 100%;
+    overflow-y: auto;
     width: auto;
     margin: 14px 0 0;
     flex-direction: column;
@@ -13697,8 +13698,19 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
   html.native-app .admin-shell:not(.admin-overlay) > .admin-content {
     grid-column: 2;
     grid-row: 1 / -1;
+    min-height: 0;
     width: auto;
     margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* The column scrolls under the floating tab bar; a closing spacer lets its
+     last card rise clear of it. */
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-content::after {
+    content: "";
+    display: block;
+    grid-column: 1 / -1;
+    height: calc(var(--tabs-h) + 32px);
   }
 }
 
