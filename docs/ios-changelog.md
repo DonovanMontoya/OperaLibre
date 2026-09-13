@@ -12,6 +12,25 @@ independently of the server releases.
 
 ## Unreleased
 
+## 1.2.3 (17)
+
+Distributed via App Store Connect (TestFlight) on September 13, 2026. Source
+commit: `e2068306`.
+
+- Connect a Libro.fm account to browse, search, and import your purchases
+  straight into your OperaLibre server library.
+  ([#84](https://github.com/DonovanMontoya/OperaLibre/pull/84))
+- Libro.fm purchases can now download directly to this device on iOS and
+  Android, with no OperaLibre server required.
+  ([#146](https://github.com/DonovanMontoya/OperaLibre/pull/146))
+- Libro.fm purchases can be browsed as a cover grid (the new default) or a
+  list, with a compact header shared with the Audible import flow.
+  ([#146](https://github.com/DonovanMontoya/OperaLibre/pull/146))
+- Fixed several Libro.fm import edge cases: numeric ISBNs, native response
+  decoding, and rejected catalog fields are now handled correctly, and
+  finished on-device download jobs are cleaned up automatically.
+  ([#146](https://github.com/DonovanMontoya/OperaLibre/pull/146))
+
 ## 1.2.2 (16)
 
 Distributed via App Store Connect (TestFlight) on September 12, 2026. Source
