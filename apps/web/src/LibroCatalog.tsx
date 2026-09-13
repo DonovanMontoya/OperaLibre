@@ -147,11 +147,12 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
         return <li key={book.isbn}>
           <LibroCover book={book} device={device} />
           <div className="libro-purchase-copy"><h3>{book.title}</h3><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
+            {book.localBookId ? <span className="libro-owned-status">In library</span> : null}
             {importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
-            {device && importing ? <button type="button" disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel download</button> : null}
           </div>
-          {book.localBookId ? <button type="button" onClick={() => onOpenBook?.(book.localBookId!)} disabled={!onOpenBook}><BookOpen size={15} /> In library</button>
-            : <button type="button" disabled={!!busy || importing} onClick={() => void act(book.isbn, () => backend.import(book.isbn))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Importing…" : device ? "Download to device" : "Import"}</button>}
+          {book.localBookId ? <button type="button" aria-label={`Open ${book.title}`} onClick={() => onOpenBook?.(book.localBookId!)} disabled={!onOpenBook}><BookOpen size={15} /> Open</button>
+            : device && importing ? <button type="button" aria-label={`Cancel download of ${book.title}`} disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel</button>
+            : <button type="button" aria-label={`${device ? "Download" : "Import"} ${book.title}`} disabled={!!busy || importing} onClick={() => void act(book.isbn, () => backend.import(book.isbn))}>{importing || busy === book.isbn ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} {importing ? "Adding…" : device ? "Download" : "Import"}</button>}
         </li>;
       })}</ul>
     </> : null}
