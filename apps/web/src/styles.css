@@ -7272,9 +7272,9 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   }
 
   html.native-app .games-shell > .game-card { display: contents; }
-  /* A keyboard is wider than it is tall; where :has is available it takes a
-     broader column than the square board needs. */
-  html.native-app .games-shell:has(> .word-game) { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
+  /* A keyboard is wider than it is tall, so it takes a broader column than
+     the square board needs. */
+  html.native-app .games-shell.games-words { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
 
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
   html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
@@ -7342,7 +7342,7 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .word-tile { font-size: clamp(1.1rem, 2.2vw, 1.7rem); }
   /* The guesses share the left column with the reading chrome; the tagline
      gives its line back to them. */
-  html.native-app .games-shell:has(> .word-game) .games-head p { display: none; }
+  html.native-app .games-shell.games-words .games-head p { display: none; }
   html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 10px; }
   html.native-app .word-keys-row { gap: 7px; }
   html.native-app .word-key { max-width: 58px; min-height: 64px; border-radius: 10px; font-size: 1.05rem; }
@@ -13141,6 +13141,604 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player::after,
   html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library::after {
     display: none;
+  }
+}
+
+/* A phone on its side is held by both ends and has little height to spare,
+   so it takes the iPad's lessons at phone scale. Games put the play surface
+   against the right edge under a thumb and hand the now-playing strip to
+   the column the game is not using, so the board keeps the full height.
+   The Ledger and Settings spread into two columns instead of a long scroll.
+   Side insets keep everything clear of the Dynamic Island. */
+@media (orientation: landscape) and (max-height: 499px) {
+  html.native-app .native-shell {
+    /* Height between the shell's top padding and the tab bar's clearance:
+       as wide as the square board's column needs to be. */
+    --phone-play-h: calc(var(--native-viewport-height) - max(8px, var(--status-h)) - var(--tabs-h) - 10px);
+    --phone-board-col: min(var(--phone-play-h), 50vw);
+    --phone-keys-col: clamp(300px, 46vw, 440px);
+    --phone-games-gap: clamp(12px, 2.4vw, 22px);
+  }
+
+  /* --- Games ------------------------------------------------------ */
+  html.native-app .games-shell,
+  html.native-app .native-shell.has-mini-player .games-shell {
+    grid-template-columns: minmax(0, 1fr) var(--phone-board-col);
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+    column-gap: var(--phone-games-gap);
+    padding: max(8px, var(--status-h)) max(12px, env(safe-area-inset-right))
+      calc(var(--tabs-h) + 10px) max(12px, env(safe-area-inset-left));
+  }
+  html.native-app .native-shell .games-shell.games-words {
+    grid-template-columns: minmax(0, 1fr) var(--phone-keys-col);
+  }
+  html.native-app .games-shell > .game-card { display: contents; }
+
+  /* The tab bar already names the parlour; its heading and footnote give
+     their height to the boards. */
+  html.native-app .games-head,
+  html.native-app .games-privacy { display: none; }
+
+  html.native-app .games-switcher {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: 1fr 1fr;
+    margin: 0;
+  }
+
+  html.native-app .game-card .game-title-row {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(217, 181, 116, 0.14);
+  }
+  html.native-app .game-card .game-reset { grid-column: auto; margin: 0; }
+
+  html.native-app .game-card .game-message {
+    grid-column: 1;
+    grid-row: 7;
+    margin: 6px 2px 0;
+    text-align: left;
+    font-size: .7rem;
+    line-height: 1.4;
+  }
+
+  /* Chapter Match: tallies under the title, the board flush right at full
+     height. The playing strip docks under the reading column. */
+  html.native-app .match-record { grid-column: 1; grid-row: 4; align-self: auto; margin: 10px 2px 0; }
+  html.native-app .match-score { grid-column: 1; grid-row: 5; align-self: auto; margin: 6px 2px 0; }
+  html.native-app .match-score strong { font-size: 1.35rem; }
+  html.native-app .match-board-frame { grid-column: 2; grid-row: 1 / -1; min-height: 0; place-items: center end; }
+  html.native-app .match-piece { font-size: clamp(.9rem, 2.2vw, 1.25rem); }
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board {
+    width: min(100%, var(--phone-play-h));
+  }
+  @supports (width: 1cqh) {
+    html.native-app .match-board,
+    html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+  }
+  html.native-app .native-shell.has-mini-player .match-game .game-message {
+    margin-bottom: calc(var(--mini-player-height) + 10px);
+  }
+  html.native-app .native-shell.tab-games .mini-player {
+    right: calc(max(12px, env(safe-area-inset-right)) + var(--phone-board-col) + var(--phone-games-gap));
+  }
+
+  /* Word Grid: guesses read on the left; the keyboard types against the
+     right edge, with the playing strip docked beneath it. */
+  html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 8px; place-items: center start; }
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board {
+    width: min(100%, max(96px, calc((var(--phone-play-h) - 150px) * .82)));
+  }
+  @supports (width: 1cqh) {
+    html.native-app .word-board,
+    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 82cqh); }
+  }
+  html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 6px; }
+  html.native-app .word-keys-row { gap: 4px; }
+  html.native-app .word-key { max-width: 40px; min-height: 42px; border-radius: 8px; font-size: .8rem; }
+  html.native-app .word-key.wide { max-width: 60px; font-size: .62rem; }
+  html.native-app .native-shell.has-mini-player .word-keys {
+    margin-bottom: calc(var(--mini-player-height) + 10px);
+  }
+  html.native-app .native-shell.tab-games.games-words .mini-player {
+    left: calc(100vw - max(12px, env(safe-area-inset-right)) - var(--phone-keys-col));
+    right: max(12px, env(safe-area-inset-right));
+  }
+
+  /* --- Ledger ----------------------------------------------------- */
+  html.native-app .profile-page.ledger-dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 12px 14px;
+    padding-top: max(10px, var(--status-h));
+    padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+  }
+  html.native-app .ledger-dashboard > * { grid-column: 1 / -1; min-width: 0; }
+  html.native-app .ledger-dashboard > .profile-headline,
+  html.native-app .ledger-dashboard > .profile-calendar { grid-column: auto; }
+  html.native-app .ledger-dashboard.ledger-device-only > .profile-headline { grid-column: 1 / -1; }
+
+  html.native-app .ledger-dashboard .profile-head { gap: 10px; }
+  html.native-app .ledger-dashboard .profile-mono { width: 32px; height: 32px; flex-basis: 32px; font-size: 14px; border-radius: 10px; }
+  html.native-app .ledger-dashboard .profile-id h1 { font-size: 20px; }
+  html.native-app .ledger-dashboard .ledger-owner { margin-top: 2px; font-size: 12px; }
+  html.native-app .ledger-dashboard .profile-id p { margin-top: 1px; font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-headline { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; padding: 12px 14px; border-radius: 14px; }
+  html.native-app .ledger-dashboard .headline-primary { padding: 0 14px 0 0; border-right: 1px solid #514439; border-bottom: 0; }
+  html.native-app .ledger-dashboard .headline-value { font-size: 36px; }
+  html.native-app .ledger-dashboard .headline-label { font-size: 10px; }
+  html.native-app .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 10px; }
+  html.native-app .ledger-dashboard .headline-secondary > div { gap: 3px; }
+  html.native-app .ledger-dashboard .headline-secondary dd { font-size: 18px; }
+  html.native-app .ledger-dashboard .headline-secondary dt { font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-calendar { display: flex; flex-direction: column; justify-content: space-between; padding: 10px 12px; border-radius: 14px; }
+  html.native-app .ledger-dashboard .profile-calendar header { margin-bottom: 6px; }
+  html.native-app .ledger-dashboard .profile-calendar h2 { font-size: 14px; }
+  html.native-app .ledger-dashboard .calendar-weeks,
+  html.native-app .ledger-dashboard .calendar-week,
+  html.native-app .ledger-dashboard .calendar-weekdays { gap: 3px; }
+  html.native-app .ledger-dashboard .calendar-cell,
+  html.native-app .ledger-dashboard .calendar-weekdays span { height: 11px; }
+  html.native-app .ledger-dashboard .calendar-footer { margin-top: 6px; }
+  html.native-app .ledger-dashboard .calendar-footer p { font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-favorites { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; padding: 0 4px; }
+  html.native-app .ledger-dashboard .profile-favorites span { font-size: 10px; }
+  html.native-app .ledger-dashboard .profile-favorites strong { font-size: 13px; }
+
+  html.native-app .ledger-dashboard .ledger-achievements { padding-top: 12px; }
+  html.native-app .ledger-dashboard .achievements-heading h2 { font-size: 16px; margin-bottom: 2px; }
+  html.native-app .ledger-dashboard .achievements-heading p { font-size: 10px; }
+  html.native-app .ledger-dashboard .achievement-tally > strong { font-size: 18px; }
+  html.native-app .ledger-dashboard .achievement-filters { margin: 8px 0; }
+  html.native-app .ledger-dashboard .achievement-filters button { min-height: 30px; padding: 5px 10px; }
+  html.native-app .ledger-dashboard .achievement-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  html.native-app .ledger-dashboard .achievement-card { padding: 10px 12px; border-radius: 12px; }
+  html.native-app .ledger-dashboard .achievement-seal { width: 26px; height: 26px; border-radius: 8px; }
+  html.native-app .ledger-dashboard .achievement-card h3 { font-size: 13px; margin: 6px 0 3px; }
+  html.native-app .ledger-dashboard .achievement-card p { font-size: 10px; line-height: 1.35; }
+
+  html.native-app .ledger-dashboard .profile-recent h2 { font-size: 14px; }
+  html.native-app .ledger-dashboard .profile-recent ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
+  html.native-app .ledger-dashboard .profile-recent li:nth-last-child(2):nth-child(odd) { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
+  html.native-app .ledger-dashboard .recent-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; padding: 6px 0; }
+  html.native-app .ledger-dashboard .recent-cover { width: 32px; height: 32px; }
+
+  /* --- Settings --------------------------------------------------- */
+  html.native-app .settings-shell {
+    gap: 0;
+    padding: max(10px, var(--status-h)) max(16px, env(safe-area-inset-right))
+      calc(var(--tabs-h) + 24px) max(16px, env(safe-area-inset-left));
+  }
+  html.native-app .settings-head { margin-bottom: 10px; }
+  html.native-app .settings-head h1 { font-size: 1.7rem; }
+  html.native-app .settings-cards {
+    display: block;
+    column-count: 2;
+    column-gap: 14px;
+  }
+  /* Inline-level cards carry their bottom margin inside their own line, so
+     a column never opens with the previous column's leftover spacing. */
+  html.native-app .settings-cards > * {
+    display: inline-grid;
+    width: 100%;
+    vertical-align: top;
+    break-inside: avoid;
+    margin-bottom: 14px;
+  }
+}
+
+/* ===================== Landscape shelf =====================
+   On its side the shelf is read for its books. The header's controls fold
+   into a toolbar, and the grid becomes a dense wall of covers whose reading
+   state sits on the cover itself: a gold rule along the bottom edge for a
+   book under way, a bound ribbon for one finished. */
+
+/* --- A shelf wide enough for one toolbar (phone landscape, iPad full shelf) --- */
+html.native-app .native-shell.shelf-folded > .library-pane {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 16px;
+  row-gap: 10px;
+  align-content: start;
+}
+html.native-app .native-shell.shelf-folded > .library-pane > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+html.native-app .native-shell.shelf-folded > .library-pane > .pane-title {
+  grid-column: 1;
+  grid-row: 1;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title .eyebrow {
+  display: none;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  white-space: nowrap;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-actions {
+  gap: 4px;
+  margin-left: 4px;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title .icon-button {
+  width: 34px;
+  height: 34px;
+}
+/* The toolbar's own pieces join the pane's grid: search and the ordering
+   controls share the wordmark's line, the collection switch and the count
+   the line below, and an open filter panel spans beneath them. */
+html.native-app .native-shell.shelf-folded > .library-pane > .library-toolbar {
+  display: contents;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > * {
+  grid-column: 1 / -1;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-search-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-controls {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-sort {
+  flex: 0 1 130px;
+}
+/* The chosen order reads for itself on a toolbar; its label stays for
+   assistive technology and gives its width to search. */
+html.native-app .native-shell.shelf-folded > .library-pane .library-sort > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .source-toggle {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  align-self: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+/* iPad hangs its tab bar over the middle of the top edge, so the first line
+   keeps to the ends — wordmark and actions left, ordering right — and search
+   takes the middle of the second line, below the bar. */
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane {
+  padding-top: calc(env(safe-area-inset-top) + 14px);
+  row-gap: 12px;
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .pane-title {
+  min-height: var(--native-tabs-top, 0px);
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-search-row {
+  grid-row: 2;
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
+  grid-column: 3;
+}
+
+/* --- The iPad's shelf page beside the player, in landscape --- */
+@media (orientation: landscape) and (min-width: 720px) and (min-height: 500px) {
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-title {
+    row-gap: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-title .eyebrow {
+    display: none;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane h1 {
+    margin: 0;
+    font-size: 1.75rem;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-actions {
+    gap: 5px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-actions .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-toolbar {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-controls {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-results-summary {
+    margin-bottom: 8px;
+  }
+}
+
+/* --- Both landscape shelves: controls at toolbar height --- */
+html.native-app .native-shell.shelf-landscape .library-search {
+  padding: 8px 12px;
+}
+html.native-app .native-shell.shelf-landscape .library-filter-toggle {
+  min-height: 38px;
+  padding: 0 11px;
+}
+/* The sliders glyph names the control; the word gives its width to search. */
+html.native-app .native-shell.shelf-landscape .library-filter-toggle > span {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .library-sort select {
+  min-height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .library-sort-direction {
+  min-height: 38px;
+  height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .view-toggle button {
+  width: 36px;
+  min-height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .source-toggle button {
+  min-height: 34px;
+  padding: 4px 12px;
+}
+html.native-app .native-shell.shelf-landscape .source-toggle-copy small {
+  display: none;
+}
+
+/* --- The book wall --- */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 20px 14px;
+}
+html.native-app .native-shell.shelf-landscape.shelf-folded .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+}
+html.native-app .native-shell.shelf-landscape.device-ipad:not(.shelf-folded) .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+  gap: 16px 10px;
+}
+
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "cover cover"
+    "title title"
+    "byline byline"
+    "meta glyph";
+  gap: 0 6px;
+  align-content: start;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .cover-mark {
+  grid-area: cover;
+  margin-bottom: 8px;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-availability {
+  top: 4px;
+  right: 4px;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 4px;
+}
+/* The tile's text joins the tile's own grid, so reading state can move onto
+   the cover while the words stay in reading order beneath it. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text {
+  display: contents;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text strong {
+  grid-area: title;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text > strong + span {
+  grid-area: byline;
+  margin-top: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.6rem;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-sort-context,
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-shared-readers {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-runtime-tag {
+  grid-area: meta;
+  margin-top: 4px;
+  font-size: 0.56rem;
+}
+/* Read along keeps its glyph; its word would crowd the meta line. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-readalong-tag {
+  grid-area: glyph;
+  align-self: end;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  /* The base tag pins its size with !important for the roomy rows. */
+  font-size: 0 !important;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-readalong-tag svg {
+  width: 12px;
+  height: 12px;
+}
+
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress {
+  display: contents;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress em {
+  display: none;
+}
+/* Under way: time left replaces the runtime, and the cover's bottom edge
+   fills with how far the listener has got. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row.in-progress .book-runtime-tag {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress em {
+  display: block;
+  grid-area: meta;
+  margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.54rem;
+  letter-spacing: 0.08em;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress::before,
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress i {
+  grid-area: cover;
+  align-self: end;
+  position: relative;
+  inset: auto;
+  height: 3px;
+  margin-bottom: 8px;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress::before {
+  content: "";
+  z-index: 2;
+  background: rgba(16, 10, 6, 0.72);
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress i {
+  z-index: 3;
+  justify-self: start;
+  min-width: 3px;
+  background: var(--gold-soft);
+  box-shadow: 0 0 6px rgba(217, 181, 116, 0.45);
+}
+/* Finished: a ribbon bound into the top of the cover. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.finished::after {
+  content: "";
+  grid-area: cover;
+  align-self: start;
+  justify-self: start;
+  z-index: 3;
+  width: 10px;
+  height: 24px;
+  margin-left: 9px;
+  background: linear-gradient(90deg, #6f2317, var(--oxblood) 45%, #6f2317);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%);
+}
+
+/* ===================== Landscape administration =====================
+   Like Settings on its side: the heading, notices and section list keep a
+   column of their own that stays put, and the chosen section scrolls in the
+   column beside it. */
+@media (orientation: landscape) and (min-width: 700px) {
+  html.native-app .admin-shell:not(.admin-overlay) {
+    display: grid;
+    grid-template-columns: clamp(180px, 22vw, 250px) minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    column-gap: clamp(18px, 3vw, 36px);
+    overflow: hidden;
+    padding-top: max(12px, calc(var(--status-h) + 12px));
+    padding-bottom: 0;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > * {
+    grid-column: 2;
+    min-width: 0;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-head {
+    grid-column: 1;
+    grid-row: 1;
+    width: auto;
+    margin: 0;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-head h1 {
+    font-size: clamp(1.6rem, 2.6vw, 2.2rem);
+    line-height: 1.02;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-head p {
+    display: none;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-message {
+    grid-column: 1;
+    width: auto;
+    margin: 10px 0 0;
+    font-size: 0.8rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-nav {
+    grid-column: 1;
+    grid-row: 4;
+    align-self: start;
+    max-height: 100%;
+    overflow-y: auto;
+    width: auto;
+    margin: 14px 0 0;
+    flex-direction: column;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-nav button {
+    flex: none;
+    justify-content: flex-start;
+    padding: 0 12px;
+    text-align: left;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-content {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    min-height: 0;
+    width: auto;
+    margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* The column scrolls under the floating tab bar; a closing spacer lets its
+     last card rise clear of it. */
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-content::after {
+    content: "";
+    display: block;
+    grid-column: 1 / -1;
+    height: calc(var(--tabs-h) + 32px);
+  }
+}
+
+/* A phone on its side: the content column is narrow, so its cards stack. */
+@media (orientation: landscape) and (min-width: 700px) and (max-height: 499px) {
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics {
+    gap: 8px;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics article {
+    padding: 11px 14px;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics strong {
+    font-size: 1.6rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-back .download-btn {
+    width: 100%;
+    padding-inline: 10px;
+    white-space: nowrap;
+    font-size: 0.58rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-user-layout {
+    grid-template-columns: 1fr;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-create-user {
+    position: static;
   }
 }
 
