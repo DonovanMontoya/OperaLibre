@@ -864,6 +864,16 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
 type LibrarySource = "local" | "audible";
+const LANDSCAPE_QUERY = "(orientation: landscape)";
+// A phone on its side: short enough that the iPad spread never applies.
+const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)";
+function readLandscape(): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.(LANDSCAPE_QUERY).matches;
+}
+function readShortLandscape(): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
+}
+
 /** Which pages of the iPad Shelf spread are showing. */
 type ShelfLayout = "split" | "player" | "library";
 type MetadataEditorState = {
@@ -4122,6 +4132,30 @@ function MainApp({
     wideShelf.addEventListener("change", restoreSplitLayout);
     return () => wideShelf.removeEventListener("change", restoreSplitLayout);
   }, [native, shelfLayout]);
+
+  // Landscape shelves trade chrome for covers: a phone on its side, or an
+  // iPad in landscape, gets the dense book wall, and any shelf wide enough
+  // to run its controls along one toolbar folds its header into it.
+  const [landscape, setLandscape] = useState(() => readLandscape());
+  const [shortLandscape, setShortLandscape] = useState(() => readShortLandscape());
+  useEffect(() => {
+    if (!native) return;
+    const wide = window.matchMedia(LANDSCAPE_QUERY);
+    const short = window.matchMedia(SHORT_LANDSCAPE_QUERY);
+    const update = () => {
+      setLandscape(wide.matches);
+      setShortLandscape(short.matches);
+    };
+    update();
+    wide.addEventListener("change", update);
+    short.addEventListener("change", update);
+    return () => {
+      wide.removeEventListener("change", update);
+      short.removeEventListener("change", update);
+    };
+  }, [native]);
+  const shelfLandscape = native && landscape && (ipad || shortLandscape);
+  const shelfFolded = native && ((!ipad && shortLandscape) || shelfLayout === "library");
 
   const isCompactView = viewMode === "compact";
 
@@ -8605,7 +8639,7 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
+          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${shelfLandscape ? " shelf-landscape" : ""}${shelfFolded ? " shelf-folded" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >

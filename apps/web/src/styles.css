@@ -13337,6 +13337,311 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   }
 }
 
+/* ===================== Landscape shelf =====================
+   On its side the shelf is read for its books. The header's controls fold
+   into a toolbar, and the grid becomes a dense wall of covers whose reading
+   state sits on the cover itself: a gold rule along the bottom edge for a
+   book under way, a bound ribbon for one finished. */
+
+/* --- A shelf wide enough for one toolbar (phone landscape, iPad full shelf) --- */
+html.native-app .native-shell.shelf-folded > .library-pane {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 16px;
+  row-gap: 10px;
+  align-content: start;
+}
+html.native-app .native-shell.shelf-folded > .library-pane > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+html.native-app .native-shell.shelf-folded > .library-pane > .pane-title {
+  grid-column: 1;
+  grid-row: 1;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title .eyebrow {
+  display: none;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  white-space: nowrap;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-actions {
+  gap: 4px;
+  margin-left: 4px;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title .icon-button {
+  width: 34px;
+  height: 34px;
+}
+/* The toolbar's own pieces join the pane's grid: search and the ordering
+   controls share the wordmark's line, the collection switch and the count
+   the line below, and an open filter panel spans beneath them. */
+html.native-app .native-shell.shelf-folded > .library-pane > .library-toolbar {
+  display: contents;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > * {
+  grid-column: 1 / -1;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-search-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-controls {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-sort {
+  flex: 0 1 130px;
+}
+/* The chosen order reads for itself on a toolbar; its label stays for
+   assistive technology and gives its width to search. */
+html.native-app .native-shell.shelf-folded > .library-pane .library-sort > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .source-toggle {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  align-self: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+/* iPad hangs its tab bar over the middle of the top edge, so the first line
+   keeps to the ends — wordmark and actions left, ordering right — and search
+   takes the middle of the second line, below the bar. */
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane {
+  padding-top: calc(env(safe-area-inset-top) + 14px);
+  row-gap: 12px;
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .pane-title {
+  min-height: var(--native-tabs-top, 0px);
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-search-row {
+  grid-row: 2;
+}
+html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
+  grid-column: 3;
+}
+
+/* --- The iPad's shelf page beside the player, in landscape --- */
+@media (orientation: landscape) and (min-width: 720px) and (min-height: 500px) {
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-title {
+    row-gap: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-title .eyebrow {
+    display: none;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane h1 {
+    margin: 0;
+    font-size: 1.75rem;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-actions {
+    gap: 5px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .pane-actions .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-toolbar {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-controls {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  html.native-app .native-shell.device-ipad:not(.shelf-folded) > .library-pane .library-results-summary {
+    margin-bottom: 8px;
+  }
+}
+
+/* --- Both landscape shelves: controls at toolbar height --- */
+html.native-app .native-shell.shelf-landscape .library-search {
+  padding: 8px 12px;
+}
+html.native-app .native-shell.shelf-landscape .library-filter-toggle {
+  min-height: 38px;
+  padding: 0 11px;
+}
+/* The sliders glyph names the control; the word gives its width to search. */
+html.native-app .native-shell.shelf-landscape .library-filter-toggle > span {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .library-sort select {
+  min-height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .library-sort-direction {
+  min-height: 38px;
+  height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .view-toggle button {
+  width: 36px;
+  min-height: 38px;
+}
+html.native-app .native-shell.shelf-landscape .source-toggle button {
+  min-height: 34px;
+  padding: 4px 12px;
+}
+html.native-app .native-shell.shelf-landscape .source-toggle-copy small {
+  display: none;
+}
+
+/* --- The book wall --- */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 20px 14px;
+}
+html.native-app .native-shell.shelf-landscape.shelf-folded .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+}
+html.native-app .native-shell.shelf-landscape.device-ipad:not(.shelf-folded) .book-list.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+  gap: 16px 10px;
+}
+
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "cover cover"
+    "title title"
+    "byline byline"
+    "meta glyph";
+  gap: 0 6px;
+  align-content: start;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .cover-mark {
+  grid-area: cover;
+  margin-bottom: 8px;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-availability {
+  top: 4px;
+  right: 4px;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 4px;
+}
+/* The tile's text joins the tile's own grid, so reading state can move onto
+   the cover while the words stay in reading order beneath it. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text {
+  display: contents;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text strong {
+  grid-area: title;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-text > strong + span {
+  grid-area: byline;
+  margin-top: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.6rem;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-sort-context,
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-shared-readers {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-runtime-tag {
+  grid-area: meta;
+  margin-top: 4px;
+  font-size: 0.56rem;
+}
+/* Read along keeps its glyph; its word would crowd the meta line. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-readalong-tag {
+  grid-area: glyph;
+  align-self: end;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  /* The base tag pins its size with !important for the roomy rows. */
+  font-size: 0 !important;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-readalong-tag svg {
+  width: 12px;
+  height: 12px;
+}
+
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress {
+  display: contents;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress em {
+  display: none;
+}
+/* Under way: time left replaces the runtime, and the cover's bottom edge
+   fills with how far the listener has got. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row:has(.book-progress.inProgress) .book-runtime-tag {
+  display: none;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress em {
+  display: block;
+  grid-area: meta;
+  margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.54rem;
+  letter-spacing: 0.08em;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress::before,
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress i {
+  grid-area: cover;
+  align-self: end;
+  position: relative;
+  inset: auto;
+  height: 3px;
+  margin-bottom: 8px;
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress::before {
+  content: "";
+  z-index: 2;
+  background: rgba(16, 10, 6, 0.72);
+}
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress i {
+  z-index: 3;
+  justify-self: start;
+  min-width: 3px;
+  background: var(--gold-soft);
+  box-shadow: 0 0 6px rgba(217, 181, 116, 0.45);
+}
+/* Finished: a ribbon bound into the top of the cover. */
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.finished::after {
+  content: "";
+  grid-area: cover;
+  align-self: start;
+  justify-self: start;
+  z-index: 3;
+  width: 10px;
+  height: 24px;
+  margin-left: 9px;
+  background: linear-gradient(90deg, #6f2317, var(--oxblood) 45%, #6f2317);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%);
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
