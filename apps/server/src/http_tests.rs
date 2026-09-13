@@ -212,6 +212,70 @@ async fn libro_import_settings_require_owner_and_readers_cannot_inspect_server_f
     );
 }
 
+#[tokio::test]
+async fn deleting_user_removes_libro_credentials_under_the_account_guard() {
+    let server = Arc::new(TestServer::start(1).await);
+    let owner = server.setup_owner().await;
+    let response = server
+        .send_json(
+            "POST",
+            "/api/users",
+            &owner,
+            serde_json::json!({
+                "username":"libro-reader", "password":"reader-password-1234", "isAdmin":false
+            }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    let id = server
+        .state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .find(|user| user.username == "libro-reader")
+        .unwrap()
+        .id
+        .clone();
+    let credential = libro_account::account_path(&server.state, &id);
+    std::fs::create_dir_all(credential.parent().unwrap()).unwrap();
+    std::fs::write(
+        &credential,
+        br#"{"email":"fixture@example.test","token":"fixture-token","books":[],"synced_at":null}"#,
+    )
+    .unwrap();
+    let guard = libro_account::account_guard(&server.state, &id).await;
+    let worker = server.clone();
+    let deleted_id = id.clone();
+    let deletion = tokio::spawn(async move {
+        worker
+            .send_json(
+                "DELETE",
+                &format!("/api/users/{deleted_id}"),
+                &owner,
+                serde_json::json!({}),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(!deletion.is_finished());
+    assert!(credential.exists());
+    drop(guard);
+    assert_eq!(deletion.await.unwrap().status, StatusCode::OK);
+    assert!(!credential.exists());
+    assert!(
+        !server
+            .state
+            .users
+            .read()
+            .await
+            .users
+            .iter()
+            .any(|user| user.id == id)
+    );
+}
+
 /// A booted server with a temporary data directory and a fixture library.
 struct TestServer {
     router: Router,
