@@ -1,5 +1,14 @@
 import type { LibroAccountStatus } from "./types.ts";
 
+export function libroCoverURL(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const url = new URL(raw.trim(), "https://libro.fm/");
+    if (url.protocol === "http:") url.protocol = "https:";
+    return url.protocol === "https:" && !url.username && !url.password && (!url.port || url.port === "443") ? url.href : null;
+  } catch { return null; }
+}
+
 export function libroDownloadURL(raw: unknown): string {
   if (typeof raw !== "string") throw new Error("Libro.fm returned an invalid download address.");
   const url = new URL(raw);
@@ -34,7 +43,7 @@ export function libroPage(value: unknown): { pages: number; books: LibroAccountS
     const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : [];
     return {
       isbn, title: raw.title, authors: strings(raw.authors),
-      cover_url: typeof raw.cover_url === "string" && raw.cover_url.startsWith("https://") ? raw.cover_url : null,
+      cover_url: libroCoverURL(raw.cover_url),
       audiobook_info: { narrators: strings(raw.audiobook_info?.narrators), duration: typeof raw.audiobook_info?.duration === "number" ? raw.audiobook_info.duration : null },
       description: typeof raw.description === "string" ? raw.description : "", localBookId: null
     };

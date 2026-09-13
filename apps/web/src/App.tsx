@@ -8955,14 +8955,14 @@ function MainApp({
                   {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
                 </button>
               </div>
-              {librarySource !== "local" ? (
+              {librarySource !== "local" && (canBrowseLibation || (supportsLibroDevice() && !localMode && isOperaLibre)) ? (
                 <div className="purchase-source">
                   <label htmlFor="purchase-source">Browse purchases</label>
                   <select id="purchase-source" value={librarySource} onChange={event => setLibrarySource(event.currentTarget.value === "audible" ? "audible" : "libro")}>
                     {canBrowseLibation ? <option value="audible">Audible{brokenLibationAccounts.length > 0 ? " — needs attention" : ""}</option> : null}
                     <option value="libro">Libro.fm</option>
                   </select>
-                  {librarySource === "libro" && supportsLibroDevice() ? <>
+                  {librarySource === "libro" && supportsLibroDevice() && !localMode && isOperaLibre ? <>
                     <label htmlFor="libro-destination">Download destination</label>
                     <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
                       {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
@@ -9158,14 +9158,14 @@ function MainApp({
             </div>
           ) : null}
 
-          <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
+          {librarySource !== "libro" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
             <span>
               {librarySource === "local"
                 ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
-                : librarySource === "libro" ? "Libro.fm purchases" : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
             </span>
             <span>{sortOrderLabel}</span>
-          </div>
+          </div> : null}
 
         </div>
 

@@ -3,6 +3,33 @@ import { BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Se
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus } from "./types";
 import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
+import { libroCoverURL } from "./libroDevicePolicy";
+import { getDeviceBooks } from "./localLibrary";
+import { getOfflineCoverUrl } from "./offline";
+
+function LibroCover({ book, device }: { book: LibroAccountStatus["books"][number]; device: boolean }) {
+  const [local, setLocal] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string[]>([]);
+  useEffect(() => {
+    let stopped = false;
+    let ownedURL: string | null = null;
+    setLocal(null);
+    setFailed([]);
+    const imported = device && book.localBookId ? getDeviceBooks().find(item => item.id === book.localBookId) : null;
+    if (imported) void getOfflineCoverUrl(imported).then(url => {
+      ownedURL = url;
+      if (!stopped) setLocal(url);
+      else if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+    }).catch(() => undefined);
+    return () => { stopped = true; if (ownedURL?.startsWith("blob:")) URL.revokeObjectURL(ownedURL); };
+  }, [device, book.localBookId, book.cover_url]);
+  const remote = libroCoverURL(book.cover_url);
+  const cover = local && !failed.includes(local) ? local : remote && !failed.includes(remote) ? remote : null;
+  return <div className="libro-purchase-cover">
+    <span className="libro-cover-fallback" aria-hidden="true"><BookOpen size={28} /><span>{book.title}</span></span>
+    {cover ? <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(previous => [...previous, cover])} /> : null}
+  </div>;
+}
 
 const serverBackend = { status: getLibroAccount, connect: connectLibroAccount, disconnect: disconnectLibroAccount,
   refresh: refreshLibroAccount, import: importLibroPurchase, books: getBooks };
@@ -88,15 +115,14 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
   const loadingLibrary = !!refreshJob && active(refreshJob);
   return <section className="libro-catalog" aria-label="Libro.fm library">
     <header className="libro-catalog-head">
-      <div><h2>Libro.fm</h2><p>{account?.connected ? account.email : "Connect your account to browse and import your purchases."}</p></div>
-      {account?.connected ? <div className="libro-catalog-actions">
+      {!account?.connected ? <div><h2>Libro.fm</h2><p>Connect your account to browse and import your purchases.</p></div> : null}
+      {account?.connected ? <details className="libro-account-details"><summary>Libro.fm account</summary><p>{account.email}</p><div className="libro-catalog-actions">
         <button type="button" disabled={!!busy || loadingLibrary} onClick={() => void act("refresh", backend.refresh)}>{loadingLibrary ? <LoaderCircle size={15} className="spin-icon" /> : <RefreshCcw size={15} />} Refresh</button>
         <button type="button" disabled={!!busy} onClick={() => { setEmail(account.email ?? ""); setReconnect(!reconnect); }}>Reconnect</button>
         <button type="button" disabled={!!busy || account.jobs.some(active)} onClick={() => void act("disconnect", backend.disconnect)}>Disconnect</button>
-      </div> : null}
+      </div>{device ? <p className="libro-catalog-summary">Download here, listen offline. No server needed. Reopen this screen to finish background imports.</p> : null}</details> : null}
     </header>
     {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
-    {device ? <p className="libro-catalog-summary">Download here, listen offline. No server needed. Reopen this screen to finish background imports.</p> : null}
     {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
       <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
       <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
@@ -118,12 +144,8 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
       <ul className={`libro-purchases libro-purchases--${view}`}>{books.map(book => {
         const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));
         const importing = !!job && active(job);
-        const cover = book.cover_url?.startsWith("https://") ? book.cover_url : null;
         return <li key={book.isbn}>
-          <div className="libro-purchase-cover" key={cover}>
-            <span className="libro-cover-fallback" aria-hidden="true"><BookOpen size={28} /><span>{book.title}</span></span>
-            {cover ? <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = "none"; }} /> : null}
-          </div>
+          <LibroCover book={book} device={device} />
           <div className="libro-purchase-copy"><h3>{book.title}</h3><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
             {device && importing ? <button type="button" disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel download</button> : null}
