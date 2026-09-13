@@ -77,7 +77,7 @@ pub(crate) struct Login {
     password: String,
 }
 
-fn account_path(state: &AppState, user_id: &str) -> PathBuf {
+pub(crate) fn account_path(state: &AppState, user_id: &str) -> PathBuf {
     // User IDs are not filesystem paths, even for imported account databases.
     let key: String = Sha256::digest(user_id.as_bytes())
         .iter()
@@ -97,7 +97,7 @@ async fn read_account(state: &AppState, user_id: &str) -> Result<Option<Account>
     }
 }
 
-async fn account_guard(state: &AppState, user_id: &str) -> OwnedMutexGuard<()> {
+pub(crate) async fn account_guard(state: &AppState, user_id: &str) -> OwnedMutexGuard<()> {
     let lock = {
         let mut gates = state.libro.account_gates.lock().await;
         gates.retain(|_, gate| gate.strong_count() > 0);
@@ -346,6 +346,16 @@ pub(crate) async fn connect_libro_account(
         ));
     }
     let guard = account_guard(&state, &auth.id).await;
+    if !state
+        .users
+        .read()
+        .await
+        .users
+        .iter()
+        .any(|user| user.id == auth.id)
+    {
+        return Err(ApiError::not_found("User no longer exists."));
+    }
     let api = Api::new()?;
     let response = api.client.post(format!("{}oauth/token", api.root))
         .json(&serde_json::json!({"grant_type":"password","username":login.email.trim(),"password":login.password}))
@@ -498,9 +508,17 @@ pub(crate) async fn import_libro_purchase(
     if created {
         let job = id.clone();
         tokio::spawn(run_job(state.clone(), id.clone(), async move {
-            let _slot = state.upload_lock.lock().await;
-            update_job_running(&state, &job).await;
-            let result = acquire_book(&state, &auth.id, &account.token, &book, &job).await;
+            let result = async {
+                let _slot = state
+                    .download_task_slots
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| ApiError::internal("Downloads are shutting down."))?;
+                update_job_running(&state, &job).await;
+                acquire_book(&state, &auth.id, &account.token, &book, &job).await
+            }
+            .await;
             finish(&state, &job, result).await;
         }));
     }
@@ -720,6 +738,18 @@ async fn acquire_book(
     book: &LibroBook,
     job: &str,
 ) -> Result<(), ApiError> {
+    acquire_book_with_api(state, user_id, token, book, job, &Api::new()?).await
+}
+
+async fn acquire_book_with_api(
+    state: &AppState,
+    user_id: &str,
+    token: &str,
+    book: &LibroBook,
+    job: &str,
+    api: &Api,
+) -> Result<(), ApiError> {
+    let mut publication_guard = Some(state.upload_lock.lock().await);
     let destination = state.library_root.join(destination(book));
     fs::create_dir_all(&state.library_root).await?;
     if fs::try_exists(&destination).await? {
@@ -733,10 +763,11 @@ async fn acquire_book(
             ));
         }
     } else {
+        // Staging is private. Network work must not block unrelated mutations.
+        drop(publication_guard.take());
         let staging = tempfile::Builder::new()
             .prefix(UPLOAD_STAGING_PREFIX)
             .tempdir_in(&state.library_root)?;
-        let api = Api::new()?;
         update_job_progress(
             state,
             job,
@@ -853,6 +884,7 @@ async fn acquire_book(
         .await
         .map_err(|_| ApiError::internal("Audio validation stopped."))??;
         write_json_atomic(&staging.path().join(BOOK_SIDECAR), book).await?;
+        publication_guard = Some(state.upload_lock.lock().await);
         if fs::try_exists(&destination).await? {
             return Err(ApiError::conflict(
                 "A library folder appeared during import. Nothing was overwritten.",
@@ -871,6 +903,7 @@ async fn acquire_book(
         ApiError::internal("The imported book could not be indexed. Retry the import.")
     })?;
     grant_user_book_access(state, user_id, &book_id).await?;
+    drop(publication_guard);
     Ok(())
 }
 
@@ -886,6 +919,57 @@ pub(crate) fn libro_metadata_for_group(path: &FsPath) -> Option<LibroBook> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn packaging_wait_does_not_hold_the_global_upload_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let signal = entered.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/api/v10/audiobooks/9780000000001/packaged_m4b",
+            get(move || {
+                let signal = signal.clone();
+                async move {
+                    signal.notify_one();
+                    std::future::pending::<()>().await;
+                    StatusCode::OK
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let worker_state = state.clone();
+        let task = tokio::spawn(async move {
+            let api = Api {
+                root: format!("http://{address}/"),
+                client: reqwest::Client::new(),
+            };
+            acquire_book_with_api(
+                &worker_state,
+                "fixture",
+                "fixture-token",
+                &book("9780000000001"),
+                "fixture-job",
+                &api,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        assert!(
+            state.upload_lock.try_lock().is_ok(),
+            "network work blocked unrelated uploads"
+        );
+        task.abort();
+        let _ = task.await;
+        server.abort();
+    }
 
     #[test]
     fn numeric_isbns_normalize_without_changing_identifiers() {
