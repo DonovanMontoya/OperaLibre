@@ -22,7 +22,7 @@ import {
   type MatchCell
 } from "./games";
 
-type GameName = "words" | "match";
+export type GameName = "words" | "match";
 type WordSave = { word: string; guesses: string[] };
 const WORD_SAVE_KEY = "operalibre.games.word-grid";
 const MATCH_SAVE_KEY = "operalibre.games.chapter-match";
@@ -513,9 +513,12 @@ function ChapterMatch() {
   </section>;
 }
 
-export function GamesPage() {
+export function GamesPage({ onGameChange }: { onGameChange?: (game: GameName) => void } = {}) {
   const [game, setGame] = useState<GameName>("match");
-  return <section className="games-shell" aria-label="Games">
+  // The shell places the now-playing strip by which game is open, and some
+  // supported iOS versions cannot ask the page with :has().
+  useEffect(() => { onGameChange?.(game); }, [game, onGameChange]);
+  return <section className={`games-shell games-${game}`} aria-label="Games">
     <header className="games-head"><span className="eyebrow"><Sparkles size={13} /> The Parlour</span><h1>Games</h1><p>Small diversions for long listens.</p></header>
     <div className="games-switcher" role="tablist" aria-label="Choose a game">
       <button type="button" role="tab" aria-selected={game === "match"} className={game === "match" ? "active" : ""} onClick={() => setGame("match")}><Grid3X3 size={16} /> Chapter Match</button>
