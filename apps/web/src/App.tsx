@@ -348,6 +348,7 @@ import {
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
 import { LibroCatalog } from "./LibroCatalog";
+import { supportsLibroDevice, refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { ProgressSharingCard, isNotifiedOfFinishes } from "./ProgressSharing";
 import {
@@ -3964,6 +3965,8 @@ function MainApp({
   const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [libroRefreshKey, setLibroRefreshKey] = useState(0);
+  const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
+  const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
   const lastPurchaseSource = useRef<"audible" | "libro">("libro");
   useEffect(() => {
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
@@ -8194,12 +8197,12 @@ function MainApp({
     if (librarySource === "audible") {
       await loadLibationBooks();
     } else if (librarySource === "libro") {
-      await refreshLibroAccount();
+      await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
       setLibroRefreshKey(key => key + 1);
     } else {
       await loadBooks();
     }
-  }, [librarySource, loadBooks, loadLibationBooks]);
+  }, [librarySource, libroOnDevice, loadBooks, loadLibationBooks]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
   const hasMiniPlayer = Boolean(playbackBook && currentTrack);
 
@@ -8743,7 +8746,7 @@ function MainApp({
         onClick={() => setLibraryOpen(false)}
       />
 
-      <aside className={`library-pane ${libraryOpen ? "open" : ""}`} {...shelfPull.handlers}>
+      <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
         {native ? (
           <div
             className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
@@ -8941,7 +8944,7 @@ function MainApp({
         </div>
 
         <div className="library-toolbar">
-          {isOperaLibre && !localMode && !demoMode ? (
+          {!demoMode && ((isOperaLibre && !localMode) || supportsLibroDevice()) ? (
             <>
               <div className="source-toggle shelf-navigation" role="group" aria-label="Library navigation">
                 <button type="button" className={librarySource === "local" ? "selected" : ""} onClick={showYourLibrary} aria-pressed={librarySource === "local"}>
@@ -8952,13 +8955,20 @@ function MainApp({
                   {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
                 </button>
               </div>
-              {librarySource !== "local" ? (
+              {librarySource !== "local" && (canBrowseLibation || (supportsLibroDevice() && !localMode && isOperaLibre)) ? (
                 <div className="purchase-source">
                   <label htmlFor="purchase-source">Browse purchases</label>
                   <select id="purchase-source" value={librarySource} onChange={event => setLibrarySource(event.currentTarget.value === "audible" ? "audible" : "libro")}>
                     {canBrowseLibation ? <option value="audible">Audible{brokenLibationAccounts.length > 0 ? " — needs attention" : ""}</option> : null}
                     <option value="libro">Libro.fm</option>
                   </select>
+                  {librarySource === "libro" && supportsLibroDevice() && !localMode && isOperaLibre ? <>
+                    <label htmlFor="libro-destination">Download destination</label>
+                    <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
+                      {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
+                      <option value="device">This device</option>
+                    </select>
+                  </> : null}
                 </div>
               ) : null}
             </>
@@ -9148,14 +9158,14 @@ function MainApp({
             </div>
           ) : null}
 
-          <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
+          {librarySource !== "libro" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
             <span>
               {librarySource === "local"
                 ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
-                : librarySource === "libro" ? "Libro.fm purchases" : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
             </span>
             <span>{sortOrderLabel}</span>
-          </div>
+          </div> : null}
 
         </div>
 
@@ -9337,7 +9347,7 @@ function MainApp({
         ) : null}
 
         {librarySource === "libro" ? (
-          <LibroCatalog refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+          <LibroCatalog key={libroOnDevice ? "device" : "server"} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
         ) : librarySource === "local" ? (
           <>
             {localMode && !connectPromptDismissed && !hasUserConfiguredServer() ? (

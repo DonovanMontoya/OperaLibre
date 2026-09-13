@@ -18,6 +18,7 @@ interface BackgroundDownloadsPlugin {
     jobId: string;
     title: string;
     serverOrigin: string;
+    provider?: "libro";
     files: BackgroundDownloadFile[];
   }): Promise<void>;
   getStatus(options: { jobId: string }): Promise<BackgroundDownloadStatus>;
@@ -25,6 +26,10 @@ interface BackgroundDownloadsPlugin {
 }
 
 const BackgroundDownloads = registerPlugin<BackgroundDownloadsPlugin>("BackgroundDownloads");
+
+export function enqueueLibroDeviceDownload(jobId: string, title: string, files: BackgroundDownloadFile[]) {
+  return BackgroundDownloads.enqueueBook({ jobId, title, files, serverOrigin: "https://libro.fm", provider: "libro" });
+}
 
 function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
