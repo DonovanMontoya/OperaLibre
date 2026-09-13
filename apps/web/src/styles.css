@@ -10814,6 +10814,9 @@ html.native-app .admin-shell:not(.admin-overlay) {
   animation: profile-fade-in 0.2s ease both;
 }
 
+/* Groups the cards for wide layouts; elsewhere it adds no box of its own. */
+.settings-cards { display: contents; }
+
 .settings-head {
   display: flex;
   align-items: center;
@@ -13019,12 +13022,31 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
     margin-top: var(--bar-band);
   }
 
-  /* Settings: title left and Administration right frame the bar. */
+  /* Settings: title left and Administration right frame the bar, and the
+     cards set in two columns below it. */
   html.native-app .native-shell.device-ipad .settings-shell {
+    gap: 0;
     padding-top: calc(var(--clock-h) + 6px);
+    padding-inline: max(28px, env(safe-area-inset-left)) max(28px, env(safe-area-inset-right));
   }
   html.native-app .native-shell.device-ipad .settings-head {
     min-height: var(--bar-band);
+    margin-bottom: 14px;
+  }
+  html.native-app .native-shell.device-ipad .settings-head h1 { font-size: 2.1rem; }
+  html.native-app .native-shell.device-ipad .settings-cards {
+    display: block;
+    column-count: 2;
+    column-gap: 18px;
+  }
+  /* Inline-level cards carry their bottom margin inside their own line, so
+     a column never opens with the previous column's leftover spacing. */
+  html.native-app .native-shell.device-ipad .settings-cards > * {
+    display: inline-grid;
+    width: 100%;
+    vertical-align: top;
+    break-inside: avoid;
+    margin-bottom: 18px;
   }
 }
 
