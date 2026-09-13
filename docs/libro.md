@@ -140,3 +140,31 @@ In Docker, mount the watched folder into the container and enter its container
 path. With the hardened systemd service, place it somewhere the service can read;
 personal home directories may be inaccessible. See
 [Library layout](library-layout.md) and [Deployment](deployment.md).
+
+### Browse stores and connect more accounts
+
+In **Get books**, choose the **All accounts** tab to browse Audible and Libro.fm purchases
+on the same screen. Search applies to both store sections. You can still select
+an individual store and filter purchases by account.
+
+Expand **Libro.fm accounts**, then choose **Add Libro.fm account** to connect another account. Existing connections
+and cached purchases are preserved, including connections saved by older versions.
+Expand **Libro.fm accounts** to reconnect or disconnect a specific account;
+**Refresh all accounts** updates every connected library. Purchases show their
+account email, and imports use that account's connection. Disconnecting an account
+keeps already imported books.
+
+Server connections remain private to your OperaLibre user. Device connections use
+iOS Keychain or Android encrypted storage and are shared by users of that app on
+that device. Server and device connections are separate.
+
+On the **All accounts** tab, the purchase account filter includes both Audible and
+Libro.fm accounts, grouped and labeled by store. Choosing an account shows only
+that account's purchases; **All accounts** restores both stores. The individual
+store tabs keep their own account filters.
+
+Expand **Libro.fm accounts** to save an optional nickname (up to 80 characters).
+Nicknames appear in filters and purchase labels; email addresses remain available
+in account settings. Clearing a nickname restores the email label. Server
+nicknames are saved for your OperaLibre user, while device nicknames stay with the
+secure connection on that device. Refreshing or reconnecting preserves nicknames.

@@ -47,6 +47,8 @@ pub(crate) struct LibroGenre {
 // Never serialize this object into an API response or a log.
 #[derive(Serialize, Deserialize)]
 struct Account {
+    #[serde(default)]
+    nickname: String,
     email: String,
     token: String,
     books: Vec<LibroBook>,
@@ -56,6 +58,7 @@ struct Account {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStatus {
+    accounts: Vec<AccountSummary>,
     connected: bool,
     email: Option<String>,
     synced_at: Option<String>,
@@ -65,9 +68,23 @@ pub(crate) struct AccountStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AccountSummary {
+    nickname: String,
+    email: String,
+    synced_at: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct AccountSelection {
+    email: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CatalogBook {
     #[serde(flatten)]
     book: LibroBook,
+    account_email: String,
     local_book_id: Option<String>,
 }
 
@@ -89,10 +106,21 @@ pub(crate) fn account_path(state: &AppState, user_id: &str) -> PathBuf {
         .join(format!("{key}.json"))
 }
 
-async fn read_account(state: &AppState, user_id: &str) -> Result<Option<Account>, ApiError> {
+async fn read_account(state: &AppState, user_id: &str) -> Result<Vec<Account>, ApiError> {
     match fs::read(account_path(state, user_id)).await {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Ok(bytes) => {
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Stored {
+                Multiple(Vec<Account>),
+                Legacy(Account),
+            }
+            Ok(match serde_json::from_slice(&bytes)? {
+                Stored::Multiple(accounts) => accounts,
+                Stored::Legacy(account) => vec![account],
+            })
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e.into()),
     }
 }
@@ -163,7 +191,7 @@ pub(crate) async fn get_libro_account(
         .iter()
         .map(|(id, path)| (path.clone(), id.clone()))
         .collect();
-    if let Some(account) = &account {
+    for account in &account {
         for book in &account.books {
             let id = paths
                 .get(&state.library_root.join(destination(book)))
@@ -175,6 +203,7 @@ pub(crate) async fn get_libro_account(
                 });
             books.push(CatalogBook {
                 book: book.clone(),
+                account_email: account.email.clone(),
                 local_book_id: id,
             });
         }
@@ -195,9 +224,17 @@ pub(crate) async fn get_libro_account(
     jobs.sort_by_key(|j| std::cmp::Reverse(job_started_timestamp(j)));
     jobs.truncate(30);
     Ok(Json(AccountStatus {
-        connected: account.is_some(),
-        email: account.as_ref().map(|a| a.email.clone()),
-        synced_at: account.and_then(|a| a.synced_at),
+        connected: !account.is_empty(),
+        email: account.first().map(|a| a.email.clone()),
+        synced_at: account.first().and_then(|a| a.synced_at.clone()),
+        accounts: account
+            .iter()
+            .map(|a| AccountSummary {
+                nickname: a.nickname.clone(),
+                email: a.email.clone(),
+                synced_at: a.synced_at.clone(),
+            })
+            .collect(),
         books,
         jobs,
     }))
@@ -370,21 +407,74 @@ pub(crate) async fn connect_libro_account(
             )
         })?;
     let account = Account {
+        nickname: String::new(),
         email: login.email.trim().to_owned(),
         token: token.into(),
         books: Vec::new(),
         synced_at: None,
     };
-    write_json_atomic(&account_path(&state, &auth.id), &account).await?;
+    let mut accounts = read_account(&state, &auth.id).await?;
+    if let Some(existing) = accounts
+        .iter_mut()
+        .find(|a| a.email.eq_ignore_ascii_case(&account.email))
+    {
+        existing.token = account.token;
+    } else {
+        accounts.push(account);
+    }
+    write_json_atomic(&account_path(&state, &auth.id), &accounts).await?;
     drop(guard);
     refresh_libro_account(State(state), Extension(auth)).await
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AccountNickname {
+    email: String,
+    nickname: String,
+}
+
+pub(crate) async fn rename_libro_account(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(update): Json<AccountNickname>,
+) -> Result<StatusCode, ApiError> {
+    let nickname = update.nickname.trim();
+    if nickname.chars().count() > 80 || nickname.chars().any(char::is_control) {
+        return Err(ApiError::bad_request(
+            "Use a nickname of at most 80 characters without control characters.",
+        ));
+    }
+    let _guard = account_guard(&state, &auth.id).await;
+    let mut accounts = read_account(&state, &auth.id).await?;
+    let account = accounts
+        .iter_mut()
+        .find(|a| a.email.eq_ignore_ascii_case(&update.email))
+        .ok_or_else(|| ApiError::not_found("Libro.fm account not found."))?;
+    account.nickname = nickname.to_owned();
+    write_json_atomic(&account_path(&state, &auth.id), &accounts).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn disconnect_libro_account(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    Query(selection): Query<AccountSelection>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = account_guard(&state, &auth.id).await;
+    let mut accounts = read_account(&state, &auth.id).await?;
+    if let Some(email) = selection.email {
+        accounts.retain(|a| !a.email.eq_ignore_ascii_case(&email));
+    } else if accounts.len() > 1 {
+        return Err(ApiError::bad_request(
+            "Choose the Libro.fm account to disconnect.",
+        ));
+    } else {
+        accounts.clear();
+    }
+    if !accounts.is_empty() {
+        write_json_atomic(&account_path(&state, &auth.id), &accounts).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     match fs::remove_file(account_path(&state, &auth.id)).await {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -397,7 +487,7 @@ pub(crate) async fn refresh_libro_account(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<JobCreated>, ApiError> {
-    if read_account(&state, &auth.id).await?.is_none() {
+    if read_account(&state, &auth.id).await?.is_empty() {
         return Err(ApiError::bad_request(
             "Connect your Libro.fm account first.",
         ));
@@ -414,18 +504,27 @@ pub(crate) async fn refresh_libro_account(
             update_job_running(&state, &job).await;
             let result = async {
                 let _guard = account_guard(&state, &auth.id).await;
-                let mut account = read_account(&state, &auth.id)
-                    .await?
-                    .ok_or_else(|| ApiError::bad_request("Account disconnected."))?;
+                let mut accounts = read_account(&state, &auth.id).await?;
+                let mut failure = None;
                 update_job_progress(
                     &state,
                     &job,
                     JobProgress::new("Loading your Libro.fm library"),
                 )
                 .await;
-                account.books = Api::new()?.library(&account.token).await?;
-                account.synced_at = Some(unix_now_millis().to_string());
-                write_json_atomic(&account_path(&state, &auth.id), &account).await
+                for account in &mut accounts {
+                    match Api::new()?.library(&account.token).await {
+                        Ok(books) => {
+                            account.books = books;
+                            account.synced_at = Some(unix_now_millis().to_string());
+                        }
+                        Err(error) => {
+                            failure = Some(error);
+                        }
+                    }
+                }
+                write_json_atomic(&account_path(&state, &auth.id), &accounts).await?;
+                failure.map_or(Ok(()), Err)
             }
             .await;
             finish(&state, &job, result).await;
@@ -460,11 +559,22 @@ pub(crate) async fn import_libro_purchase(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(isbn): Path<String>,
+    Query(selection): Query<AccountSelection>,
 ) -> Result<Json<JobCreated>, ApiError> {
     let _guard = account_guard(&state, &auth.id).await;
-    let account = read_account(&state, &auth.id)
-        .await?
-        .ok_or_else(|| ApiError::bad_request("Connect your Libro.fm account first."))?;
+    let accounts = read_account(&state, &auth.id).await?;
+    let account = accounts
+        .into_iter()
+        .find(|a| {
+            selection
+                .email
+                .as_ref()
+                .is_none_or(|email| a.email.eq_ignore_ascii_case(email))
+                && a.books.iter().any(|book| book.isbn == isbn)
+        })
+        .ok_or_else(|| {
+            ApiError::not_found("This purchase is not in the selected Libro.fm account.")
+        })?;
     let book = account
         .books
         .iter()
@@ -1162,6 +1272,7 @@ mod tests {
             notify_finishes: false,
         };
         let stored = Account {
+            nickname: String::new(),
             email: "one@example.test".into(),
             token: "private-fixture-token".into(),
             books: vec![book("9780000000001")],
@@ -1187,16 +1298,75 @@ mod tests {
             .0;
         assert!(!response.connected);
         assert!(response.books.is_empty());
+        // A legacy single connection loads unchanged, then survives migration to multiple accounts.
+        let mut accounts = read_account(&state, &user.id).await.unwrap();
+        assert_eq!(accounts.len(), 1);
+        accounts.push(Account {
+            nickname: String::new(),
+            email: "second@example.test".into(),
+            token: "second-private-token".into(),
+            books: vec![book("9780000000002")],
+            synced_at: None,
+        });
+        write_json_atomic(&account_path(&state, &user.id), &accounts)
+            .await
+            .unwrap();
+        let response = get_libro_account(State(state.clone()), Extension(user.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(response.accounts.len(), 2);
+        assert_eq!(response.books.len(), 2);
+        assert_eq!(response.books[1].account_email, "second@example.test");
+        assert!(
+            !serde_json::to_string(&response)
+                .unwrap()
+                .contains("private-token")
+        );
+        let wrong_account = import_libro_purchase(
+            State(state.clone()),
+            Extension(user.clone()),
+            Path("9780000000002".into()),
+            Query(AccountSelection {
+                email: Some("one@example.test".into()),
+            }),
+        )
+        .await;
+        assert_eq!(wrong_account.unwrap_err().status, StatusCode::NOT_FOUND);
+        let ambiguous = disconnect_libro_account(
+            State(state.clone()),
+            Extension(user.clone()),
+            Query(AccountSelection::default()),
+        )
+        .await;
+        assert_eq!(ambiguous.unwrap_err().status, StatusCode::BAD_REQUEST);
+        disconnect_libro_account(
+            State(state.clone()),
+            Extension(user.clone()),
+            Query(AccountSelection {
+                email: Some("SECOND@example.test".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        let remaining = read_account(&state, &user.id).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].token, "private-fixture-token");
         let result = import_libro_purchase(
             State(state.clone()),
             Extension(user.clone()),
             Path("9780000000099".into()),
+            Query(AccountSelection::default()),
         )
         .await;
         assert_eq!(result.unwrap_err().status, StatusCode::NOT_FOUND);
-        disconnect_libro_account(State(state.clone()), Extension(user))
-            .await
-            .unwrap();
+        disconnect_libro_account(
+            State(state.clone()),
+            Extension(user),
+            Query(AccountSelection::default()),
+        )
+        .await
+        .unwrap();
         assert!(!account_path(&state, "one").exists());
     }
 }

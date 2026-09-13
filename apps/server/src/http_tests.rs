@@ -16,6 +16,78 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn libro_nicknames_are_private_persistent_and_do_not_change_purchase_identity() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "nickname-reader").await;
+    let user = server.get("/api/auth/me", &reader).await.json();
+    let path = account_path(&server.state, user["id"].as_str().unwrap());
+    let legacy = serde_json::json!({"email":"reader@example.test","token":"private-token", "books":[{"isbn":"9780000000001","title":"Fixture"}],"synced_at":"123"});
+    write_json_atomic(&path, &legacy).await.unwrap();
+    let update = serde_json::json!({"email":"READER@example.test","nickname":"  Personal  "});
+    assert_eq!(
+        server
+            .send_json("PATCH", "/api/me/libro", &owner, update.clone())
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server
+            .send_json("PATCH", "/api/me/libro", &reader, update)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let status = server.get("/api/me/libro", &reader).await;
+    assert_eq!(status.json()["accounts"][0]["nickname"], "Personal");
+    assert_eq!(
+        status.json()["books"][0]["accountEmail"],
+        "reader@example.test"
+    );
+    assert!(!status.text().contains("private-token"));
+    let stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+    assert_eq!(stored[0]["token"], legacy["token"]);
+    assert_eq!(stored[0]["synced_at"], "123");
+    assert_eq!(stored[0]["books"][0]["isbn"], "9780000000001");
+    for nickname in ["x".repeat(81), "bad\nname".into()] {
+        assert_eq!(
+            server
+                .send_json(
+                    "PATCH",
+                    "/api/me/libro",
+                    &reader,
+                    serde_json::json!({"email":"reader@example.test","nickname":nickname})
+                )
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        server.get("/api/me/libro", &reader).await.json()["accounts"][0]["nickname"],
+        "Personal"
+    );
+    assert_eq!(
+        server
+            .send_json(
+                "PATCH",
+                "/api/me/libro",
+                &reader,
+                serde_json::json!({"email":"reader@example.test","nickname":""})
+            )
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server.get("/api/me/libro", &reader).await.json()["accounts"][0]["nickname"],
+        ""
+    );
+}
+
+#[tokio::test]
 async fn libro_owned_import_reuses_existing_audio_and_grants_restricted_reader_access() {
     let server = TestServer::start(1).await;
     let owner = server.setup_owner().await;

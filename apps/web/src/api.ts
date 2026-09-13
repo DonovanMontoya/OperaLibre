@@ -1013,9 +1013,12 @@ export function getLibroAccount() { return request<LibroAccountStatus>("/api/me/
 export function connectLibroAccount(email: string, password: string) {
   return request<JobCreated>("/api/me/libro", { method: "POST", body: JSON.stringify({ email, password }) });
 }
-export function disconnectLibroAccount() { return request<void>("/api/me/libro", { method: "DELETE" }); }
+export function renameLibroAccount(email: string, nickname: string) {
+  return request<void>("/api/me/libro", { method: "PATCH", body: JSON.stringify({ email, nickname }) });
+}
+export function disconnectLibroAccount(email?: string) { return request<void>(`/api/me/libro${email ? `?email=${encodeURIComponent(email)}` : ""}`, { method: "DELETE" }); }
 export function refreshLibroAccount() { return request<JobCreated>("/api/me/libro/refresh", { method: "POST" }); }
-export function importLibroPurchase(isbn: string) { return request<JobCreated>(`/api/me/libro/books/${encodeURIComponent(isbn)}/import`, { method: "POST" }); }
+export function importLibroPurchase(isbn: string, email?: string) { return request<JobCreated>(`/api/me/libro/books/${encodeURIComponent(isbn)}/import${email ? `?email=${encodeURIComponent(email)}` : ""}`, { method: "POST" }); }
 
 export function configureLibroImports(folder: string | null) {
   return request<LibroImportStatus>("/api/libro", {
