@@ -26,3 +26,22 @@ test("device catalogs reject malformed responses and oversized page counts", () 
     assert.throws(() => libroPage(value));
   }
 });
+
+test("book schema errors identify the field without disclosing provider values", () => {
+  const cases: [unknown, string][] = [
+    [null, "record is null"],
+    [{ isbn: 9780000000001, title: "Private title" }, "ISBN is number"],
+    [{ title: "Private title" }, "ISBN is undefined"],
+    [{ isbn: "private-invalid-id", title: "Private title" }, "ISBN format: 18 characters, other characters"],
+    [{ isbn: "9780000000001", title: null }, "title is null"],
+  ];
+  for (const [record, detail] of cases) {
+    assert.throws(() => libroPage({ total_pages: 1, audiobooks: [record] }), (error: Error) => {
+      assert.ok(error.message.includes(detail));
+      assert.ok(!error.message.includes("Private title"));
+      assert.ok(!error.message.includes("private-invalid-id"));
+      assert.ok(!error.message.includes("9780000000001"));
+      return true;
+    });
+  }
+});
