@@ -13015,12 +13015,12 @@ html.native-app.uikit-tabs {
 }
 
 /* Ledger: a reading dashboard, with habits ahead of milestones. */
-html.native-app:not(.dark-mode) .profile-shell { background: #f5f2eb; }
+html.native-app:not(.dark-mode) .profile-shell { background: var(--paper); }
 .profile-page.ledger-dashboard {
-  --ledger-base: #f5f2eb;
-  --ledger-surface: #fffdf8;
+  --ledger-base: var(--paper);
+  --ledger-surface: rgb(var(--sheet-rgb));
   --ledger-line: rgba(var(--ink-rgb), .11);
-  background: var(--ledger-base);
+  background-color: var(--ledger-base);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   gap: 28px;
   border-radius: 24px;
@@ -13032,16 +13032,16 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .ledger-dashboard .profile-id h1 { font-size: 32px; line-height: 1.1; }
 .ledger-dashboard .ledger-owner { display: block; margin-top: 6px; font-size: 14px; color: var(--ink-soft); }
 .ledger-dashboard .profile-id p { font: inherit; font-size: 12px; line-height: 1.5; margin-top: 5px; }
-.ledger-dashboard .profile-headline { background: #241c17; border-radius: 22px; border: 0; padding: 24px; gap: 24px; align-items: center; }
+.ledger-dashboard .profile-headline { background: var(--spine); border-radius: 22px; border: 0; padding: 24px; gap: 24px; align-items: center; }
 .ledger-dashboard .headline-primary { padding: 0; border: 0; gap: 10px; }
-.ledger-dashboard .headline-value { font: 500 clamp(44px, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: #f1e7d0; }
-.ledger-dashboard .headline-unit { font-size: .4em; color: #d9b574; }
-.ledger-dashboard .headline-label { font: inherit; font-size: 12px; line-height: 1.5; color: #c7b9a8; }
+.ledger-dashboard .headline-value { font: 500 clamp(44px, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--paper); }
+.ledger-dashboard .headline-unit { font-size: .4em; color: var(--gold-soft); }
+.ledger-dashboard .headline-label { font: inherit; font-size: 12px; line-height: 1.5; color: rgba(241, 231, 208, 0.62); }
 .ledger-dashboard .headline-secondary { gap: 20px 16px; }
 .ledger-dashboard .headline-secondary > div { gap: 7px; }
-.ledger-dashboard .headline-secondary dd { font: 500 27px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: #f1e7d0; font-variant-numeric: tabular-nums; }
-.ledger-dashboard .headline-secondary dt { font: inherit; font-size: 12px; line-height: 1.4; color: #c7b9a8; }
-.ledger-dashboard .headline-secondary .dd-unit { color: #d9b574; }
+.ledger-dashboard .headline-secondary dd { font: 500 27px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--paper); font-variant-numeric: tabular-nums; }
+.ledger-dashboard .headline-secondary dt { font: inherit; font-size: 12px; line-height: 1.4; color: rgba(241, 231, 208, 0.62); }
+.ledger-dashboard .headline-secondary .dd-unit { color: var(--gold-soft); }
 .ledger-dashboard .profile-calendar { padding: 22px; background: var(--ledger-surface); border: 1px solid var(--ledger-line); border-radius: 18px; }
 .ledger-dashboard .profile-calendar h2, .ledger-dashboard .profile-recent h2 { font: 600 19px/1.3 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.025em; }
 .ledger-dashboard .profile-calendar header span { font: inherit; font-size: 12px; }
@@ -13088,7 +13088,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .ledger-dashboard button:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 3px; }
 @media (max-width: 720px) {
   .ledger-dashboard .profile-headline { grid-template-columns: 1fr; gap: 22px; padding: 22px; }
-  .ledger-dashboard .headline-primary { border-bottom: 1px solid #514439; padding-bottom: 20px; }
+  .ledger-dashboard .headline-primary { border-bottom: 1px solid rgba(241, 231, 208, 0.14); padding-bottom: 20px; }
   .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ledger-dashboard .profile-calendar { padding: 18px; }
   .ledger-dashboard .achievement-card { padding: 14px; }
