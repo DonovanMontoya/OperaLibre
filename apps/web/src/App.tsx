@@ -8746,7 +8746,7 @@ function MainApp({
         onClick={() => setLibraryOpen(false)}
       />
 
-      <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource === "libro" ? "libro-browsing" : ""}`} {...shelfPull.handlers}>
+      <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
         {native ? (
           <div
             className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
