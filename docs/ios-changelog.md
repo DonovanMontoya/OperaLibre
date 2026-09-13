@@ -12,6 +12,11 @@ independently of the server releases.
 
 ## Unreleased
 
+## 1.2.2 (16)
+
+Distributed via App Store Connect (TestFlight) on September 12, 2026. Source
+commit: `aad9110`.
+
 - Follow Along can now use an uploaded matching EPUB, with a confirmation before
   a potentially time-consuming re-sync. Narration timing can also be tuned to
   match your listening preference. ([#126](https://github.com/DonovanMontoya/OperaLibre/pull/126),
@@ -30,6 +35,26 @@ independently of the server releases.
   stays aligned after foregrounding. ([#125](https://github.com/DonovanMontoya/OperaLibre/pull/125))
 - Each iOS section now carries its own color through the native app shell.
   ([#129](https://github.com/DonovanMontoya/OperaLibre/pull/129))
+- iPhone landscape now gets the same treatments as iPad: Games puts the board
+  against the right edge with the picker and now-playing strip alongside,
+  the Ledger sets totals beside the listening calendar, and Settings cards
+  flow into two columns. ([#143](https://github.com/DonovanMontoya/OperaLibre/pull/143))
+- The landscape shelf reads as a book wall: a folded two-line toolbar, tighter
+  covers set three across with a two-line title, and reading state (a gold
+  progress rule or a finished ribbon) moves onto the cover itself.
+  ([#143](https://github.com/DonovanMontoya/OperaLibre/pull/143))
+- Landscape administration keeps the section list in a fixed column beside
+  the scrolling content. ([#143](https://github.com/DonovanMontoya/OperaLibre/pull/143))
+- The iPad shelf can now be hidden, so the player takes the full screen, or
+  widened to a larger grid without losing your saved view.
+  ([#140](https://github.com/DonovanMontoya/OperaLibre/pull/140))
+- Settings cards on iPad landscape flow into two balanced columns.
+  ([#139](https://github.com/DonovanMontoya/OperaLibre/pull/139))
+- Fixed Follow Along dropping arcing or quick-flick page swipes; a sideways
+  swipe or flick now reliably turns the page.
+  ([#141](https://github.com/DonovanMontoya/OperaLibre/pull/141))
+- Fixed Follow Along snapping a hand-turned page back to the narrated page a
+  moment later. ([#132](https://github.com/DonovanMontoya/OperaLibre/pull/132))
 
 ## 1.2.0 (15)
 
