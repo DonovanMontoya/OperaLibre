@@ -1,3 +1,4 @@
+import { refreshLibroAccounts } from "./purchaseRefresh";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { enqueueLibroDeviceDownload, getBackgroundBookDownloadStatus, cancelBackgroundBookDownload } from "./backgroundDownloads";
@@ -53,7 +54,7 @@ export async function connectLibroDevice(email: string, password: string) {
   try {
     await Native.request({ action: "connect", email, password });
     // Preserve cached purchases until the refreshed catalog is available.
-    await refreshLibroDevice();
+    await refreshLibroDevice(email);
   } finally { starting = false; }
 }
 
@@ -70,32 +71,28 @@ export async function disconnectLibroDevice(email?: string) {
   } finally { starting = false; }
 }
 
-export function refreshLibroDevice(): Promise<void> {
+export function refreshLibroDevice(email?: string): Promise<void> {
   if (refresh) return refresh;
   refresh = (async () => {
     const connection = await Native.request({ action: "status" });
     if (!connection.connected) throw new Error("Connect your device account first.");
     const accounts = (connection.accounts as { email: string }[] | undefined) ?? [{ email: String(connection.email) }];
-    let failure: unknown;
-    for (const account of accounts) {
-      try {
-        const books = new Map<string, Purchase>();
-        let bytes = 0;
-        for (let page = 1; page <= 200; page++) {
-          const raw = await Native.request({ action: "page", page, email: account.email });
-          bytes += JSON.stringify(raw).length;
-          if (bytes > 32 * 1024 * 1024) throw new Error("This catalog exceeds the supported size.");
-          const result = libroPage(raw);
-          for (const book of result.books) books.set(book.isbn, book);
-          if (books.size > 20000) throw new Error("This catalog has too many books.");
-          if (page >= result.pages) {
-            saveCatalog({ email: account.email, books: [...books.values()], syncedAt: String(Date.now()) });
-            break;
-          }
+    await refreshLibroAccounts(accounts, async account => {
+      const books = new Map<string, Purchase>();
+      let bytes = 0;
+      for (let page = 1; page <= 200; page++) {
+        const raw = await Native.request({ action: "page", page, email: account.email });
+        bytes += JSON.stringify(raw).length;
+        if (bytes > 32 * 1024 * 1024) throw new Error("This catalog exceeds the supported size.");
+        const result = libroPage(raw);
+        for (const book of result.books) books.set(book.isbn, book);
+        if (books.size > 20000) throw new Error("This catalog has too many books.");
+        if (page >= result.pages) {
+          saveCatalog({ email: account.email, books: [...books.values()], syncedAt: String(Date.now()) });
+          break;
         }
-      } catch (error) { failure = error; }
-    }
-    if (failure) throw failure;
+      }
+    }, email);
   })().finally(() => { refresh = null; });
   return refresh;
 }

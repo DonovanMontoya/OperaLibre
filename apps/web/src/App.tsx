@@ -1,3 +1,4 @@
+import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
@@ -8212,8 +8213,13 @@ function MainApp({
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "all") {
-      setLibroRefreshKey(key => key + 1);
-      if (canBrowseLibation) await loadLibationBooks();
+      await refreshPurchaseSources([
+        ...(libroAccounts?.length ? [async () => {
+          try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
+          finally { setLibroRefreshKey(key => key + 1); }
+        }] : []),
+        ...(canBrowseLibation ? [loadLibationBooks] : [])
+      ]);
     } else if (librarySource === "audible") {
       await loadLibationBooks();
     } else if (librarySource === "libro") {
@@ -8222,7 +8228,7 @@ function MainApp({
     } else {
       await loadBooks();
     }
-  }, [librarySource, libroOnDevice, canBrowseLibation, loadBooks, loadLibationBooks]);
+  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
   const hasMiniPlayer = Boolean(playbackBook && currentTrack);
 
