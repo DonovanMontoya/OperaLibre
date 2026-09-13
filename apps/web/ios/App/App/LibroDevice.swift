@@ -64,7 +64,7 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
         }
     }
 
-    private func api(_ path: String, token: String? = nil, body: [String: String]? = nil) throws -> JSObject {
+    private func api(_ path: String, token: String? = nil, body: [String: String]? = nil) throws -> [String: Any] {
         var request = URLRequest(url: URL(string: "https://libro.fm/" + path)!)
         request.setValue("7.34.8", forHTTPHeaderField: "X-LibroFm-AppVer")
         request.setValue("okhttp/5.3.2", forHTTPHeaderField: "User-Agent")
@@ -76,7 +76,7 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<JSObject, Error> = .failure(LibroDeviceError(message: "Could not reach Libro.fm. Check your internet connection."))
+        var result: Result<[String: Any], Error> = .failure(LibroDeviceError(message: "Could not reach Libro.fm. Check your internet connection."))
         session.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             guard error == nil, let http = response as? HTTPURLResponse else { return }
@@ -88,8 +88,7 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
                     ? "Libro.fm could not authorize this request. Reconnect the device account."
                     : "Libro.fm returned HTTP \(http.statusCode). Try again later.")); return
             }
-            guard let data, data.count <= 8 * 1024 * 1024,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? JSObject else {
+            guard let data, let json = try? decodeLibroDeviceResponse(data) else {
                 result = .failure(LibroDeviceError(message: "Unexpected Libro.fm response.")); return
             }
             result = .success(json)
@@ -105,7 +104,7 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
         }
     }
 
-    private func perform(_ call: CAPPluginCall) throws -> JSObject {
+    private func perform(_ call: CAPPluginCall) throws -> [String: Any] {
         switch call.getString("action") {
         case "status":
             let account = try connection()
