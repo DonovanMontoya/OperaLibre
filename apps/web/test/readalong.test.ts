@@ -11,6 +11,7 @@ import {
   parseReadalongLabel,
   readAlongMode,
   readalongMatchScore,
+  repeatedNarratedPageTurn,
   shouldOpenPlayingChapter,
   syncMapPrecision
 } from "../src/readalong.ts";
@@ -251,6 +252,14 @@ describe("following the chapter being played", () => {
 
   it("does nothing when no chapter is playing", () => {
     assert.equal(shouldOpenPlayingChapter(true, null, null), false);
+  });
+});
+
+describe("narrated page-turn dedupe", () => {
+  it("dedupes within one layout but retries after the page is relaid out", () => {
+    const last = { cfi: "spoken", from: "page-start", layout: 3 };
+    assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 3), true);
+    assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 4), false);
   });
 });
 
