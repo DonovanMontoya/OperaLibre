@@ -3,6 +3,7 @@ import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
 import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
+import { removeHighlight, type AnnotationStore } from "./readerAnnotations";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
@@ -2453,7 +2454,7 @@ export function EpubReadalong({
       return;
     }
     try {
-      rendition.annotations.remove(cfi, "highlight");
+      removeHighlight(rendition.annotations as unknown as AnnotationStore, cfi);
     } catch {
       // stale annotation already gone
     }
