@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, CloudDownload, LoaderCircle, RefreshCcw, Search } from "lucide-react";
+import { BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus } from "./types";
 import { libroDeviceBackend, cancelLibroDevice } from "./libroDevice";
@@ -27,6 +27,7 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<"grid" | "list">("list");
   const [refreshTick, setRefreshTick] = useState(0);
   const booksChanged = useRef(onBooksChanged);
   booksChanged.current = onBooksChanged;
@@ -95,7 +96,7 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
       </div> : null}
     </header>
     {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
-    {device ? <p className="libro-catalog-summary">Downloads stay on this device. Internet is needed to connect and download; no OperaLibre server is used. Open this screen after a background download to finish adding the book.</p> : null}
+    {device ? <p className="libro-catalog-summary">Download here, listen offline. No server needed. Reopen this screen to finish background imports.</p> : null}
     {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
       <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
       <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
@@ -105,15 +106,24 @@ export function LibroCatalog({ onBooksChanged, onOpenBook, searchQuery, sortMode
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
     {account?.connected ? <>
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
-      <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
+      <div className="libro-view-toolbar">
+        <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
+        <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
+          <button type="button" aria-label="Cover grid" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={18} /></button>
+          <button type="button" aria-label="Compact list" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={18} /></button>
+        </div>
+      </div>
       {refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
       {!books.length && !loadingLibrary ? <p className="libro-catalog-empty">{needle ? "No purchases match your search." : account.syncedAt ? "No audiobooks found in this account." : "Refresh your library to load your purchases."}</p> : null}
-      <ul className="libro-purchases">{books.map(book => {
+      <ul className={`libro-purchases libro-purchases--${view}`}>{books.map(book => {
         const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));
         const importing = !!job && active(job);
         const cover = book.cover_url?.startsWith("https://") ? book.cover_url : null;
         return <li key={book.isbn}>
-          <div className="libro-purchase-cover">{cover ? <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <BookOpen size={24} />}</div>
+          <div className="libro-purchase-cover" key={cover}>
+            <span className="libro-cover-fallback" aria-hidden="true"><BookOpen size={28} /><span>{book.title}</span></span>
+            {cover ? <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = "none"; }} /> : null}
+          </div>
           <div className="libro-purchase-copy"><h3>{book.title}</h3><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {importing ? <p role="status">{job.progress?.step ?? "Queued for import…"}</p> : job?.status === "failed" ? <p className="libro-catalog-error">{job.error ?? "Import failed. Try again."}</p> : null}
             {device && importing ? <button type="button" disabled={!!busy} onClick={() => void act("cancel", () => cancelLibroDevice(book.isbn))}>Cancel download</button> : null}
