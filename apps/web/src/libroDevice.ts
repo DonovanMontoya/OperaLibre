@@ -19,6 +19,11 @@ const read = <T>(key: string, fallback: T): T => {
 };
 const write = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
 const active = (item: Pending) => ["queued", "running"].includes(item.job.status);
+// Native queues persist every job record until removed, so terminal and forgotten jobs must be discarded.
+const discard = async (item: Pending) => {
+  await cancelBackgroundBookDownload(item.job.id).catch(() => undefined);
+  await Filesystem.rmdir({ path: `offline-media/${item.folder}`, directory: Directory.Data, recursive: true }).catch(() => undefined);
+};
 let refresh: Promise<void> | null = null;
 let reconcile: Promise<void> | null = null;
 let starting = false;
@@ -34,8 +39,7 @@ export async function cancelLibroDevice(isbn: string) {
   item.job.status = "failed";
   item.job.error = "Download cancelled. You can retry it.";
   write(JOBS, pending);
-  await cancelBackgroundBookDownload(item.job.id);
-  await Filesystem.rmdir({ path: `offline-media/${item.folder}`, directory: Directory.Data, recursive: true }).catch(() => undefined);
+  await discard(item);
 }
 
 export async function connectLibroDevice(email: string, password: string) {
@@ -50,6 +54,7 @@ export async function disconnectLibroDevice() {
   await Native.request({ action: "disconnect" });
   localStorage.removeItem(CACHE);
   // Completed files remain in the local library; only connection history is removed.
+  for (const item of read<Pending[]>(JOBS, [])) await discard(item);
   localStorage.removeItem(JOBS);
 }
 
@@ -101,7 +106,7 @@ async function settleDownloads() {
         item.job.status = "completed";
         item.job.finishedAt = String(Date.now());
         write(JOBS, pending);
-        await Filesystem.rmdir({ path: `offline-media/${item.folder}`, directory: Directory.Data, recursive: true }).catch(() => undefined);
+        await discard(item);
       }
     } catch (error) {
       item.job.status = "failed";
@@ -135,10 +140,7 @@ export async function importLibroDevice(isbn: string) {
     if (!connection.connected || connection.email !== catalog.email || !book) throw new Error("Refresh your device purchase list first.");
     if (getDeviceBooks().some(book => book.id === `device:libro:${isbn}`)) return;
     const old = read<Pending[]>(JOBS, []);
-    for (const item of old.filter(item => item.book.isbn === isbn && item.job.status === "failed")) {
-      await cancelBackgroundBookDownload(item.job.id);
-      await Filesystem.rmdir({ path: `offline-media/${item.folder}`, directory: Directory.Data, recursive: true }).catch(() => undefined);
-    }
+    for (const item of old.filter(item => item.book.isbn === isbn && item.job.status === "failed")) await discard(item);
     const m4b = await Native.request({ action: "m4b", isbn });
     const hasM4b = typeof m4b.m4b_url === "string" && m4b.m4b_url.length > 0;
     const urls: string[] = [];
@@ -155,7 +157,9 @@ export async function importLibroDevice(isbn: string) {
     const files = await Promise.all(urls.map(async (url, index) => ({ url,
       path: (await Filesystem.getUri({ path: `offline-media/${folder}/part-${String(index).padStart(3, "0")}.${hasM4b ? "m4b" : "zip"}`, directory: Directory.Data })).uri,
       label: `Part ${index + 1}`, required: true })));
-    const pending = [...old.filter(item => item.book.isbn !== isbn).slice(-19), { job, book, folder }];
+    const others = old.filter(item => item.book.isbn !== isbn);
+    for (const item of others.slice(0, -19)) await discard(item);
+    const pending = [...others.slice(-19), { job, book, folder }];
     write(JOBS, pending);
     try { await enqueueLibroDeviceDownload(job.id, book.title, files); }
     catch (error) { job.status = "failed"; job.error = "Could not queue device download. Retry the book."; write(JOBS, pending); throw error; }
