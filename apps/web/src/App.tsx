@@ -83,6 +83,7 @@ import {
   anchorAfterRelocation,
   anchorOnPage,
   readerStorageKey,
+  repeatedNarratedPageTurn,
   shouldOpenPlayingChapter,
   syncMapPrecision,
 } from "./readalong";
@@ -1577,9 +1578,22 @@ export function EpubReadalong({
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
   const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  // Follow as of the latest decision rather than the latest render. A page
+  // turned by hand stops following at once; an effect still holding the
+  // rendered value must not move the page back before React catches up.
+  const followRef = useRef(follow);
+  // The page a narration turn last left from, and where it was sent. When
+  // epub.js lands on that same page again the sentence sits on a page
+  // boundary it cannot show, and asking again would only redraw the page on
+  // every position update.
+  const lastKeepRef = useRef<{ cfi: string; from: string; layout: number } | null>(null);
   const setFollow = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    if (typeof value === "boolean") {
+      followRef.current = value;
+    }
     setFollowState((prev) => {
       const next = typeof value === "function" ? value(prev) : value;
+      followRef.current = next;
       writeStoredValue("operalibre.readerFollow", next ? "1" : "0");
       return next;
     });
@@ -1657,15 +1671,19 @@ export function EpubReadalong({
   }, [sheet]);
 
   const resumeFollowing = useCallback(() => {
+    readerDebugLog("follow on");
     highlightedFragmentRef.current = -1;
+    lastKeepRef.current = null;
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
   }, []);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
+    readerDebugLog(`tap seek ${Math.round(fragment.startSeconds)}s ${fragment.href}`);
     onSeekToRef.current?.(fragment.startSeconds);
     highlightedFragmentRef.current = -1;
+    lastKeepRef.current = null;
     setFollow(true);
   }, []);
 
@@ -2375,7 +2393,7 @@ export function EpubReadalong({
     if (!syncTarget || !isReady || toc.length === 0) {
       return;
     }
-    if (!shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
+    if (!followRef.current || !shouldOpenPlayingChapter(follow, syncTarget.id, syncedTargetRef.current)) {
       return;
     }
     const href = findTocHrefForChapterTitle(toc, syncTarget.title);
@@ -2426,9 +2444,10 @@ export function EpubReadalong({
     const fragment = syncFragments[fragmentIndex];
     const currentHref = location.start?.href ?? "";
     if (!hrefsMatch(currentHref, fragment.href)) {
-      if (autoNavHrefRef.current !== fragment.href) {
+      if (autoNavHrefRef.current !== fragment.href && followRef.current) {
         autoNavHrefRef.current = fragment.href;
         highlightedFragmentRef.current = -1;
+        readerDebugLog(`follow chapter ${fragment.href}`);
         void rendition.display(fragment.href);
       }
       return;
@@ -2463,6 +2482,13 @@ export function EpubReadalong({
           comparator.compare(cfi, location.end.cfi) >= 0 ||
           comparator.compare(cfi, location.start.cfi) < 0
         ) {
+          const from = location.start.cfi;
+          const last = lastKeepRef.current;
+          if (!followRef.current || repeatedNarratedPageTurn(last, cfi, from, relayoutTick)) {
+            return;
+          }
+          lastKeepRef.current = { cfi, from, layout: relayoutTick };
+          readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
           void rendition.display(cfi);
         }
       } catch {

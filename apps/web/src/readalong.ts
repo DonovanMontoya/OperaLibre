@@ -468,3 +468,15 @@ export function shouldOpenPlayingChapter(
   if (!following || !playingChapterId) return false;
   return playingChapterId !== handledChapterId;
 }
+
+export type NarratedPageTurn = { cfi: string; from: string; layout: number };
+
+/** Whether this exact page correction has already been attempted for this layout. */
+export function repeatedNarratedPageTurn(
+  last: NarratedPageTurn | null,
+  cfi: string,
+  from: string,
+  layout: number
+): boolean {
+  return !!last && last.cfi === cfi && last.from === from && last.layout === layout;
+}
