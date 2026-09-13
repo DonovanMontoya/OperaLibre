@@ -8,6 +8,7 @@ const MAX_JSON: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LibroBook {
+    #[serde(deserialize_with = "deserialize_isbn")]
     pub(crate) isbn: String,
     pub(crate) title: String,
     #[serde(default)]
@@ -113,6 +114,22 @@ async fn account_guard(state: &AppState, user_id: &str) -> OwnedMutexGuard<()> {
 
 fn valid_isbn(isbn: &str) -> bool {
     (10..=13).contains(&isbn.len()) && isbn.bytes().all(|c| c.is_ascii_digit() || c == b'X')
+}
+
+fn deserialize_isbn<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let isbn = match value {
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Number(value) => value
+            .as_u64()
+            .map(|value| value.to_string())
+            .ok_or_else(|| serde::de::Error::custom("invalid numeric ISBN"))?,
+        _ => return Err(serde::de::Error::custom("invalid ISBN type")),
+    };
+    if !valid_isbn(&isbn) {
+        return Err(serde::de::Error::custom("invalid ISBN format"));
+    }
+    Ok(isbn)
 }
 
 fn destination(book: &LibroBook) -> String {
@@ -869,6 +886,34 @@ pub(crate) fn libro_metadata_for_group(path: &FsPath) -> Option<LibroBook> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_isbns_normalize_without_changing_identifiers() {
+        for isbn in [
+            serde_json::json!(9780000000001u64),
+            serde_json::json!("9780000000001"),
+        ] {
+            let book: LibroBook =
+                serde_json::from_value(serde_json::json!({"isbn":isbn,"title":"Fixture"})).unwrap();
+            assert_eq!(book.isbn, "9780000000001");
+            assert_eq!(serde_json::to_value(book).unwrap()["isbn"], "9780000000001");
+        }
+        for isbn in [
+            serde_json::json!(9780000000001.5),
+            serde_json::json!(-9780000000001i64),
+            serde_json::json!(123),
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!("../../unsafe"),
+        ] {
+            assert!(
+                serde_json::from_value::<LibroBook>(
+                    serde_json::json!({"isbn":isbn,"title":"Fixture"})
+                )
+                .is_err()
+            );
+        }
+    }
 
     fn book(isbn: &str) -> LibroBook {
         serde_json::from_value(serde_json::json!({"isbn":isbn,"title":"A Libro.fm book", "authors":["An Author"], "audiobook_info":{"narrators":["A Narrator"],"duration":120}})).unwrap()
