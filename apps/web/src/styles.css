@@ -12918,7 +12918,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
    scale. Everything keeps its source order, so a missing section simply
    closes up. */
 @media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
-  html.native-app .profile-page.ledger-dashboard {
+  html.native-app .native-shell.device-ipad .profile-page.ledger-dashboard {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-content: start;
@@ -12982,6 +12982,50 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   html.native-app .ledger-dashboard .profile-recent li:nth-last-child(2):nth-child(odd) { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
   html.native-app .ledger-dashboard .recent-row { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; padding: 8px 0; }
   html.native-app .ledger-dashboard .recent-cover { width: 36px; height: 36px; }
+}
+
+/* Landscape iPads hang the tab bar in the middle of the top edge, leaving the
+   band either side of it empty. Headings that sit at a screen's edges move
+   up into that band — each opens with a row exactly as tall as the bar's
+   clearance — while anything that spans the middle still clears the bar. */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 500px) {
+  html.native-app .native-shell.device-ipad {
+    --clock-h: env(safe-area-inset-top);
+    --bar-band: var(--native-tabs-top, 0px);
+  }
+
+  /* Shelf: the verso is narrower than the gap beside the bar. */
+  html.native-app .native-shell.device-ipad.tab-shelf > .library-pane,
+  html.native-app .native-shell.device-ipad.tab-reading > .library-pane,
+  html.native-app .native-shell.device-ipad.tab-shelf.library-book-open > .library-pane {
+    padding-top: calc(var(--clock-h) + 18px);
+  }
+
+  /* Ledger: the heading fills the band on the left. */
+  html.native-app .native-shell.device-ipad .profile-page.ledger-dashboard {
+    padding-top: calc(var(--clock-h) + 6px);
+  }
+  html.native-app .native-shell.device-ipad .ledger-dashboard > .profile-head {
+    min-height: var(--bar-band);
+  }
+
+  /* Games: the reading column starts in the band; the board and keyboard,
+     which reach under the bar, keep clear of it. */
+  html.native-app .native-shell.device-ipad .games-shell {
+    padding-top: calc(var(--clock-h) + 10px);
+  }
+  html.native-app .native-shell.device-ipad .match-board-frame,
+  html.native-app .native-shell.device-ipad .word-keys {
+    margin-top: var(--bar-band);
+  }
+
+  /* Settings: title left and Administration right frame the bar. */
+  html.native-app .native-shell.device-ipad .settings-shell {
+    padding-top: calc(var(--clock-h) + 6px);
+  }
+  html.native-app .native-shell.device-ipad .settings-head {
+    min-height: var(--bar-band);
+  }
 }
 
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
