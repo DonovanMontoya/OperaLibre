@@ -13642,6 +13642,94 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
   clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%);
 }
 
+/* ===================== Landscape administration =====================
+   Like Settings on its side: the heading, notices and section list keep a
+   column of their own, with the list held in view while the chosen
+   section scrolls beside it. */
+@media (orientation: landscape) and (min-width: 700px) {
+  html.native-app .admin-shell:not(.admin-overlay) {
+    display: grid;
+    grid-template-columns: clamp(180px, 22vw, 250px) minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    column-gap: clamp(18px, 3vw, 36px);
+    align-content: start;
+    padding-top: max(12px, calc(var(--status-h) + 12px));
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > * {
+    grid-column: 2;
+    min-width: 0;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-head {
+    grid-column: 1;
+    grid-row: 1;
+    width: auto;
+    margin: 0;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-head h1 {
+    font-size: clamp(1.6rem, 2.6vw, 2.2rem);
+    line-height: 1.02;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-head p {
+    display: none;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-message {
+    grid-column: 1;
+    width: auto;
+    margin: 10px 0 0;
+    font-size: 0.8rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-nav {
+    grid-column: 1;
+    grid-row: 4;
+    align-self: start;
+    position: sticky;
+    top: 0;
+    width: auto;
+    margin: 14px 0 0;
+    flex-direction: column;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-nav button {
+    flex: none;
+    justify-content: flex-start;
+    padding: 0 12px;
+    text-align: left;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) > .admin-content {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    width: auto;
+    margin: 0;
+  }
+}
+
+/* A phone on its side: the content column is narrow, so its cards stack. */
+@media (orientation: landscape) and (min-width: 700px) and (max-height: 499px) {
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics {
+    gap: 8px;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics article {
+    padding: 11px 14px;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-metrics strong {
+    font-size: 1.6rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-back .download-btn {
+    width: 100%;
+    padding-inline: 10px;
+    white-space: nowrap;
+    font-size: 0.58rem;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-user-layout {
+    grid-template-columns: 1fr;
+  }
+  html.native-app .admin-shell:not(.admin-overlay) .admin-create-user {
+    position: static;
+  }
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
