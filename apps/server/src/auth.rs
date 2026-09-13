@@ -1309,6 +1309,9 @@ pub(crate) async fn delete_user(
         ));
     }
 
+    // Serialize deletion with provider login/refresh so credentials cannot be
+    // recreated by an in-flight request after the user has been removed.
+    let _libro_guard = libro_account::account_guard(&state, &user_id).await;
     state
         .users
         .mutate(|users| {
@@ -1324,6 +1327,13 @@ pub(crate) async fn delete_user(
             }
             if target.is_owner && users.users.iter().filter(|user| user.is_owner).count() <= 1 {
                 return Err(ApiError::conflict("The final owner cannot be deleted."));
+            }
+            // Remove the small credential file before committing user deletion;
+            // an I/O failure must leave an account that can still disconnect.
+            match std::fs::remove_file(libro_account::account_path(&state, &user_id)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
             users.users.retain(|user| user.id != user_id);
             Ok(())
