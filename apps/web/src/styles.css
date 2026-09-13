@@ -13050,6 +13050,100 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   }
 }
 
+/* The Shelf spread's own layout switches. They only mean something where
+   the collection and the player share the screen — on iPad that is the Shelf
+   tab, whether the web shell calls it shelf or reading underneath. */
+.shelf-layout-controls,
+.shelf-reveal-button {
+  display: none;
+}
+
+@media (min-width: 720px) and (min-height: 500px) {
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading) .shelf-layout-controls {
+    display: flex;
+    gap: 6px;
+    flex: none;
+  }
+  html.native-app .shelf-layout-controls .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Player alone: the recto takes both pages, and a tab at the top left
+     brings the collection back. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player > .library-pane {
+    display: none;
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player > .player-pane {
+    grid-column: 1 / -1;
+    padding-left: max(var(--fore-edge), env(safe-area-inset-left));
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player.has-mini-player
+    > .player-pane:not(.has-native-player) ~ .mini-player {
+    left: max(16px, env(safe-area-inset-left));
+  }
+
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player .shelf-reveal-button {
+    position: fixed;
+    z-index: 30;
+    top: calc(env(safe-area-inset-top) + 12px);
+    left: max(18px, env(safe-area-inset-left));
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 8px 14px 8px 11px;
+    border: 1px solid rgba(217, 181, 116, 0.4);
+    border-radius: 999px;
+    color: var(--gold-soft);
+    background: #1a1410;
+    box-shadow: 0 10px 24px -16px #000;
+    font: 600 0.7rem "JetBrains Mono", monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  /* Collection alone: the verso spreads across both pages at a larger grid,
+     with the playing book in the floating transport. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library > .player-pane {
+    display: none;
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library > .library-pane {
+    grid-column: 1 / -1;
+    padding-right: max(24px, env(safe-area-inset-right));
+    padding-bottom: calc(var(--tabs-h) + 28px);
+    background-image: linear-gradient(180deg, #241a12 0%, #100a06 100%);
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library.has-mini-player > .library-pane {
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 36px);
+  }
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library .book-list.is-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 26px 22px;
+  }
+  html.native-app .native-shell.has-mini-player:is(.tab-shelf, .tab-reading).shelf-library > .player-pane ~ .mini-player {
+    display: grid;
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+  }
+
+  /* With the collection put away, the screen is the player's paper, and the
+     clock and bar take its tone instead of the shelf's. */
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player {
+    --native-chrome: #f1e7d0;
+    --native-bar: #e1d7c1;
+  }
+  html.native-app.platform-ios.dark-mode .native-shell:is(.tab-shelf, .tab-reading).shelf-player {
+    --native-chrome: #17120f;
+    --native-bar: #17120f;
+  }
+
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-player::after,
+  html.native-app .native-shell:is(.tab-shelf, .tab-reading).shelf-library::after {
+    display: none;
+  }
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
