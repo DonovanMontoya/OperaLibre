@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { libroDownloadURL, libroPage } from "../src/libroDevicePolicy.ts";
+import { libroCoverURL, libroDownloadURL, libroPage } from "../src/libroDevicePolicy.ts";
+
+test("cover URLs resolve against Libro securely without accepting unsafe schemes", () => {
+  assert.equal(libroCoverURL("/covers/book.jpg"), "https://libro.fm/covers/book.jpg");
+  assert.equal(libroCoverURL("//images.libro.fm/book.jpg"), "https://images.libro.fm/book.jpg");
+  assert.equal(libroCoverURL("http://images.libro.fm/book.jpg"), "https://images.libro.fm/book.jpg");
+  for (const value of [null, "", "javascript:alert(1)", "file:///tmp/private", "https://user:pass@libro.fm/cover", "https://libro.fm:8000/cover"]) assert.equal(libroCoverURL(value), null);
+});
 
 test("device Libro downloads allow only HTTPS provider hosts", () => {
   for (const host of ["libro.fm", "assets.libro.fm", "books.s3.amazonaws.com", "example.cloudfront.net"]) {
