@@ -22,14 +22,18 @@ export function libroPage(value: unknown): { pages: number; books: LibroAccountS
       throw new Error(`Libro.fm returned an unexpected book record (${index + 1}: ${detail}).`);
     };
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid(`record is ${kind(raw)}`);
-    if (typeof raw.isbn !== "string") invalid(`ISBN is ${kind(raw.isbn)}`);
-    if (!/^[0-9X]{10,13}$/.test(raw.isbn)) {
-      invalid(`ISBN format: ${raw.isbn.length} characters, ${/^[0-9X]+$/.test(raw.isbn) ? "digits/X only" : "other characters"}`);
+    // The provider also returns JSON numbers. Only convert exact, nonnegative
+    // integers; never round an identifier or coerce null/objects into one.
+    const isbn = typeof raw.isbn === "number" && Number.isSafeInteger(raw.isbn) && raw.isbn >= 0
+      ? String(raw.isbn) : raw.isbn;
+    if (typeof isbn !== "string") invalid(`ISBN is ${kind(raw.isbn)}`);
+    if (!/^[0-9X]{10,13}$/.test(isbn)) {
+      invalid(`ISBN format: ${isbn.length} characters, ${/^[0-9X]+$/.test(isbn) ? "digits/X only" : "other characters"}`);
     }
     if (typeof raw.title !== "string") invalid(`title is ${kind(raw.title)}`);
     const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : [];
     return {
-      isbn: raw.isbn, title: raw.title, authors: strings(raw.authors),
+      isbn, title: raw.title, authors: strings(raw.authors),
       cover_url: typeof raw.cover_url === "string" && raw.cover_url.startsWith("https://") ? raw.cover_url : null,
       audiobook_info: { narrators: strings(raw.audiobook_info?.narrators), duration: typeof raw.audiobook_info?.duration === "number" ? raw.audiobook_info.duration : null },
       description: typeof raw.description === "string" ? raw.description : "", localBookId: null

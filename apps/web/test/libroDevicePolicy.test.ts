@@ -30,7 +30,7 @@ test("device catalogs reject malformed responses and oversized page counts", () 
 test("book schema errors identify the field without disclosing provider values", () => {
   const cases: [unknown, string][] = [
     [null, "record is null"],
-    [{ isbn: 9780000000001, title: "Private title" }, "ISBN is number"],
+    [{ isbn: 9780000000001.5, title: "Private title" }, "ISBN is number"],
     [{ title: "Private title" }, "ISBN is undefined"],
     [{ isbn: "private-invalid-id", title: "Private title" }, "ISBN format: 18 characters, other characters"],
     [{ isbn: "9780000000001", title: null }, "title is null"],
@@ -43,5 +43,16 @@ test("book schema errors identify the field without disclosing provider values",
       assert.ok(!error.message.includes("9780000000001"));
       return true;
     });
+  }
+});
+
+test("numeric provider ISBNs normalize to the same stable ID as string ISBNs", () => {
+  const book = { isbn: "9780000000001", title: "A book" };
+  const stringPage = libroPage({ total_pages: 1, audiobooks: [book] });
+  const numericPage = libroPage({ total_pages: 1, audiobooks: [{ ...book, isbn: 9780000000001 }] });
+  assert.deepEqual(numericPage, stringPage);
+  assert.equal(numericPage.books[0].isbn, "9780000000001");
+  for (const isbn of [NaN, Infinity, -9780000000001, 9780000000001.5, Number.MAX_SAFE_INTEGER + 1, 123, null, true, {}]) {
+    assert.throws(() => libroPage({ total_pages: 1, audiobooks: [{ ...book, isbn }] }));
   }
 });
