@@ -356,7 +356,7 @@ import {
   finishedAgoLabel
 } from "./finishFeed";
 import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
-import { GamesPage } from "./GameRoom";
+import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import {
   FOLLOW_AGGRESSIVENESS_LABELS,
@@ -4155,6 +4155,7 @@ function MainApp({
     };
   }, [native]);
   const shelfLandscape = native && landscape && (ipad || shortLandscape);
+  const [activeGame, setActiveGame] = useState<GameName>("match");
   const shelfFolded = native && ((!ipad && shortLandscape) || shelfLayout === "library");
 
   const isCompactView = viewMode === "compact";
@@ -8639,7 +8640,7 @@ function MainApp({
       ref={shellRef}
       className={
         native
-          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${shelfLandscape ? " shelf-landscape" : ""}${shelfFolded ? " shelf-folded" : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
+          ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${shelfLandscape ? " shelf-landscape" : ""}${shelfFolded ? " shelf-folded" : ""}${nativeTab === "games" ? ` games-${activeGame}` : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
@@ -9451,7 +9452,7 @@ function MainApp({
                       </div>
                     ) : null}
                     <button
-                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
+                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
                       onClick={() => {
                         selectBook(book);
                         setLibraryOpen(false);
@@ -11478,7 +11479,7 @@ function MainApp({
         />
       ) : null}
 
-      {native && gamesEnabled && nativeTab === "games" ? <GamesPage /> : null}
+      {native && gamesEnabled && nativeTab === "games" ? <GamesPage onGameChange={setActiveGame} /> : null}
 
       {native && nativeTab === "settings" ? (
         <section className="settings-shell" aria-label="Settings">

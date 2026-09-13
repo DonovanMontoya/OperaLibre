@@ -7272,9 +7272,9 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   }
 
   html.native-app .games-shell > .game-card { display: contents; }
-  /* A keyboard is wider than it is tall; where :has is available it takes a
-     broader column than the square board needs. */
-  html.native-app .games-shell:has(> .word-game) { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
+  /* A keyboard is wider than it is tall, so it takes a broader column than
+     the square board needs. */
+  html.native-app .games-shell.games-words { grid-template-columns: minmax(0, 1fr) clamp(440px, 48vw, 620px); }
 
   html.native-app .games-head { grid-column: 1; grid-row: 1; }
   html.native-app .games-head h1 { font-size: clamp(2.1rem, 4vw, 3.1rem); }
@@ -7342,7 +7342,7 @@ html.native-app .games-privacy { flex: none; margin: 8px 4px 0; color: rgba(241,
   html.native-app .word-tile { font-size: clamp(1.1rem, 2.2vw, 1.7rem); }
   /* The guesses share the left column with the reading chrome; the tagline
      gives its line back to them. */
-  html.native-app .games-shell:has(> .word-game) .games-head p { display: none; }
+  html.native-app .games-shell.games-words .games-head p { display: none; }
   html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 10px; }
   html.native-app .word-keys-row { gap: 7px; }
   html.native-app .word-key { max-width: 58px; min-height: 64px; border-radius: 10px; font-size: 1.05rem; }
@@ -13169,7 +13169,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
     padding: max(8px, var(--status-h)) max(12px, env(safe-area-inset-right))
       calc(var(--tabs-h) + 10px) max(12px, env(safe-area-inset-left));
   }
-  html.native-app .games-shell:has(> .word-game) {
+  html.native-app .native-shell .games-shell.games-words {
     grid-template-columns: minmax(0, 1fr) var(--phone-keys-col);
   }
   html.native-app .games-shell > .game-card { display: contents; }
@@ -13246,7 +13246,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   html.native-app .native-shell.has-mini-player .word-keys {
     margin-bottom: calc(var(--mini-player-height) + 10px);
   }
-  html.native-app .native-shell.tab-games:has(.word-game) .mini-player {
+  html.native-app .native-shell.tab-games.games-words .mini-player {
     left: calc(100vw - max(12px, env(safe-area-inset-right)) - var(--phone-keys-col));
     right: max(12px, env(safe-area-inset-right));
   }
@@ -13594,7 +13594,7 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress 
 }
 /* Under way: time left replaces the runtime, and the cover's bottom edge
    fills with how far the listener has got. */
-html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row:has(.book-progress.inProgress) .book-runtime-tag {
+html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-row.in-progress .book-runtime-tag {
   display: none;
 }
 html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.inProgress em {
