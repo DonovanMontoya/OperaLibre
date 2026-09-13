@@ -13144,6 +13144,199 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   }
 }
 
+/* A phone on its side is held by both ends and has little height to spare,
+   so it takes the iPad's lessons at phone scale. Games put the play surface
+   against the right edge under a thumb and hand the now-playing strip to
+   the column the game is not using, so the board keeps the full height.
+   The Ledger and Settings spread into two columns instead of a long scroll.
+   Side insets keep everything clear of the Dynamic Island. */
+@media (orientation: landscape) and (max-height: 499px) {
+  html.native-app .native-shell {
+    /* Height between the shell's top padding and the tab bar's clearance:
+       as wide as the square board's column needs to be. */
+    --phone-play-h: calc(var(--native-viewport-height) - max(8px, var(--status-h)) - var(--tabs-h) - 10px);
+    --phone-board-col: min(var(--phone-play-h), 50vw);
+    --phone-keys-col: clamp(300px, 46vw, 440px);
+    --phone-games-gap: clamp(12px, 2.4vw, 22px);
+  }
+
+  /* --- Games ------------------------------------------------------ */
+  html.native-app .games-shell,
+  html.native-app .native-shell.has-mini-player .games-shell {
+    grid-template-columns: minmax(0, 1fr) var(--phone-board-col);
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+    column-gap: var(--phone-games-gap);
+    padding: max(8px, var(--status-h)) max(12px, env(safe-area-inset-right))
+      calc(var(--tabs-h) + 10px) max(12px, env(safe-area-inset-left));
+  }
+  html.native-app .games-shell:has(> .word-game) {
+    grid-template-columns: minmax(0, 1fr) var(--phone-keys-col);
+  }
+  html.native-app .games-shell > .game-card { display: contents; }
+
+  /* The tab bar already names the parlour; its heading and footnote give
+     their height to the boards. */
+  html.native-app .games-head,
+  html.native-app .games-privacy { display: none; }
+
+  html.native-app .games-switcher {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: 1fr 1fr;
+    margin: 0;
+  }
+
+  html.native-app .game-card .game-title-row {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(217, 181, 116, 0.14);
+  }
+  html.native-app .game-card .game-reset { grid-column: auto; margin: 0; }
+
+  html.native-app .game-card .game-message {
+    grid-column: 1;
+    grid-row: 7;
+    margin: 6px 2px 0;
+    text-align: left;
+    font-size: .7rem;
+    line-height: 1.4;
+  }
+
+  /* Chapter Match: tallies under the title, the board flush right at full
+     height. The playing strip docks under the reading column. */
+  html.native-app .match-record { grid-column: 1; grid-row: 4; align-self: auto; margin: 10px 2px 0; }
+  html.native-app .match-score { grid-column: 1; grid-row: 5; align-self: auto; margin: 6px 2px 0; }
+  html.native-app .match-score strong { font-size: 1.35rem; }
+  html.native-app .match-board-frame { grid-column: 2; grid-row: 1 / -1; min-height: 0; place-items: center end; }
+  html.native-app .match-piece { font-size: clamp(.9rem, 2.2vw, 1.25rem); }
+  html.native-app .match-board,
+  html.native-app .native-shell.has-mini-player .match-board {
+    width: min(100%, var(--phone-play-h));
+  }
+  @supports (width: 1cqh) {
+    html.native-app .match-board,
+    html.native-app .native-shell.has-mini-player .match-board { width: min(100%, 100cqh); }
+  }
+  html.native-app .native-shell.has-mini-player .match-game .game-message {
+    margin-bottom: calc(var(--mini-player-height) + 10px);
+  }
+  html.native-app .native-shell.tab-games .mini-player {
+    right: calc(max(12px, env(safe-area-inset-right)) + var(--phone-board-col) + var(--phone-games-gap));
+  }
+
+  /* Word Grid: guesses read on the left; the keyboard types against the
+     right edge, with the playing strip docked beneath it. */
+  html.native-app .word-board-frame { grid-column: 1; grid-row: 4 / 7; margin-top: 8px; place-items: center start; }
+  html.native-app .word-board,
+  html.native-app .native-shell.has-mini-player .word-board {
+    width: min(100%, max(96px, calc((var(--phone-play-h) - 150px) * .82)));
+  }
+  @supports (width: 1cqh) {
+    html.native-app .word-board,
+    html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 82cqh); }
+  }
+  html.native-app .word-keys { grid-column: 2; grid-row: 1 / -1; align-self: center; margin: 0; gap: 6px; }
+  html.native-app .word-keys-row { gap: 4px; }
+  html.native-app .word-key { max-width: 40px; min-height: 42px; border-radius: 8px; font-size: .8rem; }
+  html.native-app .word-key.wide { max-width: 60px; font-size: .62rem; }
+  html.native-app .native-shell.has-mini-player .word-keys {
+    margin-bottom: calc(var(--mini-player-height) + 10px);
+  }
+  html.native-app .native-shell.tab-games:has(.word-game) .mini-player {
+    left: calc(100vw - max(12px, env(safe-area-inset-right)) - var(--phone-keys-col));
+    right: max(12px, env(safe-area-inset-right));
+  }
+
+  /* --- Ledger ----------------------------------------------------- */
+  html.native-app .profile-page.ledger-dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 12px 14px;
+    padding-top: max(10px, var(--status-h));
+    padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+  }
+  html.native-app .ledger-dashboard > * { grid-column: 1 / -1; min-width: 0; }
+  html.native-app .ledger-dashboard > .profile-headline,
+  html.native-app .ledger-dashboard > .profile-calendar { grid-column: auto; }
+  html.native-app .ledger-dashboard.ledger-device-only > .profile-headline { grid-column: 1 / -1; }
+
+  html.native-app .ledger-dashboard .profile-head { gap: 10px; }
+  html.native-app .ledger-dashboard .profile-mono { width: 32px; height: 32px; flex-basis: 32px; font-size: 14px; border-radius: 10px; }
+  html.native-app .ledger-dashboard .profile-id h1 { font-size: 20px; }
+  html.native-app .ledger-dashboard .ledger-owner { margin-top: 2px; font-size: 12px; }
+  html.native-app .ledger-dashboard .profile-id p { margin-top: 1px; font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-headline { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; padding: 12px 14px; border-radius: 14px; }
+  html.native-app .ledger-dashboard .headline-primary { padding: 0 14px 0 0; border-right: 1px solid #514439; border-bottom: 0; }
+  html.native-app .ledger-dashboard .headline-value { font-size: 36px; }
+  html.native-app .ledger-dashboard .headline-label { font-size: 10px; }
+  html.native-app .ledger-dashboard .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 10px; }
+  html.native-app .ledger-dashboard .headline-secondary > div { gap: 3px; }
+  html.native-app .ledger-dashboard .headline-secondary dd { font-size: 18px; }
+  html.native-app .ledger-dashboard .headline-secondary dt { font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-calendar { display: flex; flex-direction: column; justify-content: space-between; padding: 10px 12px; border-radius: 14px; }
+  html.native-app .ledger-dashboard .profile-calendar header { margin-bottom: 6px; }
+  html.native-app .ledger-dashboard .profile-calendar h2 { font-size: 14px; }
+  html.native-app .ledger-dashboard .calendar-weeks,
+  html.native-app .ledger-dashboard .calendar-week,
+  html.native-app .ledger-dashboard .calendar-weekdays { gap: 3px; }
+  html.native-app .ledger-dashboard .calendar-cell,
+  html.native-app .ledger-dashboard .calendar-weekdays span { height: 11px; }
+  html.native-app .ledger-dashboard .calendar-footer { margin-top: 6px; }
+  html.native-app .ledger-dashboard .calendar-footer p { font-size: 10px; }
+
+  html.native-app .ledger-dashboard .profile-favorites { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; padding: 0 4px; }
+  html.native-app .ledger-dashboard .profile-favorites span { font-size: 10px; }
+  html.native-app .ledger-dashboard .profile-favorites strong { font-size: 13px; }
+
+  html.native-app .ledger-dashboard .ledger-achievements { padding-top: 12px; }
+  html.native-app .ledger-dashboard .achievements-heading h2 { font-size: 16px; margin-bottom: 2px; }
+  html.native-app .ledger-dashboard .achievements-heading p { font-size: 10px; }
+  html.native-app .ledger-dashboard .achievement-tally > strong { font-size: 18px; }
+  html.native-app .ledger-dashboard .achievement-filters { margin: 8px 0; }
+  html.native-app .ledger-dashboard .achievement-filters button { min-height: 30px; padding: 5px 10px; }
+  html.native-app .ledger-dashboard .achievement-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  html.native-app .ledger-dashboard .achievement-card { padding: 10px 12px; border-radius: 12px; }
+  html.native-app .ledger-dashboard .achievement-seal { width: 26px; height: 26px; border-radius: 8px; }
+  html.native-app .ledger-dashboard .achievement-card h3 { font-size: 13px; margin: 6px 0 3px; }
+  html.native-app .ledger-dashboard .achievement-card p { font-size: 10px; line-height: 1.35; }
+
+  html.native-app .ledger-dashboard .profile-recent h2 { font-size: 14px; }
+  html.native-app .ledger-dashboard .profile-recent ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
+  html.native-app .ledger-dashboard .profile-recent li:nth-last-child(2):nth-child(odd) { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
+  html.native-app .ledger-dashboard .recent-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; padding: 6px 0; }
+  html.native-app .ledger-dashboard .recent-cover { width: 32px; height: 32px; }
+
+  /* --- Settings --------------------------------------------------- */
+  html.native-app .settings-shell {
+    gap: 0;
+    padding: max(10px, var(--status-h)) max(16px, env(safe-area-inset-right))
+      calc(var(--tabs-h) + 24px) max(16px, env(safe-area-inset-left));
+  }
+  html.native-app .settings-head { margin-bottom: 10px; }
+  html.native-app .settings-head h1 { font-size: 1.7rem; }
+  html.native-app .settings-cards {
+    display: block;
+    column-count: 2;
+    column-gap: 14px;
+  }
+  /* Inline-level cards carry their bottom margin inside their own line, so
+     a column never opens with the previous column's leftover spacing. */
+  html.native-app .settings-cards > * {
+    display: inline-grid;
+    width: 100%;
+    vertical-align: top;
+    break-inside: avoid;
+    margin-bottom: 14px;
+  }
+}
+
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
 .libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
