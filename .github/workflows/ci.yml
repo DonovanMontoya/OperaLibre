@@ -147,3 +147,8 @@ jobs:
         run: |
           swiftc apps/web/ios/App/App/BackgroundDownloadPolicy.swift apps/web/ios/Tests/BackgroundDownloadPolicyTests.swift -o "$RUNNER_TEMP/background-policy-tests"
           "$RUNNER_TEMP/background-policy-tests"
+
+      - name: Test iOS Libro response decoding
+        run: |
+          swiftc apps/web/ios/App/App/LibroDeviceResponse.swift apps/web/ios/Tests/LibroDeviceResponseTests.swift -o "$RUNNER_TEMP/libro-response-tests"
+          "$RUNNER_TEMP/libro-response-tests"
