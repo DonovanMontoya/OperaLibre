@@ -259,12 +259,16 @@ export type LibroImportStatus = {
   }[];
 };
 
+export type LibroAccountSummary = { email: string; nickname?: string; syncedAt: string | null };
+
 export type LibroAccountStatus = {
+  accounts?: LibroAccountSummary[];
   connected: boolean;
   email: string | null;
   syncedAt: string | null;
   jobs: JobStatus[];
   books: {
+    accountEmail?: string;
     isbn: string;
     title: string;
     authors: string[];

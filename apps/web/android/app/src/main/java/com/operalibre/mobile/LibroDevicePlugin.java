@@ -54,7 +54,7 @@ public class LibroDevicePlugin extends Plugin {
         try (InputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[4096]; int count;
             while ((count = input.read(buffer)) != -1) {
-                if (output.size() + count > 65536) throw new ProviderError("The stored connection is invalid. Disconnect and reconnect.");
+                if (output.size() + count > 4 * 1024 * 1024) throw new ProviderError("The stored connection is invalid. Disconnect and reconnect.");
                 output.write(buffer, 0, count);
             }
             envelope = new JSONObject(output.toString("UTF-8"));
@@ -63,10 +63,33 @@ public class LibroDevicePlugin extends Plugin {
         cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)));
         return new JSONObject(new String(cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP)), StandardCharsets.UTF_8));
     }
+    private JSONArray connections() throws Exception {
+        JSONObject stored = connection();
+        if (stored == null) return new JSONArray();
+        return stored.has("accounts") ? stored.getJSONArray("accounts") : new JSONArray().put(stored);
+    }
+    private JSONObject selected(String email) throws Exception {
+        JSONArray accounts = connections();
+        if (email == null && accounts.length() > 1) throw new ProviderError("Choose a Libro.fm account.");
+        for (int i = 0; i < accounts.length(); i++) {
+            JSONObject account = accounts.getJSONObject(i);
+            if (email == null || account.getString("email").equalsIgnoreCase(email)) return account;
+        }
+        return null;
+    }
+    private JSONArray excluding(JSONArray accounts, String email) throws Exception {
+        JSONArray result = new JSONArray();
+        for (int i = 0; i < accounts.length(); i++) {
+            JSONObject account = accounts.getJSONObject(i);
+            if (!account.getString("email").equalsIgnoreCase(email)) result.put(account);
+        }
+        return result;
+    }
     private void save(JSONObject value) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
         JSONObject envelope = new JSONObject().put("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
             .put("data", Base64.encodeToString(cipher.doFinal(value.toString().getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP));
+        if (envelope.toString().getBytes(StandardCharsets.UTF_8).length > 4 * 1024 * 1024) throw new ProviderError("Too many Libro.fm connections. Disconnect an account first.");
         File temp = new File(getContext().getNoBackupFilesDir(), "libro-connection.tmp");
         try (FileOutputStream output = new FileOutputStream(temp)) { output.write(envelope.toString().getBytes(StandardCharsets.UTF_8)); output.getFD().sync(); }
         // POSIX rename is atomic and available on API 21+, unlike java.nio.file (26+).
@@ -104,10 +127,28 @@ public class LibroDevicePlugin extends Plugin {
     private JSONObject perform(PluginCall call) throws Exception {
         String action = call.getString("action", "");
         if (action.equals("status")) {
-            JSONObject account = connection();
-            return new JSONObject().put("connected", account != null).put("email", account == null ? "" : account.getString("email"));
+            JSONArray accounts = connections(), summaries = new JSONArray();
+            for (int i = 0; i < accounts.length(); i++) summaries.put(new JSONObject().put("email", accounts.getJSONObject(i).getString("email")).put("nickname", accounts.getJSONObject(i).optString("nickname", "")));
+            return new JSONObject().put("connected", accounts.length() > 0).put("accounts", summaries)
+                .put("email", accounts.length() == 0 ? "" : accounts.getJSONObject(0).getString("email"));
+        }
+        if (action.equals("rename")) {
+            String email = call.getString("email"), nickname = call.getString("nickname", "").trim();
+            if (email == null || nickname.codePointCount(0, nickname.length()) > 80 || nickname.codePoints().anyMatch(Character::isISOControl)) throw new ProviderError("Use a nickname of at most 80 characters without control characters.");
+            JSONArray accounts = connections();
+            boolean found = false;
+            for (int i = 0; i < accounts.length(); i++) {
+                JSONObject account = accounts.getJSONObject(i);
+                if (account.getString("email").equalsIgnoreCase(email)) { account.put("nickname", nickname); found = true; }
+            }
+            if (!found) throw new ProviderError("Libro.fm account not found.");
+            save(new JSONObject().put("accounts", accounts));
+            return new JSONObject();
         }
         if (action.equals("disconnect")) {
+            JSONObject account = selected(call.getString("email"));
+            JSONArray remaining = excluding(connections(), account == null ? "" : account.getString("email"));
+            if (remaining.length() > 0) { save(new JSONObject().put("accounts", remaining)); return new JSONObject(); }
             if (credentialFile().exists() && !credentialFile().delete()) throw new ProviderError("Could not remove the connection.");
             return new JSONObject();
         }
@@ -117,11 +158,12 @@ public class LibroDevicePlugin extends Plugin {
             JSONObject value = api("oauth/token", null, new JSONObject().put("grant_type", "password").put("username", email).put("password", password));
             String token = value.optString("access_token", "");
             if (token.isEmpty() || token.length() >= 16384) throw new ProviderError("Libro.fm did not provide a token.");
-            save(new JSONObject().put("email", email).put("token", token));
+            JSONObject previous = selected(email);
+            save(new JSONObject().put("accounts", excluding(connections(), email).put(new JSONObject().put("email", email).put("token", token).put("nickname", previous == null ? "" : previous.optString("nickname", "")))));
             return new JSONObject().put("connected", true).put("email", email);
         }
         if (action.equals("extract")) return extract(call.getString("folder", ""));
-        JSONObject account = connection();
+        JSONObject account = selected(call.getString("email"));
         if (account == null) throw new ProviderError("Connect the device account first.");
         String token = account.getString("token");
         if (action.equals("page")) {

@@ -6,7 +6,7 @@ import { libroDownloadURL, libroPage } from "./libroDevicePolicy";
 import type { JobStatus, LibroAccountStatus } from "./types";
 
 interface DevicePlugin {
-  request(options: { action: string; email?: string; password?: string; page?: number; isbn?: string; folder?: string }): Promise<Record<string, unknown>>;
+  request(options: { action: string; nickname?: string; email?: string; password?: string; page?: number; isbn?: string; folder?: string }): Promise<Record<string, unknown>>;
 }
 const Native = registerPlugin<DevicePlugin>("LibroDevice");
 const CACHE = "operalibre.libroDevice.catalog.v1";
@@ -24,6 +24,11 @@ const discard = async (item: Pending) => {
   await cancelBackgroundBookDownload(item.job.id).catch(() => undefined);
   await Filesystem.rmdir({ path: `offline-media/${item.folder}`, directory: Directory.Data, recursive: true }).catch(() => undefined);
 };
+const catalogs = (): Catalog[] => {
+  const stored = read<Catalog | Catalog[]>(CACHE, []);
+  return Array.isArray(stored) ? stored : [stored];
+};
+const saveCatalog = (catalog: Catalog) => write(CACHE, [...catalogs().filter(item => item.email.toLowerCase() !== catalog.email.toLowerCase()), catalog]);
 let refresh: Promise<void> | null = null;
 let reconcile: Promise<void> | null = null;
 let starting = false;
@@ -44,18 +49,25 @@ export async function cancelLibroDevice(isbn: string) {
 
 export async function connectLibroDevice(email: string, password: string) {
   if (read<Pending[]>(JOBS, []).some(active) || starting || refresh) throw new Error("Wait for the current device operation to finish.");
-  await Native.request({ action: "connect", email, password });
-  write(CACHE, { email: email.trim(), books: [], syncedAt: null });
-  await refreshLibroDevice();
+  starting = true;
+  try {
+    await Native.request({ action: "connect", email, password });
+    // Preserve cached purchases until the refreshed catalog is available.
+    await refreshLibroDevice();
+  } finally { starting = false; }
 }
 
-export async function disconnectLibroDevice() {
+export async function disconnectLibroDevice(email?: string) {
   if (read<Pending[]>(JOBS, []).some(active) || starting || refresh) throw new Error("Wait for the current device operation to finish.");
-  await Native.request({ action: "disconnect" });
-  localStorage.removeItem(CACHE);
-  // Completed files remain in the local library; only connection history is removed.
-  for (const item of read<Pending[]>(JOBS, [])) await discard(item);
-  localStorage.removeItem(JOBS);
+  starting = true;
+  try {
+    if (reconcile) await reconcile;
+    await Native.request({ action: "disconnect", email });
+    write(CACHE, email ? catalogs().filter(item => item.email.toLowerCase() !== email.toLowerCase()) : []);
+    // Completed files remain in the local library; only connection history is removed.
+    for (const item of read<Pending[]>(JOBS, [])) await discard(item);
+    localStorage.removeItem(JOBS);
+  } finally { starting = false; }
 }
 
 export function refreshLibroDevice(): Promise<void> {
@@ -63,20 +75,27 @@ export function refreshLibroDevice(): Promise<void> {
   refresh = (async () => {
     const connection = await Native.request({ action: "status" });
     if (!connection.connected) throw new Error("Connect your device account first.");
-    const books = new Map<string, Purchase>();
-    let bytes = 0;
-    for (let page = 1; page <= 200; page++) {
-      const raw = await Native.request({ action: "page", page });
-      bytes += JSON.stringify(raw).length;
-      if (bytes > 32 * 1024 * 1024) throw new Error("This catalog exceeds the supported size.");
-      const result = libroPage(raw);
-      for (const book of result.books) books.set(book.isbn, book);
-      if (books.size > 20000) throw new Error("This catalog has too many books.");
-      if (page >= result.pages) {
-        write(CACHE, { email: connection.email, books: [...books.values()], syncedAt: String(Date.now()) });
-        return;
-      }
+    const accounts = (connection.accounts as { email: string }[] | undefined) ?? [{ email: String(connection.email) }];
+    let failure: unknown;
+    for (const account of accounts) {
+      try {
+        const books = new Map<string, Purchase>();
+        let bytes = 0;
+        for (let page = 1; page <= 200; page++) {
+          const raw = await Native.request({ action: "page", page, email: account.email });
+          bytes += JSON.stringify(raw).length;
+          if (bytes > 32 * 1024 * 1024) throw new Error("This catalog exceeds the supported size.");
+          const result = libroPage(raw);
+          for (const book of result.books) books.set(book.isbn, book);
+          if (books.size > 20000) throw new Error("This catalog has too many books.");
+          if (page >= result.pages) {
+            saveCatalog({ email: account.email, books: [...books.values()], syncedAt: String(Date.now()) });
+            break;
+          }
+        }
+      } catch (error) { failure = error; }
     }
+    if (failure) throw failure;
   })().finally(() => { refresh = null; });
   return refresh;
 }
@@ -121,32 +140,33 @@ export async function getLibroDevice(): Promise<LibroAccountStatus> {
   if (!reconcile && !starting) reconcile = settleDownloads().finally(() => { reconcile = null; });
   await reconcile;
   const connection = await Native.request({ action: "status" });
-  const catalog = read<Catalog>(CACHE, { email: "", books: [], syncedAt: null });
+  const accounts = (connection.accounts as { email: string }[] | undefined) ?? (connection.connected ? [{ email: String(connection.email) }] : []);
+  const cached = catalogs().filter(catalog => accounts.some(account => account.email.toLowerCase() === catalog.email.toLowerCase()));
   const local = new Set(getDeviceBooks().map(book => book.id));
-  const matching = connection.connected && connection.email === catalog.email;
-  return { connected: !!connection.connected, email: typeof connection.email === "string" ? connection.email : null,
-    syncedAt: matching ? catalog.syncedAt : null,
-    books: matching ? catalog.books.map(book => ({ ...book, localBookId: local.has(`device:libro:${book.isbn}`) ? `device:libro:${book.isbn}` : null })) : [],
+  return { connected: !!connection.connected, email: accounts[0]?.email ?? null,
+    accounts: accounts.map(account => ({ ...account, syncedAt: cached.find(c => c.email.toLowerCase() === account.email.toLowerCase())?.syncedAt ?? null })),
+    syncedAt: cached[0]?.syncedAt ?? null,
+    books: cached.flatMap(catalog => catalog.books.map(book => ({ ...book, accountEmail: catalog.email, localBookId: local.has(`device:libro:${book.isbn}`) ? `device:libro:${book.isbn}` : null }))),
     jobs: read<Pending[]>(JOBS, []).map(item => item.job).reverse() };
 }
 
-export async function importLibroDevice(isbn: string) {
+export async function importLibroDevice(isbn: string, email?: string) {
   if (starting || read<Pending[]>(JOBS, []).some(active)) throw new Error("Wait for your current device download to finish.");
   starting = true;
   try {
-    const catalog = read<Catalog>(CACHE, { email: "", books: [], syncedAt: null });
+    const catalog = catalogs().find(c => (!email || c.email.toLowerCase() === email.toLowerCase()) && c.books.some(book => book.isbn === isbn));
     const connection = await Native.request({ action: "status" });
-    const book = catalog.books.find(book => book.isbn === isbn);
-    if (!connection.connected || connection.email !== catalog.email || !book) throw new Error("Refresh your device purchase list first.");
+    const book = catalog?.books.find(book => book.isbn === isbn);
+    if (!connection.connected || !catalog || !book || !((connection.accounts as { email: string }[] | undefined) ?? [{ email: String(connection.email) }]).some(a => a.email.toLowerCase() === catalog.email.toLowerCase())) throw new Error("Refresh your device purchase list first.");
     if (getDeviceBooks().some(book => book.id === `device:libro:${isbn}`)) return;
     const old = read<Pending[]>(JOBS, []);
     for (const item of old.filter(item => item.book.isbn === isbn && item.job.status === "failed")) await discard(item);
-    const m4b = await Native.request({ action: "m4b", isbn });
+    const m4b = await Native.request({ action: "m4b", isbn, email: catalog.email });
     const hasM4b = typeof m4b.m4b_url === "string" && m4b.m4b_url.length > 0;
     const urls: string[] = [];
     if (hasM4b) urls.push(libroDownloadURL(m4b.m4b_url));
     else {
-      const manifest = await Native.request({ action: "manifest", isbn });
+      const manifest = await Native.request({ action: "manifest", isbn, email: catalog.email });
       const parts = manifest.parts as { url: string }[];
       if (!Array.isArray(parts) || !parts.length || parts.length > 100) throw new Error("Libro.fm did not provide downloadable audio.");
       for (const part of parts) urls.push(libroDownloadURL(part.url));
@@ -166,5 +186,12 @@ export async function importLibroDevice(isbn: string) {
   } finally { starting = false; }
 }
 
-export const libroDeviceBackend = { status: getLibroDevice, connect: connectLibroDevice, disconnect: disconnectLibroDevice,
+export async function renameLibroDevice(email: string, nickname: string) {
+  if (starting || refresh) throw new Error("Wait for the current device operation to finish.");
+  starting = true;
+  try { await Native.request({ action: "rename", email, nickname }); }
+  finally { starting = false; }
+}
+
+export const libroDeviceBackend = { rename: renameLibroDevice, status: getLibroDevice, connect: connectLibroDevice, disconnect: disconnectLibroDevice,
   refresh: refreshLibroDevice, import: importLibroDevice, books: async () => getDeviceBooks() };
