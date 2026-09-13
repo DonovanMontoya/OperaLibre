@@ -8746,7 +8746,7 @@ function MainApp({
         onClick={() => setLibraryOpen(false)}
       />
 
-      <aside className={`library-pane ${libraryOpen ? "open" : ""}`} {...shelfPull.handlers}>
+      <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource === "libro" ? "libro-browsing" : ""}`} {...shelfPull.handlers}>
         {native ? (
           <div
             className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
@@ -8966,7 +8966,7 @@ function MainApp({
                     <label htmlFor="libro-destination">Download destination</label>
                     <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
                       {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
-                      <option value="device">This device · no server needed</option>
+                      <option value="device">This device</option>
                     </select>
                   </> : null}
                 </div>
