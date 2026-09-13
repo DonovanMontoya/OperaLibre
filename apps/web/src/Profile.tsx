@@ -169,7 +169,7 @@ export function ProfilePage({
   return (
     <main className="profile-shell" onClick={onClose}>
       <article
-        className="profile-page ledger-dashboard"
+        className={`profile-page ledger-dashboard${offlineSource === "device" ? " ledger-device-only" : ""}`}
         onClick={(event) => event.stopPropagation()}
       >
       <button type="button" className="profile-back" onClick={onClose}>
