@@ -12,6 +12,26 @@ independently of the server releases.
 
 ## Unreleased
 
+## 1.2.4 (18)
+
+Distributed via App Store Connect (TestFlight) on September 14, 2026. Source
+commit: `3276728b`.
+
+- Get books now has All accounts, Libro.fm, and Audible tabs, with shared
+  search and account filtering. Libro.fm supports multiple connections and
+  editable nicknames, and existing single-account data remains readable.
+  ([#150](https://github.com/DonovanMontoya/OperaLibre/pull/150))
+- Account management and purchase refresh no longer fail together: refreshing
+  one Libro.fm account's purchases no longer breaks refresh for the others.
+  ([#150](https://github.com/DonovanMontoya/OperaLibre/pull/150))
+- Landscape shelves keep results outside the toolbar grid, restoring
+  full-width books and visible controls while respecting the iPad native tab
+  bar. ([#150](https://github.com/DonovanMontoya/OperaLibre/pull/150))
+- Fixed the Ledger page's colors drifting from the app's paper theme.
+  ([#149](https://github.com/DonovanMontoya/OperaLibre/pull/149))
+- Fixed a duplicated Follow Along highlight left behind after rotating the
+  reader. ([#148](https://github.com/DonovanMontoya/OperaLibre/pull/148))
+
 ## 1.2.3 (17)
 
 Distributed via App Store Connect (TestFlight) on September 13, 2026. Source
