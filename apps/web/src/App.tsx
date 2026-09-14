@@ -4,7 +4,12 @@ import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
 import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
-import { removeHighlight, type AnnotationStore } from "./readerAnnotations";
+import {
+  pruneUntrackedHighlights,
+  removeHighlight,
+  type AnnotationStore,
+  type MarkedView
+} from "./readerAnnotations";
 import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
 import {
   ALargeSmall,
@@ -1469,6 +1474,12 @@ function sentenceHighlightStyle(theme: ReaderTheme) {
     : { fill: "#d9a441", "fill-opacity": "0.32", "mix-blend-mode": "multiply" };
 }
 
+/** Erases narrated-sentence marks that a relayout drew twice and orphaned. */
+function pruneReadalongMarks(rendition: Rendition) {
+  const views = rendition.views() as unknown as MarkedView[] | { all(): MarkedView[] };
+  pruneUntrackedHighlights(Array.isArray(views) ? views : views.all(), "readalong-highlight");
+}
+
 export function EpubReadalong({
   bookId,
   storageScope,
@@ -2036,6 +2047,9 @@ export function EpubReadalong({
     const handleRendered = () => {
       debugLog("rendered");
       setIsReady(true);
+      if (rendition) {
+        pruneReadalongMarks(rendition);
+      }
       const contentsList = ([] as Contents[]).concat(
         (rendition?.getContents() as unknown as Contents[]) ?? []
       );
@@ -2460,6 +2474,7 @@ export function EpubReadalong({
     } catch {
       // stale annotation already gone
     }
+    pruneReadalongMarks(rendition);
   }, []);
 
   // Sentence-level readalong: highlight the fragment being narrated and keep
