@@ -2848,6 +2848,7 @@ pub(crate) async fn run_libation(
     // with it, or an export keeps writing to a path we have already removed.
     Ok(Command::new(cli_path)
         .args(config.command_args(args))
+        .env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1")
         .kill_on_drop(true)
         .output()
         .await?)
@@ -2910,6 +2911,7 @@ pub(crate) fn run_interactive_libation_login(
     };
     let mut command = CommandBuilder::new(cli_path);
     command.args(args);
+    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
     let mut child = match pair.slave.spawn_command(command) {
         Ok(child) => child,
         Err(error) => {
