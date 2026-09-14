@@ -856,7 +856,8 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.65rem;
   color: rgba(241, 231, 208, 0.65);
 }
-.purchase-source select {
+.purchase-source select,
+.purchase-destination select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -13522,105 +13523,60 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
    state sits on the cover itself: a gold rule along the bottom edge for a
    book under way, a bound ribbon for one finished. */
 
-/* --- A shelf wide enough for one toolbar (phone landscape, iPad full shelf) --- */
+/* The shelf stays a single scroll container. Only its toolbar uses a grid;
+   results must never participate in the toolbar's column placement. */
 html.native-app .native-shell.shelf-folded > .library-pane {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  column-gap: 16px;
-  row-gap: 10px;
-  align-content: start;
-}
-html.native-app .native-shell.shelf-folded > .library-pane > * {
-  grid-column: 1 / -1;
-  min-width: 0;
+  display: block;
 }
 html.native-app .native-shell.shelf-folded > .library-pane > .pane-title {
-  grid-column: 1;
-  grid-row: 1;
   flex-wrap: nowrap;
   align-items: center;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
+  margin: 0 0 10px;
+  padding: 0 0 10px;
 }
-html.native-app .native-shell.shelf-folded > .library-pane .pane-title .eyebrow {
-  display: none;
-}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-title .eyebrow { display: none; }
 html.native-app .native-shell.shelf-folded > .library-pane .pane-title h1 {
   margin: 0;
   font-size: 1.45rem;
   white-space: nowrap;
 }
-html.native-app .native-shell.shelf-folded > .library-pane .pane-actions {
-  gap: 4px;
-  margin-left: 4px;
-}
+html.native-app .native-shell.shelf-folded > .library-pane .pane-actions { gap: 4px; margin-left: auto; }
 html.native-app .native-shell.shelf-folded > .library-pane .pane-title .icon-button {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
 }
-/* The toolbar's own pieces join the pane's grid: search and the ordering
-   controls share the wordmark's line, the collection switch and the count
-   the line below, and an open filter panel spans beneath them. */
 html.native-app .native-shell.shelf-folded > .library-pane > .library-toolbar {
-  display: contents;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  margin-bottom: 12px;
 }
-html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > * {
-  grid-column: 1 / -1;
-}
-html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-search-row {
-  grid-column: 2;
-  grid-row: 1;
-}
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > * { min-width: 0; grid-column: 1 / -1; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .shelf-navigation { order: 0; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .purchase-source { order: 1; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar:has(> .purchase-source) > .shelf-navigation { grid-column: 1; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .purchase-source { grid-column: 2; align-self: center; min-width: 300px; }
+
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-search-row { order: 2; grid-column: 1; }
 html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-controls {
-  grid-column: 3;
-  grid-row: 1;
+  order: 3;
+  grid-column: 2;
   align-self: center;
   flex-wrap: nowrap;
   gap: 6px;
 }
-html.native-app .native-shell.shelf-folded > .library-pane .library-sort {
-  flex: 0 1 130px;
-}
-/* The chosen order reads for itself on a toolbar; its label stays for
-   assistive technology and gives its width to search. */
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-results-summary { order: 4; margin: 0; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-filters { order: 5; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-active-filters { order: 6; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-sort { flex: 0 0 130px; width: 130px; }
 html.native-app .native-shell.shelf-folded > .library-pane .library-sort > span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
-html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .source-toggle {
-  grid-column: 1;
-  grid-row: 2;
-  justify-self: start;
-}
-html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
-  grid-column: 2 / -1;
-  grid-row: 2;
-  align-self: center;
-  justify-content: flex-end;
-  gap: 14px;
-}
-
-/* iPad hangs its tab bar over the middle of the top edge, so the first line
-   keeps to the ends — wordmark and actions left, ordering right — and search
-   takes the middle of the second line, below the bar. */
+/* Reserve UIKit's actual top-bar clearance instead of arranging controls
+   beside an assumed tab-bar width, which changes with tabs and rotation. */
 html.native-app .native-shell.device-ipad.shelf-folded > .library-pane {
-  padding-top: calc(env(safe-area-inset-top) + 14px);
-  row-gap: 12px;
-}
-html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .pane-title {
-  min-height: var(--native-tabs-top, 0px);
-}
-html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-search-row {
-  grid-row: 2;
-}
-html.native-app .native-shell.device-ipad.shelf-folded > .library-pane .library-toolbar > .library-results-summary {
-  grid-column: 3;
+  padding-top: calc(var(--status-h) + 12px);
 }
 
 /* --- The iPad's shelf page beside the player, in landscape --- */
@@ -14262,3 +14218,56 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   .admin-sync-search { width: 100%; }
   .admin-sync-search input { width: 100%; }
 }
+
+.libro-account-filter { display: grid; gap: 6px; margin: 12px 0; font-size: 0.8rem; }
+.libro-account-filter select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--catalog-border); border-radius: 8px; background-color: var(--catalog-surface); color: var(--catalog-ink); font: inherit; }
+.libro-account-filter select:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
+.libro-purchases--grid .libro-purchase-copy .libro-purchase-account { display: block; }
+
+/* Store tabs live inside Get books, beneath the main task navigation. */
+.purchase-tabs { display: flex; grid-column: 1 / -1; gap: 3px; padding: 3px; border: 1px solid rgba(217, 181, 116, 0.25); border-radius: 10px; background: rgba(0, 0, 0, 0.14); }
+.purchase-tabs button { flex: 1; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 4px; border: 0; border-radius: 7px; background: transparent; color: rgba(241, 231, 208, 0.72); font: 500 0.8rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
+.purchase-tabs button[aria-selected="true"] { background: var(--gold-soft); color: var(--spine); }
+.purchase-tabs button:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
+.purchase-results { display: block; min-width: 0; }
+
+.purchase-account-filter { display: block; margin: 0 0 14px; }
+.purchase-account-filter select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(217, 181, 116, 0.3); border-radius: 10px; background: var(--spine); color: var(--gold-soft); font: inherit; color-scheme: dark; }
+.purchase-account-filter select:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
+.purchase-provider-tag { display: inline-block; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font: 500 0.65rem/1.3 -apple-system, BlinkMacSystemFont, sans-serif; white-space: nowrap; }
+.libro-nickname { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.libro-nickname label { display: grid; flex: 1; min-width: 130px; gap: 4px; }
+.libro-nickname input { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--catalog-border); border-radius: 8px; color: var(--catalog-ink); background: var(--catalog-surface); font: inherit; box-sizing: border-box; }
+
+/* Keep the expanded iPhone portrait header on one line. Other shell layouts retain their sizing. */
+@media (min-width: 375px) and (max-width: 600px) and (orientation: portrait) {
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-title {
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-title > div:first-child { min-width: 0; }
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-title .eyebrow { display: none; }
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-title h1 { margin: 0; font-size: clamp(1.25rem, 6vw, 1.75rem); line-height: 1.15; white-space: nowrap; }
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-actions { gap: 0; }
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-actions > .icon-button,
+  html.native-app .native-shell:not(.device-ipad):not(.shelf-folded) > .library-pane .pane-actions > div > .icon-button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+}
+
+/* In a landscape shelf, account management should not displace the books. */
+html.native-app .native-shell.shelf-landscape .audible-toolbar:empty { display: none; }
+html.native-app .native-shell.shelf-landscape .libation-panel.audible-compact { padding: 0; gap: 6px; }
+html.native-app .native-shell.shelf-landscape .purchase-account-filter { margin-bottom: 4px; }
+html.native-app .native-shell.shelf-landscape .libro-catalog { padding: 10px 0; }
+html.native-app .native-shell.shelf-landscape .libro-catalog-head { align-items: center; gap: 4px 12px; }
+html.native-app .native-shell.shelf-landscape .libro-catalog h2 { margin: 0; font-size: 1.4rem; }
+html.native-app .native-shell.shelf-landscape .libro-account-details:not([open]) { width: auto; }
+html.native-app .native-shell.shelf-landscape .libro-catalog-summary { padding: 0; }
+html.native-app .native-shell.shelf-landscape .libro-view-toolbar { margin: 4px 0; }
+
+.purchase-destination { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.purchase-destination > span { flex: none; font: 0.7rem "JetBrains Mono", monospace; color: var(--gold-soft); }
+.purchase-destination select { flex: 1; width: 0; min-width: 0; }
+html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .purchase-destination { order: 4; }

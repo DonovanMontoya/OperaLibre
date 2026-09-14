@@ -35,20 +35,29 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
          kSecAttrAccount as String: "connection"]
     }
 
-    private func connection() throws -> [String: String]? {
+    private func connections() throws -> [[String: String]] {
         var query = keyQuery()
         query[kSecReturnData as String] = true
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound { return [] }
         guard status == errSecSuccess, let data = result as? Data,
-              let value = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
+              let value = try? JSONSerialization.jsonObject(with: data) else {
             throw LibroDeviceError(message: "Unlock this device to read the Libro.fm connection.")
         }
-        return value
+        if let accounts = value as? [[String: String]] { return accounts }
+        if let legacy = value as? [String: String] { return [legacy] }
+        throw LibroDeviceError(message: "Could not read the Libro.fm connections.")
     }
 
-    private func save(_ value: [String: String]) throws {
+    private func connection(_ email: String?) throws -> [String: String]? {
+        let accounts = try connections()
+        if let email { return accounts.first { $0["email"]?.lowercased() == email.lowercased() } }
+        guard accounts.count <= 1 else { throw LibroDeviceError(message: "Choose a Libro.fm account.") }
+        return accounts.first
+    }
+
+    private func save(_ value: [[String: String]]) throws {
         let data = try JSONSerialization.data(withJSONObject: value)
         let attributes: [String: Any] = [kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
@@ -107,9 +116,22 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
     private func perform(_ call: CAPPluginCall) throws -> [String: Any] {
         switch call.getString("action") {
         case "status":
-            let account = try connection()
-            return ["connected": account != nil, "email": account?["email"] ?? ""]
+            let accounts = try connections()
+            return ["connected": !accounts.isEmpty, "email": accounts.first?["email"] ?? "",
+                    "accounts": accounts.map { ["email": $0["email"] ?? "", "nickname": $0["nickname"] ?? ""] }]
+        case "rename":
+            guard let email = call.getString("email"), let raw = call.getString("nickname") else { throw LibroDeviceError(message: "Choose an account and nickname.") }
+            let nickname = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard nickname.unicodeScalars.count <= 80, nickname.rangeOfCharacter(from: .controlCharacters) == nil else { throw LibroDeviceError(message: "Use a nickname of at most 80 characters without control characters.") }
+            var accounts = try connections()
+            guard let index = accounts.firstIndex(where: { $0["email"]?.lowercased() == email.lowercased() }) else { throw LibroDeviceError(message: "Libro.fm account not found.") }
+            accounts[index]["nickname"] = nickname
+            try save(accounts)
+            return [:]
         case "disconnect":
+            let selected = try connection(call.getString("email"))
+            let accounts = try connections().filter { $0["email"] != selected?["email"] }
+            if !accounts.isEmpty { try save(accounts); return [:] }
             let status = SecItemDelete(keyQuery() as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw LibroDeviceError(message: "Could not remove the connection.") }
             return [:]
@@ -119,15 +141,18 @@ public class LibroDevicePlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTaskDeleg
             guard !email.isEmpty, email.count <= 320, !password.isEmpty, password.count <= 1024 else { throw LibroDeviceError(message: "Enter your Libro.fm email and password.") }
             let json = try api("oauth/token", body: ["grant_type":"password", "username":email, "password":password])
             guard let token = json["access_token"] as? String, !token.isEmpty, token.count < 16384 else { throw LibroDeviceError(message: "Libro.fm did not provide a token.") }
-            try save(["email":email, "token":token])
+            let nickname = try connection(email)?["nickname"] ?? ""
+            var accounts = try connections().filter { $0["email"]?.lowercased() != email.lowercased() }
+            accounts.append(["email":email, "token":token, "nickname":nickname])
+            try save(accounts)
             return ["connected":true, "email":email]
         case "extract": return try extract(call)
         case "page":
-            guard let page = call.getInt("page"), (1...200).contains(page), let token = try connection()?["token"] else { throw LibroDeviceError(message: "Connect the device account first.") }
+            guard let page = call.getInt("page"), (1...200).contains(page), let token = try connection(call.getString("email"))?["token"] else { throw LibroDeviceError(message: "Connect the device account first.") }
             return try api("api/v10/library?page=\(page)", token: token)
         case "m4b", "manifest":
             guard let isbn = call.getString("isbn"), isbn.range(of: "^[0-9X]{10,13}$", options: .regularExpression) != nil,
-                  let token = try connection()?["token"] else { throw LibroDeviceError(message: "Connect the device account first.") }
+                  let token = try connection(call.getString("email"))?["token"] else { throw LibroDeviceError(message: "Connect the device account first.") }
             return try api(call.getString("action") == "m4b" ? "api/v10/audiobooks/\(isbn)/packaged_m4b" : "api/v10/download-manifest?isbn=\(isbn)", token: token)
         default: throw LibroDeviceError(message: "Unsupported device operation.")
         }

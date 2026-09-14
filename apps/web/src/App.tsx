@@ -1,3 +1,4 @@
+import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
@@ -348,6 +349,7 @@ import {
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
+import type { LibroAccountSummary } from "./types";
 import { LibroCatalog } from "./LibroCatalog";
 import { supportsLibroDevice, refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
@@ -867,7 +869,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
-type LibrarySource = "local" | "audible" | "libro";
+type LibrarySource = "local" | "audible" | "libro" | "all";
 const LANDSCAPE_QUERY = "(orientation: landscape)";
 // A phone on its side: short enough that the iPad spread never applies.
 const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)";
@@ -906,7 +908,7 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
-const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro"];
+const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro", "all"];
 
 // "account" only makes sense for the Audible shelf; "series"/"genre"/"progress" only
 // for the local library — an Audible row is a purchase that has not been downloaded yet,
@@ -918,7 +920,7 @@ const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
 const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
-  if (source === "libro") return ["title", "author", "duration"].includes(mode);
+  if (source === "libro" || source === "all") return ["title", "author", "duration"].includes(mode);
   const unsupported = source === "local" ? AUDIBLE_ONLY_SORT_MODES : LOCAL_ONLY_SORT_MODES;
   return !unsupported.includes(mode);
 }
@@ -3968,7 +3970,7 @@ function MainApp({
   const [libroRefreshKey, setLibroRefreshKey] = useState(0);
   const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
   const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
-  const lastPurchaseSource = useRef<"audible" | "libro">("libro");
+  const lastPurchaseSource = useRef<"audible" | "libro" | "all">("all");
   useEffect(() => {
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
   }, [librarySource]);
@@ -4015,6 +4017,9 @@ function MainApp({
   const [libationFinalizationFailures, setLibationFinalizationFailures] = useState<Set<string>>(new Set());
   const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
   const [libationRefreshPending, setLibationRefreshPending] = useState(false);
+  const [purchaseAccountFilter, setPurchaseAccountFilter] = useState("all");
+  const [libroAccounts, setLibroAccounts] = useState<LibroAccountSummary[] | null>(null);
+  useEffect(() => { setPurchaseAccountFilter("all"); setLibroAccounts(null); }, [libroOnDevice, currentUser.id]);
   const [audibleAccountFilter, setAudibleAccountFilter] = useState("all");
   const libationMessage = formatLibationMessage(libationStatus);
   const brokenLibationAccounts = libationStatus?.accounts.filter((account) => !account.authenticated) ?? [];
@@ -4024,6 +4029,7 @@ function MainApp({
   const downloadAllLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-liberate-all");
   const isRefreshingAudible = libationRefreshPending || !!refreshLibationJob;
   const canBrowseLibation = capabilities.imports && (currentUser.isAdmin || (native && !!libationStatus?.enabled));
+  const showAudiblePurchases = librarySource === "audible" || (librarySource === "all" && canBrowseLibation && !purchaseAccountFilter.startsWith("libro:"));
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -4339,9 +4345,10 @@ function MainApp({
 
   const visibleLibationBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    const accountBooks = audibleAccountFilter === "all"
+    const selectedAccount = librarySource === "all" ? (purchaseAccountFilter.startsWith("audible:") ? purchaseAccountFilter.slice(8) : "all") : audibleAccountFilter;
+    const accountBooks = selectedAccount === "all"
       ? libationBooks
-      : libationBooks.filter((book) => book.profileId === audibleAccountFilter);
+      : libationBooks.filter((book) => book.profileId === selectedAccount);
     const filtered = query
       ? accountBooks.filter((book) =>
           [book.title, book.subtitle, book.authors, book.narrators]
@@ -4365,7 +4372,7 @@ function MainApp({
       return a.title.localeCompare(b.title);
     });
     return sortReversed ? sorted.reverse() : sorted;
-  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed]);
+  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed, librarySource, purchaseAccountFilter]);
   const audibleProfiles = useMemo(() => {
     const profiles = new Map<string, string>();
     for (const book of libationBooks) {
@@ -4373,6 +4380,16 @@ function MainApp({
     }
     return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [audibleAccountLabels, libationBooks]);
+
+  const allAudibleAccounts = useMemo(() => {
+    const accounts = new Map(audibleProfiles.map(account => [account.id, account.name]));
+    for (const account of libationStatus?.accounts ?? []) accounts.set(account.id, account.name || account.accountId);
+    return [...accounts].map(([id, name]) => ({ id, name }));
+  }, [audibleProfiles, libationStatus]);
+  useEffect(() => {
+    if (purchaseAccountFilter.startsWith("libro:") && libroAccounts && !libroAccounts.some(account => `libro:${account.email}` === purchaseAccountFilter)) setPurchaseAccountFilter("all");
+    if (purchaseAccountFilter.startsWith("audible:") && libationStatus && !allAudibleAccounts.some(account => `audible:${account.id}` === purchaseAccountFilter)) setPurchaseAccountFilter("all");
+  }, [purchaseAccountFilter, libroAccounts, libationStatus, allAudibleAccounts]);
 
   // Accounts come and go in Libation, so a filter pinned to a departed account
   // would quietly show an empty library under a select that reads "All accounts".
@@ -5558,14 +5575,14 @@ function MainApp({
   }, [currentUser.isAdmin]);
 
   useEffect(() => {
-    if (librarySource === "audible" && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
+    if ((librarySource === "audible" || librarySource === "all") && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
       void loadLibationBooks();
     }
   }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
 
   useEffect(() => {
     if (
-      librarySource !== "audible" ||
+      (librarySource !== "audible" && librarySource !== "all") ||
       currentUser.libationAccess !== "approval"
     ) {
       return;
@@ -8195,7 +8212,15 @@ function MainApp({
   }, [nativeTabsReady, nativeTabsShown, readerClosing]);
 
   const refreshShelf = useCallback(async () => {
-    if (librarySource === "audible") {
+    if (librarySource === "all") {
+      await refreshPurchaseSources([
+        ...(libroAccounts?.length ? [async () => {
+          try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
+          finally { setLibroRefreshKey(key => key + 1); }
+        }] : []),
+        ...(canBrowseLibation ? [loadLibationBooks] : [])
+      ]);
+    } else if (librarySource === "audible") {
       await loadLibationBooks();
     } else if (librarySource === "libro") {
       await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
@@ -8203,7 +8228,7 @@ function MainApp({
     } else {
       await loadBooks();
     }
-  }, [librarySource, libroOnDevice, loadBooks, loadLibationBooks]);
+  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
   const hasMiniPlayer = Boolean(playbackBook && currentTrack);
 
@@ -8956,21 +8981,40 @@ function MainApp({
                   {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
                 </button>
               </div>
-              {librarySource !== "local" && (canBrowseLibation || (supportsLibroDevice() && !localMode && isOperaLibre)) ? (
+              {librarySource !== "local" ? (
+                <>
                 <div className="purchase-source">
-                  <label htmlFor="purchase-source">Browse purchases</label>
-                  <select id="purchase-source" value={librarySource} onChange={event => setLibrarySource(event.currentTarget.value === "audible" ? "audible" : "libro")}>
-                    {canBrowseLibation ? <option value="audible">Audible{brokenLibationAccounts.length > 0 ? " — needs attention" : ""}</option> : null}
-                    <option value="libro">Libro.fm</option>
-                  </select>
-                  {librarySource === "libro" && supportsLibroDevice() && !localMode && isOperaLibre ? <>
-                    <label htmlFor="libro-destination">Download destination</label>
+                  <div className="purchase-tabs" role="tablist" aria-label="Book stores">
+                    {(["all", "libro", ...(canBrowseLibation ? ["audible"] : [])] as LibrarySource[]).map(source => (
+                      <button key={source} id={`purchase-tab-${source}`} type="button" role="tab"
+                        aria-selected={librarySource === source} aria-controls="purchase-results"
+                        tabIndex={librarySource === source ? 0 : -1}
+                        onClick={() => { setAudibleAccountFilter("all"); setPurchaseAccountFilter("all"); setLibrarySource(source); }}
+                        onKeyDown={event => {
+                          const tabs = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                          const index = tabs.indexOf(event.currentTarget);
+                          const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
+                            : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
+                            : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+                          if (next < 0) return;
+                          event.preventDefault();
+                          tabs[next].focus();
+                          tabs[next].click();
+                        }}>
+                        {source === "all" ? "All accounts" : source === "libro" ? "Libro.fm" : "Audible"}
+                        {source === "audible" && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {(librarySource === "libro" || librarySource === "all") && supportsLibroDevice() && !localMode && isOperaLibre ? <label className="purchase-destination" htmlFor="libro-destination">
+                    <span>Download to</span>
                     <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
                       {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
                       <option value="device">This device</option>
                     </select>
-                  </> : null}
-                </div>
+                  </label> : null}
+              </>
               ) : null}
             </>
           ) : null}
@@ -8980,7 +9024,7 @@ function MainApp({
               <input
                 type="search"
                 ref={shelfSearchRef}
-                placeholder={librarySource === "local" ? "Search books, authors, tags…" : librarySource === "libro" ? "Search Libro.fm purchases…" : "Search Audible titles…"}
+                placeholder={librarySource === "local" ? "Search books, authors, tags…" : librarySource === "libro" ? "Search Libro.fm purchases…" : librarySource === "all" ? "Search all purchases…" : "Search Audible titles…"}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.currentTarget.value)}
                 aria-label="Search library"
@@ -9037,7 +9081,7 @@ function MainApp({
             >
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
-            {librarySource !== "libro" ? <div className="view-toggle" role="group" aria-label="View mode">
+            {librarySource !== "libro" && librarySource !== "all" ? <div className="view-toggle" role="group" aria-label="View mode">
               {SHELF_VIEW_MODE_OPTIONS.map((option) => {
                 const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
                 return (
@@ -9159,7 +9203,7 @@ function MainApp({
             </div>
           ) : null}
 
-          {librarySource !== "libro" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
+          {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
             <span>
               {librarySource === "local"
                 ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
@@ -9188,10 +9232,19 @@ function MainApp({
           </section>
         ) : null}
 
-        {currentUser.isAdmin && librarySource === "audible" ? (
+        <div id="purchase-results" className="purchase-results" role={librarySource !== "local" ? "tabpanel" : undefined} aria-labelledby={librarySource !== "local" ? `purchase-tab-${librarySource}` : undefined}>
+        {librarySource === "all" ? <label className="purchase-account-filter">
+          <span className="sr-only">Purchase account</span>
+          <select aria-label="Purchase account" value={purchaseAccountFilter} onChange={event => setPurchaseAccountFilter(event.target.value)}>
+            <option value="all">All accounts</option>
+            {canBrowseLibation && allAudibleAccounts.length > 0 ? <optgroup label="Audible">{allAudibleAccounts.map(account => <option key={account.id} value={`audible:${account.id}`}>Audible · {account.name}</option>)}</optgroup> : null}
+            {(libroAccounts?.length ?? 0) > 0 ? <optgroup label="Libro.fm">{libroAccounts!.map(account => <option key={account.email} value={`libro:${account.email}`}>Libro.fm · {account.nickname || account.email}</option>)}</optgroup> : null}
+          </select>
+        </label> : null}
+        {currentUser.isAdmin && showAudiblePurchases ? (
           <section className="libation-panel audible-compact">
             <div className="audible-toolbar">
-              <div className="libation-account-toolbar">
+              {librarySource !== "all" ? <div className="libation-account-toolbar">
                 <label>
                   <span className="sr-only">Audible account</span>
                   <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
@@ -9201,8 +9254,19 @@ function MainApp({
                     ))}
                   </select>
                 </label>
-              </div>
+              </div> : null}
 
+
+            </div>
+            {libationMessage ? <p role="status">{libationMessage}</p> : null}
+            {(libationStatus && (!libationStatus.enabled || !libationStatus.authenticated || brokenLibationAccounts.length > 0)) ? (
+              <p className="audible-attention" role="status"><AlertCircle size={14} />
+                {!libationStatus?.enabled ? "Audible is not configured." : brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention. Open Accounts & downloads to reconnect.` : "Sign in through Libation to connect your Audible account."}
+              </p>
+            ) : null}
+            <details className="audible-management">
+              <summary>Accounts &amp; downloads <ChevronDown size={15} /></summary>
+              <div className="audible-management-body">
               <div className="libation-actions">
                 <button
                   type="button"
@@ -9217,19 +9281,9 @@ function MainApp({
                   ) : (
                     <RefreshCcw size={13} />
                   )}
-                  <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : "Refresh"}</span>
+                  <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : librarySource === "all" ? "Refresh Audible" : "Refresh"}</span>
                 </button>
               </div>
-            </div>
-            {libationMessage ? <p role="status">{libationMessage}</p> : null}
-            {(libationStatus && (!libationStatus.enabled || !libationStatus.authenticated || brokenLibationAccounts.length > 0)) ? (
-              <p className="audible-attention" role="status"><AlertCircle size={14} />
-                {!libationStatus?.enabled ? "Audible is not configured." : brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention. Open Accounts & downloads to reconnect.` : "Sign in through Libation to connect your Audible account."}
-              </p>
-            ) : null}
-            <details className="audible-management">
-              <summary>Accounts &amp; downloads <ChevronDown size={15} /></summary>
-              <div className="audible-management-body">
                 <p>Add or reconnect accounts in Libation.</p>
                 {libationStatus?.accounts.length ? (
                   <div className="account-list">
@@ -9310,10 +9364,10 @@ function MainApp({
           </section>
         ) : null}
 
-        {!currentUser.isAdmin && librarySource === "audible" ? (
+        {!currentUser.isAdmin && showAudiblePurchases ? (
           <section className="libation-panel reader-libation-panel">
             <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
-            {audibleProfiles.length > 1 ? (
+            {librarySource !== "all" && audibleProfiles.length > 1 ? (
               <label className="reader-account-filter">
                 <span>Browsing</span>
                 <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
@@ -9347,9 +9401,11 @@ function MainApp({
           </section>
         ) : null}
 
-        {librarySource === "libro" ? (
-          <LibroCatalog key={libroOnDevice ? "device" : "server"} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
-        ) : librarySource === "local" ? (
+        {librarySource === "libro" || librarySource === "all" ? (
+          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+        ) : null}
+
+        {librarySource === "local" ? (
           <>
             {localMode && !connectPromptDismissed && !hasUserConfiguredServer() ? (
               <section className="connect-server-card" aria-label="Connect a server">
@@ -9557,8 +9613,9 @@ function MainApp({
               })}
             </div>
           </>
-        ) : (
+        ) : showAudiblePurchases ? (
           <>
+            {librarySource === "all" ? <h2>Audible</h2> : null}
             {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
               <div className="empty-state">Loading Audible library…</div>
             ) : null}
@@ -9603,7 +9660,7 @@ function MainApp({
                     <div className="audible-copy">
                       <strong>{book.title}</strong>
                       <span>{metaParts.join(" · ")}</span>
-                      <small className="audible-account-badge"><KeyRound size={10} /> {audibleAccountLabels.get(book.profileId) ?? book.profileName}</small>
+                      <small className="audible-account-badge"><span className="purchase-provider-tag">Audible</span><KeyRound size={10} /> {audibleAccountLabels.get(book.profileId) ?? book.profileName}</small>
                     </div>
                     {isLocal ? (
                       <button
@@ -9656,7 +9713,8 @@ function MainApp({
               })}
             </div>
           </>
-        )}
+        ) : null}
+        </div>
       </aside>
 
       <section
