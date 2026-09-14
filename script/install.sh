@@ -737,6 +737,27 @@ configured_libation_path() {
     "${INSTALL_DIR}/server.config" 2>/dev/null | head -n 1
 }
 
+configured_libation_files_dir() {
+  sed -n 's/^[[:space:]]*libation_files_dir[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' \
+    "${INSTALL_DIR}/server.config" 2>/dev/null | head -n 1
+}
+
+ensure_libation_files_dir() {
+  # Libation's own Settings.json/AccountsSettings.json are normally written
+  # by its desktop first-run wizard; the CLI refuses to run at all without
+  # them. Seed empty ones so `login-external` works right after install
+  # instead of failing with "Cannot find settings files".
+  existing_files_dir=$(configured_libation_files_dir)
+  if [ -n "$existing_files_dir" ] && [ -f "${existing_files_dir}/Settings.json" ]; then
+    return 0
+  fi
+  files_dir="${existing_files_dir:-${INSTALL_DIR}/LibationFiles}"
+  mkdir -p "$files_dir" || return 1
+  [ -f "${files_dir}/Settings.json" ] || printf '{}' >"${files_dir}/Settings.json"
+  [ -f "${files_dir}/AccountsSettings.json" ] || printf '{}' >"${files_dir}/AccountsSettings.json"
+  set_config libation_files_dir "$files_dir"
+}
+
 find_libation() {
   for candidate in \
     "${INSTALL_DIR}/libation/Libation.app/Contents/MacOS/LibationCli" \
@@ -857,8 +878,11 @@ install_libation() {
 if [ "$LIBATION_CHOICE" != no ]; then
   existing_libation_config=$(configured_libation_path)
   if [ -n "$existing_libation_config" ] && [ -z "$LIBATION_PATH" ]; then
-    # An upgrade that already has the import configured. Leave it alone.
+    # An upgrade that already has the import configured. Leave the CLI path
+    # alone, but still backfill a missing LibationFiles setup from an older
+    # install that predates it.
     LIBATION_CONFIGURED=$existing_libation_config
+    ensure_libation_files_dir || true
   else
     want_libation=0
     if [ "$LIBATION_CHOICE" = yes ]; then
@@ -904,6 +928,7 @@ if [ "$LIBATION_CHOICE" != no ]; then
 
       if [ -n "$LIBATION_PATH" ]; then
         set_config libation_cli_path "$LIBATION_PATH"
+        ensure_libation_files_dir || say "Could not set up Libation's settings folder; the Audible import may need manual setup."
         LIBATION_CONFIGURED=$LIBATION_PATH
       else
         say "The Audible import stays off. See ${LIBATION_DOCS} to turn it on later."
