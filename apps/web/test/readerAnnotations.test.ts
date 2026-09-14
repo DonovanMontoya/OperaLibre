@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { removeHighlight } from "../src/readerAnnotations.ts";
+import { pruneUntrackedHighlights, removeHighlight } from "../src/readerAnnotations.ts";
 
 // Mirrors epub.js 0.3.93 Annotations: removal prunes the section list only
 // for views on screen, and a page render attaches every listed hash.
@@ -51,5 +51,32 @@ describe("readalong highlight removal", () => {
     removeHighlight(store, "first");
     store.highlight("second");
     assert.deepEqual(marks, ["second"]);
+  });
+
+  it("erases a mark orphaned when a page draws the same sentence twice", () => {
+    // Mirrors epub.js IframeView.highlight over a marks-pane Pane.
+    const pane = {
+      marks: [] as { className: string }[],
+      removeMark(mark: { className: string }) {
+        pane.marks.splice(pane.marks.indexOf(mark), 1);
+      }
+    };
+    const view = { pane, highlights: {} as Record<string, { mark: { className: string } }> };
+    const draw = (cfi: string, className: string) => {
+      const mark = { className };
+      pane.marks.push(mark);
+      view.highlights[cfi] = { mark };
+    };
+    draw("note", "user-note");
+    // The redraw lands on the loading page, then its first render draws it again.
+    draw("first", "readalong-highlight");
+    draw("first", "readalong-highlight");
+    pruneUntrackedHighlights([view], "readalong-highlight");
+    assert.equal(pane.marks.length, 2);
+
+    // Removing the tracked mark now leaves nothing of the sentence behind.
+    pane.removeMark(view.highlights.first.mark);
+    delete view.highlights.first;
+    assert.deepEqual(pane.marks.map((mark) => mark.className), ["user-note"]);
   });
 });
