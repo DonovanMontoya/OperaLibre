@@ -207,6 +207,7 @@ pub(crate) fn build_router(
             "/api/me/libro",
             get(get_libro_account)
                 .post(connect_libro_account)
+                .patch(rename_libro_account)
                 .delete(disconnect_libro_account),
         )
         .route("/api/me/libro/refresh", post(refresh_libro_account))
