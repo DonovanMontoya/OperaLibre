@@ -26,7 +26,7 @@ A simple `key = value` format. One key per line. Blank lines and `#` comments ar
 # This is a comment.
 deployment_mode = local
 host =
-port = 4000
+port = 4920
 max_upload_gib = 20
 max_book_download_gib = 25
 max_concurrent_book_downloads = 1
@@ -45,7 +45,7 @@ An unknown key is a **startup error**, not a warning — a typo or a setting fro
 # Deployment profile and optional advanced bind override.
 deployment_mode = local
 host =
-port = 4000
+port = 4920
 
 # Transfer resource limits.
 max_upload_gib = 20
@@ -90,7 +90,7 @@ ffprobe_path =
 | --- | --- | --- |
 | `deployment_mode` | `local` | `local` binds to loopback with HTTPS-grade cookies; `lan` listens on all interfaces and permits plain-HTTP cookies for a trusted LAN/VPN; `proxy` binds to loopback and expects a same-machine HTTPS reverse proxy. |
 | `host` | chosen by profile | Optional advanced bind override. Must be a numeric IP address, not a hostname. `local` and `proxy` require a loopback address; `lan` defaults to `0.0.0.0`. When upgrading an older config without `deployment_mode`, a non-loopback `host` is inferred as `lan` for compatibility. |
-| `port` | `4000` | TCP port the API listens on. |
+| `port` | `4920` | TCP port the API listens on. |
 | `allowed_origins` | *(empty)* | Comma-separated list of trusted custom frontend origins, e.g. `https://reader.example.com`. These origins receive credentialed CORS access and may make cookie-authenticated changes, so do not list sites you do not control. Same-origin requests and the official app origins need no configuration. |
 
 ### Transfer limits

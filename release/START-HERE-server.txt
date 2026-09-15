@@ -20,7 +20,7 @@ macOS or Linux:
 
       https://donovanmontoya.github.io/OperaLibre/installing-a-release.html
 
-The API listens at http://localhost:4000 by default.
+The API listens at http://localhost:4920 by default.
 
 CONFIGURE IT
 ------------

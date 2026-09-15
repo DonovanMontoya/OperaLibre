@@ -224,7 +224,7 @@ impl ServerConfig {
             host,
             port: match config_u16_value(&values, "port")? {
                 Some(port) => port,
-                None => env_u16_value("PORT")?.unwrap_or(4000),
+                None => env_u16_value("PORT")?.unwrap_or(4920),
             },
             max_upload_bytes,
             max_book_download_bytes,

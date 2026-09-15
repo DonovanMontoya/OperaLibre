@@ -27,7 +27,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:4000",
+        target: "http://localhost:4920",
         // Browser sessions are cookies, and the server only accepts a
         // cookie-authenticated write whose Origin is its own. Present the
         // proxied request as coming from the server itself, as it would in
@@ -36,10 +36,10 @@ export default defineConfig({
         configure(proxy) {
           proxy.on("proxyReq", (proxyRequest) => {
             if (proxyRequest.getHeader("origin")) {
-              proxyRequest.setHeader("origin", "http://localhost:4000");
+              proxyRequest.setHeader("origin", "http://localhost:4920");
             }
             if (proxyRequest.getHeader("referer")) {
-              proxyRequest.setHeader("referer", "http://localhost:4000/");
+              proxyRequest.setHeader("referer", "http://localhost:4920/");
             }
           });
         }

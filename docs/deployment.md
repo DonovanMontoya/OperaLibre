@@ -55,7 +55,7 @@ host =
 web_dist_dir = web
 ```
 
-Then open `http://localhost:4000` on the server itself. For another device on a trusted LAN or VPN, select `deployment_mode = lan`; for public access, select `deployment_mode = proxy` and use the TLS reverse proxy below. Leaving `host` blank lets the profile choose the correct interface.
+Then open `http://localhost:4920` on the server itself. For another device on a trusted LAN or VPN, select `deployment_mode = lan`; for public access, select `deployment_mode = proxy` and use the TLS reverse proxy below. Leaving `host` blank lets the profile choose the correct interface.
 
 ## systemd unit (Linux)
 
@@ -236,7 +236,7 @@ server {
   location = /api/auth/login {
     limit_req zone=operalibre_login burst=5 nodelay;
     client_max_body_size 16k;
-    proxy_pass http://127.0.0.1:4000;
+    proxy_pass http://127.0.0.1:4920;
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-For   $remote_addr;
@@ -246,7 +246,7 @@ server {
   location = /api/admin/backup {
     client_max_body_size 256m;
     proxy_request_buffering off;
-    proxy_pass http://127.0.0.1:4000;
+    proxy_pass http://127.0.0.1:4920;
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-For   $remote_addr;
@@ -255,7 +255,7 @@ server {
 
   location /api/ {
     client_max_body_size 2m;
-    proxy_pass http://127.0.0.1:4000;
+    proxy_pass http://127.0.0.1:4920;
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-For   $remote_addr;
@@ -267,7 +267,7 @@ server {
   # Audiobookshelf-compatible API; same settings as /api/.
   location /abs/ {
     client_max_body_size 2m;
-    proxy_pass http://127.0.0.1:4000;
+    proxy_pass http://127.0.0.1:4920;
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-For   $remote_addr;
@@ -283,7 +283,7 @@ Two notes when fronting with a proxy:
 1. **Keep range requests intact.** The `Range` header and `206 Partial Content` responses are what makes seeking through a multi-hour `.m4b` snappy. Cloudflare and similar services often handle this for you; some proxies need explicit configuration.
 2. **Disable response buffering for streams.** Long audio reads should not be buffered into memory before being sent to the client.
 
-Proxy-mode first-run setup always asks for the single-use token printed in the server console or protected server log; it expires after 30 minutes. Requiring it even for apparently local requests protects the owner account if a proxy omits forwarded client-address headers. Never expose or port-forward port `4000`; only ports `80` and `443` should reach nginx, with port `80` used solely for the HTTPS redirect.
+Proxy-mode first-run setup always asks for the single-use token printed in the server console or protected server log; it expires after 30 minutes. Requiring it even for apparently local requests protects the owner account if a proxy omits forwarded client-address headers. Never expose or port-forward port `4920`; only ports `80` and `443` should reach nginx, with port `80` used solely for the HTTPS redirect.
 
 ## Simpler automatic HTTPS with Caddy
 
@@ -294,7 +294,7 @@ books.example.com {
   request_body {
     max_size 20GB
   }
-  reverse_proxy 127.0.0.1:4000
+  reverse_proxy 127.0.0.1:4920
 }
 ```
 
@@ -305,7 +305,7 @@ deployment_mode = proxy
 host =
 ```
 
-Caddy obtains and renews the public certificate and redirects HTTP to HTTPS automatically. The native app user enters only `books.example.com`; OperaLibre automatically chooses `https://`. Firewall port `4000` from every external interface—Caddy should be the only public entry point. The nginx template remains the more configurable option when you need proxy-level request throttling or custom logging.
+Caddy obtains and renews the public certificate and redirects HTTP to HTTPS automatically. The native app user enters only `books.example.com`; OperaLibre automatically chooses `https://`. Firewall port `4920` from every external interface—Caddy should be the only public entry point. The nginx template remains the more configurable option when you need proxy-level request throttling or custom logging.
 
 ## Custom frontends
 
@@ -328,7 +328,7 @@ The checked-in Capacitor Android project packages the web app as a native Androi
 npm run build:android
 ```
 
-Open and synchronize the project with `npm run android:open -w @operalibre/web` to run it on a device, configure release signing, or generate an Android App Bundle. Users may enter `My-Mac.local:4000`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name such as `books.example.com` automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent.
+Open and synchronize the project with `npm run android:open -w @operalibre/web` to run it on a device, configure release signing, or generate an Android App Bundle. Users may enter `My-Mac.local:4920`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name such as `books.example.com` automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent.
 
 ## iOS / Capacitor
 
@@ -338,7 +338,7 @@ The checked-in Capacitor iOS project packages the web app as a native iPhone app
 npm run ios:open -w @operalibre/web
 ```
 
-In Xcode, select your development team and an attached iPhone, then press Run. For a server outside the app bundle, enter the reachable server URL on the app’s first screen. Users may enter `My-Mac.local:4000`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent. See [Using OperaLibre](using-operalibre.md#native-iphone-app) for the listener-oriented steps.
+In Xcode, select your development team and an attached iPhone, then press Run. For a server outside the app bundle, enter the reachable server URL on the app’s first screen. Users may enter `My-Mac.local:4920`, a private IP, or a Tailscale address without a scheme; the app keeps those connections on HTTP. A public name automatically uses HTTPS, and explicit public HTTP is rejected before credentials are sent. See [Using OperaLibre](using-operalibre.md#native-iphone-app) for the listener-oriented steps.
 
 ## Backups
 
