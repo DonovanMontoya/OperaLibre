@@ -7,7 +7,7 @@
 # automatically. Advanced deployments can override it with `host`.
 deployment_mode = local
 host =
-port = 4000
+port = 4920
 
 # Transfer resource limits. Set a GiB value to 0 only when another layer
 # enforces storage limits. Concurrent book downloads must be between 1 and 32.

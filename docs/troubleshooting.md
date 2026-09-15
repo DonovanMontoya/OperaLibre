@@ -39,7 +39,7 @@ OperaLibre releases are not Apple-notarized yet. Follow the one-time quarantine 
 
 ### The browser did not open
 
-Browse to <http://localhost:4000> yourself. If that address does not load, check `data/server.log` and `LAUNCH-ERROR.txt` in the OperaLibre folder. A common cause is another program already using port 4000.
+Browse to <http://localhost:4920> yourself. If that address does not load, check `data/server.log` and `LAUNCH-ERROR.txt` in the OperaLibre folder. A common cause is another program already using port 4920.
 
 ### Is OperaLibre still running?
 
@@ -80,7 +80,7 @@ The combined package runs in the background. Closing the browser does not stop i
 Another process is on `port`. Either change `port` in `server.config` or stop the other process.
 
 ```bash
-lsof -i :4000        # find the offender
+lsof -i :4920        # find the offender
 ```
 
 ## I forgot the admin password

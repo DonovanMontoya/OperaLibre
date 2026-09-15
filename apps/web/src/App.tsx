@@ -11876,7 +11876,7 @@ function MainApp({
                   <input
                     value={aliasUrl}
                     onChange={(event) => setAliasUrl(event.currentTarget.value)}
-                    placeholder="http://100.x.x.x:4000"
+                    placeholder="http://100.x.x.x:4920"
                     aria-label="Alias server address"
                     inputMode="url"
                     autoCapitalize="off"

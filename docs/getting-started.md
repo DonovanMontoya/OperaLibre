@@ -61,7 +61,7 @@ Open `server.config` in a text editor and replace `/Users/you/Audiobooks` with t
 ```config
 deployment_mode = local
 host =
-port = 4000
+port = 4920
 max_upload_gib = 20
 max_book_download_gib = 25
 max_concurrent_book_downloads = 1
@@ -79,7 +79,7 @@ npm run dev
 This starts the server and the web app together. Leave this Terminal window open while you listen. You should see two color-coded prefixes (`server` cyan, `web` magenta).
 
 - Web UI: <http://localhost:5173>
-- API:    <http://localhost:4000>
+- API:    <http://localhost:4920>
 
 The Vite web app forwards its requests to the server automatically, so use the **Web UI** address above—not the API address—in your browser.
 
@@ -97,7 +97,7 @@ To stream to a phone or tablet:
 
 1. Set `deployment_mode = lan` and leave `host` blank in `server.config` so the server selects `0.0.0.0` automatically.
 2. Find your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `ip addr` on Linux, `ipconfig` on Windows).
-3. Allow port `4000` (or whatever you set) through your firewall.
+3. Allow port `4920` (or whatever you set) through your firewall.
 4. On the other device, open `http://<your-lan-ip>:5173` in dev, sign in, and start listening. For a setup that keeps working after you close the development Terminal, use the production setup below.
 
 > **Safety:** LAN mode uses plain HTTP and deliberately allows a non-Secure session cookie. It is suitable only for a trusted home network or private VPN. Do not port-forward it to the public internet; use `proxy` mode and the HTTPS guidance in [Deployment](deployment.md) for access away from home.
@@ -125,7 +125,7 @@ Start the server with:
 ./apps/server/target/release/operalibre-server
 ```
 
-Now open [http://localhost:4000](http://localhost:4000). The server and web app share one address, which is simpler to bookmark and use on another device. To make it start automatically when the computer restarts, follow the macOS or Linux instructions in [Deployment](deployment.md).
+Now open [http://localhost:4920](http://localhost:4920). The server and web app share one address, which is simpler to bookmark and use on another device. To make it start automatically when the computer restarts, follow the macOS or Linux instructions in [Deployment](deployment.md).
 
 ## Type-checking everything
 

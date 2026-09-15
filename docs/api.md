@@ -5,7 +5,7 @@ nav_order: 9
 
 # API Reference
 
-All endpoints are served by the Rust backend on `host:port` (default `127.0.0.1:4000`). With the exception of a small public surface, every endpoint requires an authenticated session. Public deployments must expose a TLS reverse proxy rather than this raw HTTP listener.
+All endpoints are served by the Rust backend on `host:port` (default `127.0.0.1:4920`). With the exception of a small public surface, every endpoint requires an authenticated session. Public deployments must expose a TLS reverse proxy rather than this raw HTTP listener.
 
 Browser clients that authenticate with the session cookie must send an `Origin` (or `Referer`) matching the API host for `POST`, `PUT`, and `DELETE` requests. Origins explicitly trusted through `allowed_origins` are also accepted. Native and other API clients should send the session with `Authorization: Bearer ...`; bearer-authenticated changes do not require browser CSRF headers.
 
@@ -285,11 +285,11 @@ The server publishes an [OPDS](https://opds.io/) catalog so generic reading apps
 | `GET` | `/api/opds` | Navigation-feed root. |
 | `GET` | `/api/opds/books` | Acquisition feed, one entry per book with per-track download links. |
 
-Both feeds authenticate with the media token as a `?token=` query parameter (HTTP Basic is not supported), so the catalog URL to paste into an OPDS client is `http://server:4000/api/opds?token=...`. Bearer authentication is also accepted. The feed supplies separate track acquisitions; a client must support audio downloads and multiple tracks to import a complete audiobook. OPDS does not synchronize playback progress. BookPlayer currently has no OPDS connector; use its Audiobookshelf connection below.
+Both feeds authenticate with the media token as a `?token=` query parameter (HTTP Basic is not supported), so the catalog URL to paste into an OPDS client is `http://server:4920/api/opds?token=...`. Bearer authentication is also accepted. The feed supplies separate track acquisitions; a client must support audio downloads and multiple tracks to import a complete audiobook. OPDS does not synchronize playback progress. BookPlayer currently has no OPDS connector; use its Audiobookshelf connection below.
 
 ## Audiobookshelf-compatible API (`/abs`)
 
-The server implements a subset of the [Audiobookshelf](https://www.audiobookshelf.org/) API under the `/abs` prefix. In BookPlayer, choose an Audiobookshelf connection, enter `http://server:4000/abs` (or your HTTPS address ending in `/abs`), and sign in with a normal OperaLibre account. The server root and the OPDS URL are not the Audiobookshelf base URL.
+The server implements a subset of the [Audiobookshelf](https://www.audiobookshelf.org/) API under the `/abs` prefix. In BookPlayer, choose an Audiobookshelf connection, enter `http://server:4920/abs` (or your HTTPS address ending in `/abs`), and sign in with a normal OperaLibre account. The server root and the OPDS URL are not the Audiobookshelf base URL.
 
 Compatibility is client-specific. BookPlayer response decoding and its browse/download HTTP contracts have been tested against a temporary server; the full iOS app and physical-device playback have not been verified. The official Audiobookshelf app requires additional endpoints, including authorization and playback-session synchronization, which are not implemented. See the [compatibility audit](client-compatibility.md) for exact coverage and remaining gaps.
 
