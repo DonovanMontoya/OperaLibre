@@ -10,12 +10,19 @@ import {
 
 test("Vite development uses its same-origin API proxy for the default local server", () => {
   assert.equal(
-    browserApiBase("http://localhost:4000", "http://localhost:5173"),
+    browserApiBase("http://localhost:4920", "http://localhost:5173"),
     "http://localhost:5173"
   );
   assert.equal(
     browserApiBase("http://localhost:4111", "http://localhost:5173"),
     "http://localhost:4111"
+  );
+});
+
+test("Vite development still recognizes a server address saved under the previous default port", () => {
+  assert.equal(
+    browserApiBase("http://localhost:4000", "http://localhost:5173"),
+    "http://localhost:5173"
   );
   assert.equal(
     browserApiBase("http://192.168.1.20:4000", "http://localhost:5173"),

@@ -86,7 +86,7 @@ The repository also includes a native iPhone app with background spoken-audio pl
 1. From the repository root, run `npm run ios:open -w @operalibre/web`.
 2. In Xcode, select the **App** target, then select your development team under **Signing & Capabilities**.
 3. Connect your iPhone, select it as the run destination, and press Run.
-4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4000`), and sign in.
+4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4920`), and sign in.
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
@@ -162,13 +162,13 @@ The repository includes a native Android 7+ app. Building it requires Android St
 1. From the repository root, run `npm run android:open -w @operalibre/web`.
 2. Let Android Studio finish its first Gradle sync, then select an emulator or connected Android device.
 3. Press Run.
-4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4000`), and sign in.
+4. In the app, choose **OperaLibre**, enter the server’s LAN address (for example `http://192.168.1.20:4920`), and sign in.
 
 For a directly installable development build, run `npm run build:android`; the APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. Configure release signing in Android Studio before distributing the app. Private-network HTTP is supported; public servers should use HTTPS.
 
 ### Use another audiobook app
 
-The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4000/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre and tag filters, and resume position all sync with the reader's OperaLibre progress.
+The server also speaks an Audiobookshelf-compatible API, so audiobook apps with Audiobookshelf support — BookPlayer, for example — can connect directly. In the app, add an Audiobookshelf server, enter the OperaLibre address with `/abs` appended (for example `http://192.168.1.20:4920/abs`), and sign in with a normal OperaLibre account. Browsing, streaming, cover art, search, genre and tag filters, and resume position all sync with the reader's OperaLibre progress.
 
 There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see the [API Reference](api.md#opds) for the feed address.
 

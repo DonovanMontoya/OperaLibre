@@ -25,7 +25,7 @@ The installer walks you through the whole setup:
 6. It offers to set up the optional Audible import. Answer `n` to skip it — the feature stays hidden and can be turned on later.
 7. It writes your answers into `server.config`, clears the macOS download quarantine, and starts the server in the background.
 
-When it finishes, open the address it prints — usually <http://localhost:4000> — and create the administrator account.
+When it finishes, open the address it prints — usually <http://localhost:4920> — and create the administrator account.
 
 Running the same command again updates an existing installation in place. It stops the running server and waits for it to exit, copies the new files into a staging folder beside the installation, and only then swaps them into place, so a download or copy that fails part-way leaves the old version untouched. Your `data` folder, `audiobooks` folder, and `server.config` settings are kept.
 
@@ -128,7 +128,7 @@ Double-click `open-operalibre`. If your file manager does not run executable fil
 ./open-operalibre
 ```
 
-If the browser does not open automatically on any platform, open <http://localhost:4000>.
+If the browser does not open automatically on any platform, open <http://localhost:4920>.
 
 The launcher exits after OperaLibre is ready. No command or Terminal window needs to remain open, and closing the browser does not stop the server. Use the same Open action whenever you want to return.
 
@@ -192,7 +192,7 @@ Save the file and start OperaLibre again.
 The secure default listens only on the server computer. For a trusted home network or private VPN, set `deployment_mode = lan` and leave `host` blank in `server.config`, restart OperaLibre, and connect the other device to that same trusted network. Then open:
 
 ```text
-http://SERVER-COMPUTER-IP:4000
+http://SERVER-COMPUTER-IP:4920
 ```
 
 The server computer's local IP usually looks like `192.168.1.25` or `10.0.0.25`. See [Use it on a phone or tablet](using-operalibre.md#use-it-on-a-phone-or-tablet) for installing the web app on the home screen.

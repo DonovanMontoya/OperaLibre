@@ -32,7 +32,7 @@ Linux:
 
 Your browser opens automatically. If it does not, open:
 
-  http://localhost:4000
+  http://localhost:4920
 
 The first page asks you to create the administrator account. This is the
 person who can upload books and add other readers.
@@ -96,7 +96,7 @@ to:
 
 Leave host blank, restart OperaLibre, then open:
 
-  http://YOUR-COMPUTER-IP:4000
+  http://YOUR-COMPUTER-IP:4920
 
 Allow OperaLibre through the computer's firewall if asked. Do not expose this
 plain HTTP address directly to the public internet.

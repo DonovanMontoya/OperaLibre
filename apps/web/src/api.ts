@@ -110,10 +110,10 @@ export function defaultServerUrl(serverType: ServerType) {
     return `${scheme}//${host}:${port}`;
   }
   // A production bundle is normally served by the Rust server or by the
-  // same-origin TLS proxy. Only Vite development needs to address port 4000
+  // same-origin TLS proxy. Only Vite development needs to address port 4920
   // directly; its own /api proxy remains available as a fallback as well.
   if (window.location.port === "5173") {
-    return `${scheme}//${host}:4000`;
+    return `${scheme}//${host}:4920`;
   }
   return window.location.origin;
 }
@@ -364,7 +364,7 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
     throw new Error("Server URL is required.");
   }
   if (Capacitor.isNativePlatform() && isLoopbackServerUrl(base)) {
-    const port = serverType === "jellyfin" ? 8096 : 4000;
+    const port = serverType === "jellyfin" ? 8096 : 4920;
     throw new Error(
       `localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:${port}.`
     );
