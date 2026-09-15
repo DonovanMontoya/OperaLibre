@@ -71,6 +71,11 @@ export function normalizeServerAddress(rawValue: string): string {
   }
 }
 
+// 4000 was the default before the port changed to 4920; a browser that saved
+// a server address under the old default must keep resolving through the
+// same-origin Vite proxy instead of failing CORS against a stale port.
+const DEV_PROXY_TARGET_PORTS = ["4920", "4000"];
+
 export function browserApiBase(serverUrl: string, browserOrigin: string): string {
   try {
     const server = new URL(normalizeServerAddress(serverUrl));
@@ -78,7 +83,7 @@ export function browserApiBase(serverUrl: string, browserOrigin: string): string
     const usesViteDevelopmentProxy = browser.port === "5173"
       && server.protocol === browser.protocol
       && server.hostname === browser.hostname
-      && server.port === "4000";
+      && DEV_PROXY_TARGET_PORTS.includes(server.port);
     return usesViteDevelopmentProxy ? browser.origin : serverUrl;
   } catch {
     return serverUrl;

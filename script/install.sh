@@ -431,7 +431,7 @@ config_value() {
 
 configured_port() {
   port_value=$(config_value port | sed -n 's/^\([0-9][0-9]*\).*/\1/p')
-  printf '%s' "${port_value:-4000}"
+  printf '%s' "${port_value:-4920}"
 }
 
 configured_data_dir() {

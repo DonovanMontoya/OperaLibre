@@ -89,7 +89,7 @@ fn run() -> Result<(), String> {
     }
 
     if start_server(&root, true)? == StartOutcome::StillStarting {
-        let port = configured_port(&root.join("server.config")).unwrap_or(4000);
+        let port = configured_port(&root.join("server.config")).unwrap_or(4920);
         show_message(&format!(
             "OperaLibre is still starting. Scanning a large library can take a while; open http://localhost:{port} once it finishes, or check {} for details.",
             server_log_path(&root).display()
@@ -171,7 +171,7 @@ fn start_server(root: &Path, open_when_ready: bool) -> Result<StartOutcome, Stri
         .map_err(|error| format!("Could not create the data folder: {error}"))?;
     secure_directory(&data_dir)?;
 
-    let port = configured_port(&root.join("server.config")).unwrap_or(4000);
+    let port = configured_port(&root.join("server.config")).unwrap_or(4920);
     let log_path = data_dir.join("server.log");
 
     // A server already up, or still coming up from an earlier start, is
