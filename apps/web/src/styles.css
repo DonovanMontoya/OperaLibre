@@ -9974,6 +9974,11 @@ html.native-app .modal-scrim {
   animation: scrim-fade 0.24s ease both;
 }
 
+/* Confirmations launched from player details must cover that sheet (z 110). */
+html.native-app .unplayed-confirm-scrim {
+  z-index: 140;
+}
+
 html.native-app .modal-card {
   width: 100%;
   max-height: calc(var(--native-viewport-height) - var(--status-h) - 12px);
