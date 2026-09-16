@@ -4611,3 +4611,108 @@ async fn a_missed_nightly_sweep_records_the_skip_and_schedules_only_the_next_nig
     );
     assert!(server.state.jobs.read().await.is_empty());
 }
+
+#[tokio::test]
+async fn epub_entries_load_independently_with_media_auth_and_revalidation() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let epub = alignment::build_test_epub_with_text(&long_chapter_text(), "<p>Later chapter</p>");
+    server
+        .add_companions_to_first_book(&token, &[("Book 00.epub", epub.clone())])
+        .await;
+    let books = server.get("/api/books", &token).await.json();
+    let book = &books[0];
+    let id = book["id"].as_str().unwrap();
+    let companion = book["companions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["extension"] == "epub")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let base = format!("/api/books/{id}/companions/{companion}/entries");
+    let path = format!("{base}/OEBPS/text/ch1.xhtml");
+    let media = media_token_for_session(&token);
+    let response = server.get(&format!("{path}?token={media}"), "").await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    assert!(response.text().contains("meadow"));
+    assert!(!response.text().contains("Later chapter"));
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(epub)).unwrap();
+    let mut expected = Vec::new();
+    std::io::Read::read_to_end(
+        &mut archive.by_name("OEBPS/text/ch1.xhtml").unwrap(),
+        &mut expected,
+    )
+    .unwrap();
+    assert_eq!(response.body, expected);
+    assert_eq!(
+        response.header(header::CONTENT_TYPE),
+        "application/xhtml+xml"
+    );
+    assert_eq!(
+        response.header(header::CACHE_CONTROL),
+        COMPANION_CACHE_CONTROL
+    );
+    assert!(
+        response
+            .header(header::CONTENT_SECURITY_POLICY)
+            .contains("sandbox")
+    );
+    let cached = server
+        .send(
+            Request::builder()
+                .uri(&path)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, response.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+    assert!(cached.body.is_empty());
+    let compressed = server
+        .send(
+            Request::builder()
+                .uri(&path)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(compressed.header(header::CONTENT_ENCODING), "gzip");
+    assert!(compressed.body.len() < response.body.len());
+    assert_eq!(server.get(&path, "").await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        server
+            .get(&format!("{base}/missing.xhtml"), &token)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server
+            .get(&format!("{base}/%2e%2e/secret"), &token)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let reader = server.add_reader(&token, "no-epub-access").await;
+    let reader_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{reader_id}/book-access"),
+            &token,
+            serde_json::json!({ "allowedBookIds": [] }),
+        )
+        .await;
+    assert_eq!(
+        server.get(&path, &reader).await.status,
+        StatusCode::NOT_FOUND
+    );
+}

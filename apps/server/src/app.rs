@@ -265,6 +265,10 @@ pub(crate) fn build_router(
             "/api/books/{book_id}/companions/{companion_id}",
             get(get_companion_file),
         )
+        .route(
+            "/api/books/{book_id}/companions/{companion_id}/entries/{*entry}",
+            get(get_epub_entry).layer(CompressionLayer::new()),
+        )
         // A sync map names every sentence of the book, so a long title runs
         // to several megabytes of JSON that gzips five-to-one. Audio and
         // documents retain their original encoding and range behavior.
