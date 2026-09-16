@@ -7137,6 +7137,7 @@ html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260
   html.native-app .native-shell.has-mini-player .word-board { width: min(100%, 260px, 82cqh); }
 }
 html.native-app .word-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+html.native-app .word-row.rejected { animation: word-row-rejected .3s ease-in-out; }
 html.native-app .word-tile { display: grid; place-items: center; aspect-ratio: 1; min-height: 0; border: 1px solid rgba(241,231,208,.18); border-radius: 9px; color: var(--paper); font: 700 clamp(1rem, 5vw, 1.35rem) "JetBrains Mono", monospace; background: rgba(255,255,255,.035); }
 html.native-app .word-tile.correct { border-color: #72936a; background: #526f4c; }
 html.native-app .word-tile.present { border-color: #b78f46; background: #8b682c; }
@@ -7245,6 +7246,12 @@ html.native-app .match-message { display: inline-block; animation: match-message
   70% { opacity: 1; transform: translateY(5%) scale(1.03); }
   to { opacity: 1; transform: none; }
 }
+@keyframes word-row-rejected {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  45% { transform: translateX(5px); }
+  70% { transform: translateX(-3px); }
+}
 @keyframes match-piece-invalid {
   0%, 100% { transform: translateX(0); }
   30% { transform: translateX(-4px) rotate(-4deg); }
@@ -7268,6 +7275,7 @@ html.native-app .match-message { display: inline-block; animation: match-message
   html.native-app .match-piece.clearing,
   html.native-app .match-piece.falling,
   html.native-app .match-piece.invalid,
+  html.native-app .word-row.rejected,
   html.native-app .match-piece.clearing::after,
   html.native-app .match-popup,
   html.native-app .match-score strong.score-bump,
