@@ -504,6 +504,7 @@ export async function importDeviceAudioFiles(
     tags: [],
     publishedDate: bookTags?.publishedDate ?? null,
     asin: bookTags?.asin ?? null,
+    addedAt: new Date().toISOString(),
     readingFile: null,
     syncFile: null,
     chapters: bookChapters(tracks),
