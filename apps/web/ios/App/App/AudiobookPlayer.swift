@@ -1205,7 +1205,8 @@ public final class AudiobookPlayer {
             "positionSeconds": positionSeconds,
             "durationSeconds": durationSeconds,
             "isPlaying": isPlaying,
-            "readyToPlay": initialSeekComplete && player?.currentItem?.status == .readyToPlay
+            "readyToPlay": initialSeekComplete && player?.currentItem?.status == .readyToPlay,
+            "positionReady": initialSeekComplete
         ]
         if let trackId = recoveryTrackId {
             data["trackId"] = trackId

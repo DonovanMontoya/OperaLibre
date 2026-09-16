@@ -470,9 +470,24 @@ export async function getOfflineCompanionUrl(book: Book, companion: CompanionFil
 }
 
 /** Previously opened web companions remain available during a network outage. */
-export async function getCachedEpubBytes(book: Book, companion: CompanionFile): Promise<ArrayBuffer | null> {
-  const record = await readMedia(book.id, companionMediaKind(companion));
-  return record ? record.blob.arrayBuffer() : null;
+export async function getCachedEpubBytes(
+  book: Book, companion: CompanionFile, signal?: AbortSignal
+): Promise<ArrayBuffer | null> {
+  signal?.throwIfAborted();
+  const local = await getOfflineCompanionUrl(book, companion);
+  if (!local) {
+    signal?.throwIfAborted();
+    return null;
+  }
+  try {
+    signal?.throwIfAborted();
+    const response = await fetch(local, { signal });
+    const data = response.ok ? await response.arrayBuffer() : null;
+    signal?.throwIfAborted();
+    return data;
+  } finally {
+    if (local.startsWith("blob:")) URL.revokeObjectURL(local);
+  }
 }
 
 /** A complete local download remains usable offline; online EPUBs can open by chapter. */

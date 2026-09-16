@@ -8,7 +8,10 @@ export function epubEntryUrl(source: string, path: string): string {
   if (member.split("/").some((part) => part === "..") || member.includes("\\")) {
     throw new Error("Invalid EPUB entry path");
   }
-  url.pathname += `/entries/${member.split("/").map(encodeURIComponent).join("/")}`;
+  url.pathname += `/entries/${member.split("/").map((part) =>
+    encodeURIComponent(part).replace(/[!'()*]/g, (character) =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+  ).join("/")}`;
   url.hash = "";
   return url.href;
 }
@@ -26,6 +29,7 @@ export function supportsStreamingEpub(source: string): boolean {
  * only when displayed. epub.js still rewrites stylesheet-relative resources.
  */
 export function streamingArchive(source: string, signal: AbortSignal, container: string) {
+  const stylesheetUrls = new Set<string>();
   const getText = async (path: string): Promise<string> => {
     signal.throwIfAborted();
     if (path === "/META-INF/container.xml") return container;
@@ -47,8 +51,18 @@ export function streamingArchive(source: string, signal: AbortSignal, container:
       return text;
     },
     async createUrl(path: string) { return epubEntryUrl(source, path); },
-    revokeUrl() {},
-    destroy() {}
+    createCssUrl(text: string) {
+      const url = URL.createObjectURL(new Blob([text], { type: "text/css" }));
+      stylesheetUrls.add(url);
+      return url;
+    },
+    revokeUrl(url: string) {
+      if (stylesheetUrls.delete(url)) URL.revokeObjectURL(url);
+    },
+    destroy() {
+      stylesheetUrls.forEach((url) => URL.revokeObjectURL(url));
+      stylesheetUrls.clear();
+    }
   };
 }
 
@@ -68,16 +82,25 @@ export async function prepareStreamingEpub(source: string, signal: AbortSignal) 
 export async function prepareEpubRead(
   source: ArrayBuffer | string,
   signal: AbortSignal,
-  readCached?: () => Promise<ArrayBuffer | null>
+  readCached?: () => Promise<ArrayBuffer | null>,
+  loadWholeFile?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>
 ) {
   signal.throwIfAborted();
   if (typeof source !== "string") return { data: source };
   try {
     const archive = await prepareStreamingEpub(source, signal);
-    if (archive) return { archive };
+    signal.throwIfAborted();
+    if (archive) return { archive: cachedStreamingArchive(archive, signal, readCached) };
+    if (loadWholeFile) {
+      const data = await loadWholeFile(source, signal);
+      signal.throwIfAborted();
+      return { data };
+    }
     const response = await fetch(source, { credentials: "include", signal });
     if (!response.ok) throw new Error(`EPUB request failed with ${response.status}`);
-    return { data: await response.arrayBuffer() };
+    const data = await response.arrayBuffer();
+    signal.throwIfAborted();
+    return { data };
   } catch (error) {
     signal.throwIfAborted();
     // Fetch uses TypeError for network failures. HTTP denials above remain
@@ -90,11 +113,185 @@ export async function prepareEpubRead(
   }
 }
 
+function cachedStreamingArchive(
+  streaming: ReturnType<typeof streamingArchive>,
+  signal: AbortSignal,
+  readCached?: () => Promise<ArrayBuffer | null>
+) {
+  let destroyed = false;
+  let fallback: Archive | undefined;
+  let recovery: Promise<Archive> | undefined;
+  let openCached: ((data: ArrayBuffer) => Promise<Archive>) | undefined;
+  const urls = new Set<string>();
+  const checkActive = () => {
+    signal.throwIfAborted();
+    if (destroyed) throw new DOMException("EPUB archive destroyed", "AbortError");
+  };
+  const destroy = () => {
+    destroyed = true;
+    streaming.destroy();
+    urls.forEach((url) => URL.revokeObjectURL(url));
+    urls.clear();
+    fallback?.destroy();
+    fallback = undefined;
+    signal.removeEventListener("abort", destroy);
+  };
+  signal.addEventListener("abort", destroy, { once: true });
+  const recover = (error: unknown) => {
+    checkActive();
+    if (!(error instanceof TypeError) || !readCached || !openCached) throw error;
+    recovery ??= (async () => {
+      const data = await readCached().catch(() => null);
+      checkActive();
+      if (!data) throw error;
+      const archive = await openCached!(data);
+      if (destroyed || signal.aborted) {
+        archive.destroy();
+        checkActive();
+      }
+      fallback = archive;
+      return archive;
+    })();
+    return recovery;
+  };
+  const read = async <T>(online: () => Promise<T>, cached: (archive: Archive) => Promise<T>): Promise<T> => {
+    checkActive();
+    if (recovery) {
+      const result = await cached(await recovery);
+      checkActive();
+      return result;
+    }
+    try {
+      const result = await online();
+      checkActive();
+      if (recovery) {
+        const cachedResult = await cached(await recovery);
+        checkActive();
+        return cachedResult;
+      }
+      return result;
+    } catch (error) {
+      const result = await cached(await recover(error));
+      checkActive();
+      return result;
+    }
+  };
+  return {
+    ...streaming,
+    getText: (path: string) => read(() => streaming.getText(path), async (archive) => {
+      const text = await archive.getText(path);
+      if (text === undefined) throw new Error(`File not found in the epub: ${path}`);
+      return text;
+    }),
+    request: (path: string, type?: string) => read<unknown>(
+      () => streaming.request(path, type), (archive) => archive.request(path, type)
+    ),
+    async createUrl(path: string) {
+      checkActive();
+      if (!recovery) return streaming.createUrl(path);
+      const url = await (await recovery).createUrl(path, { base64: false });
+      if (destroyed || signal.aborted) {
+        URL.revokeObjectURL(url);
+        checkActive();
+      }
+      urls.add(url);
+      return url;
+    },
+    createCssUrl(text: string) {
+      checkActive();
+      return streaming.createCssUrl(text);
+    },
+    revokeUrl(url: string) {
+      streaming.revokeUrl(url);
+      if (urls.delete(url)) URL.revokeObjectURL(url);
+    },
+    destroy,
+    hasFallback: () => !!fallback,
+    setFallbackLoader(loader: (data: ArrayBuffer) => Promise<Archive>) { openCached = loader; }
+  };
+}
+
+export function attachEpubReadArchive(book: Book, archive: ReturnType<typeof cachedStreamingArchive>) {
+  const unarchive = book.unarchive;
+  archive.setFallbackLoader(async (data) => {
+    const holder = { archive: undefined as Archive | undefined };
+    try {
+      await unarchive.call(holder as Book, data as unknown as BinaryType);
+      return holder.archive!;
+    } catch (error) {
+      holder.archive?.destroy();
+      throw error;
+    }
+  });
+  attachStreamingArchive(book, archive as ReturnType<typeof streamingArchive>);
+  const streamingBook = book as unknown as {
+    replacements(): Promise<unknown>;
+    resources: { replacements(): Promise<unknown>; replaceCss(): Promise<unknown> };
+  };
+  const replacements = streamingBook.replacements.bind(book);
+  let refreshed: Promise<unknown> | undefined;
+  const refresh = () => {
+    if (!archive.hasFallback()) return Promise.resolve();
+    refreshed ??= streamingBook.resources.replacements().then(() => streamingBook.resources.replaceCss());
+    return refreshed;
+  };
+  streamingBook.replacements = async () => {
+    await replacements();
+    await refresh();
+  };
+  book.spine.hooks.content.register(async () => {
+    await book.opened;
+    await refresh();
+  });
+}
+
 export function attachStreamingArchive(book: Book, archive: ReturnType<typeof streamingArchive>) {
   // epub.js exposes unarchive as its extension point. Its normal open("binary")
   // establishes archive-relative paths, then uses this adapter for all reads.
   book.unarchive = async () => {
     book.archive = archive as unknown as Archive;
     return book.archive;
+  };
+  const streamingBook = book as unknown as {
+    replacements(): Promise<unknown>;
+    resources: {
+      urls: string[];
+      replacementUrls: string[];
+      relativeTo(url: string): string[];
+      substitute(content: string, url?: string): string;
+      createCssFile(href: string): Promise<string | undefined>;
+    };
+  };
+  const replacements = streamingBook.replacements.bind(book);
+  streamingBook.replacements = () => {
+    const resources = streamingBook.resources;
+    const substitute = (content: string, urls: string[]) => {
+      const substitutions = new Map<string, string>();
+      urls.forEach((url, index) => {
+        if (url && resources.replacementUrls[index]) {
+          substitutions.set(url, resources.replacementUrls[index]);
+        }
+      });
+      const patterns = [...substitutions.keys()]
+        .sort((left, right) => right.length - left.length)
+        .map((url) => url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      if (!patterns.length) return content;
+      return content.replace(new RegExp(patterns.join("|"), "g"),
+        (url) => substitutions.get(url)!);
+    };
+    resources.substitute = (content, url) =>
+      substitute(content, url ? resources.relativeTo(url) : resources.urls);
+    resources.createCssFile = async (href) => {
+      const absolute = book.resolve(href);
+      let text: string;
+      try {
+        text = await archive.getText(absolute);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        return undefined;
+      }
+      return archive.createCssUrl(substitute(text, resources.relativeTo(absolute)));
+    };
+    return replacements();
   };
 }

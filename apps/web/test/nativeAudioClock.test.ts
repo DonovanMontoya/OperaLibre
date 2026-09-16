@@ -66,6 +66,28 @@ test("late duration does not reset a resumed clock or announce readiness twice",
   clock.destroy();
 });
 
+test("a failure-time position replaces the suspended clock without announcing readiness", () => {
+  const { audio, events, seeks } = element();
+  const clock = new NativeAudioControlClock(audio, "https://server/audio", 600);
+  clock.synchronizePosition(7800, true);
+  assert.equal(audio.currentTime, 7800);
+  assert.equal(audio.readyState, 0);
+  assert.deepEqual(events, [{ name: "timeupdate", position: 7800 }]);
+  assert.equal(seeks(), 0);
+  clock.destroy();
+});
+
+test("unfinished seeks and invalid failure positions preserve the pending resume", () => {
+  const { audio, events } = element();
+  const clock = new NativeAudioControlClock(audio, "https://server/audio", 600);
+  clock.synchronizePosition(0, false);
+  clock.synchronizePosition(NaN, true);
+  clock.synchronizePosition(-1, true);
+  assert.equal(audio.currentTime, 600);
+  assert.deepEqual(events, []);
+  clock.destroy();
+});
+
 test("successive attachments discard the old clock and keep the new pending seek", () => {
   const {audio} = element();
   const old = new NativeAudioControlClock(audio, "https://server/first", 600);
