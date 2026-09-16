@@ -125,6 +125,7 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         tags: Vec::new(),
         published_date: None,
         asin: None,
+        added_at: "1970-01-01T00:00:00Z".to_string(),
         reading_file: None,
         companions: Vec::new(),
         sync_file: None,
@@ -3023,6 +3024,7 @@ fn fingerprint_history_retires_the_previous_digest_instead_of_erasing_it() {
         last_seen_scan: 1,
         track_count: 1,
         duration_seconds: None,
+        added_at: 0,
     };
 
     identity.record_fingerprint("two");
@@ -4660,6 +4662,7 @@ fn a_track_two_files_can_claim_is_not_given_to_the_certain_one() {
         last_seen_scan: 1,
         track_count: 2,
         duration_seconds: None,
+        added_at: 0,
     });
     identities.scan_counter = 1;
 
@@ -4712,6 +4715,38 @@ fn remuxing_one_of_two_identical_copies_keeps_its_identity() {
         "the remuxed copy keeps its identity even though its twin still holds the old digest"
     );
     assert_eq!(after[1].0, before[1].0, "the untouched copy is unaffected");
+}
+
+/// A freshly minted identity is stamped with when it was added; rescanning
+/// the same book afterwards must not disturb that stamp, since it is what the
+/// "newest" sort orders by.
+#[test]
+fn a_new_book_is_stamped_with_its_addition_time_and_keeps_it_on_rescan() {
+    let root = tempfile::tempdir().unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"original container");
+
+    let before_scan = super::unix_now_seconds();
+    let mut identities = super::LibraryIdentityStore::default();
+    resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+    let after_scan = super::unix_now_seconds();
+
+    let added_at = identities.books[0].added_at;
+    assert!(
+        added_at >= before_scan && added_at <= after_scan,
+        "a newly minted identity is stamped with the time it was minted"
+    );
+
+    resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", std::slice::from_ref(&track)).with_duration(3600.0)],
+    );
+    assert_eq!(
+        identities.books[0].added_at, added_at,
+        "rescanning an unchanged book must not move its addition stamp"
+    );
 }
 
 /// Unreadable tags look exactly like a replacement. Once a book's runtime is
@@ -4820,6 +4855,7 @@ fn an_identity_two_groups_can_claim_is_not_given_to_the_certain_one() {
         last_seen_scan: 1,
         track_count: 1,
         duration_seconds: Some(3600.0),
+        added_at: 0,
     });
     // I2 sits at Y with the same digest, so Y has two candidates while X has one.
     identities.books.push(super::BookIdentity {
@@ -4831,6 +4867,7 @@ fn an_identity_two_groups_can_claim_is_not_given_to_the_certain_one() {
         last_seen_scan: 1,
         track_count: 1,
         duration_seconds: Some(3600.0),
+        added_at: 0,
     });
     identities.scan_counter = 1;
 
