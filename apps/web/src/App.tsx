@@ -1,5 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
-import { attachStreamingArchive, prepareEpubRead } from "./streamingEpub";
+import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
@@ -290,6 +290,7 @@ import {
   getOfflineUser,
   isBookDownloaded,
   loadEpubSource,
+  loadCompanionBytes,
   getCachedEpubBytes,
   releaseOfflineMediaUrl,
   removeBookDownload
@@ -1490,6 +1491,7 @@ export function EpubReadalong({
   url,
   loadSource,
   loadCachedSource,
+  loadWholeFile,
   listeningChapter,
   syncTarget,
   syncFragments,
@@ -1511,7 +1513,8 @@ export function EpubReadalong({
   url: string;
   /** Reads the ebook, from the device when a copy is already there. */
   loadSource?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer | string>;
-  loadCachedSource?: () => Promise<ArrayBuffer | null>;
+  loadCachedSource?: (signal?: AbortSignal) => Promise<ArrayBuffer | null>;
+  loadWholeFile?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
   listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
@@ -1580,6 +1583,7 @@ export function EpubReadalong({
   const onSeekToRef = useRef(onSeekTo);
   const loadSourceRef = useRef(loadSource);
   const loadCachedSourceRef = useRef(loadCachedSource);
+  const loadWholeFileRef = useRef(loadWholeFile);
   // Bumped whenever the page reflows (text size, zoom, window resize): the
   // markers were measured against the old layout and the narrated sentence
   // may have moved to another page.
@@ -1603,6 +1607,7 @@ export function EpubReadalong({
   onSeekToRef.current = onSeekTo;
   loadSourceRef.current = loadSource;
   loadCachedSourceRef.current = loadCachedSource;
+  loadWholeFileRef.current = loadWholeFile;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
@@ -2085,11 +2090,19 @@ export function EpubReadalong({
         const source = loadSourceRef.current
           ? await loadSourceRef.current(url, abortController.signal)
           : url;
-        const prepared = await prepareEpubRead(source, abortController.signal, loadCachedSourceRef.current);
-        if (cancelled || !viewerRef.current) return;
+        const readCached = loadCachedSourceRef.current;
+        const prepared = await prepareEpubRead(
+          source, abortController.signal,
+          readCached ? () => readCached(abortController.signal) : undefined,
+          loadWholeFileRef.current
+        );
+        if (cancelled || !viewerRef.current) {
+          prepared.archive?.destroy();
+          return;
+        }
         if (prepared.archive) {
           book = ePub({ replacements: "blobUrl" });
-          attachStreamingArchive(book, prepared.archive);
+          attachEpubReadArchive(book, prepared.archive);
           await book.open(new ArrayBuffer(0), "binary");
         } else {
           if (!prepared.data.byteLength) throw new Error("EPUB response was empty");
@@ -8585,7 +8598,10 @@ function MainApp({
         loadSource={(companionUrl, signal) =>
           loadEpubSource(selectedBook, activeCompanion, companionUrl, signal)
         }
-        loadCachedSource={() => getCachedEpubBytes(selectedBook, activeCompanion)}
+        loadCachedSource={(signal) => getCachedEpubBytes(selectedBook, activeCompanion, signal)}
+        loadWholeFile={(companionUrl, signal) =>
+          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
+        }
         syncTarget={
           readalongEnabled && activeCompanionIsBook && !(narrationFollowActive && selectedSyncFragments) && isViewingPlayingBook && activeChapter
             ? activeChapter

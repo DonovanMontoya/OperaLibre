@@ -13,6 +13,7 @@ type NativeAudioState = {
   durationSeconds: number;
   isPlaying: boolean;
   readyToPlay: boolean;
+  positionReady?: boolean;
   /** The queue track the clock belongs to, once the native side reports it. */
   trackId?: string;
 };
@@ -376,7 +377,10 @@ export function attachNativeAudioPlayer(
     // starting or stopping the muted HTML decoder during app transitions.
     // AVPlayer is authoritative. Apply its clock before a synthetic pause can
     // make React persist the stale pre-background HTML position.
-    if (!state.readyToPlay) return;
+    if (!state.readyToPlay) {
+      controlClock.synchronizePosition(state.positionSeconds, state.positionReady === true);
+      return;
+    }
     const firstMetadata = controlClock.updateMetadata(state.durationSeconds);
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
     if (firstMetadata) audio.dispatchEvent(new Event("loadedmetadata"));

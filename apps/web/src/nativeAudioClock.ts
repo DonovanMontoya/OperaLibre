@@ -33,6 +33,12 @@ export class NativeAudioControlClock {
     return first;
   }
 
+  synchronizePosition(position: number, positionReady: boolean) {
+    if (!positionReady || !Number.isFinite(position) || position < 0) return;
+    this.position = position;
+    this.audio.dispatchEvent(new Event("timeupdate"));
+  }
+
   destroy() {
     for (const [key, descriptor] of this.originals) {
       if (descriptor) Object.defineProperty(this.audio, key, descriptor);
