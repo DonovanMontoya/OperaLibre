@@ -21,7 +21,7 @@ function Fixture() {
     <button onClick={() => setOpen(!open)}>{open ? "Close ebook" : "Open ebook"}</button>
     <button onClick={() => setChapter(chapter === 2 ? 3 : 2)}>Advance audio ({chapter})</button>
     {open && <EpubReadalong bookId="fixture" storageScope="catch-up-fixture" title="Catch-up fixture"
-      url="/fixture.epub" loadBytes={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
+      url="/fixture.epub" loadSource={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
       syncTarget={null} syncFragments={null} precision={null} positionSeconds={0} />}
   </>;
 }

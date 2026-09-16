@@ -1,3 +1,5 @@
+import { hasPlaybackSource } from "./nativeAudioStartup";
+import { attachStreamingArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
@@ -287,7 +289,8 @@ import {
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
-  loadCompanionBytes,
+  loadEpubSource,
+  getCachedEpubBytes,
   releaseOfflineMediaUrl,
   removeBookDownload
 } from "./offline";
@@ -1485,7 +1488,8 @@ export function EpubReadalong({
   storageScope,
   title,
   url,
-  loadBytes,
+  loadSource,
+  loadCachedSource,
   listeningChapter,
   syncTarget,
   syncFragments,
@@ -1506,7 +1510,8 @@ export function EpubReadalong({
   title: string;
   url: string;
   /** Reads the ebook, from the device when a copy is already there. */
-  loadBytes?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer>;
+  loadSource?: (url: string, signal: AbortSignal) => Promise<ArrayBuffer | string>;
+  loadCachedSource?: () => Promise<ArrayBuffer | null>;
   listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
@@ -1573,7 +1578,8 @@ export function EpubReadalong({
   const syncFragmentsRef = useRef<SyncFragment[] | null>(syncFragments);
   const syncTargetRef = useRef<EpubSyncTarget | null>(syncTarget);
   const onSeekToRef = useRef(onSeekTo);
-  const loadBytesRef = useRef(loadBytes);
+  const loadSourceRef = useRef(loadSource);
+  const loadCachedSourceRef = useRef(loadCachedSource);
   // Bumped whenever the page reflows (text size, zoom, window resize): the
   // markers were measured against the old layout and the narrated sentence
   // may have moved to another page.
@@ -1595,7 +1601,8 @@ export function EpubReadalong({
   syncFragmentsRef.current = syncFragments;
   syncTargetRef.current = syncTarget;
   onSeekToRef.current = onSeekTo;
-  loadBytesRef.current = loadBytes;
+  loadSourceRef.current = loadSource;
+  loadCachedSourceRef.current = loadCachedSource;
   const [toc, setToc] = useState<Array<NavItem & { depth: number }>>([]);
   const [location, setLocation] = useState<Location | null>(null);
   const [activeHref, setActiveHref] = useState("");
@@ -2075,28 +2082,19 @@ export function EpubReadalong({
           }
         }, 12000);
 
-        const data = loadBytesRef.current
-          ? await loadBytesRef.current(url, abortController.signal)
-          : await (async () => {
-              const response = await fetch(url, {
-                credentials: "include",
-                signal: abortController.signal
-              });
-              if (!response.ok) {
-                throw new Error(`EPUB request failed with ${response.status}`);
-              }
-              return response.arrayBuffer();
-            })();
-        if (cancelled || !viewerRef.current) {
-          return;
+        const source = loadSourceRef.current
+          ? await loadSourceRef.current(url, abortController.signal)
+          : url;
+        const prepared = await prepareEpubRead(source, abortController.signal, loadCachedSourceRef.current);
+        if (cancelled || !viewerRef.current) return;
+        if (prepared.archive) {
+          book = ePub({ replacements: "blobUrl" });
+          attachStreamingArchive(book, prepared.archive);
+          await book.open(new ArrayBuffer(0), "binary");
+        } else {
+          if (!prepared.data.byteLength) throw new Error("EPUB response was empty");
+          book = ePub(prepared.data, { replacements: "blobUrl" });
         }
-        if (data.byteLength === 0) {
-          throw new Error("EPUB response was empty");
-        }
-
-        book = ePub(data, {
-          replacements: "blobUrl"
-        });
         await book.opened;
         if (cancelled || !viewerRef.current) {
           return;
@@ -3928,6 +3926,8 @@ function MainApp({
   const nativePlaybackPlayingRef = useRef(false);
   const [speed, setSpeed] = useState(readStoredSpeed);
   const [volume, setVolume] = useState(0.9);
+  const playbackSettingsRef = useRef({ rate: speed, volume });
+  playbackSettingsRef.current = { rate: speed, volume };
   // Per-book gain, keyed by book id. The server holds the copy that follows the
   // listener between devices; this is the local mirror that survives an offline
   // launch and covers backends that have no place to store it.
@@ -5296,33 +5296,39 @@ function MainApp({
       playbackBook.source === "device"
       || !!playbackBook.deviceBookId
       || playbackBookDownloaded;
-    void Promise.all(
-      playbackBook.tracks.slice(activeTrackIndex).map(async (track, queueIndex) => {
-        const localUrl = preferLocalFiles
-          ? await getOfflineTrackUrl(playbackBook, track).catch(() => null)
-          : null;
-        const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex + queueIndex);
-        return {
-          url: localUrl ?? mediaUrl(track.streamUrl),
-          trackId: track.id,
-          bookOffsetSeconds: trackOffset,
-          title: track.title,
-          artist: playbackBook.author ?? "Audiobook",
-          album: playbackBook.title,
-          chapters: chapterSegments
-            .filter((chapter) => chapter.trackId === track.id)
-            .map((chapter) => ({
-              title: chapter.title,
-              startSeconds: chapter.startSeconds - trackOffset,
-              durationSeconds: chapter.durationSeconds
-            }))
-        } satisfies NativeAudioQueueTrack;
-      })
-    ).then((queue) => {
+    const tracks = playbackBook.tracks.slice(activeTrackIndex);
+    const entry = (track: Track, queueIndex: number, localUrl: string | null = null): NativeAudioQueueTrack => {
+      const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex + queueIndex);
+      return {
+        url: localUrl ?? mediaUrl(track.streamUrl),
+        trackId: track.id,
+        bookOffsetSeconds: trackOffset,
+        title: track.title,
+        artist: playbackBook.author ?? "Audiobook",
+        album: playbackBook.title,
+        chapters: chapterSegments
+          .filter((chapter) => chapter.trackId === track.id)
+          .map((chapter) => ({
+            title: chapter.title,
+            startSeconds: chapter.startSeconds - trackOffset,
+            durationSeconds: chapter.durationSeconds
+          }))
+      };
+    };
+    const publish = (queue: NativeAudioQueueTrack[]) => {
       if (!active) return;
       nativeAudioQueueRef.current = queue;
       audioRef.current?.dispatchEvent(new Event("operalibre-native-queue-change"));
-    });
+    };
+    if (!preferLocalFiles) {
+      // This effect precedes the native attachment: make a streaming queue
+      // available now, rather than loading once and immediately rebuilding it.
+      publish(tracks.map((track, index) => entry(track, index)));
+    } else {
+      void Promise.all(tracks.map(async (track, index) => entry(
+        track, index, await getOfflineTrackUrl(playbackBook, track).catch(() => null)
+      ))).then(publish);
+    }
     return () => {
       active = false;
     };
@@ -5877,9 +5883,14 @@ function MainApp({
     };
 
     void (async () => {
-      const recoveredNative = nativeAudio
-        ? await getNativeAudioRecovery(nativeAudioRecoveryScope(currentUser.id, playbackBook.id)).catch(() => null)
-        : null;
+      // Independent local stores can answer concurrently; preserve the same
+      // freshest-copy reconciliation after both have completed.
+      const [recoveredNative, cached] = await Promise.all([
+        nativeAudio
+          ? getNativeAudioRecovery(nativeAudioRecoveryScope(currentUser.id, playbackBook.id)).catch(() => null)
+          : Promise.resolve(null),
+        getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
+      ]);
       const recoveryTrack = recoveredNative
         ? playbackBook.tracks.find((track) => track.id === recoveredNative.trackId)
         : null;
@@ -5901,7 +5912,6 @@ function MainApp({
         currentUser.id,
         playbackBook.id
       );
-      const cached = await getCachedProgress(currentUser.id, playbackBook.id).catch(() => null);
       if (playbackBook.source === "device") {
         const local = freshestProgress(device, checkpoint, cached, nativeProgress);
         if (local) updateBookProgress(playbackBook.id, local);
@@ -6041,7 +6051,7 @@ function MainApp({
       return;
     }
     audioRef.current.playbackRate = speed;
-  }, [speed]);
+  }, [speed, currentTrackKey, nativeAudio]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -6070,12 +6080,20 @@ function MainApp({
     return attachNativeAudioPlayer(
       audio,
       (message) => setPlaybackError(message),
-      () => setNativeAudioFailed(true),
+      (position, resume) => {
+        setPendingSeek({ trackId: currentTrack.id, positionSeconds: position });
+        playWhenTrackLoads.current = resume;
+        setNativeAudioFailed(true);
+      },
       {
+        source: streamUrl,
+        settings: () => playbackSettingsRef.current,
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,
         bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
         queue: () => nativeAudioQueueRef.current,
+        pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
+          ? pendingSeekRef.current.positionSeconds : undefined,
         gain: () => playbackGainRef.current,
         sleepTimerSeconds: () => {
           const deadline = sleepDeadlineRef.current;
@@ -6128,7 +6146,7 @@ function MainApp({
         foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
-  }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey]);
+  }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey, streamUrl]);
 
   // Progress often arrives after preload has already emitted loadedmetadata.
   // Apply that late checkpoint as soon as the target media element is ready.
@@ -6147,7 +6165,9 @@ function MainApp({
       0,
       Math.min(pendingSeek.positionSeconds, audio.duration || pendingSeek.positionSeconds)
     );
-    setPlaybackPosition(audio, restoredPosition);
+    if (!nativeAudio || Math.abs(audio.currentTime - restoredPosition) > 0.75) {
+      setPlaybackPosition(audio, restoredPosition);
+    }
     setPosition(restoredPosition);
     setPendingSeek(null);
     // Mirrors onLoadedMetadata. A queued autoplay whose element had already
@@ -6158,7 +6178,7 @@ function MainApp({
       startPlayback(audio, !resumeAutoplayPendingRef.current);
       resumeAutoplayPendingRef.current = false;
     }
-  }, [currentTrackKey, pendingSeek, streamUrl]);
+  }, [currentTrackKey, pendingSeek, streamUrl, nativeAudio]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -6168,7 +6188,7 @@ function MainApp({
     applyPlaybackVolume(audio);
     if (gainChain().isAttachedTo(audio)) gainChain().setGain(playbackGain);
     if (nativeAudio) void setNativeAudioGain(playbackGain).catch(() => undefined);
-  }, [volume, playbackGain, nativeAudio]);
+  }, [volume, playbackGain, nativeAudio, currentTrackKey]);
 
   playbackGainRef.current = playbackGain;
 
@@ -7256,11 +7276,8 @@ function MainApp({
       autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
       audio.muted = false;
-      setNativeAudioFailed(true);
+      stageWebAudioFallback(audio, true);
       setPlaybackError(errorMessage(error, "Native audio playback failed."));
-      // Let React tear down the failed native attachment first; its cleanup
-      // pauses the control element before web audio becomes authoritative.
-      window.setTimeout(() => safePlay(audioRef.current), 0);
     });
   }
 
@@ -7277,10 +7294,24 @@ function MainApp({
     setIsPlaying(false);
     void pauseNativeAudio().catch((error) => {
       audio.muted = false;
-      audio.pause();
-      setNativeAudioFailed(true);
+      stageWebAudioFallback(audio, false);
       setPlaybackError(errorMessage(error, "Native audio playback could not be paused."));
     });
+  }
+
+  function stageWebAudioFallback(audio: HTMLAudioElement, resume: boolean, target?: number) {
+    if (currentTrackKey) {
+      const pending = pendingSeekRef.current;
+      setPendingSeek({
+        trackId: currentTrackKey,
+        positionSeconds: target ?? (pending?.trackId === currentTrackKey
+          ? pending.positionSeconds : audio.currentTime)
+      });
+    }
+    // React restores the real media source; its metadata event applies this
+    // checkpoint before playing. The native clock itself never fetched audio.
+    playWhenTrackLoads.current = resume;
+    setNativeAudioFailed(true);
   }
 
   function setPlaybackPosition(audio: HTMLAudioElement, value: number) {
@@ -7291,13 +7322,8 @@ function MainApp({
       void seekNativeAudio(nextPosition).catch((error) => {
         nativePlaybackPlayingRef.current = false;
         audio.muted = false;
-        setNativeAudioFailed(true);
+        stageWebAudioFallback(audio, shouldResume, nextPosition);
         setPlaybackError(errorMessage(error, "Native audio could not seek."));
-        if (shouldResume) {
-          // Native effect cleanup runs after this state change and may pause
-          // the element, so resume only once that cleanup has completed.
-          window.setTimeout(() => safePlay(audioRef.current), 0);
-        }
       });
     }
     return nextPosition;
@@ -7325,7 +7351,9 @@ function MainApp({
         pendingSeek.positionSeconds,
         audio.duration || pendingSeek.positionSeconds
       );
-      setPlaybackPosition(audio, restoredPosition);
+      if (!nativeAudio || Math.abs(audio.currentTime - restoredPosition) > 0.75) {
+        setPlaybackPosition(audio, restoredPosition);
+      }
       setPosition(restoredPosition);
       setPendingSeek(null);
     } else if (pendingSeek !== null) {
@@ -7432,11 +7460,11 @@ function MainApp({
     seekBookPositionInBook(playbackBook, value, autoPlay);
   }
 
-  // Start playback now if the <audio> element has a source, otherwise flag the
-  // intent so the streamUrl effect starts it once the disk lookup resolves.
+  // Start when the active engine has a source. The native control element
+  // deliberately has no src; only AVPlayer fetches its stream URL.
   function playWhenReady() {
     const audio = audioRef.current;
-    if (audio?.getAttribute("src")) {
+    if (hasPlaybackSource(audio, nativeAudio, streamUrl)) {
       startPlayback(audio);
       return;
     }
@@ -7450,10 +7478,9 @@ function MainApp({
     }
 
     haptic("medium");
-    // No source yet (native disk lookup still resolving): calling play() on
-    // an empty element silently fails — queue the intent instead, and the
-    // streamUrl effect starts playback the moment the source lands.
-    if (!audio.getAttribute("src")) {
+    // A disk lookup may still be resolving. Native readiness uses the
+    // stream URL, never the intentionally absent web element src.
+    if (!hasPlaybackSource(audio, nativeAudio, streamUrl)) {
       wantsAutoplayRef.current = true;
       return;
     }
@@ -8555,9 +8582,10 @@ function MainApp({
         listeningChapter={activeCompanionIsBook
           ? (isViewingPlayingBook ? activeChapter?.title : chapterAtBookPosition(selectedChapterSegments, selectedBook.progress?.bookPositionSeconds ?? 0)?.title) ?? null
           : null}
-        loadBytes={(companionUrl, signal) =>
-          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
+        loadSource={(companionUrl, signal) =>
+          loadEpubSource(selectedBook, activeCompanion, companionUrl, signal)
         }
+        loadCachedSource={() => getCachedEpubBytes(selectedBook, activeCompanion)}
         syncTarget={
           readalongEnabled && activeCompanionIsBook && !(narrationFollowActive && selectedSyncFragments) && isViewingPlayingBook && activeChapter
             ? activeChapter
@@ -8718,9 +8746,9 @@ function MainApp({
       <audio
         key={currentTrackKey ?? "no-track"}
         ref={audioRef}
-        src={streamUrl || undefined}
+        src={nativeAudio ? undefined : streamUrl || undefined}
         muted={nativeAudio}
-        preload="metadata"
+        preload={nativeAudio ? "none" : "metadata"}
         onLoadedMetadata={onLoadedMetadata}
         onError={() => {
           const code = audioRef.current?.error?.code;
