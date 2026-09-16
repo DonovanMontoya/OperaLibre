@@ -11,11 +11,13 @@ function fixture(nativeAudio = true) {
   const timers = new Map<number, { at: number; run: () => void }>();
   let nextTimer = 0;
   let saves = 0;
+  let clockRefreshes = 0;
   const adoptions: string[] = [];
   const actionsFor = (book: string) => ({
     nativeAudio,
     async persistProgress() { saves += 1; },
-    async adoptNewerServerProgress() { adoptions.push(book); }
+    async adoptNewerServerProgress() { adoptions.push(book); },
+    refreshClock() { clockRefreshes += 1; }
   });
   let actions = actionsFor("original");
   const gate = new NativeForegroundSyncGate(() => now, 5000);
@@ -37,6 +39,7 @@ function fixture(nativeAudio = true) {
   return {
     sync, gate, adoptions, timers,
     saves: () => saves,
+    clockRefreshes: () => clockRefreshes,
     updateBook(book: string) { actions = actionsFor(book); },
     fallBack() { actions = { ...actions, nativeAudio: false }; },
     visibility(value: DocumentVisibilityState) {
@@ -122,6 +125,21 @@ test("web audio adopts immediately and pagehide still saves progress", () => {
   assert.equal(f.saves(), 2);
   assert.equal(f.timers.size, 0);
   f.sync.dispose();
+});
+
+test("web audio redraws its live clock on resume; native audio waits for its own", () => {
+  const web = fixture(false);
+  web.visibility("hidden");
+  assert.equal(web.clockRefreshes(), 0);
+  web.visibility("visible");
+  assert.equal(web.clockRefreshes(), 1);
+  web.sync.dispose();
+
+  const native = fixture();
+  native.visibility("hidden");
+  native.visibility("visible");
+  assert.equal(native.clockRefreshes(), 0);
+  native.sync.dispose();
 });
 
 test("a native failure during the wait allows the fallback retry", () => {
