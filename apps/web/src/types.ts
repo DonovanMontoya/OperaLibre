@@ -26,6 +26,8 @@ export type Book = {
   tags: BookTag[];
   publishedDate: string | null;
   asin: string | null;
+  /** When this book was first added to the server's library, not when it was published. */
+  addedAt: string;
   /** The companion read-along follows: the primary book-kind document. */
   readingFile: ReadingFile | null;
   /**

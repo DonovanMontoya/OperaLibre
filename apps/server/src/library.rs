@@ -263,6 +263,12 @@ pub(crate) struct BookIdentity {
     pub(crate) track_count: usize,
     #[serde(default)]
     pub(crate) duration_seconds: Option<f64>,
+    /// Unix seconds when this identity was first minted, i.e. when the book
+    /// was first added to this server. Zero means "unknown": every identity
+    /// that existed before this field did, which sorts it as the oldest
+    /// possible addition rather than fabricating a date it was never given.
+    #[serde(default)]
+    pub(crate) added_at: u64,
 }
 
 impl BookIdentity {
@@ -331,6 +337,9 @@ pub(crate) struct Book {
     pub(crate) tags: Vec<BookTag>,
     pub(crate) published_date: Option<String>,
     pub(crate) asin: Option<String>,
+    /// When this book was first added to the server's library, not when it
+    /// was published. Powers the "newest" sort.
+    pub(crate) added_at: String,
     /// The companion read-along follows: the primary book-kind document
     /// among `companions`, if any.
     pub(crate) reading_file: Option<ReadingFile>,
@@ -942,6 +951,8 @@ fn migrate_legacy_identities(legacy: LegacyIdentityStore) -> LibraryIdentityStor
             last_seen_scan: 0,
             track_count: 0,
             duration_seconds: None,
+            // The legacy format never recorded when a book was added.
+            added_at: 0,
         })
         .collect();
 
@@ -1403,6 +1414,7 @@ pub(crate) fn resolve_library_identities(
             last_seen_scan: scan,
             track_count: group.grouped_files.len(),
             duration_seconds: group.duration_seconds,
+            added_at: unix_now_seconds(),
         });
         claimed_by[position] = Some(index);
         used.insert(index);
@@ -1888,6 +1900,12 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     })
     .await?;
 
+    let added_at_by_book_id: HashMap<&str, u64> = identities
+        .books
+        .iter()
+        .map(|identity| (identity.book_id.as_str(), identity.added_at))
+        .collect();
+
     for (position, group) in prepared.into_iter().enumerate() {
         let PreparedGroup {
             group_key,
@@ -2001,6 +2019,12 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             tags: Vec::new(),
             published_date: metadata_summary.published_date.clone(),
             asin: metadata.iter().find_map(|item| item.asin.clone()),
+            added_at: rfc3339_utc(
+                added_at_by_book_id
+                    .get(book_id.as_str())
+                    .copied()
+                    .unwrap_or(0),
+            ),
             reading_file: None,
             companions: Vec::new(),
             sync_file: sync_file.map(|sync_file| sync_file.file),
