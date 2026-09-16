@@ -4343,7 +4343,10 @@ function MainApp({
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
         case "added":
-          return b.addedAt.localeCompare(a.addedAt) || a.title.localeCompare(b.title);
+          // A book cached or imported before this field existed has no addedAt
+          // once it round-trips through storage, even though the type says it
+          // always does; treat that as the oldest possible addition.
+          return compareShelfLabels(b.addedAt, a.addedAt) || a.title.localeCompare(b.title);
         case "title":
         default:
           return a.title.localeCompare(b.title);
