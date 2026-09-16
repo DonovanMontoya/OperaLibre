@@ -2844,6 +2844,14 @@ img.large-cover {
   grid-template-rows: minmax(0, 1fr);
 }
 
+/* In landscape a notched/Dynamic Island iPhone puts its cutout on the left
+   or right edge instead of the top, so the page text needs the same inset
+   the topbar and bottombar already get vertically. */
+.epub-reader.immersive .epub-stage-wrap {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
 .epub-tapzones {
   position: absolute;
   inset: 0;
@@ -2988,6 +2996,8 @@ img.large-cover {
 
 .epub-reader.immersive .epub-topbar {
   padding-top: calc(env(safe-area-inset-top) + 4px);
+  padding-left: max(8px, env(safe-area-inset-left));
+  padding-right: max(8px, env(safe-area-inset-right));
 }
 
 .epub-topbar-title {
@@ -3061,6 +3071,8 @@ img.large-cover {
 
 .epub-reader.immersive .epub-bottombar {
   padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px));
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
 }
 
 .epub-reader.chrome-hidden .epub-topbar,
