@@ -28,6 +28,12 @@ test("only real words can be spent as a guess", () => {
   for (const word of ["crane", "adieu", "books", "their"]) assert.equal(GUESS_WORDS.has(word), true);
 });
 
+test("words newer than a Scrabble lexicon are still words", () => {
+  for (const word of ["email", "blogs", "inbox", "login", "emoji", "manga", "ramen"]) {
+    assert.ok(GUESS_WORDS.has(word), `${word} was turned away`);
+  }
+});
+
 test("every answer is one the keyboard can type and the list accepts", () => {
   for (const word of WORDS) assert.ok(GUESS_WORDS.has(word), `${word} cannot be guessed`);
 });
