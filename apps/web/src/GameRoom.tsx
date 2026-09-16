@@ -13,6 +13,7 @@ import {
   dailyWord,
   findMatches,
   hasLegalMove,
+  loadGuessWords,
   makeMatchBoard,
   randomWord,
   scoreWord,
@@ -52,12 +53,27 @@ function readWordSave(): WordSave {
 const KEY_ROWS = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const RESULT_RANK: Record<LetterResult, number> = { absent: 0, present: 1, correct: 2 };
 
+// "loading" until the dictionary chunk settles, then the words themselves —
+// or "unchecked" if it never arrived, in which case guesses go through
+// unjudged rather than the game refusing every one of them.
+type Dictionary = "loading" | "unchecked" | ReadonlySet<string>;
+
 function WordGrid() {
   const [save, setSave] = useState(readWordSave);
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState("Guess the shelf’s five-letter word.");
+  const [dictionary, setDictionary] = useState<Dictionary>("loading");
+  // Counts turned-away guesses so each one restarts the row’s shake.
+  const [rejections, setRejections] = useState(0);
   const answer = save.word;
   const finished = save.guesses.includes(answer) || save.guesses.length >= WORD_ATTEMPTS;
+  const words = typeof dictionary === "string" ? null : dictionary;
+
+  useEffect(() => {
+    let live = true;
+    void loadGuessWords().then((loaded) => { if (live) setDictionary(loaded ?? "unchecked"); });
+    return () => { live = false; };
+  }, []);
 
   useEffect(() => {
     try {
@@ -87,9 +103,18 @@ function WordGrid() {
       setMessage("Enter five letters first.");
       return;
     }
+    // Five letters that spell nothing are a slip, never a guess worth one of
+    // the six attempts — hand them back instead of scoring them.
+    if (words && !words.has(guess)) {
+      haptic("medium");
+      setRejections((count) => count + 1);
+      setMessage(`${guess.toUpperCase()} isn’t in the word list.`);
+      return;
+    }
     const guesses = [...save.guesses, guess];
     setSave({ ...save, guesses });
     setDraft("");
+    setRejections(0);
     // The end of a game — won or spent — earns a firmer bump than a keystroke.
     if (guess === answer || guesses.length === WORD_ATTEMPTS) haptic("medium");
     setMessage(guess === answer ? "Beautifully read." : guesses.length === WORD_ATTEMPTS ? `The word was ${answer.toUpperCase()}.` : "Keep reading between the lines.");
@@ -99,6 +124,7 @@ function WordGrid() {
     haptic("light");
     setSave({ word: randomWord(answer), guesses: [] });
     setDraft("");
+    setRejections(0);
     setMessage("A fresh word is on the shelf.");
   }
 
@@ -109,6 +135,7 @@ function WordGrid() {
       submit();
       return;
     }
+    setRejections(0);
     if (key === "back") {
       setDraft((current) => current.slice(0, -1));
       return;
@@ -127,14 +154,17 @@ function WordGrid() {
     <div className="word-board-frame"><div className="word-board" aria-label="Word guesses">
       {rows.map((word, row) => {
         const result = guessResults[row] ?? [];
-        return <div className="word-row" key={row}>
+        // A rejected guess remounts its row, so the shake replays even when
+        // the same word is offered twice.
+        const drafting = row === save.guesses.length;
+        return <div className={`word-row ${drafting && rejections ? "rejected" : ""}`} key={drafting ? `draft-${rejections}` : row}>
           {Array.from({ length: WORD_LENGTH }, (_, col) => <span className={`word-tile ${result[col] ?? ""}`} key={col}>{word[col]?.toUpperCase() ?? ""}</span>)}
         </div>;
       })}
     </div></div>
     <div className="word-keys" aria-label="Letter keyboard">
       {KEY_ROWS.map((rowKeys, rowIndex) => <div className="word-keys-row" key={rowIndex}>
-        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || draft.length !== WORD_LENGTH} onClick={() => pressKey("enter")} aria-label="Submit guess">Enter</button>}
+        {rowIndex === 2 && <button type="button" className="word-key wide" disabled={finished || draft.length !== WORD_LENGTH || dictionary === "loading"} onClick={() => pressKey("enter")} aria-label="Submit guess">Enter</button>}
         {rowKeys.split("").map((letter) => (
           <button type="button" className={`word-key ${keyResults[letter] ?? ""}`} disabled={finished} onClick={() => pressKey(letter)} key={letter}>{letter.toUpperCase()}</button>
         ))}

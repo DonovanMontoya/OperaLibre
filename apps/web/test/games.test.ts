@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WORDS, cellsAreAdjacent, findMatches, hasLegalMove, makeMatchBoard, randomWord, scoreWord, swapCells } from "../src/games.ts";
+import { GUESS_WORDS } from "../src/guessWords.ts";
 
 test("scores duplicate letters without over-counting", () => {
   assert.deepEqual(scoreWord("books", "prose"), ["absent", "absent", "correct", "absent", "present"]);
@@ -18,6 +19,28 @@ test("dead boards are detected and never dealt", () => {
   for (let round = 0; round < 25; round += 1) {
     assert.equal(hasLegalMove(makeMatchBoard()), true);
   }
+});
+
+test("only real words can be spent as a guess", () => {
+  // A stray row of letters used to cost an attempt and be scored as if it
+  // were a word.
+  for (const junk of ["aaaaa", "qwert", "asdfg", "abcde"]) assert.equal(GUESS_WORDS.has(junk), false);
+  for (const word of ["crane", "adieu", "books", "their"]) assert.equal(GUESS_WORDS.has(word), true);
+});
+
+test("words newer than a Scrabble lexicon are still words", () => {
+  for (const word of ["email", "blogs", "inbox", "login", "emoji", "manga", "ramen"]) {
+    assert.ok(GUESS_WORDS.has(word), `${word} was turned away`);
+  }
+});
+
+test("every answer is one the keyboard can type and the list accepts", () => {
+  for (const word of WORDS) assert.ok(GUESS_WORDS.has(word), `${word} cannot be guessed`);
+});
+
+test("the guess list holds nothing but five lowercase letters", () => {
+  assert.ok(GUESS_WORDS.size > 5000);
+  for (const word of GUESS_WORDS) assert.match(word, /^[a-z]{5}$/);
 });
 
 test("random word never repeats the excluded word", () => {
