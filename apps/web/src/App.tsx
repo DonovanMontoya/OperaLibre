@@ -4080,8 +4080,12 @@ function MainApp({
   // the resumed WebView.
   const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
   const foregroundProgressSyncRef = useRef<ReturnType<typeof createForegroundProgressSync> | null>(null);
-  const foregroundProgressActionsRef = useRef({ nativeAudio, persistProgress, adoptNewerServerProgress });
-  foregroundProgressActionsRef.current = { nativeAudio, persistProgress, adoptNewerServerProgress };
+  const foregroundProgressActionsRef = useRef({
+    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: onTimeUpdate
+  });
+  foregroundProgressActionsRef.current = {
+    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: onTimeUpdate
+  };
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
   // again after its Retry-After; the timer and the latest loader live in

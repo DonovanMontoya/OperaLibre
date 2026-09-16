@@ -122,6 +122,7 @@ public final class AudiobookPlayer {
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
+    private var willEnterForegroundObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
     /// The listener's per-book boost, separate from `player.volume` because
@@ -179,6 +180,7 @@ public final class AudiobookPlayer {
             interruptionObserver,
             routeChangeObserver,
             becameActiveObserver,
+            willEnterForegroundObserver,
             enteredBackgroundObserver
         ] {
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -830,17 +832,20 @@ public final class AudiobookPlayer {
         ) { [weak self] notification in
             self?.handleAudioRouteChange(notification)
         }
+        willEnterForegroundObserver = center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.emitForegroundClockEarly()
+        }
         becameActiveObserver = center.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            if self.sleepTimerFinishedWhileInactive {
-                self.sleepTimerFinishedWhileInactive = false
-                self.emit("sleepTimerEnded", data: [:])
-            }
-            self.emitRemoteIntentionalSeek()
+            self.emitDeferredTransportEvents()
             // Some short notification interruptions do not deliver their end
             // callback until the app is active again. Resume the exact native
             // clock if playback was running before that interruption — but
@@ -892,6 +897,35 @@ public final class AudiobookPlayer {
         ) { [weak self] _ in
             self?.persistCheckpoint(force: true)
         }
+    }
+
+    /// Events held back while the WebView was suspended that must reach JS
+    /// before the next clock, in this order. Each fires at most once.
+    private func emitDeferredTransportEvents() {
+        if sleepTimerFinishedWhileInactive {
+            sleepTimerFinishedWhileInactive = false
+            emit("sleepTimerEnded", data: [:])
+        }
+        emitRemoteIntentionalSeek()
+    }
+
+    /// didBecomeActive only fires once the unlock or app-switch animation has
+    /// finished, so the WebView would show its pre-background clock for that
+    /// whole transition. Hand it the live clock as the app heads back to the
+    /// foreground instead; didBecomeActive still re-emits it afterwards.
+    ///
+    /// Only the plain case is sent early. A book that finished while away
+    /// reports its final state together with `ended`, and an interruption
+    /// that may still auto-resume would flash a pause the resume undoes.
+    private func emitForegroundClockEarly() {
+        guard
+            player != nil,
+            !finishedWhileInactive,
+            !(wasPlayingBeforeInterruption && shouldAutoplay)
+        else { return }
+        emitDeferredTransportEvents()
+        emitTrackChanged()
+        emitState()
     }
 
     private func handleAudioInterruption(_ notification: Notification) {
