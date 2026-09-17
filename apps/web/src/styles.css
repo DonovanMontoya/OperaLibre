@@ -4719,6 +4719,48 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   border-color: var(--gold-soft);
 }
 
+/* Play was pressed but the stream has not started yet: an arc turns around
+   the button so the tap reads as taken, and the Pause glyph offers the way
+   out. */
+.round-button.primary.play-pending,
+.native-now-play.play-pending,
+.mini-actions .mini-play.play-pending {
+  position: relative;
+}
+
+.play-pending-ring {
+  position: absolute;
+  inset: -7px;
+  border: 2px solid transparent;
+  border-top-color: var(--oxblood);
+  border-right-color: var(--oxblood);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: spin 0.9s linear infinite;
+}
+
+.mini-actions .mini-play .play-pending-ring {
+  inset: -5px;
+  border-top-color: var(--gold-soft);
+  border-right-color: var(--gold-soft);
+}
+
+@keyframes play-pending-pulse {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play-pending-ring {
+    border-color: var(--oxblood);
+    animation: play-pending-pulse 1.2s ease-in-out infinite alternate;
+  }
+
+  .mini-actions .mini-play .play-pending-ring {
+    border-color: var(--gold-soft);
+  }
+}
+
 /* On desktop the library is a permanent 380px column. Keep the persistent
    player inside the reading pane so it never covers the final shelf rows. */
 @media (min-width: 961px) {
