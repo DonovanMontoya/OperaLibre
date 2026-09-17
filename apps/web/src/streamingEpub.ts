@@ -72,7 +72,7 @@ export async function prepareStreamingEpub(source: string, signal: AbortSignal) 
   const response = await fetch(epubEntryUrl(source, "META-INF/container.xml"), {
     credentials: "include", signal
   });
-  if (response.status === 404) return null;
+  if (response.status === 401 || response.status === 404) return null;
   if (!response.ok) throw new Error(`EPUB request failed with ${response.status}`);
   return streamingArchive(source, signal, await response.text());
 }

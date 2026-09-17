@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import Capacitor
 import MediaPlayer
 import UIKit
@@ -169,6 +170,96 @@ final class PerformanceTests: XCTestCase {
         XCTAssertLessThan(engine.status.positionSeconds, 2)
     }
 
+    @MainActor
+    func testCancelledRemoteSeekDuringQueueAdvance() throws {
+        let queuePlayer = SeekControlledQueuePlayer()
+        queuePlayer.holdNextSeek = true
+        let engine = AudiobookPlayer(makeQueuePlayer: { items in
+            for item in items { queuePlayer.insert(item, after: nil) }
+            return queuePlayer
+        })
+        let observer = StartupStateObserver()
+        engine.observer = observer
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        var wav = Data()
+        func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        wav.append(Data("RIFF".utf8)); u32(160_036); wav.append(Data("WAVEfmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16)
+        wav.append(Data("data".utf8)); u32(160_000); wav.append(Data(repeating: 0, count: 160_000))
+        try wav.write(to: url)
+        defer { engine.stop(releaseSession: true); try? FileManager.default.removeItem(at: url) }
+
+        func until(_ name: String, _ predicate: @escaping () -> Bool) {
+            let done = expectation(description: name)
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    if predicate() { timer.invalidate(); done.fulfill() }
+                }
+            }
+            defer { timer.invalidate() }
+            wait(for: [done], timeout: 10)
+        }
+        func publishState() {
+            NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        }
+        let queue = ["cancel-first", "cancel-next"].enumerated().map { index, id in
+            NativeAudioQueuedTrack(url: url, trackId: id, bookOffsetSeconds: Double(index) * 10,
+                title: id, artist: "Fixture", album: "Queue", chapters: [])
+        }
+        engine.load(AudiobookLoadRequest(url: url, positionSeconds: 3, rate: 1.75,
+            volume: 0.9, gain: 1, autoplay: false, recoveryScopeKey: "cancel-queue-test",
+            recoveryTrackId: "cancel-first", recoveryBookOffsetSeconds: 0, queue: queue))
+        until("initial resume seek held") { queuePlayer.heldSeek != nil }
+        publishState()
+        XCTAssertFalse(observer.positionReady, "Initial activation must wait for the resume seek")
+        XCTAssertFalse(observer.ready)
+        XCTAssertEqual(engine.status.positionSeconds, 3, accuracy: 0.01)
+        XCTAssertEqual(CMTimeGetSeconds(queuePlayer.currentTime()), 0, accuracy: 0.01)
+        engine.play()
+        let playHandled = expectation(description: "play intent handled")
+        DispatchQueue.main.async { playHandled.fulfill() }
+        wait(for: [playHandled], timeout: 2)
+        XCTAssertFalse(engine.status.isPlaying, "Play must not bypass the initial resume seek")
+        queuePlayer.releaseHeldSeek()
+        until("initial resume completed") {
+            publishState()
+            return observer.ready && engine.status.isPlaying
+        }
+        XCTAssertGreaterThanOrEqual(engine.status.positionSeconds, 3)
+        engine.pause()
+        until("paused before canceled remote seek") { !engine.status.isPlaying }
+        let firstItem = try XCTUnwrap(queuePlayer.currentItem)
+        queuePlayer.cancelNextSeekByAdvancing = true
+        engine.skip(bySeconds: 1)
+        until("real queue advance observed") { engine.status.trackId == "cancel-next" }
+        XCTAssertFalse(queuePlayer.currentItem === firstItem)
+        XCTAssertEqual(queuePlayer.cancelledSeekCount, 1)
+        publishState()
+        XCTAssertTrue(observer.positionReady, "Queue advance must restore readiness after a canceled seek")
+        XCTAssertEqual(observer.intentionalSeekCount, 0, "The old item's remote seek must not reach the new item")
+        engine.play()
+        until("next item clock progresses") {
+            publishState()
+            return observer.ready && engine.status.positionSeconds > 0.5
+        }
+        XCTAssertEqual(engine.playbackRate, 1.75)
+        engine.pause()
+        until("next item paused") { !engine.status.isPlaying }
+        let checkpoint = try XCTUnwrap(engine.recoveryState(forScope: "cancel-queue-test"))
+        XCTAssertEqual(checkpoint.trackId, "cancel-next")
+        XCTAssertGreaterThan(checkpoint.positionSeconds, 0.5)
+        XCTAssertEqual(checkpoint.bookPositionSeconds, 10 + checkpoint.positionSeconds, accuracy: 0.01)
+        XCTAssertEqual(checkpoint.positionSeconds, engine.status.positionSeconds, accuracy: 0.1)
+        observer.ready = false
+        engine.seek(toPositionSeconds: 2)
+        until("next item app seek completes") {
+            publishState()
+            return observer.ready && abs(engine.status.positionSeconds - 2) < 0.1
+        }
+        XCTAssertEqual(observer.intentionalSeekCount, 0)
+    }
+
     func testMissingDownloadStatusPerformance() throws {
         let key = "operalibre.background-download-jobs"
         defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -198,7 +289,45 @@ final class PerformanceTests: XCTestCase {
 
 private final class StartupStateObserver: AudiobookPlayerObserver {
     var ready = false
+    var positionReady = false
+    var intentionalSeekCount = 0
     func audiobookPlayer(_ player: AudiobookPlayer, didEmit event: String, data: [String: Any]) {
-        if event == "state" { ready = data["readyToPlay"] as? Bool ?? false }
+        if event == "state" {
+            ready = data["readyToPlay"] as? Bool ?? false
+            positionReady = data["positionReady"] as? Bool ?? false
+        }
+        if event == "intentionalSeek" { intentionalSeekCount += 1 }
+    }
+}
+
+private final class SeekControlledQueuePlayer: AVQueuePlayer {
+    var holdNextSeek = false
+    var cancelNextSeekByAdvancing = false
+    var heldSeek: (() -> Void)?
+    var cancelledSeekCount = 0
+
+    override func seek(to time: CMTime, toleranceBefore: CMTime, toleranceAfter: CMTime,
+                       completionHandler: @escaping (Bool) -> Void) {
+        if holdNextSeek {
+            holdNextSeek = false
+            heldSeek = { [weak self] in
+                self?.seek(to: time, toleranceBefore: toleranceBefore, toleranceAfter: toleranceAfter,
+                           completionHandler: completionHandler)
+            }
+        } else if cancelNextSeekByAdvancing {
+            cancelNextSeekByAdvancing = false
+            advanceToNextItem()
+            cancelledSeekCount += 1
+            completionHandler(false)
+        } else {
+            super.seek(to: time, toleranceBefore: toleranceBefore, toleranceAfter: toleranceAfter,
+                       completionHandler: completionHandler)
+        }
+    }
+
+    func releaseHeldSeek() {
+        let seek = heldSeek
+        heldSeek = nil
+        seek?()
     }
 }
