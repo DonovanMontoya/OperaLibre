@@ -7631,11 +7631,13 @@ function MainApp({
   function cancelPendingPlayback(audio: HTMLAudioElement | null | undefined) {
     // Still waiting on the stream: this tap takes the start back. The
     // generation also prevents an async shelf progress check from re-arming it.
+    const pendingOwnsActiveBook = playPendingBookIdRef.current === playbackBookIdRef.current;
     playCancelGenerationRef.current += 1;
     wantsAutoplayRef.current = false;
     playWhenTrackLoads.current = false;
     resumeAutoplayPendingRef.current = false;
-    pausePlayback(audio);
+    if (pendingOwnsActiveBook) pausePlayback(audio);
+    else setPlayPending(false);
   }
 
   function selectBook(book: Book) {
