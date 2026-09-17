@@ -14,7 +14,9 @@ zip.file("nav.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="ht
 for (const n of [1, 2, 3]) zip.file(`c${n}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter ${n}</title></head><body><h1 id="start">Chapter ${n}</h1>${Array.from({ length: 30 }, (_, i) => `<p>Chapter ${n}, paragraph ${i + 1}. The reader keeps this page while the narrator continues along the river. Returning to an earlier passage should always be possible.</p>`).join("")}</body></html>`);
 const bytes = await zip.generateAsync({ type: "arraybuffer" });
 
-const narration = new URLSearchParams(location.search).has("narration");
+const params = new URLSearchParams(location.search);
+const narration = params.has("narration");
+const chapterSync = params.has("chapter-sync");
 const fragments = [
   { startSeconds: 0, endSeconds: 10, href: "c1.xhtml", text: "Chapter 1, paragraph 1." },
   { startSeconds: 10, endSeconds: 20, href: "c1.xhtml", text: "This sentence is absent from the EPUB." },
@@ -33,7 +35,10 @@ function Fixture() {
     {narration && <label>Narration position<input type="number" value={position} onChange={event => setPosition(Number(event.target.value))} /></label>}
     {open && <EpubReadalong bookId="fixture" storageScope="catch-up-fixture" title="Catch-up fixture"
       url="/fixture.epub" loadSource={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
-      syncTarget={null} syncFragments={narration ? fragments : null} positionSeconds={position} />}
+      syncTarget={chapterSync
+        ? { id: `chapter-${chapter}`, title: `Chapter ${chapter}` }
+        : null}
+      syncFragments={narration ? fragments : null} positionSeconds={position} />}
   </>;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);
