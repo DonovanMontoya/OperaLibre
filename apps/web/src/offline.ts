@@ -469,6 +469,51 @@ export async function getOfflineCompanionUrl(book: Book, companion: CompanionFil
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
+/** Previously opened web companions remain available during a network outage. */
+export async function getCachedEpubBytes(
+  book: Book, companion: CompanionFile, signal?: AbortSignal
+): Promise<ArrayBuffer | null> {
+  signal?.throwIfAborted();
+  const local = await getOfflineCompanionUrl(book, companion);
+  if (!local) {
+    signal?.throwIfAborted();
+    return null;
+  }
+  try {
+    signal?.throwIfAborted();
+    const response = await fetch(local, { signal });
+    const data = response.ok ? await response.arrayBuffer() : null;
+    signal?.throwIfAborted();
+    return data;
+  } finally {
+    if (local.startsWith("blob:")) URL.revokeObjectURL(local);
+  }
+}
+
+/** A complete local download remains usable offline; online EPUBs can open by chapter. */
+export async function loadEpubSource(
+  book: Book, companion: CompanionFile, url: string, signal: AbortSignal
+): Promise<ArrayBuffer | string> {
+  signal.throwIfAborted();
+  const native = Capacitor.isNativePlatform();
+  if (native) await migrateLegacyBookDirectory(book);
+  const preferLocal = native || await isBookDownloaded(book).catch(() => false);
+  const local = preferLocal ? await getOfflineCompanionUrl(book, companion).catch(() => null) : null;
+  if (local) {
+    try {
+      signal.throwIfAborted();
+      const response = await fetch(local, { signal });
+      if (response.ok) return await response.arrayBuffer();
+    } catch {
+      signal.throwIfAborted();
+    } finally {
+      if (local.startsWith("blob:")) URL.revokeObjectURL(local);
+    }
+  }
+  signal.throwIfAborted();
+  return url;
+}
+
 /** Native reads prefer disk, independent of the asynchronous download badge scan.
  * Web reads still revalidate; native copies persist until the download is removed.
  */

@@ -94,6 +94,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/cover` | Cover art image, extracted from the audio files' embedded tags. |
 | `GET` | `/api/books/{book_id}/readalong` | The book's text companion (the `book`-kind entry of `companions`), if there is one. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
+| `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves a sidecar or generated map when one exists; otherwise, for a book with an EPUB companion, estimates one from the chapter list on first request and caches it. |
 | `POST` | `/api/books/{book_id}/sync/anchors` | Add a listener-placed sync anchor to an estimated map: `{ "href": ..., "text": ..., "seconds": ... }` says the sentence `text` in spine document `href` is being narrated at book position `seconds`. Kept with the book under `data_dir/sync`; the estimate is rebuilt through every anchor on the next request. Returns `{ "anchorCount": n }`. Rejected for books that already have an aligned map. |
 | `DELETE` | `/api/books/{book_id}/sync/anchors` | Drop every listener-placed anchor on the book. Admin only. |
@@ -153,6 +154,8 @@ Every document and picture found beside a book's audio is listed in the book's `
 ```
 
 `kind` is `book` for the text the narrator reads, `supplement` for a document that is mostly pictures (an Audible PDF of maps or illustrations), or `image` for a loose picture file. The judgement compares the document's text against the amount a narration of the book's length implies, so a picture book's short EPUB is still the book and a captioned atlas beside a ten-hour audiobook is not. `unreadable: true` marks a document that could not be opened; it is offered as the book rather than hidden. The counts are present for documents only; PDF counts are sampled and scaled. `readingFile` remains the primary `book`-kind companion (EPUB preferred) for older clients.
+
+The EPUB reader requests package metadata, stylesheets, and the current chapter through the entry route. Images and fonts load when their chapter uses them, so opening a large illustrated book does not require downloading the entire archive. Complete downloaded copies still open locally; older servers fall back to the whole-file route. Audio continues to use byte ranges. On iOS, AVPlayer alone fetches the audio; native metadata and position drive a source-free web control clock. Volume boost loads track metadata only for the active queue item. M4B files with their index at the end can also benefit from the existing faststart maintenance operation.
 
 #### Sync maps
 

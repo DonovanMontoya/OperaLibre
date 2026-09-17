@@ -139,6 +139,95 @@ pub(crate) async fn get_companion_file(
     serve_companion_document(&state, &file_path, headers).await
 }
 
+/// Read just one ZIP member. No extraction directory or whole-book allocation:
+/// even a large illustrated EPUB sends only the requested chapter or image.
+pub(crate) async fn get_epub_entry(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path((book_id, companion_id, entry_path)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_book_access(&auth, &book_id)?;
+    if entry_path.is_empty()
+        || entry_path.starts_with('/')
+        || entry_path.contains('\\')
+        || entry_path.split('/').any(|part| part == "..")
+    {
+        return Err(ApiError::bad_request("Invalid EPUB entry path"));
+    }
+    let path = {
+        let library = state.library.read().await;
+        let book = library.book(&book_id)?;
+        book.companions
+            .iter()
+            .find(|file| file.id == companion_id && file.extension.eq_ignore_ascii_case("epub"))
+            .ok_or(ApiError::not_found("EPUB companion not found"))?;
+        library
+            .reading_paths
+            .get(&companion_id)
+            .cloned()
+            .ok_or(ApiError::not_found("EPUB path not found"))?
+    };
+    let root = state.library_root.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let (file, metadata) = open_contained_file(&path, &[root])
+            .map_err(|_| ApiError::not_found("EPUB not found"))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
+        let mut entry = archive
+            .by_name(&entry_path)
+            .map_err(|_| ApiError::not_found("EPUB entry not found"))?;
+        const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+        if entry.is_dir() || entry.size() > MAX_ENTRY_BYTES {
+            return Err(ApiError::bad_request(
+                "EPUB entry is too large or is a directory",
+            ));
+        }
+        let etag = file_etag(&metadata).map(|value| {
+            format!(
+                "\"{}-{:x}-{:x}\"",
+                value.trim_matches('"'),
+                entry.crc32(),
+                entry.size()
+            )
+        });
+        let mut response = Response::builder()
+            .header(CACHE_CONTROL, COMPANION_CACHE_CONTROL)
+            .header("x-content-type-options", "nosniff")
+            .header("referrer-policy", "no-referrer")
+            // An entry opened directly must never run library-provided scripts.
+            .header(
+                "content-security-policy",
+                "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            );
+        if let Some(etag) = etag.as_deref() {
+            response = response.header(ETAG, etag);
+            if if_none_match_matches(&headers, etag) {
+                return Ok(response
+                    .status(StatusCode::NOT_MODIFIED)
+                    .body(Body::empty())?);
+            }
+        }
+        let content_type = mime_guess::from_path(&entry_path)
+            .first_or_octet_stream()
+            .to_string();
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut entry)
+            .take(MAX_ENTRY_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return Err(ApiError::bad_request("EPUB entry is too large"));
+        }
+        Ok(response
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, bytes.len())
+            .body(Body::from(bytes))?)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Could not read EPUB entry: {error}")))?
+}
+
 async fn serve_companion_document(
     state: &AppState,
     file_path: &FsPath,
