@@ -423,9 +423,9 @@ config_value() {
       last = substr(value, length(value), 1)
       if (length(value) >= 2 && first == last && (first == "\"" || first == "\047"))
         value = substr(value, 2, length(value) - 2)
-      print value
-      exit
+      found = 1
     }
+    END { if (found) print value }
   ' "$config"
 }
 
