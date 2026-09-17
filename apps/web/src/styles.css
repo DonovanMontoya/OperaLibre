@@ -12035,10 +12035,11 @@ html.native-app .recent-row {
     content: "";
     position: absolute;
     top: 0;
-    /* Stops at the tab bar rather than running under it. The bar is
-       frosted (backdrop-filter), so anything left behind it gets
-       blurred up into the bar as a smudge at the seam. */
-    bottom: var(--tabs-h);
+    /* The tab bar floats above the page here rather than sitting in a
+       full-width bottom strip, so nothing needs the seam to duck under
+       it — running it to the true edge avoids a visible cutoff line
+       just above the mini-player. */
+    bottom: 0;
     left: calc(var(--verso-w) - var(--gutter) / 2);
     width: var(--gutter);
     z-index: 4;
@@ -12081,10 +12082,6 @@ html.native-app .recent-row {
     display: grid;
     left: calc(var(--verso-w) + var(--gutter) / 2);
     right: max(16px, env(safe-area-inset-right));
-  }
-
-  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   /* "Back to Library" is the shelf's own variant of this button and
@@ -12210,6 +12207,14 @@ html.native-app .recent-row {
       rgba(58, 38, 22, 0.07) 0,
       rgba(58, 38, 22, 0) calc(var(--gutter-margin) + 30px)
     );
+  }
+
+  /* When the mini-player docks over the recto (viewing a book other than
+     the one playing), it needs more scroll room reserved below than the
+     base recto padding leaves, or its content — the chapter list and
+     controls — ends up hidden beneath the docked player. */
+  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   html.native-app .native-shell > .player-pane::before {

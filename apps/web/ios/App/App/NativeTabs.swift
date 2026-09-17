@@ -352,12 +352,18 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         var clearance: CGFloat = 0
         var topClearance: CGFloat = 0
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
-            let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
-            if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
-                // The page keeps its own content clear of the floating bar
-                // through the bottom safe area, the same inset it already
-                // reserves for the home indicator.
-                clearance = view.bounds.maxY - bar.minY
+            // iPad's `tabBar` keeps a hidden legacy frame hanging at the
+            // bottom even though its visible bar floats at the top (handled
+            // below by topClearance); treating that phantom frame as a real
+            // bottom bar would reserve safe-area room nothing is using.
+            if traitCollection.userInterfaceIdiom != .pad {
+                let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
+                if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
+                    // The page keeps its own content clear of the floating bar
+                    // through the bottom safe area, the same inset it already
+                    // reserves for the home indicator.
+                    clearance = view.bounds.maxY - bar.minY
+                }
             }
             if host !== self {
                 // iPad hangs its floating bar from the top of the window, in a
