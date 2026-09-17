@@ -6,6 +6,7 @@ import {
   bookMatchesShelfDownload,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
+  compareShelfAddedAt,
   countActiveShelfFilters,
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
@@ -234,6 +235,21 @@ test("filtering to Cosmere uses its own book number even when it is the second t
   assert.deepEqual(tagForShelfSort(novel, ["cosmere"]), tag(" Cosmere ", "2"));
   assert.deepEqual(tagForShelfSort(novel, []), tag("Favorites", "20"));
   assert.equal(tagForShelfSort(book(), ["cosmere"]), undefined);
+});
+
+test("newest sorts legacy missing and invalid timestamps as epoch in either direction", () => {
+  const dates = [undefined, "2026-09-16T12:00:00Z", null, "", "invalid", "1970-01-01T00:00:00Z", "2026-09-15T12:00:00Z"];
+  const sorted = dates.map((addedAt, id) => ({ addedAt, id }))
+    .sort((a, b) => compareShelfAddedAt(a.addedAt, b.addedAt) || a.id - b.id);
+  assert.deepEqual(sorted.map(({ id }) => id), [1, 6, 0, 2, 3, 4, 5]);
+  assert.deepEqual(sorted.reverse().map(({ id }) => id), [5, 4, 3, 2, 0, 6, 1]);
+  assert.equal(compareShelfAddedAt(undefined, "1970-01-01T00:00:00Z"), 0);
+});
+
+test("newest compares mixed timestamp precision and timezone offsets chronologically", () => {
+  const dates = ["2026-09-16T12:00:00Z", "2026-09-16T12:00:00.500Z", "2026-09-16T09:00:01-03:00"];
+  assert.deepEqual([...dates].sort(compareShelfAddedAt), [dates[2], dates[1], dates[0]]);
+  assert.equal(compareShelfAddedAt(dates[0], "2026-09-16T12:00:00.000Z"), 0);
 });
 
 test("overlapping tag selections use the first matching selection consistently", () => {

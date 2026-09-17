@@ -190,6 +190,7 @@ import {
   bookMatchesShelfDownload,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
+  compareShelfAddedAt,
   countActiveShelfFilters,
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
@@ -873,7 +874,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
-type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
+type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account" | "added";
 type LibrarySource = "local" | "audible" | "libro" | "all";
 const LANDSCAPE_QUERY = "(orientation: landscape)";
 // A phone on its side: short enough that the iPad spread never applies.
@@ -909,7 +910,8 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "genre", label: "Genre" },
   { value: "progress", label: "Progress" },
   { value: "account", label: "Account" },
-  { value: "duration", label: "Length" }
+  { value: "duration", label: "Length" },
+  { value: "added", label: "Newest" }
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
@@ -922,7 +924,7 @@ const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro", "all"];
 // "local" — restores what was last chosen there instead of permanently collapsing to
 // "title".
 const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
-const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
+const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress", "added"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
   if (source === "libro" || source === "all") return ["title", "author", "duration"].includes(mode);
@@ -2492,6 +2494,13 @@ export function EpubReadalong({
     if (!isReady || !rendition || !location) {
       return;
     }
+    if (highlightedFragmentRef.current !== fragmentIndex) {
+      removeAnnotation(highlightCfiRef.current);
+      highlightCfiRef.current = null;
+      highlightThemeRef.current = null;
+      narratedRangeRef.current = null;
+      lastKeepRef.current = null;
+    }
     const fragment = syncFragments[fragmentIndex];
     const currentHref = location.start?.href ?? "";
     if (!hrefsMatch(currentHref, fragment.href)) {
@@ -2589,7 +2598,6 @@ export function EpubReadalong({
       return;
     }
     searchCursorRef.current = found.endOffset;
-    narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
 
     let cfi: string;
     try {
@@ -2597,7 +2605,6 @@ export function EpubReadalong({
     } catch {
       return;
     }
-    removeAnnotation(highlightCfiRef.current);
     rendition.annotations.highlight(
       cfi,
       {},
@@ -2605,6 +2612,7 @@ export function EpubReadalong({
       "readalong-highlight",
       sentenceStyle
     );
+    narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
@@ -2864,9 +2872,9 @@ export function EpubReadalong({
           </select></label>
         ) : null}
       </div>
-      {fullscreen ? (
-        <div className="epub-stage-wrap">
-          {stage}
+      <div className="epub-stage-wrap">
+        {stage}
+        {fullscreen ? (
           <div
             className="epub-tapzones"
             onPointerDown={handleOverlayPointerDown}
@@ -2877,10 +2885,8 @@ export function EpubReadalong({
             <span className="epub-tapzone epub-tapzone-prev" />
             <span className="epub-tapzone epub-tapzone-next" />
           </div>
-        </div>
-      ) : (
-        stage
-      )}
+        ) : null}
+      </div>
       {fullscreen ? (
         <footer className="epub-bottombar">
           <div className="epub-pagebar" aria-hidden="true">
@@ -4204,6 +4210,8 @@ function MainApp({
 
   const sortOrderLabel = sortMode === "duration"
     ? sortReversed ? "Shortest first" : "Longest first"
+    : sortMode === "added"
+    ? sortReversed ? "Oldest first" : "Newest first"
     : sortMode === "progress"
       ? sortReversed ? "Finished first" : "In progress first"
       : sortMode === "tag" || sortMode === "series"
@@ -4343,6 +4351,11 @@ function MainApp({
           return compareReadingStatus(a, b) || a.title.localeCompare(b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
+        case "added":
+          // A book cached or imported before this field existed has no addedAt
+          // once it round-trips through storage, even though the type says it
+          // always does; treat that as the oldest possible addition.
+          return compareShelfAddedAt(a.addedAt, b.addedAt) || a.title.localeCompare(b.title);
         case "title":
         default:
           return a.title.localeCompare(b.title);
