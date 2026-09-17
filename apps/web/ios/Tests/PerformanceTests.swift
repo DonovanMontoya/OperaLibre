@@ -260,6 +260,70 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(observer.intentionalSeekCount, 0)
     }
 
+    func testInterruptedSeekOnSameItemRestoresReadiness() throws {
+        let queuePlayer = SeekControlledQueuePlayer()
+        let engine = AudiobookPlayer(makeQueuePlayer: { items in
+            for item in items { queuePlayer.insert(item, after: nil) }
+            return queuePlayer
+        })
+        let observer = StartupStateObserver()
+        engine.observer = observer
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        var wav = Data()
+        func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
+        wav.append(Data("RIFF".utf8)); u32(160_036); wav.append(Data("WAVEfmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16)
+        wav.append(Data("data".utf8)); u32(160_000); wav.append(Data(repeating: 0, count: 160_000))
+        try wav.write(to: url)
+        defer { engine.stop(releaseSession: true); try? FileManager.default.removeItem(at: url) }
+
+        func until(_ name: String, _ predicate: @escaping () -> Bool) {
+            let done = expectation(description: name)
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    if predicate() { timer.invalidate(); done.fulfill() }
+                }
+            }
+            defer { timer.invalidate() }
+            wait(for: [done], timeout: 10)
+        }
+        func publishState() {
+            NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        }
+        engine.load(AudiobookLoadRequest(url: url, positionSeconds: 3, rate: 1,
+            volume: 0.9, gain: 1, autoplay: false, recoveryScopeKey: "interrupted-seek-test",
+            recoveryTrackId: "interrupted", recoveryBookOffsetSeconds: 0, queue: []))
+        until("initial resume completed") {
+            publishState()
+            return observer.ready
+        }
+        XCTAssertEqual(engine.status.positionSeconds, 3, accuracy: 0.05)
+
+        // A single interruption is retried and still reaches the target.
+        queuePlayer.interruptSeeksInPlace = 1
+        observer.ready = false
+        engine.seek(toPositionSeconds: 6)
+        until("retried seek reaches target") {
+            publishState()
+            return observer.ready && abs(engine.status.positionSeconds - 6) < 0.05
+        }
+        XCTAssertEqual(queuePlayer.cancelledSeekCount, 1)
+
+        // A seek that never lands follows the audio instead of the unreached target.
+        queuePlayer.interruptSeeksInPlace = 3
+        observer.ready = false
+        engine.seek(toPositionSeconds: 9)
+        until("unreached seek restores readiness") {
+            publishState()
+            return queuePlayer.cancelledSeekCount == 4 && observer.positionReady && observer.ready
+        }
+        XCTAssertEqual(queuePlayer.cancelledSeekCount, 4)
+        XCTAssertEqual(engine.status.positionSeconds, 6, accuracy: 0.05)
+        let checkpoint = try XCTUnwrap(engine.recoveryState(forScope: "interrupted-seek-test"))
+        XCTAssertEqual(checkpoint.positionSeconds, 6, accuracy: 0.05)
+    }
+
     func testMissingDownloadStatusPerformance() throws {
         let key = "operalibre.background-download-jobs"
         defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -305,6 +369,8 @@ private final class SeekControlledQueuePlayer: AVQueuePlayer {
     var cancelNextSeekByAdvancing = false
     var heldSeek: (() -> Void)?
     var cancelledSeekCount = 0
+    /// Interrupt this many seeks in place, as AVFoundation may without a newer seek.
+    var interruptSeeksInPlace = 0
 
     override func seek(to time: CMTime, toleranceBefore: CMTime, toleranceAfter: CMTime,
                        completionHandler: @escaping (Bool) -> Void) {
@@ -314,6 +380,10 @@ private final class SeekControlledQueuePlayer: AVQueuePlayer {
                 self?.seek(to: time, toleranceBefore: toleranceBefore, toleranceAfter: toleranceAfter,
                            completionHandler: completionHandler)
             }
+        } else if interruptSeeksInPlace > 0 {
+            interruptSeeksInPlace -= 1
+            cancelledSeekCount += 1
+            DispatchQueue.main.async { completionHandler(false) }
         } else if cancelNextSeekByAdvancing {
             cancelNextSeekByAdvancing = false
             advanceToNextItem()

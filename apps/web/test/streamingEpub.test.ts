@@ -246,6 +246,34 @@ for (const failedPath of ["OPS/content.opf", "OPS/nav.xhtml", "OPS/chapter.xhtml
   });
 }
 
+test("a network failure without a local copy does not break later streamed reads", { timeout: 3000 }, async (t) => {
+  const { Book, files } = await cachedEpubFixture(t);
+  let offline = false;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const path = decodeURIComponent(new URL(String(url)).pathname.split("/entries/")[1]);
+    if (offline && path === "OPS/chapter.xhtml") throw new TypeError("Network briefly unavailable");
+    assert.ok(files[path], path);
+    return new Response(files[path]);
+  });
+  let cachedReads = 0;
+  const prepared = await prepareEpubRead(source, new AbortController().signal, async () => {
+    cachedReads += 1;
+    return null;
+  });
+  assert.ok(prepared.archive);
+  const book = new Book({ replacements: "blobUrl" });
+  attachEpubReadArchive(book, prepared.archive);
+  await book.open(new ArrayBuffer(0), "binary");
+  await book.opened;
+  offline = true;
+  await assert.rejects(prepared.archive.getText("/OPS/chapter.xhtml"), TypeError);
+  offline = false;
+  assert.match(await prepared.archive.getText("/OPS/chapter.xhtml"), /Cached first chapter/);
+  assert.match(await prepared.archive.createUrl("/OPS/image.png"), /books\.example/);
+  assert.equal(cachedReads, 1);
+  book.destroy();
+});
+
 for (const url of [source, "https://books.example/legacy.epub"]) {
   test(`whole-file loader persists legacy bytes for ${url}`, async (t) => {
     const bytes = new Uint8Array([1, 2, 3]).buffer;

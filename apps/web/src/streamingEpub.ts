@@ -140,7 +140,8 @@ function cachedStreamingArchive(
   const recover = (error: unknown) => {
     checkActive();
     if (!(error instanceof TypeError) || !readCached || !openCached) throw error;
-    recovery ??= (async () => {
+    if (recovery) return recovery;
+    const attempt = (async () => {
       const data = await readCached().catch(() => null);
       checkActive();
       if (!data) throw error;
@@ -152,20 +153,34 @@ function cachedStreamingArchive(
       fallback = archive;
       return archive;
     })();
-    return recovery;
+    recovery = attempt;
+    // Without a local copy the failure belongs to this read alone. Later reads
+    // must try the network again rather than replay a transient outage.
+    attempt.catch(() => {
+      if (recovery === attempt) recovery = undefined;
+    });
+    return attempt;
+  };
+  /** The recovered local archive, or undefined when none is open or opening one failed. */
+  const recoveredArchive = async () => {
+    const archive = recovery ? await recovery.catch(() => undefined) : undefined;
+    checkActive();
+    return archive;
   };
   const read = async <T>(online: () => Promise<T>, cached: (archive: Archive) => Promise<T>): Promise<T> => {
     checkActive();
-    if (recovery) {
-      const result = await cached(await recovery);
+    const recovered = await recoveredArchive();
+    if (recovered) {
+      const result = await cached(recovered);
       checkActive();
       return result;
     }
     try {
       const result = await online();
       checkActive();
-      if (recovery) {
-        const cachedResult = await cached(await recovery);
+      const recoveredDuringRead = await recoveredArchive();
+      if (recoveredDuringRead) {
+        const cachedResult = await cached(recoveredDuringRead);
         checkActive();
         return cachedResult;
       }
@@ -187,9 +202,9 @@ function cachedStreamingArchive(
       () => streaming.request(path, type), (archive) => archive.request(path, type)
     ),
     async createUrl(path: string) {
-      checkActive();
-      if (!recovery) return streaming.createUrl(path);
-      const url = await (await recovery).createUrl(path, { base64: false });
+      const recovered = await recoveredArchive();
+      if (!recovered) return streaming.createUrl(path);
+      const url = await recovered.createUrl(path, { base64: false });
       if (destroyed || signal.aborted) {
         URL.revokeObjectURL(url);
         checkActive();
