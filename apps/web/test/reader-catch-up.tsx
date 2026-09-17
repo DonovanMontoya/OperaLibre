@@ -32,7 +32,7 @@ function Fixture() {
     <button onClick={() => setChapter(chapter === 2 ? 3 : 2)}>Advance audio ({chapter})</button>
     {narration && <label>Narration position<input type="number" value={position} onChange={event => setPosition(Number(event.target.value))} /></label>}
     {open && <EpubReadalong bookId="fixture" storageScope="catch-up-fixture" title="Catch-up fixture"
-      url="/fixture.epub" loadBytes={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
+      url="/fixture.epub" loadSource={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
       syncTarget={null} syncFragments={narration ? fragments : null} positionSeconds={position} />}
   </>;
 }

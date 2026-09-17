@@ -1,3 +1,5 @@
+import { NativeAudioControlClock } from "./nativeAudioClock";
+import { applyNativePlaybackSettings, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { carPlaybackOwnsEngine } from "./carPlay";
 import {
@@ -10,6 +12,8 @@ type NativeAudioState = {
   positionSeconds: number;
   durationSeconds: number;
   isPlaying: boolean;
+  readyToPlay: boolean;
+  positionReady?: boolean;
   /** The queue track the clock belongs to, once the native side reports it. */
   trackId?: string;
 };
@@ -37,10 +41,13 @@ export type NativeAudioQueueTrack = {
 };
 
 type NativeAudioRecoveryIdentity = {
+  source: string;
+  settings: () => { rate: number; volume: number };
   scopeKey: string;
   trackId: string;
   bookOffsetSeconds: number;
   queue: () => NativeAudioQueueTrack[];
+  pendingPosition: () => number | undefined;
   /**
    * Read at load time rather than captured: the attachment effect runs before
    * the effect that syncs the gain, so a value captured at attach would be the
@@ -217,7 +224,7 @@ export async function getNativeAudioRecovery(scopeKey: string): Promise<NativeAu
 export function attachNativeAudioPlayer(
   audio: HTMLAudioElement,
   onError: (message: string) => void,
-  onFallback: () => void,
+  onFallback: (position: number, resume: boolean) => void,
   recovery: NativeAudioRecoveryIdentity,
   /** Returns false when React declined the change and still owns this track. */
   onTrackChanged: (
@@ -232,6 +239,9 @@ export function attachNativeAudioPlayer(
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
+  const controlClock = new NativeAudioControlClock(
+    audio, recovery.source, nativeStartupPosition(recovery.pendingPosition(), audio.currentTime)
+  );
   let disposed = false;
   let endedFromNative = false;
   let nativeIsPlaying = false;
@@ -271,13 +281,13 @@ export function attachNativeAudioPlayer(
     fellBack = true;
     nativeStateSynchronizer.clear();
     const shouldResume = nativeIsPlaying;
+    const position = nativeStartupPosition(recovery.pendingPosition(), audio.currentTime);
+    controlClock.destroy();
     audio.muted = false;
     onError(message);
-    onFallback();
+    onFallback(position, shouldResume);
     void stopNativeUnlessCarOwns();
-    if (shouldResume) {
-      void audio.play().catch(() => undefined);
-    }
+
   };
 
   const safely = (operation: Promise<void>) => {
@@ -287,9 +297,14 @@ export function attachNativeAudioPlayer(
     });
   };
 
+  // Capacitor drops events nobody is listening for yet. A local file can be
+  // ready (or fail) before registration finishes, and a paused player sends
+  // no later tick, so nothing may load until every listener is in place.
+  let listening = false;
+  const listenerRegistrations: Promise<unknown>[] = [];
   const load = () => {
-    const url = audio.currentSrc;
-    if (!url) return;
+    const url = recovery.source;
+    if (disposed || fellBack || !listening || !url) return;
     nativeStateSynchronizer.clear();
     endedFromNative = false;
     const configuredQueue = recovery.queue();
@@ -304,11 +319,15 @@ export function attachNativeAudioPlayer(
           album: "",
           chapters: []
         }];
+    // A newly mounted control element defaults to 1x/full volume. The user's
+    // selected settings own every native load, including async queue rebuilds.
+    const settings = recovery.settings();
+    applyNativePlaybackSettings(audio, settings);
     safely(NativeAudio.load({
       url,
-      positionSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
-      rate: audio.playbackRate,
-      volume: audio.volume,
+      positionSeconds: nativeStartupPosition(recovery.pendingPosition(), audio.currentTime),
+      rate: settings.rate,
+      volume: settings.volume,
       gain: recovery.gain(),
       autoplay: nativeIsPlaying,
       recoveryScopeKey: recovery.scopeKey,
@@ -317,12 +336,8 @@ export function attachNativeAudioPlayer(
       queue
     }));
   };
-  const rateChange = () => safely(NativeAudio.setRate({ rate: audio.playbackRate }));
-  const volumeChange = () => safely(NativeAudio.setVolume({ volume: audio.volume }));
-  const emptied = () => {
-    nativeStateSynchronizer.clear();
-    void stopNativeUnlessCarOwns({ releaseSession: false });
-  };
+  const rateChange = () => safely(NativeAudio.setRate({ rate: recovery.settings().rate }));
+  const volumeChange = () => safely(NativeAudio.setVolume({ volume: recovery.settings().volume }));
   const seeked = () => {
     nativeIsPlaying = nativeStateSynchronizer.afterSeek(nativeIsPlaying);
   };
@@ -333,16 +348,12 @@ export function attachNativeAudioPlayer(
   void NativeAudio.setSleepTimer({
     seconds: Math.max(0, recovery.sleepTimerSeconds())
   }).catch(() => undefined);
-  audio.addEventListener("loadedmetadata", load);
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
-  audio.addEventListener("emptied", emptied);
   audio.addEventListener("seeked", seeked);
   audio.addEventListener("operalibre-native-queue-change", load);
 
-  if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) load();
-
-  void NativeAudio.addListener("state", (state) => {
+  listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack) return;
     // A clock for another queue track belongs to the element React is about
     // to mount for it, not to this one. Prefer the payload's own track id;
@@ -368,13 +379,19 @@ export function attachNativeAudioPlayer(
     // starting or stopping the muted HTML decoder during app transitions.
     // AVPlayer is authoritative. Apply its clock before a synthetic pause can
     // make React persist the stale pre-background HTML position.
+    if (!state.readyToPlay) {
+      controlClock.synchronizePosition(state.positionSeconds, state.positionReady === true);
+      return;
+    }
+    const firstMetadata = controlClock.updateMetadata(state.durationSeconds);
     nativeIsPlaying = nativeStateSynchronizer.receive(state, nativeIsPlaying);
+    if (firstMetadata) audio.dispatchEvent(new Event("loadedmetadata"));
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("ended", (state) => {
+  listenerRegistrations.push(NativeAudio.addListener("ended", (state) => {
     if (disposed || fellBack || endedFromNative) return;
     endedFromNative = true;
     nativeStateSynchronizer.clear();
@@ -391,9 +408,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("trackChanged", (event) => {
+  listenerRegistrations.push(NativeAudio.addListener("trackChanged", (event) => {
     if (disposed || fellBack || !event.trackId || event.trackId === recovery.trackId) return;
     offerTrackChange({
       trackId: event.trackId,
@@ -404,9 +421,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("intentionalSeek", (event) => {
+  listenerRegistrations.push(NativeAudio.addListener("intentionalSeek", (event) => {
     if (disposed || fellBack || !Number.isFinite(event.positionSeconds)) return;
     audio.currentTime = Math.max(0, event.positionSeconds);
     onIntentionalSeek();
@@ -414,9 +431,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("sleepTimerEnded", () => {
+  listenerRegistrations.push(NativeAudio.addListener("sleepTimerEnded", () => {
     if (disposed || fellBack) return;
     nativeIsPlaying = false;
     // The follow-up state event compares against the flag just cleared and
@@ -427,24 +444,29 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("error", ({ message }) => {
+  listenerRegistrations.push(NativeAudio.addListener("error", ({ message }) => {
     failOverToWebAudio(message || "Native audio playback failed.");
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
+  }));
+
+  // AVPlayer is the only media loader; its ready event initializes the UI clock.
+  startAfterListeners(listenerRegistrations, () => !disposed && !fellBack, () => {
+    listening = true;
+    load();
   });
 
   return () => {
     disposed = true;
-    audio.removeEventListener("loadedmetadata", load);
     audio.removeEventListener("ratechange", rateChange);
     audio.removeEventListener("volumechange", volumeChange);
-    audio.removeEventListener("emptied", emptied);
     audio.removeEventListener("seeked", seeked);
     audio.removeEventListener("operalibre-native-queue-change", load);
     nativeStateSynchronizer.clear();
+    controlClock.destroy();
     if (!fellBack) audio.pause();
     audio.muted = false;
     for (const handle of listenerHandles) void handle.remove();
