@@ -12,7 +12,10 @@ export default defineConfig(({ command }) => {
     // Relative asset URLs let this production bundle run inside the macOS app.
     base: "./",
     define: {
-      __OPERALIBRE_FRONTEND_VERSION__: JSON.stringify(frontendVersion)
+      __OPERALIBRE_FRONTEND_VERSION__: JSON.stringify(frontendVersion),
+      // Lets the browser recognize a saved server address as this same
+      // proxied backend even when server.config sets a custom port.
+      __OPERALIBRE_DEV_PROXY_PORT__: JSON.stringify(proxyTarget ? new URL(proxyTarget).port : "")
     },
     plugins: [
       react(),

@@ -71,19 +71,32 @@ export function normalizeServerAddress(rawValue: string): string {
   }
 }
 
-// 4000 was the default before the port changed to 4920; a browser that saved
-// a server address under the old default must keep resolving through the
-// same-origin Vite proxy instead of failing CORS against a stale port.
-const DEV_PROXY_TARGET_PORTS = ["4920", "4000"];
+// 4920 and 4000 (the default before the port changed) are recognized even
+// without a build, so a browser that saved a server address under either
+// default keeps resolving through the same-origin Vite proxy instead of
+// failing CORS against a stale port.
+const KNOWN_DEV_PROXY_PORTS = ["4920", "4000"];
 
-export function browserApiBase(serverUrl: string, browserOrigin: string): string {
+// vite.config.ts injects the dev server's own resolved proxy target here, so
+// a custom server.config port is recognized the same way. The typeof guard
+// keeps this file safe to import from plain `node --test`, which never
+// defines this Vite build-time constant.
+const CURRENT_DEV_PROXY_PORT =
+  typeof __OPERALIBRE_DEV_PROXY_PORT__ !== "undefined" ? __OPERALIBRE_DEV_PROXY_PORT__ : "";
+
+export function browserApiBase(
+  serverUrl: string,
+  browserOrigin: string,
+  currentDevProxyPort: string = CURRENT_DEV_PROXY_PORT
+): string {
   try {
     const server = new URL(normalizeServerAddress(serverUrl));
     const browser = new URL(browserOrigin);
     const usesViteDevelopmentProxy = browser.port === "5173"
       && server.protocol === browser.protocol
       && server.hostname === browser.hostname
-      && DEV_PROXY_TARGET_PORTS.includes(server.port);
+      && (KNOWN_DEV_PROXY_PORTS.includes(server.port)
+        || (currentDevProxyPort !== "" && server.port === currentDevProxyPort));
     return usesViteDevelopmentProxy ? browser.origin : serverUrl;
   } catch {
     return serverUrl;
