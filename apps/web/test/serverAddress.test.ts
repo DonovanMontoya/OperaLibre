@@ -45,6 +45,21 @@ test("Vite development recognizes a custom server.config port resolved at build 
   );
 });
 
+test("Vite development recognizes a server.config port of 80 despite the URL API eliding it", () => {
+  assert.equal(
+    browserApiBase("http://localhost:80", "http://localhost:5173", "80"),
+    "http://localhost:5173"
+  );
+  assert.equal(
+    browserApiBase("http://localhost", "http://localhost:5173", "80"),
+    "http://localhost:5173"
+  );
+  assert.equal(
+    browserApiBase("http://localhost:80", "http://localhost:5173", "5000"),
+    "http://localhost:80"
+  );
+});
+
 test("recognizes local, LAN, and private overlay addresses", () => {
   for (const hostname of [
     "localhost", "bookshelf", "books.local", "books.home.arpa", "books.tailnet.ts.net",

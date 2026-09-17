@@ -14,8 +14,10 @@ export default defineConfig(({ command }) => {
     define: {
       __OPERALIBRE_FRONTEND_VERSION__: JSON.stringify(frontendVersion),
       // Lets the browser recognize a saved server address as this same
-      // proxied backend even when server.config sets a custom port.
-      __OPERALIBRE_DEV_PROXY_PORT__: JSON.stringify(proxyTarget ? new URL(proxyTarget).port : "")
+      // proxied backend even when server.config sets a custom port. URL
+      // elides the default http port (80), so recover it explicitly —
+      // devProxyTarget always returns an http:// target.
+      __OPERALIBRE_DEV_PROXY_PORT__: JSON.stringify(proxyTarget ? new URL(proxyTarget).port || "80" : "")
     },
     plugins: [
       react(),
