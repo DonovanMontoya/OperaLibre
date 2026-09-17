@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ownsPendingPlay,
-  playbackEventOwnsPendingPlay
+  playbackEventOwnsPendingPlay,
+  playbackIntentBelongsToBook
 } from "../src/playbackPending.ts";
 
 test("a rejected play cannot clear the replacement book's pending request", () => {
@@ -21,4 +22,10 @@ test("playing events only clear their own book's pending request", () => {
   assert.equal(playbackEventOwnsPendingPlay(true, "book-b", "book-a"), false);
   assert.equal(playbackEventOwnsPendingPlay(true, "book-b", "book-b"), true);
   assert.equal(playbackEventOwnsPendingPlay(false, null, "book-a"), true);
+});
+
+test("a mounted book cannot borrow a replacement book's playback intent", () => {
+  assert.equal(playbackIntentBelongsToBook(true, "book-b", "book-a", true), false);
+  assert.equal(playbackIntentBelongsToBook(true, "book-a", "book-a", false), true);
+  assert.equal(playbackIntentBelongsToBook(false, null, "book-a", true), true);
 });
