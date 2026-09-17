@@ -85,6 +85,48 @@ test("old servers fall back, but access failures are not concealed", async (t) =
   await assert.rejects(prepareStreamingEpub(source, new AbortController().signal), /403/);
 });
 
+test("a legacy media-token probe retries the authenticated whole-file URL", async (t) => {
+  const bytes = new Uint8Array([1, 2, 3]).buffer;
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = String(input);
+    requests.push(url);
+    assert.equal(new URL(url).searchParams.get("token"), "media");
+    assert.equal(new Headers(init?.headers).has("Authorization"), false);
+    return url.includes("/entries/")
+      ? new Response("", { status: 401 }) : new Response(bytes);
+  });
+  let saved: ArrayBuffer | null = null;
+  const prepared = await prepareEpubRead(source, new AbortController().signal,
+    async () => { assert.fail("A successful retry must not use cached bytes"); },
+    (url, signal) => revalidatedCompanion(url, async () => null, async (data) => { saved = data; }, signal));
+  assert.deepEqual(prepared.data, bytes);
+  assert.deepEqual(saved, bytes);
+  assert.deepEqual(requests, [epubEntryUrl(source, "META-INF/container.xml"), source]);
+});
+
+for (const status of [401, 403]) {
+  test(`legacy probe retry preserves whole-file HTTP ${status} without cache rescue`, async (t) => {
+    let requests = 0;
+    t.mock.method(globalThis, "fetch", async () => new Response("", { status: ++requests === 1 ? 401 : status }));
+    const cached = async () => { assert.fail("An access denial must not read cached bytes"); };
+    await assert.rejects(prepareEpubRead(source, new AbortController().signal, cached,
+      (url, signal) => revalidatedCompanion(url, cached, async () => { assert.fail("Denied bytes must not be saved"); }, signal)),
+    new RegExp(`Companion request failed with ${status}`));
+    assert.equal(requests, 2);
+  });
+}
+
+test("a legacy 401 probe also retries without a whole-file loader", async (t) => {
+  const bytes = new Uint8Array([4, 5, 6]).buffer;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => ++requests === 1
+    ? new Response("", { status: 401 }) : new Response(bytes));
+  const result = await prepareEpubRead(source, new AbortController().signal);
+  assert.deepEqual(result.data, bytes);
+  assert.equal(requests, 2);
+});
+
 test("closing the reader cancels subsequent chapter reads", async (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => new Response("chapter"));
   const controller = new AbortController();

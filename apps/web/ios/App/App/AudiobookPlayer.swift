@@ -110,6 +110,12 @@ public final class AudiobookPlayer {
     weak var observer: AudiobookPlayerObserver?
     weak var monitor: AudiobookPlayerMonitor?
 
+    private let makeQueuePlayer: ([AVPlayerItem]) -> AVQueuePlayer
+
+    init(makeQueuePlayer: @escaping ([AVPlayerItem]) -> AVQueuePlayer = { AVQueuePlayer(items: $0) }) {
+        self.makeQueuePlayer = makeQueuePlayer
+    }
+
     private var player: AVPlayer?
     private var statusObservation: NSKeyValueObservation?
     private var durationObservation: NSKeyValueObservation?
@@ -273,7 +279,7 @@ public final class AudiobookPlayer {
                 return item
             }
             self.queuedItems = items
-            let player = AVQueuePlayer(items: items)
+            let player = self.makeQueuePlayer(items)
             player.actionAtItemEnd = .advance
             player.automaticallyWaitsToMinimizeStalling = true
             player.preventsDisplaySleepDuringVideoPlayback = false
@@ -632,6 +638,8 @@ public final class AudiobookPlayer {
                     index != self.activeQueueIndex
                 else { return }
                 self.activateQueuedTrack(at: index)
+                self.initialSeekComplete = true
+                self.pendingRemoteIntentionalSeek = false
                 self.persistCheckpoint(force: true)
                 self.updateNowPlayingInfo()
                 if self.shouldAutoplay && player.timeControlStatus != .playing {
