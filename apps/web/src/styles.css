@@ -12077,9 +12077,10 @@ html.native-app .recent-row {
     content: "";
     position: absolute;
     top: 0;
-    /* Stops at the tab bar rather than running under it. The bar is
-       frosted (backdrop-filter), so anything left behind it gets
-       blurred up into the bar as a smudge at the seam. */
+    /* Stops at the tab bar rather than running under it on the devices
+       that still render one at the bottom (see the .floating-tabs
+       override below): the bar is frosted (backdrop-filter), so anything
+       left behind it gets blurred up into the bar as a smudge at the seam. */
     bottom: var(--tabs-h);
     left: calc(var(--verso-w) - var(--gutter) / 2);
     width: var(--gutter);
@@ -12106,6 +12107,17 @@ html.native-app .recent-row {
     background-repeat: repeat-y, no-repeat;
   }
 
+  /* The tab bar floats above the page instead of sitting in a full-width
+     bottom strip only once iOS 18's top-floating presentation is actually
+     active (set by the native shell as html.floating-tabs); earlier iPadOS
+     still renders a real bottom bar the fold must duck under, above. Here,
+     nothing needs the seam to stop early, so running it to the true edge
+     avoids a visible cutoff line just above the mini-player. */
+  html.native-app.floating-tabs .native-shell.tab-shelf::after,
+  html.native-app.floating-tabs .native-shell.tab-reading::after {
+    bottom: 0;
+  }
+
   /* The recto carries the full transport whenever it is showing the
      book that is playing, so the floating ribbon would only repeat
      it. Any other time — inspecting a different title while
@@ -12123,10 +12135,6 @@ html.native-app .recent-row {
     display: grid;
     left: calc(var(--verso-w) + var(--gutter) / 2);
     right: max(16px, env(safe-area-inset-right));
-  }
-
-  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
-    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   /* "Back to Library" is the shelf's own variant of this button and
@@ -12252,6 +12260,14 @@ html.native-app .recent-row {
       rgba(58, 38, 22, 0.07) 0,
       rgba(58, 38, 22, 0) calc(var(--gutter-margin) + 30px)
     );
+  }
+
+  /* When the mini-player docks over the recto (viewing a book other than
+     the one playing), it needs more scroll room reserved below than the
+     base recto padding leaves, or its content — the chapter list and
+     controls — ends up hidden beneath the docked player. */
+  html.native-app .native-shell.has-mini-player > .player-pane:not(.has-native-player) {
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
   }
 
   html.native-app .native-shell > .player-pane::before {
