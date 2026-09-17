@@ -253,6 +253,20 @@ export function adoptableServerProgress(
 export const FOREGROUND_ADOPTION_SLACK_SECONDS = 2;
 
 /**
+ * Whether the server kept its own copy over a save — typically the checkpoint
+ * a pause wrote just before the app was backgrounded, suspended with the
+ * WebView and delivered on return after another device moved on, or that
+ * position re-stamped on resume and refused as a regression. Healing the
+ * checkpoint with that answer leaves the player on the refused position, so
+ * foreground adoption has to measure the server against the refused save
+ * rather than the healed checkpoint, which already matches the server.
+ */
+export function saveWasOverruled(attempted: Progress, saved: Progress): boolean {
+  return Math.abs(saved.bookPositionSeconds - attempted.bookPositionSeconds)
+    > FOREGROUND_ADOPTION_SLACK_SECONDS;
+}
+
+/**
  * Whether a deliberate seek also needs the server's reset guard lifted.
  * `intentionalSeek` alone already lets a write move backwards; only
  * `intentionalRegression` lets a near-zero position replace substantial
