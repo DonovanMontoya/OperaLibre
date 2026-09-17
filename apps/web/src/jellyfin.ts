@@ -60,6 +60,7 @@ type JellyfinItem = {
   Genres?: string[] | null;
   ProductionYear?: number | null;
   PremiereDate?: string | null;
+  DateCreated?: string | null;
   RunTimeTicks?: number | null;
   IndexNumber?: number | null;
   ParentIndexNumber?: number | null;
@@ -348,6 +349,10 @@ function mapBook(items: JellyfinItem[]): Book | null {
   const remaining = totalDuration > 0 ? Math.max(0, totalDuration - effectivePosition) : null;
   const percent = totalDuration > 0 ? Math.min(100, (effectivePosition / totalDuration) * 100) : null;
   const publishedDate = first.PremiereDate ?? (first.ProductionYear ? String(first.ProductionYear) : null);
+  const addedAt = sorted
+    .map((item) => item.DateCreated)
+    .filter((value): value is string => !!value)
+    .sort()[0] ?? new Date(0).toISOString();
 
   return {
     id,
@@ -365,6 +370,7 @@ function mapBook(items: JellyfinItem[]): Book | null {
     tags: [],
     publishedDate,
     asin: first.ProviderIds?.Audible ?? first.ProviderIds?.ASIN ?? null,
+    addedAt,
     readingFile: null,
     syncFile: null,
     chapters,

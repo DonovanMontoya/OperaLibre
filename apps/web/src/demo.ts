@@ -54,6 +54,7 @@ const DEMO_BOOKS: Book[] = [
     tags: [],
     publishedDate: "2026",
     asin: null,
+    addedAt: "2026-01-02T00:00:00.000Z",
     readingFile: {
       id: "demo-lantern-notes",
       fileName: "The Lantern Atlas — Field Notes.html",
@@ -118,6 +119,7 @@ const DEMO_BOOKS: Book[] = [
     tags: [],
     publishedDate: "2026",
     asin: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
     readingFile: null,
     syncFile: null,
     chapters: [

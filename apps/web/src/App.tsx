@@ -877,7 +877,7 @@ const START_OVER_PROGRESS_CHECK_MS = 2_500;
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 
-type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account";
+type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account" | "added";
 type LibrarySource = "local" | "audible" | "libro" | "all";
 const LANDSCAPE_QUERY = "(orientation: landscape)";
 // A phone on its side: short enough that the iPad spread never applies.
@@ -913,7 +913,8 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "genre", label: "Genre" },
   { value: "progress", label: "Progress" },
   { value: "account", label: "Account" },
-  { value: "duration", label: "Length" }
+  { value: "duration", label: "Length" },
+  { value: "added", label: "Newest" }
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
@@ -926,7 +927,7 @@ const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro", "all"];
 // "local" — restores what was last chosen there instead of permanently collapsing to
 // "title".
 const AUDIBLE_ONLY_SORT_MODES: SortMode[] = ["account"];
-const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress"];
+const LOCAL_ONLY_SORT_MODES: SortMode[] = ["series", "tag", "genre", "progress", "added"];
 
 function isSortModeSupported(source: LibrarySource, mode: SortMode) {
   if (source === "libro" || source === "all") return ["title", "author", "duration"].includes(mode);
@@ -4213,6 +4214,8 @@ function MainApp({
 
   const sortOrderLabel = sortMode === "duration"
     ? sortReversed ? "Shortest first" : "Longest first"
+    : sortMode === "added"
+    ? sortReversed ? "Oldest first" : "Newest first"
     : sortMode === "progress"
       ? sortReversed ? "Finished first" : "In progress first"
       : sortMode === "tag" || sortMode === "series"
@@ -4352,6 +4355,11 @@ function MainApp({
           return compareReadingStatus(a, b) || a.title.localeCompare(b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
+        case "added":
+          // A book cached or imported before this field existed has no addedAt
+          // once it round-trips through storage, even though the type says it
+          // always does; treat that as the oldest possible addition.
+          return compareShelfLabels(b.addedAt, a.addedAt) || a.title.localeCompare(b.title);
         case "title":
         default:
           return a.title.localeCompare(b.title);
