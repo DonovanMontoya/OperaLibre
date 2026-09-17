@@ -13,6 +13,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
+  saveWasOverruled,
   serverStorageKey,
   shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
@@ -594,6 +595,41 @@ test("a foregrounded idle session adopts only a strictly newer, materially diffe
   // A device with no local copy at all takes whatever the server has.
   const serverOnly = progress({ updatedAt: String(Date.parse("2026-08-27T12:00:00.000Z")) });
   assert.equal(adoptableServerProgress(null, serverOnly), serverOnly);
+});
+
+test("a pause save refused after resume still lets the player adopt the newer copy", () => {
+  // Paused here at 25:00, the save suspended with the WebView. Another device
+  // then listened to 36:40, and the late save came back with that copy.
+  const pauseSave = progress({
+    bookPositionSeconds: 1500,
+    updatedAt: String(Date.parse("2026-09-14T22:00:00.000Z"))
+  });
+  const elsewhere = progress({
+    bookPositionSeconds: 2200,
+    updatedAt: String(Date.parse("2026-09-14T22:10:00.000Z"))
+  });
+  assert.equal(saveWasOverruled(pauseSave, elsewhere), true);
+
+  // The checkpoint healed with the server's answer matches the server, so
+  // measuring against it adopts nothing and the player stays on 25:00.
+  const healed = progressAfterSave(pauseSave, pauseSave, elsewhere);
+  assert.equal(adoptableServerProgress(healed, elsewhere), null);
+
+  // Resuming re-stamps the unchanged position, so the refused save can be the
+  // newer revision; the server refused it as a regression. Timestamps cannot
+  // decide this one, but the distance from the server's answer still does.
+  const restamped = progress({
+    ...pauseSave,
+    updatedAt: String(Date.parse("2026-09-14T22:15:00.000Z"))
+  });
+  assert.equal(adoptableServerProgress(restamped, elsewhere), null);
+  assert.equal(saveWasOverruled(restamped, elsewhere), true);
+
+  // An accepted save echoed back within the clock slack was not overruled.
+  assert.equal(
+    saveWasOverruled(pauseSave, progress({ ...pauseSave, bookPositionSeconds: 1501.5 })),
+    false
+  );
 });
 
 
