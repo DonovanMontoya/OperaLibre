@@ -1,5 +1,5 @@
 import { NativeAudioControlClock } from "./nativeAudioClock";
-import { applyNativePlaybackSettings, nativeStartupPosition } from "./nativeAudioStartup";
+import { applyNativePlaybackSettings, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { carPlaybackOwnsEngine } from "./carPlay";
 import {
@@ -297,9 +297,14 @@ export function attachNativeAudioPlayer(
     });
   };
 
+  // Capacitor drops events nobody is listening for yet. A local file can be
+  // ready (or fail) before registration finishes, and a paused player sends
+  // no later tick, so nothing may load until every listener is in place.
+  let listening = false;
+  const listenerRegistrations: Promise<unknown>[] = [];
   const load = () => {
     const url = recovery.source;
-    if (disposed || fellBack || !url) return;
+    if (disposed || fellBack || !listening || !url) return;
     nativeStateSynchronizer.clear();
     endedFromNative = false;
     const configuredQueue = recovery.queue();
@@ -348,10 +353,7 @@ export function attachNativeAudioPlayer(
   audio.addEventListener("seeked", seeked);
   audio.addEventListener("operalibre-native-queue-change", load);
 
-  // AVPlayer is the only media loader; its ready event initializes the UI clock.
-  load();
-
-  void NativeAudio.addListener("state", (state) => {
+  listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack) return;
     // A clock for another queue track belongs to the element React is about
     // to mount for it, not to this one. Prefer the payload's own track id;
@@ -387,9 +389,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("ended", (state) => {
+  listenerRegistrations.push(NativeAudio.addListener("ended", (state) => {
     if (disposed || fellBack || endedFromNative) return;
     endedFromNative = true;
     nativeStateSynchronizer.clear();
@@ -406,9 +408,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("trackChanged", (event) => {
+  listenerRegistrations.push(NativeAudio.addListener("trackChanged", (event) => {
     if (disposed || fellBack || !event.trackId || event.trackId === recovery.trackId) return;
     offerTrackChange({
       trackId: event.trackId,
@@ -419,9 +421,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("intentionalSeek", (event) => {
+  listenerRegistrations.push(NativeAudio.addListener("intentionalSeek", (event) => {
     if (disposed || fellBack || !Number.isFinite(event.positionSeconds)) return;
     audio.currentTime = Math.max(0, event.positionSeconds);
     onIntentionalSeek();
@@ -429,9 +431,9 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("sleepTimerEnded", () => {
+  listenerRegistrations.push(NativeAudio.addListener("sleepTimerEnded", () => {
     if (disposed || fellBack) return;
     nativeIsPlaying = false;
     // The follow-up state event compares against the flag just cleared and
@@ -442,13 +444,19 @@ export function attachNativeAudioPlayer(
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
-  });
+  }));
 
-  void NativeAudio.addListener("error", ({ message }) => {
+  listenerRegistrations.push(NativeAudio.addListener("error", ({ message }) => {
     failOverToWebAudio(message || "Native audio playback failed.");
   }).then((handle) => {
     if (disposed) void handle.remove();
     else listenerHandles.push(handle);
+  }));
+
+  // AVPlayer is the only media loader; its ready event initializes the UI clock.
+  startAfterListeners(listenerRegistrations, () => !disposed && !fellBack, () => {
+    listening = true;
+    load();
   });
 
   return () => {

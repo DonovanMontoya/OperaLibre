@@ -21,3 +21,15 @@ export function applyNativePlaybackSettings(
   audio.playbackRate = settings.rate;
   audio.volume = settings.volume;
 }
+
+/** Start once every event listener is registered, even if one registration
+ * failed; skip the start when the attachment ended in the meantime. */
+export function startAfterListeners(
+  registrations: Promise<unknown>[],
+  isActive: () => boolean,
+  start: () => void
+): Promise<void> {
+  return Promise.allSettled(registrations).then(() => {
+    if (isActive()) start();
+  });
+}
