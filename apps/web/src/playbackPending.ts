@@ -12,3 +12,12 @@ export function ownsPendingPlay(
   return request.cancelGeneration === cancelGeneration
     && request.bookId === pendingBookId;
 }
+
+/** Media events from an old book must not finish a newer book's request. */
+export function playbackEventOwnsPendingPlay(
+  pending: boolean,
+  pendingBookId: string | null,
+  playbackBookId: string | null
+) {
+  return !pending || pendingBookId === playbackBookId;
+}

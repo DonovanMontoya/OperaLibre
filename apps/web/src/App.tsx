@@ -2,7 +2,7 @@ import { hasPlaybackSource } from "./nativeAudioStartup";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
-import { ownsPendingPlay } from "./playbackPending";
+import { ownsPendingPlay, playbackEventOwnsPendingPlay } from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
@@ -6168,12 +6168,12 @@ function MainApp({
     return attachNativeAudioPlayer(
       audio,
       (message) => {
-        setPlayPending(false);
         setPlaybackError(message);
       },
       (position, resume) => {
         setPendingSeek({ trackId: currentTrack.id, positionSeconds: position });
         playWhenTrackLoads.current = resume;
+        setPlayPending(resume, playbackBook.id);
         setNativeAudioFailed(true);
       },
       {
@@ -7645,6 +7645,14 @@ function MainApp({
     }
   }
 
+  function clearPlayPendingForBook(bookId: string | null) {
+    if (playbackEventOwnsPendingPlay(
+      playPendingRef.current,
+      playPendingBookIdRef.current,
+      bookId
+    )) setPlayPending(false);
+  }
+
   function cancelPendingPlayback(audio: HTMLAudioElement | null | undefined) {
     // Still waiting on the stream: this tap takes the start back. The
     // generation also prevents an async shelf progress check from re-arming it.
@@ -8942,7 +8950,7 @@ function MainApp({
                 ? "Playback lost its connection to the audiobook server."
                 : "This audio track could not be loaded.";
           setIsPlaying(false);
-          setPlayPending(false);
+          clearPlayPendingForBook(playbackBookId);
           setPlaybackError(message);
           // The element keeps paused=false after a media error, so the
           // toggle read "playing" and needed two taps. On iOS the element is
@@ -8977,14 +8985,14 @@ function MainApp({
           if (nativeAudio) {
             nativePlaybackPlayingRef.current = true;
             // Native's synthetic play event reflects AVPlayer already playing.
-            setPlayPending(false);
+            clearPlayPendingForBook(playbackBookId);
           }
           setPlaybackError(null);
           setIsPlaying(true);
         }}
         // Web media emits `play` as soon as paused becomes false; `playing`
         // is the point buffering has ended and audible playback actually began.
-        onPlaying={() => setPlayPending(false)}
+        onPlaying={() => clearPlayPendingForBook(playbackBookId)}
         onPause={() => {
           // Anything that plays after a pause is a fresh action, never the
           // automatic resume that flag was armed for.
