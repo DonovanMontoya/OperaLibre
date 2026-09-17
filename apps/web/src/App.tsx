@@ -2,7 +2,11 @@ import { hasPlaybackSource } from "./nativeAudioStartup";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
-import { ownsPendingPlay, playbackEventOwnsPendingPlay } from "./playbackPending";
+import {
+  ownsPendingPlay,
+  playbackEventOwnsPendingPlay,
+  playbackIntentBelongsToBook
+} from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
@@ -6176,9 +6180,15 @@ function MainApp({
         setPlaybackError(message);
       },
       (position, resume) => {
+        const ownsIntent = playbackEventOwnsPendingPlay(
+          playPendingRef.current,
+          playPendingBookIdRef.current,
+          playbackBook.id
+        );
+        const resumeThisBook = resume && ownsIntent;
         setPendingSeek({ trackId: currentTrack.id, positionSeconds: position });
-        playWhenTrackLoads.current = resume;
-        setPlayPending(resume, playbackBook.id);
+        playWhenTrackLoads.current = resumeThisBook;
+        if (ownsIntent) setPlayPending(resumeThisBook, playbackBook.id);
         setNativeAudioFailed(true);
       },
       {
@@ -6190,7 +6200,12 @@ function MainApp({
         queue: () => nativeAudioQueueRef.current,
         pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
           ? pendingSeekRef.current.positionSeconds : undefined,
-        wantsPlayback: () => playPendingRef.current || wantsAutoplayRef.current || playWhenTrackLoads.current,
+        wantsPlayback: () => playbackIntentBelongsToBook(
+          playPendingRef.current,
+          playPendingBookIdRef.current,
+          playbackBook.id,
+          wantsAutoplayRef.current || playWhenTrackLoads.current
+        ),
         gain: () => playbackGainRef.current,
         sleepTimerSeconds: () => {
           const deadline = sleepDeadlineRef.current;
