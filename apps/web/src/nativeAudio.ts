@@ -48,6 +48,8 @@ type NativeAudioRecoveryIdentity = {
   bookOffsetSeconds: number;
   queue: () => NativeAudioQueueTrack[];
   pendingPosition: () => number | undefined;
+  /** Whether a Play request is still waiting for this native load. */
+  wantsPlayback: () => boolean;
   /**
    * Read at load time rather than captured: the attachment effect runs before
    * the effect that syncs the gain, so a value captured at attach would be the
@@ -280,7 +282,7 @@ export function attachNativeAudioPlayer(
     if (disposed || fellBack) return;
     fellBack = true;
     nativeStateSynchronizer.clear();
-    const shouldResume = nativeIsPlaying;
+    const shouldResume = nativeIsPlaying || recovery.wantsPlayback();
     const position = nativeStartupPosition(recovery.pendingPosition(), audio.currentTime);
     controlClock.destroy();
     audio.muted = false;

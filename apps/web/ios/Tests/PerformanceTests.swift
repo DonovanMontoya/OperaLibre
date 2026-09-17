@@ -345,6 +345,37 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(resumeCheckpoint.positionSeconds, 4, accuracy: 0.01)
     }
 
+    @MainActor
+    func testInitialStreamRemovalReportsLoadFailure() throws {
+        let queuePlayer = AVQueuePlayer()
+        let engine = AudiobookPlayer(makeQueuePlayer: { items in
+            for item in items { queuePlayer.insert(item, after: nil) }
+            return queuePlayer
+        })
+        let observer = StartupStateObserver()
+        engine.observer = observer
+        let url = URL(string: "https://example.invalid/interrupted.m4b")!
+        defer { engine.stop(releaseSession: true) }
+
+        engine.load(AudiobookLoadRequest(url: url, positionSeconds: 120, rate: 1,
+            volume: 0.9, gain: 1, autoplay: true, recoveryScopeKey: "load-failure-test",
+            recoveryTrackId: "interrupted", recoveryBookOffsetSeconds: 0, queue: []))
+        let loaded = expectation(description: "player created")
+        DispatchQueue.main.async { loaded.fulfill() }
+        wait(for: [loaded], timeout: 2)
+
+        queuePlayer.removeAllItems()
+        let failed = expectation(description: "missing initial item reports failure")
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                if !observer.errors.isEmpty { timer.invalidate(); failed.fulfill() }
+            }
+        }
+        defer { timer.invalidate() }
+        wait(for: [failed], timeout: 2)
+        XCTAssertEqual(observer.errors.last, "The audio track could not be loaded.")
+    }
+
     func testMissingDownloadStatusPerformance() throws {
         let key = "operalibre.background-download-jobs"
         defer { UserDefaults.standard.removeObject(forKey: key) }

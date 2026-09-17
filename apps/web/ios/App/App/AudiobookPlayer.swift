@@ -704,8 +704,19 @@ public final class AudiobookPlayer {
                 guard
                     let self,
                     let player,
-                    generation == self.generation,
-                    let currentItem = player.currentItem,
+                    generation == self.generation
+                else { return }
+                // AVQueuePlayer can discard an interrupted initial stream
+                // before AVPlayerItem publishes `.failed`. Without a current
+                // item there will be no later readiness or status event, so
+                // explicitly fail over instead of leaving Play waiting forever.
+                guard let currentItem = player.currentItem else {
+                    if !self.initialSeekComplete {
+                        self.emitError("The audio track could not be loaded.")
+                    }
+                    return
+                }
+                guard
                     let index = self.queuedItems.firstIndex(where: { $0 === currentItem }),
                     index != self.activeQueueIndex
                 else { return }
