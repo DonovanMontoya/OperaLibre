@@ -65,6 +65,12 @@ test('chapter following opens at the current audiobook chapter before sentence s
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
   )).toContain('c2.xhtml');
+  // The remembered-page settling checks run at 300 ms and 1 s. The narrated
+  // chapter must remain in control after both have had a chance to run.
+  await page.waitForTimeout(1200);
+  expect(await page.evaluate(() =>
+    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
+  )).toContain('c2.xhtml');
 });
 
 for (const failure of ['missing sentence', 'CFI conversion'] as const) {

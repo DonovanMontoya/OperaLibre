@@ -2489,6 +2489,11 @@ export function EpubReadalong({
       return;
     }
     syncedTargetRef.current = syncTarget.id;
+    // Following has taken ownership from the remembered reading page. Let the
+    // relocation establish a new anchor in the narrated chapter so the
+    // post-open settling loop cannot pull the reader back a moment later.
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
     setActiveHref(href);
     readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
