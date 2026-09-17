@@ -367,7 +367,10 @@ public final class AudiobookPlayer {
             // A seek that never lands leaves the audio where it was. Once this
             // item has a real position, follow that audio rather than freezing
             // the clock and checkpoints at the unreached target.
-            guard reached || self.positionEstablished else { return }
+            guard reached || self.positionEstablished else {
+                self.failUnreachedResumeSeek()
+                return
+            }
             self.initialSeekComplete = true
             self.positionEstablished = true
             self.lastKnownPosition = self.finiteSeconds(player.currentTime())
@@ -390,6 +393,14 @@ public final class AudiobookPlayer {
             self.prepareBoostForNextQueuedItem()
             self.updateNowPlayingInfo()
         }
+    }
+
+    /// The saved position could not be reached before this item ever played.
+    /// Playing from wherever AVPlayer stopped would overwrite that position, so
+    /// hand playback to web audio, which restores the saved target instead.
+    /// Checkpoints keep reporting the target until then.
+    private func failUnreachedResumeSeek() {
+        emitError("The audiobook could not resume at its saved position.")
     }
 
     /// Seeks the current item exactly. A seek superseded by a newer one leaves
@@ -629,10 +640,12 @@ public final class AudiobookPlayer {
                 switch item.status {
                 case .readyToPlay:
                     let ready: (Bool) -> Void = { [weak self] reached in
-                        // An unreached resume seek keeps reporting its target
-                        // rather than persisting where the audio happens to be.
-                        guard let self, reached, generation == self.generation,
+                        guard let self, generation == self.generation,
                               player === self.player, player.currentItem === item else { return }
+                        guard reached else {
+                            self.failUnreachedResumeSeek()
+                            return
+                        }
                         self.initialSeekComplete = true
                         self.positionEstablished = true
                         if UIApplication.shared.applicationState == .active {
