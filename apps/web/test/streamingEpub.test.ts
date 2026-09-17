@@ -246,6 +246,55 @@ for (const failedPath of ["OPS/content.opf", "OPS/nav.xhtml", "OPS/chapter.xhtml
   });
 }
 
+test("lazy asset failures redisplay from a local copy only when the network is down", { timeout: 3000 }, async (t) => {
+  const { Book, files, bytes } = await cachedEpubFixture(t);
+  let offline = false;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (offline) throw new TypeError("Network unavailable after chapter text");
+    const path = decodeURIComponent(new URL(String(url)).pathname.split("/entries/")[1]);
+    assert.ok(files[path], path);
+    return new Response(files[path]);
+  });
+  let cachedReads = 0;
+  const prepared = await prepareEpubRead(source, new AbortController().signal, async () => {
+    cachedReads += 1;
+    return bytes;
+  });
+  assert.ok(prepared.archive);
+  const book = new Book({ replacements: "blobUrl" });
+  const assets = attachEpubReadArchive(book, prepared.archive);
+  await book.open(new ArrayBuffer(0), "binary");
+  await book.opened;
+  const online = await book.section(0).render(book.load.bind(book));
+  assert.match(online, /books\.example\/prefix\/api\/books\/book\/companions\/epub\/entries\/OPS\/image\.png/);
+
+  // A missing asset while the server is reachable is not an outage.
+  assert.equal(await assets.recoverAssets(), false);
+  assert.equal(cachedReads, 0);
+
+  offline = true;
+  assert.equal(await assets.recoverAssets(), true);
+  const local = await book.section(0).render(book.load.bind(book));
+  assert.doesNotMatch(local, /books\.example/);
+  const imageUrl = book.resources.replacementUrls[book.resources.urls.indexOf("image.png")];
+  assert.match(imageUrl, /^blob:/);
+  assert.match(local, new RegExp(imageUrl));
+  assert.equal(cachedReads, 1);
+  // Later failures of local URLs cannot loop into another recovery.
+  assert.equal(await assets.recoverAssets(), false);
+  book.destroy();
+});
+
+test("lazy asset failures without a local copy keep the streamed page", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response("container"));
+  const prepared = await prepareEpubRead(source, new AbortController().signal, async () => null);
+  assert.ok(prepared.archive);
+  const { Book } = await cachedEpubFixture(t);
+  const assets = attachEpubReadArchive(new Book({ replacements: "blobUrl" }), prepared.archive);
+  t.mock.method(globalThis, "fetch", async () => { throw new TypeError("Offline"); });
+  assert.equal(await assets.recoverAssets(), false);
+});
+
 test("a network failure without a local copy does not break later streamed reads", { timeout: 3000 }, async (t) => {
   const { Book, files } = await cachedEpubFixture(t);
   let offline = false;

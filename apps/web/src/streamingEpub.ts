@@ -51,6 +51,13 @@ export function streamingArchive(source: string, signal: AbortSignal, container:
       return text;
     },
     async createUrl(path: string) { return epubEntryUrl(source, path); },
+    /** Reach the server without downloading content; rejects with TypeError when offline. */
+    async probe() {
+      signal.throwIfAborted();
+      await fetch(epubEntryUrl(source, "META-INF/container.xml"), {
+        method: "HEAD", credentials: "include", cache: "no-store", signal
+      });
+    },
     createCssUrl(text: string) {
       const url = URL.createObjectURL(new Blob([text], { type: "text/css" }));
       stylesheetUrls.add(url);
@@ -122,6 +129,7 @@ function cachedStreamingArchive(
   let fallback: Archive | undefined;
   let recovery: Promise<Archive> | undefined;
   let openCached: ((data: ArrayBuffer) => Promise<Archive>) | undefined;
+  let assetRecovery: Promise<boolean> | undefined;
   const urls = new Set<string>();
   const checkActive = () => {
     signal.throwIfAborted();
@@ -222,6 +230,28 @@ function cachedStreamingArchive(
     },
     destroy,
     hasFallback: () => !!fallback,
+    /** Lazy images and fonts load outside read(), so their network failures never
+     * reach recover(). Probe the server: only a network failure opens the local
+     * copy. Resolves true when the displayed page should use its local assets. */
+    recoverAssets() {
+      checkActive();
+      if (fallback) return Promise.resolve(false);
+      assetRecovery ??= (async () => {
+        try {
+          await streaming.probe();
+          return false;
+        } catch (error) {
+          try {
+            return !!await recover(error);
+          } catch {
+            // No local copy, or the failure was not a network outage.
+            checkActive();
+            return false;
+          }
+        }
+      })().finally(() => { assetRecovery = undefined; });
+      return assetRecovery;
+    },
     setFallbackLoader(loader: (data: ArrayBuffer) => Promise<Archive>) { openCached = loader; }
   };
 }
@@ -258,6 +288,14 @@ export function attachEpubReadArchive(book: Book, archive: ReturnType<typeof cac
     await book.opened;
     await refresh();
   });
+  return {
+    /** True once local asset URLs are in place; display the page again to use them. */
+    async recoverAssets() {
+      if (!await archive.recoverAssets()) return false;
+      await refresh();
+      return true;
+    }
+  };
 }
 
 export function attachStreamingArchive(book: Book, archive: ReturnType<typeof streamingArchive>) {

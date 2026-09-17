@@ -1892,6 +1892,7 @@ export function EpubReadalong({
     let resizeObserver: ResizeObserver | null = null;
     let book: EpubBook | null = null;
     let rendition: Rendition | null = null;
+    let streamedAssets: ReturnType<typeof attachEpubReadArchive> | null = null;
     const handleRelocated = (nextLocation: Location) => {
       lastLocationRef.current = nextLocation;
       locationRef.current = nextLocation;
@@ -2104,7 +2105,7 @@ export function EpubReadalong({
         }
         if (prepared.archive) {
           book = ePub({ replacements: "blobUrl" });
-          attachEpubReadArchive(book, prepared.archive);
+          streamedAssets = attachEpubReadArchive(book, prepared.archive);
           await book.open(new ArrayBuffer(0), "binary");
         } else {
           if (!prepared.data.byteLength) throw new Error("EPUB response was empty");
@@ -2170,6 +2171,24 @@ export function EpubReadalong({
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
         rendition.on("rendered", handleRendered);
+        if (streamedAssets) {
+          const assets = streamedAssets;
+          // Streamed images and fonts load lazily in the page. If the network
+          // drops before they arrive, lay the page out again from a local copy.
+          rendition.hooks.content.register((contents: Contents) => {
+            const assetFailed = () => {
+              void assets.recoverAssets().then((recovered) => {
+                if (!recovered || cancelled || !rendition) return;
+                rendition.clear();
+                void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+              }).catch(() => undefined);
+            };
+            contents.document.addEventListener("error", (event) => {
+              if ((event.target as Node | null)?.nodeType === Node.ELEMENT_NODE) assetFailed();
+            }, true);
+            contents.document.fonts?.addEventListener("loadingerror", assetFailed);
+          });
+        }
         if (import.meta.env.DEV) {
           // Inspectable from the console while developing the reader.
           const debugWindow = window as unknown as { __operalibreReader?: unknown; __operalibreReaderOpens?: string[] };
