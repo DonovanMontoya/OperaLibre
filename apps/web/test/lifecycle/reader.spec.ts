@@ -59,6 +59,14 @@ test('Focus preserves the EPUB host and rendition through resizing and returning
   await expect.poll(() => place(page)).not.toBe(before);
 });
 
+test('chapter following opens at the current audiobook chapter before sentence sync is available', async ({ page }) => {
+  await page.goto(`${url}test/reader-catch-up.html?chapter-sync`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
+  )).toContain('c2.xhtml');
+});
+
 for (const failure of ['missing sentence', 'CFI conversion'] as const) {
   test(`${failure} clears the previous narration mark and cannot revive it on updates or relayout`, async ({ page }) => {
     await openReader(page, true);

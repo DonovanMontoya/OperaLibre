@@ -1623,6 +1623,9 @@ export function EpubReadalong({
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
   const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  // Bumped when the listener explicitly asks to return. Follow may already be
+  // on, so setting the same boolean is not enough to rerun navigation.
+  const [followRequest, setFollowRequest] = useState(0);
   // Follow as of the latest decision rather than the latest render. A page
   // turned by hand stops following at once; an effect still holding the
   // rendered value must not move the page back before React catches up.
@@ -1722,6 +1725,7 @@ export function EpubReadalong({
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
+    setFollowRequest((request) => request + 1);
   }, []);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
@@ -2263,12 +2267,10 @@ export function EpubReadalong({
             await rendition.display();
           }
         }
-        // The listener left off here, so this is where the book opens; the
-        // chapter being played counts as already handled. It takes the page
-        // only once the narration moves on to a different chapter.
-        if (anchorCfiRef.current) {
-          syncedTargetRef.current = syncTargetRef.current?.id ?? null;
-        }
+        // Keep the saved page as the reading anchor, but do not mark the
+        // playing chapter handled. When Follow is on, chapter sync can move
+        // there immediately while a sentence map is still loading; the map
+        // refines the position afterward without delaying the first jump.
         // The chapter's pictures and web fonts arrive after the first
         // layout and push the text along, so the page epub.js first shows
         // for a remembered place is usually an earlier one. Check back while
@@ -2489,7 +2491,7 @@ export function EpubReadalong({
     setActiveHref(href);
     readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
-  }, [follow, isReady, syncTarget, toc]);
+  }, [follow, followRequest, isReady, syncTarget, toc]);
 
   const fragmentIndex = useMemo(
     () =>
@@ -2649,7 +2651,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, followRequest, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
