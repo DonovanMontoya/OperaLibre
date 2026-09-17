@@ -89,6 +89,9 @@ jobs:
       - name: Test
         run: npm test -w @operalibre/web
 
+      - name: Test development proxy
+        run: node --experimental-strip-types --test script/dev_proxy.test.mjs
+
       - name: Build
         run: npm run build -w @operalibre/web
 

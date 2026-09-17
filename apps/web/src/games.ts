@@ -20,6 +20,23 @@ export function randomWord(exclude?: string): string {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// The guess dictionary is 50 KB the rest of the app never needs, so it arrives
+// as its own chunk the first time the Word Grid opens.
+let guessWords: Promise<ReadonlySet<string> | null> | null = null;
+
+export function loadGuessWords(): Promise<ReadonlySet<string> | null> {
+  // A chunk that failed to arrive must not lock a player out of their own
+  // game: it resolves to null — no dictionary, no checking — and the next
+  // mount asks again.
+  guessWords ??= import("./guessWords")
+    .then((module) => module.GUESS_WORDS)
+    .catch(() => {
+      guessWords = null;
+      return null;
+    });
+  return guessWords;
+}
+
 export function scoreWord(guess: string, answer: string): LetterResult[] {
   const result: LetterResult[] = Array.from({ length: WORD_LENGTH }, () => "absent");
   const remaining = new Map<string, number>();

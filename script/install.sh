@@ -423,9 +423,9 @@ config_value() {
       last = substr(value, length(value), 1)
       if (length(value) >= 2 && first == last && (first == "\"" || first == "\047"))
         value = substr(value, 2, length(value) - 2)
-      print value
-      exit
+      found = 1
     }
+    END { if (found) print value }
   ' "$config"
 }
 
@@ -733,13 +733,16 @@ LIBATION_DOCS="https://donovanmontoya.github.io/OperaLibre/libation.html"
 LIBATION_CONFIGURED=""
 
 configured_libation_path() {
-  sed -n 's/^[[:space:]]*libation_cli_path[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' \
-    "${INSTALL_DIR}/server.config" 2>/dev/null | head -n 1
+  config_value libation_cli_path
 }
 
 configured_libation_files_dir() {
-  sed -n 's/^[[:space:]]*libation_files_dir[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' \
-    "${INSTALL_DIR}/server.config" 2>/dev/null | head -n 1
+  files_value=$(config_value libation_files_dir)
+  case "$files_value" in
+    "") ;;
+    /*) printf '%s' "$files_value" ;;
+    *) printf '%s' "${INSTALL_DIR}/${files_value}" ;;
+  esac
 }
 
 ensure_libation_files_dir() {
