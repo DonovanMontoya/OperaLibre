@@ -100,6 +100,39 @@ for (const resumedBeforeResponse of [false, true]) {
   });
 }
 
+test('a paused player returning to the foreground adopts a rewind from another device', async ({ page, server }) => {
+  const book = await setup(page, server);
+  await play(page);
+  const saved = await seekAndPause(page);
+  await expect.poll(async () => Math.abs((await server.progress(book.id))!.positionSeconds - saved)).toBeLessThan(1);
+  const visibility = (value: 'visible' | 'hidden') => page.evaluate(state => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, value);
+  await visibility('hidden');
+  await page.waitForLoadState('networkidle');
+  // Another device rewinds while this one is away, for longer than the
+  // periodic save interval: a resume that saved would stamp the stale spot.
+  await server.json(`/api/books/${book.id}/progress`, 'PUT', {
+    trackId: book.tracks[0].id,
+    positionSeconds: 20,
+    bookPositionSeconds: 20,
+    durationSeconds: 180,
+    intentionalRegression: true
+  });
+  await page.waitForTimeout(2500);
+  const staleWrites: number[] = [];
+  await page.route(`**/api/books/${book.id}/progress`, route => {
+    const body = route.request().method() === 'GET' ? null : route.request().postDataJSON();
+    if (body && Math.abs(body.positionSeconds - 20) >= 1) staleWrites.push(body.positionSeconds);
+    return route.continue();
+  });
+  await visibility('visible');
+  await expectResume(page, 20);
+  expect(Math.abs((await server.progress(book.id))!.positionSeconds - 20)).toBeLessThan(1);
+  expect(staleWrites).toEqual([]);
+});
+
 test('offline pause survives tab closure and synchronizes after reconnect', async ({ page, context, server }) => {
   const book = await setup(page, server);
   await play(page);
