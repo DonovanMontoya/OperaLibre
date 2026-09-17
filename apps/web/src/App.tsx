@@ -7838,7 +7838,7 @@ function MainApp({
     // start the first track — `currentTrack` falls back to track one while the
     // restored id is still resolving — which is the very thing being fixed.
     resumeAutoplayBookIdRef.current = book.id;
-    setPlayPending(true);
+    setPlayPending(true, book.id);
     setPlaybackBookId(book.id);
   }
 
@@ -8955,11 +8955,17 @@ function MainApp({
           autoResumePlayEventPendingRef.current = false;
           markPlaybackTouched(false, undefined, !automaticResume);
           engageGainChain(audioRef.current);
-          if (nativeAudio) nativePlaybackPlayingRef.current = true;
-          setPlayPending(false);
+          if (nativeAudio) {
+            nativePlaybackPlayingRef.current = true;
+            // Native's synthetic play event reflects AVPlayer already playing.
+            setPlayPending(false);
+          }
           setPlaybackError(null);
           setIsPlaying(true);
         }}
+        // Web media emits `play` as soon as paused becomes false; `playing`
+        // is the point buffering has ended and audible playback actually began.
+        onPlaying={() => setPlayPending(false)}
         onPause={() => {
           // Anything that plays after a pause is a fresh action, never the
           // automatic resume that flag was armed for.
