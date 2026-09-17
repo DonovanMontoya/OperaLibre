@@ -129,6 +129,7 @@ public final class AudiobookPlayer {
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
+    private var willEnterForegroundObserver: NSObjectProtocol?
     private var enteredBackgroundObserver: NSObjectProtocol?
     private var desiredRate: Float = 1
     /// The listener's per-book boost, separate from `player.volume` because
@@ -191,6 +192,7 @@ public final class AudiobookPlayer {
             interruptionObserver,
             routeChangeObserver,
             becameActiveObserver,
+            willEnterForegroundObserver,
             enteredBackgroundObserver
         ] {
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -944,6 +946,13 @@ public final class AudiobookPlayer {
         ) { [weak self] notification in
             self?.handleAudioRouteChange(notification)
         }
+        willEnterForegroundObserver = center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.emitForegroundClockEarly()
+        }
         becameActiveObserver = center.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
@@ -1006,6 +1015,30 @@ public final class AudiobookPlayer {
         ) { [weak self] _ in
             self?.persistCheckpoint(force: true)
         }
+    }
+
+    /// didBecomeActive only fires once the unlock or app-switch animation has
+    /// finished, so the WebView would show its pre-background clock for that
+    /// whole transition. Hand it the live clock as the app heads back to the
+    /// foreground instead; didBecomeActive still re-emits it afterwards.
+    ///
+    /// Only the plain case is sent early. A book that finished while away
+    /// reports its final state together with `ended`, and an interruption
+    /// that may still auto-resume would flash a pause the resume undoes.
+    /// A pending sleep-timer end or lock-screen seek must reach JS before the
+    /// clock it explains, and the WebView may not be listening yet (its
+    /// content process can be evicted in the background) — so those stay
+    /// queued for didBecomeActive, which delivers them in order.
+    private func emitForegroundClockEarly() {
+        guard
+            player != nil,
+            !finishedWhileInactive,
+            !sleepTimerFinishedWhileInactive,
+            !pendingRemoteIntentionalSeek,
+            !(wasPlayingBeforeInterruption && shouldAutoplay)
+        else { return }
+        emitTrackChanged()
+        emitState()
     }
 
     private func handleAudioInterruption(_ notification: Notification) {
