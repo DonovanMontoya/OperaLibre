@@ -845,7 +845,11 @@ public final class AudiobookPlayer {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            self.emitDeferredTransportEvents()
+            if self.sleepTimerFinishedWhileInactive {
+                self.sleepTimerFinishedWhileInactive = false
+                self.emit("sleepTimerEnded", data: [:])
+            }
+            self.emitRemoteIntentionalSeek()
             // Some short notification interruptions do not deliver their end
             // callback until the app is active again. Resume the exact native
             // clock if playback was running before that interruption — but
@@ -899,16 +903,6 @@ public final class AudiobookPlayer {
         }
     }
 
-    /// Events held back while the WebView was suspended that must reach JS
-    /// before the next clock, in this order. Each fires at most once.
-    private func emitDeferredTransportEvents() {
-        if sleepTimerFinishedWhileInactive {
-            sleepTimerFinishedWhileInactive = false
-            emit("sleepTimerEnded", data: [:])
-        }
-        emitRemoteIntentionalSeek()
-    }
-
     /// didBecomeActive only fires once the unlock or app-switch animation has
     /// finished, so the WebView would show its pre-background clock for that
     /// whole transition. Hand it the live clock as the app heads back to the
@@ -917,13 +911,18 @@ public final class AudiobookPlayer {
     /// Only the plain case is sent early. A book that finished while away
     /// reports its final state together with `ended`, and an interruption
     /// that may still auto-resume would flash a pause the resume undoes.
+    /// A pending sleep-timer end or lock-screen seek must reach JS before the
+    /// clock it explains, and the WebView may not be listening yet (its
+    /// content process can be evicted in the background) — so those stay
+    /// queued for didBecomeActive, which delivers them in order.
     private func emitForegroundClockEarly() {
         guard
             player != nil,
             !finishedWhileInactive,
+            !sleepTimerFinishedWhileInactive,
+            !pendingRemoteIntentionalSeek,
             !(wasPlayingBeforeInterruption && shouldAutoplay)
         else { return }
-        emitDeferredTransportEvents()
         emitTrackChanged()
         emitState()
     }
