@@ -70,6 +70,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var cover: UIView?
     // Last top-bar clearance handed to the page; -1 until it has one.
     private var sentTopClearance: CGFloat = -1
+    // Whether the page was last told the floating top bar (rather than a
+    // legacy bottom bar) is in play; nil until it has been told at all.
+    private var sentFloatingTopBar: Bool?
     // The color the visible screen carries, sent with every tab change. The
     // page covers the window, so this shows only where it cannot reach — a
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
@@ -139,6 +142,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         loadViewIfNeeded()
         // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
+        sentFloatingTopBar = nil
         applyChrome(chrome, bar: bar)
         if visible != navigationVisible && navigation.parent != nil {
             // Showing or hiding the bar resizes the web view, and the page
@@ -349,20 +353,20 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         let hostSafeTop = frame.minY
         frame.origin.y = view.bounds.minY
         frame.size.height = view.bounds.height
+        // The floating top bar (handled below by topClearance) only exists
+        // on iPad from iOS 18's `.tabBar` mode onward — set at viewDidLoad,
+        // gated the same way. Earlier iPadOS still renders a real bottom
+        // `tabBar`; the page needs to know which one is actually in play,
+        // both to skip the hidden legacy bottom frame iOS 18+ leaves behind
+        // and to keep its own bottom-anchored decoration (the fold) from
+        // running under a real bottom bar's frosted backdrop.
+        var usesFloatingTopBar = false
+        if #available(iOS 18.0, *) {
+            usesFloatingTopBar = traitCollection.userInterfaceIdiom == .pad
+        }
         var clearance: CGFloat = 0
         var topClearance: CGFloat = 0
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
-            // The floating top bar (handled below by topClearance) only
-            // exists on iPad from iOS 18's `.tabBar` mode onward — set at
-            // viewDidLoad, gated the same way. Earlier iPadOS still renders
-            // a real bottom `tabBar`, whose frame must keep reserving safe
-            // area there; only the iOS 18+ iPad case leaves a hidden legacy
-            // frame at the bottom that would wrongly reserve room nothing
-            // is using.
-            var usesFloatingTopBar = false
-            if #available(iOS 18.0, *) {
-                usesFloatingTopBar = traitCollection.userInterfaceIdiom == .pad
-            }
             if !usesFloatingTopBar {
                 let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
                 if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
@@ -389,6 +393,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             sentTopClearance = topClearance
             webView.evaluateJavaScript(
                 "document.documentElement.style.setProperty('--native-tabs-top', '\(Int(topClearance))px')")
+        }
+        if usesFloatingTopBar != sentFloatingTopBar, let webView = content.webView {
+            sentFloatingTopBar = usesFloatingTopBar
+            webView.evaluateJavaScript(
+                "document.documentElement.classList.toggle('floating-tabs', \(usesFloatingTopBar))")
         }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]
