@@ -7441,8 +7441,9 @@ function MainApp({
       )) return;
       autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
-      setPlayPending(false);
       audio.muted = false;
+      // This same request is about to continue on web audio. Keep its pending
+      // owner, timer, and second-tap cancellation until playback or an error.
       stageWebAudioFallback(audio, true);
       setPlaybackError(errorMessage(error, "Native audio playback failed."));
     });
