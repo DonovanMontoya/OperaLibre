@@ -12077,11 +12077,11 @@ html.native-app .recent-row {
     content: "";
     position: absolute;
     top: 0;
-    /* The tab bar floats above the page here rather than sitting in a
-       full-width bottom strip, so nothing needs the seam to duck under
-       it — running it to the true edge avoids a visible cutoff line
-       just above the mini-player. */
-    bottom: 0;
+    /* Stops at the tab bar rather than running under it on the devices
+       that still render one at the bottom (see the .floating-tabs
+       override below): the bar is frosted (backdrop-filter), so anything
+       left behind it gets blurred up into the bar as a smudge at the seam. */
+    bottom: var(--tabs-h);
     left: calc(var(--verso-w) - var(--gutter) / 2);
     width: var(--gutter);
     z-index: 4;
@@ -12105,6 +12105,17 @@ html.native-app .recent-row {
     background-size: 1.5px 26px, 100% 100%;
     background-position: center top, 0 0;
     background-repeat: repeat-y, no-repeat;
+  }
+
+  /* The tab bar floats above the page instead of sitting in a full-width
+     bottom strip only once iOS 18's top-floating presentation is actually
+     active (set by the native shell as html.floating-tabs); earlier iPadOS
+     still renders a real bottom bar the fold must duck under, above. Here,
+     nothing needs the seam to stop early, so running it to the true edge
+     avoids a visible cutoff line just above the mini-player. */
+  html.native-app.floating-tabs .native-shell.tab-shelf::after,
+  html.native-app.floating-tabs .native-shell.tab-reading::after {
+    bottom: 0;
   }
 
   /* The recto carries the full transport whenever it is showing the
