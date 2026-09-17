@@ -167,6 +167,10 @@ public final class AudiobookPlayer {
     private var queuedItems: [AVPlayerItem] = []
     private var activeQueueIndex = 0
     private var initialSeekComplete = false
+    /// The active item has reached a real position since loading. Until then a
+    /// seek that never lands must keep reporting the resume target, not 0:00.
+    private var positionEstablished = false
+    private var seekSerial = 0
     private var finishedWhileInactive = false
     private var finishedPositionSeconds: Double?
     private var finishedDurationSeconds: Double?
@@ -259,6 +263,7 @@ public final class AudiobookPlayer {
             self.queuedTracks = requestedQueue
             self.activeQueueIndex = 0
             self.initialSeekComplete = false
+            self.positionEstablished = false
             self.pendingRemoteIntentionalSeek = false
             self.finishedWhileInactive = false
             self.finishedPositionSeconds = nil
@@ -353,17 +358,24 @@ public final class AudiobookPlayer {
         pendingPosition = position
         initialSeekComplete = false
         guard let player, let item = player.currentItem else { return }
-        let seekGeneration = generation
         if intentional {
             pendingRemoteIntentionalSeek = true
             monitor?.audiobookPlayerDidSeekDeliberately(self)
         }
-        player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-            guard let self, finished, seekGeneration == self.generation,
-                  player === self.player, player.currentItem === item else { return }
+        seekCurrentItem(player, item: item, to: position) { [weak self] reached in
+            guard let self else { return }
+            // A seek that never lands leaves the audio where it was. Once this
+            // item has a real position, follow that audio rather than freezing
+            // the clock and checkpoints at the unreached target.
+            guard reached || self.positionEstablished else { return }
             self.initialSeekComplete = true
+            self.positionEstablished = true
             self.lastKnownPosition = self.finiteSeconds(player.currentTime())
+            if !reached {
+                // The audio did not move, so there is no deliberate jump to authorize.
+                self.pendingPosition = self.lastKnownPosition
+                self.pendingRemoteIntentionalSeek = false
+            }
             // Publish the intentional seek before state can persist a backwards
             // jump. React uses that event to authorize a deliberate rewind.
             if UIApplication.shared.applicationState == .active {
@@ -375,7 +387,37 @@ public final class AudiobookPlayer {
                 player.playImmediately(atRate: self.desiredRate)
             }
             item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
+            self.prepareBoostForNextQueuedItem()
             self.updateNowPlayingInfo()
+        }
+    }
+
+    /// Seeks the current item exactly. A seek superseded by a newer one leaves
+    /// readiness to that seek; one interrupted by anything else is retried, and
+    /// `completion(false)` reports a target that still was not reached.
+    private func seekCurrentItem(
+        _ player: AVPlayer,
+        item: AVPlayerItem,
+        to position: Double,
+        attempts: Int = 3,
+        completion: @escaping (Bool) -> Void
+    ) {
+        seekSerial += 1
+        let serial = seekSerial
+        let seekGeneration = generation
+        player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            guard let self, serial == self.seekSerial, seekGeneration == self.generation,
+                  player === self.player, player.currentItem === item else { return }
+            if finished || item.status != .readyToPlay {
+                // An item that is not ready yet runs its resume seek from the
+                // status observer; that seek owns readiness.
+                if finished { completion(true) }
+            } else if attempts > 1 {
+                self.seekCurrentItem(player, item: item, to: position, attempts: attempts - 1, completion: completion)
+            } else {
+                completion(false)
+            }
         }
     }
 
@@ -450,6 +492,9 @@ public final class AudiobookPlayer {
             if let item = self.player?.currentItem {
                 self.applyBoost(to: item, gain: gain)
             }
+            if self.positionEstablished {
+                self.prepareBoostForNextQueuedItem()
+            }
         }
     }
 
@@ -499,6 +544,15 @@ public final class AudiobookPlayer {
 
     private func emit(_ event: String, data: [String: Any]) {
         observer?.audiobookPlayer(self, didEmit: event, data: data)
+    }
+
+    /// Mix the following file before the queue advances into it, so a boosted
+    /// book does not start each file at the unboosted level. Deferred until the
+    /// active file has settled so it does not compete with startup.
+    private func prepareBoostForNextQueuedItem() {
+        let next = activeQueueIndex + 1
+        guard queuedItems.indices.contains(next) else { return }
+        applyBoost(to: queuedItems[next], gain: boostGain)
     }
 
     /// `AVPlayer.volume` is capped at unity, so a book mastered quiet is lifted
@@ -574,11 +628,13 @@ public final class AudiobookPlayer {
                 guard let self, let item, generation == self.generation else { return }
                 switch item.status {
                 case .readyToPlay:
-                    let target = CMTime(seconds: self.pendingPosition, preferredTimescale: 600)
-                    let ready: (Bool) -> Void = { [weak self] finished in
-                        guard let self, finished, generation == self.generation,
+                    let ready: (Bool) -> Void = { [weak self] reached in
+                        // An unreached resume seek keeps reporting its target
+                        // rather than persisting where the audio happens to be.
+                        guard let self, reached, generation == self.generation,
                               player === self.player, player.currentItem === item else { return }
                         self.initialSeekComplete = true
+                        self.positionEstablished = true
                         if UIApplication.shared.applicationState == .active {
                             self.emitRemoteIntentionalSeek()
                         }
@@ -588,13 +644,14 @@ public final class AudiobookPlayer {
                             player.playImmediately(atRate: self.desiredRate)
                         }
                         item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
+                        self.prepareBoostForNextQueuedItem()
                         self.persistCheckpoint(force: true)
                         self.updateNowPlayingInfo()
                     }
                     if self.pendingPosition == 0 {
                         ready(true)
                     } else {
-                        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: ready)
+                        self.seekCurrentItem(player, item: item, to: self.pendingPosition, completion: ready)
                     }
                 case .failed:
                     self.emitError(item.error?.localizedDescription ?? "The audio track could not be loaded.")
@@ -639,6 +696,8 @@ public final class AudiobookPlayer {
                 else { return }
                 self.activateQueuedTrack(at: index)
                 self.initialSeekComplete = true
+                self.positionEstablished = true
+                self.prepareBoostForNextQueuedItem()
                 self.pendingRemoteIntentionalSeek = false
                 self.persistCheckpoint(force: true)
                 self.updateNowPlayingInfo()
