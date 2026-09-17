@@ -84,6 +84,16 @@ const KNOWN_DEV_PROXY_PORTS = ["4920", "4000"];
 const CURRENT_DEV_PROXY_PORT =
   typeof __OPERALIBRE_DEV_PROXY_PORT__ !== "undefined" ? __OPERALIBRE_DEV_PROXY_PORT__ : "";
 
+// URL elides the scheme's default port (80 for http, 443 for https), so a
+// server.config port of 80 would otherwise compare equal to "no configured
+// port" below. Recover the port that was actually configured.
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  if (url.protocol === "http:") return "80";
+  if (url.protocol === "https:") return "443";
+  return "";
+}
+
 export function browserApiBase(
   serverUrl: string,
   browserOrigin: string,
@@ -92,11 +102,12 @@ export function browserApiBase(
   try {
     const server = new URL(normalizeServerAddress(serverUrl));
     const browser = new URL(browserOrigin);
+    const serverPort = effectivePort(server);
     const usesViteDevelopmentProxy = browser.port === "5173"
       && server.protocol === browser.protocol
       && server.hostname === browser.hostname
-      && (KNOWN_DEV_PROXY_PORTS.includes(server.port)
-        || (currentDevProxyPort !== "" && server.port === currentDevProxyPort));
+      && (KNOWN_DEV_PROXY_PORTS.includes(serverPort)
+        || (currentDevProxyPort !== "" && serverPort === currentDevProxyPort));
     return usesViteDevelopmentProxy ? browser.origin : serverUrl;
   } catch {
     return serverUrl;
