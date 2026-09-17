@@ -2,6 +2,7 @@ import { hasPlaybackSource } from "./nativeAudioStartup";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
+import { ownsPendingPlay } from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
@@ -7390,6 +7391,10 @@ function MainApp({
       return;
     }
     markPlaybackTouched(false, undefined, interruptRestore);
+    const pendingRequest = {
+      bookId: playbackBookIdRef.current,
+      cancelGeneration: playCancelGenerationRef.current
+    };
     if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) setPlayPending(true);
     // Let the element's `play` event tell an automatic Shelf-Resume start
     // apart from a listener's tap. A rejected start clears it again so the
@@ -7398,12 +7403,22 @@ function MainApp({
     engageGainChain(audio);
     if (!nativeAudio) {
       audio.play().catch(() => {
+        if (!ownsPendingPlay(
+          pendingRequest,
+          playCancelGenerationRef.current,
+          playPendingBookIdRef.current
+        )) return;
         autoResumePlayEventPendingRef.current = false;
         setPlayPending(false);
       });
       return;
     }
     void playNativeAudio().catch((error) => {
+      if (!ownsPendingPlay(
+        pendingRequest,
+        playCancelGenerationRef.current,
+        playPendingBookIdRef.current
+      )) return;
       autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
       setPlayPending(false);
