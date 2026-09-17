@@ -1,23 +1,28 @@
 import { spawn } from "node:child_process";
+import { devServerEnvironment, repositoryRoot } from "./dev_proxy.mjs";
+
+const childOptions = {
+  stdio: "inherit",
+  cwd: repositoryRoot,
+  env: devServerEnvironment()
+};
 
 function spawnNpm(args) {
   // npm is a .cmd shim on Windows, which child_process.spawn() cannot resolve
   // like an interactive shell does. npm exposes its real JavaScript entry
   // point to lifecycle scripts, so run that with the current Node executable.
   if (process.env.npm_execpath) {
-    return spawn(process.execPath, [process.env.npm_execpath, ...args], {
-      stdio: "inherit"
-    });
+    return spawn(process.execPath, [process.env.npm_execpath, ...args], childOptions);
   }
 
   return spawn(process.platform === "win32" ? "npm.cmd" : "npm", args, {
-    stdio: "inherit",
+    ...childOptions,
     shell: process.platform === "win32"
   });
 }
 
 const children = [
-  spawn("cargo", ["run", "--manifest-path", "apps/server/Cargo.toml"], { stdio: "inherit" }),
+  spawn("cargo", ["run", "--manifest-path", "apps/server/Cargo.toml"], childOptions),
   spawnNpm(["run", "dev", "-w", "@operalibre/web"])
 ];
 
