@@ -8,6 +8,8 @@ type SyncActions = {
    * Redraw the progress bar from the media element's live clock. Web audio
    * keeps playing in the background but its first tick after resume can land
    * a frame late; the native player's clock arrives on its own event instead.
+   * Display only: a save queued here would block the server adoption below
+   * and could stamp a stale paused position over another device's rewind.
    */
   refreshClock(): void;
 };
