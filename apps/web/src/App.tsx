@@ -7391,12 +7391,14 @@ function MainApp({
     if (!nativeAudio) {
       audio.play().catch(() => {
         autoResumePlayEventPendingRef.current = false;
+        setPlayPending(false);
       });
       return;
     }
     void playNativeAudio().catch((error) => {
       autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
+      setPlayPending(false);
       audio.muted = false;
       stageWebAudioFallback(audio, true);
       setPlaybackError(errorMessage(error, "Native audio playback failed."));
@@ -7603,12 +7605,7 @@ function MainApp({
 
     haptic("medium");
     if (playPendingRef.current) {
-      // Still waiting on the stream: this tap takes the start back.
-      playCancelGenerationRef.current += 1;
-      wantsAutoplayRef.current = false;
-      playWhenTrackLoads.current = false;
-      resumeAutoplayPendingRef.current = false;
-      pausePlayback(audio);
+      cancelPendingPlayback(audio);
       return;
     }
     // A disk lookup may still be resolving. Native readiness uses the
@@ -7623,6 +7620,16 @@ function MainApp({
     } else {
       pausePlayback(audio);
     }
+  }
+
+  function cancelPendingPlayback(audio: HTMLAudioElement | null | undefined) {
+    // Still waiting on the stream: this tap takes the start back. The
+    // generation also prevents an async shelf progress check from re-arming it.
+    playCancelGenerationRef.current += 1;
+    wantsAutoplayRef.current = false;
+    playWhenTrackLoads.current = false;
+    resumeAutoplayPendingRef.current = false;
+    pausePlayback(audio);
   }
 
   function selectBook(book: Book) {
@@ -7757,6 +7764,12 @@ function MainApp({
    */
   async function playSelectedBook(book: Book) {
     haptic("medium");
+    if (playPendingRef.current) {
+      cancelPendingPlayback(audioRef.current);
+      return;
+    }
+    const cancelGeneration = playCancelGenerationRef.current;
+    setPlayPending(true);
     if (!shouldResumeSavedPosition(book.progress)) {
       // The listing summary can lag the server (a cached shelf, a session on
       // another device since the last refresh). Before "Begin this reading"
@@ -7764,6 +7777,7 @@ function MainApp({
       // the server would honour — ask for the live copy, briefly. Offline or
       // unanswered, the summary stands as before.
       const inProgressElsewhere = await freshProgressBeforeStartingOver(book);
+      if (playCancelGenerationRef.current !== cancelGeneration) return;
       if (inProgressElsewhere) {
         updateBookProgress(book.id, inProgressElsewhere);
         resumeSelectedBook(book);
@@ -7771,6 +7785,7 @@ function MainApp({
       }
       // "Read it again" on a finished book, or one never opened: track one.
       if (book.tracks[0]) selectTrack(book.tracks[0]);
+      else setPlayPending(false);
       return;
     }
     resumeSelectedBook(book);
