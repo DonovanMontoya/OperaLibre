@@ -192,6 +192,7 @@ import {
   bookMatchesShelfDownload,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
+  compareShelfAddedAt,
   countActiveShelfFilters,
   countShelfFacet,
   EMPTY_SHELF_FILTERS,
@@ -2504,6 +2505,13 @@ export function EpubReadalong({
     if (!isReady || !rendition || !location) {
       return;
     }
+    if (highlightedFragmentRef.current !== fragmentIndex) {
+      removeAnnotation(highlightCfiRef.current);
+      highlightCfiRef.current = null;
+      highlightThemeRef.current = null;
+      narratedRangeRef.current = null;
+      lastKeepRef.current = null;
+    }
     const fragment = syncFragments[fragmentIndex];
     const currentHref = location.start?.href ?? "";
     if (!hrefsMatch(currentHref, fragment.href)) {
@@ -2601,7 +2609,6 @@ export function EpubReadalong({
       return;
     }
     searchCursorRef.current = found.endOffset;
-    narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
 
     let cfi: string;
     try {
@@ -2609,7 +2616,6 @@ export function EpubReadalong({
     } catch {
       return;
     }
-    removeAnnotation(highlightCfiRef.current);
     rendition.annotations.highlight(
       cfi,
       {},
@@ -2617,6 +2623,7 @@ export function EpubReadalong({
       "readalong-highlight",
       sentenceStyle
     );
+    narratedRangeRef.current = { index, start: found.endOffset - needle.length, length: needle.length, contents };
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
@@ -2876,9 +2883,9 @@ export function EpubReadalong({
           </select></label>
         ) : null}
       </div>
-      {fullscreen ? (
-        <div className="epub-stage-wrap">
-          {stage}
+      <div className="epub-stage-wrap">
+        {stage}
+        {fullscreen ? (
           <div
             className="epub-tapzones"
             onPointerDown={handleOverlayPointerDown}
@@ -2889,10 +2896,8 @@ export function EpubReadalong({
             <span className="epub-tapzone epub-tapzone-prev" />
             <span className="epub-tapzone epub-tapzone-next" />
           </div>
-        </div>
-      ) : (
-        stage
-      )}
+        ) : null}
+      </div>
       {fullscreen ? (
         <footer className="epub-bottombar">
           <div className="epub-pagebar" aria-hidden="true">
@@ -4359,7 +4364,7 @@ function MainApp({
           // A book cached or imported before this field existed has no addedAt
           // once it round-trips through storage, even though the type says it
           // always does; treat that as the oldest possible addition.
-          return compareShelfLabels(b.addedAt, a.addedAt) || a.title.localeCompare(b.title);
+          return compareShelfAddedAt(a.addedAt, b.addedAt) || a.title.localeCompare(b.title);
         case "title":
         default:
           return a.title.localeCompare(b.title);

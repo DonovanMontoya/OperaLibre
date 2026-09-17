@@ -163,6 +163,12 @@ export function tagForShelfSort(book: Book, selected: string[]) {
   return tags[0];
 }
 
+export function compareShelfAddedAt(left: string | null | undefined, right: string | null | undefined) {
+  const leftTime = Date.parse(left ?? "");
+  const rightTime = Date.parse(right ?? "");
+  return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+}
+
 export function countActiveShelfFilters(filters: ShelfFilters) {
   return (filters.status === "all" ? 0 : 1)
     + (filters.downloadedOnly ? 1 : 0)
