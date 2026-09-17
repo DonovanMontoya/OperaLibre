@@ -2,6 +2,11 @@ import { hasPlaybackSource } from "./nativeAudioStartup";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
+import {
+  ownsPendingPlay,
+  playbackEventOwnsPendingPlay,
+  playbackIntentBelongsToBook
+} from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
@@ -136,6 +141,7 @@ import {
   resolveActivePlaybackBookId,
   resolveBookId,
   resolveProgressLocation,
+  saveWasOverruled,
   shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
   summarizeBookProgress,
@@ -877,6 +883,8 @@ function safePlay(audio: HTMLAudioElement | null | undefined) {
 const START_OVER_PROGRESS_CHECK_MS = 2_500;
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
+// How long a Play still waiting on the stream shows as loading.
+const PLAY_PENDING_LIMIT_MS = 45_000;
 
 type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account" | "added";
 type LibrarySource = "local" | "audible" | "libro" | "all";
@@ -1620,6 +1628,9 @@ export function EpubReadalong({
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
   const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  // Bumped when the listener explicitly asks to return. Follow may already be
+  // on, so setting the same boolean is not enough to rerun navigation.
+  const [followRequest, setFollowRequest] = useState(0);
   // Follow as of the latest decision rather than the latest render. A page
   // turned by hand stops following at once; an effect still holding the
   // rendered value must not move the page back before React catches up.
@@ -1719,6 +1730,7 @@ export function EpubReadalong({
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
+    setFollowRequest((request) => request + 1);
   }, []);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
@@ -2260,12 +2272,10 @@ export function EpubReadalong({
             await rendition.display();
           }
         }
-        // The listener left off here, so this is where the book opens; the
-        // chapter being played counts as already handled. It takes the page
-        // only once the narration moves on to a different chapter.
-        if (anchorCfiRef.current) {
-          syncedTargetRef.current = syncTargetRef.current?.id ?? null;
-        }
+        // Keep the saved page as the reading anchor, but do not mark the
+        // playing chapter handled. When Follow is on, chapter sync can move
+        // there immediately while a sentence map is still loading; the map
+        // refines the position afterward without delaying the first jump.
         // The chapter's pictures and web fonts arrive after the first
         // layout and push the text along, so the page epub.js first shows
         // for a remembered place is usually an earlier one. Check back while
@@ -2483,10 +2493,15 @@ export function EpubReadalong({
       return;
     }
     syncedTargetRef.current = syncTarget.id;
+    // Following has taken ownership from the remembered reading page. Let the
+    // relocation establish a new anchor in the narrated chapter so the
+    // post-open settling loop cannot pull the reader back a moment later.
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
     setActiveHref(href);
     readerDebugLog(`chapterJump ${href}`);
     void renditionRef.current?.display(href);
-  }, [follow, isReady, syncTarget, toc]);
+  }, [follow, followRequest, isReady, syncTarget, toc]);
 
   const fragmentIndex = useMemo(
     () =>
@@ -2646,7 +2661,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, followRequest, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -3909,6 +3924,10 @@ function MainApp({
   const resumeAutoplayPendingRef = useRef(false);
   const resumeReconciliationBookIdRef = useRef<string | null>(null);
   const foregroundAdoptInFlightRef = useRef(false);
+  // Per book, a save the server overruled while the player still sits on it:
+  // its healed checkpoint already matches the server, so adoption measures
+  // against this instead. Any newer local checkpoint supersedes it.
+  const overruledSaveRef = useRef(new Map<string, Progress>());
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
   // Authentication can be restored synchronously, but the native destination
@@ -3961,6 +3980,32 @@ function MainApp({
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  // Play was asked for but no audio is coming out yet — a streamed book can
+  // take seconds to buffer. The buttons show it so a tap never looks ignored,
+  // and a second tap cancels instead of queueing another start.
+  const [playPending, setPlayPendingState] = useState(false);
+  const playPendingRef = useRef(false);
+  const playPendingBookIdRef = useRef<string | null>(null);
+  const playPendingTimerRef = useRef<number | null>(null);
+  // Bumped when a waiting Play is taken back, so a restore still running for
+  // a shelf Resume does not start the book the listener just cancelled.
+  const playCancelGenerationRef = useRef(0);
+  const setPlayPending = (pending: boolean, bookId = playbackBookIdRef.current) => {
+    if (playPendingTimerRef.current !== null) {
+      window.clearTimeout(playPendingTimerRef.current);
+      playPendingTimerRef.current = null;
+    }
+    // A start that never arrives must not leave the ring spinning for good.
+    if (pending) {
+      playPendingTimerRef.current = window.setTimeout(
+        () => cancelPendingPlayback(audioRef.current),
+        PLAY_PENDING_LIMIT_MS
+      );
+    }
+    playPendingRef.current = pending;
+    playPendingBookIdRef.current = pending ? bookId : null;
+    setPlayPendingState(pending);
+  };
   const nativePlaybackPlayingRef = useRef(false);
   const [speed, setSpeed] = useState(readStoredSpeed);
   const [volume, setVolume] = useState(0.9);
@@ -5898,6 +5943,9 @@ function MainApp({
     resumeAutoplayBookIdRef.current = null;
     const restoreVersion = progressMutationVersion.current;
     const restoreActionVersion = playbackActionVersionRef.current;
+    const restoreCancelGeneration = playCancelGenerationRef.current;
+    // Restoring places the player afresh; an earlier refused position is moot.
+    overruledSaveRef.current.delete(playbackBook.id);
     if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null) => {
       if (
@@ -5922,7 +5970,7 @@ function MainApp({
       // The restored track and position are now known, so a queued shelf
       // Resume can safely play: both places that consume this flag apply the
       // pending seek before starting.
-      if (armResumeAutoplay) {
+      if (armResumeAutoplay && playCancelGenerationRef.current === restoreCancelGeneration) {
         playWhenTrackLoads.current = true;
         resumeAutoplayPendingRef.current = true;
       }
@@ -6128,10 +6176,19 @@ function MainApp({
     nativeAudioAttachedRef.current = true;
     return attachNativeAudioPlayer(
       audio,
-      (message) => setPlaybackError(message),
+      (message) => {
+        setPlaybackError(message);
+      },
       (position, resume) => {
+        const ownsIntent = playbackEventOwnsPendingPlay(
+          playPendingRef.current,
+          playPendingBookIdRef.current,
+          playbackBook.id
+        );
+        const resumeThisBook = resume && ownsIntent;
         setPendingSeek({ trackId: currentTrack.id, positionSeconds: position });
-        playWhenTrackLoads.current = resume;
+        playWhenTrackLoads.current = resumeThisBook;
+        if (ownsIntent) setPlayPending(resumeThisBook, playbackBook.id);
         setNativeAudioFailed(true);
       },
       {
@@ -6143,6 +6200,12 @@ function MainApp({
         queue: () => nativeAudioQueueRef.current,
         pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
           ? pendingSeekRef.current.positionSeconds : undefined,
+        wantsPlayback: () => playbackIntentBelongsToBook(
+          playPendingRef.current,
+          playPendingBookIdRef.current,
+          playbackBook.id,
+          wantsAutoplayRef.current || playWhenTrackLoads.current
+        ),
         gain: () => playbackGainRef.current,
         sleepTimerSeconds: () => {
           const deadline = sleepDeadlineRef.current;
@@ -6575,6 +6638,7 @@ function MainApp({
       finishedOverride: playbackBook.progress?.finishedOverride ?? null
     };
     if (!reconciling) progressMutationVersion.current += 1;
+    overruledSaveRef.current.delete(playbackBook.id);
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
     void cacheProgress(currentUser.id, localProgress).catch(() => undefined);
     if (playbackBook.deviceBookId) {
@@ -6670,6 +6734,12 @@ function MainApp({
             // wins every restart and is retried indefinitely.
             const book = books.find((candidate) => candidate.id === entry.bookId);
             if (book) storeCanonicalServerProgress(book, saved);
+            if (saveWasOverruled(entry.progress, saved)) {
+              overruledSaveRef.current.set(entry.bookId, entry.progress);
+              // Move an idle player off the refused position now, not at the
+              // next resume. Adoption waits for the rest of this drain.
+              void foregroundProgressActionsRef.current.adoptNewerServerProgress();
+            }
           }
         } catch {
           // The synchronous checkpoint and IndexedDB copy already contain the
@@ -6837,7 +6907,20 @@ function MainApp({
       return;
     }
     const isPaused = nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused;
-    if (!isPaused || queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
+    if (!isPaused) {
+      return;
+    }
+    if (queuedProgressSaves.current.size > 0 || progressSaveDrainPromiseRef.current) {
+      // The save a pause makes on its way to the background is suspended with
+      // the WebView and often lands only after resume. Giving up here lost the
+      // handoff for the whole session, and the next Play resumed the stale
+      // position. Ask again once the queue settles.
+      const pendingGeneration = nativeForegroundSyncGateRef.current.generation;
+      void flushProgressSaveQueue().then(() => {
+        if (nativeForegroundSyncGateRef.current.generation === pendingGeneration) {
+          void foregroundProgressActionsRef.current.adoptNewerServerProgress();
+        }
+      });
       return;
     }
     const foregroundGeneration = nativeForegroundSyncGateRef.current.generation;
@@ -6866,7 +6949,14 @@ function MainApp({
         currentUser.id,
         book.id
       );
-      const adopted = adoptableServerProgress(freshestProgress(checkpoint, cached), server);
+      // A refused save can carry the fresher timestamp — resuming re-stamps an
+      // unchanged position — so it is measured by distance alone: the server
+      // already vetted its own copy when it refused ours.
+      const overruled = overruledSaveRef.current.get(book.id);
+      overruledSaveRef.current.delete(book.id);
+      const adopted = overruled
+        ? saveWasOverruled(overruled, server) ? server : null
+        : adoptableServerProgress(freshestProgress(checkpoint, cached), server);
       if (!adopted) return;
       const location = resolveProgressLocation(book.tracks, adopted);
       if (!location) return;
@@ -7321,6 +7411,11 @@ function MainApp({
       return;
     }
     markPlaybackTouched(false, undefined, interruptRestore);
+    const pendingRequest = {
+      bookId: playbackBookIdRef.current,
+      cancelGeneration: playCancelGenerationRef.current
+    };
+    if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) setPlayPending(true);
     // Let the element's `play` event tell an automatic Shelf-Resume start
     // apart from a listener's tap. A rejected start clears it again so the
     // next play event — a real tap — counts as one.
@@ -7328,20 +7423,34 @@ function MainApp({
     engageGainChain(audio);
     if (!nativeAudio) {
       audio.play().catch(() => {
+        if (!ownsPendingPlay(
+          pendingRequest,
+          playCancelGenerationRef.current,
+          playPendingBookIdRef.current
+        )) return;
         autoResumePlayEventPendingRef.current = false;
+        setPlayPending(false);
       });
       return;
     }
     void playNativeAudio().catch((error) => {
+      if (!ownsPendingPlay(
+        pendingRequest,
+        playCancelGenerationRef.current,
+        playPendingBookIdRef.current
+      )) return;
       autoResumePlayEventPendingRef.current = false;
       nativePlaybackPlayingRef.current = false;
       audio.muted = false;
+      // This same request is about to continue on web audio. Keep its pending
+      // owner, timer, and second-tap cancellation until playback or an error.
       stageWebAudioFallback(audio, true);
       setPlaybackError(errorMessage(error, "Native audio playback failed."));
     });
   }
 
   function pausePlayback(audio: HTMLAudioElement | null | undefined) {
+    setPlayPending(false);
     if (!audio) return;
     // While the car owns the player, the element is all this app controls.
     // Pausing the native player here would stop the driver's book, and this
@@ -7529,6 +7638,7 @@ function MainApp({
       return;
     }
     wantsAutoplayRef.current = true;
+    setPlayPending(true);
   }
 
   function togglePlayback() {
@@ -7538,10 +7648,15 @@ function MainApp({
     }
 
     haptic("medium");
+    if (playPendingRef.current) {
+      cancelPendingPlayback(audio);
+      return;
+    }
     // A disk lookup may still be resolving. Native readiness uses the
     // stream URL, never the intentionally absent web element src.
     if (!hasPlaybackSource(audio, nativeAudio, streamUrl)) {
       wantsAutoplayRef.current = true;
+      setPlayPending(true);
       return;
     }
     if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) {
@@ -7549,6 +7664,26 @@ function MainApp({
     } else {
       pausePlayback(audio);
     }
+  }
+
+  function clearPlayPendingForBook(bookId: string | null) {
+    if (playbackEventOwnsPendingPlay(
+      playPendingRef.current,
+      playPendingBookIdRef.current,
+      bookId
+    )) setPlayPending(false);
+  }
+
+  function cancelPendingPlayback(audio: HTMLAudioElement | null | undefined) {
+    // Still waiting on the stream: this tap takes the start back. The
+    // generation also prevents an async shelf progress check from re-arming it.
+    const pendingOwnsActiveBook = playPendingBookIdRef.current === playbackBookIdRef.current;
+    playCancelGenerationRef.current += 1;
+    wantsAutoplayRef.current = false;
+    playWhenTrackLoads.current = false;
+    resumeAutoplayPendingRef.current = false;
+    if (pendingOwnsActiveBook) pausePlayback(audio);
+    else setPlayPending(false);
   }
 
   function selectBook(book: Book) {
@@ -7683,6 +7818,15 @@ function MainApp({
    */
   async function playSelectedBook(book: Book) {
     haptic("medium");
+    if (playPendingRef.current) {
+      const pendingBookId = playPendingBookIdRef.current;
+      cancelPendingPlayback(audioRef.current);
+      // A second activation of the same shelf action is cancellation. A tap
+      // on another book replaces the old pending request in one action.
+      if (pendingBookId === book.id) return;
+    }
+    const cancelGeneration = playCancelGenerationRef.current;
+    setPlayPending(true, book.id);
     if (!shouldResumeSavedPosition(book.progress)) {
       // The listing summary can lag the server (a cached shelf, a session on
       // another device since the last refresh). Before "Begin this reading"
@@ -7690,6 +7834,7 @@ function MainApp({
       // the server would honour — ask for the live copy, briefly. Offline or
       // unanswered, the summary stands as before.
       const inProgressElsewhere = await freshProgressBeforeStartingOver(book);
+      if (playCancelGenerationRef.current !== cancelGeneration) return;
       if (inProgressElsewhere) {
         updateBookProgress(book.id, inProgressElsewhere);
         resumeSelectedBook(book);
@@ -7697,6 +7842,7 @@ function MainApp({
       }
       // "Read it again" on a finished book, or one never opened: track one.
       if (book.tracks[0]) selectTrack(book.tracks[0]);
+      else setPlayPending(false);
       return;
     }
     resumeSelectedBook(book);
@@ -7740,6 +7886,7 @@ function MainApp({
     // start the first track — `currentTrack` falls back to track one while the
     // restored id is still resolving — which is the very thing being fixed.
     resumeAutoplayBookIdRef.current = book.id;
+    setPlayPending(true, book.id);
     setPlaybackBookId(book.id);
   }
 
@@ -7817,6 +7964,7 @@ function MainApp({
     }
     if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
       playWhenTrackLoads.current = false;
+      setPlayPending(false);
       setIsPlaying(false);
       if (playbackBook && currentTrack) {
         const mediaDuration = audioRef.current?.duration;
@@ -8823,6 +8971,7 @@ function MainApp({
                 ? "Playback lost its connection to the audiobook server."
                 : "This audio track could not be loaded.";
           setIsPlaying(false);
+          clearPlayPendingForBook(playbackBookId);
           setPlaybackError(message);
           // The element keeps paused=false after a media error, so the
           // toggle read "playing" and needed two taps. On iOS the element is
@@ -8854,10 +9003,17 @@ function MainApp({
           autoResumePlayEventPendingRef.current = false;
           markPlaybackTouched(false, undefined, !automaticResume);
           engageGainChain(audioRef.current);
-          if (nativeAudio) nativePlaybackPlayingRef.current = true;
+          if (nativeAudio) {
+            nativePlaybackPlayingRef.current = true;
+            // Native's synthetic play event reflects AVPlayer already playing.
+            clearPlayPendingForBook(playbackBookId);
+          }
           setPlaybackError(null);
           setIsPlaying(true);
         }}
+        // Web media emits `play` as soon as paused becomes false; `playing`
+        // is the point buffering has ended and audible playback actually began.
+        onPlaying={() => clearPlayPendingForBook(playbackBookId)}
         onPause={() => {
           // Anything that plays after a pause is a fresh action, never the
           // automatic resume that flag was armed for.
@@ -9922,11 +10078,13 @@ function MainApp({
                   </button>
                   <button
                     type="button"
-                    className="native-now-play"
-                    aria-label={isPlaying ? "Pause" : "Play"}
+                    className={`native-now-play${playPending ? " play-pending" : ""}`}
+                    aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
+                    aria-busy={playPending}
                     onClick={togglePlayback}
                   >
-                    {isPlaying ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
+                    {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
+                    {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
                   </button>
                   <button
                     type="button"
@@ -10437,8 +10595,14 @@ function MainApp({
                     <RotateCcw size={22} strokeWidth={1.7} />
                     <small>15s</small>
                   </button>
-                  <button className="round-button primary" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
-                    {isPlaying ? <Pause size={30} fill="currentColor" /> : <Play size={30} fill="currentColor" />}
+                  <button
+                    className={`round-button primary${playPending ? " play-pending" : ""}`}
+                    aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
+                    aria-busy={playPending}
+                    onClick={togglePlayback}
+                  >
+                    {isPlaying || playPending ? <Pause size={30} fill="currentColor" /> : <Play size={30} fill="currentColor" />}
+                    {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
                   </button>
                   <button
                     className="round-button secondary transport-skip"
@@ -10817,8 +10981,15 @@ function MainApp({
               <RotateCcw size={16} />
               <small>15</small>
             </button>
-            <button type="button" className="mini-play" aria-label={isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
-              {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+            <button
+              type="button"
+              className={`mini-play${playPending ? " play-pending" : ""}`}
+              aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
+              aria-busy={playPending}
+              onClick={togglePlayback}
+            >
+              {isPlaying || playPending ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+              {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
             </button>
             <button type="button" className="mini-seek" aria-label="Forward 30 seconds" onClick={() => seekBy(30)}>
               <RotateCw size={16} />
