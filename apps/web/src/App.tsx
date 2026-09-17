@@ -3973,20 +3973,25 @@ function MainApp({
   // and a second tap cancels instead of queueing another start.
   const [playPending, setPlayPendingState] = useState(false);
   const playPendingRef = useRef(false);
+  const playPendingBookIdRef = useRef<string | null>(null);
   const playPendingTimerRef = useRef<number | null>(null);
   // Bumped when a waiting Play is taken back, so a restore still running for
   // a shelf Resume does not start the book the listener just cancelled.
   const playCancelGenerationRef = useRef(0);
-  const setPlayPending = (pending: boolean) => {
+  const setPlayPending = (pending: boolean, bookId = playbackBookIdRef.current) => {
     if (playPendingTimerRef.current !== null) {
       window.clearTimeout(playPendingTimerRef.current);
       playPendingTimerRef.current = null;
     }
     // A start that never arrives must not leave the ring spinning for good.
     if (pending) {
-      playPendingTimerRef.current = window.setTimeout(() => setPlayPending(false), PLAY_PENDING_LIMIT_MS);
+      playPendingTimerRef.current = window.setTimeout(
+        () => cancelPendingPlayback(audioRef.current),
+        PLAY_PENDING_LIMIT_MS
+      );
     }
     playPendingRef.current = pending;
+    playPendingBookIdRef.current = pending ? bookId : null;
     setPlayPendingState(pending);
   };
   const nativePlaybackPlayingRef = useRef(false);
@@ -6177,6 +6182,7 @@ function MainApp({
         queue: () => nativeAudioQueueRef.current,
         pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
           ? pendingSeekRef.current.positionSeconds : undefined,
+        wantsPlayback: () => playPendingRef.current || wantsAutoplayRef.current || playWhenTrackLoads.current,
         gain: () => playbackGainRef.current,
         sleepTimerSeconds: () => {
           const deadline = sleepDeadlineRef.current;
@@ -7765,11 +7771,14 @@ function MainApp({
   async function playSelectedBook(book: Book) {
     haptic("medium");
     if (playPendingRef.current) {
+      const pendingBookId = playPendingBookIdRef.current;
       cancelPendingPlayback(audioRef.current);
-      return;
+      // A second activation of the same shelf action is cancellation. A tap
+      // on another book replaces the old pending request in one action.
+      if (pendingBookId === book.id) return;
     }
     const cancelGeneration = playCancelGenerationRef.current;
-    setPlayPending(true);
+    setPlayPending(true, book.id);
     if (!shouldResumeSavedPosition(book.progress)) {
       // The listing summary can lag the server (a cached shelf, a session on
       // another device since the last refresh). Before "Begin this reading"
