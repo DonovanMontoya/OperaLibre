@@ -322,6 +322,27 @@ final class PerformanceTests: XCTestCase {
         XCTAssertEqual(engine.status.positionSeconds, 6, accuracy: 0.05)
         let checkpoint = try XCTUnwrap(engine.recoveryState(forScope: "interrupted-seek-test"))
         XCTAssertEqual(checkpoint.positionSeconds, 6, accuracy: 0.05)
+        XCTAssertTrue(observer.errors.isEmpty)
+
+        // An initial resume that never lands fails over rather than staying
+        // unready or playing from the wrong place.
+        queuePlayer.interruptSeeksInPlace = 3
+        observer.ready = false
+        observer.positionReady = false
+        engine.load(AudiobookLoadRequest(url: url, positionSeconds: 4, rate: 1,
+            volume: 0.9, gain: 1, autoplay: false, recoveryScopeKey: "interrupted-seek-test",
+            recoveryTrackId: "interrupted", recoveryBookOffsetSeconds: 0, queue: []))
+        until("unreached resume reports failure") { !observer.errors.isEmpty }
+        XCTAssertEqual(queuePlayer.cancelledSeekCount, 7)
+        publishState()
+        XCTAssertFalse(observer.positionReady)
+        XCTAssertEqual(engine.status.positionSeconds, 4, accuracy: 0.01)
+        engine.pause()
+        let pauseHandled = expectation(description: "pause checkpoint written")
+        DispatchQueue.main.async { pauseHandled.fulfill() }
+        wait(for: [pauseHandled], timeout: 2)
+        let resumeCheckpoint = try XCTUnwrap(engine.recoveryState(forScope: "interrupted-seek-test"))
+        XCTAssertEqual(resumeCheckpoint.positionSeconds, 4, accuracy: 0.01)
     }
 
     func testMissingDownloadStatusPerformance() throws {
@@ -355,7 +376,9 @@ private final class StartupStateObserver: AudiobookPlayerObserver {
     var ready = false
     var positionReady = false
     var intentionalSeekCount = 0
+    var errors: [String] = []
     func audiobookPlayer(_ player: AudiobookPlayer, didEmit event: String, data: [String: Any]) {
+        if event == "error" { errors.append(data["message"] as? String ?? "") }
         if event == "state" {
             ready = data["readyToPlay"] as? Bool ?? false
             positionReady = data["positionReady"] as? Bool ?? false
