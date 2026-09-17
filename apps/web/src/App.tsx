@@ -4087,10 +4087,10 @@ function MainApp({
   const nativeForegroundSyncGateRef = useRef(new NativeForegroundSyncGate());
   const foregroundProgressSyncRef = useRef<ReturnType<typeof createForegroundProgressSync> | null>(null);
   const foregroundProgressActionsRef = useRef({
-    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: onTimeUpdate
+    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: showMediaClock
   });
   foregroundProgressActionsRef.current = {
-    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: onTimeUpdate
+    nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: showMediaClock
   };
   const libraryRequestGenerationRef = useRef(0);
   // A listing refused while the server's startup scan runs is asked for
@@ -7134,10 +7134,15 @@ function MainApp({
     setDownloadStatus({ bookId: book.id, message: "Download removed" });
   }
 
-  function onTimeUpdate() {
+  /**
+   * Draw the media element's clock without saving it. Returns false while a
+   * restored checkpoint is still waiting to be applied, when there is nothing
+   * newer than that checkpoint to save.
+   */
+  function showMediaClock() {
     const audio = audioRef.current;
     if (!audio) {
-      return;
+      return false;
     }
     // AVPlayer can emit its initial 0:00 clock before the pending restored
     // seek reaches the media element. Keep the coherent checkpoint visible.
@@ -7145,11 +7150,17 @@ function MainApp({
     if (restoring && restoring.trackId === currentTrackKey) {
       setPosition(restoring.positionSeconds);
       setDuration(Number.isFinite(audio.duration) ? audio.duration : duration);
-      return;
+      return false;
     }
     setPosition(audio.currentTime);
     setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    return true;
+  }
 
+  function onTimeUpdate() {
+    if (!showMediaClock()) {
+      return;
+    }
     const now = Date.now();
     if (now - saveStartedAt.current >= PROGRESS_SAVE_INTERVAL_MS) {
       saveStartedAt.current = now;
