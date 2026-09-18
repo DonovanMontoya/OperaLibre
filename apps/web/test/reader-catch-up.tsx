@@ -17,6 +17,8 @@ const bytes = await zip.generateAsync({ type: "arraybuffer" });
 const params = new URLSearchParams(location.search);
 const narration = params.has("narration");
 const chapterSync = params.has("chapter-sync");
+const immersive = params.has("immersive");
+if (immersive) document.documentElement.classList.add("native-app");
 const fragments = [
   { startSeconds: 0, endSeconds: 10, href: "c1.xhtml", text: "Chapter 1, paragraph 1." },
   { startSeconds: 10, endSeconds: 20, href: "c1.xhtml", text: "This sentence is absent from the EPUB." },
@@ -29,16 +31,24 @@ function Fixture() {
   const [open, setOpen] = useState(true);
   const [chapter, setChapter] = useState(2);
   const [position, setPosition] = useState(0);
+  const [playing, setPlaying] = useState(false);
   return <>
     <button onClick={() => setOpen(!open)}>{open ? "Close ebook" : "Open ebook"}</button>
     <button onClick={() => setChapter(chapter === 2 ? 3 : 2)}>Advance audio ({chapter})</button>
     {narration && <label>Narration position<input type="number" value={position} onChange={event => setPosition(Number(event.target.value))} /></label>}
     {open && <EpubReadalong bookId="fixture" storageScope="catch-up-fixture" title="Catch-up fixture"
+      immersive={immersive} onClose={() => setOpen(false)} positionLabel={`${position}s`}
+      playback={immersive ? {
+        playing, speed: 1, sleepRemaining: 0,
+        onToggle: () => setPlaying(value => !value),
+        onSkip: delta => setPosition(value => Math.max(0, value + delta)),
+        onOpen: () => {}
+      } : null}
       url="/fixture.epub" loadSource={async () => bytes.slice(0)} listeningChapter={`Chapter ${chapter}`}
       syncTarget={chapterSync
         ? { id: `chapter-${chapter}`, title: `Chapter ${chapter}` }
         : null}
-      syncFragments={narration ? fragments : null} positionSeconds={position} />}
+      syncFragments={narration ? fragments : null} positionSeconds={position} onSeekTo={setPosition} />}
   </>;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);
