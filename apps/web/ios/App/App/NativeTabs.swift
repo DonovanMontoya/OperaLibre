@@ -79,10 +79,10 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // The side rail's free slot last handed to the page; nil when there is
     // none, and unset until the page has been told either way.
     private var sentRail: CGRect??
-    // Below this the column holds too little to be worth using (the cover
-    // screen on its side leaves a sliver above the bar's items), and the
-    // page keeps its ordinary layout.
-    private static let minimumRailHeight: CGFloat = 200
+    // A 44pt play/pause target plus padding can stay in the column even when
+    // Now Playing expands the system status area. The page drops secondary
+    // controls before giving up the rail.
+    private static let minimumRailHeight: CGFloat = 60
     // The color the visible screen carries, sent with every tab change. The
     // page covers the window, so this shows only where it cannot reach — a
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
@@ -436,7 +436,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                                 width: view.safeAreaInsets.right, height: view.bounds.height)
             let bottom = view.bounds.maxY - view.safeAreaInsets.bottom
             let top = railTop(in: column, above: bottom)
-            if bottom - top >= Self.minimumRailHeight {
+            if bottom - top >= 200 {
                 rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
             }
         }
@@ -448,10 +448,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 (() => { const s = document.documentElement.style;
                 s.setProperty('--rail-x', '\(Int(rail.minX))px'); s.setProperty('--rail-width', '\(Int(rail.width))px');
                 s.setProperty('--rail-top', '\(Int(rail.minY))px'); s.setProperty('--rail-bottom', '\(Int(rail.maxY))px');
+                document.documentElement.dataset.railControls = '\(rail.height >= 216 ? "full" : rail.height >= 164 ? "transport" : "play")';
                 document.documentElement.classList.add('side-rail'); })()
                 """
             } else {
-                script = "document.documentElement.classList.remove('side-rail')"
+                script = "document.documentElement.classList.remove('side-rail'); delete document.documentElement.dataset.railControls"
             }
             webView.evaluateJavaScript(script)
         }

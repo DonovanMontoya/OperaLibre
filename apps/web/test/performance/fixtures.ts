@@ -12,7 +12,7 @@ export function library(count: number): Book[] {
     publishedDate: null, asin: null, readingFile: null, syncFile: null, chapters: [], metadata,
     tracks: [0, 1].map(track => ({ id: `track-${index}-${track}`, title: `Track ${track + 1}`,
       fileName: `${track}.wav`, index: track, durationSeconds: 120, streamUrl: '/fixture.wav', chapters: [], metadata })),
-    progress: null, source: 'server', volumeGain: 1,
+    progress: null, source: 'server', volumeGain: 1, addedAt: '1700000000',
   }));
 }
 

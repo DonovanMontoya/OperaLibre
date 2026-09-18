@@ -668,6 +668,7 @@ export function AdminPanel({
 
   return (
     <section className={`admin-shell ${onClose ? "admin-overlay" : ""}`} aria-label="Administration">
+      <div className="admin-navigation">
       <header className="admin-head">
         <div>
           {onBack ? <div className="admin-back">
@@ -702,6 +703,7 @@ export function AdminPanel({
 
       {error ? <p className="admin-message error">{error}</p> : null}
       {notice ? <p className="admin-message success"><Check size={14} /> {notice}</p> : null}
+      </div>
 
       {section === "imports" ? <div className="admin-content">
         <LibroCatalog onBooksChanged={onBooksChanged} onOpenBook={onOpenBook} />

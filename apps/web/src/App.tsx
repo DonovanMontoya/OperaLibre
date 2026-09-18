@@ -1,5 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
-import { isBookPosture, useDeviceFold } from "./deviceFold";
+import { isBookPosture, useDeviceFold, usesFoldLayout } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -11,7 +11,7 @@ import {
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
-import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
+import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
 import {
   pruneUntrackedHighlights,
   removeHighlight,
@@ -1694,7 +1694,8 @@ export function EpubReadalong({
   // Held open like a book, the reader sets a page on each half, the gap
   // between them on the fold. The change re-lays the chapter out, so it turns
   // back to the remembered place the way a resize does.
-  const bookSpread = fullscreen && isBookPosture(useDeviceFold());
+  const deviceFold = useDeviceFold();
+  const bookSpread = fullscreen && isBookPosture(deviceFold);
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!isReady || !rendition) return;
@@ -1808,13 +1809,14 @@ export function EpubReadalong({
   // window coordinates; this resolves the point to a page turn, a sentence
   // seek, or a bar toggle.
   const handleOverlayTap = useCallback(
-    (xFraction: number, clientX: number, clientY: number) => {
+    (x: number, clientX: number, clientY: number) => {
       const rendition = renditionRef.current;
-      if (xFraction < 0.25) {
+      const edge = pageTurnAtEdge(x, viewerRef.current?.getBoundingClientRect().width ?? 0);
+      if (edge === "prev") {
         navigateByHand(() => rendition?.prev());
         return;
       }
-      if (xFraction > 0.75) {
+      if (edge === "next") {
         navigateByHand(() => rendition?.next());
         return;
       }
@@ -1891,7 +1893,7 @@ export function EpubReadalong({
         return;
       }
       if (gesture === "tap") {
-        handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+        handleOverlayTap(event.clientX - stage.left, event.clientX, event.clientY);
         return;
       }
       readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
@@ -2002,8 +2004,8 @@ export function EpubReadalong({
       if (target?.closest?.("a, button, input, textarea, select, svg")) {
         return;
       }
-      // Full screen reads like a paper book: the outer quarters of the page
-      // turn it, the middle seeks to the tapped sentence, and a tap on nothing
+      // Full screen reads like a paper book: narrow outer margins
+      // turn it, the text seeks to the tapped sentence, and a tap on nothing
       // in particular shows or hides the bars.
       if (fullscreenRef.current) {
         // The chapter is one wide, scrolled document; the visible page is
@@ -2011,12 +2013,13 @@ export function EpubReadalong({
         const frame = doc.defaultView?.frameElement;
         const stage = viewerRef.current?.getBoundingClientRect();
         if (frame && stage && stage.width > 0) {
-          const x = (frame.getBoundingClientRect().left + clientX - stage.left) / stage.width;
-          if (x < 0.25) {
+          const x = frame.getBoundingClientRect().left + clientX - stage.left;
+          const edge = pageTurnAtEdge(x, stage.width);
+          if (edge === "prev") {
             navigateByHand(() => rendition?.prev());
             return;
           }
-          if (x > 0.75) {
+          if (edge === "next") {
             navigateByHand(() => rendition?.next());
             return;
           }
@@ -3752,6 +3755,7 @@ function MainApp({
   const sharedProgressAvailable = capabilities.sharedActivity;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
+  const playbackFold = useDeviceFold();
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   // The ebook reader ships off by default; the narration-follow highlight is a
   // sub-option beneath it, off by default and behind a warning.
@@ -10119,7 +10123,10 @@ function MainApp({
       <section
         className={`player-pane native-player-view-${nativePlayerView} ${
           isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-        } ${showReaderInNowView ? "has-reader" : ""}`}
+        } ${showReaderInNowView ? "has-reader" : ""} ${
+          nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
+            ? "" : "fit-playback"
+        }`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
         onTouchStart={beginBookDetailsBackSwipe}
@@ -11990,6 +11997,7 @@ function MainApp({
           {/* Grouped so a wide screen can set the cards in columns; on a phone the
               wrapper steps aside and they stack in the shell as before. */}
           <div className="settings-cards">
+            <div className="settings-upper">
             <section className="settings-card">
               <span className="section-label"><Gauge size={13} /> Playback</span>
               <div className="settings-field">
@@ -12040,6 +12048,8 @@ function MainApp({
               </div> : null}
               {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
             </section> : null}
+            </div>
+            <div className="settings-lower">
 
             <section className="settings-card">
               <span className="section-label"><Gamepad2 size={13} /> Extras</span>
@@ -12320,6 +12330,7 @@ function MainApp({
                 </button>
               </div>
             </section>
+            </div>
           </div>
         </section>
       ) : null}
