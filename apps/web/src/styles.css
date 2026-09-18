@@ -9108,7 +9108,7 @@ html:not(.native-app) .native-player-return-icon {
 
   html:not(.native-app) .native-now-artwork .large-cover {
     width: min(58vw, 224px);
-    max-height: 30vh;
+    max-height: 24vh;
     border-radius: 17px;
   }
 
@@ -9155,7 +9155,7 @@ html:not(.native-app) .native-player-return-icon {
 
   html:not(.native-app) .native-now-artwork .large-cover {
     width: min(46vw, 170px);
-    max-height: 26vh;
+    max-height: 24vh;
   }
 
   html:not(.native-app) .native-now-copy {
@@ -14354,3 +14354,524 @@ html.native-app .native-shell.shelf-landscape .libro-view-toolbar { margin: 4px 
 .purchase-destination > span { flex: none; font: 0.7rem "JetBrains Mono", monospace; color: var(--gold-soft); }
 .purchase-destination select { flex: 1; width: 0; min-width: 0; }
 html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .purchase-destination { order: 4; }
+
+
+/* ============================================================
+   Foldable iPhone
+
+   The iOS shell reports the hinge as data-fold-posture and, when the page
+   crosses the fold, data-fold-axis with the fold's rect as --fold-x/-y/
+   -width/-height (see deviceFold.ts). Half open, each half is a screen of its
+   own and nothing sits on the crease. With the hinge across the screen, like
+   a laptop, the Reading screen stands its cover and title on the upper half
+   and lays its controls on the lower one. With the hinge down the middle, the
+   wide layouts divide at it instead (below).
+   ============================================================ */
+.native-now-half {
+  display: contents;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
+  /* The fold's rect is in viewport coordinates, so the card takes the whole
+     viewport and its grid tracks meet the fold exactly. */
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-areas: none;
+  gap: 0;
+  width: auto;
+  max-width: none;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-half {
+  display: flex;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
+  gap: clamp(10px, 2vh, 18px);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls > * {
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--fold-y) var(--fold-height) minmax(0, 1fr);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-lead {
+  grid-row: 1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(18px, 4vw, 40px);
+  padding: calc(var(--status-h) + 14px) max(24px, env(safe-area-inset-right)) 18px
+    max(24px, env(safe-area-inset-left));
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-artwork {
+  display: flex;
+  flex: none;
+  align-self: stretch;
+  align-items: center;
+  padding: 11px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-artwork .large-cover {
+  /* The upper half's height less the clock, its padding, and the mat, capped
+     so the title keeps a column beside it. */
+  width: min(calc(var(--fold-y) - var(--status-h) - 54px), 300px, 40vw);
+  height: min(calc(var(--fold-y) - var(--status-h) - 54px), 300px, 40vw);
+  max-width: none;
+  max-height: none;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-copy {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 460px;
+  align-items: flex-start;
+  text-align: left;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .native-shell
+  .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) .native-now-controls {
+  grid-row: 3;
+  padding: 16px max(24px, env(safe-area-inset-right)) calc(var(--tabs-h) + 12px)
+    max(24px, env(safe-area-inset-left));
+}
+
+
+/* Unfolded, the inner screen is a small tablet, so Settings takes its iPad
+   layout: cards in two columns. A fold only reaches the page on the inner
+   screen, so `data-fold-axis` stands for "unfolded". */
+html.native-app[data-fold-axis]:not([data-fold-posture="closed"]) .settings-shell {
+  gap: 0;
+  padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right));
+}
+
+html.native-app[data-fold-axis]:not([data-fold-posture="closed"]) .settings-head h1 {
+  font-size: 2.1rem;
+}
+
+html.native-app[data-fold-axis]:not([data-fold-posture="closed"]) .settings-cards {
+  display: block;
+  column-count: 2;
+  column-gap: 18px;
+}
+
+/* Inline-level cards carry their bottom margin inside their own line, so a
+   column never opens with the previous column's leftover spacing. */
+html.native-app[data-fold-axis]:not([data-fold-posture="closed"]) .settings-cards > * {
+  display: inline-grid;
+  width: 100%;
+  vertical-align: top;
+  break-inside: avoid;
+  margin-bottom: 18px;
+}
+
+/* The wide layout's spread already draws a fold between the Shelf and the
+   player; with the hinge down the middle, it is drawn over the real one. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
+  --verso-w: calc(var(--fold-x) + var(--fold-width) / 2);
+  --gutter: max(30px, var(--fold-width));
+}
+
+/* The bar hangs down the side here, not across the bottom, so the fold runs
+   the full height of the page rather than stopping short of it. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell:is(.tab-shelf, .tab-reading)::after {
+  bottom: 0;
+}
+
+/* The player's page is only half a screen wide yet the full height of a
+   phone on its side, so the stack scales by height to fit it. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-playing {
+  /* Clear of the folio's rule, mat and all. */
+  padding-top: 22px;
+  row-gap: clamp(8px, 1.6vh, 14px);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork img.large-cover {
+  width: auto;
+  max-width: 100%;
+  max-height: 24vh;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .has-native-player.native-player-view-now .native-now-artwork span.large-cover {
+  width: 24vh;
+  max-width: 100%;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell .native-now-copy h2 {
+  font-size: clamp(1.35rem, 4.4vh, 2rem);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-play {
+  width: 84px;
+  height: 84px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-transport .native-now-seek {
+  height: 54px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-utility button {
+  min-height: 50px;
+}
+
+/* Half open with the hinge down the middle, each half is a page of its own:
+   two-column screens meet at the fold, and nothing is set across it. The
+   fold sits at the middle of the screen, so equal padding either side and a
+   gap as wide as the fold plus a margin each side land the gap on it. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-shell,
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .profile-page.ledger-dashboard {
+  padding-inline: max(24px, env(safe-area-inset-left), env(safe-area-inset-right));
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-cards {
+  column-gap: calc(var(--fold-width) + 40px);
+}
+
+/* Ledger: its sections flow down the left page and on to the right. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .profile-page.ledger-dashboard {
+  display: block;
+  max-width: none;
+  margin: 0;
+  column-count: 2;
+  column-gap: calc(var(--fold-width) + 40px);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .profile-page.ledger-dashboard > * {
+  width: 100%;
+  break-inside: avoid;
+  margin-bottom: 18px;
+}
+
+/* Games: what is read on the left page, the board or keyboard on the right,
+   where it can be played without reaching across the fold. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .games-shell {
+  grid-template-columns: calc(var(--fold-x) - max(16px, env(safe-area-inset-left)) - 20px) minmax(0, 1fr);
+  column-gap: calc(var(--fold-width) + 40px);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .games-shell.games-words {
+  grid-template-columns: calc(var(--fold-x) - max(16px, env(safe-area-inset-left)) - 20px) minmax(0, 1fr);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .match-board-frame {
+  place-items: center;
+}
+
+/* Administration: the heading and section list on the left page, the chosen
+   section on the right. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) {
+  display: grid;
+  grid-template-columns: calc(var(--fold-x) - max(18px, env(safe-area-inset-left)) - 20px) minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  column-gap: calc(var(--fold-width) + 40px);
+  overflow: hidden;
+  padding-top: max(12px, calc(var(--status-h) + 12px));
+  padding-bottom: 0;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > * {
+  grid-column: 2;
+  min-width: 0;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > .admin-head {
+  grid-column: 1;
+  grid-row: 1;
+  width: auto;
+  margin: 0;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-head h1 {
+  font-size: 2.2rem;
+  line-height: 1.02;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > .admin-message {
+  grid-column: 1;
+  width: auto;
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > .admin-nav {
+  grid-column: 1;
+  grid-row: 4;
+  display: flex;
+  align-self: start;
+  max-height: 100%;
+  overflow-y: auto;
+  width: auto;
+  margin: 14px 0 0;
+  flex-direction: column;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav button {
+  flex: none;
+  justify-content: flex-start;
+  padding: 0 12px;
+  text-align: left;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-nav button svg {
+  display: inline;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > .admin-content {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  min-height: 0;
+  width: auto;
+  margin: 0;
+  padding-top: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The chosen section has only a page's width, so its tallies pair up and
+   its headings stack over their actions, as on a phone. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) .admin-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) :is(.admin-quick-actions, .admin-section-head) {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+/* The column scrolls under the floating tab bar; a closing spacer lets its
+   last card rise clear of it. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .admin-shell:not(.admin-overlay) > .admin-content::after {
+  content: "";
+  display: block;
+  height: calc(var(--tabs-h) + 32px);
+}
+
+/* ===================== Side rail =====================
+   A foldable's cover screen hangs the tab bar down its trailing edge, in a
+   column shared with the clock. The iOS shell runs the page under that column
+   and reports its free slot, between the clock and the bar's items, as
+   --rail-x/-width/-top/-bottom. Controls that would otherwise stack under
+   the content move into the slot, handing the height back to the page. */
+html.native-app.side-rail .native-shell {
+  --mini-player-height: 0px !important;
+}
+
+/* Browsing, the mini player stands in the rail: the book to return to, and
+   the transport, one above the other. It keeps its own dark lacquer, a pill
+   like the tab bar's beneath it, so it reads the same over any page. */
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player {
+  position: fixed;
+  top: calc((var(--rail-top) + var(--rail-bottom)) / 2);
+  left: calc(var(--rail-x) + (var(--rail-width) - 56px) / 2);
+  right: auto;
+  bottom: auto;
+  z-index: 45;
+  width: 56px;
+  max-height: calc(var(--rail-bottom) - var(--rail-top) - 8px);
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 5px 0 8px;
+  border-radius: 28px;
+  /* Centred in the slot; translateZ keeps the base layer promotion. */
+  transform: translate3d(0, -50%, 0);
+}
+
+/* Nothing hangs across the bottom of the cover screen, so the Reading card
+   runs down to the home indicator's margin, and its artwork row takes the
+   height it gains. */
+html.native-app.side-rail:not([data-fold-axis]) .native-shell > .player-pane.has-native-player.native-player-view-now {
+  padding-bottom: max(18px, calc(env(safe-area-inset-bottom) - 14px));
+}
+
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player {
+  display: flex;
+}
+
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player :is(.mini-meta, .mini-chapter, .mini-progress) {
+  display: none;
+}
+
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-cover-button {
+  width: 44px;
+  height: 44px;
+}
+
+html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+
+/* Reading along, the bar is hidden and the column is free to the bottom of
+   the screen. The listening controls stand in it, so the page below the text
+   is left to its progress line and the words get the height. Still inside the
+   bottom bar, they fade with the rest of the chrome. */
+html.native-app.side-rail .epub-reader.fullscreen .epub-audiobar {
+  position: fixed;
+  top: var(--rail-top);
+  left: var(--rail-x);
+  width: var(--rail-width);
+  height: calc(var(--rail-bottom) - var(--rail-top));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 0;
+}
+
+html.native-app.side-rail .epub-reader.fullscreen .epub-audiobar-status {
+  justify-content: center;
+  padding-left: 0;
+}
+
+html.native-app.side-rail .epub-reader.fullscreen .epub-audiobar-extras {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+/* The page's tap catcher spans the stage, strip included, and sits above the
+   bottom bar; lift the bar over it and end the catcher at the text, so a tap
+   in the column reaches its controls rather than turning the page. */
+html.native-app.side-rail .epub-reader.fullscreen .epub-bottombar {
+  z-index: 5;
+}
+
+html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
+  right: env(safe-area-inset-right);
+}
+
+/* ===================== Reading along, half open =====================
+   Held like a book (hinge down the middle), the reader sets a page on each
+   half; epub.js centres the gap between them on the stage, so the stage is
+   padded evenly to centre it on the fold. The title keeps to the left page
+   and the tools to the right, off the crease. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .epub-reader.immersive .epub-stage-wrap {
+  padding-inline: max(env(safe-area-inset-left), env(safe-area-inset-right));
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar {
+  grid-template-columns: 40px minmax(0, calc(var(--fold-x) - max(8px, env(safe-area-inset-left)) - 72px)) minmax(0, 1fr);
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar-title {
+  text-align: left;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar-actions {
+  justify-self: end;
+}
+
+/* Held like a laptop (hinge across), the words fill the upper half and the
+   player the lower one, the fold between them. The rows above the fold add
+   up to its top, because the two below it are sized exactly. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive {
+  grid-template-rows: auto auto minmax(0, 1fr) var(--fold-height)
+    calc(100dvh - var(--fold-y) - var(--fold-height));
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-bottombar {
+  grid-row: 5;
+  align-content: center;
+  gap: 14px;
+  padding-inline: max(28px, env(safe-area-inset-left)) max(28px, env(safe-area-inset-right));
+}
+
+/* The player gets a half of its own: the time over the transport, and the
+   speed, sleep and chapter tools under it. */
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar {
+  grid-template-columns: 56px 80px 56px;
+  grid-template-areas:
+    "status status status"
+    "back play forward"
+    "extras extras extras";
+  justify-content: center;
+  justify-items: center;
+  row-gap: 18px;
+  column-gap: 28px;
+  margin-top: 8px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar > :nth-child(1) {
+  grid-area: back;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar > :nth-child(2) {
+  grid-area: play;
+  width: 76px;
+  height: 76px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar > :nth-child(3) {
+  grid-area: forward;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar-status {
+  grid-area: status;
+  padding-left: 0;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar-time {
+  font-size: 1.05rem;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar-extras {
+  grid-area: extras;
+  gap: 22px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar-extras .epub-icon-button {
+  width: 48px;
+  height: 48px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar-play svg {
+  width: 30px;
+  height: 30px;
+}
+
+html.native-app[data-fold-posture="half-open"][data-fold-axis="horizontal"] .epub-reader.immersive .epub-audiobar :is(.epub-skip, .epub-audiobar-extras .epub-icon-button) svg {
+  width: 24px;
+  height: 24px;
+}

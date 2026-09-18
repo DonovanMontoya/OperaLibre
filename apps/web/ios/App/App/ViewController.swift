@@ -7,5 +7,6 @@ class ViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(NativeAudioPlugin())
         bridge?.registerPluginInstance(CarPlayBridgePlugin())
         bridge?.registerPluginInstance(NativeTabsPlugin())
+        bridge?.registerPluginInstance(DeviceFoldPlugin())
     }
 }
