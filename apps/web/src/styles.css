@@ -14504,6 +14504,14 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
   --gutter: max(30px, var(--fold-width));
 }
 
+/* The floating transport stands on the right page, clear of the crease. Its
+   default bottom dock would straddle the fold. */
+html.native-app[data-fold-active][data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.tab-shelf, .tab-games) > .mini-player {
+  left: calc(var(--fold-x) + var(--fold-width) + 12px);
+  right: max(12px, env(safe-area-inset-right));
+}
+
 /* The bar hangs down the side here, not across the bottom, so the fold runs
    the full height of the page rather than stopping short of it. */
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell:is(.tab-shelf, .tab-reading)::after {
