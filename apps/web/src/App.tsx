@@ -1,4 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
+import { isBookPosture, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -1690,6 +1691,21 @@ export function EpubReadalong({
   // Full screen: the native reader always, the web reader in focus mode. The
   // bars fade out for reading and a tap on blank page brings them back.
   const fullscreen = immersive || focusMode;
+  // Held open like a book, the reader sets a page on each half, the gap
+  // between them on the fold. The change re-lays the chapter out, so it turns
+  // back to the remembered place the way a resize does.
+  const bookSpread = fullscreen && isBookPosture(useDeviceFold());
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (!isReady || !rendition) return;
+    const mode = bookSpread ? "always" : "none";
+    if ((rendition.settings as { spread?: string }).spread === mode) return;
+    const anchor = anchorCfiRef.current;
+    if (anchor) beginRestore();
+    rendition.spread(mode, 0);
+    if (anchor) void rendition.display(anchor);
+    setRelayoutTick((tick) => tick + 1);
+  }, [beginRestore, bookSpread, isReady]);
   const fullscreenRef = useRef(fullscreen);
   fullscreenRef.current = fullscreen;
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -10129,151 +10145,158 @@ function MainApp({
           <>
             {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
               <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
-                <div className="native-now-artwork">
-                  <CoverArt book={nowPlayingBook} size="large" />
-                </div>
-
-                <div className="native-now-copy">
-                  <span className="native-now-kicker">
-                    {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
-                  </span>
-                  <h2>{activeChapter?.title ?? currentTrack.title}</h2>
-                  <p>{nowPlayingBook.title}</p>
-                  <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
-                </div>
-
-                <div className="native-now-timeline">
-                  <ScrubSlider
-                    ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
-                    max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
-                    value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
-                    onPreview={setScrubPreview}
-                    onCommit={(value) => {
-                      if (activeChapter) {
-                        seekBookPosition(activeChapter.startSeconds + value);
-                      } else {
-                        seekTo(value);
-                      }
-                    }}
-                  />
-                  <div className="native-now-time-row">
-                    <span>{formatTime(scrubbedElapsed)}</span>
-                    <span>
-                      {activeChapter
-                        ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
-                        : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
-                    </span>
+                {/* The halves group the stack for a foldable phone, which sets
+                    them either side of its fold. Everywhere else they take no
+                    box and their children lay out in the card's grid. */}
+                <div className="native-now-half native-now-lead">
+                  <div className="native-now-artwork">
+                    <CoverArt book={nowPlayingBook} size="large" />
                   </div>
-                  {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
-                    <div
-                      className="book-time-row"
-                      aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
-                    >
-                      <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
-                      <span>{bookCompletionPercent}% complete</span>
+
+                  <div className="native-now-copy">
+                    <span className="native-now-kicker">
+                      {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
+                    </span>
+                    <h2>{activeChapter?.title ?? currentTrack.title}</h2>
+                    <p>{nowPlayingBook.title}</p>
+                    <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
+                  </div>
+                </div>
+
+                <div className="native-now-half native-now-controls">
+                  <div className="native-now-timeline">
+                    <ScrubSlider
+                      ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
+                      max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
+                      value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+                      onPreview={setScrubPreview}
+                      onCommit={(value) => {
+                        if (activeChapter) {
+                          seekBookPosition(activeChapter.startSeconds + value);
+                        } else {
+                          seekTo(value);
+                        }
+                      }}
+                    />
+                    <div className="native-now-time-row">
+                      <span>{formatTime(scrubbedElapsed)}</span>
+                      <span>
+                        {activeChapter
+                          ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
+                          : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
+                      </span>
                     </div>
-                  ) : null}
-                </div>
+                    {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
+                      <div
+                        className="book-time-row"
+                        aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
+                      >
+                        <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
+                        <span>{bookCompletionPercent}% complete</span>
+                      </div>
+                    ) : null}
+                  </div>
 
-                <div className="native-now-transport">
-                  {activeChapter ? (
+                  <div className="native-now-transport">
+                    {activeChapter ? (
+                      <button
+                        type="button"
+                        className="native-now-chapter"
+                        aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
+                        onClick={restartOrPreviousChapter}
+                        disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                      >
+                        <SkipBack size={27} strokeWidth={1.65} />
+                        <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      className="native-now-chapter"
-                      aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
-                      onClick={restartOrPreviousChapter}
-                      disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                      className="native-now-seek"
+                      aria-label="Rewind 15 seconds"
+                      onClick={() => seekBy(-15)}
                     >
-                      <SkipBack size={27} strokeWidth={1.65} />
-                      <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
+                      <RotateCcw size={24} strokeWidth={1.7} />
+                      <span>15s</span>
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="native-now-seek"
-                    aria-label="Rewind 15 seconds"
-                    onClick={() => seekBy(-15)}
-                  >
-                    <RotateCcw size={24} strokeWidth={1.7} />
-                    <span>15s</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`native-now-play${playPending ? " play-pending" : ""}`}
-                    aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
-                    aria-busy={playPending}
-                    onClick={togglePlayback}
-                  >
-                    {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
-                    {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="native-now-seek"
-                    aria-label="Forward 30 seconds"
-                    onClick={() => seekBy(30)}
-                  >
-                    <RotateCw size={24} strokeWidth={1.7} />
-                    <span>30s</span>
-                  </button>
-                  {activeChapter ? (
                     <button
                       type="button"
-                      className="native-now-chapter"
-                      aria-label="Next chapter"
-                      onClick={nextChapter}
-                      disabled={!hasNextChapter}
+                      className={`native-now-play${playPending ? " play-pending" : ""}`}
+                      aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
+                      aria-busy={playPending}
+                      onClick={togglePlayback}
                     >
-                      <SkipForward size={27} strokeWidth={1.65} />
-                      <span>Next</span>
+                      {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
+                      {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
                     </button>
-                  ) : null}
-                </div>
+                    <button
+                      type="button"
+                      className="native-now-seek"
+                      aria-label="Forward 30 seconds"
+                      onClick={() => seekBy(30)}
+                    >
+                      <RotateCw size={24} strokeWidth={1.7} />
+                      <span>30s</span>
+                    </button>
+                    {activeChapter ? (
+                      <button
+                        type="button"
+                        className="native-now-chapter"
+                        aria-label="Next chapter"
+                        onClick={nextChapter}
+                        disabled={!hasNextChapter}
+                      >
+                        <SkipForward size={27} strokeWidth={1.65} />
+                        <span>Next</span>
+                      </button>
+                    ) : null}
+                  </div>
 
-                <div className="native-now-utility">
-                  <button
-                    type="button"
-                    onClick={() => openNativePlayerSheet("speed")}
-                  >
-                    <Gauge size={16} /> {speed}×
-                  </button>
-                  <button type="button" onClick={() => {
-                    setSleepCustomOpen(false);
-                    setSleepCustomDraft("");
-                    openNativePlayerSheet("sleep");
-                  }}>
-                    <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (playbackBook) setSelectedBookId(playbackBook.id);
-                      openNativePlayerSheet("details");
-                    }}
-                  >
-                    <Bookmark size={16} /> Details
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (playbackBook) setSelectedBookId(playbackBook.id);
-                      openNativePlayerSheet("chapters");
-                    }}
-                  >
-                    <ListMusic size={16} /> Chapters
-                  </button>
-                  {readalongEnabled && playbackBook?.readingFile ? (
+                  <div className="native-now-utility">
                     <button
                       type="button"
-                      className="native-now-read"
+                      onClick={() => openNativePlayerSheet("speed")}
+                    >
+                      <Gauge size={16} /> {speed}×
+                    </button>
+                    <button type="button" onClick={() => {
+                      setSleepCustomOpen(false);
+                      setSleepCustomDraft("");
+                      openNativePlayerSheet("sleep");
+                    }}>
+                      <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
-                        haptic("light");
-                        openReadalong(playbackBook);
+                        if (playbackBook) setSelectedBookId(playbackBook.id);
+                        openNativePlayerSheet("details");
                       }}
                     >
-                      <BookOpen size={16} /> Read along
+                      <Bookmark size={16} /> Details
                     </button>
-                  ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (playbackBook) setSelectedBookId(playbackBook.id);
+                        openNativePlayerSheet("chapters");
+                      }}
+                    >
+                      <ListMusic size={16} /> Chapters
+                    </button>
+                    {readalongEnabled && playbackBook?.readingFile ? (
+                      <button
+                        type="button"
+                        className="native-now-read"
+                        onClick={() => {
+                          haptic("light");
+                          openReadalong(playbackBook);
+                        }}
+                      >
+                        <BookOpen size={16} /> Read along
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
 
                 {!native ? (
