@@ -14717,6 +14717,68 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.a
   height: calc(var(--tabs-h) + 32px);
 }
 
+/* Half open, each page is a screen of its own — Ledger and Settings scroll
+   independently rather than as one continuous column flow, the same way the
+   horizontal hinge's upper and lower halves already do (above). Flat, the
+   spread reads as a single sheet and keeps the flowed layout instead. */
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .profile-page.ledger-dashboard {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  max-width: none;
+  height: auto;
+  margin: 0;
+  display: grid;
+  grid-template-columns: var(--fold-x) var(--fold-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  column-count: auto;
+  padding: calc(var(--status-h) + 16px) 0 calc(var(--tabs-h) + 20px);
+  overflow: hidden;
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-shell {
+  display: grid;
+  grid-template-columns: var(--fold-x) var(--fold-width) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  padding: calc(var(--status-h) + 16px) 0 calc(var(--tabs-h) + 20px);
+  overflow: hidden;
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-head {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  margin: 0;
+  padding: 0 max(24px, env(safe-area-inset-right)) 12px max(24px, env(safe-area-inset-left));
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-cards {
+  display: contents;
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"]
+  :is(.settings-upper, .settings-lower, .ledger-upper, .ledger-lower) {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-upper, .ledger-upper) {
+  grid-column: 1;
+  padding: 0 20px 20px max(24px, env(safe-area-inset-left));
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-lower, .ledger-lower) {
+  grid-column: 3;
+  padding: 0 max(24px, env(safe-area-inset-right)) 20px 20px;
+}
+
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-upper, .settings-lower) {
+  grid-row: 2;
+}
+
 /* ===================== Side rail =====================
    A foldable's cover screen hangs the tab bar down its trailing edge, in a
    column shared with the clock. The iOS shell runs the page under that column
