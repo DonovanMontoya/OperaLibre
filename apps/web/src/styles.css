@@ -15846,41 +15846,41 @@ html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-su
 html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-player),
 html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-stage),
 html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-tabs) {
-  animation-duration: 260ms;
-  animation-timing-function: cubic-bezier(.2, .78, .2, 1);
+  animation-duration: 120ms;
+  animation-timing-function: cubic-bezier(.2, .85, .25, 1);
 }
 
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-summary),
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-player),
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-stage),
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-tabs) {
-  animation: duo-posture-out 180ms cubic-bezier(.4, 0, 1, 1) both;
+  animation: duo-posture-out 70ms linear both;
 }
 
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-summary),
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-player),
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-stage),
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-tabs) {
-  animation: duo-posture-in 260ms cubic-bezier(.2, .78, .2, 1) both;
+  animation: duo-posture-in 120ms cubic-bezier(.2, .85, .25, 1) both;
 }
 
 html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.games-shell, .mini-player, .match-board-frame, .word-keys, .spine-tabs) {
-  animation: duo-posture-settle 260ms cubic-bezier(.2, .78, .2, 1) both;
+  animation: duo-posture-settle 120ms cubic-bezier(.2, .85, .25, 1) both;
 }
 
 @keyframes duo-posture-out {
   from { opacity: 1; }
-  to { opacity: 0.18; }
+  to { opacity: 0; }
 }
 
 @keyframes duo-posture-in {
-  from { opacity: 0.32; }
+  from { opacity: 0.82; }
   to { opacity: 1; }
 }
 
 @keyframes duo-posture-settle {
-  from { opacity: 0.45; transform: scale(.985); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0.82; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

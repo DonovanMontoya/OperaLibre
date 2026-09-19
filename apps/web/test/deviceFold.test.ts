@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyDeviceFold, isBookPosture, isFoldTransitionChange, type DeviceFoldState } from "../src/deviceFold.ts";
+import { applyDeviceFold, isBookPosture, isFoldTransitionChange, resolveFoldLayoutState, type DeviceFoldState } from "../src/deviceFold.ts";
 
 function fakeRoot() {
   const properties = new Map<string, string>();
@@ -99,4 +99,17 @@ test("only structural posture changes animate", () => {
     ...halfOpen,
     fold: { ...halfOpen.fold!, x: 460, y: 0, width: 31, height: 669, axis: "vertical" }
   }), true);
+});
+
+test("closing angle anticipates the closed layout before the hinge reports closed", () => {
+  const halfOpen: DeviceFoldState = {
+    posture: "half-open",
+    angle: 90,
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
+  };
+  assert.equal(resolveFoldLayoutState(halfOpen).posture, "half-open");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 46 }).posture, "half-open");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 45 }).posture, "closed");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 12 }).posture, "closed");
+  assert.equal(resolveFoldLayoutState({ posture: "closed", angle: 0 }).posture, "closed");
 });
