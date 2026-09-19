@@ -193,6 +193,34 @@ test('a sentence near the left of the reader seeks narration instead of turning 
   await expect(page.getByLabel('Narration position')).toHaveValue('20');
 });
 
+test('a tap in the wrapper padding at the right of the page turns forward instead of seeking hidden text', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await expect(page.locator('.epub-stage iframe')).toHaveCount(1);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+    // Browser fixtures have no iOS safe-area inset. Reproduce the open
+    // device's stage-wrapper padding so the catcher is wider than the EPUB.
+    const wrap = document.querySelector<HTMLElement>('.epub-stage-wrap')!;
+    wrap.style.paddingInline = '84px';
+  });
+  const stage = (await page.locator('.epub-stage').boundingBox())!;
+  const catcher = (await page.locator('.epub-tapzones').boundingBox())!;
+  expect(catcher.x + catcher.width).toBeGreaterThan(stage.x + stage.width);
+  const currentCfi = () => page.evaluate(() =>
+    (window as any).__operalibreReader.rendition.currentLocation()?.start?.cfi as string | undefined);
+  await expect.poll(currentCfi).toBeTruthy();
+  const before = await currentCfi();
+  await page.mouse.click(catcher.x + catcher.width - 4, catcher.y + catcher.height / 2);
+  await expect.poll(currentCfi).not.toBe(before);
+  await expect(page.getByLabel('Narration position')).toHaveValue('0');
+  await expect(page.getByText(/Reading freely/)).toBeVisible();
+});
+
 test('reader survives folding, rotating, flattening and closing without replacing its book', async ({ page }) => {
   await page.goto(`${url}test/reader-catch-up.html?immersive`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
