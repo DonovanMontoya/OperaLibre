@@ -148,6 +148,35 @@ test('half-open reader clears the horizontal hinge and keeps its transport on th
   expect(transport.y + transport.height).toBeLessThanOrEqual(951);
 });
 
+test('the reader remembers a different text size for the closed screen than the open one', async ({ page }) => {
+  await page.goto(`${url}test/reader-catch-up.html`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  const size = page.locator('.epub-font-controls span');
+  const grow = page.getByRole('button', { name: 'Increase reader text size' });
+  const setPosture = (state: DeviceFoldState) => page.evaluate(async state => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, state);
+  }, state);
+
+  await expect(size).toHaveText(/100%/);
+  await grow.click();
+  await expect(size).toHaveText(/110%/);
+
+  await setPosture({ posture: 'closed', angle: 0 });
+  await expect(size).toHaveText(/100%/);
+  await grow.click();
+  await grow.click();
+  await expect(size).toHaveText(/120%/);
+
+  await setPosture({ posture: 'flat', angle: 180,
+    fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } });
+  await expect(size).toHaveText(/110%/);
+
+  await setPosture({ posture: 'closed', angle: 0 });
+  await expect(size).toHaveText(/120%/);
+});
+
 test('a sentence near the left of the reader seeks narration instead of turning back', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);

@@ -1,5 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
-import { isBookPosture, useDeviceFold, usesFoldLayout } from "./deviceFold";
+import { isBookPosture, useDeviceFold, usesFoldLayout, type DeviceFoldState } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -1304,6 +1304,23 @@ function writeStoredValue(key: string, value: string) {
   }
 }
 
+// A foldable's cover screen and its unfolded inner screen are different
+// reading surfaces — a size comfortable closed can be lost or cramped once
+// opened. Remember the reader's text size per screen instead of one value
+// for both.
+function readerFontScaleBucket(posture: DeviceFoldState["posture"]): "closed" | "open" {
+  return posture === "closed" ? "closed" : "open";
+}
+
+function readStoredFontScale(bucket: string): number {
+  // The open screen inherits whatever size was set before screens had their
+  // own, so an existing preference isn't silently lost to the split.
+  const raw = readStoredValue(`operalibre.readerFontScale.${bucket}`)
+    ?? (bucket === "open" ? readStoredValue("operalibre.readerFontScale") : null);
+  const stored = Number(raw);
+  return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
+}
+
 function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId", bookId: string | null) {
   try {
     const key = storedStateKey(userId, field);
@@ -1675,10 +1692,12 @@ export function EpubReadalong({
   const [appDark, setAppDark] = useState(currentAppPrefersDark);
   useEffect(() => watchAppPrefersDark(setAppDark), []);
   const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
-  const [fontScale, setFontScale] = useState(() => {
-    const stored = Number(readStoredValue("operalibre.readerFontScale"));
-    return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
-  });
+  // Held open like a book, the reader sets a page on each half, the gap
+  // between them on the fold. The change re-lays the chapter out, so it turns
+  // back to the remembered place the way a resize does.
+  const deviceFold = useDeviceFold();
+  const fontScaleBucket = readerFontScaleBucket(deviceFold.posture);
+  const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket));
   // The look a freshly opened book is styled with, and what the open one has
   // been given so far, so a change re-styles it exactly once.
   const readerThemeRef = useRef(readerTheme);
@@ -1687,14 +1706,18 @@ export function EpubReadalong({
   fontScaleRef.current = fontScale;
   const appliedThemeRef = useRef<ReaderTheme | null>(null);
   const appliedFontScaleRef = useRef<number | null>(null);
+  const fontScaleBucketRef = useRef(fontScaleBucket);
+  // Closing or opening the fold swaps which screen's remembered size applies,
+  // rather than carrying whatever size the other screen was left at.
+  useEffect(() => {
+    if (fontScaleBucketRef.current === fontScaleBucket) return;
+    fontScaleBucketRef.current = fontScaleBucket;
+    setFontScale(readStoredFontScale(fontScaleBucket));
+  }, [fontScaleBucket]);
   const [focusMode, setFocusMode] = useState(false);
   // Full screen: the native reader always, the web reader in focus mode. The
   // bars fade out for reading and a tap on blank page brings them back.
   const fullscreen = immersive || focusMode;
-  // Held open like a book, the reader sets a page on each half, the gap
-  // between them on the fold. The change re-lays the chapter out, so it turns
-  // back to the remembered place the way a resize does.
-  const deviceFold = useDeviceFold();
   const bookSpread = fullscreen && isBookPosture(deviceFold);
   useEffect(() => {
     const rendition = renditionRef.current;
@@ -2470,7 +2493,7 @@ export function EpubReadalong({
   }, [isReady, readerTheme]);
 
   useEffect(() => {
-    writeStoredValue("operalibre.readerFontScale", String(fontScale));
+    writeStoredValue(`operalibre.readerFontScale.${fontScaleBucket}`, String(fontScale));
     const rendition = renditionRef.current;
     if (!isReady || !rendition || appliedFontScaleRef.current === fontScale) {
       return;
@@ -2487,7 +2510,7 @@ export function EpubReadalong({
     rendition.clear();
     void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
-  }, [beginRestore, fontScale, isReady]);
+  }, [beginRestore, fontScale, fontScaleBucket, isReady]);
 
   useEffect(() => {
     if (!fullscreen) {
