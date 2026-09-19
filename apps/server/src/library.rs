@@ -264,9 +264,8 @@ pub(crate) struct BookIdentity {
     #[serde(default)]
     pub(crate) duration_seconds: Option<f64>,
     /// Unix seconds when this identity was first minted, i.e. when the book
-    /// was first added to this server. Zero means "unknown": every identity
-    /// that existed before this field did, which sorts it as the oldest
-    /// possible addition rather than fabricating a date it was never given.
+    /// was first added to this server. Older identities are backfilled once
+    /// from audio file timestamps. Zero means no usable date is available.
     #[serde(default)]
     pub(crate) added_at: u64,
 }
@@ -1181,6 +1180,34 @@ pub(crate) struct ScannedGroup<'a> {
     pub(crate) duration_seconds: Option<f64>,
 }
 
+/// Best available approximation for books predating addition tracking. Prefer
+/// file creation time (a download may preserve the source modification time),
+/// falling back to modification time on filesystems without birth times. Use
+/// the earliest track, so a later replacement track does not date the book.
+fn historical_addition_time(files: &[PathBuf]) -> u64 {
+    files
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .filter_map(|metadata| {
+            historical_file_time(metadata.created().ok(), metadata.modified().ok())
+        })
+        .min()
+        .unwrap_or(0)
+}
+
+pub(crate) fn historical_file_time(
+    created: Option<std::time::SystemTime>,
+    modified: Option<std::time::SystemTime>,
+) -> Option<u64> {
+    let now = unix_now_seconds();
+    [created, modified].into_iter().flatten().find_map(|time| {
+        time.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs())
+            .filter(|seconds| *seconds > 0 && *seconds <= now)
+    })
+}
+
 /// Claims only edges that are unambiguous in BOTH directions: the position
 /// must have exactly one candidate, and that candidate must be proposed by
 /// exactly one position. Checking only the first direction leaves the outcome
@@ -1424,6 +1451,9 @@ pub(crate) fn resolve_library_identities(
     for (position, group) in groups.iter().enumerate() {
         let index = claimed_by[position].expect("every group is claimed or minted above");
         let identity = &mut store.books[index];
+        if identity.added_at == 0 {
+            identity.added_at = historical_addition_time(group.grouped_files);
+        }
         identity.record_fingerprint(group.book_fingerprint);
         identity.last_seen_scan = scan;
         identity.track_count = group.grouped_files.len();
