@@ -185,8 +185,9 @@ test('a sentence near the left of the reader seeks narration instead of turning 
   await expect(paragraph).toBeVisible();
   const box = (await paragraph.boundingBox())!;
   const stage = (await page.locator('.epub-stage').boundingBox())!;
-  const x = box.x + 10;
-  expect(x - stage.x).toBeGreaterThan(32);
+  const edge = Math.min(80, stage.width * 0.15);
+  const x = box.x + edge + 10;
+  expect(x - stage.x).toBeGreaterThan(edge);
   expect(x - stage.x).toBeLessThan(stage.width / 4);
   await page.mouse.click(x, box.y + 10);
   await expect(page.getByLabel('Narration position')).toHaveValue('20');
