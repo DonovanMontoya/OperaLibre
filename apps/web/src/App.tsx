@@ -943,7 +943,15 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
+const PURCHASE_VIEW_MODE_STORAGE_KEY = "operalibre.purchaseViewMode";
 const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro", "all"];
+
+function readStoredPurchaseViewMode(): ShelfViewMode {
+  const stored = readStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY);
+  return SHELF_VIEW_MODE_OPTIONS.some((option) => option.value === stored)
+    ? (stored as ShelfViewMode)
+    : "list";
+}
 
 // "account" only makes sense for the Audible shelf; "series"/"genre"/"progress" only
 // for the local library — an Audible row is a purchase that has not been downloaded yet,
@@ -4165,6 +4173,7 @@ function MainApp({
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
+  const [purchaseViewMode, setPurchaseViewMode] = useState<ShelfViewMode>(readStoredPurchaseViewMode);
   // iPad's two-page Shelf can give the whole screen to either page: the
   // player alone, or the collection alone at its larger grid.
   const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
@@ -4331,6 +4340,11 @@ function MainApp({
     viewBeforeWideShelfRef.current = null;
     setViewMode(mode);
     writeStoredShelfViewMode(mode);
+  }
+
+  function selectPurchaseViewMode(mode: ShelfViewMode) {
+    setPurchaseViewMode(mode);
+    writeStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY, mode);
   }
 
   function changeShelfLayout(next: ShelfLayout) {
@@ -4548,6 +4562,36 @@ function MainApp({
     });
     return sortReversed ? sorted.reverse() : sorted;
   }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
+
+  const visibleBookRuns = useMemo(() => {
+    const runs: Array<{
+      label: string | null;
+      items: Array<{ book: (typeof visibleBooks)[number]; index: number }>;
+    }> = [];
+    visibleBooks.forEach((book, index) => {
+      const label = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
+      const previous = runs[runs.length - 1];
+      if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
+        previous.items.push({ book, index });
+      } else {
+        runs.push({ label, items: [{ book, index }] });
+      }
+    });
+    return runs;
+  }, [shelfFilters.tags, sortMode, visibleBooks]);
+
+  const splitShelfIntoLeaves = playbackFold.fold?.axis === "vertical";
+  const visibleBookColumns = useMemo(() => {
+    if (!splitShelfIntoLeaves) return [visibleBookRuns];
+    const columns: typeof visibleBookRuns[] = [[], []];
+    const weights = [0, 0];
+    for (const run of visibleBookRuns) {
+      const column = weights[0] <= weights[1] ? 0 : 1;
+      columns[column].push(run);
+      weights[column] += run.items.length + 0.5;
+    }
+    return columns;
+  }, [splitShelfIntoLeaves, visibleBookRuns]);
 
   const audibleAccountLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -9525,17 +9569,19 @@ function MainApp({
             >
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
-            {librarySource !== "libro" && librarySource !== "all" ? <div className="view-toggle" role="group" aria-label="View mode">
+            {librarySource !== "libro" && librarySource !== "all" ? <div className="view-toggle" role="group" aria-label={librarySource === "audible" ? "Purchase view mode" : "View mode"}>
               {SHELF_VIEW_MODE_OPTIONS.map((option) => {
                 const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
+                const activeViewMode = librarySource === "audible" ? purchaseViewMode : viewMode;
                 return (
                   <button
+                    type="button"
                     key={option.value}
-                    className={viewMode === option.value ? "selected" : ""}
-                    onClick={() => selectViewMode(option.value)}
+                    className={activeViewMode === option.value ? "selected" : ""}
+                    onClick={() => librarySource === "audible" ? selectPurchaseViewMode(option.value) : selectViewMode(option.value)}
                     aria-label={option.label}
                     title={option.value === "compact" ? "Compact view · more books per screen" : option.label}
-                    aria-pressed={viewMode === option.value}
+                    aria-pressed={activeViewMode === option.value}
                   >
                     <Icon size={14} />
                   </button>
@@ -9928,7 +9974,17 @@ function MainApp({
             {/* Compact keeps the list layout and only tightens it, so it carries
                 both classes rather than forking every row rule. */}
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
-              {visibleBooks.map((book, index) => {
+              {visibleBookColumns.map((column, columnIndex) => (
+                <div className="book-leaf" key={`leaf-${columnIndex}`}>
+                {column.map((run) => (
+                <section className="book-sort-run" key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
+                  {run.label ? (
+                    <div className="book-sort-group" role="heading" aria-level={2}>
+                      <span>{bookSortGroupCaption(sortMode)}</span>
+                      <strong>{run.label}</strong>
+                    </div>
+                  ) : null}
+                  {run.items.map(({ book, index }) => {
                 const progressPercent = book.progress?.percentComplete ?? 0;
                 const availableOnDevice =
                   demoMode
@@ -9950,19 +10006,9 @@ function MainApp({
                 const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
                 const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
                 const sortTag = tagForShelfSort(book, shelfFilters.tags);
-                const sortGroup = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
-                const previousSortGroup = index > 0
-                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode, shelfFilters.tags)
-                  : null;
                 return (
-                  <Fragment key={book.id}>
-                    {sortGroup && compareShelfLabels(sortGroup, previousSortGroup) !== 0 ? (
-                      <div className="book-sort-group" role="heading" aria-level={2}>
-                        <span>{bookSortGroupCaption(sortMode)}</span>
-                        <strong>{sortGroup}</strong>
-                      </div>
-                    ) : null}
                     <button
+                      key={book.id}
                       className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
                       onClick={() => {
                         selectBook(book);
@@ -10052,9 +10098,12 @@ function MainApp({
                         ) : null}
                       </span>
                     </button>
-                  </Fragment>
                 );
-              })}
+                  })}
+                </section>
+                ))}
+                </div>
+              ))}
             </div>
           </>
         ) : showAudiblePurchases ? (
@@ -10068,7 +10117,7 @@ function MainApp({
               <div className="empty-state">No Libation books loaded yet.</div>
             ) : null}
 
-            <div className="audible-list">
+            <div className={`audible-list audible-list--${purchaseViewMode}`}>
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
                 const downloadRequest = libationDownloadRequests.find(
@@ -10645,6 +10694,39 @@ function MainApp({
                   </div>
                 </div>
                 <h2>{selectedBook.title}</h2>
+                {!isViewingPlayingBook ? (
+                  <div className="book-quick-start">
+                    <button
+                      type="button"
+                      className="book-quick-play"
+                      aria-label={`Play ${selectedBook.title}`}
+                      onClick={() => void playSelectedBook(selectedBook)}
+                    >
+                      <span className="book-quick-play-icon"><Play size={20} fill="currentColor" /></span>
+                      <span className="book-quick-play-copy">
+                        <strong>
+                          {selectedBook.progress?.status === "inProgress"
+                            ? "Resume this book"
+                            : selectedBook.progress?.status === "finished"
+                              ? "Read it again"
+                              : "Begin this reading"}
+                        </strong>
+                        <small>
+                          {selectedBook.progress?.status === "inProgress"
+                            && formatDurationLabel(selectedBook.progress.remainingSeconds)
+                            ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                            : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
+                        </small>
+                      </span>
+                    </button>
+                    {playbackBook && playbackBook.id !== selectedBook.id ? (
+                      <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
+                        <Headphones size={14} />
+                        <span>Now playing <em>{playbackBook.title}</em></span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="book-credits">
                   {selectedBook.author ? <span>{selectedBook.author}</span> : null}
                   {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
