@@ -24,6 +24,7 @@ const listeners = new Set<() => void>();
 type FoldViewTransition = { finished: Promise<unknown>; skipTransition?: () => void };
 let activeFoldTransition: FoldViewTransition | null = null;
 let fallbackTransitionTimer: number | null = null;
+const closedLayoutAngle = 45;
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => void listeners.delete(listener);
@@ -40,6 +41,18 @@ export function isBookPosture(state: DeviceFoldState): boolean {
 
 export function usesFoldLayout(state: DeviceFoldState): boolean {
   return !!state.fold && state.posture !== "closed" && (state.posture === "half-open" || state.fold.active);
+}
+
+/**
+ * Move into the cover layout while the two halves are still physically
+ * closing. Waiting for UIHinge.Status.closed makes the screen visibly reflow
+ * after the hardware has stopped moving.
+ */
+export function resolveFoldLayoutState(state: DeviceFoldState): DeviceFoldState {
+  if (state.posture === "half-open" && state.angle !== undefined && state.angle <= closedLayoutAngle) {
+    return { ...state, posture: "closed" };
+  }
+  return state;
 }
 
 /** A posture or axis change redraws the surfaces; live hinge-angle updates do not. */
@@ -77,6 +90,7 @@ function publishDeviceFold(root: HTMLElement, state: DeviceFoldState): void {
  * nothing and keep their ordinary layout.
  */
 export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void {
+  const layoutState = resolveFoldLayoutState(state);
   const previous = current;
   const document = root.ownerDocument;
   const view = document?.defaultView;
@@ -85,10 +99,10 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
     && !!view
     && root.classList?.contains("platform-ios")
     && !reducedMotion
-    && isFoldTransitionChange(previous, state);
+    && isFoldTransitionChange(previous, layoutState);
 
   if (!shouldAnimate) {
-    publishDeviceFold(root, state);
+    publishDeviceFold(root, layoutState);
     return;
   }
 
@@ -98,7 +112,7 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
   if (transitionDocument.startViewTransition) {
     activeFoldTransition?.skipTransition?.();
     root.dataset.foldTransition = "view";
-    const transition = transitionDocument.startViewTransition(() => publishDeviceFold(root, state));
+    const transition = transitionDocument.startViewTransition(() => publishDeviceFold(root, layoutState));
     activeFoldTransition = transition;
     const cleanUp = () => {
       if (activeFoldTransition !== transition) return;
@@ -109,13 +123,13 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
     return;
   }
 
-  publishDeviceFold(root, state);
+  publishDeviceFold(root, layoutState);
   root.dataset.foldTransition = "fallback";
   if (fallbackTransitionTimer !== null) view?.clearTimeout(fallbackTransitionTimer);
   fallbackTransitionTimer = view?.setTimeout(() => {
     fallbackTransitionTimer = null;
     delete root.dataset.foldTransition;
-  }, 300) ?? null;
+  }, 140) ?? null;
 }
 
 export function installDeviceFold(root: HTMLElement): void {
