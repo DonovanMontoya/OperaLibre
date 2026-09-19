@@ -78,6 +78,56 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   expect(player.y + player.height).toBeLessThanOrEqual(380);
 });
 
+test('half open, Ledger and Settings scroll each page on its own; flat keeps the one continuous flow', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.setContent(`<html class="native-app" data-fold-axis="vertical" data-fold-active><head>
+    <link rel="stylesheet" href="${url}src/styles.css?direct">
+    </head><body>
+    <article class="profile-page ledger-dashboard">
+      <div class="ledger-upper"><p style="height:1200px">Upper</p></div>
+      <div class="ledger-lower"><p style="height:1200px">Lower</p></div>
+    </article>
+    <section class="settings-shell">
+      <header class="settings-head"><h1>Settings</h1></header>
+      <div class="settings-cards">
+        <div class="settings-upper"><p style="height:1200px">Upper</p></div>
+        <div class="settings-lower"><p style="height:1200px">Lower</p></div>
+      </div>
+    </section>
+    </body></html>`);
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries({ '--fold-x': '460px', '--fold-width': '31px',
+      '--status-h': '44px', '--tabs-h': '80px' })) {
+      root.style.setProperty(name, value);
+    }
+  });
+  const columnCount = () => page.locator('.ledger-dashboard').evaluate(el => getComputedStyle(el).columnCount);
+  const overflowY = (selector: string) => page.locator(selector).evaluate(el => getComputedStyle(el).overflowY);
+
+  await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'flat'; });
+  expect(await columnCount()).toBe('2');
+  expect(await overflowY('.ledger-upper')).not.toBe('auto');
+  expect(await overflowY('.settings-upper')).not.toBe('auto');
+
+  await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'half-open'; });
+  expect(await columnCount()).toBe('auto');
+  for (const selector of ['.ledger-upper', '.ledger-lower', '.settings-upper', '.settings-lower']) {
+    expect(await overflowY(selector)).toBe('auto');
+  }
+  const ledgerUpper = (await page.locator('.ledger-upper').boundingBox())!;
+  const ledgerLower = (await page.locator('.ledger-lower').boundingBox())!;
+  expect(ledgerUpper.x + ledgerUpper.width).toBeLessThanOrEqual(460);
+  expect(ledgerLower.x).toBeGreaterThanOrEqual(491);
+  const settingsUpper = (await page.locator('.settings-upper').boundingBox())!;
+  const settingsLower = (await page.locator('.settings-lower').boundingBox())!;
+  expect(settingsUpper.x + settingsUpper.width).toBeLessThanOrEqual(460);
+  expect(settingsLower.x).toBeGreaterThanOrEqual(491);
+
+  await page.locator('.ledger-upper').evaluate(el => { el.scrollTop = 500; });
+  expect(await page.locator('.ledger-lower').evaluate(el => el.scrollTop)).toBe(0);
+});
+
 test('half-open reader clears the horizontal hinge and keeps its transport on the lower half', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   await page.goto(`${url}test/reader-catch-up.html?immersive`);
