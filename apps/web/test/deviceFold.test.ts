@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyDeviceFold, isBookPosture, type DeviceFoldState } from "../src/deviceFold.ts";
+import { applyDeviceFold, isBookPosture, isFoldTransitionChange, type DeviceFoldState } from "../src/deviceFold.ts";
 
 function fakeRoot() {
   const properties = new Map<string, string>();
@@ -84,4 +84,19 @@ test("rotation and closing clear the book spread and fold displacement", () => {
   assert.equal(isBookPosture(closed), false);
   applyDeviceFold(root, { posture: "unknown" });
   assert.equal(attributes.has("data-fold-active"), false);
+});
+
+test("only structural posture changes animate", () => {
+  const halfOpen: DeviceFoldState = {
+    posture: "half-open",
+    angle: 90,
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
+  };
+  assert.equal(isFoldTransitionChange({ posture: "unknown" }, halfOpen), false);
+  assert.equal(isFoldTransitionChange(halfOpen, { ...halfOpen, angle: 112 }), false);
+  assert.equal(isFoldTransitionChange(halfOpen, { posture: "closed", angle: 0 }), true);
+  assert.equal(isFoldTransitionChange(halfOpen, {
+    ...halfOpen,
+    fold: { ...halfOpen.fold!, x: 460, y: 0, width: 31, height: 669, axis: "vertical" }
+  }), true);
 });

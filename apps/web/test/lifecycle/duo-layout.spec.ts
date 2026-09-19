@@ -493,6 +493,7 @@ test('portrait fold bounds the shelf, settings and administration to independent
     applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 90,
       fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
   });
+  await page.waitForFunction(() => !document.documentElement.dataset.foldTransition);
   const left = (await page.locator('.admin-navigation').boundingBox())!;
   const right = (await page.locator('.admin-content').boundingBox())!;
   expect(left.x + left.width).toBeLessThanOrEqual(460);
