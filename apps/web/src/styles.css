@@ -15079,7 +15079,35 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] {
   --fold-bottom-height: calc(var(--native-layout-height) - var(--fold-bottom-start));
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell:is(.tab-shelf, .tab-reading)::after { display: none; }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf > :is(.library-pane, .player-pane) {
+
+/* Just browsing, the library keeps the whole screen and the transport stays
+   a floating mini-player, the same as flat and portrait — nothing forces a
+   player page onto the lower screen until a book is actually open. */
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf:not(.library-book-open) > .library-pane {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: auto;
+  width: auto;
+  min-height: 0;
+  max-height: none;
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  transition: none;
+  margin: 0;
+  padding: calc(var(--status-h) + 12px) max(20px, env(safe-area-inset-right))
+    calc(var(--tabs-h) + var(--mini-player-height) + 20px) max(20px, env(safe-area-inset-left));
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf:not(.library-book-open) > .player-pane {
+  display: none;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf.library-book-open > :is(.library-pane, .player-pane) {
   position: fixed;
   display: block;
   left: 0;
@@ -15097,13 +15125,13 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   transition: none;
   margin: 0;
 }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf > .library-pane {
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf.library-book-open > .library-pane {
   top: 0;
   bottom: auto;
   height: var(--fold-y);
   padding: calc(var(--status-h) + 12px) max(20px, env(safe-area-inset-right)) 20px max(20px, env(safe-area-inset-left));
 }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf > .player-pane {
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf.library-book-open > .player-pane {
   top: var(--fold-bottom-start);
   bottom: 0;
   height: auto;
@@ -15111,7 +15139,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf .shelf-layout-controls,
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf .shelf-reveal-button,
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf > .mini-player { display: none; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf.library-book-open > .mini-player { display: none; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-shelf
   .has-native-player.native-player-view-now .native-now-playing:not(.has-reader) {
   position: static;
@@ -15170,20 +15198,79 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper { g
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-lower { grid-row: 3; padding-bottom: calc(var(--tabs-h) + 20px); }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-dashboard > :is(.ledger-upper, .ledger-lower) > * { margin-bottom: 16px; }
 
+/* The totals card and the habits calendar share a row on the upper screen,
+   the same pairing a short landscape phone already uses, so both fit
+   without the page needing a scroll of its own. */
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 10px 14px;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper > :not(.profile-headline):not(.profile-calendar) {
+  grid-column: 1 / -1;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-head { gap: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-mono { width: 32px; height: 32px; flex-basis: 32px; font-size: 14px; border-radius: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-id h1 { font-size: 20px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .ledger-owner { margin-top: 2px; font-size: 12px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-id p { margin-top: 1px; font-size: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-headline {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-primary { padding: 0 14px 0 0; border-right: 1px solid #514439; border-bottom: 0; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-value { font-size: 36px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-label { font-size: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-secondary dd { font-size: 18px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .headline-secondary dt { font-size: 10px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-calendar {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-calendar header { margin-bottom: 6px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .profile-calendar h2 { font-size: 14px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is(.calendar-weeks, .calendar-week, .calendar-weekdays) { gap: 3px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper :is(.calendar-cell, .calendar-weekdays span) { height: 11px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer { margin-top: 6px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer p { font-size: 10px; }
+
 /* Games keep their instructions/score (or word guesses) above the crease;
    the interactive board/keyboard occupies the lower surface. */
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   top: 0;
   bottom: auto;
   height: var(--fold-y);
   overflow: auto;
   padding: calc(var(--status-h) + 12px) 20px 16px;
-  gap: 10px;
+  gap: 14px;
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell > .game-card { display: contents; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell :is(.games-head, .games-privacy) { display: none; }
+/* The score reads like a small dashboard, not a caption, so the pane earns
+   its space instead of leaving a void above the board. */
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .match-record { font-size: 0.7rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .match-record strong { font-size: 1rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .match-score { font-size: 0.76rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .match-score strong { font-size: 1.7rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .game-message {
+  margin: 4px auto 0;
+  padding: 10px 18px;
+  max-width: fit-content;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 0.85rem;
+}
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell :is(.match-board-frame, .word-keys) {
   position: fixed;
   top: var(--fold-bottom-start);
@@ -15194,15 +15281,18 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .ga
   height: auto;
   min-height: 0;
   margin: 0;
-  padding: 16px 0;
+  padding: 20px;
   display: grid;
   align-content: center;
   justify-items: center;
   overflow: auto;
   overscroll-behavior: contain;
+  background: rgba(184, 137, 58, 0.07);
+  border: 1px solid rgba(184, 137, 58, 0.14);
+  border-radius: 24px;
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .match-board {
-  width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 52px));
+  width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 60px));
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .word-board { width: min(100%, 230px); }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .word-keys-row { width: 100%; }
