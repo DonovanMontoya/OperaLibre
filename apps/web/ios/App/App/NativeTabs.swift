@@ -422,7 +422,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                let items = itemsPlatter(in: column) {
                 let top = railTop(in: column, above: items.minY)
                 if items.minY - top >= Self.minimumRailHeight {
-                    rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: items.minY - top)
+                    // Centred on the platter, not the column: the platter
+                    // sits a few points off the bar's frame, and the page's
+                    // controls stand in line with it.
+                    rail = CGRect(x: items.midX - column.width / 2 - frame.minX, y: top,
+                                  width: column.width, height: items.minY - top)
                     frame.size.width = view.bounds.maxX - frame.minX
                 }
             }
