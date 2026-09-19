@@ -244,7 +244,13 @@ test('portrait fold bounds the shelf, settings and administration to independent
       expect(await page.locator(selector).evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     }
   };
-  await checkPanes('.library-pane', '.player-pane');
+  // Just browsing, the library keeps the whole screen and the transport is
+  // the floating mini-player — no player page forced onto the lower screen.
+  const browsingLibrary = (await page.locator('.library-pane').boundingBox())!;
+  expect(browsingLibrary.y).toBeLessThanOrEqual(0.5);
+  expect(browsingLibrary.y + browsingLibrary.height).toBeGreaterThan(460.5);
+  await expect(page.locator('.player-pane')).toBeHidden();
+
   await page.locator('.book-row').first().click();
   await checkPanes('.library-pane', '.player-pane');
   await expect(page.locator('.readalong-invite')).toBeVisible();
@@ -265,11 +271,21 @@ test('portrait fold bounds the shelf, settings and administration to independent
       });
       document.documentElement.style.setProperty('--tabs-h', axis === 'vertical' ? '0px' : '80px');
     }, { width, height, axis });
-    await expect(page.locator('.native-now-playing')).toBeVisible();
     for (const tab of axis === 'closed' ? ['Reading'] : ['Reading', 'Shelf']) {
       // The fixture has HTML tabs instead of UIKit's side rail; zero bottom
       // inset intentionally hides them in landscape. Exercise their handlers.
       await page.locator('.spine-tab').filter({ hasText: tab }).dispatchEvent('click');
+      // Browsing the horizontal-fold Shelf keeps the library full screen and
+      // the transport a floating mini-player — no player page is forced onto
+      // the lower screen just because a book happens to be playing.
+      if (tab === 'Shelf' && axis === 'horizontal') {
+        await expect(page.locator('.player-pane')).toBeHidden();
+        await expect(page.locator('.mini-player')).toBeVisible();
+        const library = (await page.locator('.library-pane').boundingBox())!;
+        expect(library.height).toBeGreaterThan(height / 2);
+        await page.screenshot({ path: `../../output/playwright/duo-static-${width}-${tab}.png` });
+        continue;
+      }
       const pane = page.locator('.player-pane');
       await expect.poll(() => pane.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
       expect(await pane.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
