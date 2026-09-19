@@ -1304,6 +1304,9 @@ function writeStoredValue(key: string, value: string) {
   }
 }
 
+const READER_FONT_SCALE_MIN = 50;
+const READER_FONT_SCALE_MAX = 300;
+
 // A foldable's cover screen and its unfolded inner screen are different
 // reading surfaces — a size comfortable closed can be lost or cramped once
 // opened. Remember the reader's text size per screen instead of one value
@@ -1318,7 +1321,9 @@ function readStoredFontScale(bucket: string): number {
   const raw = readStoredValue(`operalibre.readerFontScale.${bucket}`)
     ?? (bucket === "open" ? readStoredValue("operalibre.readerFontScale") : null);
   const stored = Number(raw);
-  return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
+  return Number.isFinite(stored) && stored >= READER_FONT_SCALE_MIN && stored <= READER_FONT_SCALE_MAX
+    ? stored
+    : 100;
 }
 
 function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId", bookId: string | null) {
@@ -2805,8 +2810,8 @@ export function EpubReadalong({
       <button
         type="button"
         aria-label="Decrease reader text size"
-        disabled={fontScale <= 85}
-        onClick={() => setFontScale((size) => Math.max(85, size - 10))}
+        disabled={fontScale <= READER_FONT_SCALE_MIN}
+        onClick={() => setFontScale((size) => Math.max(READER_FONT_SCALE_MIN, size - 10))}
       >
         <Minus size={15} />
       </button>
@@ -2814,8 +2819,8 @@ export function EpubReadalong({
       <button
         type="button"
         aria-label="Increase reader text size"
-        disabled={fontScale >= 140}
-        onClick={() => setFontScale((size) => Math.min(140, size + 10))}
+        disabled={fontScale >= READER_FONT_SCALE_MAX}
+        onClick={() => setFontScale((size) => Math.min(READER_FONT_SCALE_MAX, size + 10))}
       >
         <Plus size={15} />
       </button>
