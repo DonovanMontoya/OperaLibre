@@ -15244,7 +15244,10 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .ca
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper .calendar-footer p { font-size: 10px; }
 
 /* Games keep their instructions/score (or word guesses) above the crease;
-   the interactive board/keyboard occupies the lower surface. */
+   the interactive board/keyboard occupies the lower surface, fixed below
+   this pane's own boundary. WebKit clips a fixed descendant to an ancestor
+   that scrolls, spec or not, so this pane can't be the one to carry
+   overflow: auto — only its own (short, non-scrolling) content needs it. */
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell {
   display: flex;
   flex-direction: column;
@@ -15252,7 +15255,7 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .ga
   top: 0;
   bottom: auto;
   height: var(--fold-y);
-  overflow: auto;
+  overflow: visible;
   padding: calc(var(--status-h) + 12px) 20px 16px;
   gap: 14px;
 }
@@ -15272,6 +15275,9 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .games-shell .gam
   background: rgba(255, 255, 255, 0.05);
   font-size: 0.85rem;
 }
+/* The word keyboard's tiles are cut for the parlour's dark ground — pale
+   text on barely-there glass — so the stage stays dark beneath the crease
+   rather than handing them to the page's cream. */
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .games-shell :is(.match-board-frame, .word-keys) {
   position: fixed;
   top: var(--fold-bottom-start);
@@ -15282,13 +15288,15 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .ga
   height: auto;
   min-height: 0;
   margin: 0;
-  padding: 16px 0;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   overflow: auto;
   overscroll-behavior: contain;
+  background: linear-gradient(155deg, #21150f, #0f0b08 68%);
+  border-radius: 24px;
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .match-board {
   width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 52px));
