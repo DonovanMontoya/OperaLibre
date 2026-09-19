@@ -15814,6 +15814,82 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
   width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - 28px));
 }
 
+/* Posture changes should feel like the same little game table being folded,
+   not a route being replaced. WebKit's view transition snapshots preserve
+   continuity while the underlying layout switches between the cover, laptop,
+   and open-book geometries. Only the four large surfaces participate; the
+   pieces themselves keep their existing interaction animations. */
+html.native-app.platform-ios .native-shell.tab-games .games-shell {
+  view-transition-name: duo-games-summary;
+}
+
+html.native-app.platform-ios .native-shell.tab-games > .mini-player {
+  view-transition-name: duo-games-player;
+}
+
+html.native-app.platform-ios .native-shell.tab-games:not(.games-words) .match-board-frame {
+  view-transition-name: duo-games-stage;
+}
+
+html.native-app.platform-ios .native-shell.tab-games.games-words .word-keys {
+  view-transition-name: duo-games-stage;
+}
+
+html.native-app.platform-ios .native-shell.tab-games .spine-tabs {
+  view-transition-name: duo-games-tabs;
+}
+
+html.native-app[data-fold-transition="view"]::view-transition-old(root) { display: none; }
+html.native-app[data-fold-transition="view"]::view-transition-new(root) { animation: none; }
+
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-summary),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-player),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-stage),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-tabs) {
+  animation-duration: 260ms;
+  animation-timing-function: cubic-bezier(.2, .78, .2, 1);
+}
+
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-summary),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-player),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-stage),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-tabs) {
+  animation: duo-posture-out 180ms cubic-bezier(.4, 0, 1, 1) both;
+}
+
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-summary),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-player),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-stage),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-tabs) {
+  animation: duo-posture-in 260ms cubic-bezier(.2, .78, .2, 1) both;
+}
+
+html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.games-shell, .mini-player, .match-board-frame, .word-keys, .spine-tabs) {
+  animation: duo-posture-settle 260ms cubic-bezier(.2, .78, .2, 1) both;
+}
+
+@keyframes duo-posture-out {
+  from { opacity: 1; }
+  to { opacity: 0.18; }
+}
+
+@keyframes duo-posture-in {
+  from { opacity: 0.32; }
+  to { opacity: 1; }
+}
+
+@keyframes duo-posture-settle {
+  from { opacity: 0.45; transform: scale(.985); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.native-app.platform-ios .native-shell.tab-games :is(.games-shell, .mini-player, .match-board-frame, .word-keys, .spine-tabs) {
+    view-transition-name: none;
+    animation: none;
+  }
+}
+
 @supports (width: 1cqh) {
   html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games .match-board,
   html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab-games.has-mini-player .match-board {
