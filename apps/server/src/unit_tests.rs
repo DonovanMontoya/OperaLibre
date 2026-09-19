@@ -4749,6 +4749,70 @@ fn a_new_book_is_stamped_with_its_addition_time_and_keeps_it_on_rescan() {
     );
 }
 
+#[test]
+fn historical_addition_dates_prefer_creation_and_handle_missing_or_invalid_dates() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let old = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    let recent = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let future = std::time::SystemTime::now() + Duration::from_secs(86400);
+    assert_eq!(
+        super::historical_file_time(Some(recent), Some(old)),
+        Some(1_700_000_000)
+    );
+    assert_eq!(
+        super::historical_file_time(None, Some(old)),
+        Some(1_600_000_000)
+    );
+    assert_eq!(
+        super::historical_file_time(Some(future), Some(old)),
+        Some(1_600_000_000)
+    );
+    assert_eq!(
+        super::historical_file_time(Some(UNIX_EPOCH), Some(old)),
+        Some(1_600_000_000)
+    );
+    assert_eq!(super::historical_file_time(None, None), None);
+}
+
+#[test]
+fn existing_books_recover_missing_addition_dates_once_and_persist_them() {
+    let root = tempfile::tempdir().unwrap();
+    let track = write_book(root.path(), "Book", "01.m4b", b"original container");
+    let mut identities = super::LibraryIdentityStore::default();
+    let scan = |store: &mut super::LibraryIdentityStore| {
+        resolve_scan(
+            store,
+            &[IdentityFixture::read("Book", std::slice::from_ref(&track))],
+        )
+    };
+    let original = scan(&mut identities);
+    // Simulate a store written before added_at existed, including serde's default.
+    let mut json = serde_json::to_value(&identities).unwrap();
+    assert!(
+        json["books"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("addedAt")
+            .is_some()
+    );
+    identities = serde_json::from_value(json).unwrap();
+    assert_eq!(identities.books[0].added_at, 0);
+    assert_eq!(scan(&mut identities), original);
+    let recovered = identities.books[0].added_at;
+    assert!(recovered > 0);
+    let metadata = std::fs::metadata(&track).unwrap();
+    assert_eq!(
+        Some(recovered),
+        super::historical_file_time(metadata.created().ok(), metadata.modified().ok())
+    );
+    identities = serde_json::from_slice(&serde_json::to_vec(&identities).unwrap()).unwrap();
+    assert_eq!(identities.books[0].added_at, recovered);
+    // An established date is authoritative even when file timestamps differ.
+    identities.books[0].added_at = 1_600_000_000;
+    scan(&mut identities);
+    assert_eq!(identities.books[0].added_at, 1_600_000_000);
+}
+
 /// Unreadable tags look exactly like a replacement. Once a book's runtime is
 /// known, a scan that cannot produce one must not be waved through the
 /// path-only tier.
