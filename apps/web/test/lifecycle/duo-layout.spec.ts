@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import { createServer, type ViteDevServer } from 'vite';
 import type { DeviceFoldState } from '../../src/deviceFold';
 import { library } from '../performance/fixtures';
@@ -76,6 +77,80 @@ test('unfolded spread keeps the mini player in the side rail, off the fold', asy
   expect(player.x + player.width).toBeLessThanOrEqual(951);
   expect(player.y).toBeGreaterThanOrEqual(120);
   expect(player.y + player.height).toBeLessThanOrEqual(380);
+});
+
+test('wide Duo gives Shelf both leaves while Reading keeps the player spread', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
+  await page.setContent(`<html class="native-app side-rail" data-fold-posture="half-open" data-fold-axis="vertical" data-fold-active><head>
+    <style>${stylesheet}</style>
+    </head><body><main class="native-shell tab-shelf has-mini-player shelf-landscape shelf-folded">
+    <section class="library-pane"><div class="shelf-layout-controls">Layout</div><div class="book-list is-grid">
+      ${Array.from({ length: 12 }, (_, index) => `<button class="book-row">Book ${index + 1}</button>`).join('')}
+    </div></section><section class="player-pane">Player</section>
+    </main></body></html>`);
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    root.className = 'native-app side-rail';
+    root.dataset.foldPosture = 'half-open';
+    root.dataset.foldAxis = 'vertical';
+    root.setAttribute('data-fold-active', '');
+    for (const [name, value] of Object.entries({ '--fold-x': '460px', '--fold-width': '31px',
+      '--fold-height': '669px', '--status-h': '44px', '--tabs-h': '0px' })) {
+      root.style.setProperty(name, value);
+    }
+  });
+
+  await expect(page.locator('.player-pane')).toBeHidden();
+  await expect(page.locator('.shelf-layout-controls')).toBeHidden();
+  const libraryPane = (await page.locator('.library-pane').boundingBox())!;
+  expect(libraryPane.x).toBeLessThanOrEqual(0.5);
+  expect(libraryPane.x + libraryPane.width).toBeGreaterThanOrEqual(950.5);
+  for (const book of await page.locator('.book-row').all()) {
+    const box = (await book.boundingBox())!;
+    expect(box.x + box.width <= 460 || box.x >= 491).toBe(true);
+  }
+
+  await page.locator('.book-list').evaluate(list => {
+    list.setAttribute('class', 'book-list is-list');
+    const run = (index: number) => `<div class="book-sort-run">
+        <div class="book-sort-group"><span>Series</span><strong>Series ${index + 1}</strong></div>
+        ${Array.from({ length: index === 0 ? 3 : 1 }, (_, bookIndex) =>
+          `<button class="book-row">Book ${index + 1}.${bookIndex + 1}</button>`).join('')}
+      </div>`;
+    list.innerHTML = `<div class="book-leaf">${run(0)}${run(2)}</div><div class="book-leaf">${run(1)}${run(3)}</div>`;
+  });
+  const leaves = await page.locator('.book-leaf').all();
+  const firstRun = (await leaves[0].locator('.book-sort-run').first().boundingBox())!;
+  const secondRun = (await leaves[1].locator('.book-sort-run').first().boundingBox())!;
+  expect(firstRun.x + firstRun.width).toBeLessThanOrEqual(460);
+  expect(secondRun.x).toBeGreaterThanOrEqual(491);
+  for (const book of await leaves[0].locator('.book-sort-run').first().locator('.book-row').all()) {
+    const box = (await book.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(460);
+  }
+
+  await page.locator('.book-list').evaluate(list => list.classList.replace('is-list', 'is-grid'));
+  for (const leaf of await page.locator('.book-leaf').all()) {
+    const runs = await leaf.locator('.book-sort-run').all();
+    for (const run of runs) {
+      const runBox = (await run.boundingBox())!;
+      const leafBox = (await leaf.boundingBox())!;
+      expect(runBox.width).toBeGreaterThan(leafBox.width * 0.9);
+      for (const book of await run.locator('.book-row').all()) {
+        const box = (await book.boundingBox())!;
+        expect(box.x + box.width <= 460 || box.x >= 491).toBe(true);
+      }
+    }
+  }
+
+  await page.locator('main').evaluate(main => {
+    main.classList.remove('tab-shelf');
+    main.classList.add('tab-reading');
+  });
+  await expect(page.locator('.player-pane')).toBeVisible();
+  const playerPane = (await page.locator('.player-pane').boundingBox())!;
+  expect(playerPane.x).toBeGreaterThanOrEqual(475);
 });
 
 test('half open, Ledger and Settings scroll each page on its own; flat keeps the one continuous flow', async ({ page }) => {
@@ -311,6 +386,10 @@ test('portrait fold bounds the shelf, settings and administration to independent
 
   await page.locator('.book-row').first().click();
   await checkPanes('.library-pane', '.player-pane');
+  await expect(page.locator('.book-quick-play')).toBeVisible();
+  const quickPlay = (await page.locator('.book-quick-play').boundingBox())!;
+  const detailPane = (await page.locator('.player-pane').boundingBox())!;
+  expect(quickPlay.y + quickPlay.height).toBeLessThanOrEqual(detailPane.y + detailPane.height);
   await expect(page.locator('.readalong-invite')).toBeVisible();
   expect(await page.locator('.readalong-invite').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: '../../output/duo-shelf-portrait.png' });
@@ -333,14 +412,23 @@ test('portrait fold bounds the shelf, settings and administration to independent
       // The fixture has HTML tabs instead of UIKit's side rail; zero bottom
       // inset intentionally hides them in landscape. Exercise their handlers.
       await page.locator('.spine-tab').filter({ hasText: tab }).dispatchEvent('click');
-      // Browsing the horizontal-fold Shelf keeps the library full screen and
-      // the transport a floating mini-player — no player page is forced onto
-      // the lower screen just because a book happens to be playing.
-      if (tab === 'Shelf' && axis === 'horizontal') {
+      // Shelf is a collection destination in either fold direction. Browsing
+      // keeps the library full screen and the transport in the mini player;
+      // Reading is the tab that owns the persistent player page.
+      if (tab === 'Shelf' && axis !== 'closed') {
         await expect(page.locator('.player-pane')).toBeHidden();
-        await expect(page.locator('.mini-player')).toBeVisible();
         const library = (await page.locator('.library-pane').boundingBox())!;
-        expect(library.height).toBeGreaterThan(height / 2);
+        if (axis === 'horizontal') {
+          await expect(page.locator('.mini-player')).toBeVisible();
+          expect(library.height).toBeGreaterThan(height / 2);
+        } else {
+          expect(library.width).toBeGreaterThan(width - 2);
+          for (const book of await page.locator('.book-row:visible').all()) {
+            const box = (await book.boundingBox())!;
+            const foldStart = (width - 31) / 2;
+            expect(box.x + box.width <= foldStart || box.x >= foldStart + 31).toBe(true);
+          }
+        }
         await page.screenshot({ path: `../../output/playwright/duo-static-${width}-${tab}.png` });
         continue;
       }
@@ -366,8 +454,27 @@ test('portrait fold bounds the shelf, settings and administration to independent
   });
   await page.getByRole('button', { name: 'Games', exact: true }).click();
   await checkPanes('.games-shell', '.match-board-frame');
+  const gameSummary = (await page.locator('.games-switcher').boundingBox())!;
+  const gamePlayer = (await page.locator('.mini-player').boundingBox())!;
+  const gameBoard = (await page.locator('.match-board').boundingBox())!;
+  expect(gameSummary.x + gameSummary.width).toBeLessThanOrEqual(334.5);
+  expect(parseFloat(await page.locator('.games-shell').evaluate(el => getComputedStyle(el).borderRadius))).toBeGreaterThanOrEqual(20);
+  await expect(page.locator('.ios-status-veil')).toBeHidden();
+  expect(gamePlayer.x).toBeGreaterThanOrEqual(334.5);
+  expect(gamePlayer.y + gamePlayer.height).toBeLessThanOrEqual(460.5);
+  expect(gameBoard.y).toBeGreaterThanOrEqual(490.5);
+  expect(gameBoard.width).toBeGreaterThan(320);
+  expect(await page.locator('.match-piece').first().evaluate(el => getComputedStyle(el).fontSize)).toBe('16px');
+  await page.screenshot({ path: '../../output/duo-games-portrait.png' });
   await page.getByRole('tab', { name: 'Word Grid', exact: true }).click();
   await checkPanes('.games-shell', '.word-keys');
+  const wordBoard = (await page.locator('.word-board').boundingBox())!;
+  const wordShell = (await page.locator('.games-shell').boundingBox())!;
+  expect(wordBoard.y).toBeGreaterThanOrEqual(wordShell.y);
+  expect(wordBoard.y + wordBoard.height).toBeLessThanOrEqual(wordShell.y + wordShell.height + 1);
+  expect((await page.locator('.word-key').first().boundingBox())!.height).toBeGreaterThanOrEqual(50);
+  expect(parseFloat(await page.locator('.word-tile').first().evaluate(el => getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(15);
+  await page.screenshot({ path: '../../output/duo-word-grid-portrait.png' });
   await page.getByRole('button', { name: 'Ledger', exact: true }).click();
   await expect(page.locator('.ledger-upper')).toBeVisible();
   await checkPanes('.ledger-upper', '.ledger-lower');
@@ -398,5 +505,11 @@ test('portrait fold bounds the shelf, settings and administration to independent
   await page.locator('.book-row').first().click();
   await expect(page.locator('.readalong-invite')).toBeVisible();
   expect(await page.locator('.readalong-invite').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await expect(page.getByRole('button', { name: 'Back to Library', exact: true })).toBeVisible();
   await page.screenshot({ path: '../../output/duo-shelf-landscape.png' });
+  await page.getByRole('button', { name: 'Back to Library', exact: true }).click();
+  await expect(page.locator('.player-pane')).toBeHidden();
+  expect((await page.locator('.library-pane').boundingBox())!.width).toBeGreaterThan(900);
+  await page.getByRole('button', { name: 'Games', exact: true }).click();
+  expect(await page.locator('.match-piece').first().evaluate(el => getComputedStyle(el).fontSize)).toBe('16px');
 });
