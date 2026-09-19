@@ -1839,7 +1839,13 @@ export function EpubReadalong({
   const handleOverlayTap = useCallback(
     (x: number, clientX: number, clientY: number) => {
       const rendition = renditionRef.current;
-      const edge = pageTurnAtEdge(x, viewerRef.current?.getBoundingClientRect().width ?? 0);
+      const stageWidth = viewerRef.current?.getBoundingClientRect().width ?? 0;
+      // The app-layer catcher can extend into the stage wrapper's safe-area
+      // padding. Clamp that space to the page edge: otherwise a tap just past
+      // the iframe is rejected as an edge turn, then translated into the
+      // EPUB's next hidden column and mistaken for a sentence seek.
+      const stageX = Math.max(0, Math.min(stageWidth, x));
+      const edge = pageTurnAtEdge(stageX, stageWidth);
       if (edge === "prev") {
         navigateByHand(() => rendition?.prev());
         return;
@@ -2032,16 +2038,17 @@ export function EpubReadalong({
       if (target?.closest?.("a, button, input, textarea, select, svg")) {
         return;
       }
-      // Full screen reads like a paper book: narrow outer margins
-      // turn it, the text seeks to the tapped sentence, and a tap on nothing
-      // in particular shows or hides the bars.
+      // Full screen reads like a paper book: narrow outer margins turn it,
+      // the text seeks to the tapped sentence, and a tap on nothing in
+      // particular shows or hides the bars.
       if (fullscreenRef.current) {
         // The chapter is one wide, scrolled document; the visible page is
         // the stage's box in the app's own coordinates.
         const frame = doc.defaultView?.frameElement;
         const stage = viewerRef.current?.getBoundingClientRect();
         if (frame && stage && stage.width > 0) {
-          const x = frame.getBoundingClientRect().left + clientX - stage.left;
+          const rawX = frame.getBoundingClientRect().left + clientX - stage.left;
+          const x = Math.max(0, Math.min(stage.width, rawX));
           const edge = pageTurnAtEdge(x, stage.width);
           if (edge === "prev") {
             navigateByHand(() => rendition?.prev());
@@ -2591,7 +2598,13 @@ export function EpubReadalong({
   useEffect(() => {
     const rendition = renditionRef.current;
     const sentenceStyle = sentenceHighlightStyle(readerTheme);
-    if (!follow || !syncFragments || fragmentIndex < 0) {
+    // followRef, not the follow state: a page turned by hand stops following
+    // at once (see navigateByHand), but this effect can still re-run once
+    // more — retriggered by the turn's own relocation — before React
+    // re-renders with the new follow value. Reading the stale state here
+    // would re-highlight and re-page to wherever the narration currently is,
+    // which is exactly the jump a hand-turned page must not make.
+    if (!followRef.current || !syncFragments || fragmentIndex < 0) {
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
