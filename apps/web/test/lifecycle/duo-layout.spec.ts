@@ -54,6 +54,30 @@ test('cover-screen transport stays inside its rail as Now Playing consumes space
   }
 });
 
+test('unfolded spread keeps the mini player in the side rail, off the fold', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical" data-fold-active><head>
+    <link rel="stylesheet" href="${url}src/styles.css?direct">
+    </head><body><main class="native-shell tab-shelf has-mini-player shelf-landscape">
+    <section class="library-pane"></section><section class="player-pane"></section>
+    <aside class="mini-player" aria-label="Mini player">
+      <button class="mini-cover-button" aria-label="Open current book">Book</button>
+      <div class="mini-actions"><button class="mini-play" aria-label="Pause">Pause</button></div>
+    </aside></main></body></html>`);
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries({ '--fold-x': '475px', '--fold-y': '0px', '--fold-width': '1px',
+      '--fold-height': '669px', '--rail-x': '867px', '--rail-width': '84px', '--rail-top': '120px', '--rail-bottom': '380px' })) {
+      root.style.setProperty(name, value);
+    }
+  });
+  const player = (await page.getByRole('complementary', { name: 'Mini player' }).boundingBox())!;
+  expect(player.x).toBeGreaterThanOrEqual(867);
+  expect(player.x + player.width).toBeLessThanOrEqual(951);
+  expect(player.y).toBeGreaterThanOrEqual(120);
+  expect(player.y + player.height).toBeLessThanOrEqual(380);
+});
+
 test('half-open reader clears the horizontal hinge and keeps its transport on the lower half', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   await page.goto(`${url}test/reader-catch-up.html?immersive`);
