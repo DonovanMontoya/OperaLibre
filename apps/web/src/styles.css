@@ -14731,6 +14731,7 @@ html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis=
   display: grid;
   grid-template-columns: var(--fold-x) var(--fold-width) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  column-gap: 0;
   column-count: auto;
   padding: calc(var(--status-h) + 16px) 0 calc(var(--tabs-h) + 20px);
   overflow: hidden;
@@ -15281,18 +15282,16 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .ga
   height: auto;
   min-height: 0;
   margin: 0;
-  padding: 20px;
-  display: grid;
-  align-content: center;
-  justify-items: center;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   overflow: auto;
   overscroll-behavior: contain;
-  background: rgba(184, 137, 58, 0.07);
-  border: 1px solid rgba(184, 137, 58, 0.14);
-  border-radius: 24px;
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .match-board {
-  width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 60px));
+  width: min(100%, calc(var(--fold-bottom-height) - var(--tabs-h) - var(--mini-player-height) - 52px));
 }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell .word-board { width: min(100%, 230px); }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .word-keys-row { width: 100%; }
