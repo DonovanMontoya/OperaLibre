@@ -14505,11 +14505,41 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
 }
 
 /* The floating transport stands on the right page, clear of the crease. Its
-   default bottom dock would straddle the fold. */
-html.native-app[data-fold-active][data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+   default dock and the wide spread's dock both straddle the fold. With the
+   tab bar hung down the side, the rail holds it instead. */
+html.native-app[data-fold-active][data-fold-axis="vertical"]:not([data-fold-posture="closed"]):not(.side-rail)
   .native-shell:is(.tab-shelf, .tab-games) > .mini-player {
   left: calc(var(--fold-x) + var(--fold-width) + 12px);
   right: max(12px, env(safe-area-inset-right));
+}
+
+/* Each page of the spread is phone-width, too narrow for the tablet's hero
+   of cover beside title. The book's page stacks it instead: cover, then the
+   title and credits across the page's full measure, then its actions. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  justify-items: start;
+  gap: 18px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+  width: min(180px, 52%);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading h2 {
+  max-width: none;
+  margin: 6px 0 8px;
+  font-size: clamp(1.7rem, 3vw, 2.3rem);
+  line-height: 1.06;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+  flex-wrap: wrap;
 }
 
 /* The bar hangs down the side here, not across the bottom, so the fold runs
@@ -14730,6 +14760,15 @@ html.native-app.side-rail:not([data-fold-axis]) .native-shell > .player-pane.has
 
 html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player {
   display: flex;
+}
+
+/* The wide spread docks the mini player over the recto; in the rail it keeps
+   the rail's slot and column. */
+html.native-app.side-rail .native-shell.has-mini-player:is(.tab-shelf, .tab-games)
+  > .player-pane:not(.has-native-player) ~ .mini-player {
+  display: flex;
+  left: calc(var(--rail-x) + (var(--rail-width) - 56px) / 2);
+  right: auto;
 }
 
 html.native-app.side-rail .native-shell:is(.tab-shelf, .tab-games) .mini-player :is(.mini-meta, .mini-chapter, .mini-progress) {
