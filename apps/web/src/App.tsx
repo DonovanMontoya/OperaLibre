@@ -2153,6 +2153,13 @@ export function EpubReadalong({
       setIsReady(true);
       if (rendition) {
         pruneReadalongMarks(rendition);
+        // A fold/resize can replace epub.js's page view after the resize
+        // observer has already requested a marker redraw. Once the new view
+        // actually exists, rerun the read-along effect so the still-active
+        // sentence is painted into that view as well.
+        if (highlightCfiRef.current) {
+          setRelayoutTick((tick) => tick + 1);
+        }
       }
       const contentsList = ([] as Contents[]).concat(
         (rendition?.getContents() as unknown as Contents[]) ?? []

@@ -329,6 +329,33 @@ test('reader survives folding, rotating, flattening and closing without replacin
   await expect(page.locator('html')).not.toHaveAttribute('data-fold-active');
 });
 
+test('fully opening the reader redraws the active follow-along highlight', async ({ page }) => {
+  await page.setViewportSize({ width: 669, height: 951 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 90,
+      fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } });
+  });
+  const drawnHighlights = () => page.evaluate(() =>
+    document.querySelectorAll('.readalong-highlight').length
+  );
+  await expect.poll(drawnHighlights).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'flat', angle: 180,
+      fold: { x: 475, y: 0, width: 1, height: 669, axis: 'vertical', active: false } });
+  });
+
+  await expect.poll(drawnHighlights).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: 'Stop following narration', exact: true })).toBeVisible();
+});
+
 test('portrait fold bounds the shelf, settings and administration to independent surfaces', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   const books = library(30);
