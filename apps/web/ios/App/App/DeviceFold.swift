@@ -72,7 +72,11 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func refresh(notify: Bool) {
-        var next: [String: Any] = ["posture": posture]
+        var next: [String: Any] = [
+            "posture": posture,
+            "horizontalSizeClass": Self.sizeClassName(probe?.traitCollection.horizontalSizeClass),
+            "verticalSizeClass": Self.sizeClassName(probe?.traitCollection.verticalSizeClass)
+        ]
         if let angle { next["angle"] = angle.rounded() }
         #if compiler(>=6.4)
         if #available(iOS 27.1, *), let probe,
@@ -88,6 +92,14 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
         guard !NSDictionary(dictionary: next).isEqual(to: state) else { return }
         state = next
         if notify { notifyListeners("change", data: next, retainUntilConsumed: true) }
+    }
+
+    private static func sizeClassName(_ sizeClass: UIUserInterfaceSizeClass?) -> String {
+        switch sizeClass {
+        case .compact: return "compact"
+        case .regular: return "regular"
+        default: return "unspecified"
+        }
     }
 
     #if compiler(>=6.4)

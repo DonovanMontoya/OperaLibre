@@ -9179,7 +9179,7 @@ function MainApp({
     >
       {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
-      {native && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
+      {native && ipad && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
         <button
           type="button"
           className="shelf-reveal-button"
@@ -9295,7 +9295,7 @@ function MainApp({
             <span className="eyebrow"><Library size={13} /> The Collection</span>
             <h1>OperaLibre</h1>
           </div>
-          {native ? (
+          {native && ipad ? (
             <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
               {shelfLayout === "library" ? (
                 <button
@@ -9508,13 +9508,6 @@ function MainApp({
                     ))}
                   </div>
                 </div>
-                {(librarySource === "libro" || librarySource === "all") && supportsLibroDevice() && !localMode && isOperaLibre ? <label className="purchase-destination" htmlFor="libro-destination">
-                    <span>Download to</span>
-                    <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
-                      {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
-                      <option value="device">This device</option>
-                    </select>
-                  </label> : null}
               </>
               ) : null}
             </>
@@ -9582,16 +9575,16 @@ function MainApp({
             >
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
-            {librarySource !== "libro" && librarySource !== "all" ? <div className="view-toggle" role="group" aria-label={librarySource === "audible" ? "Purchase view mode" : "View mode"}>
+            <div className="view-toggle" role="group" aria-label={librarySource === "local" ? "View mode" : "Purchase view mode"}>
               {SHELF_VIEW_MODE_OPTIONS.map((option) => {
                 const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
-                const activeViewMode = librarySource === "audible" ? purchaseViewMode : viewMode;
+                const activeViewMode = librarySource === "local" ? viewMode : purchaseViewMode;
                 return (
                   <button
                     type="button"
                     key={option.value}
                     className={activeViewMode === option.value ? "selected" : ""}
-                    onClick={() => librarySource === "audible" ? selectPurchaseViewMode(option.value) : selectViewMode(option.value)}
+                    onClick={() => librarySource === "local" ? selectViewMode(option.value) : selectPurchaseViewMode(option.value)}
                     aria-label={option.label}
                     title={option.value === "compact" ? "Compact view · more books per screen" : option.label}
                     aria-pressed={activeViewMode === option.value}
@@ -9600,7 +9593,7 @@ function MainApp({
                   </button>
                 );
               })}
-            </div> : null}
+            </div>
           </div>
 
           {showShelfFilters && filtersOpen ? (
@@ -9736,94 +9729,35 @@ function MainApp({
         ) : null}
 
         <div id="purchase-results" className="purchase-results" role={librarySource !== "local" ? "tabpanel" : undefined} aria-labelledby={librarySource !== "local" ? `purchase-tab-${librarySource}` : undefined}>
+        <div className="purchase-settings-pane">
         {librarySource === "all" ? <label className="purchase-account-filter">
-          <span className="sr-only">Purchase account</span>
+          <span className="purchase-control-label">Account</span>
           <select aria-label="Purchase account" value={purchaseAccountFilter} onChange={event => setPurchaseAccountFilter(event.target.value)}>
             <option value="all">All accounts</option>
             {canBrowseLibation && allAudibleAccounts.length > 0 ? <optgroup label="Audible">{allAudibleAccounts.map(account => <option key={account.id} value={`audible:${account.id}`}>Audible · {account.name}</option>)}</optgroup> : null}
             {(libroAccounts?.length ?? 0) > 0 ? <optgroup label="Libro.fm">{libroAccounts!.map(account => <option key={account.email} value={`libro:${account.email}`}>Libro.fm · {account.nickname || account.email}</option>)}</optgroup> : null}
           </select>
         </label> : null}
-        {currentUser.isAdmin && showAudiblePurchases ? (
-          <section className="libation-panel audible-compact">
-            <div className="audible-toolbar">
-              {librarySource !== "all" ? <div className="libation-account-toolbar">
-                <label>
-                  <span className="sr-only">Audible account</span>
-                  <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
-                    <option value="all">All accounts</option>
-                    {libationStatus?.accounts.map((account) => (
-                      <option key={account.id} value={account.id}>{account.name || account.accountId}</option>
-                    ))}
-                  </select>
-                </label>
-              </div> : null}
-
-
-            </div>
-            {libationMessage ? <p role="status">{libationMessage}</p> : null}
-            {(libationStatus && (!libationStatus.enabled || !libationStatus.authenticated || brokenLibationAccounts.length > 0)) ? (
-              <p className="audible-attention" role="status"><AlertCircle size={14} />
-                {!libationStatus?.enabled ? "Audible is not configured." : brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention. Open Accounts & downloads to reconnect.` : "Sign in through Libation to connect your Audible account."}
-              </p>
-            ) : null}
-            <details className="audible-management">
-              <summary>Accounts &amp; downloads <ChevronDown size={15} /></summary>
-              <div className="audible-management-body">
-              <div className="libation-actions">
-                <button
-                  type="button"
-                  onClick={() => void startLibationSync()}
-                  aria-busy={isRefreshingAudible}
-                  disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}
-                >
-                  {refreshLibationJob?.status === "queued" ? (
-                    <List size={13} />
-                  ) : isRefreshingAudible ? (
-                    <LoaderCircle size={13} className="spin-icon" />
-                  ) : (
-                    <RefreshCcw size={13} />
-                  )}
-                  <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : librarySource === "all" ? "Refresh Audible" : "Refresh"}</span>
-                </button>
-              </div>
-                <p>Add or reconnect accounts in Libation.</p>
-                {libationStatus?.accounts.length ? (
-                  <div className="account-list">
-                    {libationStatus.accounts.map((account) => (
-                      <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
-                        <span className="account-health-icon">
-                          {account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}
-                        </span>
-                        <span className="account-list-copy">
-                          <strong>{account.name || account.accountId}</strong>
-                          <small>
-                            {account.locale.toUpperCase()}
-                            {account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}
-                          </small>
-                          {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
-                        </span>
-                      </article>
-                    ))}
-                  </div>
-                ) : null}
-
-                <div className="libation-actions">
-                  {currentUser.libationAccess === "direct" ? <button
-                    type="button"
-                    onClick={() => void startAllLiberation()}
-                    aria-busy={libationAllPending || !!downloadAllLibationJob}
-                    disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}
-                  >
-                    {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
-                    <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
-                  </button> : null}
-                </div>
-                <p>{libationStatus?.autoRefreshHours ? `Checks for new purchases automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh to check for new purchases."}</p>
-              </div>
-            </details>
-
-            {displayedLibationJobs.map((job) => {
+        {librarySource === "audible" && allAudibleAccounts.length > 1 ? <label className="purchase-account-filter">
+          <span className="purchase-control-label">Account</span>
+          <select aria-label="Audible account" value={audibleAccountFilter} onChange={event => setAudibleAccountFilter(event.currentTarget.value)}>
+            <option value="all">All Audible accounts</option>
+            {allAudibleAccounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+          </select>
+        </label> : null}
+        {showAudiblePurchases && (displayedLibationJobs.length > 0 || libationMessage || brokenLibationAccounts.length > 0) ? (
+          <details className="purchase-console">
+            <summary>
+              <span><CloudDownload size={14} /> Activity</span>
+              <strong>{displayedLibationJobs.some(isPendingJob) ? "Working" : brokenLibationAccounts.length > 0 ? "Needs attention" : "Up to date"}</strong>
+              <ChevronDown size={15} />
+            </summary>
+            <div className="purchase-console-body">
+              {libationMessage ? <p role="status">{libationMessage}</p> : null}
+              {brokenLibationAccounts.length > 0 ? <button type="button" className="purchase-settings-link" onClick={() => openNativeTab("settings")}>
+                <AlertCircle size={14} /> {brokenLibationAccounts.length} Audible account{brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention <ChevronRight size={14} />
+              </button> : null}
+              {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
                 ? libationBooks.find((book) => book.catalogId === job.targetId)?.title
                 : null;
@@ -9863,49 +9797,16 @@ function MainApp({
                 ) : null}
               </details>
               );
-            })}
-          </section>
+              })}
+            </div>
+          </details>
         ) : null}
 
-        {!currentUser.isAdmin && showAudiblePurchases ? (
-          <section className="libation-panel reader-libation-panel">
-            <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
-            {librarySource !== "all" && audibleProfiles.length > 1 ? (
-              <label className="reader-account-filter">
-                <span>Browsing</span>
-                <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
-                  <option value="all">All accounts</option>
-                  {audibleProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                </select>
-              </label>
-            ) : null}
-            <div className="libation-actions">
-              <button
-                type="button"
-                onClick={() => void startLibationSync()}
-                aria-busy={isRefreshingAudible}
-                disabled={!libationStatus?.enabled || libationLoading || isRefreshingAudible}
-              >
-                {isRefreshingAudible
-                  ? <LoaderCircle size={13} className="spin-icon" />
-                  : <RefreshCcw size={13} />}
-                <span>{isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
-              </button>
-            </div>
-            <p>
-              {currentUser.libationAccess === "direct"
-                ? "Your administrator allows you to add titles directly to the shared library."
-                : "Choose Request on a title. An administrator must approve it before Libation downloads it."}
-              {" "}
-              {libationStatus?.manualRefreshesPerHour
-                ? `You can check for new purchases up to ${libationStatus.manualRefreshesPerHour} times per hour.`
-                : "You can check for new purchases at any time."}
-            </p>
-          </section>
-        ) : null}
+        </div>
+        <div className="purchase-books-pane">
 
         {librarySource === "libro" || librarySource === "all" ? (
-          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode="catalog" polling={nativeTab === "shelf"} onOpenSettings={() => openNativeTab("settings")} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
         ) : null}
 
         {librarySource === "local" ? (
@@ -10121,7 +10022,7 @@ function MainApp({
           </>
         ) : showAudiblePurchases ? (
           <>
-            {librarySource === "all" ? <h2>Audible</h2> : null}
+            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
             {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
               <div className="empty-state">Loading Audible library…</div>
             ) : null}
@@ -10130,7 +10031,7 @@ function MainApp({
               <div className="empty-state">No Libation books loaded yet.</div>
             ) : null}
 
-            <div className={`audible-list audible-list--${purchaseViewMode}`}>
+            <div className={`audible-list purchase-book-list purchase-book-list--${purchaseViewMode} audible-list--${purchaseViewMode}`}>
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
                 const downloadRequest = libationDownloadRequests.find(
@@ -10161,7 +10062,7 @@ function MainApp({
                   isLocal ? "In library" : book.bookStatus
                 ].filter(Boolean);
                 return (
-                  <div key={book.catalogId} className={`audible-row ${isLocal ? "is-local" : ""}`}>
+                  <div key={book.catalogId} className={`audible-row purchase-book-row ${isLocal ? "is-local" : ""}`}>
                     <LibationCoverArt book={book} />
                     <div className="audible-copy">
                       <strong>{book.title}</strong>
@@ -10220,6 +10121,7 @@ function MainApp({
             </div>
           </>
         ) : null}
+        </div>
         </div>
       </aside>
 
@@ -12183,6 +12085,67 @@ function MainApp({
                 </button>
               </div> : null}
               {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
+            </section> : null}
+
+            {(supportsLibroDevice() || canBrowseLibation) ? <section className="settings-card purchase-provider-settings">
+              <span className="section-label"><CloudDownload size={13} /> Book stores</span>
+              <p className="settings-hint">Connections and download behavior live here. Get Books stays focused on finding titles.</p>
+
+              {supportsLibroDevice() ? <details className="store-settings-group">
+                <summary>
+                  <span><strong>Libro.fm</strong><small>{libroAccounts?.length ? `${libroAccounts.length} connected account${libroAccounts.length === 1 ? "" : "s"}` : "Account and download settings"}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                <div className="store-settings-body">
+                  {!localMode && isOperaLibre ? <label className="store-destination" htmlFor="settings-libro-destination">
+                    <span><strong>Download purchases to</strong><small>Choose where new Libro.fm imports are kept.</small></span>
+                    <select id="settings-libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
+                      <option value="server">OperaLibre server</option>
+                      <option value="device">This device</option>
+                    </select>
+                  </label> : null}
+                  <LibroCatalog
+                    key={`settings:${currentUser.id}:${libroOnDevice ? "device" : "server"}`}
+                    mode="management"
+                    polling={nativeTab === "settings"}
+                    device={libroOnDevice}
+                    refreshKey={libroRefreshKey}
+                    onAccountsChanged={setLibroAccounts}
+                    onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange}
+                  />
+                </div>
+              </details> : null}
+
+              {canBrowseLibation ? <details className="store-settings-group">
+                <summary>
+                  <span><strong>Audible</strong><small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention` : `${allAudibleAccounts.length} connected account${allAudibleAccounts.length === 1 ? "" : "s"}`}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                <div className="store-settings-body audible-settings-body">
+                  <p className="settings-hint">Add or reconnect Audible accounts in Libation. OperaLibre uses those connections to refresh purchases.</p>
+                  {libationStatus?.accounts.length ? <div className="account-list">
+                    {libationStatus.accounts.map((account) => <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
+                      <span className="account-health-icon">{account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}</span>
+                      <span className="account-list-copy">
+                        <strong>{account.name || account.accountId}</strong>
+                        <small>{account.locale.toUpperCase()}{account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}</small>
+                        {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
+                      </span>
+                    </article>)}
+                  </div> : null}
+                  <div className="store-settings-actions">
+                    <button type="button" className="download-btn" onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}>
+                      {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}
+                      <span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
+                    </button>
+                    {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}>
+                      {libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
+                      <span>{libationAllPending || downloadAllLibationJob ? "Downloading purchases" : "Download all purchases"}</span>
+                    </button> : null}
+                  </div>
+                  <p className="settings-hint">{libationStatus?.autoRefreshHours ? `Checks automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh manually to check for new purchases."}</p>
+                </div>
+              </details> : null}
             </section> : null}
             </div>
             <div className="settings-lower">
