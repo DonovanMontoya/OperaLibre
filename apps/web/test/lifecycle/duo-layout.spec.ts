@@ -603,6 +603,7 @@ test('portrait fold bounds the shelf, settings and administration to independent
     else if (path === '/api/books') body = books;
     else if (path === '/api/users') body = [user];
     else if (path === '/api/libation/status') body = { accounts: [], configured: false, available: false };
+    else if (path === '/api/me/libro') body = { connected: false, email: null, syncedAt: null, accounts: [], books: [], jobs: [] };
     else if (path === '/api/update') body = { currentVersion: '0.4.2', updateAvailable: false };
     else if (path === '/api/profile/stats') body = { totalHoursRead: 12, booksFinished: 2, totalTracksCompleted: 4,
       currentStreakDays: 1, longestStreakDays: 2, avgDailyMinutes: 20, lastListenedAt: null,

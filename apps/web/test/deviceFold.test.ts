@@ -25,14 +25,10 @@ test("publishes the posture, axis, and fold rect", () => {
   applyDeviceFold(root, {
     posture: "half-open",
     angle: 110,
-    horizontalSizeClass: "regular",
-    verticalSizeClass: "regular",
     fold: { x: 0, y: 320, width: 951, height: 24, axis: "horizontal", active: true }
   });
   assert.equal(dataset.foldPosture, "half-open");
   assert.equal(dataset.foldAxis, "horizontal");
-  assert.equal(dataset.horizontalSizeClass, "regular");
-  assert.equal(dataset.verticalSizeClass, "regular");
   assert.equal(properties.get("--fold-y"), "320px");
   assert.equal(properties.get("--fold-height"), "24px");
 });
@@ -127,4 +123,33 @@ test("compact transition uses hysteresis while the hinge hovers near its cutoff"
   assert.equal(resolveFoldLayoutState(halfOpen, { posture: "half-open" }).posture, "half-open");
   assert.equal(resolveFoldLayoutState(halfOpen, { posture: "closed" }).posture, "closed");
   assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 83 }, { posture: "closed" }).posture, "half-open");
+});
+
+test("a deferred fold transition cannot overwrite a newer closed state", async () => {
+  const { root, dataset, attributes } = fakeRoot();
+  const updates: Array<() => void> = [];
+  const finishes: Array<() => void> = [];
+  Object.assign(root, {
+    classList: { contains: () => true },
+    ownerDocument: {
+      defaultView: { matchMedia: () => ({ matches: false }) },
+      startViewTransition: (update: () => void) => {
+        updates.push(update);
+        return { finished: new Promise<void>(resolve => finishes.push(resolve)), skipTransition() {} };
+      }
+    }
+  });
+  applyDeviceFold(root, { posture: "unknown" });
+  applyDeviceFold(root, { posture: "flat" });
+  applyDeviceFold(root, { posture: "half-open", angle: 90,
+    fold: { x: 460, y: 0, width: 31, height: 669, axis: "vertical", active: true } });
+  assert.equal(updates.length, 1);
+  applyDeviceFold(root, { posture: "closed", angle: 0 });
+  // Skipping a View Transition does not prevent its update callback running.
+  updates[0]();
+  finishes[0]();
+  await Promise.resolve();
+  assert.equal(dataset.foldPosture, "closed");
+  assert.equal(attributes.has("data-fold-active"), false);
+  assert.equal(dataset.foldTransition, undefined);
 });
