@@ -434,8 +434,6 @@ test('closed landscape reader docks listening controls beside the page', async (
     const modulePath = '/src/deviceFold.ts';
     const { applyDeviceFold } = await import(modulePath);
     applyDeviceFold(document.documentElement, { posture: 'closed', angle: 0 });
-    // Model the camera-side landscape safe area reported by the Duo.
-    document.documentElement.style.setProperty('--reader-landscape-safe-right', '120px');
   });
 
   const stage = (await page.locator('.epub-stage').boundingBox())!;
@@ -445,8 +443,8 @@ test('closed landscape reader docks listening controls beside the page', async (
   expect(transport.width).toBeLessThanOrEqual(64);
   expect(transport.height).toBeGreaterThan(300);
   const reclaimedCornerInset = 951 - (transport.x + transport.width);
-  expect(reclaimedCornerInset).toBeGreaterThanOrEqual(60);
-  expect(reclaimedCornerInset).toBeLessThanOrEqual(68);
+  expect(reclaimedCornerInset).toBeGreaterThanOrEqual(8);
+  expect(reclaimedCornerInset).toBeLessThanOrEqual(12);
   expect(footer.height).toBeLessThan(48);
 });
 

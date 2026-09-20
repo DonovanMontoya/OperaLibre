@@ -15809,13 +15809,9 @@ html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
 @media (orientation: landscape) {
   html.native-app[data-fold-posture="closed"] .epub-reader.immersive {
     /* The landscape safe area describes the camera corner as a full-height
-       strip. The reader transport ends above that camera, so reclaim part of
-       the strip while retaining a generous corner buffer. The indirection is
-       also useful to the geometry fixture, where env() has no simulated notch. */
-    --reader-landscape-edge-inset: max(
-      10px,
-      calc(var(--reader-landscape-safe-right, env(safe-area-inset-right)) - 56px)
-    );
+       strip, even though the transport ends above it. Let the controls use
+       that empty strip so their optical centerline meets the camera cutout. */
+    --reader-landscape-edge-inset: 10px;
     --reader-landscape-transport-space: calc(var(--reader-landscape-edge-inset) + 72px);
   }
 
