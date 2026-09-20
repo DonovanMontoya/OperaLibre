@@ -4,14 +4,10 @@ import { flushSync } from "react-dom";
 
 export type FoldPosture = "closed" | "half-open" | "flat" | "unknown";
 export type FoldAxis = "vertical" | "horizontal";
-export type DeviceSizeClass = "compact" | "regular" | "unspecified";
 export type DeviceFoldState = {
   posture: FoldPosture;
   /** Hinge angle in degrees, when the device reports one. */
   angle?: number;
-  /** UIKit size classes for the web view's current display and orientation. */
-  horizontalSizeClass?: DeviceSizeClass;
-  verticalSizeClass?: DeviceSizeClass;
   /** Where the fold crosses the page, in CSS pixels of the layout viewport. */
   fold?: { x: number; y: number; width: number; height: number; axis: FoldAxis; active: boolean };
 };
@@ -29,6 +25,7 @@ const listeners = new Set<() => void>();
 type FoldViewTransition = { finished: Promise<unknown>; skipTransition?: () => void };
 let activeFoldTransition: FoldViewTransition | null = null;
 let fallbackTransitionTimer: number | null = null;
+let foldUpdateVersion = 0;
 // Give the compact cover layout time to settle while the hardware is still
 // moving. Separate enter/exit angles prevent a hand hovering near the cutoff
 // from repeatedly swapping the two compositions.
@@ -79,13 +76,6 @@ function publishDeviceFold(root: HTMLElement, state: DeviceFoldState): void {
   current = state;
   listeners.forEach((listener) => listener());
   const fold = state.fold;
-  for (const [attribute, value] of [
-    ["horizontalSizeClass", state.horizontalSizeClass],
-    ["verticalSizeClass", state.verticalSizeClass]
-  ] as const) {
-    if (value) root.dataset[attribute] = value;
-    else delete root.dataset[attribute];
-  }
   root.toggleAttribute("data-fold-active", usesFoldLayout(state));
   if (state.posture === "unknown" && !fold) {
     delete root.dataset.foldPosture;
@@ -115,6 +105,16 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
   const layoutState = resolveFoldLayoutState(state, previous);
   const document = root.ownerDocument;
   const view = document?.defaultView;
+  const updateVersion = ++foldUpdateVersion;
+  // skipTransition still runs a pending update callback. Invalidate it before
+  // cancelling the visual transition, including when this update won't animate.
+  activeFoldTransition?.skipTransition?.();
+  activeFoldTransition = null;
+  if (fallbackTransitionTimer !== null) {
+    view?.clearTimeout(fallbackTransitionTimer);
+    fallbackTransitionTimer = null;
+  }
+  delete root.dataset.foldTransition;
   const reducedMotion = view?.matchMedia("(prefers-reduced-motion: reduce)").matches ?? false;
   // UIKit owns the visual handoff between the cover and inner displays. A
   // second web snapshot animation there competes with the system transition;
@@ -136,13 +136,13 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
     startViewTransition?: (update: () => void | Promise<void>) => FoldViewTransition;
   };
   if (transitionDocument.startViewTransition) {
-    activeFoldTransition?.skipTransition?.();
     root.dataset.foldTransition = "view";
     // useSyncExternalStore notifies React synchronously, but React may otherwise
     // commit after WebKit takes the new snapshot. Flush the fold update so the
     // before and after images contain complete layouts rather than an
     // attribute-switched shell followed by a second React jump.
     const transition = transitionDocument.startViewTransition(() => {
+      if (updateVersion !== foldUpdateVersion) return;
       flushSync(() => publishDeviceFold(root, layoutState));
     });
     activeFoldTransition = transition;
@@ -157,7 +157,6 @@ export function applyDeviceFold(root: HTMLElement, state: DeviceFoldState): void
 
   publishDeviceFold(root, layoutState);
   root.dataset.foldTransition = "fallback";
-  if (fallbackTransitionTimer !== null) view?.clearTimeout(fallbackTransitionTimer);
   fallbackTransitionTimer = view?.setTimeout(() => {
     fallbackTransitionTimer = null;
     delete root.dataset.foldTransition;

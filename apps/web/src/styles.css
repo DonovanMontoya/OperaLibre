@@ -856,8 +856,7 @@ html:not(.native-app) .web-shell > .player-pane {
   font-size: 0.65rem;
   color: rgba(241, 231, 208, 0.65);
 }
-.purchase-source select,
-.purchase-destination select {
+.purchase-source select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -998,7 +997,6 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .account-list-actions button,
-.libation-account-toolbar button,
 .libation-login-card button,
 .libation-login-link {
   min-height: 30px;
@@ -1020,15 +1018,6 @@ html:not(.native-app) .web-shell > .player-pane {
   color: #e8a99a;
 }
 
-.libation-account-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 8px;
-}
-
-.libation-account-toolbar label,
-.reader-account-filter,
 .libation-login-card label {
   display: grid;
   gap: 5px;
@@ -1039,8 +1028,6 @@ html:not(.native-app) .web-shell > .player-pane {
   color: rgba(241, 231, 208, 0.54);
 }
 
-.libation-account-toolbar select,
-.reader-account-filter select,
 .libation-login-card input,
 .libation-login-card select,
 .libation-login-card textarea {
@@ -1115,13 +1102,6 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 @media (max-width: 620px) {
-  .libation-account-toolbar {
-    grid-template-columns: 1fr;
-  }
-
-  .libation-account-toolbar button {
-    width: 100%;
-  }
 
   .account-list article {
     grid-template-columns: auto minmax(0, 1fr);
@@ -13048,9 +13028,7 @@ html.native-app .recent-row {
   html.native-app .library-pane.purchase-browsing .purchase-tabs { padding: 2px; }
   html.native-app .library-pane.purchase-browsing .purchase-tabs button { min-height: 36px; padding-block: 4px; }
   html.native-app .library-pane.purchase-browsing .purchase-source > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  html.native-app .library-pane.purchase-browsing .purchase-source select,
-  html.native-app .library-pane.purchase-browsing .purchase-destination select { min-height: 38px; padding: 4px 10px; font-size: 0.88rem; }
-  html.native-app .library-pane.purchase-browsing .purchase-destination { gap: 6px; }
+  html.native-app .library-pane.purchase-browsing .purchase-source select { min-height: 38px; padding: 4px 10px; font-size: 0.88rem; }
   html.native-app .library-pane.purchase-browsing .purchase-source select:only-of-type { grid-column: 1 / -1; }
   html.native-app .library-pane.purchase-browsing .library-results-summary { grid-column: 1 / -1; padding: 0; margin: 0; font-size: 0.65rem; }
   html.native-app .library-pane.purchase-browsing .library-search-row { grid-column: 1 / -1; }
@@ -14195,38 +14173,10 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
 }
 
 /* Audible browsing keeps management and diagnostic detail out of the book list. */
-.libation-panel.audible-compact { gap: 12px; padding: 14px 0; background: none; border-top: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.audible-compact .audible-toolbar { display: flex; gap: 10px; align-items: center; }
-.audible-compact .libation-account-toolbar { display: block; flex: 1; min-width: 0; }
-.audible-compact .libation-account-toolbar label { display: block; font: inherit; letter-spacing: 0; text-transform: none; }
-.audible-compact .libation-account-toolbar select { width: 100%; min-height: 44px; border-radius: 12px; font: inherit; font-size: 14px; font-style: normal; padding: 10px 12px; }
-.audible-compact .libation-actions { display: flex; flex-wrap: wrap; margin: 0; }
-.audible-compact .libation-actions button { min-height: 44px; padding: 10px 14px; border-radius: 12px; font: inherit; font-size: 13px; letter-spacing: 0; text-transform: none; }
-.audible-compact p { font: inherit; font-size: 13px; line-height: 1.5; }
-.audible-compact summary { cursor: pointer; list-style: none; }
-.audible-compact summary::-webkit-details-marker { display: none; }
-.audible-management > summary { display: flex; justify-content: space-between; align-items: center; min-height: 44px; color: var(--gold-soft); font-size: 13px; }
-.audible-management-body { display: grid; gap: 12px; padding: 8px 0 14px; }
-.audible-compact .account-list article { border: 0; border-radius: 10px; padding: 10px; }
-.audible-compact .account-list-copy { font: inherit; font-size: 13px; letter-spacing: 0; }
-.audible-compact .account-list-copy em { white-space: normal; }
-.audible-compact .audible-job { padding: 0; border: 0; background: none; min-width: 0; }
-.audible-compact .job-card-head { display: flex; flex-wrap: nowrap; gap: 8px; min-height: 44px; }
-.audible-compact .job-card-head strong { flex: 1; min-width: 0; font: inherit; font-size: 13px; overflow-wrap: anywhere; }
-.audible-compact .job-state { font: inherit; font-size: 11px; letter-spacing: 0; text-transform: none; }
-.audible-compact .job-card-head > svg { flex-shrink: 0; }
-.audible-compact details[open] > summary > svg:last-child { transform: rotate(180deg); }
 @media (max-width: 700px) and (orientation: portrait) {
   html.native-app .library-pane.purchase-browsing .libation-panel { margin: 0; padding: 6px 0; gap: 6px; }
-  html.native-app .library-pane.purchase-browsing .audible-toolbar:empty { display: none; }
-  html.native-app .library-pane.purchase-browsing .audible-management > summary { font-size: 0.75rem; }
-  html.native-app .library-pane.purchase-browsing .audible-toolbar { gap: 6px; }
 }
-.audible-compact .job-meta { margin: 10px 0; }
-.audible-compact .job-output { max-height: 220px; overflow: auto; }
-.audible-compact .audible-attention { display: flex; align-items: flex-start; gap: 8px; color: var(--gold-soft); }
 .audible-attention svg { flex-shrink: 0; margin-top: 3px; }
-.audible-compact summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; border-radius: 6px; }
 
 /* The library-wide sweep leads the dashboard: one button for "now" and one
    rule for "every night". */
@@ -14579,6 +14529,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-console > summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; border-radius: 10px; }
 .purchase-console-body { display: grid; gap: 8px; padding: 0 12px 12px; }
 .purchase-console-body > p { margin: 0; font-size: 0.78rem; }
+.purchase-console-body > .settings-hint { color: inherit; }
 .purchase-console .audible-job { margin: 0; padding: 0; border: 0; background: transparent; }
 .purchase-settings-link,
 .libro-settings-link {
@@ -14733,18 +14684,9 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 }
 
 @media (min-width: 560px) and (max-width: 700px) and (orientation: portrait) {
-  html.native-app .library-pane.purchase-browsing .libation-panel.audible-compact {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 14px;
-  }
-  html.native-app .library-pane.purchase-browsing .libation-panel.audible-compact > :is(p, .audible-toolbar) {
-    grid-column: 1 / -1;
-  }
 }
 
 /* In a landscape shelf, account management should not displace the books. */
-html.native-app .native-shell.shelf-landscape .audible-toolbar:empty { display: none; }
-html.native-app .native-shell.shelf-landscape .libation-panel.audible-compact { padding: 0; gap: 6px; }
 html.native-app .native-shell.shelf-landscape .purchase-account-filter { margin-bottom: 4px; }
 html.native-app .native-shell.shelf-landscape .libro-catalog { padding: 10px 0; }
 html.native-app .native-shell.shelf-landscape .libro-catalog-head { align-items: center; gap: 4px 12px; }
@@ -14752,12 +14694,6 @@ html.native-app .native-shell.shelf-landscape .libro-catalog h2 { margin: 0; fon
 html.native-app .native-shell.shelf-landscape .libro-account-details:not([open]) { width: auto; }
 html.native-app .native-shell.shelf-landscape .libro-catalog-summary { padding: 0; }
 html.native-app .native-shell.shelf-landscape .libro-view-toolbar { margin: 4px 0; }
-
-.purchase-destination { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.purchase-destination > span { flex: none; font: 0.7rem "JetBrains Mono", monospace; color: var(--gold-soft); }
-.purchase-destination select { flex: 1; width: 0; min-width: 0; }
-html.native-app .native-shell.shelf-folded > .library-pane .library-toolbar > .purchase-destination { order: 4; }
-
 
 /* ============================================================
    Foldable iPhone
@@ -15137,25 +15073,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .library-pane.purchase-browsing .purchase-destination {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  min-height: 44px;
-  padding: 7px 10px;
-  border: 1px solid rgba(217, 181, 116, 0.16);
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .library-pane.purchase-browsing .purchase-destination select {
-  width: 100%;
-  min-height: 34px;
-  border: 0;
-  background: transparent;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .library-pane.purchase-browsing .library-search {
   min-height: 46px;
   border-radius: 12px;
@@ -15211,25 +15128,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   padding: 0;
   border: 0;
   background: transparent;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .library-pane.purchase-browsing .purchase-settings-pane .audible-toolbar:empty {
-  display: none;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .library-pane.purchase-browsing .purchase-settings-pane .audible-management {
-  border: 1px solid rgba(217, 181, 116, 0.16);
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .library-pane.purchase-browsing .purchase-settings-pane .audible-management > summary {
-  min-height: 46px;
-  box-sizing: border-box;
-  padding: 12px 14px;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
