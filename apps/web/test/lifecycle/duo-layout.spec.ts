@@ -88,6 +88,23 @@ test('cover-screen transport stays inside its rail as Now Playing consumes space
     await expect(page.locator('.mini-cover-button')).toBeVisible({ visible: controls === 'full' });
     await expect(page.getByRole('button', { name: 'Rewind', exact: true })).toBeVisible({ visible: controls !== 'play' });
   }
+
+  // Rotating the closed device the other way mirrors UIKit's tab column.
+  // The same compact transport follows it instead of falling back to a
+  // full-width ribbon across the shelf.
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--rail-x', '0px');
+    root.style.setProperty('--rail-width', '84px');
+    root.style.setProperty('--rail-top', '120px');
+    root.style.setProperty('--rail-bottom', '336px');
+    root.dataset.railControls = 'full';
+  });
+  const mirroredPlayer = (await page.getByRole('complementary', { name: 'Mini player' }).boundingBox())!;
+  expect(mirroredPlayer.x).toBeGreaterThanOrEqual(0);
+  expect(mirroredPlayer.x + mirroredPlayer.width).toBeLessThanOrEqual(84);
+  expect(mirroredPlayer.y).toBeGreaterThanOrEqual(120);
+  expect(mirroredPlayer.y + mirroredPlayer.height).toBeLessThanOrEqual(336);
 });
 
 test('unfolded spread keeps the mini player in the side rail, off the fold', async ({ page }) => {
@@ -186,9 +203,95 @@ test('wide Duo gives Shelf both leaves while Reading keeps the player spread', a
   await expect(page.locator('.player-pane')).toBeVisible();
   const playerPane = (await page.locator('.player-pane').boundingBox())!;
   expect(playerPane.x).toBeGreaterThanOrEqual(475);
+  expect(await page.locator('main').evaluate(main => getComputedStyle(main, '::after').display)).toBe('none');
 });
 
-test('half open, Ledger and Settings scroll each page on its own; flat keeps the one continuous flow', async ({ page }) => {
+test('Duo page headers keep useful controls and drop decorative subtitles', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
+  await page.setContent(`<html class="native-app" data-fold-posture="half-open" data-fold-axis="vertical" data-fold-active><head>
+    <style>${stylesheet}</style>
+    </head><body><main class="native-shell tab-shelf">
+      <section class="library-pane" style="width:460px">
+        <div class="pane-title">
+          <div><span class="eyebrow">The Collection</span><h1>OperaLibre</h1></div>
+          <div class="pane-actions">
+            ${Array.from({ length: 5 }, (_, index) => `<button class="icon-button" aria-label="Action ${index + 1}">${index + 1}</button>`).join('')}
+          </div>
+        </div>
+      </section>
+      <section class="games-shell"><header class="games-head"><span class="eyebrow">The Parlour</span><h1>Games</h1><p>Small diversions for long listens.</p></header></section>
+      <section class="settings-shell"><header class="settings-head"><div class="settings-heading"><span class="eyebrow">The Study</span><h1>Settings</h1></div></header></section>
+    </main></body></html>`);
+
+  await expect(page.getByText('The Collection')).toBeHidden();
+  await expect(page.getByText('The Parlour')).toBeHidden();
+  await expect(page.getByText('Small diversions for long listens.')).toBeHidden();
+  await expect(page.getByText('The Study')).toBeHidden();
+  expect(await page.getByText('The Collection').evaluate(element => getComputedStyle(element).display)).toBe('none');
+  expect(await page.getByText('The Parlour').evaluate(element => getComputedStyle(element).display)).toBe('none');
+  expect(await page.getByText('Small diversions for long listens.').evaluate(element => getComputedStyle(element).display)).toBe('none');
+  expect(await page.getByText('The Study').evaluate(element => getComputedStyle(element).display)).toBe('none');
+
+  const wordmark = (await page.getByRole('heading', { name: 'OperaLibre' }).boundingBox())!;
+  const actions = (await page.locator('.pane-actions').boundingBox())!;
+  expect(Math.abs(wordmark.y + wordmark.height / 2 - (actions.y + actions.height / 2))).toBeLessThanOrEqual(2);
+  expect(actions.x + actions.width).toBeLessThanOrEqual(460);
+});
+
+test('Get Books keeps controls on the left leaf and books on the right leaf', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.setContent(`<html class="native-app side-rail" data-fold-posture="flat" data-fold-axis="vertical"><head>
+    <link rel="stylesheet" href="${url}src/styles.css?direct">
+    </head><body><main class="native-shell tab-shelf shelf-landscape device-ipad">
+      <aside class="library-pane purchase-browsing">
+        <header class="pane-title"><h1>OperaLibre</h1></header>
+        <div class="library-toolbar">
+          <div class="shelf-navigation"><button>Library</button><button>Get books</button></div>
+          <div class="purchase-source"><div class="purchase-tabs"><button>All accounts</button><button>Libro.fm</button><button>Audible</button></div></div>
+          <div class="library-search-row">Search</div><div class="library-controls"><label class="library-sort">Sort</label><button class="library-sort-direction">Down</button><div class="view-toggle"><button>List</button><button>Compact</button><button>Grid</button></div></div>
+        </div>
+        <div class="purchase-results">
+          <div class="purchase-settings-pane"><details class="purchase-console"><summary>Activity</summary><section style="height:900px">Download activity</section></details></div>
+          <div class="purchase-books-pane">
+            <ol class="libro-purchases purchase-book-list purchase-book-list--list"><li class="purchase-book-row"><span class="libro-purchase-cover"></span><span class="libro-purchase-copy"><h3>Taipei Story</h3><p>Author</p></span><button>Import</button></li></ol>
+            <div class="audible-list purchase-book-list purchase-book-list--list"><div class="audible-row purchase-book-row"><span class="audible-cover"></span><span class="audible-copy"><strong>12 Rules for Life</strong><span>Author</span></span><button>Download</button></div></div>
+          </div>
+        </div>
+      </aside>
+    </main></body></html>`);
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries({ '--fold-x': '460px', '--fold-width': '31px',
+      '--status-h': '44px', '--tabs-h': '0px', '--native-viewport-height': '669px' })) {
+      root.style.setProperty(name, value);
+    }
+  });
+
+  for (const selector of ['.pane-title', '.library-toolbar', '.purchase-settings-pane']) {
+    const box = (await page.locator(selector).boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(460);
+  }
+  for (const selector of ['.library-search-row', '.library-controls']) {
+    const box = (await page.locator(selector).boundingBox())!;
+    expect(box.width).toBeGreaterThan(350);
+  }
+  const storeTabs = (await page.locator('.purchase-tabs').boundingBox())!;
+  expect(storeTabs.width).toBeGreaterThan(350);
+  const books = (await page.locator('.purchase-books-pane').boundingBox())!;
+  expect(books.x).toBeGreaterThanOrEqual(491);
+  await expect(page.locator('.purchase-settings-pane')).toHaveCSS('overflow-y', 'auto');
+  await expect(page.locator('.purchase-books-pane')).toHaveCSS('overflow-y', 'auto');
+  const libroRow = (await page.locator('.libro-purchases .purchase-book-row').boundingBox())!;
+  const audibleRow = (await page.locator('.audible-list .purchase-book-row').boundingBox())!;
+  expect(libroRow.width).toBe(audibleRow.width);
+  expect((await page.locator('.libro-purchase-cover').boundingBox())!.width)
+    .toBe((await page.locator('.audible-cover').boundingBox())!.width);
+  expect((await page.locator('.libro-purchases button').boundingBox())!.width)
+    .toBe((await page.locator('.audible-list button').boundingBox())!.width);
+});
+
+test('Ledger keeps its two leaves when flat; half-open Settings splits into two scrollers', async ({ page }) => {
   await page.setViewportSize({ width: 951, height: 669 });
   await page.setContent(`<html class="native-app" data-fold-axis="vertical" data-fold-active><head>
     <link rel="stylesheet" href="${url}src/styles.css?direct">
@@ -215,12 +318,26 @@ test('half open, Ledger and Settings scroll each page on its own; flat keeps the
   const columnCount = () => page.locator('.ledger-dashboard').evaluate(el => getComputedStyle(el).columnCount);
   const overflowY = (selector: string) => page.locator(selector).evaluate(el => getComputedStyle(el).overflowY);
 
-  await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'flat'; });
-  expect(await columnCount()).toBe('2');
-  expect(await overflowY('.ledger-upper')).not.toBe('auto');
+  await page.evaluate(() => {
+    document.documentElement.dataset.foldPosture = 'flat';
+    document.documentElement.removeAttribute('data-fold-active');
+  });
+  expect(await columnCount()).toBe('auto');
+  expect(await overflowY('.ledger-upper')).toBe('auto');
   expect(await overflowY('.settings-upper')).not.toBe('auto');
+  await expect(page.locator('.ledger-dashboard')).toHaveCSS('padding-bottom', '0px');
+  await expect(page.locator('.ledger-upper')).toHaveCSS('padding-bottom', '0px');
+  await expect(page.locator('.ledger-lower')).toHaveCSS('padding-bottom', '0px');
+  const flatLedgerUpper = (await page.locator('.ledger-upper').boundingBox())!;
+  const flatLedgerLower = (await page.locator('.ledger-lower').boundingBox())!;
+  expect(flatLedgerUpper.x + flatLedgerUpper.width).toBeLessThanOrEqual(460);
+  expect(flatLedgerLower.x).toBeGreaterThanOrEqual(491);
+  const flatTop = flatLedgerUpper.y;
 
-  await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'half-open'; });
+  await page.evaluate(() => {
+    document.documentElement.dataset.foldPosture = 'half-open';
+    document.documentElement.setAttribute('data-fold-active', '');
+  });
   expect(await columnCount()).toBe('auto');
   for (const selector of ['.ledger-upper', '.ledger-lower', '.settings-upper', '.settings-lower']) {
     expect(await overflowY(selector)).toBe('auto');
@@ -229,6 +346,9 @@ test('half open, Ledger and Settings scroll each page on its own; flat keeps the
   const ledgerLower = (await page.locator('.ledger-lower').boundingBox())!;
   expect(ledgerUpper.x + ledgerUpper.width).toBeLessThanOrEqual(460);
   expect(ledgerLower.x).toBeGreaterThanOrEqual(491);
+  expect(ledgerUpper.y).toBe(flatTop);
+  await page.evaluate(() => { document.documentElement.style.setProperty('--status-h', '82px'); });
+  expect((await page.locator('.ledger-upper').boundingBox())!.y).toBe(flatTop);
   const settingsUpper = (await page.locator('.settings-upper').boundingBox())!;
   const settingsLower = (await page.locator('.settings-lower').boundingBox())!;
   expect(settingsUpper.x + settingsUpper.width).toBeLessThanOrEqual(460);
@@ -236,6 +356,54 @@ test('half open, Ledger and Settings scroll each page on its own; flat keeps the
 
   await page.locator('.ledger-upper').evaluate(el => { el.scrollTop = 500; });
   expect(await page.locator('.ledger-lower').evaluate(el => el.scrollTop)).toBe(0);
+});
+
+test('Ledger totals keep every value on one baseline when labels wrap', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 500 });
+  await page.setContent(`<html class="native-app"><head>
+    <link rel="stylesheet" href="${url}src/styles.css?direct">
+    </head><body>
+    <article class="profile-page ledger-dashboard">
+      <section class="profile-headline">
+        <div class="headline-primary"><span class="headline-value">97<span class="headline-unit">h 22m</span></span><span class="headline-label">Listened since May 2026</span></div>
+        <dl class="headline-secondary">
+          <div><dt>Books finished</dt><dd>17</dd></div>
+          <div><dt>Current streak</dt><dd>14<span class="dd-unit">d</span></dd></div>
+          <div><dt>Longest streak</dt><dd>14<span class="dd-unit">d</span></dd></div>
+          <div><dt>Per active day</dt><dd>115<span class="dd-unit">m</span></dd></div>
+        </dl>
+      </section>
+    </article>
+    </body></html>`);
+
+  const tops = await page.locator('.headline-secondary dd').evaluateAll(values => values.map(value => value.getBoundingClientRect().top));
+  expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(1);
+});
+
+test('Software versions collapses to the phone layout inside a narrow Duo leaf', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.setContent(`<html class="native-app"><head>
+    <link rel="stylesheet" href="${url}src/styles.css?direct">
+    </head><body>
+    <section class="admin-card admin-software-card" style="width:520px">
+      <div class="admin-software-head">
+        <div class="admin-software-copy"><h2>OperaLibre software</h2><p>Review installed versions and manage available updates in one place.</p></div>
+        <div class="admin-software-actions"><button>Check for updates</button></div>
+      </div>
+      <div class="admin-software-versions">
+        <article class="update-available"><div class="admin-software-version-head"><div><span>Server</span><strong>Current</strong></div><span class="admin-update-badge">0.4.3 available</span></div></article>
+        <article><div class="admin-software-version-head"><div><span>Web frontend</span><strong>Development</strong></div></div></article>
+      </div>
+    </section>
+    </body></html>`);
+
+  const cards = await page.locator('.admin-software-versions > article').evaluateAll(items => items.map(item => {
+    const rect = item.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width };
+  }));
+  expect(cards[1].y).toBeGreaterThan(cards[0].y);
+  expect(cards[0].width).toBeGreaterThan(470);
+  expect((await page.getByText('Server', { exact: true }).boundingBox())!.width).toBeGreaterThan(35);
 });
 
 test('half-open reader clears the horizontal hinge and keeps its transport on the lower half', async ({ page }) => {
@@ -256,6 +424,30 @@ test('half-open reader clears the horizontal hinge and keeps its transport on th
   expect(stage.y + stage.height).toBeLessThanOrEqual(460);
   expect(transport.y).toBeGreaterThanOrEqual(490);
   expect(transport.y + transport.height).toBeLessThanOrEqual(951);
+});
+
+test('closed landscape reader docks listening controls beside the page', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'closed', angle: 0 });
+    // Model the camera-side landscape safe area reported by the Duo.
+    document.documentElement.style.setProperty('--reader-landscape-safe-right', '120px');
+  });
+
+  const stage = (await page.locator('.epub-stage').boundingBox())!;
+  const transport = (await page.locator('.epub-audiobar').boundingBox())!;
+  const footer = (await page.locator('.epub-bottombar').boundingBox())!;
+  expect(transport.x).toBeGreaterThanOrEqual(stage.x + stage.width);
+  expect(transport.width).toBeLessThanOrEqual(64);
+  expect(transport.height).toBeGreaterThan(300);
+  const reclaimedCornerInset = 951 - (transport.x + transport.width);
+  expect(reclaimedCornerInset).toBeGreaterThanOrEqual(60);
+  expect(reclaimedCornerInset).toBeLessThanOrEqual(68);
+  expect(footer.height).toBeLessThan(48);
 });
 
 test('the reader remembers a different text size for the closed screen than the open one', async ({ page }) => {

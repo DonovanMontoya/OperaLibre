@@ -410,24 +410,33 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             webView.evaluateJavaScript(
                 "document.documentElement.classList.toggle('floating-tabs', \(usesFloatingTopBar))")
         }
-        // A foldable's cover screen hangs the bar down its trailing edge, in a
-        // column that also carries the clock. The page runs under that column
-        // too and is told which part of it is free: below the clock and above
-        // the bar's platter of items.
+        // A foldable's cover screen hangs the bar down one edge, in a column
+        // that also carries the clock or camera island. Which edge UIKit picks
+        // follows the device's landscape direction. The page runs under that
+        // column too and is told which part of it is free: below the system
+        // chrome and above the bar's platter of items.
         var rail: CGRect?
-        if navigationVisible, navigation.parent != nil, !navigation.view.isHidden, frame.maxX < view.bounds.maxX {
+        let hasLeadingRail = frame.minX > view.bounds.minX + 0.5
+        let hasTrailingRail = frame.maxX < view.bounds.maxX - 0.5
+        if navigationVisible, navigation.parent != nil, !navigation.view.isHidden,
+           hasLeadingRail || hasTrailingRail {
             let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
-            let column = CGRect(x: frame.maxX, y: 0, width: view.bounds.maxX - frame.maxX, height: view.bounds.height)
-            if bar.height >= view.bounds.height / 2, bar.width < view.bounds.width / 4, bar.minX > view.bounds.midX,
-               let items = itemsPlatter(in: column) {
+            let barOnLeading = hasLeadingRail && bar.maxX < view.bounds.midX
+            let barOnTrailing = hasTrailingRail && bar.minX > view.bounds.midX
+            let column = barOnLeading
+                ? CGRect(x: view.bounds.minX, y: 0, width: frame.minX - view.bounds.minX, height: view.bounds.height)
+                : CGRect(x: frame.maxX, y: 0, width: view.bounds.maxX - frame.maxX, height: view.bounds.height)
+            if bar.height >= view.bounds.height / 2, bar.width < view.bounds.width / 4,
+               barOnLeading || barOnTrailing, let items = itemsPlatter(in: column) {
                 let top = railTop(in: column, above: items.minY)
                 if items.minY - top >= Self.minimumRailHeight {
                     // Centred on the platter, not the column: the platter
                     // sits a few points off the bar's frame, and the page's
                     // controls stand in line with it.
-                    rail = CGRect(x: items.midX - column.width / 2 - frame.minX, y: top,
+                    rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
                                   width: column.width, height: items.minY - top)
-                    frame.size.width = view.bounds.maxX - frame.minX
+                    frame.origin.x = view.bounds.minX
+                    frame.size.width = view.bounds.width
                 }
             }
         } else if !navigationVisible || navigation.view.isHidden,

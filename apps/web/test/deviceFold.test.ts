@@ -25,10 +25,14 @@ test("publishes the posture, axis, and fold rect", () => {
   applyDeviceFold(root, {
     posture: "half-open",
     angle: 110,
+    horizontalSizeClass: "regular",
+    verticalSizeClass: "regular",
     fold: { x: 0, y: 320, width: 951, height: 24, axis: "horizontal", active: true }
   });
   assert.equal(dataset.foldPosture, "half-open");
   assert.equal(dataset.foldAxis, "horizontal");
+  assert.equal(dataset.horizontalSizeClass, "regular");
+  assert.equal(dataset.verticalSizeClass, "regular");
   assert.equal(properties.get("--fold-y"), "320px");
   assert.equal(properties.get("--fold-height"), "24px");
 });
@@ -107,9 +111,20 @@ test("closing angle anticipates the closed layout before the hinge reports close
     angle: 90,
     fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
   };
-  assert.equal(resolveFoldLayoutState(halfOpen).posture, "half-open");
-  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 46 }).posture, "half-open");
-  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 45 }).posture, "closed");
+  assert.equal(resolveFoldLayoutState(halfOpen, { posture: "half-open" }).posture, "half-open");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 71 }, { posture: "half-open" }).posture, "half-open");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 70 }, { posture: "half-open" }).posture, "closed");
   assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 12 }).posture, "closed");
   assert.equal(resolveFoldLayoutState({ posture: "closed", angle: 0 }).posture, "closed");
+});
+
+test("compact transition uses hysteresis while the hinge hovers near its cutoff", () => {
+  const halfOpen: DeviceFoldState = {
+    posture: "half-open",
+    angle: 76,
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
+  };
+  assert.equal(resolveFoldLayoutState(halfOpen, { posture: "half-open" }).posture, "half-open");
+  assert.equal(resolveFoldLayoutState(halfOpen, { posture: "closed" }).posture, "closed");
+  assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 83 }, { posture: "closed" }).posture, "half-open");
 });

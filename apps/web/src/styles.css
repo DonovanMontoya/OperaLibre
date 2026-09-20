@@ -10529,6 +10529,7 @@ html.native-app .profile-back {
   margin-top: 14px;
   display: grid;
   gap: 16px;
+  container: admin-software / inline-size;
 }
 
 .admin-backup-card {
@@ -10611,6 +10612,25 @@ html.native-app .profile-back {
   font: 0.58rem "JetBrains Mono", monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The admin page can occupy only one leaf or the cover screen while the
+   viewport itself is still tablet-sized. Respond to the card's real width,
+   not the hardware viewport, so Software versions behaves like iPhone
+   Settings whenever its content column is narrow. */
+@container admin-software (max-width: 700px) {
+  .admin-software-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-software-actions button { width: 100%; }
+  .admin-software-versions { grid-template-columns: minmax(0, 1fr); }
+  .admin-software-version-head { align-items: flex-start; flex-wrap: wrap; }
+  .admin-update-actions { width: 100%; }
+  .admin-update-actions button,
+  .admin-update-actions a { flex: 1; }
 }
 
 .admin-software-versions strong {
@@ -11101,6 +11121,68 @@ html.native-app .admin-shell:not(.admin-overlay) {
 .settings-download-row {
   min-width: 0;
   max-width: 100%;
+}
+
+.purchase-provider-settings { gap: 10px; }
+.store-settings-group {
+  width: 100%;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+.store-settings-group:last-child { border-bottom: 1px solid rgba(var(--ink-rgb), 0.1); }
+.store-settings-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 58px;
+  padding: 8px 2px;
+  cursor: pointer;
+  list-style: none;
+}
+.store-settings-group > summary::-webkit-details-marker { display: none; }
+.store-settings-group > summary > span { display: grid; gap: 2px; min-width: 0; }
+.store-settings-group > summary strong { color: var(--ink); font: 500 1rem/1.2 "Fraunces", serif; }
+.store-settings-group > summary small { color: var(--ink-faded); font: 0.7rem/1.35 "JetBrains Mono", monospace; }
+.store-settings-group > summary > svg { flex: none; transition: transform 160ms ease; }
+.store-settings-group[open] > summary > svg { transform: rotate(180deg); }
+.store-settings-group > summary:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 2px; border-radius: 6px; }
+.store-settings-body { display: grid; gap: 14px; padding: 4px 2px 16px; }
+.store-destination {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, auto);
+  align-items: center;
+  gap: 14px;
+}
+.store-destination > span { display: grid; gap: 3px; }
+.store-destination strong { color: var(--ink); font: 500 0.92rem/1.2 "Fraunces", serif; }
+.store-destination small { color: var(--ink-faded); font: 0.72rem/1.35 "Fraunces", serif; font-style: italic; }
+.store-destination select {
+  min-height: 44px;
+  max-width: 220px;
+  padding: 8px 30px 8px 10px;
+  border: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-radius: 9px;
+  background: rgba(var(--lift-rgb), 0.72);
+  color: var(--ink);
+}
+.purchase-provider-settings .libro-catalog {
+  --catalog-ink: var(--ink);
+  --catalog-selected-text: var(--paper);
+  --catalog-muted: var(--ink-faded);
+  --catalog-border: rgba(var(--ink-rgb), 0.18);
+  --catalog-surface: rgba(var(--lift-rgb), 0.72);
+  padding: 0;
+}
+.purchase-provider-settings .libro-catalog-head { margin-bottom: 4px; }
+.purchase-provider-settings .libro-catalog h2 { font-size: 1.25rem; }
+.purchase-provider-settings .libro-account-details { border-top: 1px solid rgba(var(--ink-rgb), 0.1); }
+.purchase-provider-settings .account-list { width: 100%; }
+.purchase-provider-settings .account-list article { border-color: rgba(var(--ink-rgb), 0.12); background: rgba(var(--lift-rgb), 0.5); }
+.purchase-provider-settings .account-list-copy { color: var(--ink); }
+.store-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 520px) {
+  .store-destination { grid-template-columns: minmax(0, 1fr); }
+  .store-destination select { width: 100%; max-width: none; }
 }
 
 .settings-field {
@@ -13273,7 +13355,7 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
 .ledger-dashboard .headline-value { font: 500 clamp(44px, 6vw, 64px)/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--paper); }
 .ledger-dashboard .headline-unit { font-size: .4em; color: var(--gold-soft); }
 .ledger-dashboard .headline-label { font: inherit; font-size: 12px; line-height: 1.5; color: rgba(241, 231, 208, 0.62); }
-.ledger-dashboard .headline-secondary { gap: 20px 16px; }
+.ledger-dashboard .headline-secondary { gap: 20px 16px; align-items: start; }
 .ledger-dashboard .headline-secondary > div { gap: 7px; }
 .ledger-dashboard .headline-secondary dd { font: 500 27px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--paper); font-variant-numeric: tabular-nums; }
 .ledger-dashboard .headline-secondary dt { font: inherit; font-size: 12px; line-height: 1.4; color: rgba(241, 231, 208, 0.62); }
@@ -14466,11 +14548,169 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
 .purchase-tabs button[aria-selected="true"] { background: var(--gold-soft); color: var(--spine); }
 .purchase-tabs button:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
 .purchase-results { display: block; min-width: 0; }
+.purchase-settings-pane,
+.purchase-books-pane { display: contents; }
 
 .purchase-account-filter { display: block; margin: 0 0 14px; }
 .purchase-account-filter select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(217, 181, 116, 0.3); border-radius: 10px; background: var(--spine); color: var(--gold-soft); font: inherit; color-scheme: dark; }
 .purchase-account-filter select:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
+.purchase-console {
+  margin-top: 10px;
+  border: 1px solid rgba(217, 181, 116, 0.18);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+  color: rgba(241, 231, 208, 0.72);
+}
+.purchase-console > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.purchase-console > summary::-webkit-details-marker { display: none; }
+.purchase-console > summary > span { display: inline-flex; align-items: center; gap: 7px; color: var(--gold-soft); font: 500 0.76rem/1.2 -apple-system, BlinkMacSystemFont, sans-serif; }
+.purchase-console > summary > strong { color: rgba(241, 231, 208, 0.5); font: 500 0.62rem/1.2 "JetBrains Mono", monospace; text-transform: uppercase; }
+.purchase-console > summary > svg { transition: transform 160ms ease; }
+.purchase-console[open] > summary > svg { transform: rotate(180deg); }
+.purchase-console > summary:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; border-radius: 10px; }
+.purchase-console-body { display: grid; gap: 8px; padding: 0 12px 12px; }
+.purchase-console-body > p { margin: 0; font-size: 0.78rem; }
+.purchase-console .audible-job { margin: 0; padding: 0; border: 0; background: transparent; }
+.purchase-settings-link,
+.libro-settings-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid rgba(217, 181, 116, 0.22);
+  border-radius: 9px;
+  background: rgba(217, 181, 116, 0.07);
+  color: var(--gold-soft);
+}
 .purchase-provider-tag { display: inline-block; padding: 2px 5px; border: 1px solid currentColor; border-radius: 4px; font: 500 0.65rem/1.3 -apple-system, BlinkMacSystemFont, sans-serif; white-space: nowrap; }
+.purchase-control-label {
+  display: block;
+  margin: 0 0 6px;
+  color: rgba(241, 231, 208, 0.52);
+  font: 600 0.64rem/1.2 "JetBrains Mono", monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* Purchases are one collection even when they arrive from different stores.
+   Provider badges retain provenance; the row geometry, type hierarchy and
+   actions deliberately do not change between Libro.fm and Audible. */
+.purchase-provider-heading,
+.purchase-books-pane .libro-catalog-head h2 {
+  margin: 0;
+  color: var(--paper);
+  font: 400 1.45rem/1.15 "Instrument Serif", serif;
+}
+
+.purchase-book-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.purchase-book-list .purchase-book-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 108px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px 4px;
+  border-top: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+.purchase-book-list .purchase-book-row:last-child {
+  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+.purchase-book-list :is(.libro-purchase-cover, .audible-cover) {
+  width: 56px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(217, 181, 116, 0.18);
+  border-radius: 8px;
+  background: rgba(217, 181, 116, 0.08);
+  box-shadow: none;
+}
+
+.purchase-book-list :is(.libro-purchase-copy, .audible-copy) {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.purchase-book-list :is(.libro-purchase-copy h3, .audible-copy strong) {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--paper);
+  font: 400 1.05rem/1.18 "Fraunces", serif;
+}
+
+.purchase-book-list :is(.libro-purchase-copy p, .libro-purchase-copy small, .audible-copy > span, .audible-account-badge) {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(241, 231, 208, 0.48);
+  font: 500 0.62rem/1.4 "JetBrains Mono", monospace;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.purchase-book-list .purchase-book-row > :is(button, .audible-download-status) {
+  width: 108px;
+  min-height: 40px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  white-space: nowrap;
+}
+
+.purchase-book-list--compact .purchase-book-row {
+  grid-template-columns: 44px minmax(0, 1fr) 100px;
+  gap: 9px;
+  padding-block: 8px;
+}
+
+.purchase-book-list--compact :is(.libro-purchase-cover, .audible-cover) { width: 44px; }
+.purchase-book-list--compact :is(.libro-purchase-copy h3, .audible-copy strong) {
+  -webkit-line-clamp: 1;
+  font-size: 0.9rem;
+}
+.purchase-book-list--compact :is(.libro-purchase-account, .audible-account-badge) { display: none; }
+.purchase-book-list--compact .purchase-book-row > :is(button, .audible-download-status) { width: 100px; }
+
+.purchase-book-list--grid {
+  grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+  gap: 20px 14px;
+  padding-top: 8px;
+}
+
+.purchase-book-list--grid .purchase-book-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  padding: 0 0 12px;
+  border-top: 0;
+}
+
+.purchase-book-list--grid :is(.libro-purchase-cover, .audible-cover) { width: 100%; border-radius: 9px; }
+.purchase-book-list--grid :is(.libro-purchase-copy, .audible-copy) { min-height: 74px; }
+.purchase-book-list--grid .purchase-book-row > :is(button, .audible-download-status) { width: 100%; margin-top: auto; }
 .libro-nickname { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .libro-nickname label { display: grid; flex: 1; min-width: 130px; gap: 4px; }
 .libro-nickname input { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--catalog-border); border-radius: 8px; color: var(--catalog-ink); background: var(--catalog-surface); font: inherit; box-sizing: border-box; }
@@ -14666,6 +14906,49 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) {
   --gutter: max(30px, var(--fold-width));
 }
 
+/* The Duo's own tabs already switch between Shelf and Reading, so its
+   collection header does not need the iPad's extra expand/collapse chrome.
+   Keep the wordmark and the five collection actions as one compact line on
+   the left leaf instead of letting the actions fall into a second row. */
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad) > .library-pane > .pane-title {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:not(.device-ipad) > .library-pane:not(.purchase-browsing) > .pane-title {
+  width: calc(var(--fold-x) - max(28px, env(safe-area-inset-left)));
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad) > .library-pane > .pane-title > div:first-child {
+  min-width: 0;
+}
+
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad) > .library-pane > .pane-title h1 {
+  margin: 0;
+  font-size: clamp(1.25rem, 3vw, 1.75rem);
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad) > .library-pane > .pane-title .pane-actions {
+  gap: 4px;
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+
+/* These literary eyebrow labels and the Games tagline repeat the page title.
+   Removing them gives the fold layouts a quieter, more native hierarchy while
+   leaving functional labels inside cards, sheets, and the reader untouched. */
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad)
+  :is(.pane-title, .games-head, .settings-heading) .eyebrow,
+html.native-app[data-fold-posture] .native-shell:not(.device-ipad) .games-head > p {
+  display: none;
+}
+
 /* Shelf and Reading are different destinations on the wide Duo. Reading
    keeps the open-book composition (collection verso, player recto), while
    Shelf uses both leaves for the collection. The physical hinge remains the
@@ -14701,6 +14984,14 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open)::after {
+  display: none;
+}
+
+/* The Duo already supplies the crease. The illustrated binding was useful on
+   a single glass iPad, but its stitched layer briefly repaints when the inner
+   display changes posture. Let the physical hinge be the only seam here. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell:is(.tab-shelf, .tab-reading)::after {
   display: none;
 }
 
@@ -14745,6 +15036,252 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
   .native-shell.tab-shelf:not(.library-book-open) > .library-pane > .library-toolbar > :is(.library-results-summary, .library-filters, .library-active-filters) {
   grid-column: 1 / -1;
+}
+
+/* Get Books is a two-leaf workstation on the inner display. Store, account,
+   search and sorting controls stay on the left; the catalog owns the right.
+   Each leaf scrolls independently, so settings never push the first title
+   below the fold. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:has(> .library-pane.purchase-browsing) > .player-pane {
+  display: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf > .library-pane.purchase-browsing {
+  position: relative;
+  inset: auto;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: auto;
+  max-width: none;
+  height: var(--native-viewport-height);
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: var(--fold-x) var(--fold-width) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing > .pane-title {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  margin: 0;
+  padding: max(22px, calc(env(safe-area-inset-top) + 8px)) 20px 12px max(24px, env(safe-area-inset-left));
+  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing > .library-toolbar {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 20px 12px max(24px, env(safe-area-inset-left));
+}
+
+/* The landscape shelf toolbar normally pairs search with sorting. This leaf
+   is intentionally narrower, so keep every control full-width and legible. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane.purchase-browsing > .library-toolbar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane.purchase-browsing > .library-toolbar > * {
+  grid-column: 1;
+  min-width: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf:not(.library-book-open) > .library-pane.purchase-browsing > .library-toolbar > .purchase-source {
+  grid-column: 1;
+  min-width: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .shelf-navigation,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-source {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 6px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .shelf-navigation {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-tabs {
+  gap: 4px;
+  padding: 4px;
+  border-color: rgba(217, 181, 116, 0.18);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-tabs button {
+  min-height: 42px;
+  border-radius: 10px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-destination {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  min-height: 44px;
+  padding: 7px 10px;
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-destination select {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .library-search {
+  min-height: 46px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .library-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 46px auto;
+  gap: 7px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing :is(.library-sort, .library-sort-direction, .view-toggle) {
+  min-height: 46px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .view-toggle button {
+  width: 42px;
+  min-height: 44px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing > .purchase-results {
+  display: contents;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane {
+  display: block;
+  grid-column: 1;
+  grid-row: 3;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 20px 20px max(24px, env(safe-area-inset-left));
+  border-top: 1px solid rgba(217, 181, 116, 0.1);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane > .purchase-account-filter {
+  margin: 12px 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane .libation-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane .audible-toolbar:empty {
+  display: none;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane .audible-management {
+  border: 1px solid rgba(217, 181, 116, 0.16);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-settings-pane .audible-management > summary {
+  min-height: 46px;
+  box-sizing: border-box;
+  padding: 12px 14px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane {
+  display: block;
+  grid-column: 3;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: max(22px, calc(env(safe-area-inset-top) + 8px)) max(76px, env(safe-area-inset-right)) 20px 20px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane > :is(.purchase-provider-heading, .libro-catalog) {
+  margin-top: 0;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane .libro-catalog {
+  padding: 0 0 18px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane .libro-catalog-head {
+  min-height: 44px;
+  align-items: center;
+  margin: 0;
+  padding: 0 4px;
+  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane .libro-view-toolbar {
+  min-height: 34px;
+  margin: 0;
+  padding: 0 4px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane > .purchase-provider-heading {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  border-bottom: 1px solid rgba(217, 181, 116, 0.14);
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .library-pane.purchase-browsing .purchase-books-pane > :first-child {
+  margin-top: 0;
 }
 
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
@@ -15069,11 +15606,11 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .admin-shell:not(.a
   height: calc(var(--tabs-h) + 32px);
 }
 
-/* Half open, each page is a screen of its own — Ledger and Settings scroll
-   independently rather than as one continuous column flow, the same way the
-   horizontal hinge's upper and lower halves already do (above). Flat, the
-   spread reads as a single sheet and keeps the flowed layout instead. */
-html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .profile-page.ledger-dashboard {
+/* Ledger retains its two-page information architecture when the inner display
+   flattens. The hinge gutter contracts, but the summary and activity regions
+   do not reshuffle into a different dashboard. Settings still uses this split
+   only while the hinge is active. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .profile-page.ledger-dashboard {
   position: fixed;
   inset: 0;
   width: auto;
@@ -15085,7 +15622,10 @@ html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis=
   grid-template-rows: minmax(0, 1fr);
   column-gap: 0;
   column-count: auto;
-  padding: calc(var(--status-h) + 16px) 0 calc(var(--tabs-h) + 20px);
+  /* The side rail changes its measured top band while the hardware opens.
+     Ledger does not live beneath that rail, so key its canvas to the physical
+     safe area instead. Both postures now share an identical vertical origin. */
+  padding: max(24px, calc(env(safe-area-inset-top) + 8px)) 0 0;
   overflow: hidden;
 }
 
@@ -15110,7 +15650,9 @@ html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis=
 }
 
 html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"]
-  :is(.settings-upper, .settings-lower, .ledger-upper, .ledger-lower) {
+  :is(.settings-upper, .settings-lower),
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  :is(.ledger-upper, .ledger-lower) {
   display: block;
   min-width: 0;
   min-height: 0;
@@ -15118,14 +15660,16 @@ html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis=
   overscroll-behavior: contain;
 }
 
-html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-upper, .ledger-upper) {
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-upper,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .ledger-upper {
   grid-column: 1;
-  padding: 0 20px 20px max(24px, env(safe-area-inset-left));
+  padding: 0 20px 0 max(24px, env(safe-area-inset-left));
 }
 
-html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-lower, .ledger-lower) {
+html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] .settings-lower,
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .ledger-lower {
   grid-column: 3;
-  padding: 0 max(24px, env(safe-area-inset-right)) 20px 20px;
+  padding: 0 max(24px, env(safe-area-inset-right)) 0 20px;
 }
 
 html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis="vertical"] :is(.settings-upper, .settings-lower) {
@@ -15257,6 +15801,73 @@ html.native-app.side-rail .epub-reader.fullscreen .epub-bottombar {
 
 html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
   right: env(safe-area-inset-right);
+}
+
+/* A closed Duo on its side has height at a premium and width to spare. Keep
+   the page progress as a slim footer, but stand the listening transport on
+   the trailing edge so it no longer takes a full line away from the book. */
+@media (orientation: landscape) {
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive {
+    /* The landscape safe area describes the camera corner as a full-height
+       strip. The reader transport ends above that camera, so reclaim part of
+       the strip while retaining a generous corner buffer. The indirection is
+       also useful to the geometry fixture, where env() has no simulated notch. */
+    --reader-landscape-edge-inset: max(
+      10px,
+      calc(var(--reader-landscape-safe-right, env(safe-area-inset-right)) - 56px)
+    );
+    --reader-landscape-transport-space: calc(var(--reader-landscape-edge-inset) + 72px);
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-stage-wrap {
+    padding-right: var(--reader-landscape-transport-space);
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-tapzones {
+    right: var(--reader-landscape-transport-space);
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-bottombar {
+    padding-right: var(--reader-landscape-transport-space);
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar {
+    position: fixed;
+    z-index: 6;
+    top: max(58px, calc(env(safe-area-inset-top) + 50px));
+    right: var(--reader-landscape-edge-inset);
+    bottom: max(10px, env(safe-area-inset-bottom));
+    width: 64px;
+    height: auto;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 8px 0 6px 8px;
+    border-left: 1px solid var(--reader-line);
+    background: var(--reader-surface);
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-status {
+    order: -1;
+    justify-content: center;
+    min-height: 24px;
+    padding-left: 0;
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-time {
+    font-size: 0.64rem;
+  }
+
+  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-extras {
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    margin-top: 3px;
+  }
 }
 
 /* ===================== Reading along, half open =====================
@@ -15817,8 +16428,8 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .native-shell.tab
 /* Posture changes should feel like the same little game table being folded,
    not a route being replaced. WebKit's view transition snapshots preserve
    continuity while the underlying layout switches between the cover, laptop,
-   and open-book geometries. Only the four large surfaces participate; the
-   pieces themselves keep their existing interaction animations. */
+   and open-book geometries. The entire game travels as one related surface;
+   the player and tabs move independently because they serve separate jobs. */
 html.native-app.platform-ios .native-shell.tab-games .games-shell {
   view-transition-name: duo-games-summary;
 }
@@ -15827,11 +16438,13 @@ html.native-app.platform-ios .native-shell.tab-games > .mini-player {
   view-transition-name: duo-games-player;
 }
 
-html.native-app.platform-ios .native-shell.tab-games:not(.games-words) .match-board-frame {
-  view-transition-name: duo-games-stage;
-}
-
-html.native-app.platform-ios .native-shell.tab-games.games-words .word-keys {
+/* The play surface is the game's matched-geometry hero. Its children remain
+   ordinary DOM throughout, so the 7x7 board grows as one object and active
+   piece animations are not replaced by 49 posture animations. */
+html.native-app.platform-ios:not([data-fold-posture="closed"])
+  .native-shell.tab-games:not(.games-words) .match-board-frame,
+html.native-app.platform-ios:not([data-fold-posture="closed"])
+  .native-shell.tab-games.games-words .word-keys {
   view-transition-name: duo-games-stage;
 }
 
@@ -15839,32 +16452,102 @@ html.native-app.platform-ios .native-shell.tab-games .spine-tabs {
   view-transition-name: duo-games-tabs;
 }
 
+/* Every other destination keeps its major regions intact as the available
+   surface changes. This is displacement rather than a page transition: the
+   shelf, player, transport and navigation retain their identity and WebKit
+   animates their old bounds to their new bounds around the reserved region. */
+html.native-app.platform-ios .native-shell:not(.tab-games) > .library-pane {
+  view-transition-name: duo-library;
+}
+
+html.native-app.platform-ios .native-shell:not(.tab-games) > .player-pane {
+  view-transition-name: duo-player;
+}
+
+html.native-app.platform-ios .native-shell:not(.tab-games) > .mini-player {
+  view-transition-name: duo-mini-player;
+}
+
+html.native-app.platform-ios .native-shell:not(.tab-games) > .spine-tabs {
+  view-transition-name: duo-tabs;
+}
+
+/* Ledger is already one persistent two-leaf layout. Snapshotting each leaf
+   separately lets tiny safe-area measurement changes read as a second jump
+   after the hardware has finished moving, so let the live layout resize. */
+html.native-app.platform-ios .native-shell.tab-ledger > .player-pane {
+  view-transition-name: none;
+}
+
+html.native-app.platform-ios:not([data-fold-posture="closed"])
+  .native-shell.tab-ledger .ledger-upper {
+  view-transition-name: none;
+}
+
+html.native-app.platform-ios:not([data-fold-posture="closed"])
+  .native-shell.tab-ledger .ledger-lower {
+  view-transition-name: none;
+}
+
 html.native-app[data-fold-transition="view"]::view-transition-old(root) { display: none; }
 html.native-app[data-fold-transition="view"]::view-transition-new(root) { animation: none; }
 
 html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-summary),
 html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-player),
-html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-stage),
-html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-tabs) {
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-library),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-player),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-mini-player),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-ledger-summary),
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-ledger-activity) {
   animation-duration: 120ms;
   animation-timing-function: cubic-bezier(.2, .85, .25, 1);
 }
 
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-summary),
 html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-player),
-html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-stage),
-html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-tabs) {
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-library),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-player),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-mini-player),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-ledger-summary),
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-ledger-activity) {
   animation: duo-posture-out 70ms linear both;
+  mix-blend-mode: normal;
 }
 
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-summary),
 html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-player),
-html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-stage),
-html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-tabs) {
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-library),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-player),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-mini-player),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-tabs),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-ledger-summary),
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-ledger-activity) {
   animation: duo-posture-in 120ms cubic-bezier(.2, .85, .25, 1) both;
+  mix-blend-mode: normal;
 }
 
-html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.games-shell, .mini-player, .match-board-frame, .word-keys, .spine-tabs) {
+html.native-app[data-fold-transition="view"]::view-transition-group(duo-games-stage) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(.2, .82, .24, 1);
+  overflow: clip;
+}
+
+html.native-app[data-fold-transition="view"]::view-transition-old(duo-games-stage) {
+  animation: duo-posture-out 110ms linear both;
+  mix-blend-mode: normal;
+}
+
+html.native-app[data-fold-transition="view"]::view-transition-new(duo-games-stage) {
+  animation: duo-posture-in 180ms cubic-bezier(.2, .82, .24, 1) both;
+  mix-blend-mode: normal;
+}
+
+html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.games-shell, .mini-player, .spine-tabs) {
   animation: duo-posture-settle 120ms cubic-bezier(.2, .85, .25, 1) both;
 }
 
@@ -15884,7 +16567,7 @@ html.native-app[data-fold-transition="fallback"] .native-shell.tab-games :is(.ga
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html.native-app.platform-ios .native-shell.tab-games :is(.games-shell, .mini-player, .match-board-frame, .word-keys, .spine-tabs) {
+  html.native-app.platform-ios .native-shell :is(.games-shell, .library-pane, .player-pane, .mini-player, .match-board-frame, .word-keys, .spine-tabs, .ledger-upper, .ledger-lower) {
     view-transition-name: none;
     animation: none;
   }
