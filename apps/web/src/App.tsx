@@ -9181,6 +9181,7 @@ function MainApp({
           </span>
         </article>)}
       </div> : null}
+      {native && libationError ? <p className="settings-hint settings-error" role="alert">{libationError}</p> : null}
       <div className="store-settings-actions">
         <button type="button" className="download-btn" onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}>
           {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}
@@ -10642,7 +10643,7 @@ function MainApp({
                   </div>
                 </div>
                 <h2>{selectedBook.title}</h2>
-                {!isViewingPlayingBook ? (
+                {native && !isViewingPlayingBook ? (
                   <div className="book-quick-start">
                     <button
                       type="button"

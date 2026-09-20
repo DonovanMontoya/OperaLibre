@@ -92,3 +92,20 @@ test('closing with retained hinge geometry restores the sorted single shelf', as
   await expect(page.locator('.book-row strong')).toHaveText(books.map(book => book.title));
   await expect(page.locator('.book-leaf')).toHaveCount(1);
 });
+
+test('web book details offer one primary playback action', async ({ page }) => {
+  const { books } = await openShell(page, false);
+  await page.locator('.book-row').first().click();
+  const play = page.getByRole('button', { name: `Play ${books[0].title}`, exact: true });
+  await expect(play).toHaveCount(1);
+  await expect(play).toBeVisible();
+});
+
+test('native Audible settings show failed refresh requests', async ({ page }) => {
+  await openShell(page, true, true);
+  await page.route('**/api/libation/sync', route => route.fulfill({ status: 429, json: { message: 'Refresh limit reached. Try again later.' } }));
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('.store-settings-group > summary').filter({ hasText: 'Audible' }).click();
+  await page.getByRole('button', { name: 'Refresh purchases', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Refresh limit reached. Try again later.' })).toBeVisible();
+});
