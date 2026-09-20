@@ -16014,3 +16014,55 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     & .native-now-copy h2 { margin-inline: auto; font-size: 1rem; }
   }
 }
+
+/* The fit-playback rules above are the final phone layout and therefore own
+   the winning control sizes. On a conventional portrait iPhone, promote the
+   transport over the already-dominant cover. Foldable layouts keep their
+   independently tuned controls. */
+@media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
+  html.native-app:not([data-fold-posture]) .native-shell
+    > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+    & .native-now-transport {
+      gap: clamp(7px, 2.5vw, 12px);
+      padding-block: 4px;
+    }
+    & .native-now-play {
+      width: 96px;
+      height: 96px;
+    }
+    & .native-now-play svg {
+      width: 42px;
+      height: 42px;
+    }
+    & .native-now-transport > button:not(.native-now-play) {
+      min-height: 64px;
+    }
+    & .native-now-transport .native-now-seek {
+      flex-basis: 56px;
+      width: 56px;
+      height: 64px;
+    }
+    & .native-now-transport .native-now-seek svg {
+      width: 28px;
+      height: 28px;
+    }
+    & .native-now-transport .native-now-chapter {
+      max-width: 70px;
+    }
+    & .native-now-transport .native-now-chapter svg {
+      width: 32px;
+      height: 32px;
+    }
+    & .native-now-transport > button:not(.native-now-play) span {
+      font-size: 0.62rem;
+    }
+    & .native-now-utility button {
+      min-height: 58px;
+      font-size: 0.56rem;
+    }
+    & .native-now-utility button svg {
+      width: 20px;
+      height: 20px;
+    }
+  }
+}

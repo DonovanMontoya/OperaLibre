@@ -13,6 +13,41 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+test('regular portrait iPhone gives the player transport stronger emphasis', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 932 });
+  const stylesheet = readFileSync(new URL('../../src/styles.css', import.meta.url), 'utf8');
+  await page.setContent(`<html class="native-app"><head><style>${stylesheet}</style></head><body>
+    <main class="native-shell">
+      <section class="player-pane has-native-player native-player-view-now fit-playback">
+        <div class="native-now-playing">
+          <div class="native-now-half native-now-lead"><div class="native-now-artwork"></div></div>
+          <div class="native-now-half native-now-controls">
+            <div class="native-now-timeline"></div>
+            <div class="native-now-transport">
+              <button class="native-now-chapter"><svg></svg><span>Restart</span></button>
+              <button class="native-now-seek"><svg></svg><span>15s</span></button>
+              <button class="native-now-play" aria-label="Play"><svg></svg></button>
+              <button class="native-now-seek"><svg></svg><span>30s</span></button>
+              <button class="native-now-chapter"><svg></svg><span>Next</span></button>
+            </div>
+            <div class="native-now-utility"><button><svg></svg><span>Details</span></button></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body></html>`);
+
+  await expect(page.locator('.native-now-play')).toHaveCSS('width', '96px');
+  await expect(page.locator('.native-now-play')).toHaveCSS('height', '96px');
+  await expect(page.locator('.native-now-seek').first()).toHaveCSS('width', '56px');
+  await expect(page.locator('.native-now-seek').first()).toHaveCSS('height', '64px');
+  await expect(page.locator('.native-now-utility button')).toHaveCSS('min-height', '58px');
+
+  // A folded Duo is still phone-sized, but uses its own tuned composition.
+  await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'closed'; });
+  await expect(page.locator('.native-now-play')).toHaveCSS('width', '64px');
+});
+
 test('cover-screen transport stays inside its rail as Now Playing consumes space', async ({ page }) => {
   await page.setViewportSize({ width: 466, height: 678 });
   await page.setContent(`<html class="native-app side-rail"><head>

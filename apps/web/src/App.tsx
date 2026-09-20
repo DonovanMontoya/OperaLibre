@@ -1,5 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
-import { isBookPosture, useDeviceFold, usesFoldLayout, type DeviceFoldState } from "./deviceFold";
+import { isBookPosture, useDeviceFold, usesFoldLayout } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -114,6 +114,12 @@ import {
   type ReaderThemeChoice
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
+import {
+  READER_FONT_SCALE_MAX,
+  READER_FONT_SCALE_MIN,
+  readerFontScaleBucket,
+  readStoredFontScale
+} from "./readerFontScale";
 import { createScreenAwakeController } from "./screenAwake";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import {
@@ -910,6 +916,19 @@ const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)"
 function readLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(LANDSCAPE_QUERY).matches;
 }
+
+function useLandscapeOrientation(): boolean {
+  const [landscape, setLandscape] = useState(readLandscape);
+  useEffect(() => {
+    const query = window.matchMedia(LANDSCAPE_QUERY);
+    const update = () => setLandscape(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return landscape;
+}
+
 function readShortLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
 }
@@ -1312,28 +1331,6 @@ function writeStoredValue(key: string, value: string) {
   }
 }
 
-const READER_FONT_SCALE_MIN = 50;
-const READER_FONT_SCALE_MAX = 300;
-
-// A foldable's cover screen and its unfolded inner screen are different
-// reading surfaces — a size comfortable closed can be lost or cramped once
-// opened. Remember the reader's text size per screen instead of one value
-// for both.
-function readerFontScaleBucket(posture: DeviceFoldState["posture"]): "closed" | "open" {
-  return posture === "closed" ? "closed" : "open";
-}
-
-function readStoredFontScale(bucket: string): number {
-  // The open screen inherits whatever size was set before screens had their
-  // own, so an existing preference isn't silently lost to the split.
-  const raw = readStoredValue(`operalibre.readerFontScale.${bucket}`)
-    ?? (bucket === "open" ? readStoredValue("operalibre.readerFontScale") : null);
-  const stored = Number(raw);
-  return Number.isFinite(stored) && stored >= READER_FONT_SCALE_MIN && stored <= READER_FONT_SCALE_MAX
-    ? stored
-    : 100;
-}
-
 function writeStoredBookId(userId: string, field: "selectedBookId" | "playbackBookId", bookId: string | null) {
   try {
     const key = storedStateKey(userId, field);
@@ -1709,8 +1706,12 @@ export function EpubReadalong({
   // between them on the fold. The change re-lays the chapter out, so it turns
   // back to the remembered place the way a resize does.
   const deviceFold = useDeviceFold();
-  const fontScaleBucket = readerFontScaleBucket(deviceFold.posture);
-  const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket));
+  const readerLandscape = useLandscapeOrientation();
+  const fontScaleBucket = readerFontScaleBucket(
+    deviceFold.posture,
+    readerLandscape ? "landscape" : "portrait"
+  );
+  const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket, readStoredValue));
   // The look a freshly opened book is styled with, and what the open one has
   // been given so far, so a change re-styles it exactly once.
   const readerThemeRef = useRef(readerTheme);
@@ -1720,12 +1721,13 @@ export function EpubReadalong({
   const appliedThemeRef = useRef<ReaderTheme | null>(null);
   const appliedFontScaleRef = useRef<number | null>(null);
   const fontScaleBucketRef = useRef(fontScaleBucket);
-  // Closing or opening the fold swaps which screen's remembered size applies,
-  // rather than carrying whatever size the other screen was left at.
+  const fontScaleBucketChanged = fontScaleBucketRef.current !== fontScaleBucket;
+  // Closing, opening, or rotating swaps to that layout's remembered size,
+  // rather than carrying whatever size the other layout was left at.
   useEffect(() => {
     if (fontScaleBucketRef.current === fontScaleBucket) return;
     fontScaleBucketRef.current = fontScaleBucket;
-    setFontScale(readStoredFontScale(fontScaleBucket));
+    setFontScale(readStoredFontScale(fontScaleBucket, readStoredValue));
   }, [fontScaleBucket]);
   const [focusMode, setFocusMode] = useState(false);
   // Full screen: the native reader always, the web reader in focus mode. The
@@ -2520,6 +2522,10 @@ export function EpubReadalong({
   }, [isReady, readerTheme]);
 
   useEffect(() => {
+    // The first render after a screen/orientation change still carries the
+    // previous layout's size. Wait for its remembered value instead of
+    // briefly saving or applying the old value under the new key.
+    if (fontScaleBucketChanged) return;
     writeStoredValue(`operalibre.readerFontScale.${fontScaleBucket}`, String(fontScale));
     const rendition = renditionRef.current;
     if (!isReady || !rendition || appliedFontScaleRef.current === fontScale) {
@@ -2537,7 +2543,7 @@ export function EpubReadalong({
     rendition.clear();
     void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
-  }, [beginRestore, fontScale, fontScaleBucket, isReady]);
+  }, [beginRestore, fontScale, fontScaleBucket, fontScaleBucketChanged, isReady]);
 
   useEffect(() => {
     if (!fullscreen) {
