@@ -336,14 +336,18 @@ export function newestLibrarySnapshot(
 }
 
 async function writeNativeLibrary(userId: string, snapshot: LibrarySnapshot) {
+  // Freeze the scope before yielding so changing servers cannot redirect an
+  // in-flight write into the next server's native catalogue.
+  const directory = `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`;
+  const path = nativeLibraryPath(userId);
   await Filesystem.mkdir({
-    path: `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`,
+    path: directory,
     directory: MEDIA_DIRECTORY,
     recursive: true
   });
   const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
   await Filesystem.writeFile({
-    path: nativeLibraryPath(userId),
+    path,
     directory: MEDIA_DIRECTORY,
     data: toBase64(bytes.buffer as ArrayBuffer)
   });

@@ -145,6 +145,23 @@ test("native library cache survives unavailable IndexedDB", async () => {
   assert.deepEqual(await getCachedLibrary("reader"), [cachedBook]);
 });
 
+test("a server change cannot redirect an in-flight native library write", async () => {
+  const started = deferred();
+  const release = deferred();
+  const writes: Array<{ path: string; data: string }> = [];
+  state.scope = "server-a";
+  state.mkdir = async () => { started.resolve(); await release.promise; };
+  state.writeFile = async (options) => { writes.push(options); };
+
+  const pending = cacheLibrary("reader", [{ id: "book" }] as Book[]);
+  await started.promise;
+  state.scope = "server-b";
+  release.resolve();
+  await pending;
+
+  assert.equal(writes[0].path, "offline-media/server-a/library-reader.json");
+});
+
 test("the newest durable library copy wins after one cache recovers", () => {
   const stale = { cachedAt: 10, books: [{ id: "stale" }] as Book[] };
   const current = { cachedAt: 20, books: [{ id: "current" }] as Book[] };
@@ -154,6 +171,7 @@ test("the newest durable library copy wins after one cache recovers", () => {
 
 test("removing a partially migrated download clears scoped and legacy folders", async () => {
   const removed: string[] = [];
+  state.scope = "server-a";
   state.stat = async ({ path } = { path: "" }) => {
     if (path !== "offline-media/server-a/legacy-book") throw new Error("not found");
   };
@@ -168,6 +186,7 @@ test("removing a partially migrated download clears scoped and legacy folders", 
 });
 
 test("a track remains playable from an old folder after a partial scoped migration", async () => {
+  state.scope = "server-a";
   const legacyBook = {
     id: "legacy-book",
     tracks: [{ id: "chapter-one", fileName: "Chapter One.m4b" }]
