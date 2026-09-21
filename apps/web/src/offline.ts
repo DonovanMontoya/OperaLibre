@@ -121,6 +121,8 @@ function sanitizeSegment(value: string) {
 
 const bookDirectory = (bookId: string) =>
   `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}/${sanitizeSegment(bookId)}`;
+const nativeLibraryPath = (userId: string) =>
+  `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}/library-${sanitizeSegment(userId)}.json`;
 const legacyBookDirectory = (bookId: string) => `${MEDIA_ROOT}/${sanitizeSegment(bookId)}`;
 
 // WKWebView's capacitor:// file server picks the Content-Type from the file
@@ -132,6 +134,8 @@ const trackFilePath = (book: Book, track: Track) =>
 // Where a download made before the stored-extension rule landed still sits.
 const legacyTrackFilePath = (book: Book, track: Track) =>
   `${bookDirectory(book.id)}/${trackFileName(track, fileExtension(track.fileName, "mp3"))}`;
+const unscopedTrackFilePath = (book: Book, track: Track, extension: string) =>
+  `${legacyBookDirectory(book.id)}/${trackFileName(track, extension)}`;
 function coverExtension(book: Book) {
   switch (book.coverArtContentType?.toLowerCase()) {
     case "image/png": return "png";
@@ -236,20 +240,33 @@ async function fileExists(path: string) {
 async function resolveTrackFilePath(book: Book, track: Track) {
   const path = trackFilePath(book, track);
   const legacy = legacyTrackFilePath(book, track);
-  if (legacy === path || (await fileExists(path))) return path;
-  if (!(await fileExists(legacy))) return path;
-  try {
-    await Filesystem.rename({
-      from: legacy,
-      to: path,
-      directory: MEDIA_DIRECTORY,
-      toDirectory: MEDIA_DIRECTORY
-    });
-    return path;
-  } catch {
-    // Keep playing the file that is already there if it could not be renamed.
-    return legacy;
+  if (await fileExists(path)) return path;
+  if (legacy !== path && await fileExists(legacy)) {
+    try {
+      await Filesystem.rename({
+        from: legacy,
+        to: path,
+        directory: MEDIA_DIRECTORY,
+        toDirectory: MEDIA_DIRECTORY
+      });
+      return path;
+    } catch {
+      // Keep playing the file that is already there if it could not be renamed.
+      return legacy;
+    }
   }
+  // A migration can legitimately find a partially populated scoped folder
+  // left by a newer retry. In that case the old whole-book folder cannot be
+  // renamed, but its complete tracks are still valid offline sources.
+  const storedExtension = storedMediaExtension(fileExtension(track.fileName, "mp3"));
+  const originalExtension = fileExtension(track.fileName, "mp3");
+  for (const candidate of [
+    unscopedTrackFilePath(book, track, storedExtension),
+    unscopedTrackFilePath(book, track, originalExtension)
+  ]) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return path;
 }
 
 async function nativeFileUrl(path: string) {
@@ -296,19 +313,68 @@ export function getOfflineUser(): AuthUser | null {
   }
 }
 
+async function writeNativeLibrary(userId: string, books: Book[]) {
+  await Filesystem.mkdir({
+    path: `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`,
+    directory: MEDIA_DIRECTORY,
+    recursive: true
+  });
+  const bytes = new TextEncoder().encode(JSON.stringify(books));
+  await Filesystem.writeFile({
+    path: nativeLibraryPath(userId),
+    directory: MEDIA_DIRECTORY,
+    data: toBase64(bytes.buffer as ArrayBuffer)
+  });
+}
+
+async function readNativeLibrary(userId: string): Promise<Book[] | null> {
+  if (!Capacitor.isNativePlatform()) return null;
+  try {
+    const result = await Filesystem.readFile({
+      path: nativeLibraryPath(userId),
+      directory: MEDIA_DIRECTORY
+    });
+    if (typeof result.data !== "string") return null;
+    const bytes = Uint8Array.from(atob(result.data), (character) => character.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    return Array.isArray(parsed) ? parsed as Book[] : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function cacheLibrary(userId: string, books: Book[]) {
-  await write("data", books, libraryKey(userId));
+  if (!Capacitor.isNativePlatform()) {
+    await write("data", books, libraryKey(userId));
+    return;
+  }
+  // WebView storage and native app data have different eviction/failure
+  // modes. Keep the small catalogue in both so durable downloaded audio never
+  // becomes unreachable solely because IndexedDB cannot open.
+  const results = await Promise.allSettled([
+    write("data", books, libraryKey(userId)),
+    writeNativeLibrary(userId, books)
+  ]);
+  if (results.every((result) => result.status === "rejected")) {
+    throw (results[0] as PromiseRejectedResult).reason;
+  }
 }
 
 export async function getCachedLibrary(userId: string) {
-  const scoped = await read<Book[]>("data", libraryKey(userId));
-  if (scoped) return scoped;
-  const legacy = await read<Book[]>("data", `library:${userId}`);
-  if (legacy) {
-    await cacheLibrary(userId, legacy);
-    await removeRecord("data", `library:${userId}`);
+  try {
+    const scoped = await read<Book[]>("data", libraryKey(userId));
+    if (scoped) return scoped;
+    const legacy = await read<Book[]>("data", `library:${userId}`);
+    if (legacy) {
+      await cacheLibrary(userId, legacy);
+      await removeRecord("data", `library:${userId}`).catch(() => undefined);
+      return legacy;
+    }
+  } catch {
+    // The native app-data copy below remains available when WebKit storage is
+    // unavailable or was cleared independently of the downloaded media.
   }
-  return legacy ?? [];
+  return await readNativeLibrary(userId) ?? [];
 }
 
 export async function cacheProgress(userId: string, progress: Progress) {
@@ -334,7 +400,7 @@ export async function isBookDownloaded(book: Book) {
       return (await Promise.all(book.tracks.map((track) => fileExists(track.localFilePath!)))).every(Boolean);
     }
     void clearLegacyMediaBlobs();
-    await migrateLegacyBookDirectory(book);
+    await migrateLegacyBookDirectory(book).catch(() => undefined);
     const paths = await Promise.all(book.tracks.map((track) => resolveTrackFilePath(book, track)));
     const checks = await Promise.all(paths.map((path) => fileExists(path)));
     return checks.every(Boolean);
@@ -440,7 +506,7 @@ export async function removeBookDownload(book: Book) {
 export async function getOfflineTrackUrl(book: Book, track: Track): Promise<string | null> {
   if (Capacitor.isNativePlatform()) {
     if (track.localFilePath) return nativeFileUrl(track.localFilePath);
-    await migrateLegacyBookDirectory(book);
+    await migrateLegacyBookDirectory(book).catch(() => undefined);
     return nativeFileUrl(await resolveTrackFilePath(book, track));
   }
   const record = await readMedia(book.id, `track:${track.id}`);

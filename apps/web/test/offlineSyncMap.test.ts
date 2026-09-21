@@ -7,25 +7,34 @@ import type { Book, SyncMap } from "../src/types.ts";
 // Each test can pause a filesystem operation while the server or reader changes.
 const state = {
   scope: "server-a",
-  stat: async () => {},
+  stat: async (_options?: { path: string }) => {},
   mkdir: async () => {},
-  writeFile: async (_options: { path: string; data: string }) => {}
+  writeFile: async (_options: { path: string; data: string }) => {},
+  readFile: async (_options: { path: string }) => ({ data: "" }),
+  getUri: async (options: { path: string }) => ({ uri: `file://${options.path}` })
 };
 const fixtureKey = Symbol.for("operalibre.offlineSyncMap.test");
 Reflect.set(globalThis, fixtureKey, state);
 const fixture = 'globalThis[Symbol.for("operalibre.offlineSyncMap.test")]';
 const mocks: Record<string, string> = {
-  "@capacitor/core": "export const Capacitor = { isNativePlatform: () => true };",
+  "@capacitor/core": `export const Capacitor = {
+    isNativePlatform: () => true,
+    convertFileSrc: (value) => value
+  };`,
   "@capacitor/filesystem": `export const Directory = { Data: "DATA" };
     export const Filesystem = {
-      stat: () => ${fixture}.stat(),
+      stat: (options) => ${fixture}.stat(options),
       mkdir: () => ${fixture}.mkdir(),
-      writeFile: (options) => ${fixture}.writeFile(options)
+      writeFile: (options) => ${fixture}.writeFile(options),
+      readFile: (options) => ${fixture}.readFile(options),
+      getUri: (options) => ${fixture}.getUri(options),
+      rename: () => Promise.resolve()
     };`,
   "./api": `export const getServerStorageKey = () => ${fixture}.scope;
     export const getServerUrl = () => "";`,
   "./backgroundDownloads": "export const cancelBackgroundBookDownload = null, getBackgroundBookDownloadStatus = null, runBackgroundBookDownload = null;",
-  "./mediaFiles": "export const fileExtension = null, storedMediaExtension = null;",
+  "./mediaFiles": `export const fileExtension = (name, fallback) => name.split(".").pop()?.toLowerCase() || fallback;
+    export const storedMediaExtension = (extension) => extension === "m4b" ? "m4a" : extension;`,
   "./companionCache": "export const revalidatedCompanion = null;",
   "./offlineDownload": "export const downloadWebBook = null;"
 };
@@ -38,7 +47,13 @@ register(`data:text/javascript,${encodeURIComponent(`
     return nextResolve(specifier, context);
   }
 `)}`, import.meta.url);
-const { saveOfflineSyncMap } = await import("../src/offline.ts");
+const {
+  cacheLibrary,
+  getCachedLibrary,
+  getOfflineTrackUrl,
+  isBookDownloaded,
+  saveOfflineSyncMap
+} = await import("../src/offline.ts");
 
 const book = { id: "shared-book", tracks: [{ id: "track", localFilePath: "downloaded.mp3" }] } as Book;
 const map: SyncMap = {
@@ -105,4 +120,45 @@ test("native sync-map persistence", async (t) => {
     state.writeFile = async () => { throw new Error("disk full"); };
     await assert.doesNotReject(saveOfflineSyncMap(book, map));
   });
+});
+
+test("native library cache survives unavailable IndexedDB", async () => {
+  const writes: Array<{ path: string; data: string }> = [];
+  state.scope = "server-a";
+  state.mkdir = async () => {};
+  state.writeFile = async (options) => { writes.push(options); };
+  const cachedBook = {
+    id: "downloaded-book",
+    title: "Downloaded Book",
+    tracks: [{ id: "track", fileName: "track.mp3" }]
+  } as Book;
+
+  await cacheLibrary("reader", [cachedBook]);
+  const snapshot = writes.find((write) => write.path === "offline-media/server-a/library-reader.json");
+  assert.ok(snapshot);
+  state.readFile = async () => ({ data: snapshot.data });
+
+  assert.deepEqual(await getCachedLibrary("reader"), [cachedBook]);
+});
+
+test("a track remains playable from an old folder after a partial scoped migration", async () => {
+  const legacyBook = {
+    id: "legacy-book",
+    tracks: [{ id: "chapter-one", fileName: "Chapter One.m4b" }]
+  } as Book;
+  const present = new Set([
+    // The directory makes whole-book migration stop, but this scoped copy has
+    // no track. The valid audio remains in the pre-scope location.
+    "offline-media/server-a/legacy-book",
+    "offline-media/legacy-book/track-chapter-one.m4a"
+  ]);
+  state.stat = async ({ path } = { path: "" }) => {
+    if (!present.has(path)) throw new Error("not found");
+  };
+
+  assert.equal(await isBookDownloaded(legacyBook), true);
+  assert.equal(
+    await getOfflineTrackUrl(legacyBook, legacyBook.tracks[0]),
+    "file://offline-media/legacy-book/track-chapter-one.m4a"
+  );
 });
