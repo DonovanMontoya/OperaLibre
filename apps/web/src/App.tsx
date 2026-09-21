@@ -357,9 +357,10 @@ import {
   shouldAcceptNativeTrackChange
 } from "./startup";
 import {
+  canPublishNativeQueue,
   nativeQueueIdentity,
   nativeQueueIsReady,
-  resolveLocalFirstUrls
+  resolveLocalFirstSources
 } from "./offlinePlayback";
 import {
   backfillDeviceLibraryMetadata,
@@ -5448,11 +5449,17 @@ function MainApp({
     // Resolve each item from disk regardless of whether the separate complete
     // download scan has finished. Otherwise chapter one can be local while
     // later AVQueuePlayer items still point at a dead server on a cold launch.
-    void resolveLocalFirstUrls(
+    void resolveLocalFirstSources(
       tracks,
       (track) => getOfflineTrackUrl(playbackBook, track),
       (track) => mediaUrl(track.streamUrl)
-    ).then((urls) => publish(tracks.map((track, index) => entry(track, index, urls[index]))));
+    ).then((sources) => {
+      // A fully local queue is usable before background authentication. Any
+      // remote fallback must wait for its media credential, or AVPlayer can
+      // fail permanently on the tokenless URL before the refreshed queue lands.
+      if (!canPublishNativeQueue(sources, mediaCredentialReady)) return;
+      publish(tracks.map((track, index) => entry(track, index, sources[index].url)));
+    });
     return () => {
       active = false;
     };

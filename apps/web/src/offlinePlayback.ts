@@ -3,18 +3,38 @@
  * local even before the separate availability scan finishes; a missing or
  * unreadable local file falls back only for that track.
  */
-export function resolveLocalFirstUrls<T>(
+export type LocalFirstSource = { url: string; local: boolean };
+
+export function resolveLocalFirstSources<T>(
+  items: readonly T[],
+  localUrl: (item: T) => Promise<string | null>,
+  remoteUrl: (item: T) => string
+): Promise<LocalFirstSource[]> {
+  return Promise.all(items.map(async (item) => {
+    try {
+      const local = await localUrl(item);
+      return local
+        ? { url: local, local: true }
+        : { url: remoteUrl(item), local: false };
+    } catch {
+      return { url: remoteUrl(item), local: false };
+    }
+  }));
+}
+
+export async function resolveLocalFirstUrls<T>(
   items: readonly T[],
   localUrl: (item: T) => Promise<string | null>,
   remoteUrl: (item: T) => string
 ): Promise<string[]> {
-  return Promise.all(items.map(async (item) => {
-    try {
-      return await localUrl(item) ?? remoteUrl(item);
-    } catch {
-      return remoteUrl(item);
-    }
-  }));
+  return (await resolveLocalFirstSources(items, localUrl, remoteUrl)).map(({ url }) => url);
+}
+
+export function canPublishNativeQueue(
+  sources: readonly LocalFirstSource[],
+  mediaCredentialReady: boolean
+) {
+  return mediaCredentialReady || sources.every(({ local }) => local);
 }
 
 export function nativeQueueIdentity(
