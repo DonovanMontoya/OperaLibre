@@ -66,6 +66,15 @@ export function nativeQueueIdentityAfterRestore(
   return nativeQueueIdentity(bookId, trackId, downloaded, mediaCredentialReady);
 }
 
+/** A deliberate listener action owns playback and therefore completes recovery. */
+export function playbackRestoreBookAfterAction(
+  restoredBookId: string | null,
+  actionBookId: string | null,
+  interruptsRestore: boolean
+) {
+  return interruptsRestore && actionBookId ? actionBookId : restoredBookId;
+}
+
 export function nativeQueueIsReady(
   native: boolean,
   requiredIdentity: string | null,
