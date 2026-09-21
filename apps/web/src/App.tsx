@@ -356,7 +356,11 @@ import {
   NATIVE_STARTUP_SETTLE_MS,
   shouldAcceptNativeTrackChange
 } from "./startup";
-import { resolveLocalFirstUrls } from "./offlinePlayback";
+import {
+  nativeQueueIdentity,
+  nativeQueueIsReady,
+  resolveLocalFirstUrls
+} from "./offlinePlayback";
 import {
   backfillDeviceLibraryMetadata,
   DEVICE_USER,
@@ -4166,6 +4170,7 @@ function MainApp({
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
+  const [nativeAudioQueueReadyKey, setNativeAudioQueueReadyKey] = useState<string | null>(null);
   // Native AVPlayer sends its definitive clock only after foregrounding. Keep
   // the server-adoption path behind that handoff, otherwise an older server
   // revision can replace a lock-screen rewind before its native event reaches
@@ -4688,6 +4693,16 @@ function MainApp({
     [books]
   );
   const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
+  const requiredNativeAudioQueueKey = nativeQueueIdentity(
+    playbackBook?.id ?? null,
+    currentTrack?.id ?? null,
+    playbackBookDownloaded
+  );
+  const nativeAudioQueueReady = nativeQueueIsReady(
+    nativeAudio,
+    requiredNativeAudioQueueKey,
+    nativeAudioQueueReadyKey
+  );
   const offlineSourceUrl =
     offlineSource && offlineSource.trackId === currentTrack?.id ? offlineSource.url : null;
   // On native, keep the audio source empty until the disk lookup answers so a
@@ -5398,9 +5413,12 @@ function MainApp({
   useEffect(() => {
     let active = true;
     nativeAudioQueueRef.current = [];
+    setNativeAudioQueueReadyKey(null);
     if (!nativeAudio || !playbackBook || !currentTrack) {
       return;
     }
+    const queueKey = requiredNativeAudioQueueKey;
+    if (!queueKey) return;
     const tracks = playbackBook.tracks.slice(activeTrackIndex);
     const entry = (track: Track, queueIndex: number, sourceUrl: string): NativeAudioQueueTrack => {
       const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex + queueIndex);
@@ -5423,7 +5441,7 @@ function MainApp({
     const publish = (queue: NativeAudioQueueTrack[]) => {
       if (!active) return;
       nativeAudioQueueRef.current = queue;
-      audioRef.current?.dispatchEvent(new Event("operalibre-native-queue-change"));
+      setNativeAudioQueueReadyKey(queueKey);
     };
     // Resolve each item from disk regardless of whether the separate complete
     // download scan has finished. Otherwise chapter one can be local while
@@ -5444,18 +5462,19 @@ function MainApp({
     currentTrackKey,
     nativeAudio,
     playbackBookKey,
-    playbackBookDownloaded
+    playbackBookDownloaded,
+    requiredNativeAudioQueueKey
   ]);
 
   // Autoplay requested while the audio source was still resolving (native disk
   // lookup): start playback as soon as the source lands.
   useEffect(() => {
-    if (!streamUrl || !wantsAutoplayRef.current) {
+    if (!streamUrl || !nativeAudioQueueReady || !wantsAutoplayRef.current) {
       return;
     }
     wantsAutoplayRef.current = false;
     window.setTimeout(() => startPlayback(audioRef.current), 0);
-  }, [streamUrl]);
+  }, [nativeAudioQueueReady, streamUrl]);
 
   useEffect(() => {
     void loadBooks();
@@ -6183,6 +6202,10 @@ function MainApp({
       }
       return;
     }
+    // AVPlayer receives its complete local-first queue on the initial load.
+    // Attaching earlier would start a one-item player and tear it down again
+    // when slower filesystem checks for later chapters completed.
+    if (!nativeAudioQueueReady) return;
     nativeAudioAttachedRef.current = true;
     return attachNativeAudioPlayer(
       audio,
@@ -6268,7 +6291,16 @@ function MainApp({
         foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
-  }, [carPlaybackBookId, currentTrackKey, currentUser.id, nativeAudio, playbackBookKey, streamUrl]);
+  }, [
+    carPlaybackBookId,
+    currentTrackKey,
+    currentUser.id,
+    nativeAudio,
+    nativeAudioQueueReady,
+    playbackBookKey,
+    requiredNativeAudioQueueKey,
+    streamUrl
+  ]);
 
   // Progress often arrives after preload has already emitted loadedmetadata.
   // Apply that late checkpoint as soon as the target media element is ready.
@@ -7650,7 +7682,7 @@ function MainApp({
   // deliberately has no src; only AVPlayer fetches its stream URL.
   function playWhenReady() {
     const audio = audioRef.current;
-    if (hasPlaybackSource(audio, nativeAudio, streamUrl)) {
+    if (nativeAudioQueueReady && hasPlaybackSource(audio, nativeAudio, streamUrl)) {
       startPlayback(audio);
       return;
     }
@@ -7671,7 +7703,7 @@ function MainApp({
     }
     // A disk lookup may still be resolving. Native readiness uses the
     // stream URL, never the intentionally absent web element src.
-    if (!hasPlaybackSource(audio, nativeAudio, streamUrl)) {
+    if (!nativeAudioQueueReady || !hasPlaybackSource(audio, nativeAudio, streamUrl)) {
       wantsAutoplayRef.current = true;
       setPlayPending(true);
       return;
