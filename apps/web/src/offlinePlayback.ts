@@ -48,6 +48,24 @@ export function nativeQueueIdentity(
     : null;
 }
 
+/**
+ * A native cold start learns the playback book before IndexedDB and AVPlayer
+ * recovery have reconciled its saved track. Do not let that temporary state
+ * build a queue from the book's first track: a fast local download can load
+ * and publish that placeholder before progress restoration reaches React.
+ */
+export function nativeQueueIdentityAfterRestore(
+  native: boolean,
+  bookId: string | null,
+  trackId: string | null,
+  restoredBookId: string | null,
+  downloaded: boolean,
+  mediaCredentialReady: boolean
+) {
+  if (native && (!bookId || restoredBookId !== bookId)) return null;
+  return nativeQueueIdentity(bookId, trackId, downloaded, mediaCredentialReady);
+}
+
 export function nativeQueueIsReady(
   native: boolean,
   requiredIdentity: string | null,
@@ -63,7 +81,8 @@ export function nativeQueueRefreshShouldResume(
   requiredIdentity: string | null,
   resolvedIdentity: string | null
 ) {
-  return native && playing && !!resolvedIdentity && requiredIdentity !== resolvedIdentity;
+  return native && playing && !!requiredIdentity && !!resolvedIdentity
+    && requiredIdentity !== resolvedIdentity;
 }
 
 /** The resolved queue owns the active source once it is ready. */
