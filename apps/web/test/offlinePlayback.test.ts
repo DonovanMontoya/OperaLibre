@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canPublishNativeQueue,
   nativeQueueIdentity,
   nativeQueueIsReady,
+  resolveLocalFirstSources,
   resolveLocalFirstUrls
 } from "../src/offlinePlayback.ts";
 
@@ -56,4 +58,22 @@ test("receiving the media credential invalidates tokenless remote queue URLs", (
 
   assert.notEqual(withCredential, withoutCredential);
   assert.equal(nativeQueueIsReady(true, withCredential, withoutCredential), false);
+});
+
+test("only a wholly local queue publishes before the media credential arrives", async () => {
+  const tracks = ["local", "remote"];
+  const mixed = await resolveLocalFirstSources(
+    tracks,
+    async (track) => track === "local" ? "file:///local.m4a" : null,
+    (track) => `https://server.example/${track}`
+  );
+  const local = await resolveLocalFirstSources(
+    tracks,
+    async (track) => `file:///${track}.m4a`,
+    (track) => `https://server.example/${track}`
+  );
+
+  assert.equal(canPublishNativeQueue(mixed, false), false);
+  assert.equal(canPublishNativeQueue(mixed, true), true);
+  assert.equal(canPublishNativeQueue(local, false), true);
 });
