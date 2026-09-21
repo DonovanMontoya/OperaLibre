@@ -1,5 +1,5 @@
 import { NativeAudioControlClock } from "./nativeAudioClock";
-import { applyNativePlaybackSettings, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
+import { applyNativePlaybackSettings, nativeLoadShouldAutoplay, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { carPlaybackOwnsEngine } from "./carPlay";
 import {
@@ -331,7 +331,7 @@ export function attachNativeAudioPlayer(
       rate: settings.rate,
       volume: settings.volume,
       gain: recovery.gain(),
-      autoplay: nativeIsPlaying,
+      autoplay: nativeLoadShouldAutoplay(nativeIsPlaying, recovery.wantsPlayback()),
       recoveryScopeKey: recovery.scopeKey,
       recoveryTrackId: recovery.trackId,
       recoveryBookOffsetSeconds: recovery.bookOffsetSeconds,

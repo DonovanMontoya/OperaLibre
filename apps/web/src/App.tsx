@@ -359,8 +359,10 @@ import {
 } from "./startup";
 import {
   canPublishNativeQueue,
+  nativeQueueEntryUrl,
   nativeQueueIdentity,
   nativeQueueIsReady,
+  nativeQueueRefreshShouldResume,
   resolveLocalFirstSources
 } from "./offlinePlayback";
 import {
@@ -4739,6 +4741,9 @@ function MainApp({
   const offlineSourcePending = native && !!currentTrack && offlineSource?.trackId !== currentTrack.id;
   const streamUrl =
     !currentTrack || offlineSourcePending ? "" : offlineSourceUrl ?? mediaUrl(currentTrack.streamUrl);
+  const nativeAttachmentSource = nativeAudio && nativeAudioQueueReady
+    ? nativeQueueEntryUrl(nativeAudioQueueRef.current, streamUrl)
+    : streamUrl;
   const sliderMax = duration || currentTrack?.durationSeconds || 0;
   const bookDuration = playbackBook?.durationSeconds ?? (playbackBook ? durationFromTracks(playbackBook) : 0);
   const bookPosition =
@@ -5418,7 +5423,7 @@ function MainApp({
   useEffect(() => {
     let active = true;
     let resolvedUrl: string | null = null;
-    setOfflineSource(null);
+    setOfflineSource((source) => source?.trackId === currentTrack?.id ? source : null);
     if (Capacitor.isNativePlatform() && playbackBook && currentTrack) {
       const trackId = currentTrack.id;
       void getOfflineTrackUrl(playbackBook, currentTrack)
@@ -5436,10 +5441,20 @@ function MainApp({
     // Keyed on ids: resetting offlineSource on identity churn blanked the
     // <audio> src mid-playback (native), stopping the book seconds after play.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, playbackBookKey]);
+  }, [currentTrackKey, playbackBookKey, playbackBookDownloaded]);
 
   useEffect(() => {
     let active = true;
+    if (nativeQueueRefreshShouldResume(
+      nativeAudio,
+      nativePlaybackPlayingRef.current,
+      requiredNativeAudioQueueKey,
+      nativeAudioQueueReadyKey
+    ) && playbackBook) {
+      playWhenTrackLoads.current = true;
+      wantsAutoplayRef.current = true;
+      setPlayPending(true, playbackBook.id);
+    }
     nativeAudioQueueRef.current = [];
     setNativeAudioQueueReadyKey(null);
     if (!nativeAudio || !playbackBook || !currentTrack) {
@@ -6259,7 +6274,10 @@ function MainApp({
         setNativeAudioFailed(true);
       },
       {
-        source: streamUrl,
+        // The queue is the atomic local-first resolution. Its first item must
+        // also seed AVPlayer; using the separately resolved control source can
+        // overwrite a just-downloaded local chapter with its old remote URL.
+        source: nativeAttachmentSource,
         settings: () => playbackSettingsRef.current,
         scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
         trackId: currentTrack.id,
@@ -6333,7 +6351,7 @@ function MainApp({
     nativeAudioQueueReady,
     playbackBookKey,
     requiredNativeAudioQueueKey,
-    streamUrl
+    nativeAttachmentSource
   ]);
 
   // Progress often arrives after preload has already emitted loadedmetadata.
