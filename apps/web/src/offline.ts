@@ -24,6 +24,7 @@ const MEDIA_ROOT = "offline-media";
 const MEDIA_DIRECTORY = Directory.Data;
 
 type StoredMedia = { key: string; blob: Blob };
+type LibrarySnapshot = { cachedAt: number; books: Book[] };
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -313,13 +314,34 @@ export function getOfflineUser(): AuthUser | null {
   }
 }
 
-async function writeNativeLibrary(userId: string, books: Book[]) {
+function librarySnapshot(value: unknown): LibrarySnapshot | null {
+  if (Array.isArray(value)) return { cachedAt: 0, books: value as Book[] };
+  if (
+    value && typeof value === "object"
+    && Number.isFinite((value as LibrarySnapshot).cachedAt)
+    && Array.isArray((value as LibrarySnapshot).books)
+  ) {
+    return value as LibrarySnapshot;
+  }
+  return null;
+}
+
+export function newestLibrarySnapshot(
+  first: LibrarySnapshot | null,
+  second: LibrarySnapshot | null
+) {
+  if (!first) return second;
+  if (!second) return first;
+  return second.cachedAt > first.cachedAt ? second : first;
+}
+
+async function writeNativeLibrary(userId: string, snapshot: LibrarySnapshot) {
   await Filesystem.mkdir({
     path: `${MEDIA_ROOT}/${sanitizeSegment(getServerStorageKey())}`,
     directory: MEDIA_DIRECTORY,
     recursive: true
   });
-  const bytes = new TextEncoder().encode(JSON.stringify(books));
+  const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
   await Filesystem.writeFile({
     path: nativeLibraryPath(userId),
     directory: MEDIA_DIRECTORY,
@@ -327,7 +349,7 @@ async function writeNativeLibrary(userId: string, books: Book[]) {
   });
 }
 
-async function readNativeLibrary(userId: string): Promise<Book[] | null> {
+async function readNativeLibrary(userId: string): Promise<LibrarySnapshot | null> {
   if (!Capacitor.isNativePlatform()) return null;
   try {
     const result = await Filesystem.readFile({
@@ -336,24 +358,24 @@ async function readNativeLibrary(userId: string): Promise<Book[] | null> {
     });
     if (typeof result.data !== "string") return null;
     const bytes = Uint8Array.from(atob(result.data), (character) => character.charCodeAt(0));
-    const parsed = JSON.parse(new TextDecoder().decode(bytes));
-    return Array.isArray(parsed) ? parsed as Book[] : null;
+    return librarySnapshot(JSON.parse(new TextDecoder().decode(bytes)));
   } catch {
     return null;
   }
 }
 
 export async function cacheLibrary(userId: string, books: Book[]) {
+  const snapshot: LibrarySnapshot = { cachedAt: Date.now(), books };
   if (!Capacitor.isNativePlatform()) {
-    await write("data", books, libraryKey(userId));
+    await write("data", snapshot, libraryKey(userId));
     return;
   }
   // WebView storage and native app data have different eviction/failure
   // modes. Keep the small catalogue in both so durable downloaded audio never
   // becomes unreachable solely because IndexedDB cannot open.
   const results = await Promise.allSettled([
-    write("data", books, libraryKey(userId)),
-    writeNativeLibrary(userId, books)
+    write("data", snapshot, libraryKey(userId)),
+    writeNativeLibrary(userId, snapshot)
   ]);
   if (results.every((result) => result.status === "rejected")) {
     throw (results[0] as PromiseRejectedResult).reason;
@@ -361,20 +383,23 @@ export async function cacheLibrary(userId: string, books: Book[]) {
 }
 
 export async function getCachedLibrary(userId: string) {
+  let indexedSnapshot: LibrarySnapshot | null = null;
+  let legacySnapshot: LibrarySnapshot | null = null;
   try {
-    const scoped = await read<Book[]>("data", libraryKey(userId));
-    if (scoped) return scoped;
-    const legacy = await read<Book[]>("data", `library:${userId}`);
-    if (legacy) {
-      await cacheLibrary(userId, legacy);
-      await removeRecord("data", `library:${userId}`).catch(() => undefined);
-      return legacy;
-    }
+    indexedSnapshot = librarySnapshot(await read<unknown>("data", libraryKey(userId)));
+    legacySnapshot = librarySnapshot(await read<unknown>("data", `library:${userId}`));
   } catch {
-    // The native app-data copy below remains available when WebKit storage is
-    // unavailable or was cleared independently of the downloaded media.
+    // The native app-data copy below remains available when WebKit storage is unavailable.
   }
-  return await readNativeLibrary(userId) ?? [];
+  const selected = newestLibrarySnapshot(
+    newestLibrarySnapshot(indexedSnapshot, legacySnapshot),
+    await readNativeLibrary(userId)
+  );
+  if (legacySnapshot && selected === legacySnapshot) {
+    await cacheLibrary(userId, legacySnapshot.books).catch(() => undefined);
+    await removeRecord("data", `library:${userId}`).catch(() => undefined);
+  }
+  return selected?.books ?? [];
 }
 
 export async function cacheProgress(userId: string, progress: Progress) {
@@ -483,10 +508,11 @@ export async function downloadBookForOffline(
 
 export async function removeBookDownload(book: Book) {
   if (Capacitor.isNativePlatform()) {
-    await migrateLegacyBookDirectory(book);
-    await Filesystem.rmdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }).catch(
-      () => undefined
-    );
+    await migrateLegacyBookDirectory(book).catch(() => undefined);
+    await Promise.all([
+      Filesystem.rmdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true }),
+      Filesystem.rmdir({ path: legacyBookDirectory(book.id), directory: MEDIA_DIRECTORY, recursive: true })
+    ].map((removal) => removal.catch(() => undefined)));
     return;
   }
   // Delete by key prefix rather than from the current track list: a track

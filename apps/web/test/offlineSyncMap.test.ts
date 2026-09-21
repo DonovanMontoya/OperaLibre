@@ -11,7 +11,8 @@ const state = {
   mkdir: async () => {},
   writeFile: async (_options: { path: string; data: string }) => {},
   readFile: async (_options: { path: string }) => ({ data: "" }),
-  getUri: async (options: { path: string }) => ({ uri: `file://${options.path}` })
+  getUri: async (options: { path: string }) => ({ uri: `file://${options.path}` }),
+  rmdir: async (_options: { path: string }) => {}
 };
 const fixtureKey = Symbol.for("operalibre.offlineSyncMap.test");
 Reflect.set(globalThis, fixtureKey, state);
@@ -28,6 +29,7 @@ const mocks: Record<string, string> = {
       writeFile: (options) => ${fixture}.writeFile(options),
       readFile: (options) => ${fixture}.readFile(options),
       getUri: (options) => ${fixture}.getUri(options),
+      rmdir: (options) => ${fixture}.rmdir(options),
       rename: () => Promise.resolve()
     };`,
   "./api": `export const getServerStorageKey = () => ${fixture}.scope;
@@ -52,6 +54,8 @@ const {
   getCachedLibrary,
   getOfflineTrackUrl,
   isBookDownloaded,
+  newestLibrarySnapshot,
+  removeBookDownload,
   saveOfflineSyncMap
 } = await import("../src/offline.ts");
 
@@ -139,6 +143,28 @@ test("native library cache survives unavailable IndexedDB", async () => {
   state.readFile = async () => ({ data: snapshot.data });
 
   assert.deepEqual(await getCachedLibrary("reader"), [cachedBook]);
+});
+
+test("the newest durable library copy wins after one cache recovers", () => {
+  const stale = { cachedAt: 10, books: [{ id: "stale" }] as Book[] };
+  const current = { cachedAt: 20, books: [{ id: "current" }] as Book[] };
+  assert.equal(newestLibrarySnapshot(stale, current), current);
+  assert.equal(newestLibrarySnapshot(current, stale), current);
+});
+
+test("removing a partially migrated download clears scoped and legacy folders", async () => {
+  const removed: string[] = [];
+  state.stat = async ({ path } = { path: "" }) => {
+    if (path !== "offline-media/server-a/legacy-book") throw new Error("not found");
+  };
+  state.rmdir = async ({ path }) => { removed.push(path); };
+
+  await removeBookDownload({ id: "legacy-book", tracks: [] } as unknown as Book);
+
+  assert.deepEqual(removed.sort(), [
+    "offline-media/legacy-book",
+    "offline-media/server-a/legacy-book"
+  ]);
 });
 
 test("a track remains playable from an old folder after a partial scoped migration", async () => {
