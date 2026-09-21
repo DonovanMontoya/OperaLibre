@@ -4693,10 +4693,12 @@ function MainApp({
     [books]
   );
   const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
+  const mediaCredentialReady = !!getStoredMediaToken();
   const requiredNativeAudioQueueKey = nativeQueueIdentity(
     playbackBook?.id ?? null,
     currentTrack?.id ?? null,
-    playbackBookDownloaded
+    playbackBookDownloaded,
+    mediaCredentialReady
   );
   const nativeAudioQueueReady = nativeQueueIsReady(
     nativeAudio,
