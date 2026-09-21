@@ -41,11 +41,19 @@ test("one missing or failed local track falls back without changing the others",
 });
 
 test("native attachment waits for the complete queue for its exact storage state", () => {
-  const remote = nativeQueueIdentity("book", "chapter-1", false);
-  const downloaded = nativeQueueIdentity("book", "chapter-1", true);
+  const remote = nativeQueueIdentity("book", "chapter-1", false, true);
+  const downloaded = nativeQueueIdentity("book", "chapter-1", true, true);
 
   assert.equal(nativeQueueIsReady(true, remote, null), false);
   assert.equal(nativeQueueIsReady(true, remote, remote), true);
   assert.equal(nativeQueueIsReady(true, downloaded, remote), false);
   assert.equal(nativeQueueIsReady(false, remote, null), true);
+});
+
+test("receiving the media credential invalidates tokenless remote queue URLs", () => {
+  const withoutCredential = nativeQueueIdentity("book", "chapter-1", false, false);
+  const withCredential = nativeQueueIdentity("book", "chapter-1", false, true);
+
+  assert.notEqual(withCredential, withoutCredential);
+  assert.equal(nativeQueueIsReady(true, withCredential, withoutCredential), false);
 });

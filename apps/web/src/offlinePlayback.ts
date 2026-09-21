@@ -20,9 +20,12 @@ export function resolveLocalFirstUrls<T>(
 export function nativeQueueIdentity(
   bookId: string | null,
   trackId: string | null,
-  downloaded: boolean
+  downloaded: boolean,
+  mediaCredentialReady: boolean
 ) {
-  return bookId && trackId ? JSON.stringify([bookId, trackId, downloaded]) : null;
+  return bookId && trackId
+    ? JSON.stringify([bookId, trackId, downloaded, mediaCredentialReady])
+    : null;
 }
 
 export function nativeQueueIsReady(
