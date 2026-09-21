@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyNativePlaybackSettings, hasPlaybackSource, nativeStartupPosition, startAfterListeners } from "../src/nativeAudioStartup.ts";
+import { applyNativePlaybackSettings, hasPlaybackSource, nativeLoadShouldAutoplay, nativeStartupPosition, startAfterListeners } from "../src/nativeAudioStartup.ts";
 
 test("a restored seek wins over the uninitialized web clock", () => {
   assert.equal(nativeStartupPosition(3600, 0), 3600);
@@ -15,6 +15,12 @@ test("native play and pause remain available with a source-free web clock", () =
   // Both the shelf Play and the playing/paused transport gate use this check.
   assert.equal(hasPlaybackSource(audio, true, "https://server/track"), true);
   assert.equal(hasPlaybackSource(audio, false, "https://server/track"), false);
+});
+
+test("a replacement native load preserves a queued play request", () => {
+  assert.equal(nativeLoadShouldAutoplay(false, true), true);
+  assert.equal(nativeLoadShouldAutoplay(true, false), true);
+  assert.equal(nativeLoadShouldAutoplay(false, false), false);
 });
 
 test("unresolved sources wait, and web fallback requires its real media source", () => {
