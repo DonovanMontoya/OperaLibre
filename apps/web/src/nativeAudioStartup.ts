@@ -3,6 +3,11 @@ export function nativeStartupPosition(pending: number | undefined, current: numb
   return Number.isFinite(position) ? Math.max(0, position) : 0;
 }
 
+/** A queued Play request owns the first load just as an already-playing rebuild does. */
+export function nativeLoadShouldAutoplay(currentlyPlaying: boolean, wantsPlayback: boolean) {
+  return currentlyPlaying || wantsPlayback;
+}
+
 /** Native playback owns a stream URL without assigning it to the web element. */
 export function hasPlaybackSource(
   audio: Pick<HTMLAudioElement, "getAttribute"> | null,

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canPublishNativeQueue,
+  nativeQueueEntryUrl,
   nativeQueueIdentity,
   nativeQueueIsReady,
+  nativeQueueRefreshShouldResume,
   resolveLocalFirstSources,
   resolveLocalFirstUrls
 } from "../src/offlinePlayback.ts";
@@ -58,6 +60,25 @@ test("receiving the media credential invalidates tokenless remote queue URLs", (
 
   assert.notEqual(withCredential, withoutCredential);
   assert.equal(nativeQueueIsReady(true, withCredential, withoutCredential), false);
+});
+
+test("replacing an active native queue preserves its play intent", () => {
+  const remote = nativeQueueIdentity("book", "chapter-1", false, true);
+  const downloaded = nativeQueueIdentity("book", "chapter-1", true, true);
+
+  assert.equal(nativeQueueRefreshShouldResume(true, true, downloaded, remote), true);
+  assert.equal(nativeQueueRefreshShouldResume(true, false, downloaded, remote), false);
+  assert.equal(nativeQueueRefreshShouldResume(false, true, downloaded, remote), false);
+  assert.equal(nativeQueueRefreshShouldResume(true, true, downloaded, downloaded), false);
+  assert.equal(nativeQueueRefreshShouldResume(true, true, downloaded, null), false);
+});
+
+test("the rebuilt queue owns the current source instead of a stale remote fallback", () => {
+  assert.equal(
+    nativeQueueEntryUrl([{ url: "file:///downloaded/chapter-1.m4a" }], "https://server/chapter-1"),
+    "file:///downloaded/chapter-1.m4a"
+  );
+  assert.equal(nativeQueueEntryUrl([], "https://server/chapter-1"), "https://server/chapter-1");
 });
 
 test("only a wholly local queue publishes before the media credential arrives", async () => {

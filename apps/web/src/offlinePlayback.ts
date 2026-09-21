@@ -55,3 +55,21 @@ export function nativeQueueIsReady(
 ) {
   return !native || (!!requiredIdentity && requiredIdentity === resolvedIdentity);
 }
+
+/** A replacement queue for the active player must carry its play intent forward. */
+export function nativeQueueRefreshShouldResume(
+  native: boolean,
+  playing: boolean,
+  requiredIdentity: string | null,
+  resolvedIdentity: string | null
+) {
+  return native && playing && !!resolvedIdentity && requiredIdentity !== resolvedIdentity;
+}
+
+/** The resolved queue owns the active source once it is ready. */
+export function nativeQueueEntryUrl(
+  queue: readonly { url: string }[],
+  fallbackUrl: string
+) {
+  return queue[0]?.url ?? fallbackUrl;
+}
