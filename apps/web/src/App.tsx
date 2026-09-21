@@ -363,6 +363,7 @@ import {
   nativeQueueIdentityAfterRestore,
   nativeQueueIsReady,
   nativeQueueRefreshShouldResume,
+  playbackRestoreBookAfterAction,
   resolveLocalFirstSources
 } from "./offlinePlayback";
 import {
@@ -7438,14 +7439,24 @@ function MainApp({
     seekTargetBookPosition?: number
   ) {
     playbackTouchedRef.current = true;
+    const bookId = seekBookId ?? playbackBook?.id ?? null;
     if (interruptRestore) {
       playbackActionVersionRef.current += 1;
       resumeAutoplayPendingRef.current = false;
       if (resumeReconciliationBookIdRef.current === playbackBook?.id) {
         resumeReconciliationBookIdRef.current = null;
       }
+      // The listener's action now owns the track and position. Let the stale
+      // recovery finish harmlessly, but release persistence and native queue
+      // attachment instead of leaving this book behind the recovery gate.
+      const resolvedBookId = playbackRestoreBookAfterAction(
+        restoredProgressBookId.current,
+        bookId,
+        true
+      );
+      restoredProgressBookId.current = resolvedBookId;
+      setRestoredPlaybackBookId(resolvedBookId);
     }
-    const bookId = seekBookId ?? playbackBook?.id;
     if (deliberateSeek && bookId) {
       intentionalSeekGenerationRef.current.set(
         bookId,

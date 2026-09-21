@@ -7,6 +7,7 @@ import {
   nativeQueueIdentityAfterRestore,
   nativeQueueIsReady,
   nativeQueueRefreshShouldResume,
+  playbackRestoreBookAfterAction,
   resolveLocalFirstSources,
   resolveLocalFirstUrls
 } from "../src/offlinePlayback.ts";
@@ -68,6 +69,12 @@ test("offline native cold start cannot queue the first track before progress res
     nativeQueueIdentityAfterRestore(false, "book", "opening-credits", null, true, false),
     nativeQueueIdentity("book", "opening-credits", true, false)
   );
+});
+
+test("a deliberate playback action releases a superseded restoration gate", () => {
+  assert.equal(playbackRestoreBookAfterAction(null, "book", true), "book");
+  assert.equal(playbackRestoreBookAfterAction(null, "book", false), null);
+  assert.equal(playbackRestoreBookAfterAction("first", null, true), "first");
 });
 
 test("receiving the media credential invalidates tokenless remote queue URLs", () => {
