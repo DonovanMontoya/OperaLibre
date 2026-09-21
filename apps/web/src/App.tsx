@@ -4687,6 +4687,7 @@ function MainApp({
     () => books.filter((book) => book.source !== "device"),
     [books]
   );
+  const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
   const offlineSourceUrl =
     offlineSource && offlineSource.trackId === currentTrack?.id ? offlineSource.url : null;
   // On native, keep the audio source empty until the disk lookup answers so a
@@ -5442,7 +5443,8 @@ function MainApp({
     activeTrackIndex,
     currentTrackKey,
     nativeAudio,
-    playbackBookKey
+    playbackBookKey,
+    playbackBookDownloaded
   ]);
 
   // Autoplay requested while the audio source was still resolving (native disk
