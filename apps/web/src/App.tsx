@@ -350,7 +350,13 @@ import {
   type CarPlaybackSession
 } from "./carLibrary.ts";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
-import { NATIVE_STARTUP_SETTLE_MS, shouldAcceptNativeTrackChange } from "./startup";
+import {
+  canResolveStartupNavigation,
+  canRestoreCachedNativeSession,
+  NATIVE_STARTUP_SETTLE_MS,
+  shouldAcceptNativeTrackChange
+} from "./startup";
+import { resolveLocalFirstUrls } from "./offlinePlayback";
 import {
   backfillDeviceLibraryMetadata,
   DEVICE_USER,
@@ -3346,13 +3352,16 @@ function initialAuthState(): AuthState {
   // A native launch should not sit behind a network timeout. This is the same
   // cached identity used for offline mode; checkAuth validates it in the
   // background and still returns to login if the server rejects the session.
-  // Media elements cannot send the API Authorization header, so the native
-  // shelf must wait for its query-safe media credential before it renders
-  // remote artwork. This matters on the first launch after upgrading from a
-  // build that only persisted the full session token.
-  const cachedUser = Capacitor.isNativePlatform() && getStoredToken() && getStoredMediaToken()
-    ? getOfflineUser()
-    : null;
+  // Downloaded media needs neither remote artwork nor the query-safe media
+  // credential. Older installs that have the full session token and cached
+  // identity must therefore open immediately too; checkAuth fills the newer
+  // media token in the background when the server is reachable.
+  const offlineUser = Capacitor.isNativePlatform() ? getOfflineUser() : null;
+  const cachedUser = canRestoreCachedNativeSession(
+    Capacitor.isNativePlatform(),
+    getStoredToken(),
+    !!offlineUser
+  ) ? offlineUser : null;
   return cachedUser
     ? { phase: "ready", user: cachedUser }
     : { phase: "loading" };
@@ -4678,7 +4687,6 @@ function MainApp({
     () => books.filter((book) => book.source !== "device"),
     [books]
   );
-  const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
   const offlineSourceUrl =
     offlineSource && offlineSource.trackId === currentTrack?.id ? offlineSource.url : null;
   // On native, keep the audio source empty until the disk lookup answers so a
@@ -4991,7 +4999,10 @@ function MainApp({
         // A device-only first paint may not contain the stored server book.
         // Wait for the cached/live shelf before deciding that session vanished.
         if (!next && preferred && !preferredIsPresent && !definitive) return existing;
-        if (!startupNavigationResolved.current && (next || preferredIsPresent || definitive)) {
+        if (
+          !startupNavigationResolved.current
+          && canResolveStartupNavigation(next, preferred, preferredIsPresent, definitive)
+        ) {
           startupNavigationResolved.current = true;
           if (native) {
             setNativeTab(next ? "reading" : "shelf");
@@ -5191,7 +5202,10 @@ function MainApp({
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || !books.length) return;
-    void Promise.all(books.map(async (book) => [book.id, await isBookDownloaded(book)] as const))
+    void Promise.all(books.map(async (book) => [
+      book.id,
+      await isBookDownloaded(book).catch(() => false)
+    ] as const))
       .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
     // Keyed on book ids and local-file identity: progress/metadata updates do
     // not re-stat every track, but removing a merged imported copy rechecks the
@@ -5386,15 +5400,11 @@ function MainApp({
     if (!nativeAudio || !playbackBook || !currentTrack) {
       return;
     }
-    const preferLocalFiles =
-      playbackBook.source === "device"
-      || !!playbackBook.deviceBookId
-      || playbackBookDownloaded;
     const tracks = playbackBook.tracks.slice(activeTrackIndex);
-    const entry = (track: Track, queueIndex: number, localUrl: string | null = null): NativeAudioQueueTrack => {
+    const entry = (track: Track, queueIndex: number, sourceUrl: string): NativeAudioQueueTrack => {
       const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex + queueIndex);
       return {
-        url: localUrl ?? mediaUrl(track.streamUrl),
+        url: sourceUrl,
         trackId: track.id,
         bookOffsetSeconds: trackOffset,
         title: track.title,
@@ -5414,15 +5424,14 @@ function MainApp({
       nativeAudioQueueRef.current = queue;
       audioRef.current?.dispatchEvent(new Event("operalibre-native-queue-change"));
     };
-    if (!preferLocalFiles) {
-      // This effect precedes the native attachment: make a streaming queue
-      // available now, rather than loading once and immediately rebuilding it.
-      publish(tracks.map((track, index) => entry(track, index)));
-    } else {
-      void Promise.all(tracks.map(async (track, index) => entry(
-        track, index, await getOfflineTrackUrl(playbackBook, track).catch(() => null)
-      ))).then(publish);
-    }
+    // Resolve each item from disk regardless of whether the separate complete
+    // download scan has finished. Otherwise chapter one can be local while
+    // later AVQueuePlayer items still point at a dead server on a cold launch.
+    void resolveLocalFirstUrls(
+      tracks,
+      (track) => getOfflineTrackUrl(playbackBook, track),
+      (track) => mediaUrl(track.streamUrl)
+    ).then((urls) => publish(tracks.map((track, index) => entry(track, index, urls[index]))));
     return () => {
       active = false;
     };
@@ -5433,8 +5442,7 @@ function MainApp({
     activeTrackIndex,
     currentTrackKey,
     nativeAudio,
-    playbackBookKey,
-    playbackBookDownloaded
+    playbackBookKey
   ]);
 
   // Autoplay requested while the audio source was still resolving (native disk
@@ -7165,6 +7173,13 @@ function MainApp({
           }
         }));
       }, abortController.signal);
+      // The files and the catalogue are one offline feature. Re-persist the
+      // current authorized shelf after the transfer so a quick app kill cannot
+      // leave durable audio with no metadata from which to render or play it.
+      await cacheLibrary(
+        currentUser.id,
+        booksRef.current.filter((candidate) => candidate.source !== "device")
+      );
       setDownloadedBookIds((existing) => new Set(existing).add(book.id));
       setDownloadStatus({ bookId: book.id, message: `${book.title} is available offline` });
     } catch (downloadError) {
