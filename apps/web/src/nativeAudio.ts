@@ -1,5 +1,5 @@
 import { NativeAudioControlClock } from "./nativeAudioClock";
-import { applyNativePlaybackSettings, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
+import { applyNativePlaybackSettings, nativeLoadShouldAutoplay, nativeStartupPosition, startAfterListeners } from "./nativeAudioStartup";
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { carPlaybackOwnsEngine } from "./carPlay";
 import {
@@ -331,7 +331,7 @@ export function attachNativeAudioPlayer(
       rate: settings.rate,
       volume: settings.volume,
       gain: recovery.gain(),
-      autoplay: nativeIsPlaying,
+      autoplay: nativeLoadShouldAutoplay(nativeIsPlaying, recovery.wantsPlayback()),
       recoveryScopeKey: recovery.scopeKey,
       recoveryTrackId: recovery.trackId,
       recoveryBookOffsetSeconds: recovery.bookOffsetSeconds,
@@ -353,7 +353,6 @@ export function attachNativeAudioPlayer(
   audio.addEventListener("ratechange", rateChange);
   audio.addEventListener("volumechange", volumeChange);
   audio.addEventListener("seeked", seeked);
-  audio.addEventListener("operalibre-native-queue-change", load);
 
   listenerRegistrations.push(NativeAudio.addListener("state", (state) => {
     if (disposed || fellBack) return;
@@ -466,7 +465,6 @@ export function attachNativeAudioPlayer(
     audio.removeEventListener("ratechange", rateChange);
     audio.removeEventListener("volumechange", volumeChange);
     audio.removeEventListener("seeked", seeked);
-    audio.removeEventListener("operalibre-native-queue-change", load);
     nativeStateSynchronizer.clear();
     controlClock.destroy();
     if (!fellBack) audio.pause();
