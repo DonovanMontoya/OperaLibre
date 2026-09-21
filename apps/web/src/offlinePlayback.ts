@@ -16,3 +16,19 @@ export function resolveLocalFirstUrls<T>(
     }
   }));
 }
+
+export function nativeQueueIdentity(
+  bookId: string | null,
+  trackId: string | null,
+  downloaded: boolean
+) {
+  return bookId && trackId ? JSON.stringify([bookId, trackId, downloaded]) : null;
+}
+
+export function nativeQueueIsReady(
+  native: boolean,
+  requiredIdentity: string | null,
+  resolvedIdentity: string | null
+) {
+  return !native || (!!requiredIdentity && requiredIdentity === resolvedIdentity);
+}
