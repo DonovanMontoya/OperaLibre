@@ -354,7 +354,8 @@ import {
   canResolveStartupNavigation,
   canRestoreCachedNativeSession,
   NATIVE_STARTUP_SETTLE_MS,
-  shouldAcceptNativeTrackChange
+  shouldAcceptNativeTrackChange,
+  shouldRefreshMediaCredential
 } from "./startup";
 import {
   canPublishNativeQueue,
@@ -3551,6 +3552,30 @@ export default function App() {
     });
     void checkAuth();
     return () => setUnauthorizedHandler(null);
+  }, [checkAuth]);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const refreshMediaCredential = () => {
+      if (!shouldRefreshMediaCredential(
+        Capacitor.isNativePlatform(),
+        getStoredToken(),
+        getStoredMediaToken(),
+        hasUserConfiguredServer(),
+        isLocalMode(),
+        isDemoMode()
+      )) return;
+      void checkAuth();
+    };
+    const refreshMediaCredentialOnForeground = () => {
+      if (!document.hidden && navigator.onLine) refreshMediaCredential();
+    };
+    window.addEventListener("online", refreshMediaCredential);
+    document.addEventListener("visibilitychange", refreshMediaCredentialOnForeground);
+    return () => {
+      window.removeEventListener("online", refreshMediaCredential);
+      document.removeEventListener("visibilitychange", refreshMediaCredentialOnForeground);
+    };
   }, [checkAuth]);
 
   const handleCurrentUserChanged = useCallback((user: AuthUser) => {

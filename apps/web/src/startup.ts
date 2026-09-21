@@ -9,6 +9,18 @@ export function canRestoreCachedNativeSession(
   return native && !!authToken && hasCachedUser;
 }
 
+/** A reconnect can upgrade an offline-restored session with its media credential. */
+export function shouldRefreshMediaCredential(
+  native: boolean,
+  authToken: string | null,
+  mediaToken: string | null,
+  hasConfiguredServer: boolean,
+  localMode: boolean,
+  demoMode: boolean
+) {
+  return native && !!authToken && !mediaToken && hasConfiguredServer && !localMode && !demoMode;
+}
+
 /**
  * Whether the native launch cover has enough catalogue state to choose its
  * first screen. A cached shelf is conclusive when there is no saved playback

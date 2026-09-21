@@ -3,13 +3,24 @@ import test from "node:test";
 import {
   canResolveStartupNavigation,
   canRestoreCachedNativeSession,
-  shouldAcceptNativeTrackChange
+  shouldAcceptNativeTrackChange,
+  shouldRefreshMediaCredential
 } from "../src/startup.ts";
 
 test("downloaded books restore from the cached account without a media token", () => {
   assert.equal(canRestoreCachedNativeSession(true, "session-token", true), true);
   assert.equal(canRestoreCachedNativeSession(true, null, true), false);
   assert.equal(canRestoreCachedNativeSession(false, "session-token", true), false);
+});
+
+test("reconnecting refreshes credentials only for an incomplete server session", () => {
+  assert.equal(shouldRefreshMediaCredential(true, "session-token", null, true, false, false), true);
+  assert.equal(shouldRefreshMediaCredential(false, "session-token", null, true, false, false), false);
+  assert.equal(shouldRefreshMediaCredential(true, "session-token", "media-token", true, false, false), false);
+  assert.equal(shouldRefreshMediaCredential(true, null, null, true, false, false), false);
+  assert.equal(shouldRefreshMediaCredential(true, "session-token", null, false, false, false), false);
+  assert.equal(shouldRefreshMediaCredential(true, "session-token", null, true, true, false), false);
+  assert.equal(shouldRefreshMediaCredential(true, "session-token", null, true, false, true), false);
 });
 
 test("a cached shelf can open offline without a saved playback session", () => {
