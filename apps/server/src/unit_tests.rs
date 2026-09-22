@@ -1470,6 +1470,10 @@ pub(crate) fn fake_libation_state(root: &std::path::Path) -> (super::AppState, s
     let cli_path = root.join("fake-libation.sh");
     let script = format!(
         r#"#!/bin/sh
+if [ "${{DOTNET_SYSTEM_GLOBALIZATION_INVARIANT-}}" != "0" ]; then
+  printf 'full globalization was not enabled for Libation\n' >&2
+  exit 91
+fi
 command="$1"
 shift
 if [ "$command" = "export" ]; then
