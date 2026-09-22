@@ -11040,6 +11040,7 @@ html.native-app .admin-shell:not(.admin-overlay) {
 
 /* Groups the cards for wide layouts; elsewhere it adds no box of its own. */
 .settings-cards { display: contents; }
+.settings-pane-guide { display: none; }
 
 .settings-head {
   display: flex;
@@ -16040,7 +16041,18 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-shell {
   padding: calc(var(--status-h) + 16px) 0 0;
   overflow: hidden;
 }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-head { grid-row: 1; padding: 0 20px 12px; margin: 0; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-head {
+  grid-row: 1;
+  padding: 0 20px 8px;
+  margin: 0;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-head h1 { font-size: 1.75rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-admin-button {
+  min-height: 38px;
+  padding: 7px 11px;
+  border-radius: 12px;
+  font-size: 0.95rem;
+}
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-cards { display: contents; }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower, .ledger-upper, .ledger-lower) {
   display: block;
@@ -16050,8 +16062,76 @@ html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upp
   overscroll-behavior: contain;
   padding: 16px max(20px, env(safe-area-inset-right)) 20px max(20px, env(safe-area-inset-left));
 }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) {
+  padding: 0 max(20px, env(safe-area-inset-right)) 16px max(20px, env(safe-area-inset-left));
+  scroll-padding-top: 38px;
+  scrollbar-gutter: stable;
+}
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper { grid-row: 2; }
-html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-lower { grid-row: 4; padding-bottom: calc(var(--tabs-h) + 20px); }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-lower {
+  grid-row: 4;
+  padding-bottom: calc(var(--tabs-h) + 16px);
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-pane-guide {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  min-height: 34px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 2px 7px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.13);
+  color: var(--ink-faded);
+  background: var(--paper);
+}
+html.native-app.platform-ios.dark-mode[data-fold-active][data-fold-axis="horizontal"] .settings-pane-guide {
+  background: #17120f;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-pane-guide strong {
+  color: var(--ink-soft);
+  font: 500 0.82rem/1.2 "Fraunces", serif;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-pane-guide span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 0.55rem/1 "JetBrains Mono", monospace;
+  letter-spacing: 0.06em;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) > .settings-card {
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 13px 14px;
+  border-radius: 12px;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) .section-label {
+  gap: 6px;
+  font-size: 0.58rem;
+  letter-spacing: 0.18em;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) .settings-field {
+  gap: 7px;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) .settings-hint,
+html.native-app[data-fold-active][data-fold-axis="horizontal"] :is(.settings-upper, .settings-lower) .settings-toggle-row small {
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-control { gap: 5px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-wheel { height: 54px; border-radius: 18px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-wheel-shell > button { min-height: 38px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-wheel-lens { height: 34px; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-wheel-value.selected { font-size: 0.9rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-wheel-hint { font-size: 0.62rem; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-presets { margin-top: 0; }
+html.native-app[data-fold-active][data-fold-axis="horizontal"] .settings-upper .speed-presets button {
+  min-height: 28px;
+  padding-block: 4px;
+}
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-upper { grid-row: 1; padding-top: calc(var(--status-h) + 16px); }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-lower { grid-row: 3; padding-bottom: calc(var(--tabs-h) + 20px); }
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .ledger-dashboard > :is(.ledger-upper, .ledger-lower) > * { margin-bottom: 16px; }

@@ -12069,7 +12069,16 @@ function MainApp({
           {/* Grouped so a wide screen can set the cards in columns; on a phone the
               wrapper steps aside and they stack in the shell as before. */}
           <div className="settings-cards">
-            <div className="settings-upper">
+            <div
+              className="settings-upper"
+              role="region"
+              aria-label="Listening and source settings. Scrolls independently."
+              tabIndex={0}
+            >
+            <div className="settings-pane-guide" aria-hidden="true">
+              <strong>Listening &amp; sources</strong>
+              <span><ArrowDown size={12} /> Scroll this half</span>
+            </div>
             <section className="settings-card">
               <span className="section-label"><Gauge size={13} /> Playback</span>
               <div className="settings-field">
@@ -12159,7 +12168,16 @@ function MainApp({
               </details> : null}
             </section> : null}
             </div>
-            <div className="settings-lower">
+            <div
+              className="settings-lower"
+              role="region"
+              aria-label="Device and account settings. Scrolls independently."
+              tabIndex={0}
+            >
+            <div className="settings-pane-guide" aria-hidden="true">
+              <strong>Device &amp; account</strong>
+              <span><ArrowDown size={12} /> Scroll this half</span>
+            </div>
 
             <section className="settings-card">
               <span className="section-label"><Gamepad2 size={13} /> Extras</span>
