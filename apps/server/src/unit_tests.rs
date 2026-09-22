@@ -2290,6 +2290,86 @@ async fn a_reader_download_grants_only_books_the_audible_account_owns() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn approved_download_reports_grant_outcome_after_liberation() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let mut reader = stored_user("reader", false, false);
+    reader.allowed_book_ids = Some(Vec::new());
+    state
+        .users
+        .mutate(move |users| {
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    for (asin, export, expected_status) in [
+        ("B000GRANT1", "not valid JSON".to_string(), "failed"),
+        (
+            "B000GRANT2",
+            r#"[{"Audible Product Id":"B000GRANT2","Title":"Owned"}]"#.to_string(),
+            "completed",
+        ),
+    ] {
+        std::fs::write(root.path().join("libation-export.json"), export).unwrap();
+        let request = super::create_libation_download_request(
+            super::State(state.clone()),
+            super::Extension(approval_reader()),
+            super::Path(asin.to_string()),
+            super::Json(super::CreateLibationDownloadRequest {
+                title: "Requested title".to_string(),
+                profile_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let approved = super::decide_libation_download_request(
+            super::State(state.clone()),
+            super::LibationApprover(admin_user()),
+            super::Path(request.id.clone()),
+            super::Json(super::DecideLibationDownloadRequest { approved: true }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let job_id = approved.job_id.unwrap();
+        let job = wait_for_finished_job(&state, &job_id).await;
+        assert_eq!(job.kind, "libation-access-grant");
+        assert_eq!(job.status, expected_status);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let status = state
+                .libation_requests
+                .read()
+                .await
+                .requests
+                .iter()
+                .find(|item| item.id == request.id)
+                .unwrap()
+                .status
+                .clone();
+            if status == expected_status {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "request never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let book_id = super::find_book_id_by_asin(&state.library.read().await.books, asin).unwrap();
+        let granted = state.users.read().await.users[1]
+            .allowed_book_ids
+            .clone()
+            .unwrap();
+        assert_eq!(granted.contains(&book_id), expected_status == "completed");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn duplicate_download_requests_share_the_active_job() {
     let root = tempfile::tempdir().unwrap();
     let (state, log_path) = fake_libation_state(root.path());
