@@ -4,8 +4,10 @@ import {
   canPublishNativeQueue,
   nativeQueueEntryUrl,
   nativeQueueIdentity,
+  nativeQueueIdentityAfterRestore,
   nativeQueueIsReady,
   nativeQueueRefreshShouldResume,
+  playbackRestoreBookAfterAction,
   resolveLocalFirstSources,
   resolveLocalFirstUrls
 } from "../src/offlinePlayback.ts";
@@ -54,6 +56,27 @@ test("native attachment waits for the complete queue for its exact storage state
   assert.equal(nativeQueueIsReady(false, remote, null), true);
 });
 
+test("offline native cold start cannot queue the first track before progress restoration", () => {
+  assert.equal(
+    nativeQueueIdentityAfterRestore(true, "book", "opening-credits", null, true, false),
+    null
+  );
+  assert.equal(
+    nativeQueueIdentityAfterRestore(true, "book", "chapter-63", "book", true, false),
+    nativeQueueIdentity("book", "chapter-63", true, false)
+  );
+  assert.equal(
+    nativeQueueIdentityAfterRestore(false, "book", "opening-credits", null, true, false),
+    nativeQueueIdentity("book", "opening-credits", true, false)
+  );
+});
+
+test("a deliberate playback action releases a superseded restoration gate", () => {
+  assert.equal(playbackRestoreBookAfterAction(null, "book", true), "book");
+  assert.equal(playbackRestoreBookAfterAction(null, "book", false), null);
+  assert.equal(playbackRestoreBookAfterAction("first", null, true), "first");
+});
+
 test("receiving the media credential invalidates tokenless remote queue URLs", () => {
   const withoutCredential = nativeQueueIdentity("book", "chapter-1", false, false);
   const withCredential = nativeQueueIdentity("book", "chapter-1", false, true);
@@ -71,6 +94,7 @@ test("replacing an active native queue preserves its play intent", () => {
   assert.equal(nativeQueueRefreshShouldResume(false, true, downloaded, remote), false);
   assert.equal(nativeQueueRefreshShouldResume(true, true, downloaded, downloaded), false);
   assert.equal(nativeQueueRefreshShouldResume(true, true, downloaded, null), false);
+  assert.equal(nativeQueueRefreshShouldResume(true, true, null, remote), false);
 });
 
 test("the rebuilt queue owns the current source instead of a stale remote fallback", () => {
