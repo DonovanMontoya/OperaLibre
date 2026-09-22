@@ -41,6 +41,8 @@ class InstallerLoginTests(unittest.TestCase):
         self.install.mkdir()
         self.cli = self.install / "Libation CLI"
         self.record = self.root / "calls.jsonl"
+        self.dependency_record = self.root / "dependency-calls"
+        self.icu_marker = self.root / "icu-installed"
         self.cli.write_text(f"#!{sys.executable}\n" + '''
 import json, os, sys
 from pathlib import Path
@@ -59,7 +61,9 @@ sys.exit(0 if input() == "ok" else 1)
         self.config.write_text("libation_files_dir = custom settings\n")
         self.env = {**os.environ, "OPERALIBRE_DIR": str(self.install),
                     "OPERALIBRE_LIBATION_PATH": "", "CALL_RECORD": str(self.record),
-                    "TEST_CLI": str(self.cli)}
+                    "TEST_CLI": str(self.cli),
+                    "DEPENDENCY_RECORD": str(self.dependency_record),
+                    "ICU_MARKER": str(self.icu_marker)}
         # Never discover or download a real Libation or read real accounts.
         section = SECTION.replace(function("find_libation"),
                                   'find_libation() { printf "%s" "$TEST_CLI"; }')
@@ -128,6 +132,24 @@ sys.exit(0 if input() == "ok" else 1)
                 ("Audible email (press Return to skip sign-in) []:", "reader@example.com"),
                 ("Audible country code [us]:", "uk"), ("Paste URL:", url)]
 
+    def use_linux_without_icu(self, install_succeeds=True):
+        apt_get = self.root / "apt-get"
+        apt_get.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DEPENDENCY_RECORD\"\n" +
+                           ("[ \"$1\" != install ] || touch \"$ICU_MARKER\"\nexit 0\n"
+                            if install_succeeds else "exit 1\n"))
+        apt_get.chmod(0o755)
+        apt_cache = self.root / "apt-cache"
+        apt_cache.write_text("#!/bin/sh\nprintf '  Depends: libicu74\\n'\n")
+        apt_cache.chmod(0o755)
+        sudo = self.root / "sudo"
+        sudo.write_text("#!/bin/sh\nexec \"$@\"\n")
+        sudo.chmod(0o755)
+        self.env["PATH"] = f"{self.root}{os.pathsep}{self.env['PATH']}"
+        script = self.script.read_text().replace("os=macos", "os=linux")
+        script = script.replace(function("libation_icu_available"),
+            'libation_icu_available() { [ -f "$ICU_MARKER" ]; }')
+        self.script.write_text(script)
+
     def test_interactive_install_accepts_import_and_logs_in(self):
         self.env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
         output = self.run_setup([
@@ -187,21 +209,44 @@ sys.exit(0 if input() == "ok" else 1)
                 self.assertIn("INSTALLATION_CONTINUES:0", output)
                 self.assertFalse(self.calls())
 
-    def test_linux_without_icu_reports_dependency_and_leaves_import_disabled(self):
-        apt_get = self.root / "apt-get"
-        apt_get.write_text("#!/bin/sh\nexit 0\n")
-        apt_get.chmod(0o755)
-        self.env["PATH"] = f"{self.root}{os.pathsep}{self.env['PATH']}"
-        script = self.script.read_text().replace("os=macos", "os=linux")
-        script = script.replace(function("libation_icu_available"),
-                                "libation_icu_available() { return 1; }")
-        self.script.write_text(script)
+    def test_yes_installs_linux_icu_and_completes_libation_setup(self):
+        self.use_linux_without_icu()
         output = self.run_setup(
             args=["--libation-path", str(self.cli), "--yes"], terminal=False)
         self.assertIn("Libation needs the ICU runtime on Linux", output)
-        self.assertIn("apt-get install -y libicu-dev", output)
+        self.assertIn("ICU is installed. Continuing Libation setup.", output)
+        self.assertEqual(self.dependency_record.read_text().splitlines(),
+                         ["update", "install -y --no-install-recommends libicu74"])
+        self.assertIn(f"libation_cli_path = {self.cli}", self.config.read_text())
+        self.assertIn("YOUR_EMAIL", output)
+        self.assertFalse(self.calls())
+
+    def test_declining_linux_icu_leaves_import_disabled(self):
+        self.use_linux_without_icu()
+        output = self.run_setup(
+            [("Install the ICU runtime now? [Y/n]:", "n")],
+            ["--libation-path", str(self.cli)])
+        self.assertIn("apt-get update && apt-get install -y libicu-dev", output)
+        self.assertFalse(self.dependency_record.exists())
+        self.assertNotIn("libation_cli_path", self.config.read_text())
+        self.assertNotIn("during setup?", output)
+
+    def test_failed_linux_icu_install_leaves_import_disabled(self):
+        self.use_linux_without_icu(install_succeeds=False)
+        output = self.run_setup(
+            args=["--libation-path", str(self.cli), "--yes"], terminal=False)
+        self.assertIn("ICU could not be installed.", output)
         self.assertNotIn("libation_cli_path", self.config.read_text())
         self.assertFalse(self.calls())
+
+    def test_unattended_upgrade_does_not_install_linux_icu(self):
+        self.config.write_text(self.config.read_text() +
+                               f"libation_cli_path = {self.cli}\n")
+        self.use_linux_without_icu()
+        output = self.run_setup(terminal=False)
+        self.assertIn("apt-get update && apt-get install -y libicu-dev", output)
+        self.assertFalse(self.dependency_record.exists())
+        self.assertIn(f"libation_cli_path = {self.cli}", self.config.read_text())
 
     def test_skip_import_never_offers_login(self):
         for args, responses in ((["--no-libation"], []), ([], [("Set up the Audible import now? [y/N]:", "n")])):
