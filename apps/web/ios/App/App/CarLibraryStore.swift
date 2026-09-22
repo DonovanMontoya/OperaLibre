@@ -13,6 +13,9 @@ final class CarLibraryStore {
     private var cachedSnapshot: CarLibrarySnapshot?
     private let invalidatedKey = "operalibre.car-library-invalidated"
     private var artworkMemoryCache: [String: UIImage] = [:]
+    /// Bumped by `clear()`, so a cover download already running for the
+    /// signed-out library cannot put its results back.
+    private var artworkEpoch = 0
     private var placeholderCache: [String: UIImage] = [:]
 
     private var directory: URL? {
@@ -75,6 +78,16 @@ final class CarLibraryStore {
         }
         persistSessions([])
         artworkMemoryCache.removeAll()
+        artworkEpoch += 1
+        // Queued behind any cover download in flight, so what it writes is
+        // removed too. Covers belong to the account that just signed out.
+        queue.async { [weak self] in
+            guard let self else { return }
+            if let artworkDirectory = self.artworkDirectory {
+                try? FileManager.default.removeItem(at: artworkDirectory)
+            }
+            UserDefaults.standard.removeObject(forKey: self.artworkSourcesKey)
+        }
     }
 
     // MARK: - Sessions
@@ -195,20 +208,22 @@ final class CarLibraryStore {
     }
 
     private func cacheArtwork(for snapshot: CarLibrarySnapshot) {
-        var sources = UserDefaults.standard.dictionary(forKey: artworkSourcesKey) as? [String: String] ?? [:]
         let wanted = snapshot.books.reduce(into: [String: String]()) { result, book in
             if let artworkUrl = book.artworkUrl, !artworkUrl.isEmpty {
                 result[book.id] = artworkUrl
             }
         }
-        let stale = wanted.filter { sources[$0.key] != $0.value }
-        guard !stale.isEmpty else { return }
+        let epoch = artworkEpoch
         queue.async { [weak self] in
             guard let self else { return }
-            for (bookId, source) in stale {
+            // Read on the queue: a job queued behind another must see what
+            // that one saved, or writing its own copy back would drop it.
+            var sources = UserDefaults.standard.dictionary(forKey: self.artworkSourcesKey)
+                as? [String: String] ?? [:]
+            for (bookId, source) in wanted where sources[bookId] != source {
                 guard
                     let url = resolveNativeAudioSourceURL(source),
-                    let data = try? Data(contentsOf: url),
+                    let data = fetchArtworkData(from: url),
                     let image = UIImage(data: data),
                     let scaled = self.scaled(image),
                     let encoded = scaled.pngData(),
@@ -218,6 +233,7 @@ final class CarLibraryStore {
                 try? encoded.write(to: destination, options: .atomic)
                 sources[bookId] = source
                 DispatchQueue.main.async {
+                    guard epoch == self.artworkEpoch else { return }
                     self.artworkMemoryCache[bookId] = scaled
                 }
             }
