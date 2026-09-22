@@ -92,7 +92,16 @@ fn import(connection: &mut rusqlite::Connection, layout: &JsonLayout) -> anyhow:
     let progress_backups: HashMap<String, Vec<Progress>> = read_json(&layout.progress_backups)?;
     let book_settings: HashMap<String, BookSettings> = read_json(&layout.book_settings)?;
     let users: UsersStore = read_json(&layout.users)?;
-    let sessions: HashMap<String, Session> = read_json(&layout.sessions)?;
+    // The JSON store kept raw tokens as its keys; the database keeps only
+    // their digests, which is what a client's token is looked up by.
+    let sessions: HashMap<String, Session> =
+        read_json::<HashMap<String, Session>>(&layout.sessions)?
+            .into_iter()
+            .map(|(token, session)| {
+                let session = Session::new(&session.user_id, session.created_at, &token);
+                (session_id_for_token(&token), session)
+            })
+            .collect();
     let mut activity: ActivityStore = read_json(&layout.activity)?;
     // Older stores opened with a synthetic "everything before tracking
     // started" bucket, estimated from how far into each book the reader had

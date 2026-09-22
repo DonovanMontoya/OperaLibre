@@ -52,10 +52,10 @@ fn feed_response(body: String, content_type: &str) -> Result<Response, ApiError>
 /// The catalogue root: one entry per shelf a reader can open.
 pub(crate) async fn opds_root(
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
 ) -> Result<Response, ApiError> {
     let updated = rfc3339_utc(unix_now_seconds());
-    let media_token = media_token_for_session(&session.0);
+    let media_token = session.media_token.clone();
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -83,12 +83,12 @@ pub(crate) async fn opds_root(
 pub(crate) async fn opds_books(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
 ) -> Result<Response, ApiError> {
     ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let updated = rfc3339_utc(unix_now_seconds());
-    let media_token = media_token_for_session(&session.0);
+    let media_token = session.media_token.clone();
     let mut body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog">
