@@ -117,9 +117,10 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             return FileManager.default.fileExists(atPath: destination.path) ? info.destination : nil
         })
         let requiredTotal = descriptions.filter(\.required).count
-        let completedRequired = descriptions.filter {
-            $0.required && existingDestinations.contains($0.destination)
-        }.count
+        let diskProgress = completedBackgroundDownloadCounts(
+            files: descriptions.map { (destination: $0.destination, required: $0.required) },
+            existingDestinations: existingDestinations
+        )
         // Destinations the live job already has tasks for. A repeated enqueue
         // may list files the first one did not; only those need new tasks.
         var alreadyScheduled = Set<String>()
@@ -145,8 +146,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 // Files already on disk are the only completed entries in the
                 // replacement list; retained active tasks count when they settle.
                 if fileListChanged {
-                    existing.completed = existingDestinations.count
-                    existing.completedRequired = completedRequired
+                    existing.completed = diskProgress.completed
+                    existing.completedRequired = diskProgress.completedRequired
                     existing.errors = []
                     existing.precountedDestinations = Array(existingDestinations)
                 }
@@ -165,8 +166,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 state: alreadyComplete ? "completed" : shouldStart ? "running" : "queued",
                 total: files.count,
                 requiredTotal: requiredTotal,
-                completed: existingDestinations.count,
-                completedRequired: completedRequired,
+                completed: diskProgress.completed,
+                completedRequired: diskProgress.completedRequired,
                 handledTaskIds: [],
                 errors: [],
                 enqueuedAt: Date().timeIntervalSince1970,
