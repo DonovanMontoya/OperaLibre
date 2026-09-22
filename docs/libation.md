@@ -12,7 +12,7 @@ This integration is entirely optional. If you don't configure it, the relevant U
 ## Prerequisites
 
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
-- On Linux, the system ICU runtime is required (`libicu-dev` on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine).
+- On Linux, the system ICU runtime is required (a versioned `libicu` package on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine). If it is missing, the one-line installer offers to install the correct package with administrator access and verifies it before completing Libation setup.
 - A recent Libation CLI with `login-external` and `list-accounts` support is required for adding accounts through OperaLibre. Existing authenticated Libation profiles remain supported.
 - Libation's download directory must point at (or feed into) your `library_root`.
 
