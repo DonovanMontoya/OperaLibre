@@ -616,10 +616,15 @@ pub(crate) async fn abs_login(
 pub(crate) async fn abs_me(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    headers: HeaderMap,
 ) -> Result<Json<AbsUser>, ApiError> {
+    // Only a bearer or cookie session reaches this route, never a media token,
+    // so the token the client presented is the one to echo back. The server
+    // keeps no copy to answer from.
+    let token = token_from_headers(&headers)
+        .ok_or_else(|| ApiError::unauthorized("Missing authentication token."))?;
     let progress = progress_for_user(&state, &auth).await?;
-    Ok(Json(abs_user(&auth, session.0, progress)))
+    Ok(Json(abs_user(&auth, token, progress)))
 }
 
 /// `GET /abs/api/libraries`
@@ -652,7 +657,7 @@ pub(crate) async fn abs_libraries(
 pub(crate) async fn abs_library_items(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
     Path(library_id): Path<String>,
     Query(query): Query<AbsItemsQuery>,
 ) -> Result<Json<AbsLibraryItemsResponse>, ApiError> {
@@ -685,7 +690,7 @@ pub(crate) async fn abs_library_items(
         .filter(|limit| *limit > 0)
         .unwrap_or(total.max(1));
     let page = query.page.unwrap_or(0);
-    let media_token = media_token_for_session(&session.0);
+    let media_token = session.media_token.clone();
     let results = visible
         .into_iter()
         .skip(page.saturating_mul(limit))
@@ -751,7 +756,7 @@ fn named_entities(names: BTreeSet<String>) -> Vec<AbsNamedEntity> {
 pub(crate) async fn abs_search(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
     Path(library_id): Path<String>,
     Query(query): Query<AbsSearchQuery>,
 ) -> Result<Json<AbsSearchResponse>, ApiError> {
@@ -759,7 +764,7 @@ pub(crate) async fn abs_search(
         return Err(ApiError::not_found("Library not found."));
     }
     let needle = query.q.trim().to_lowercase();
-    let media_token = media_token_for_session(&session.0);
+    let media_token = session.media_token.clone();
     let limit = query.limit.unwrap_or(500);
     ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
@@ -811,10 +816,10 @@ pub(crate) async fn abs_collection(
 pub(crate) async fn abs_author(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
     Path(author_id): Path<String>,
 ) -> Result<Json<AbsAuthorResponse>, ApiError> {
-    let media_token = media_token_for_session(&session.0);
+    let media_token = session.media_token.clone();
     ensure_startup_scan_finished(&state).await?;
     let books = books_with_progress(&state, &auth).await?;
     let books: Vec<_> = books
@@ -838,7 +843,7 @@ pub(crate) async fn abs_author(
 pub(crate) async fn abs_library_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
     Path(item_id): Path<String>,
 ) -> Result<Json<AbsLibraryItem>, ApiError> {
     require_book_access(&auth, &item_id)?;
@@ -852,18 +857,14 @@ pub(crate) async fn abs_library_item(
             .ok_or(ApiError::not_found("Library item not found."))?
     };
     let book = book_with_progress(&state, &auth, book).await?;
-    Ok(Json(library_item(
-        &book,
-        &media_token_for_session(&session.0),
-        true,
-    )))
+    Ok(Json(library_item(&book, &session.media_token, true)))
 }
 
 /// `POST /abs/api/items/{id}/play`
 pub(crate) async fn abs_play(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(session): Extension<SessionToken>,
+    Extension(session): Extension<CurrentSession>,
     Path(item_id): Path<String>,
 ) -> Result<Json<AbsPlaybackSession>, ApiError> {
     require_book_access(&auth, &item_id)?;
@@ -889,7 +890,7 @@ pub(crate) async fn abs_play(
         duration: book_duration(book),
         start_time: current_time,
         current_time,
-        audio_tracks: audio_files(book, &media_token_for_session(&session.0)),
+        audio_tracks: audio_files(book, &session.media_token),
         chapters: chapters(book),
     }))
 }

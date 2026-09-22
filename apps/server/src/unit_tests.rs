@@ -2335,6 +2335,7 @@ fn sessions_expire_after_max_age() {
     let session = Session {
         user_id: "user".to_string(),
         created_at: 1_000,
+        media_token_hash: String::new(),
     };
     assert!(!session.is_expired(1_000 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
     assert!(session.is_expired(1_001 + super::SESSION_COOKIE_MAX_AGE_SECONDS));
@@ -2349,6 +2350,7 @@ fn new_sessions_prune_oldest_sessions_for_the_user() {
                 Session {
                     user_id: "reader".to_string(),
                     created_at: 1_000 + index as u64,
+                    media_token_hash: String::new(),
                 },
             )
         })
@@ -2367,6 +2369,7 @@ fn password_changes_revoke_other_sessions() {
             Session {
                 user_id: "reader".to_string(),
                 created_at: 1,
+                media_token_hash: String::new(),
             },
         ),
         (
@@ -2374,6 +2377,7 @@ fn password_changes_revoke_other_sessions() {
             Session {
                 user_id: "reader".to_string(),
                 created_at: 2,
+                media_token_hash: String::new(),
             },
         ),
         (
@@ -2381,6 +2385,7 @@ fn password_changes_revoke_other_sessions() {
             Session {
                 user_id: "other".to_string(),
                 created_at: 3,
+                media_token_hash: String::new(),
             },
         ),
     ]);
@@ -3850,7 +3855,6 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
         &layout.progress_backups,
         &layout.book_settings,
         &layout.users,
-        &layout.sessions,
         &layout.activity,
         &layout.metadata_overrides,
     ]
@@ -3866,7 +3870,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
     assert!(database_path.is_file(), "the database was not created");
 
-    // Nothing was taken away: the originals stay, and a copy is kept.
+    // Non-session originals stay, and a copy is kept.
     for (name, contents) in &before {
         assert_eq!(
             &std::fs::read_to_string(data_dir.join(name)).unwrap(),
@@ -3878,6 +3882,14 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
             "{name} was not backed up"
         );
     }
+    assert!(
+        !layout.sessions.exists(),
+        "raw session tokens were left in JSON"
+    );
+    assert!(
+        !data_dir.join("backup-pre-sqlite/sessions.json").exists(),
+        "raw session tokens were left in the migration backup"
+    );
 
     let database = super::Database::open(&database_path).unwrap();
 
@@ -3954,12 +3966,22 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
         .await
         .unwrap();
 
+    // Sessions are the one deliberate change: the import keys them by digest,
+    // so the export carries the same sessions under digests of the tokens.
+    let exported_sessions: std::collections::HashMap<String, super::Session> =
+        serde_json::from_str(&std::fs::read_to_string(exported_dir.join("sessions.json")).unwrap())
+            .unwrap();
+    assert_eq!(exported_sessions.len(), 1);
+    let exported = &exported_sessions[&super::session_id_for_token("token-abc")];
+    assert_eq!(exported.user_id, "alice");
+    assert_eq!(exported.created_at, 1750000000);
+    assert!(!exported_sessions.contains_key("token-abc"));
+
     for name in [
         "progress.json",
         "progress.backups.json",
         "book-settings.json",
         "users.json",
-        "sessions.json",
         "activity.json",
         "metadata-overrides.json",
     ] {
@@ -4008,7 +4030,20 @@ async fn a_second_start_does_not_import_again() {
     drop(store);
     drop(database);
 
+    // Builds before the session cleanup left raw tokens in both places.
+    let raw_sessions = serde_json::json!({
+        "token-abc": { "user_id": "alice", "created_at": 1750000000u64 }
+    });
+    std::fs::write(&layout.sessions, raw_sessions.to_string()).unwrap();
+    std::fs::write(
+        data_dir.join("backup-pre-sqlite/sessions.json"),
+        raw_sessions.to_string(),
+    )
+    .unwrap();
+
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+    assert!(!layout.sessions.exists());
+    assert!(!data_dir.join("backup-pre-sqlite/sessions.json").exists());
 
     let database = super::Database::open(&database_path).unwrap();
     let store = super::ProgressStore::new(database);
@@ -4072,6 +4107,10 @@ fn a_failed_import_leaves_no_database_behind() {
         std::fs::read_to_string(&layout.users).unwrap(),
         "{ not json"
     );
+    assert!(
+        layout.sessions.is_file(),
+        "failed import lost the session source"
+    );
 }
 
 /// The media route resolves its caller through a reverse index rather than by
@@ -4089,15 +4128,13 @@ async fn the_media_token_index_follows_the_sessions_it_points_at() {
     );
 
     let token = "session-one".to_string();
+    let session_id = super::session_id_for_token(&token);
     let media = super::media_token_for_session(&token);
     sessions
         .mutate(|live| {
             live.insert(
-                token.clone(),
-                super::Session {
-                    user_id: "reader".to_string(),
-                    created_at: super::unix_now_seconds(),
-                },
+                session_id.clone(),
+                super::Session::new("reader", super::unix_now_seconds(), &token),
             );
             Ok(())
         })
@@ -4106,7 +4143,7 @@ async fn the_media_token_index_follows_the_sessions_it_points_at() {
 
     assert_eq!(
         sessions.session_for_media_token(&media).await,
-        Some(token.clone())
+        Some(session_id.clone())
     );
     assert_eq!(
         sessions.session_for_media_token("not-a-media-token").await,
@@ -4115,7 +4152,7 @@ async fn the_media_token_index_follows_the_sessions_it_points_at() {
 
     sessions
         .mutate(|live| {
-            live.remove(&token);
+            live.remove(&session_id);
             Ok(())
         })
         .await
@@ -4242,11 +4279,8 @@ async fn overlapping_session_mutations_keep_the_media_index_current() {
             sessions
                 .mutate(|live| {
                     live.insert(
-                        token.clone(),
-                        super::Session {
-                            user_id: "reader".to_string(),
-                            created_at: super::unix_now_seconds(),
-                        },
+                        super::session_id_for_token(&token),
+                        super::Session::new("reader", super::unix_now_seconds(), &token),
                     );
                     Ok(())
                 })
@@ -5624,6 +5658,70 @@ fn the_v1_schema_upgrade_can_run_twice_and_from_a_half_applied_state() {
             }
         }
     }
+}
+
+/// Schema 3 stores digests in place of session and media tokens. A session
+/// written by schema 2 must come through signed in: reachable by its token
+/// and by the media token already handed to the client, with neither token
+/// left anywhere in the database.
+#[tokio::test]
+async fn the_v2_schema_upgrade_hashes_live_sessions_without_signing_them_out() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("operalibre.db");
+    let token = "raw-session-token";
+    let media_token = super::media_token_for_session(token);
+    {
+        let connection = super::db::open(&database_path).unwrap();
+        connection
+            .execute_batch("UPDATE schema_version SET version = 2;")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions (token, user_id, created_at, media_token)
+                 VALUES (?1, 'alice', 1750000000, ?2)",
+                rusqlite::params![token, media_token],
+            )
+            .unwrap();
+    }
+
+    // Opening twice proves the rehash runs once, not on every start.
+    for _ in 0..2 {
+        let connection = super::db::open(&database_path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        let sessions = super::read_sessions_rows(&connection).unwrap();
+        let session_id = super::session_id_for_token(token);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[&session_id].user_id, "alice");
+        assert_eq!(
+            sessions[&session_id].media_token_hash,
+            super::media_token_lookup_key(&media_token)
+        );
+        let stored: (String, String) = connection
+            .query_row("SELECT token, media_token FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_ne!(stored.0, token, "the raw session token is still stored");
+        assert_ne!(stored.1, media_token, "the raw media token is still stored");
+    }
+
+    let database = super::Database::open(&database_path).unwrap();
+    let sessions = database
+        .call(|connection| {
+            super::read_sessions_rows(connection)
+                .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))
+        })
+        .await
+        .unwrap();
+    let store = super::SessionStore::new(database, super::StoreShape::Sessions, sessions);
+    assert_eq!(
+        store.session_for_media_token(&media_token).await,
+        Some(super::session_id_for_token(token)),
+        "a media link handed out before the upgrade stopped working"
+    );
 }
 
 // ---------------------------------------------------------------------------

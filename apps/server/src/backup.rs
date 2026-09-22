@@ -9,8 +9,10 @@
 //!
 //! Sessions are exported for format compatibility but never restored: a
 //! backup file has been outside the server's control since it was written,
-//! and reviving the tokens in it would sign every device that held one back
-//! in. A restore signs everyone out except the owner performing it.
+//! and reviving the sessions in it would sign every device that held one back
+//! in. A restore signs everyone out except the owner performing it. Since
+//! schema 3 the exported sessions are keyed by digest, so a backup file holds
+//! no token that could be presented to any server; older backups do.
 
 use crate::*;
 use rusqlite::OptionalExtension;
@@ -122,7 +124,7 @@ pub(crate) async fn export_server_backup(
 pub(crate) async fn import_server_backup(
     State(state): State<AppState>,
     _: OwnerUser,
-    Extension(SessionToken(current_session)): Extension<SessionToken>,
+    Extension(current_session): Extension<CurrentSession>,
     Json(backup): Json<ServerBackup>,
 ) -> Result<Json<RestoreResult>, ApiError> {
     validate_backup_header(&backup)?;
@@ -130,7 +132,7 @@ pub(crate) async fn import_server_backup(
     // one operation. Dropping an HTTP request (disconnect or timeout) must
     // not abandon it between the database commit and cache adoption.
     tokio::spawn(async move {
-        let result = restore_server_backup(state, current_session, backup).await;
+        let result = restore_server_backup(state, current_session.id, backup).await;
         if let Err(error) = &result {
             tracing::error!("server backup restore failed: {}", error.message);
         }
@@ -142,7 +144,7 @@ pub(crate) async fn import_server_backup(
 
 async fn restore_server_backup(
     state: AppState,
-    current_session: String,
+    current_session_id: String,
     backup: ServerBackup,
 ) -> Result<Json<RestoreResult>, ApiError> {
     let _backup_guard = state.backup_lock.lock().await;
@@ -185,7 +187,7 @@ async fn restore_server_backup(
         .sessions
         .read()
         .await
-        .get(&current_session)
+        .get(&current_session_id)
         .cloned()
         .filter(|session| {
             backup
@@ -196,10 +198,10 @@ async fn restore_server_backup(
                 .any(|user| user.id == session.user_id)
         });
     let retained_sessions: HashMap<String, Session> = retained_session
-        .map(|session| (current_session.clone(), session))
+        .map(|session| (current_session_id.clone(), session))
         .into_iter()
         .collect();
-    let session_retained = retained_sessions.contains_key(&current_session);
+    let session_retained = retained_sessions.contains_key(&current_session_id);
 
     let database_path = state.database_path.clone();
     let restored_data = backup.data.clone();
