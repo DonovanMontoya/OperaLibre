@@ -6428,6 +6428,35 @@ fn libation_titles_match_subtitles_but_not_sequels() {
         super::match_local_book(&only_sequel, &libation("Dune", None)),
         None
     );
+    let books = vec![
+        local("new-hope", "Star Wars: A New Hope"),
+        local("empire", "Star Wars: The Empire Strikes Back"),
+    ];
+    let keys = super::local_book_keys(&books);
+    assert_eq!(
+        super::match_local_book(&keys, &libation("Star Wars: The Empire Strikes Back", None))
+            .as_deref(),
+        Some("empire")
+    );
+    assert_eq!(
+        super::match_local_book(
+            &keys[..1],
+            &libation("Star Wars: The Empire Strikes Back", None)
+        ),
+        None
+    );
+    assert_eq!(
+        super::match_local_book(
+            &keys[..1],
+            &libation("Star Wars", Some("The Empire Strikes Back"))
+        ),
+        None
+    );
+    let unsuffixed = super::local_book_keys(&[local("star-wars", "Star Wars")]);
+    assert_eq!(
+        super::match_local_book(&unsuffixed, &libation("Star Wars: A New Hope", None)).as_deref(),
+        Some("star-wars")
+    );
     assert_eq!(
         super::main_title("Guns, Germs, and Steel"),
         "Guns, Germs, and Steel"

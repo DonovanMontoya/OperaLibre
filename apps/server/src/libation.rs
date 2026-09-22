@@ -1492,27 +1492,38 @@ pub(crate) fn match_local_book(
         return Some(matched.id.clone());
     }
 
-    let mut targets = vec![
-        normalize_match_key(&libation_book.title),
-        normalize_match_key(main_title(&libation_book.title)),
-    ];
-    if let Some(subtitle) = libation_book.subtitle.as_deref() {
-        targets.push(normalize_match_key(&format!(
-            "{} {subtitle}",
-            libation_book.title
-        )));
-    }
-    targets.retain(|target| !target.is_empty());
-    if targets.is_empty() {
+    let full_title = normalize_match_key(&libation_book.title);
+    let main_title = normalize_match_key(main_title(&libation_book.title));
+    if full_title.is_empty() {
         return None;
     }
+    let subtitle = libation_book
+        .subtitle
+        .as_deref()
+        .map(normalize_match_key)
+        .filter(|subtitle| !subtitle.is_empty());
+    let combined_title = subtitle
+        .as_ref()
+        .map(|subtitle| format!("{full_title} {subtitle}"));
+
+    // Prefer the full title even when a different book with the same main
+    // title appears earlier in the local catalogue.
+    if let Some(book) = local_books.iter().find(|book| {
+        !book.titles[0].is_empty()
+            && (book.titles[0] == full_title || combined_title.as_ref() == Some(&book.titles[0]))
+    }) {
+        return Some(book.id.clone());
+    }
+
+    let target_has_suffix = full_title != main_title || subtitle.is_some();
 
     local_books
         .iter()
         .find(|book| {
-            book.titles
-                .iter()
-                .any(|title| !title.is_empty() && targets.contains(title))
+            let local_has_suffix = book.titles[0] != book.titles[1];
+            !main_title.is_empty()
+                && book.titles[1] == main_title
+                && local_has_suffix != target_has_suffix
         })
         .map(|book| book.id.clone())
 }
