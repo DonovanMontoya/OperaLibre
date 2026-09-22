@@ -3193,6 +3193,22 @@ fn libation_account_rows_keep_distinct_server_identities() {
     assert_eq!(accounts[1].connection_state, "needs_sign_in");
 }
 
+#[test]
+fn libation_commands_clear_inherited_invariant_globalization() {
+    let cli = std::path::Path::new("libationcli");
+    let command = super::libation_command(cli, vec!["scan".to_string()]);
+    assert!(command.as_std().get_envs().any(|(name, value)| {
+        name == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" && value.is_none()
+    }));
+
+    let command = super::interactive_libation_command(cli, &["login-external".to_string()]);
+    assert!(
+        command
+            .get_env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn managed_libation_profiles_bootstrap_required_settings() {
     let root = tempfile::tempdir().unwrap();

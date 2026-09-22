@@ -129,6 +129,7 @@ sys.exit(0 if input() == "ok" else 1)
                 ("Audible country code [us]:", "uk"), ("Paste URL:", url)]
 
     def test_interactive_install_accepts_import_and_logs_in(self):
+        self.env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
         output = self.run_setup([
             ("Set up the Audible import now? [y/N]:", "y"), ("Use it? [Y/n]:", ""),
             *self.login_answers()])

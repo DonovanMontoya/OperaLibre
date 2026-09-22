@@ -2848,11 +2848,27 @@ pub(crate) async fn run_libation(
     // with it, or an export keeps writing to a path we have already removed.
     // Do not force .NET invariant globalization here. Libation needs ICU-backed
     // region data while it builds download options.
-    Ok(Command::new(cli_path)
-        .args(config.command_args(args))
-        .kill_on_drop(true)
+    Ok(libation_command(cli_path, config.command_args(args))
         .output()
         .await?)
+}
+
+const DOTNET_GLOBALIZATION_INVARIANT: &str = "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT";
+
+pub(crate) fn libation_command(cli_path: &FsPath, args: Vec<String>) -> Command {
+    let mut command = Command::new(cli_path);
+    command
+        .args(args)
+        .env_remove(DOTNET_GLOBALIZATION_INVARIANT)
+        .kill_on_drop(true);
+    command
+}
+
+pub(crate) fn interactive_libation_command(cli_path: &FsPath, args: &[String]) -> CommandBuilder {
+    let mut command = CommandBuilder::new(cli_path);
+    command.args(args);
+    command.env_remove(DOTNET_GLOBALIZATION_INVARIANT);
+    command
 }
 
 pub(crate) fn start_interactive_libation_login(
@@ -2910,8 +2926,7 @@ pub(crate) fn run_interactive_libation_login(
             return Err(message);
         }
     };
-    let mut command = CommandBuilder::new(cli_path);
-    command.args(args);
+    let command = interactive_libation_command(cli_path, args);
     // As above, Libation login must use the host's normal globalization mode.
     let mut child = match pair.slave.spawn_command(command) {
         Ok(child) => child,

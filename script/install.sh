@@ -778,11 +778,11 @@ shell_quote() {
 libation_login_later() {
   say "To sign in later, paste this command into Terminal. Replace YOUR_EMAIL"
   say "with your Audible email and us with your Audible country code (e.g. uk)."
-  printf '  '
+  printf '  (unset DOTNET_SYSTEM_GLOBALIZATION_INVARIANT; '
   shell_quote "$LIBATION_CONFIGURED"
   printf " login-external --account 'YOUR_EMAIL' --locale us --libationFiles "
   shell_quote "$(configured_libation_files_dir)"
-  printf '\n'
+  printf ')\n'
   say "Help: ${LIBATION_DOCS}"
 }
 
@@ -819,6 +819,7 @@ offer_libation_login() {
     if (
       umask 077
       cd "$INSTALL_DIR" || exit 1
+      unset DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
       "$LIBATION_CONFIGURED" \
         login-external --account "$login_account" --locale "$login_locale" \
         --libationFiles "$(configured_libation_files_dir)"
