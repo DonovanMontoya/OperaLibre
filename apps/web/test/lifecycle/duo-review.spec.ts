@@ -109,3 +109,23 @@ test('native Audible settings show failed refresh requests', async ({ page }) =>
   await page.getByRole('button', { name: 'Refresh purchases', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Refresh limit reached. Try again later.' })).toBeVisible();
 });
+
+test('native Libro.fm settings show failed background refreshes', async ({ page }) => {
+  await openShell(page, true);
+  let refreshed = false;
+  await page.route('**/api/me/libro', route => route.fulfill({ json: {
+    connected: true, email: 'reader@example.com', syncedAt: null,
+    accounts: [{ email: 'reader@example.com', syncedAt: null }], books: [],
+    jobs: refreshed ? [{ id: 'failed-refresh', kind: 'libro-refresh', status: 'failed',
+      error: 'Libro.fm connection expired. Reconnect your account.' }] : []
+  } }));
+  await page.route('**/api/me/libro/refresh', route => {
+    refreshed = true;
+    return route.fulfill({ json: { jobId: 'failed-refresh' } });
+  });
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('.store-settings-group > summary').filter({ hasText: 'Libro.fm' }).click();
+  await page.getByText('Manage connected accounts (1)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Refresh all accounts', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Libro.fm connection expired. Reconnect your account.' })).toBeVisible();
+});

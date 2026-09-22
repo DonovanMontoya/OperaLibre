@@ -167,6 +167,7 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
       <p>{device ? "Your sign-in goes directly from this device to Libro.fm. The token is kept in native secure storage, not sent to your server. This device connection and its cached purchases are shared by anyone using this app on this device. Disconnect before handing the device to another person." : "Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library."}</p>
     </form> : null}
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
+    {account?.connected && refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
     {mode !== "management" && account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
@@ -177,7 +178,6 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
           <button type="button" aria-label="Compact list" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={18} /></button>
         </div> : null}
       </div>
-      {refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
       {!books.length && !loadingLibrary ? <p className="libro-catalog-empty">{needle ? "No purchases match your search." : account.syncedAt ? "No audiobooks found in this account." : "Refresh your library to load your purchases."}</p> : null}
       <ul className={`libro-purchases purchase-book-list purchase-book-list--${activeView} libro-purchases--${activeView}`}>{books.map(book => {
         const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));

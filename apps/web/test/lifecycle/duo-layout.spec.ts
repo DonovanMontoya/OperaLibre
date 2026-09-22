@@ -45,7 +45,7 @@ test('regular portrait iPhone gives the player transport stronger emphasis', asy
 
   // A folded Duo is still phone-sized, but uses its own tuned composition.
   await page.evaluate(() => { document.documentElement.dataset.foldPosture = 'closed'; });
-  await expect(page.locator('.native-now-play')).toHaveCSS('width', '64px');
+  await expect(page.locator('.native-now-play')).toHaveCSS('width', '92px');
 });
 
 test('cover-screen transport stays inside its rail as Now Playing consumes space', async ({ page }) => {
