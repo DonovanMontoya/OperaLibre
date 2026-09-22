@@ -12,7 +12,7 @@ independently of the server releases.
 
 ## Unreleased
 
-## 1.2.5 (19)
+## 1.2.6 (20)
 
 Prepared for the next iOS build on September 21, 2026; TestFlight/App Store
 Connect distribution is pending. App source:
@@ -23,46 +23,19 @@ Connect distribution is pending. App source:
   playback controls fit the side rail when space is available.
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
 - Reader text size is remembered separately for open and closed screens in
-  portrait and landscape. Page-edge taps turn pages more reliably, and
-  Follow Along keeps its highlight through fold and rotation changes.
-  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167),
-  [#154](https://github.com/DonovanMontoya/OperaLibre/pull/154),
-  [#161](https://github.com/DonovanMontoya/OperaLibre/pull/161))
+  portrait and landscape, with a wider adjustment range. Page-edge taps turn
+  pages more reliably, and Follow Along keeps its highlight through fold
+  changes without pulling manually turned pages back to the narration.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
 - Get Books has consistent grid, list, and compact views. Native book-store
   connections and download settings live in Settings, with visible refresh
   errors and continued account-management access in the browser.
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
-- Downloaded books and the cached shelf open without a server connection.
-  Offline playback restores its saved position before preparing the player,
-  including after a cold launch.
-  ([#168](https://github.com/DonovanMontoya/OperaLibre/pull/168),
-  [#169](https://github.com/DonovanMontoya/OperaLibre/pull/169))
-- Streamed audiobooks start with less redundant loading. Play shows when it
-  is waiting for audio, and a second tap cancels the pending start. Returning
-  to the app refreshes the live playback position and adopts progress from
-  another device more reliably.
-  ([#156](https://github.com/DonovanMontoya/OperaLibre/pull/156),
-  [#160](https://github.com/DonovanMontoya/OperaLibre/pull/160),
-  [#163](https://github.com/DonovanMontoya/OperaLibre/pull/163))
-- EPUBs can open chapter by chapter on compatible servers, while older
-  servers retain whole-file loading. Switching reader focus preserves the
-  open book and clears stale narration highlights.
-  ([#156](https://github.com/DonovanMontoya/OperaLibre/pull/156),
-  [#161](https://github.com/DonovanMontoya/OperaLibre/pull/161))
-- Improved landscape text and mini-player layouts on iPhone and iPad, and
-  corrected Word Grid's accepted-word dictionary.
-  ([#159](https://github.com/DonovanMontoya/OperaLibre/pull/159),
-  [#165](https://github.com/DonovanMontoya/OperaLibre/pull/165),
-  [#158](https://github.com/DonovanMontoya/OperaLibre/pull/158))
-- Added newest-first shelf sorting, including corrected ordering for older
-  library entries when the server supplies recovered addition dates.
-  ([#157](https://github.com/DonovanMontoya/OperaLibre/pull/157),
-  [#161](https://github.com/DonovanMontoya/OperaLibre/pull/161),
-  [#166](https://github.com/DonovanMontoya/OperaLibre/pull/166))
+- Improved player and reader spacing, restored shelf ordering when closing
+  the device, and kept playback controls clear of navigation.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
 
-The Duo changes in #167 do not require a server update. Chapter-by-chapter
-EPUB streaming and recovered dates for older library entries use the matching
-server features; older servers retain their existing behavior.
+These changes do not require a server update.
 
 ## 1.2.4 (18)
 
