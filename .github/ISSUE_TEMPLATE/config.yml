@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/DonovanMontoya/OperaLibre/security/advisories/new
+    about: Report security issues privately. Please don't open a public issue.
+  - name: Setup and troubleshooting guide
+    url: https://donovanmontoya.github.io/OperaLibre/troubleshooting.html
+    about: Common installation, connection, and playback problems.
