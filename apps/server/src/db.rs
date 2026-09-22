@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS users (
     announce_finishes             INTEGER NOT NULL DEFAULT 1,
     notify_finishes               INTEGER NOT NULL DEFAULT 1,
     created_at                    TEXT NOT NULL,
-    -- NULL means unrestricted. An empty book_access set for a user with
+    -- 0 means unrestricted. An empty book_access set for a user with
     -- restrictions is meaningfully different from no restrictions at all,
     -- which a join alone could not express.
     restricted                    INTEGER NOT NULL
