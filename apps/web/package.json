@@ -13,6 +13,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc -b --noEmit",
+    "lint": "oxlint -c .oxlintrc.json src",
     "test:perf": "tsc -p tsconfig.performance.json && playwright test -c playwright.performance.config.ts",
     "test:lifecycle": "tsc -p tsconfig.lifecycle.json && playwright test -c playwright.lifecycle.config.ts"
   },
@@ -38,6 +39,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.0.5",
+    "oxlint": "^1.85.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.0"
   }

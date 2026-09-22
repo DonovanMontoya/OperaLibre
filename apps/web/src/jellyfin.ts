@@ -8,14 +8,20 @@ const DEVICE_ID_STORAGE_KEY = "operalibre.jellyfinDeviceId";
 const TICKS_PER_SECOND = 10_000_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 
-async function fetchWithTimeout(url: string, init?: RequestInit) {
+/** Fetch and read the response under one deadline, body included. */
+async function fetchWithTimeout<T>(
+  url: string,
+  init: RequestInit | undefined,
+  read: (response: Response) => Promise<T>
+): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const abort = () => controller.abort();
   if (init?.signal?.aborted) controller.abort();
   init?.signal?.addEventListener("abort", abort, { once: true });
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return await read(response);
   } finally {
     window.clearTimeout(timer);
     init?.signal?.removeEventListener("abort", abort);
@@ -125,23 +131,24 @@ async function jellyfinRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetchWithTimeout(`${baseUrl}${path}`, { ...init, headers });
-  if (!response.ok) {
-    let message = `Jellyfin request failed: ${response.status}`;
-    try {
-      const body = await response.json() as { Message?: string; message?: string };
-      message = body.Message ?? body.message ?? message;
-    } catch {
-      // Jellyfin may return an empty body for authentication failures.
+  return fetchWithTimeout(`${baseUrl}${path}`, { ...init, headers }, async (response) => {
+    if (!response.ok) {
+      let message = `Jellyfin request failed: ${response.status}`;
+      try {
+        const body = await response.json() as { Message?: string; message?: string };
+        message = body.Message ?? body.message ?? message;
+      } catch {
+        // Jellyfin may return an empty body for authentication failures.
+      }
+      // Carry the status so callers can tell a rejected session (401/403) from
+      // a server that answered but is unwell (5xx).
+      throw new ApiError(message, response.status);
     }
-    // Carry the status so callers can tell a rejected session (401/403) from
-    // a server that answered but is unwell (5xx).
-    throw new ApiError(message, response.status);
-  }
-  if (response.status === 204) {
-    return undefined as T;
-  }
-  return response.json() as Promise<T>;
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    return await response.json() as T;
+  });
 }
 
 function seconds(ticks: number | null | undefined) {
@@ -402,10 +409,11 @@ function mapBook(items: JellyfinItem[]): Book | null {
 }
 
 export async function pingJellyfin(baseUrl: string) {
-  const response = await fetchWithTimeout(`${baseUrl}/System/Info/Public`);
-  if (!response.ok) {
-    throw new Error(`Jellyfin responded ${response.status}.`);
-  }
+  await fetchWithTimeout(`${baseUrl}/System/Info/Public`, undefined, async (response) => {
+    if (!response.ok) {
+      throw new Error(`Jellyfin responded ${response.status}.`);
+    }
+  });
 }
 
 export async function loginToJellyfin(baseUrl: string, username: string, password: string) {
