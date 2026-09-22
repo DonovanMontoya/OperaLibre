@@ -778,7 +778,7 @@ shell_quote() {
 libation_login_later() {
   say "To sign in later, paste this command into Terminal. Replace YOUR_EMAIL"
   say "with your Audible email and us with your Audible country code (e.g. uk)."
-  printf '  DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 '
+  printf '  '
   shell_quote "$LIBATION_CONFIGURED"
   printf " login-external --account 'YOUR_EMAIL' --locale us --libationFiles "
   shell_quote "$(configured_libation_files_dir)"
@@ -819,7 +819,7 @@ offer_libation_login() {
     if (
       umask 077
       cd "$INSTALL_DIR" || exit 1
-      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 "$LIBATION_CONFIGURED" \
+      "$LIBATION_CONFIGURED" \
         login-external --account "$login_account" --locale "$login_locale" \
         --libationFiles "$(configured_libation_files_dir)"
     ) </dev/tty >/dev/tty 2>&1; then
@@ -854,6 +854,44 @@ find_libation() {
     fi
   done
   return 1
+}
+
+libation_icu_available() {
+  [ "$os" = linux ] || return 0
+
+  # Libation uses .NET's culture and region APIs while preparing downloads.
+  # The runtime loads ICU dynamically, so an extracted .deb still needs the
+  # host's ICU libraries even though the rest of Libation is self-contained.
+  if need ldconfig && ldconfig -p 2>/dev/null | grep -q 'libicuuc\.so'; then
+    return 0
+  fi
+  for icu_library in \
+    /lib/libicuuc.so.* /lib/*/libicuuc.so.* \
+    /usr/lib/libicuuc.so.* /usr/lib/*/libicuuc.so.* /usr/lib64/libicuuc.so.*
+  do
+    [ -e "$icu_library" ] && return 0
+  done
+  return 1
+}
+
+report_missing_libation_icu() {
+  say "Libation needs the ICU runtime on Linux, but no ICU library was found."
+  if need apt-get; then
+    say "Install it as root with: apt-get update && apt-get install -y libicu-dev"
+  elif need dnf; then
+    say "Install it as root with: dnf install -y libicu"
+  elif need yum; then
+    say "Install it as root with: yum install -y libicu"
+  elif need apk; then
+    say "Install it as root with: apk add icu-libs"
+  elif need pacman; then
+    say "Install it as root with: pacman -S icu"
+  elif need zypper; then
+    say "Install it as root with: zypper install libicu"
+  else
+    say "Install your distribution's ICU runtime package, then run this installer again."
+  fi
+  say "OperaLibre will still be installed, but Audible import will remain unavailable until ICU is installed."
 }
 
 libation_asset() {
@@ -958,7 +996,9 @@ if [ "$LIBATION_CHOICE" != no ]; then
     LIBATION_CONFIGURED=$existing_libation_config
     # An explicit request can connect an account on a later installer run;
     # ordinary upgrades leave the existing account setup alone.
-    if [ "$LIBATION_CHOICE" = yes ]; then
+    if ! libation_icu_available; then
+      report_missing_libation_icu
+    elif [ "$LIBATION_CHOICE" = yes ]; then
       LIBATION_LOGIN_OFFER=1
     else
       ensure_libation_files_dir || true
@@ -1007,9 +1047,14 @@ if [ "$LIBATION_CHOICE" != no ]; then
       fi
 
       if [ -n "$LIBATION_PATH" ]; then
-        set_config libation_cli_path "$LIBATION_PATH"
-        LIBATION_CONFIGURED=$LIBATION_PATH
-        LIBATION_LOGIN_OFFER=1
+        if libation_icu_available; then
+          set_config libation_cli_path "$LIBATION_PATH"
+          LIBATION_CONFIGURED=$LIBATION_PATH
+          LIBATION_LOGIN_OFFER=1
+        else
+          report_missing_libation_icu
+          LIBATION_PATH=""
+        fi
       else
         say "The Audible import stays off. See ${LIBATION_DOCS} to turn it on later."
       fi
@@ -1023,7 +1068,10 @@ if [ "$LIBATION_LOGIN_OFFER" -eq 1 ]; then
     /*) ;;
     *) LIBATION_CONFIGURED="${INSTALL_DIR}/${LIBATION_CONFIGURED}" ;;
   esac
-  if ensure_libation_files_dir; then
+  if ! libation_icu_available; then
+    report_missing_libation_icu
+    LIBATION_LOGIN_OFFER=0
+  elif ensure_libation_files_dir; then
     offer_libation_login
     if [ "$LIBATION_LOGIN_COMPLETE" -ne 1 ]; then
       libation_login_later

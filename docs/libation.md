@@ -12,6 +12,7 @@ This integration is entirely optional. If you don't configure it, the relevant U
 ## Prerequisites
 
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
+- On Linux, the system ICU runtime is required (`libicu-dev` on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine).
 - A recent Libation CLI with `login-external` and `list-accounts` support is required for adding accounts through OperaLibre. Existing authenticated Libation profiles remain supported.
 - Libation's download directory must point at (or feed into) your `library_root`.
 
@@ -77,6 +78,7 @@ Under the hood these map to API endpoints:
 - **Account shows as not authenticated** — sign the account in again in Libation. OperaLibre reports the status but no longer signs accounts in itself. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
 - **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once. The server repairs the managed account profile before starting Libation.
 - **Downloads land somewhere the server can't see** — point Libation's output directory at `library_root` (or a subdirectory of it), or move the files there after the download. The server only knows about files inside `library_root`.
+- **Libation reports that no region is associated with the Invariant Culture** — install the ICU runtime listed under Prerequisites, restart OperaLibre, and retry the download. Do not set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`; Libation needs full culture and region data when preparing a download.
 
 ## Rich local metadata
 

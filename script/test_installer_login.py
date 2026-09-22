@@ -66,7 +66,7 @@ sys.exit(0 if input() == "ok" else 1)
         section = section.replace(function("install_libation"),
                                   'install_libation() { LIBATION_PATH=$TEST_CLI; }')
         self.script = self.root / "fixture.sh"
-        self.script.write_text(PRELUDE + HELPERS + "\n" + section +
+        self.script.write_text(PRELUDE + HELPERS + "\nos=macos\n" + section +
                                '\nsay "INSTALLATION_CONTINUES:$LIBATION_LOGIN_COMPLETE"\n')
 
     def calls(self):
@@ -136,7 +136,7 @@ sys.exit(0 if input() == "ok" else 1)
         self.assertEqual(self.calls(), [{"args": ["login-external", "--account",
             "reader@example.com", "--locale", "uk", "--libationFiles",
             str(self.install / "custom settings")], "tty": [True, True, True],
-            "cwd": str(self.install), "invariant": "1"}])
+            "cwd": str(self.install), "invariant": None}])
 
     def test_download_then_login(self):
         output = self.run_setup([("Use it? [Y/n]:", "n"),
@@ -151,7 +151,7 @@ sys.exit(0 if input() == "ok" else 1)
         self.assertFalse(self.calls())
         self.assertIn("INSTALLATION_CONTINUES:0", output)
         command = next(line.strip() for line in output.splitlines()
-                       if line.startswith("  DOTNET_SYSTEM_GLOBALIZATION_INVARIANT="))
+                       if "login-external --account 'YOUR_EMAIL'" in line)
         # Execute the emitted command with a capturing shim to verify shell
         # quoting, including $, backticks and apostrophes in configured paths.
         self.cli.write_text('#!/bin/sh\nprintf "%s\\n" "$0" "$@"\n')
@@ -185,6 +185,22 @@ sys.exit(0 if input() == "ok" else 1)
                 self.assertIn("YOUR_EMAIL", output)
                 self.assertIn("INSTALLATION_CONTINUES:0", output)
                 self.assertFalse(self.calls())
+
+    def test_linux_without_icu_reports_dependency_and_leaves_import_disabled(self):
+        apt_get = self.root / "apt-get"
+        apt_get.write_text("#!/bin/sh\nexit 0\n")
+        apt_get.chmod(0o755)
+        self.env["PATH"] = f"{self.root}{os.pathsep}{self.env['PATH']}"
+        script = self.script.read_text().replace("os=macos", "os=linux")
+        script = script.replace(function("libation_icu_available"),
+                                "libation_icu_available() { return 1; }")
+        self.script.write_text(script)
+        output = self.run_setup(
+            args=["--libation-path", str(self.cli), "--yes"], terminal=False)
+        self.assertIn("Libation needs the ICU runtime on Linux", output)
+        self.assertIn("apt-get install -y libicu-dev", output)
+        self.assertNotIn("libation_cli_path", self.config.read_text())
+        self.assertFalse(self.calls())
 
     def test_skip_import_never_offers_login(self):
         for args, responses in ((["--no-libation"], []), ([], [("Set up the Audible import now? [y/N]:", "n")])):

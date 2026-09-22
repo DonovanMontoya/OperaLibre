@@ -2846,9 +2846,10 @@ pub(crate) async fn run_libation(
         .ok_or_else(|| anyhow::anyhow!("Libation CLI is not configured"))?;
     // A caller dropped mid-run (a request timeout, say) must take the CLI
     // with it, or an export keeps writing to a path we have already removed.
+    // Do not force .NET invariant globalization here. Libation needs ICU-backed
+    // region data while it builds download options.
     Ok(Command::new(cli_path)
         .args(config.command_args(args))
-        .env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1")
         .kill_on_drop(true)
         .output()
         .await?)
@@ -2911,7 +2912,7 @@ pub(crate) fn run_interactive_libation_login(
     };
     let mut command = CommandBuilder::new(cli_path);
     command.args(args);
-    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
+    // As above, Libation login must use the host's normal globalization mode.
     let mut child = match pair.slave.spawn_command(command) {
         Ok(child) => child,
         Err(error) => {
