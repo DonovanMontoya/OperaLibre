@@ -774,16 +774,20 @@ pub(crate) fn write_sessions_rows(
     let sessions: HashMap<String, Session> = serde_json::from_str(payload)
         .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
     transaction.execute("DELETE FROM sessions", [])?;
-    for (token, session) in &sessions {
+    for (session_id, session) in &sessions {
+        // A session carried without its media key (from a file older than
+        // hashed storage) still needs a unique value in the indexed column.
+        // Its own id serves: it is a digest in another domain, so no media
+        // token can ever hash to it.
+        let media_key = if session.media_token_hash.is_empty() {
+            session_id
+        } else {
+            &session.media_token_hash
+        };
         transaction.execute(
             "INSERT INTO sessions (token, user_id, created_at, media_token)
              VALUES (?1, ?2, ?3, ?4)",
-            params![
-                token,
-                session.user_id,
-                session.created_at,
-                media_token_for_session(token),
-            ],
+            params![session_id, session.user_id, session.created_at, media_key],
         )?;
     }
     Ok(sessions.len())
@@ -811,12 +815,12 @@ pub(crate) fn write_activity_rows(
 
 /// Every account.
 pub(crate) type UserStore = CachedStore<UsersStore>;
-/// Live sessions, keyed by token.
+/// Live sessions, keyed by [`session_id_for_token`] of their tokens.
 ///
-/// Wraps the cached map with a reverse index from media token to session
-/// token. The media route is the hottest in the server — every range request
-/// during playback carries one — and it used to hash every live session on
-/// every request to find its owner.
+/// Wraps the cached map with a reverse index from media token digest to
+/// session id. The media route is the hottest in the server — every range
+/// request during playback carries one — and it used to hash every live
+/// session on every request to find its owner.
 #[derive(Debug)]
 pub(crate) struct SessionStore {
     inner: CachedStore<HashMap<String, Session>>,
@@ -832,8 +836,9 @@ pub(crate) struct SessionStore {
 
 fn media_token_index(sessions: &HashMap<String, Session>) -> HashMap<String, String> {
     sessions
-        .keys()
-        .map(|token| (media_token_for_session(token), token.clone()))
+        .iter()
+        .filter(|(_, session)| !session.media_token_hash.is_empty())
+        .map(|(session_id, session)| (session.media_token_hash.clone(), session_id.clone()))
         .collect()
 }
 
@@ -875,14 +880,14 @@ impl SessionStore {
         Ok(outcome)
     }
 
-    /// The session a media token belongs to, if it belongs to one.
+    /// The id of the session a media token belongs to, if it belongs to one.
+    ///
+    /// The index holds digests, so the lookup compares a digest of the
+    /// presented token; what a timing difference could reveal is a prefix of
+    /// a hash, not of a usable token.
     pub(crate) async fn session_for_media_token(&self, media_token: &str) -> Option<String> {
         let index = self.by_media_token.read().await;
-        let (stored, session_token) = index.get_key_value(media_token)?;
-        // Defense in depth only: the map's own lookup has already compared
-        // keys with an early-exiting equality, so this cannot restore a
-        // timing guarantee. It costs nothing and keeps the match explicit.
-        constant_time_eq(stored.as_bytes(), media_token.as_bytes()).then(|| session_token.clone())
+        index.get(&media_token_lookup_key(media_token)).cloned()
     }
 
     pub(crate) async fn adopt_restored(&self, restored: HashMap<String, Session>) {
@@ -1016,13 +1021,23 @@ pub(crate) fn read_users_rows(connection: &rusqlite::Connection) -> anyhow::Resu
 pub(crate) fn read_sessions_rows(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<HashMap<String, Session>> {
-    let mut statement = connection.prepare("SELECT token, user_id, created_at FROM sessions")?;
+    let mut statement =
+        connection.prepare("SELECT token, user_id, created_at, media_token FROM sessions")?;
     let rows = statement.query_map([], |row| {
+        let session_id: String = row.get(0)?;
+        let media_key: String = row.get(3)?;
         Ok((
-            row.get::<_, String>(0)?,
+            session_id.clone(),
             Session {
                 user_id: row.get(1)?,
                 created_at: row.get(2)?,
+                // The id standing in for a missing media key (see
+                // write_sessions_rows) reads back as no media key.
+                media_token_hash: if media_key == session_id {
+                    String::new()
+                } else {
+                    media_key
+                },
             },
         ))
     })?;

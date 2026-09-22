@@ -3501,17 +3501,28 @@ async fn restoring_a_backup_signs_every_other_session_out() {
         StatusCode::OK
     );
 
-    // The reader's session is in the file. Restoring must not revive it.
+    // The reader's session is in the file, by digest only. Restoring must not
+    // revive it, and the file must not hold a token anyone could present.
     let exported = server.get("/api/admin/backup", &owner).await;
     assert_eq!(exported.status, StatusCode::OK, "{}", exported.text());
     let backup: serde_json::Value = exported.json();
+    let exported_sessions = backup["data"]["sessions"].as_object().unwrap();
     assert!(
-        backup["data"]["sessions"]
-            .as_object()
-            .unwrap()
-            .contains_key(&reader),
+        exported_sessions.contains_key(&super::session_id_for_token(&reader)),
         "the export no longer carries sessions; adjust this test"
     );
+    for token in [&owner, &reader] {
+        assert!(
+            !exported.text().contains(token.as_str()),
+            "a live session token leaked into the backup"
+        );
+        assert!(
+            !exported
+                .text()
+                .contains(&super::media_token_for_session(token)),
+            "a live media token leaked into the backup"
+        );
+    }
 
     let restored = server
         .send(

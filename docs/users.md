@@ -15,7 +15,7 @@ If the server starts with no accounts at all — a brand-new `data` directory �
 
 ## Storage
 
-Accounts, sessions, progress, per-book settings, and the reading log all live in one SQLite database, `data/operalibre.db`. Passwords are hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2); session tokens are random opaque strings. Installations upgraded from an older release had their `users.json`, `progress.json`, and sibling JSON files imported into the database once, with the originals left in place (and copied to `data/backup-pre-sqlite/`) as a rollback path — they are never read again after the import.
+Accounts, sessions, progress, per-book settings, and the reading log all live in one SQLite database, `data/operalibre.db`. Passwords are hashed with [Argon2id](https://en.wikipedia.org/wiki/Argon2); session tokens are random opaque strings, and the database stores only a SHA-256 digest of each session and media token, so a copy of the database or of a server backup cannot be used to sign in. Installations upgraded from an older release had their `users.json`, `progress.json`, and sibling JSON files imported into the database once, with the originals left in place (and copied to `data/backup-pre-sqlite/`) as a rollback path — they are never read again after the import.
 
 Sessions are persisted, so restarting the server does not sign anyone out. Each session expires 30 days after sign-in.
 

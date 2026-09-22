@@ -18,7 +18,7 @@ use crate::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Bumped when the schema changes in a way `migrate` has to react to.
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// Marks a database that is the authority over any legacy JSON files beside
 /// it: either it finished importing them, or it never had any to import.
@@ -55,11 +55,14 @@ CREATE TABLE IF NOT EXISTS book_access (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
+    -- Since schema 3 both key columns hold one-way digests, never a token a
+    -- client could present: session_id_for_token and media_token_lookup_key.
+    -- The column names predate that and are kept to avoid a table rebuild.
     token       TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
-    -- Derived once on insert so the media-token route can look a session up
-    -- directly instead of hashing every session on every range request.
+    -- Indexed so the media-token route can look a session up directly
+    -- instead of hashing every session on every range request.
     media_token TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);
@@ -141,6 +144,9 @@ pub(crate) fn open(path: &FsPath) -> anyhow::Result<Connection> {
             if version < 2 {
                 upgrade_v1_to_v2(&mut connection)?;
             }
+            if version < 3 {
+                upgrade_v2_to_v3(&mut connection)?;
+            }
         }
     }
     Ok(connection)
@@ -162,6 +168,36 @@ fn upgrade_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
         }
     }
     transaction.execute("UPDATE schema_version SET version = 2", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Replaces stored session and media tokens with their digests.
+///
+/// Every live session survives: the digest of a token a client still holds
+/// is exactly what the server now looks up, and media tokens are derived the
+/// same way as before, so links already handed out keep working.
+fn upgrade_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
+    let transaction = connection.transaction()?;
+    let rows = {
+        let mut statement = transaction.prepare("SELECT token, media_token FROM sessions")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (token, media_token) in rows {
+        transaction.execute(
+            "UPDATE sessions SET token = ?1, media_token = ?2 WHERE token = ?3",
+            params![
+                session_id_for_token(&token),
+                media_token_lookup_key(&media_token),
+                token
+            ],
+        )?;
+    }
+    transaction.execute("UPDATE schema_version SET version = 3", [])?;
     transaction.commit()?;
     Ok(())
 }
