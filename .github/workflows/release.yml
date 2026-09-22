@@ -456,6 +456,15 @@ jobs:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
+      # A rebuilt tag can predate release signing. Use the signer from the
+      # workflow revision while keeping the packages tied to the release tag.
+      - name: Checkout release signing tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-signing-tools
+          sparse-checkout: script/release_signing.mjs
+
       - name: Download release packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -475,7 +484,7 @@ jobs:
         shell: bash
         env:
           OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
-        run: node script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
+        run: node release-signing-tools/script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
 
       - name: Create checksums
         shell: bash
