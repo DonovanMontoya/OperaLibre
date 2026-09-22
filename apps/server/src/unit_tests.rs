@@ -4041,7 +4041,6 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
         &layout.progress_backups,
         &layout.book_settings,
         &layout.users,
-        &layout.sessions,
         &layout.activity,
         &layout.metadata_overrides,
     ]
@@ -4057,7 +4056,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
     assert!(database_path.is_file(), "the database was not created");
 
-    // Nothing was taken away: the originals stay, and a copy is kept.
+    // Non-session originals stay, and a copy is kept.
     for (name, contents) in &before {
         assert_eq!(
             &std::fs::read_to_string(data_dir.join(name)).unwrap(),
@@ -4069,6 +4068,14 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
             "{name} was not backed up"
         );
     }
+    assert!(
+        !layout.sessions.exists(),
+        "raw session tokens were left in JSON"
+    );
+    assert!(
+        !data_dir.join("backup-pre-sqlite/sessions.json").exists(),
+        "raw session tokens were left in the migration backup"
+    );
 
     let database = super::Database::open(&database_path).unwrap();
 
@@ -4147,22 +4154,14 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
 
     // Sessions are the one deliberate change: the import keys them by digest,
     // so the export carries the same sessions under digests of the tokens.
-    let original_sessions: std::collections::HashMap<String, super::Session> =
-        serde_json::from_str(&std::fs::read_to_string(data_dir.join("sessions.json")).unwrap())
-            .unwrap();
     let exported_sessions: std::collections::HashMap<String, super::Session> =
         serde_json::from_str(&std::fs::read_to_string(exported_dir.join("sessions.json")).unwrap())
             .unwrap();
-    assert_eq!(original_sessions.len(), exported_sessions.len());
-    for (token, original) in &original_sessions {
-        let exported = &exported_sessions[&super::session_id_for_token(token)];
-        assert_eq!(exported.user_id, original.user_id);
-        assert_eq!(exported.created_at, original.created_at);
-        assert!(
-            !exported_sessions.contains_key(token),
-            "a raw token was exported"
-        );
-    }
+    assert_eq!(exported_sessions.len(), 1);
+    let exported = &exported_sessions[&super::session_id_for_token("token-abc")];
+    assert_eq!(exported.user_id, "alice");
+    assert_eq!(exported.created_at, 1750000000);
+    assert!(!exported_sessions.contains_key("token-abc"));
 
     for name in [
         "progress.json",
@@ -4217,7 +4216,20 @@ async fn a_second_start_does_not_import_again() {
     drop(store);
     drop(database);
 
+    // Builds before the session cleanup left raw tokens in both places.
+    let raw_sessions = serde_json::json!({
+        "token-abc": { "user_id": "alice", "created_at": 1750000000u64 }
+    });
+    std::fs::write(&layout.sessions, raw_sessions.to_string()).unwrap();
+    std::fs::write(
+        data_dir.join("backup-pre-sqlite/sessions.json"),
+        raw_sessions.to_string(),
+    )
+    .unwrap();
+
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+    assert!(!layout.sessions.exists());
+    assert!(!data_dir.join("backup-pre-sqlite/sessions.json").exists());
 
     let database = super::Database::open(&database_path).unwrap();
     let store = super::ProgressStore::new(database);
@@ -4280,6 +4292,10 @@ fn a_failed_import_leaves_no_database_behind() {
     assert_eq!(
         std::fs::read_to_string(&layout.users).unwrap(),
         "{ not json"
+    );
+    assert!(
+        layout.sessions.is_file(),
+        "failed import lost the session source"
     );
 }
 
