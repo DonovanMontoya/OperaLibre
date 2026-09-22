@@ -875,10 +875,12 @@ pub(crate) async fn authenticate_and_open_session(
         record_login_failures(state, throttle_keys.all()).await;
         return Err(ApiError::unauthorized("Invalid username or password."));
     }
+    // A success clears only the counters about this account. The per-address
+    // counter stays: otherwise anyone holding one valid account could sign in
+    // to it between guesses at others and never meet the address limit.
     let mut attempts = state.login_attempts.lock().await;
-    for throttle_key in throttle_keys.all() {
-        attempts.remove(throttle_key);
-    }
+    attempts.remove(&throttle_keys.account);
+    attempts.remove(&throttle_keys.username);
     drop(attempts);
 
     let token = create_session(state, &user.id).await?;
@@ -924,7 +926,8 @@ pub(crate) fn login_ip_throttle_key(client_ip: IpAddr) -> String {
 ///   addresses would face no bound per account at all.
 ///
 /// A failure counts against all three; a sign-in is refused if any is over
-/// its limit; a success clears all three.
+/// its limit; a success clears the two about its own account and leaves the
+/// address counter to expire on its own.
 pub(crate) struct LoginThrottleKeys {
     pub(crate) account: String,
     pub(crate) ip: String,
