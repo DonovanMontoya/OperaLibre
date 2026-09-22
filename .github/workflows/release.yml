@@ -463,6 +463,20 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      # Servers and the macOS app refuse any update without a valid .sig from
+      # this key, and the script fails when the secret is missing, so an
+      # unsigned release cannot be published.
+      - name: Sign release packages
+        shell: bash
+        env:
+          OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
+        run: node script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
+
       - name: Create checksums
         shell: bash
         working-directory: release-assets

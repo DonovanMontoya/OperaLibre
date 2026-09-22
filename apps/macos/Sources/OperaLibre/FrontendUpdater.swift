@@ -28,6 +28,8 @@ enum FrontendUpdateError: LocalizedError {
     case untrustedDownloadURL
     case invalidDigest
     case digestMismatch
+    case missingSignature
+    case invalidSignature
     case invalidPackage(String)
     case httpStatus(String, Int)
     case network(Error)
@@ -42,6 +44,10 @@ enum FrontendUpdateError: LocalizedError {
             return "The frontend package has no valid SHA-256 digest."
         case .digestMismatch:
             return "The downloaded frontend package failed checksum verification."
+        case .missingSignature:
+            return "The release does not include a signature for the frontend package."
+        case .invalidSignature:
+            return "The frontend package's release signature is not valid."
         case .invalidPackage(let reason):
             return "The frontend package is invalid: \(reason)"
         case .httpStatus(let context, let code):
@@ -59,6 +65,9 @@ struct FrontendUpdateStatus {
     let latestVersion: String
     let updateAvailable: Bool
     let asset: GithubReleaseAsset?
+    /// The release's tag, which its asset signatures cover.
+    let releaseTag: String
+    let signatureAsset: GithubReleaseAsset?
 }
 
 /// Parses "1.2.3" (optional leading v) into [major, minor, patch]; nil for anything else, including "dev".
@@ -240,6 +249,7 @@ final class FrontendUpdater {
             : release.tag_name
         let assetName = "operalibre-\(latestVersion)-frontend.zip"
         let asset = release.assets.first { $0.name == assetName }
+        let signatureAsset = release.assets.first { $0.name == assetName + releaseSignatureSuffix }
 
         let current = currentVersion
         let updateAvailable: Bool
@@ -254,7 +264,9 @@ final class FrontendUpdater {
             currentVersion: current,
             latestVersion: latestVersion,
             updateAvailable: updateAvailable,
-            asset: asset
+            asset: asset,
+            releaseTag: release.tag_name,
+            signatureAsset: signatureAsset
         )
     }
 
@@ -277,6 +289,9 @@ final class FrontendUpdater {
         guard let downloadURL = URL(string: asset.browser_download_url) else {
             throw FrontendUpdateError.untrustedDownloadURL
         }
+        // Checked before the package download: an unsigned or wrongly signed release is
+        // refused without fetching it. The package is then held to the signed digest.
+        try await verifySignature(for: asset, status: status, expectedDigest: expectedDigest)
 
         let fileManager = FileManager.default
         let workDir = fileManager.temporaryDirectory
@@ -329,6 +344,37 @@ final class FrontendUpdater {
             throw error
         }
         installedVersion = status.latestVersion
+    }
+
+    private func verifySignature(
+        for asset: GithubReleaseAsset,
+        status: FrontendUpdateStatus,
+        expectedDigest: String
+    ) async throws {
+        guard let signatureAsset = status.signatureAsset,
+            signatureAsset.size > 0, signatureAsset.size <= maxReleaseSignatureBytes
+        else {
+            throw FrontendUpdateError.missingSignature
+        }
+        guard signatureAsset.browser_download_url.hasPrefix(releaseDownloadPrefix),
+            let signatureURL = URL(string: signatureAsset.browser_download_url)
+        else {
+            throw FrontendUpdateError.untrustedDownloadURL
+        }
+        let (data, response) = try await URLSession.shared.data(from: signatureURL)
+        try checkStatus(response, context: "The frontend package signature download")
+        guard data.count <= maxReleaseSignatureBytes,
+            let signature = String(data: data, encoding: .utf8),
+            verifyReleaseSignature(
+                publicKeyBase64: releaseSigningPublicKey,
+                tag: status.releaseTag,
+                assetName: asset.name,
+                sha256Hex: expectedDigest,
+                signatureBase64: signature
+            )
+        else {
+            throw FrontendUpdateError.invalidSignature
+        }
     }
 
     /// Streams an update into our scoped workspace instead of asking URLSession to create an

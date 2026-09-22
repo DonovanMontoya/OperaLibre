@@ -83,6 +83,7 @@ jobs:
       - name: Test release packaging
         run: |
           node --test script/package_release.test.mjs
+          node --test script/release_signing.test.mjs
           python3 script/test_installer_login.py
 
       - name: Install dependencies
@@ -150,6 +151,11 @@ jobs:
 
       - name: Build
         run: swift build
+
+      - name: Test release signature verification
+        run: |
+          swiftc apps/macos/Sources/OperaLibre/ReleaseSignature.swift apps/macos/Tests/ReleaseSignatureTests.swift -o "$RUNNER_TEMP/release-signature-tests"
+          "$RUNNER_TEMP/release-signature-tests"
 
       - name: Test iOS background download policy
         run: |
