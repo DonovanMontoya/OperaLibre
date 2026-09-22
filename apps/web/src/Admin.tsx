@@ -300,9 +300,15 @@ export function AdminPanel({
 
   // A conversion runs on the server as a job; follow it until it settles, then
   // pick up the library it rewrote.
+  // The poll outlives many renders; it must reach the latest rescan handler,
+  // not the one from the render that started the job.
+  const onRescanRef = useRef(onRescan);
+  onRescanRef.current = onRescan;
+  const faststartJobId = faststartJob?.id ?? null;
+  const faststartJobRunning = !!faststartJob && isRunningJob(faststartJob);
   useEffect(() => {
-    if (!faststartJob || !isRunningJob(faststartJob)) return;
-    const jobId = faststartJob.id;
+    if (!faststartJobId || !faststartJobRunning) return;
+    const jobId = faststartJobId;
     let cancelled = false;
     const timer = window.setInterval(() => {
       void getJob(jobId)
@@ -311,7 +317,7 @@ export function AdminPanel({
           setFaststartJob(next);
           if (!isRunningJob(next)) {
             void refreshFaststart();
-            void onRescan().catch(() => {});
+            void onRescanRef.current().catch(() => {});
           }
         })
         .catch(() => {
@@ -322,7 +328,7 @@ export function AdminPanel({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [faststartJob?.id, faststartJob?.status]);
+  }, [faststartJobId, faststartJobRunning]);
 
   const readers = users.filter((user) => !user.isAdmin);
   const pendingRequests = libationRequests.filter((request) => request.status === "pending");

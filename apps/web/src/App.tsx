@@ -1014,12 +1014,17 @@ function readStoredSortMode(source: LibrarySource): SortMode {
   return isValid ? (stored as SortMode) : "title";
 }
 
+// Built once: localeCompare constructs a collator on every call, and sorting a
+// large shelf compares thousands of times.
+const SHELF_LABEL_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const SHELF_TEXT_COLLATOR = new Intl.Collator();
+
 function compareShelfLabels(left: string | null | undefined, right: string | null | undefined) {
   const a = left?.trim() ?? "";
   const b = right?.trim() ?? "";
   if (!a) return b ? 1 : 0;
   if (!b) return -1;
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  return SHELF_LABEL_COLLATOR.compare(a, b);
 }
 
 function bookSortGroupLabel(book: Book, sortMode: SortMode, selectedTags: string[]) {
@@ -1788,7 +1793,7 @@ export function EpubReadalong({
     syncedTargetRef.current = null;
     setFollow(true);
     setFollowRequest((request) => request + 1);
-  }, []);
+  },[setFollow]);
 
   const tapFragment = useCallback((fragment: SyncFragment) => {
     readerDebugLog(`tap seek ${Math.round(fragment.startSeconds)}s ${fragment.href}`);
@@ -1796,7 +1801,7 @@ export function EpubReadalong({
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
     setFollow(true);
-  }, []);
+  },[setFollow]);
 
   // Turning a page by hand means the listener wants to read ahead (or
   // back); the narration marker must not drag the page away again until they
@@ -1816,7 +1821,7 @@ export function EpubReadalong({
     restoringUntilRef.current = 0;
     readerDebugLog("hand");
     void action();
-  }, []);
+  },[setFollow]);
 
   const ensureSearchIndex = useCallback((doc: Document) => {
     if (!searchIndexRef.current || searchIndexRef.current.doc !== doc) {
@@ -4444,6 +4449,10 @@ function MainApp({
   const wantsAutoplayRef = useRef(false);
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
+  // For long-lived callbacks that must see a fallback to web audio without
+  // being recreated by it (recreating loadBooks would reload the library).
+  const nativeAudioRef = useRef(nativeAudio);
+  nativeAudioRef.current = nativeAudio;
   const nativeAudioQueueRef = useRef<NativeAudioQueueTrack[]>([]);
   const [nativeAudioQueueReadyKey, setNativeAudioQueueReadyKey] = useState<string | null>(null);
   // Native AVPlayer sends its definitive clock only after foregrounding. Keep
@@ -4703,32 +4712,32 @@ function MainApp({
     sorted.sort((a, b) => {
       switch (sortMode) {
         case "author":
-          return (a.author ?? "").localeCompare(b.author ?? "") || a.title.localeCompare(b.title);
+          return SHELF_TEXT_COLLATOR.compare(a.author ?? "", b.author ?? "") || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         case "series":
           return compareShelfLabels(a.metadata.series, b.metadata.series)
             || compareShelfLabels(a.metadata.seriesPosition, b.metadata.seriesPosition)
-            || a.title.localeCompare(b.title);
+            || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         case "tag": {
           const aTag = tagForShelfSort(a, shelfFilters.tags);
           const bTag = tagForShelfSort(b, shelfFilters.tags);
           return compareShelfLabels(aTag?.name, bTag?.name)
             || compareShelfLabels(aTag?.position, bTag?.position)
-            || a.title.localeCompare(b.title);
+            || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         }
         case "genre":
-          return compareShelfLabels(a.genres[0], b.genres[0]) || a.title.localeCompare(b.title);
+          return compareShelfLabels(a.genres[0], b.genres[0]) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         case "progress":
-          return compareReadingStatus(a, b) || a.title.localeCompare(b.title);
+          return compareReadingStatus(a, b) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         case "duration":
           return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
         case "added":
           // A book cached or imported before this field existed has no addedAt
           // once it round-trips through storage, even though the type says it
           // always does; treat that as the oldest possible addition.
-          return compareShelfAddedAt(a.addedAt, b.addedAt) || a.title.localeCompare(b.title);
+          return compareShelfAddedAt(a.addedAt, b.addedAt) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
         case "title":
         default:
-          return a.title.localeCompare(b.title);
+          return SHELF_TEXT_COLLATOR.compare(a.title, b.title);
       }
     });
     return sortReversed ? sorted.reverse() : sorted;
@@ -5318,7 +5327,7 @@ function MainApp({
       );
       // A background refresh that lists the playing book as finished must not
       // pull the session out from under the listener; only its absence can.
-      const isPlayingNow = nativeAudio
+      const isPlayingNow = nativeAudioRef.current
         ? nativePlaybackPlayingRef.current
         : !!audioRef.current && !audioRef.current.paused;
       setPlaybackBookId((existing) => {
@@ -5496,6 +5505,10 @@ function MainApp({
     } finally {
       if (isCurrentRequest()) setIsLoading(false);
     }
+    // storeCanonicalServerProgress and reconcileServerBookGains read only
+    // currentUser.id (listed), refs and state setters, so the render that
+    // created this callback cannot hand them anything stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id, isOperaLibre, localMode, native]);
   loadBooksRef.current = loadBooks;
 
@@ -5803,6 +5816,19 @@ function MainApp({
     requiredNativeAudioQueueKey
   ]);
 
+  // Timer and native-event callbacks run after later renders may have landed;
+  // they call the latest version of these functions rather than the one from
+  // the render that registered them (a stale persistProgress would save an
+  // outdated finished override, for one).
+  const startPlaybackRef = useRef(startPlayback);
+  startPlaybackRef.current = startPlayback;
+  const persistProgressRef = useRef(persistProgress);
+  persistProgressRef.current = persistProgress;
+  const markPlaybackTouchedRef = useRef(markPlaybackTouched);
+  markPlaybackTouchedRef.current = markPlaybackTouched;
+  const pausePlaybackRef = useRef(pausePlayback);
+  pausePlaybackRef.current = pausePlayback;
+
   // Autoplay requested while the audio source was still resolving (native disk
   // lookup): start playback as soon as the source lands.
   useEffect(() => {
@@ -5810,7 +5836,7 @@ function MainApp({
       return;
     }
     wantsAutoplayRef.current = false;
-    window.setTimeout(() => startPlayback(audioRef.current), 0);
+    window.setTimeout(() => startPlaybackRef.current(audioRef.current), 0);
   }, [nativeAudioQueueReady, streamUrl]);
 
   useEffect(() => {
@@ -6140,8 +6166,14 @@ function MainApp({
     };
   }, [currentUser.id, currentUser.libationAccess, libationBooks, librarySource]);
 
+  // Keyed on whether anything is pending, not on the job list itself: each
+  // poll replaces the list, which would otherwise rebuild the timer on every
+  // tick. The callback reads jobs and books through refs so it stays current.
+  const libationJobsPending = libationJobs.some(isPendingJob);
+  const libationBooksRef = useRef(libationBooks);
+  libationBooksRef.current = libationBooks;
   useEffect(() => {
-    if (!libationJobs.some(isPendingJob)) {
+    if (!libationJobsPending) {
       return;
     }
 
@@ -6185,7 +6217,7 @@ function MainApp({
                 return [job.targetId];
               }
               if (job.kind === "libation-liberate-all") {
-                return libationBooks.filter((book) => !book.localBookId).map((book) => book.catalogId);
+                return libationBooksRef.current.filter((book) => !book.localBookId).map((book) => book.catalogId);
               }
               return [];
             });
@@ -6216,7 +6248,7 @@ function MainApp({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [currentUser.isAdmin, libationJobs, loadBooks, loadLibationBooks]);
+  }, [currentUser.isAdmin, libationJobsPending, loadBooks, loadLibationBooks]);
 
   useEffect(() => {
     if (libationJobs.some(isPendingJob)) {
@@ -6319,6 +6351,10 @@ function MainApp({
         window.clearInterval(timer);
       }
     };
+    // libationBooks is read once, when the check starts; the check then fetches
+    // and stores fresh books itself, so listing it would restart the check
+    // after every fetch it makes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.isAdmin, libationFinalizationFailures, libationFinalizingAsins, libationJobs, loadBooks]);
 
   useEffect(() => {
@@ -6631,7 +6667,7 @@ function MainApp({
         // rebuilds its queue is not a listener action and must not overwrite
         // the restored checkpoint or make the player oscillate.
         if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return false;
-        markPlaybackTouched();
+        markPlaybackTouchedRef.current();
         nativePlaybackPlayingRef.current = nativeIsPlaying;
         playWhenTrackLoads.current = nativeIsPlaying;
         wantsAutoplayRef.current = nativeIsPlaying;
@@ -6648,7 +6684,7 @@ function MainApp({
         // at loadedmetadata, so retarget it rather than let the lock-screen
         // seek be undone.
         const nativePosition = Math.max(0, audio.currentTime);
-        markPlaybackTouched(
+        markPlaybackTouchedRef.current(
           true,
           undefined,
           true,
@@ -6658,7 +6694,7 @@ function MainApp({
           setPendingSeek({ trackId: currentTrack.id, positionSeconds: nativePosition });
           setPosition(nativePosition);
         }
-        void persistProgress();
+        void persistProgressRef.current();
       },
       () => {
         sleepDeadlineRef.current = null;
@@ -6669,6 +6705,11 @@ function MainApp({
         foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
+    // Attaching rebuilds the AVPlayer queue, so this is keyed on identity:
+    // playbackBook, currentTrack and activeTrackIndex through their ids, and
+    // functions with render state go through refs above. setPlayPending
+    // touches only refs and setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     carPlaybackBookId,
     currentTrackKey,
@@ -6677,7 +6718,8 @@ function MainApp({
     nativeAudioQueueReady,
     playbackBookKey,
     requiredNativeAudioQueueKey,
-    nativeAttachmentSource
+    nativeAttachmentSource,
+    scheduleStartupReveal
   ]);
 
   // Progress often arrives after preload has already emitted loadedmetadata.
@@ -6710,6 +6752,9 @@ function MainApp({
       startPlayback(audio, !resumeAutoplayPendingRef.current);
       resumeAutoplayPendingRef.current = false;
     }
+    // setPlaybackPosition and startPlayback run synchronously here, from the
+    // render being committed; listing them would re-run the seek every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackKey, pendingSeek, streamUrl, nativeAudio]);
 
   useEffect(() => {
@@ -6720,6 +6765,9 @@ function MainApp({
     applyPlaybackVolume(audio);
     if (gainChain().isAttachedTo(audio)) gainChain().setGain(playbackGain);
     if (nativeAudio) void setNativeAudioGain(playbackGain).catch(() => undefined);
+    // applyPlaybackVolume reads only volume, playbackGain and nativeAudio,
+    // all listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [volume, playbackGain, nativeAudio, currentTrackKey]);
 
   playbackGainRef.current = playbackGain;
@@ -6762,6 +6810,9 @@ function MainApp({
     return () => {
       active = false;
     };
+    // Keyed on the fields the artwork comes from; a progress save replaces
+    // playbackBook without changing its cover.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [native, playbackBookKey, playbackBook?.coverArtUrl, playbackBook?.localCoverPath]);
 
   useEffect(() => {
@@ -6876,10 +6927,11 @@ function MainApp({
     };
   }, [nativeAudio]);
 
+  const activeChapterId = activeChapter?.id ?? null;
   useEffect(() => {
-    if (nativeAudio || !("mediaSession" in navigator) || !currentTrack) return;
-    const duration = activeChapter ? chapterDuration : Math.max(1, sliderMax);
-    const lockPosition = activeChapter ? chapterElapsed : position;
+    if (nativeAudio || !("mediaSession" in navigator) || !currentTrackKey) return;
+    const duration = activeChapterId !== null ? chapterDuration : Math.max(1, sliderMax);
+    const lockPosition = activeChapterId !== null ? chapterElapsed : position;
     if (!Number.isFinite(duration) || !Number.isFinite(lockPosition) || duration <= 0) return;
     try {
       navigator.mediaSession.setPositionState({
@@ -6890,21 +6942,22 @@ function MainApp({
     } catch {
       // Some WebViews expose Media Session metadata without position state.
     }
-  }, [activeChapter?.id, chapterDuration, chapterElapsed, currentTrackKey, nativeAudio, position, sliderMax, speed]);
+  }, [activeChapterId, chapterDuration, chapterElapsed, currentTrackKey, nativeAudio, position, sliderMax, speed]);
 
   useEffect(() => {
-    if (!chaptersOpen || !isViewingPlayingBook || !activeChapter) return;
+    if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
     const frame = window.requestAnimationFrame(() => {
       chaptersListRef.current
-        ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapter.id}"]`)
+        ?.querySelector<HTMLElement>(`[data-chapter-id="${activeChapterId}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChapter?.id, chaptersOpen, isViewingPlayingBook]);
+  }, [activeChapterId, chaptersOpen, isViewingPlayingBook]);
 
+  const sleepTimerArmed = sleepRemaining > 0;
   useEffect(() => {
-    if (!isPlaying || sleepRemaining <= 0) {
-      if (sleepRemaining <= 0) sleepDeadlineRef.current = null;
+    if (!isPlaying || !sleepTimerArmed) {
+      if (!sleepTimerArmed) sleepDeadlineRef.current = null;
       return;
     }
 
@@ -6937,7 +6990,7 @@ function MainApp({
       setSleepRemaining(next);
       if (next === 0) {
         sleepDeadlineRef.current = null;
-        pausePlayback(audioRef.current);
+        pausePlaybackRef.current(audioRef.current);
         setSleepMinutes(0);
       }
     }, 1000);
@@ -6955,7 +7008,11 @@ function MainApp({
       setSleepRemaining(next);
       if (next === 0) setSleepMinutes(0);
     };
-  }, [isPlaying, nativeAudio, sleepRemaining > 0]);
+    // sleepRemaining seeds the deadline once when the timer arms; after that
+    // the deadline ref drives the countdown, and re-arming on every tick
+    // would reset it each second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, nativeAudio, sleepTimerArmed]);
 
   function configureSleepTimer(minutes: number) {
     haptic("light");

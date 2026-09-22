@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, CloudDownload, LayoutGrid, List, LoaderCircle, RefreshCcw, Search } from "lucide-react";
 import { connectLibroAccount, disconnectLibroAccount, getBooks, getLibroAccount, importLibroPurchase, refreshLibroAccount, renameLibroAccount } from "./api";
 import type { Book, JobStatus, LibroAccountStatus, LibroAccountSummary } from "./types";
@@ -126,13 +126,16 @@ export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polli
 
   const accountsChanged = useRef(onAccountsChanged);
   accountsChanged.current = onAccountsChanged;
+  const accounts = useMemo<LibroAccountSummary[]>(
+    () => account?.accounts ?? (account?.email ? [{ email: account.email, syncedAt: account.syncedAt }] : []),
+    [account]
+  );
   useEffect(() => {
-    if (account) accountsChanged.current?.(account.accounts ?? (account.email ? [{ email: account.email, syncedAt: account.syncedAt }] : []));
-  }, [account]);
-  const accounts: LibroAccountSummary[] = account?.accounts ?? (account?.email ? [{ email: account.email, syncedAt: account.syncedAt }] : []);
+    if (account) accountsChanged.current?.(accounts);
+  }, [account, accounts]);
   useEffect(() => {
     if (accountFilter !== "all" && account && !accounts.some(item => item.email === accountFilter)) setAccountFilter("all");
-  }, [account, accountFilter]);
+  }, [account, accountFilter, accounts]);
   const selectedEmail = filterEmail === undefined ? (accountFilter === "all" ? null : accountFilter) : filterEmail;
   const needle = (searchQuery ?? query).trim().toLocaleLowerCase();
   const books = (account?.books ?? []).filter(book => selectedEmail === null || (book.accountEmail ?? account?.email) === selectedEmail).filter(book => `${book.title} ${book.authors.join(" ")} ${book.audiobook_info.narrators.join(" ")} ${book.isbn}`.toLocaleLowerCase().includes(needle)).sort((a, b) => {
