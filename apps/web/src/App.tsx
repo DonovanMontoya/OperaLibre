@@ -66,7 +66,6 @@ import {
   RotateCw,
   Rows3,
   Search,
-  ServerOff,
   Smartphone,
   Settings,
   SkipBack,
@@ -123,6 +122,7 @@ import {
 import { createScreenAwakeController } from "./screenAwake";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -414,7 +414,6 @@ import {
 } from "./readalongPreferences";
 import { readerStatusLabel, summarizeSharedProgress } from "./sharedProgress";
 import type {
-  AlignmentStatus,
   AuthUser,
   Book,
   BookMetadataUpdate,
@@ -426,7 +425,6 @@ import type {
   LibationDownloadRequest,
   LibationStatus,
   SyncFragment,
-  SyncMap,
   Progress,
   Track
 } from "./types";
@@ -886,16 +884,6 @@ function PlaybackSpeedControl({
 // Beyond this the segments are too thin to read or tap, and their fixed
 // borders/gaps overflow a phone screen; fall back to one continuous bar.
 const MAX_CHAPTER_SEGMENTS = 32;
-
-/**
- * play() rejects for benign reasons (a pause or source change interrupting a
- * pending play). Left unhandled those rejections are noise at best — and the
- * macOS shell treats any unhandled rejection as fatal. Real playback failures
- * still surface through the element's `error` event.
- */
-function safePlay(audio: HTMLAudioElement | null | undefined) {
-  audio?.play().catch(() => undefined);
-}
 
 // The API client's own timeout is generous (30 s); a startup-critical read
 // that is allowed to fall back to a local copy should not wait that long.
@@ -3550,6 +3538,177 @@ function ShelfFacetGroup({
   );
 }
 
+type ShelfRun = { label: string | null; items: Array<{ book: Book; index: number }> };
+
+/**
+ * The shelf's book rows. Memoized because the rest of MainApp re-renders on
+ * every media clock tick, and a large library's rows (covers, icons, labels)
+ * are the costliest thing on screen that never depends on the position. Every
+ * prop here stays referentially stable while a book plays.
+ */
+const ShelfBookList = memo(function ShelfBookList({
+  columns,
+  viewMode,
+  sortMode,
+  shelfTags,
+  selectedBookId,
+  playbackBookId,
+  downloadedBookIds,
+  isOffline,
+  demoMode,
+  localMode,
+  native,
+  readalongEnabled,
+  onSelectBook
+}: {
+  columns: ShelfRun[][];
+  viewMode: ShelfViewMode;
+  sortMode: SortMode;
+  shelfTags: ShelfFilters["tags"];
+  selectedBookId: string | null;
+  playbackBookId: string | null;
+  downloadedBookIds: Set<string>;
+  isOffline: boolean;
+  demoMode: boolean;
+  localMode: boolean;
+  native: boolean;
+  readalongEnabled: boolean;
+  onSelectBook: (book: Book) => void;
+}) {
+  const isCompactView = viewMode === "compact";
+  return (
+    <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
+      {columns.map((column, columnIndex) => (
+        <div className="book-leaf" key={`leaf-${columnIndex}`}>
+        {column.map((run) => (
+        <section className="book-sort-run" key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
+          {run.label ? (
+            <div className="book-sort-group" role="heading" aria-level={2}>
+              <span>{bookSortGroupCaption(sortMode)}</span>
+              <strong>{run.label}</strong>
+            </div>
+          ) : null}
+          {run.items.map(({ book, index }) => {
+        const progressPercent = book.progress?.percentComplete ?? 0;
+        const availableOnDevice =
+          demoMode
+          || localMode
+          || book.source === "device"
+          || !!book.deviceBookId
+          || downloadedBookIds.has(book.id);
+        const availableOnServer = !demoMode && !localMode && book.source !== "device";
+        const availabilityLabel = availableOnDevice
+          ? availableOnServer
+            ? "Available on the server and this device"
+            : "Available on this device"
+          : "Available from the server";
+        const unavailableOffline = isOffline && !availableOnDevice;
+        const shared = isCompactView ? null : summarizeSharedProgress(book.sharedProgress);
+        // Compact abbreviates the chip and drops it entirely for a book
+        // nobody has opened; the full wording stays on the tooltip so
+        // shortening it costs a screen reader nothing.
+        const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
+        const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
+        const sortTag = tagForShelfSort(book, shelfTags);
+        return (
+            <button
+              key={book.id}
+              className={`book-row ${book.id === selectedBookId ? "active" : ""} ${book.id === playbackBookId ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
+              onClick={() => onSelectBook(book)}
+            >
+              {native || viewMode === "grid" || book.coverArtUrl ? (
+                <CoverArt book={book} size="small" />
+              ) : (
+                <span className="index">{String(index + 1).padStart(2, "0")}</span>
+              )}
+              <span
+                className={`book-availability ${availableOnDevice ? "has-device-copy" : "server-only"} ${
+                  availableOnServer && availableOnDevice ? "server-and-device" : ""
+                }`}
+                role="img"
+                aria-label={availabilityLabel}
+                title={availabilityLabel}
+              >
+                {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
+                {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
+              </span>
+              {/* Compact drops the badge row — runtime, shared readers,
+                  series position — and keeps title, byline and progress.
+                  Those tags are what a browsing row is for; a row you are
+                  scanning past a hundred of is not. Read along survives as
+                  a bare glyph: unlike the rest it has no other home on the
+                  shelf, so dropping it would make "does this one have the
+                  text?" unanswerable without opening every book. */}
+              <span className="book-text">
+                <strong>{book.title}</strong>
+                <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
+                {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
+                  <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
+                ) : null}
+                {!isCompactView && sortMode === "tag" && sortTag?.position ? (
+                  <span className="book-sort-context">
+                    Book {sortTag.position} in {sortTag.name}
+                  </span>
+                ) : null}
+                {!isCompactView && formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
+                  <span className="book-runtime-tag">
+                    <Timer size={11} strokeWidth={1.5} />
+                    {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
+                  </span>
+                ) : null}
+                {readalongEnabled && book.readingFile ? (
+                  <span
+                    className={`book-readalong-tag ${isCompactView ? "is-glyph" : ""}`}
+                    title="Ebook included: read along while you listen"
+                    aria-label={isCompactView ? "Ebook included: read along while you listen" : undefined}
+                  >
+                    <BookOpen size={11} strokeWidth={1.6} />
+                    {isCompactView ? null : "Read along"}
+                  </span>
+                ) : readalongEnabled && hasExtras(book) ? (
+                  <span
+                    className={`book-readalong-tag extras ${isCompactView ? "is-glyph" : ""}`}
+                    title="Pictures or a supplement are included"
+                    aria-label={isCompactView ? "Pictures or a supplement are included" : undefined}
+                  >
+                    <Images size={11} strokeWidth={1.6} />
+                    {isCompactView ? null : "Extras"}
+                  </span>
+                ) : null}
+                {progressLabel ? (
+                  <span
+                    className={`book-progress ${book.progress?.status ?? "notStarted"}`}
+                    title={compactProgressTitle}
+                    aria-label={compactProgressTitle}
+                  >
+                    <em>{progressLabel}</em>
+                    {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
+                      <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+                    ) : null}
+                  </span>
+                ) : null}
+                {shared ? (
+                  <span
+                    className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
+                    title={shared.detail}
+                    aria-label={shared.detail}
+                  >
+                    <Users size={11} strokeWidth={1.6} aria-hidden="true" />
+                    {shared.label}
+                  </span>
+                ) : null}
+              </span>
+            </button>
+        );
+          })}
+        </section>
+        ))}
+        </div>
+      ))}
+    </div>
+  );
+});
+
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>(initialAuthState);
 
@@ -4413,7 +4572,6 @@ function MainApp({
   const [activeGame, setActiveGame] = useState<GameName>("match");
   const shelfFolded = native && ((!ipad && shortLandscape) || shelfLayout === "library");
 
-  const isCompactView = viewMode === "compact";
 
   function closeShelfFilters() {
     setFiltersOpen(false);
@@ -4592,6 +4750,15 @@ function MainApp({
     });
     return runs;
   }, [shelfFilters.tags, sortMode, visibleBooks]);
+
+  // The memoized shelf needs a select handler with one identity for the
+  // component's lifetime that still reaches the latest selectBook.
+  const selectFromShelfRef = useRef<(book: Book) => void>(() => undefined);
+  selectFromShelfRef.current = (book) => {
+    selectBook(book);
+    setLibraryOpen(false);
+  };
+  const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
 
   const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
   const visibleBookColumns = useMemo(() => {
@@ -5042,14 +5209,6 @@ function MainApp({
 
   const readerOpenedThisSessionRef = useRef<Set<string>>(new Set());
 
-  function readReaderOpenFlag(bookId: string) {
-    try {
-      return window.localStorage.getItem(readerStorageKey(readerScope, bookId, "open")) === "1";
-    } catch {
-      return false;
-    }
-  }
-
   function writeReaderOpenFlag(bookId: string, open: boolean) {
     try {
       window.localStorage.setItem(readerStorageKey(readerScope, bookId, "open"), open ? "1" : "0");
@@ -5094,10 +5253,6 @@ function MainApp({
   }
 
   /** Forget a book's loaded sync map so the next look at the reader refetches it. */
-  function forgetSyncMap(bookId: string) {
-    dispatchSyncMap({ type: "invalidate", bookId });
-  }
-
   async function startSyncGeneration(book: Book) {
     setSyncJobError(null);
     setSyncNotice(null);
@@ -5376,11 +5531,19 @@ function MainApp({
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || !books.length) return;
+    // A newer scan supersedes this one; a slow stale scan must not land last.
+    let cancelled = false;
     void Promise.all(books.map(async (book) => [
       book.id,
       await isBookDownloaded(book).catch(() => false)
     ] as const))
-      .then((states) => setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id))));
+      .then((states) => {
+        if (cancelled) return;
+        setDownloadedBookIds(new Set(states.filter(([, ready]) => ready).map(([id]) => id)));
+      });
+    return () => {
+      cancelled = true;
+    };
     // Keyed on book ids and local-file identity: progress/metadata updates do
     // not re-stat every track, but removing a merged imported copy rechecks the
     // surviving server book even though its id stays the same.
@@ -5754,13 +5917,25 @@ function MainApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncMapBookId, syncMapRevision]);
 
+  // Keyed on the job id and whether it is still pending, not the job object:
+  // every poll replaces the object, which would otherwise rebuild the timer
+  // on each tick.
+  const syncJobId = syncJob?.id ?? null;
+  const syncJobPending = !!syncJob && ["queued", "running"].includes(syncJob.status);
   useEffect(() => {
-    if (!syncJob || !["queued", "running"].includes(syncJob.status)) {
+    if (!syncJobId || !syncJobPending) {
       return;
     }
+    let cancelled = false;
+    // A slow response must not overlap the next tick, or two polls can both
+    // see the completion and reload the library twice.
+    let requestInFlight = false;
     const timer = window.setInterval(() => {
-      void getJob(syncJob.id)
+      if (requestInFlight) return;
+      requestInFlight = true;
+      void getJob(syncJobId)
         .then((job) => {
+          if (cancelled) return;
           setSyncJob(job);
           if (job.status === "completed") {
             dispatchSyncMap({ type: "reset" });
@@ -5768,10 +5943,16 @@ function MainApp({
             void loadBooks();
           }
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          requestInFlight = false;
+        });
     }, 2000);
-    return () => window.clearInterval(timer);
-  }, [loadBooks, syncJob]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loadBooks, syncJobId, syncJobPending]);
 
   // A sync run outlives the page that started it: it is a server job, and a
   // long book takes far longer than a reload or a walk to another book. Adopt
@@ -5934,11 +6115,28 @@ function MainApp({
         })
         .catch(() => undefined);
     };
-    refreshRequests();
-    const timer = window.setInterval(refreshRequests, 5000);
+    // Poll quickly only while a request is still moving (awaiting a decision
+    // or approved and downloading); otherwise a slow check still notices a
+    // new decision. A hidden page polls not at all and catches up on return.
+    let lastRefreshAt = 0;
+    const tick = (force = false) => {
+      if (document.visibilityState === "hidden") return;
+      const moving = libationDownloadRequestsRef.current.some(
+        (request) => request.status === "pending" || request.status === "approved"
+      );
+      const now = Date.now();
+      if (!force && !moving && now - lastRefreshAt < 60_000) return;
+      lastRefreshAt = now;
+      refreshRequests();
+    };
+    const onVisible = () => tick(true);
+    tick(true);
+    const timer = window.setInterval(() => tick(), 5000);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [currentUser.id, currentUser.libationAccess, libationBooks, librarySource]);
 
@@ -9921,138 +10119,21 @@ function MainApp({
 
             {/* Compact keeps the list layout and only tightens it, so it carries
                 both classes rather than forking every row rule. */}
-            <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
-              {visibleBookColumns.map((column, columnIndex) => (
-                <div className="book-leaf" key={`leaf-${columnIndex}`}>
-                {column.map((run) => (
-                <section className="book-sort-run" key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
-                  {run.label ? (
-                    <div className="book-sort-group" role="heading" aria-level={2}>
-                      <span>{bookSortGroupCaption(sortMode)}</span>
-                      <strong>{run.label}</strong>
-                    </div>
-                  ) : null}
-                  {run.items.map(({ book, index }) => {
-                const progressPercent = book.progress?.percentComplete ?? 0;
-                const availableOnDevice =
-                  demoMode
-                  || localMode
-                  || book.source === "device"
-                  || !!book.deviceBookId
-                  || downloadedBookIds.has(book.id);
-                const availableOnServer = !demoMode && !localMode && book.source !== "device";
-                const availabilityLabel = availableOnDevice
-                  ? availableOnServer
-                    ? "Available on the server and this device"
-                    : "Available on this device"
-                  : "Available from the server";
-                const unavailableOffline = isOffline && !availableOnDevice;
-                const shared = isCompactView ? null : summarizeSharedProgress(book.sharedProgress);
-                // Compact abbreviates the chip and drops it entirely for a book
-                // nobody has opened; the full wording stays on the tooltip so
-                // shortening it costs a screen reader nothing.
-                const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
-                const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
-                const sortTag = tagForShelfSort(book, shelfFilters.tags);
-                return (
-                    <button
-                      key={book.id}
-                      className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
-                      onClick={() => {
-                        selectBook(book);
-                        setLibraryOpen(false);
-                      }}
-                    >
-                      {native || viewMode === "grid" || book.coverArtUrl ? (
-                        <CoverArt book={book} size="small" />
-                      ) : (
-                        <span className="index">{String(index + 1).padStart(2, "0")}</span>
-                      )}
-                      <span
-                        className={`book-availability ${availableOnDevice ? "has-device-copy" : "server-only"} ${
-                          availableOnServer && availableOnDevice ? "server-and-device" : ""
-                        }`}
-                        role="img"
-                        aria-label={availabilityLabel}
-                        title={availabilityLabel}
-                      >
-                        {availableOnServer ? <Cloud className="server-availability-icon" size={13} strokeWidth={1.8} /> : null}
-                        {availableOnDevice ? <Smartphone className="device-availability-icon" size={13} strokeWidth={1.8} /> : null}
-                      </span>
-                      {/* Compact drops the badge row — runtime, shared readers,
-                          series position — and keeps title, byline and progress.
-                          Those tags are what a browsing row is for; a row you are
-                          scanning past a hundred of is not. Read along survives as
-                          a bare glyph: unlike the rest it has no other home on the
-                          shelf, so dropping it would make "does this one have the
-                          text?" unanswerable without opening every book. */}
-                      <span className="book-text">
-                        <strong>{book.title}</strong>
-                        <span>{bookSubtitle(book) || `${book.trackCount} track${book.trackCount === 1 ? "" : "s"}`}</span>
-                        {!isCompactView && sortMode === "series" && book.metadata.seriesPosition ? (
-                          <span className="book-sort-context">Book {book.metadata.seriesPosition} in series</span>
-                        ) : null}
-                        {!isCompactView && sortMode === "tag" && sortTag?.position ? (
-                          <span className="book-sort-context">
-                            Book {sortTag.position} in {sortTag.name}
-                          </span>
-                        ) : null}
-                        {!isCompactView && formatDurationLabel(book.durationSeconds ?? durationFromTracks(book)) ? (
-                          <span className="book-runtime-tag">
-                            <Timer size={11} strokeWidth={1.5} />
-                            {formatDurationLabel(book.durationSeconds ?? durationFromTracks(book))}
-                          </span>
-                        ) : null}
-                        {readalongEnabled && book.readingFile ? (
-                          <span
-                            className={`book-readalong-tag ${isCompactView ? "is-glyph" : ""}`}
-                            title="Ebook included: read along while you listen"
-                            aria-label={isCompactView ? "Ebook included: read along while you listen" : undefined}
-                          >
-                            <BookOpen size={11} strokeWidth={1.6} />
-                            {isCompactView ? null : "Read along"}
-                          </span>
-                        ) : readalongEnabled && hasExtras(book) ? (
-                          <span
-                            className={`book-readalong-tag extras ${isCompactView ? "is-glyph" : ""}`}
-                            title="Pictures or a supplement are included"
-                            aria-label={isCompactView ? "Pictures or a supplement are included" : undefined}
-                          >
-                            <Images size={11} strokeWidth={1.6} />
-                            {isCompactView ? null : "Extras"}
-                          </span>
-                        ) : null}
-                        {progressLabel ? (
-                          <span
-                            className={`book-progress ${book.progress?.status ?? "notStarted"}`}
-                            title={compactProgressTitle}
-                            aria-label={compactProgressTitle}
-                          >
-                            <em>{progressLabel}</em>
-                            {book.progress?.status === "inProgress" && book.progress.percentComplete !== null ? (
-                              <i style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
-                            ) : null}
-                          </span>
-                        ) : null}
-                        {shared ? (
-                          <span
-                            className={`book-shared-readers ${shared.finished > 0 ? "has-finishers" : ""}`}
-                            title={shared.detail}
-                            aria-label={shared.detail}
-                          >
-                            <Users size={11} strokeWidth={1.6} aria-hidden="true" />
-                            {shared.label}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                );
-                  })}
-                </section>
-                ))}
-                </div>
-              ))}
-            </div>
+            <ShelfBookList
+              columns={visibleBookColumns}
+              viewMode={viewMode}
+              sortMode={sortMode}
+              shelfTags={shelfFilters.tags}
+              selectedBookId={selectedBook?.id ?? null}
+              playbackBookId={playbackBook?.id ?? null}
+              downloadedBookIds={downloadedBookIds}
+              isOffline={isOffline}
+              demoMode={demoMode}
+              localMode={localMode}
+              native={native}
+              readalongEnabled={readalongEnabled}
+              onSelectBook={selectFromShelf}
+            />
           </>
         ) : showAudiblePurchases ? (
           <>

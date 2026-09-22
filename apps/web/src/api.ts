@@ -80,13 +80,26 @@ const STARTUP_TIMEOUT_MS = 8_000;
 export const SERVER_SETUP_GUIDE_URL = "https://donovanmontoya.github.io/OperaLibre/getting-started.html";
 const LOCAL_MODE_STORAGE_KEY = "operalibre.localMode";
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = STARTUP_TIMEOUT_MS) {
+/**
+ * Fetch and read the response under one deadline. The body is read inside the
+ * timeout too: a server that sends headers and then stalls would otherwise
+ * leave `response.json()` pending forever.
+ */
+async function fetchWithTimeout<T>(
+  url: string,
+  init: RequestInit,
+  read: (response: Response) => Promise<T>,
+  timeoutMs = STARTUP_TIMEOUT_MS
+): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   const abort = () => controller.abort();
+  // An already-aborted signal never fires "abort" again.
+  if (init.signal?.aborted) controller.abort();
   init.signal?.addEventListener("abort", abort, { once: true });
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return await read(response);
   } finally {
     window.clearTimeout(timer);
     init.signal?.removeEventListener("abort", abort);
@@ -376,14 +389,15 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
   const requestBase = serverType === "operalibre" && typeof window !== "undefined"
     ? browserApiBase(base, window.location.origin)
     : base;
-  const response = await fetchWithTimeout(`${requestBase}/api/health`, {
+  return fetchWithTimeout(`${requestBase}/api/health`, {
     method: "GET",
     credentials: "include"
+  }, async (response) => {
+    if (!response.ok) {
+      throw new Error(`Server responded ${response.status}.`);
+    }
+    return true;
   });
-  if (!response.ok) {
-    throw new Error(`Server responded ${response.status}.`);
-  }
-  return true;
 }
 
 let cachedToken: string | null = null;
@@ -519,7 +533,7 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetchWithTimeout(`${currentApiBase()}${path}`, {
+  return fetchWithTimeout(`${currentApiBase()}${path}`, {
     ...init,
     headers,
     // API JSON represents live playback, job, and library state. WebKit may
@@ -529,30 +543,30 @@ async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30
     // cookies prevents an old WebKit cookie from turning a native mutation
     // into a cookie-authenticated CSRF request after an app upgrade.
     credentials: usesNativeCredentialStorage() ? "omit" : "include"
-  }, timeoutMs);
-
-  if (response.status === 401 && unauthorizedHandler && !ignoreUnauthorized) {
-    unauthorizedHandler();
-  }
-
-  if (!response.ok) {
-    let message = `Request failed: ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body && typeof body.message === "string") {
-        message = body.message;
-      }
-    } catch {
-      // ignore
+  }, async (response) => {
+    if (response.status === 401 && unauthorizedHandler && !ignoreUnauthorized) {
+      unauthorizedHandler();
     }
-    throw new ApiError(message, response.status, retryAfterSeconds(response));
-  }
 
-  if (response.status === 204) {
-    return undefined as T;
-  }
+    if (!response.ok) {
+      let message = `Request failed: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body && typeof body.message === "string") {
+          message = body.message;
+        }
+      } catch {
+        // ignore
+      }
+      throw new ApiError(message, response.status, retryAfterSeconds(response));
+    }
 
-  return response.json() as Promise<T>;
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    return await response.json() as T;
+  }, timeoutMs);
 }
 
 export async function getAuthStatus() {
@@ -688,48 +702,50 @@ function authenticatedHeaders(headers?: HeadersInit) {
 
 export async function downloadServerBackup(): Promise<{ blob: Blob; filename: string }> {
   requireOperaLibreServer();
-  const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
+  return fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     headers: authenticatedHeaders(),
     cache: "no-store",
     credentials: usesNativeCredentialStorage() ? "omit" : "include"
-  }, 5 * 60_000);
-  if (!response.ok) {
-    let message = `Backup export failed: ${response.status}`;
-    try {
-      const body = await response.json();
-      if (typeof body?.message === "string") message = body.message;
-    } catch {
-      // Keep the HTTP fallback when the server did not return JSON.
+  }, async (response) => {
+    if (!response.ok) {
+      let message = `Backup export failed: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body?.message === "string") message = body.message;
+      } catch {
+        // Keep the HTTP fallback when the server did not return JSON.
+      }
+      throw new ApiError(message, response.status);
     }
-    throw new ApiError(message, response.status);
-  }
-  const disposition = response.headers.get("Content-Disposition") ?? "";
-  const filename = disposition.match(/filename="([^"]+)"/)?.[1]
-    ?? `operalibre-backup-${Date.now()}.json`;
-  return { blob: await response.blob(), filename };
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1]
+      ?? `operalibre-backup-${Date.now()}.json`;
+    return { blob: await response.blob(), filename };
+  }, 5 * 60_000);
 }
 
 export async function restoreServerBackup(file: File): Promise<ServerRestoreResult> {
   requireOperaLibreServer();
-  const response = await fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
+  return fetchWithTimeout(`${currentApiBase()}/api/admin/backup`, {
     method: "POST",
     headers: authenticatedHeaders({ "Content-Type": "application/json" }),
     body: file,
     cache: "no-store",
     credentials: usesNativeCredentialStorage() ? "omit" : "include"
-  }, 5 * 60_000);
-  if (response.status === 401 && unauthorizedHandler) unauthorizedHandler();
-  if (!response.ok) {
-    let message = `Backup restore failed: ${response.status}`;
-    try {
-      const body = await response.json();
-      if (typeof body?.message === "string") message = body.message;
-    } catch {
-      // Keep the HTTP fallback when the server did not return JSON.
+  }, async (response) => {
+    if (response.status === 401 && unauthorizedHandler) unauthorizedHandler();
+    if (!response.ok) {
+      let message = `Backup restore failed: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body?.message === "string") message = body.message;
+      } catch {
+        // Keep the HTTP fallback when the server did not return JSON.
+      }
+      throw new ApiError(message, response.status);
     }
-    throw new ApiError(message, response.status);
-  }
-  return response.json() as Promise<ServerRestoreResult>;
+    return await response.json() as ServerRestoreResult;
+  }, 5 * 60_000);
 }
 
 export async function listUsers() {
