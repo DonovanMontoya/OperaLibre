@@ -50,10 +50,11 @@ Options:
   --server-only       Install the API and media server without the bundled web
                       app, for headless servers and separately hosted frontends
   --libation          Set up the optional Audible import: use an installed
-                      Libation, or download one into the OperaLibre folder
+                      Libation, or download one into the OperaLibre folder,
+                      then offer guided sign-in when a terminal is available
   --libation-path P   Use the Libation CLI at P for the Audible import
   --no-libation       Skip the Audible import question
-  --yes               Accept every default and never prompt
+  --yes               Accept installation defaults; skip interactive sign-in
   --no-start          Install without starting OperaLibre
   --help              Show this message
 
@@ -731,6 +732,8 @@ fi
 LIBATION_REPOSITORY="rmcrackan/Libation"
 LIBATION_DOCS="https://donovanmontoya.github.io/OperaLibre/libation.html"
 LIBATION_CONFIGURED=""
+LIBATION_LOGIN_OFFER=0
+LIBATION_LOGIN_COMPLETE=0
 
 configured_libation_path() {
   config_value libation_cli_path
@@ -751,14 +754,82 @@ ensure_libation_files_dir() {
   # them. Seed empty ones so `login-external` works right after install
   # instead of failing with "Cannot find settings files".
   existing_files_dir=$(configured_libation_files_dir)
-  if [ -n "$existing_files_dir" ] && [ -f "${existing_files_dir}/Settings.json" ]; then
+  if [ -n "$existing_files_dir" ] && [ -f "${existing_files_dir}/Settings.json" ] &&
+    [ -f "${existing_files_dir}/AccountsSettings.json" ]; then
     return 0
   fi
   files_dir="${existing_files_dir:-${INSTALL_DIR}/LibationFiles}"
-  mkdir -p "$files_dir" || return 1
-  [ -f "${files_dir}/Settings.json" ] || printf '{}' >"${files_dir}/Settings.json"
-  [ -f "${files_dir}/AccountsSettings.json" ] || printf '{}' >"${files_dir}/AccountsSettings.json"
+  mkdir -p -m 700 "$files_dir" || return 1
+  (
+    umask 077
+    [ -f "${files_dir}/Settings.json" ] || printf '{}' >"${files_dir}/Settings.json" || exit 1
+    [ -f "${files_dir}/AccountsSettings.json" ] || printf '{}' >"${files_dir}/AccountsSettings.json" || exit 1
+  ) || return 1
   set_config libation_files_dir "$files_dir"
+}
+
+shell_quote() {
+  # Print one argument that can safely be pasted into a POSIX shell.
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+libation_login_later() {
+  say "To sign in later, paste this command into Terminal. Replace YOUR_EMAIL"
+  say "with your Audible email and us with your Audible country code (e.g. uk)."
+  printf '  DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 '
+  shell_quote "$LIBATION_CONFIGURED"
+  printf " login-external --account 'YOUR_EMAIL' --locale us --libationFiles "
+  shell_quote "$(configured_libation_files_dir)"
+  printf '\n'
+  say "Help: ${LIBATION_DOCS}"
+}
+
+offer_libation_login() {
+  # --yes and runs without a terminal must never start interactive login.
+  [ "$INTERACTIVE" -eq 1 ] || return 0
+  say ""
+  say "Libation is ready. You can connect your Audible account here now."
+  confirm "Would you like to sign in to Audible with Libation during setup?" y || return 0
+
+  while :; do
+    say ""
+    say "Use the email address for the Amazon account you use with Audible."
+    login_account=$(ask "Audible email (press Return to skip sign-in)" "")
+    [ -n "$login_account" ] || { say "Skipping sign-in. You can connect later."; return 0; }
+    say "Choose the Audible store where you bought your books, which may differ"
+    say "from where you live: us = audible.com, uk = audible.co.uk,"
+    say "ca = Canada, au = Australia, de = Germany, fr = France,"
+    say "it = Italy, es = Spain, in = India, jp = Japan, br = Brazil."
+    login_locale=$(ask "Audible country code" "us")
+    say ""
+    say "1. Libation will print a sign-in link. Open it in your web browser."
+    say "   On a server without a browser, open the link on your phone or computer."
+    say "2. Sign in on Amazon's page, including any verification code it asks for."
+    say "   Enter your password only on that page, never in this Terminal window."
+    say "3. Copy the entire address from the browser's address bar after sign-in,"
+    say "   then return here and paste it when Libation asks for a URL."
+    say "   A final page saying it does not exist is normal. Copy its address anyway."
+    say "   Treat that address like a password; do not share it."
+    say "   To cancel at the URL prompt, press Return without pasting an address."
+    say ""
+    # stdin is usually the install script (curl | sh). Libation checks for a
+    # terminal, so connect all three streams directly, without capturing URLs.
+    if (
+      umask 077
+      cd "$INSTALL_DIR" || exit 1
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 "$LIBATION_CONFIGURED" \
+        login-external --account "$login_account" --locale "$login_locale" \
+        --libationFiles "$(configured_libation_files_dir)"
+    ) </dev/tty >/dev/tty 2>&1; then
+      LIBATION_LOGIN_COMPLETE=1
+      say "Audible sign-in completed."
+      return 0
+    fi
+    say "Sign-in did not finish. OperaLibre will still be installed."
+    confirm "Try signing in again?" n || return 0
+  done
 }
 
 find_libation() {
@@ -885,7 +956,13 @@ if [ "$LIBATION_CHOICE" != no ]; then
     # alone, but still backfill a missing LibationFiles setup from an older
     # install that predates it.
     LIBATION_CONFIGURED=$existing_libation_config
-    ensure_libation_files_dir || true
+    # An explicit request can connect an account on a later installer run;
+    # ordinary upgrades leave the existing account setup alone.
+    if [ "$LIBATION_CHOICE" = yes ]; then
+      LIBATION_LOGIN_OFFER=1
+    else
+      ensure_libation_files_dir || true
+    fi
   else
     want_libation=0
     if [ "$LIBATION_CHOICE" = yes ]; then
@@ -931,12 +1008,29 @@ if [ "$LIBATION_CHOICE" != no ]; then
 
       if [ -n "$LIBATION_PATH" ]; then
         set_config libation_cli_path "$LIBATION_PATH"
-        ensure_libation_files_dir || say "Could not set up Libation's settings folder; the Audible import may need manual setup."
         LIBATION_CONFIGURED=$LIBATION_PATH
+        LIBATION_LOGIN_OFFER=1
       else
         say "The Audible import stays off. See ${LIBATION_DOCS} to turn it on later."
       fi
     fi
+  fi
+fi
+
+if [ "$LIBATION_LOGIN_OFFER" -eq 1 ]; then
+  # Resolve older relative CLI paths from the installation, as the server does.
+  case "$LIBATION_CONFIGURED" in
+    /*) ;;
+    *) LIBATION_CONFIGURED="${INSTALL_DIR}/${LIBATION_CONFIGURED}" ;;
+  esac
+  if ensure_libation_files_dir; then
+    offer_libation_login
+    if [ "$LIBATION_LOGIN_COMPLETE" -ne 1 ]; then
+      libation_login_later
+    fi
+  else
+    say "Could not set up Libation's settings folder. You can finish Audible setup later:"
+    say "  ${LIBATION_DOCS}"
   fi
 fi
 
@@ -983,8 +1077,13 @@ else
 fi
 say ""
 if [ -n "$LIBATION_CONFIGURED" ]; then
-  say "Audible import is configured. Sign in as the administrator, open Audible,"
-  say "and choose Add account to connect an Audible account."
+  if [ "$LIBATION_LOGIN_COMPLETE" -eq 1 ]; then
+    say "Audible is connected. Sign in to OperaLibre as the administrator and"
+    say "open Audible. Choose Refresh Audible if your books have not appeared yet."
+  else
+    say "Audible import is configured. Accounts signed in through Libation appear"
+    say "under Audible when you sign in to OperaLibre as the administrator."
+  fi
   say ""
 fi
 if [ "$KIND" = server ] && [ "$UPGRADE" -eq 0 ]; then

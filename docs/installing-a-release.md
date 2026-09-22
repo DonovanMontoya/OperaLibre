@@ -22,7 +22,7 @@ The installer walks you through the whole setup:
 3. It asks which folder holds your audiobooks. Press Return to use the folder inside the installation, or type the path of a library you already have.
 4. It asks whether OperaLibre should be reachable only from this computer (`local`) or from phones and other devices on your trusted home network (`lan`).
 5. It downloads the package, checks it against the published `SHA256SUMS.txt` digest, and stops without installing anything if the digest does not match.
-6. It offers to set up the optional Audible import. Answer `n` to skip it — the feature stays hidden and can be turned on later.
+6. It offers to set up the optional Audible import, then asks whether you would like to sign in with Libation during setup. Answer `n` to either question to skip that step and finish it later.
 7. It writes your answers into `server.config`, clears the macOS download quarantine, and starts the server in the background.
 
 When it finishes, open the address it prints — usually <http://localhost:4920> — and create the administrator account.
@@ -45,10 +45,10 @@ curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/scri
 | `--version VERSION` | Install a specific release, such as `0.3.4` |
 | `--mode local` or `--mode lan` | Choose network access without being asked |
 | `--server-only` | Install the API and media server without the bundled web app |
-| `--libation` | Set up the Audible import without being asked |
+| `--libation` | Set up the Audible import and offer guided sign-in (also on a later installer run) |
 | `--libation-path PATH` | Use the Libation CLI at `PATH` |
 | `--no-libation` | Skip the Audible import question entirely |
-| `--yes` | Accept every default and never ask a question |
+| `--yes` | Accept installation defaults without questions; skip interactive Audible sign-in |
 | `--no-start` | Install without starting OperaLibre |
 | `--help` | List all options |
 
@@ -62,9 +62,18 @@ If you say yes to the Audible import, the installer handles [Libation](https://g
 - If there is none, it offers to download the newest official Libation release for your computer and unpack it into a `libation` folder inside your OperaLibre installation. Nothing is installed system-wide and no administrator password is needed, so removing it later means deleting that one folder.
 - You can also type the path of a Libation command-line program yourself, or press Return to skip.
 
-The chosen program is written to `libation_cli_path` in `server.config`. After the server starts, sign in as the administrator, open **Audible**, and choose **Add account**; your Audible password is only ever entered on Amazon's own sign-in page. See [Libation / Audible Import](libation.md) for the rest of the workflow.
+Once Libation is ready, the installer asks **Would you like to sign in to Audible with Libation during setup?** Press Return for yes. There is no need to find or launch Libation yourself:
 
-Running the installer again never disturbs an Audible import you already configured.
+1. Enter the email address you use with Audible and choose the country code for the Audible store where you bought your books. The installer explains the choices.
+2. Open the link Libation prints in your browser. On a server without a browser, you can open it on another computer or your phone.
+3. Sign in on Amazon's page and complete any verification it requests. Your password is entered only on Amazon's page.
+4. Copy the entire address from your browser's address bar, return to Terminal, and paste it when Libation asks for a URL. A final page saying it does not exist is normal. Treat this address like a password and do not share it.
+
+The installer uses the same Libation settings folder that OperaLibre will use, so your account is available after setup. Sign in to OperaLibre as the administrator and open **Audible**; choose **Refresh Audible** if your books have not appeared yet. This setup connects your account; it does not download all your audiobooks.
+
+You can decline sign-in or press Return at the email or URL prompt to cancel. If sign-in fails, the installer offers a retry and can still finish installing OperaLibre. When sign-in is skipped, it prints a command with the correct program and settings paths to use later. Runs with `--yes` or without an interactive terminal always skip sign-in.
+
+Running the installer again preserves your existing Audible configuration and does not prompt for sign-in unless you explicitly pass `--libation` or `--libation-path`. See [Libation / Audible Import](libation.md) for the rest of the workflow.
 
 ### Headless servers
 
