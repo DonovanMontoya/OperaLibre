@@ -125,7 +125,10 @@ public class OfflineDownloadWorker extends Worker {
                 } catch (DownloadCancelledException cancelled) {
                     throw cancelled;
                 } catch (Exception error) {
-                    if (required) throw error;
+                    // A stop is not a failed optional file: skipping it here
+                    // would count it done, and the resumed job would never
+                    // fetch it.
+                    if (required || isStopped()) throw error;
                     if (partial.exists()) partial.delete();
                     partial = null;
                 }
@@ -243,7 +246,13 @@ public class OfflineDownloadWorker extends Worker {
                     }
                 }
             }
-            if (libro && (received == 0 || (expected >= 0 && expected != received))) {
+            // Requests ask for identity encoding, so a declared length is the
+            // body's length. A connection that closes early ends the stream
+            // without an error, and the partial file must not be kept.
+            if (expected >= 0 && expected != received) {
+                throw new IllegalStateException("The download was incomplete. Retry it.");
+            }
+            if (libro && received == 0) {
                 throw new IllegalStateException("The Libro.fm download was incomplete. Retry it.");
             }
         } finally {
