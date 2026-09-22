@@ -764,14 +764,23 @@ fn libation_sidecar_is_only_claimed_by_the_book_it_names() {
     std::fs::write(&unrelated, b"").unwrap();
 
     assert!(
-        super::libation_sidecar_for_group(&unrelated, std::slice::from_ref(&unrelated)).is_none(),
+        super::libation_sidecar_for_group(
+            &unrelated,
+            std::slice::from_ref(&unrelated),
+            &mut super::DirectoryFiles::default(),
+        )
+        .is_none(),
         "a loose book must not adopt a neighbour's Libation record"
     );
 
     let named = root.path().join("Other [B003ZWFO7E].m4b");
     assert_eq!(
-        super::libation_sidecar_for_group(&named, std::slice::from_ref(&named))
-            .and_then(|found| found.asin),
+        super::libation_sidecar_for_group(
+            &named,
+            std::slice::from_ref(&named),
+            &mut super::DirectoryFiles::default(),
+        )
+        .and_then(|found| found.asin),
         Some("B003ZWFO7E".to_string())
     );
 
@@ -783,8 +792,12 @@ fn libation_sidecar_is_only_claimed_by_the_book_it_names() {
     std::fs::write(&track, b"").unwrap();
     std::fs::write(folder.join("audible.metadata.json"), sidecar("B002V1OF70")).unwrap();
     assert_eq!(
-        super::libation_sidecar_for_group(&folder, std::slice::from_ref(&track))
-            .and_then(|found| found.asin),
+        super::libation_sidecar_for_group(
+            &folder,
+            std::slice::from_ref(&track),
+            &mut super::DirectoryFiles::default(),
+        )
+        .and_then(|found| found.asin),
         Some("B002V1OF70".to_string())
     );
 }
@@ -6359,4 +6372,64 @@ fn fingerprint_samples_are_filled_across_short_reads() {
     let mut sample = [0_u8; 600];
     let filled = super::read_sample(&mut TrickleReader(&data[..10]), &mut sample).unwrap();
     assert_eq!(filled, 10);
+}
+
+#[test]
+fn libation_titles_match_subtitles_but_not_sequels() {
+    let local = |id: &str, title: &str| {
+        let mut book = book_with_tracks(None, Vec::new());
+        book.id = id.to_string();
+        book.title = title.to_string();
+        book.asin = None;
+        book
+    };
+    let libation = |title: &str, subtitle: Option<&str>| super::LibationBook {
+        catalog_id: String::new(),
+        profile_id: String::new(),
+        profile_name: String::new(),
+        account_id: None,
+        asin: "not-an-asin".to_string(),
+        title: title.to_string(),
+        subtitle: subtitle.map(str::to_string),
+        authors: None,
+        narrators: None,
+        length_minutes: None,
+        description: None,
+        publisher: None,
+        book_status: None,
+        pdf_status: None,
+        content_type: None,
+        locale: None,
+        last_downloaded: None,
+        is_audible_plus: false,
+        cover_art_url: None,
+        local_book_id: None,
+    };
+    let books = vec![
+        local("messiah", "Dune Messiah"),
+        local("dune", "Dune: Book One"),
+    ];
+    let keys = super::local_book_keys(&books);
+
+    assert_eq!(
+        super::match_local_book(&keys, &libation("Dune", None)).as_deref(),
+        Some("dune")
+    );
+    assert_eq!(
+        super::match_local_book(&keys, &libation("Dune", Some("Book One"))).as_deref(),
+        Some("dune")
+    );
+    assert_eq!(
+        super::match_local_book(&keys, &libation("Dune Messiah (Unabridged)", None)).as_deref(),
+        Some("messiah")
+    );
+    let only_sequel = super::local_book_keys(&books[..1]);
+    assert_eq!(
+        super::match_local_book(&only_sequel, &libation("Dune", None)),
+        None
+    );
+    assert_eq!(
+        super::main_title("Guns, Germs, and Steel"),
+        "Guns, Germs, and Steel"
+    );
 }
