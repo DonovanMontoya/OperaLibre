@@ -12,11 +12,12 @@ independently of the server releases.
 
 ## Unreleased
 
-## 1.2.6 (20)
+### 1.2.7 (planned)
 
-Prepared for the next iOS build on September 21, 2026; TestFlight/App Store
-Connect distribution is pending. App source:
-[`5b88c600`](https://github.com/DonovanMontoya/OperaLibre/commit/5b88c600766637fbe80ad489e634381b7faf3fd1).
+The iPhone Duo changes are scheduled for 1.2.7. The build number and
+distribution date are pending. These changes were introduced in
+[#167](https://github.com/DonovanMontoya/OperaLibre/pull/167) and are excluded
+from 1.2.6 (2).
 
 - Added iPhone Duo support: the shelf, player, reader, Settings, Ledger, and
   Games adapt to folding, rotation, and the space around the hinge. Native
@@ -36,6 +37,48 @@ Connect distribution is pending. App source:
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
 
 These changes do not require a server update.
+
+## 1.2.6 (2)
+
+Prepared for App Store release on September 22, 2026, using Xcode 27.0.
+Version and build confirmed by the maintainer; distribution has not yet been
+recorded. Release branch: `feat/release-pre-iphone-duo`. App source baseline:
+[`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
+immediately before the iPhone Duo merge (#167).
+
+- Downloaded books and the cached shelf open without a server connection.
+  Offline playback restores its saved position, including after reopening
+  the app from a cold launch.
+  ([#168](https://github.com/DonovanMontoya/OperaLibre/pull/168),
+  [#169](https://github.com/DonovanMontoya/OperaLibre/pull/169))
+- Streamed audiobooks start with less redundant loading. Play shows when it
+  is waiting for audio, and a second tap cancels the pending start. Returning
+  to the app refreshes the live playback position and adopts progress from
+  another device more reliably.
+  ([#156](https://github.com/DonovanMontoya/OperaLibre/pull/156),
+  [#160](https://github.com/DonovanMontoya/OperaLibre/pull/160),
+  [#163](https://github.com/DonovanMontoya/OperaLibre/pull/163))
+- Added newest-first shelf sorting, including corrected ordering for older
+  library entries when the server supplies recovered addition dates.
+  ([#157](https://github.com/DonovanMontoya/OperaLibre/pull/157),
+  [#161](https://github.com/DonovanMontoya/OperaLibre/pull/161),
+  [#166](https://github.com/DonovanMontoya/OperaLibre/pull/166))
+- EPUBs can open chapter by chapter on compatible servers. Switching reader
+  focus preserves the open book, and stale Follow Along highlights are
+  cleared after rotation or switching books.
+  ([#156](https://github.com/DonovanMontoya/OperaLibre/pull/156),
+  [#154](https://github.com/DonovanMontoya/OperaLibre/pull/154),
+  [#161](https://github.com/DonovanMontoya/OperaLibre/pull/161))
+- Fixed landscape text clipping on iPhone and improved the iPad mini-player
+  layout.
+  ([#159](https://github.com/DonovanMontoya/OperaLibre/pull/159),
+  [#165](https://github.com/DonovanMontoya/OperaLibre/pull/165))
+- Corrected Word Grid's accepted-word dictionary.
+  ([#158](https://github.com/DonovanMontoya/OperaLibre/pull/158))
+
+Chapter-by-chapter EPUB streaming and recovered dates for older library
+entries use the matching server features; older servers retain their existing
+behavior.
 
 ## 1.2.4 (18)
 
