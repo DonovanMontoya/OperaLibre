@@ -156,13 +156,32 @@ impl Default for UsersStore {
     }
 }
 
+/// A live session, stored under [`session_id_for_token`] of its bearer token.
+///
+/// Neither the token nor its media token is kept anywhere on the server: a
+/// copy of the database or a backup file must not be enough to sign in, or to
+/// stream the library as someone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Session {
     pub(crate) user_id: String,
     pub(crate) created_at: u64,
+    /// [`media_token_lookup_key`] of this session's media token. Sessions
+    /// read from a file older than hashed storage have none and cannot be
+    /// reached by media token, which only matters to a restore, and a restore
+    /// never revives sessions from its file.
+    #[serde(default)]
+    pub(crate) media_token_hash: String,
 }
 
 impl Session {
+    pub(crate) fn new(user_id: &str, created_at: u64, token: &str) -> Self {
+        Self {
+            user_id: user_id.to_string(),
+            created_at,
+            media_token_hash: media_token_lookup_key(&media_token_for_session(token)),
+        }
+    }
+
     pub(crate) fn is_expired(&self, now_seconds: u64) -> bool {
         now_seconds.saturating_sub(self.created_at) > SESSION_COOKIE_MAX_AGE_SECONDS
     }
@@ -207,8 +226,15 @@ impl From<&User> for AuthUser {
     }
 }
 
+/// The session a request authenticated with.
 #[derive(Debug, Clone)]
-pub(crate) struct SessionToken(pub(crate) String);
+pub(crate) struct CurrentSession {
+    /// The session's storage key, [`session_id_for_token`] of its token.
+    pub(crate) id: String,
+    /// The media token for links this response hands out. A media-token
+    /// request only ever presents this, never the session token itself.
+    pub(crate) media_token: String,
+}
 
 #[derive(Debug, Deserialize)]
 // Permission payloads reject unknown fields. These types all model an
@@ -405,6 +431,23 @@ pub(crate) fn media_token_for_session(session_token: &str) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
 }
 
+/// The key a session is stored under. A one-way digest, so the sessions table
+/// and backups hold nothing a client could present.
+pub(crate) fn session_id_for_token(session_token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-session-id-v1\0");
+    digest.update(session_token.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+/// What the media-token index stores in place of the media token itself.
+pub(crate) fn media_token_lookup_key(media_token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-media-lookup-v1\0");
+    digest.update(media_token.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
 pub(crate) fn setup_token_digest(token: &str) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"operalibre-setup-v1\0");
@@ -559,13 +602,17 @@ pub(crate) fn extract_request_credential(req: &Request) -> Option<RequestCredent
 }
 
 pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
+    resolve_session_id(state, &session_id_for_token(token)).await
+}
+
+async fn resolve_session_id(state: &AppState, session_id: &str) -> Option<AuthUser> {
     let sessions = state.sessions.read().await;
-    let session = sessions.get(token)?.clone();
+    let session = sessions.get(session_id)?.clone();
     drop(sessions);
     if session.is_expired(unix_now_seconds()) {
         if let Err(error) = state
             .sessions
-            .mutate(|sessions| Ok(sessions.remove(token).is_some()))
+            .mutate(|sessions| Ok(sessions.remove(session_id).is_some()))
             .await
         {
             tracing::warn!(
@@ -586,11 +633,16 @@ pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<Aut
 pub(crate) async fn resolve_media_session(
     state: &AppState,
     media_token: &str,
-) -> Option<(AuthUser, String)> {
-    let session_token = state.sessions.session_for_media_token(media_token).await?;
-    resolve_session(state, &session_token)
-        .await
-        .map(|user| (user, session_token))
+) -> Option<(AuthUser, CurrentSession)> {
+    let session_id = state.sessions.session_for_media_token(media_token).await?;
+    let user = resolve_session_id(state, &session_id).await?;
+    Some((
+        user,
+        CurrentSession {
+            id: session_id,
+            media_token: media_token.to_string(),
+        },
+    ))
 }
 
 pub(crate) async fn auth_middleware(
@@ -603,16 +655,20 @@ pub(crate) async fn auth_middleware(
         return Err(ApiError::unauthorized("Missing authentication token."));
     };
     let resolved = match credential {
-        RequestCredential::Session(token) => resolve_session(&state, &token)
-            .await
-            .map(|user| (user, token)),
+        RequestCredential::Session(token) => resolve_session(&state, &token).await.map(|user| {
+            let session = CurrentSession {
+                id: session_id_for_token(&token),
+                media_token: media_token_for_session(&token),
+            };
+            (user, session)
+        }),
         RequestCredential::Media(token) => resolve_media_session(&state, &token).await,
     };
-    let Some((user, session_token)) = resolved else {
+    let Some((user, session)) = resolved else {
         return Err(ApiError::unauthorized("Session is invalid or expired."));
     };
     req.extensions_mut().insert(user);
-    req.extensions_mut().insert(SessionToken(session_token));
+    req.extensions_mut().insert(session);
     Ok(next.run(req).await)
 }
 
@@ -996,15 +1052,13 @@ pub(crate) async fn record_login_failures<'a>(
 
 pub(crate) async fn create_session(state: &AppState, user_id: &str) -> Result<String, ApiError> {
     let token = generate_session_token();
-    let session = Session {
-        user_id: user_id.to_string(),
-        created_at: unix_now_seconds(),
-    };
+    let session = Session::new(user_id, unix_now_seconds(), &token);
+    let session_id = session_id_for_token(&token);
     state
         .sessions
         .mutate(|sessions| {
             prune_sessions_for_new_session(sessions, user_id, session.created_at);
-            sessions.insert(token.clone(), session);
+            sessions.insert(session_id, session);
             Ok(())
         })
         .await?;
@@ -1045,10 +1099,11 @@ fn evict_oldest_sessions(
 pub(crate) fn revoke_password_change_sessions(
     sessions: &mut HashMap<String, Session>,
     user_id: &str,
-    current_session: Option<&str>,
+    current_session_id: Option<&str>,
 ) {
-    sessions.retain(|token, session| {
-        session.user_id != user_id || current_session.is_some_and(|current| token == current)
+    sessions.retain(|session_id, session| {
+        session.user_id != user_id
+            || current_session_id.is_some_and(|current| session_id == current)
     });
 }
 
@@ -1057,10 +1112,11 @@ pub(crate) async fn logout(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(token) = token_from_headers(&headers) {
+        let session_id = session_id_for_token(&token);
         state
             .sessions
             .mutate(|sessions| {
-                sessions.remove(&token);
+                sessions.remove(&session_id);
                 Ok(())
             })
             .await?;
@@ -1376,7 +1432,7 @@ pub(crate) async fn delete_user(
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Extension(current_session): Extension<SessionToken>,
+    Extension(current_session): Extension<CurrentSession>,
     Path(user_id): Path<String>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -1449,7 +1505,7 @@ pub(crate) async fn change_password(
             revoke_password_change_sessions(
                 sessions,
                 &target_id,
-                changing_self.then_some(current_session.0.as_str()),
+                changing_self.then_some(current_session.id.as_str()),
             );
             Ok(())
         })
