@@ -1159,6 +1159,10 @@ public final class AudiobookPlayer {
         guard !interruptionIsActive, let player else { return }
         wasPlayingBeforeInterruption = false
         interruptionEndedWhileInactiveAt = nil
+        // Still seeking to the saved position: the retained play intent
+        // starts playback once it lands, and playing now would start from
+        // the top of the file until then.
+        guard initialSeekComplete else { return }
         activateAudioSession()
         player.playImmediately(atRate: desiredRate)
         persistCheckpoint(force: true)
@@ -1300,9 +1304,15 @@ public final class AudiobookPlayer {
         artworkGeneration += 1
         let requestedGeneration = artworkGeneration
         nowPlayingArtwork = nil
-        guard let source, let url = resolveSourceURL(source) else { return }
+        guard let source, let url = resolveNativeAudioSourceURL(source) else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return }
+            guard
+                let data = fetchArtworkData(from: url),
+                let original = UIImage(data: data)
+            else { return }
+            // The lock screen and car draw a few hundred points at most, and
+            // the image is held for as long as the book is loaded.
+            let image = downscaledArtwork(original, maximumSide: 1024)
             DispatchQueue.main.async {
                 guard let self, requestedGeneration == self.artworkGeneration else { return }
                 self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
@@ -1456,10 +1466,6 @@ public final class AudiobookPlayer {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
-    private func resolveSourceURL(_ source: String) -> URL? {
-        resolveNativeAudioSourceURL(source)
-    }
-
     private func finiteSeconds(_ time: CMTime) -> Double {
         validSeconds(time) ?? 0
     }
@@ -1497,6 +1503,41 @@ public final class AudiobookPlayer {
     private func clampedGain(_ value: Double) -> Float {
         guard value.isFinite else { return 1 }
         return Float(min(16, max(0.5, value)))
+    }
+}
+
+/// Artwork bytes from a downloaded file or the server. Blocking: call it off
+/// the main thread. A remote fetch gives up after a bounded wait, where
+/// `Data(contentsOf:)` could hold its thread for as long as the network did.
+func fetchArtworkData(from url: URL, timeout: TimeInterval = 20) -> Data? {
+    if url.isFileURL { return try? Data(contentsOf: url) }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = timeout
+    let finished = DispatchSemaphore(value: 0)
+    var result: Data?
+    let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+        if let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) {
+            result = data
+        }
+        finished.signal()
+    }
+    task.resume()
+    if finished.wait(timeout: .now() + timeout) == .timedOut {
+        task.cancel()
+        return nil
+    }
+    return result
+}
+
+func downscaledArtwork(_ image: UIImage, maximumSide: CGFloat) -> UIImage {
+    let longest = max(image.size.width, image.size.height)
+    guard longest > maximumSide else { return image }
+    let scale = maximumSide / longest
+    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        image.draw(in: CGRect(origin: .zero, size: size))
     }
 }
 

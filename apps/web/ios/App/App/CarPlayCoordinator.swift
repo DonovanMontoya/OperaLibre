@@ -30,6 +30,15 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// what happened in the car as soon as JS runs again.
     var onWebNotification: ((String, [String: Any]) -> Void)?
 
+    /// What the car's lists last drew: which book is playing, and whether it
+    /// is. Now Playing updates arrive on every chapter, rate and artwork
+    /// change, and the lists only need redrawing when this moves.
+    private struct ListedPlayback: Equatable {
+        var bookId: String?
+        var isPlaying: Bool
+    }
+    private var listedPlayback: ListedPlayback?
+
     private let store = CarLibraryStore.shared
     private let engine = AudiobookPlayer.shared
     private var lastSessionWrite = 0.0
@@ -57,6 +66,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
 
     func carSceneDidConnect() {
         isConnected = true
+        listedPlayback = nil
         notifyWeb("carConnected", data: [:])
     }
 
@@ -228,7 +238,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         engine.stop(releaseSession: true)
         notifyWeb("carPlaybackEnded", data: [:])
         onLibraryChange?()
-        onPlaybackChange?()
+        redrawCarLists()
     }
 
     func togglePlayPause() {
@@ -342,6 +352,13 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         ))
     }
 
+    /// Redraws unconditionally, for changes the playing state does not show
+    /// (a finished book, a cleared library).
+    private func redrawCarLists() {
+        listedPlayback = nil
+        onPlaybackChange?()
+    }
+
     private func notifyWeb(_ event: String, data: [String: Any]) {
         onWebNotification?(event, data)
     }
@@ -356,14 +373,18 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         // A transport change is where a session is most worth banking: it is
         // the moment a listener stops, and the point they will resume from.
         recordSession(force: true)
-        onPlaybackChange?()
+        guard let onPlaybackChange else { return }
+        let playback = ListedPlayback(bookId: currentBook()?.id, isPlaying: engine.status.isPlaying)
+        guard playback != listedPlayback else { return }
+        listedPlayback = playback
+        onPlaybackChange()
     }
 
     func audiobookPlayerDidFinishPlayback(_ player: AudiobookPlayer) {
         recordSession(force: true, finished: true)
         let finishedBookId = carOwnedBookId
         carOwnedBookId = nil
-        onPlaybackChange?()
+        redrawCarLists()
         if let finishedBookId {
             notifyWeb("carPlaybackEnded", data: ["bookId": finishedBookId])
         }

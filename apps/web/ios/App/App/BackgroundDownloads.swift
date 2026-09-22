@@ -117,13 +117,23 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         let completedRequired = descriptions.filter {
             $0.required && existingDestinations.contains($0.destination)
         }.count
+        // Destinations the live job already has tasks for. A repeated enqueue
+        // may list files the first one did not; only those need new tasks.
+        var alreadyScheduled = Set<String>()
         let enqueueResult = mutateJobs { jobs -> (createTasks: Bool, shouldStart: Bool, completed: Bool) in
             if var existing = jobs[jobId], existing.state == "running" || existing.state == "queued" {
+                alreadyScheduled = Set((existing.files ?? []).map(\.destination))
+                let added = descriptions.filter {
+                    !alreadyScheduled.contains($0.destination) && !existingDestinations.contains($0.destination)
+                }
                 existing.files = descriptions
+                existing.total = descriptions.count
+                existing.requiredTotal = requiredTotal
                 existing.enqueuedAt = existing.enqueuedAt ?? Date().timeIntervalSince1970
                 reconcileFiles(in: &existing)
                 jobs[jobId] = existing
-                return (false, false, existing.state == "completed")
+                let completed = existing.state == "completed"
+                return (!added.isEmpty && !completed, existing.state == "running", completed)
             }
             let shouldStart = !jobs.values.contains { $0.state == "running" }
             // A retry must also fill missing EPUBs, covers and sync maps when
@@ -149,7 +159,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
 
         for (file, description) in zip(files, descriptions) {
-            if existingDestinations.contains(description.destination) { continue }
+            if existingDestinations.contains(description.destination)
+                || alreadyScheduled.contains(description.destination) { continue }
             let destination = try validatedBackgroundMediaDestination(file.destination)
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(),
@@ -179,7 +190,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     if !recoveredFiles.isEmpty { job.files = recoveredFiles }
                 }
                 self.reconcileFiles(in: &job)
-                if job.state == "running" && jobTasks.isEmpty && job.state != "completed" {
+                if job.state == "running" && jobTasks.isEmpty {
                     if job.files?.isEmpty == false {
                         job.state = "queued"
                         job.errors = []
@@ -206,7 +217,6 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 guard
                     !handled.contains(task.taskIdentifier),
                     let info = self.taskInfo(task),
-                    info.jobId == jobId,
                     info.required,
                     task.countOfBytesExpectedToReceive > 0
                 else { return partial }
@@ -417,7 +427,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     if job.state == "completed" {
                         tasksToCancel.append(contentsOf: tasksByJob[jobId] ?? [])
                     }
-                    if job.state == "running" && job.state != "completed" && tasksByJob[jobId, default: []].isEmpty {
+                    if job.state == "running" && tasksByJob[jobId, default: []].isEmpty {
                         if job.files?.isEmpty == false {
                             job.state = "queued"
                             job.errors = []
