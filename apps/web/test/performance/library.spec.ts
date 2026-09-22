@@ -37,6 +37,7 @@ test('large shelf search and real playback remain functional', async ({ page }, 
     else if (path === '/api/auth/me') body = user;
     else if (path === '/api/books') body = books;
     else if (path === '/api/libation/books') body = [];
+    else if (path === '/api/alignment/status') body = { enabled: false, cliPath: null };
     else if (/\/progress$/.test(path) && request.method() === 'GET') body = null;
     else if (/\/progress$/.test(path) && request.method() === 'PUT') {
       const update = request.postDataJSON(); writes.push(update);
