@@ -1470,8 +1470,8 @@ pub(crate) fn fake_libation_state(root: &std::path::Path) -> (super::AppState, s
     let cli_path = root.join("fake-libation.sh");
     let script = format!(
         r#"#!/bin/sh
-if [ "${{DOTNET_SYSTEM_GLOBALIZATION_INVARIANT-}}" = "1" ]; then
-  printf 'invariant globalization is incompatible with Libation\n' >&2
+if [ "${{DOTNET_SYSTEM_GLOBALIZATION_INVARIANT-}}" != "0" ]; then
+  printf 'full globalization was not enabled for Libation\n' >&2
   exit 91
 fi
 command="$1"
@@ -3191,25 +3191,6 @@ fn libation_account_rows_keep_distinct_server_identities() {
     assert_eq!(accounts[0].connection_state, "connected");
     assert!(!accounts[1].authenticated);
     assert_eq!(accounts[1].connection_state, "needs_sign_in");
-}
-
-#[test]
-fn libation_commands_clear_inherited_invariant_globalization() {
-    let mut command = tokio::process::Command::new("libationcli");
-    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
-    super::clear_invariant_globalization(&mut command);
-    assert!(command.as_std().get_envs().any(|(name, value)| {
-        name == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" && value.is_none()
-    }));
-
-    let mut command = portable_pty::CommandBuilder::new("libationcli");
-    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
-    super::clear_interactive_invariant_globalization(&mut command);
-    assert!(
-        command
-            .get_env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")
-            .is_none()
-    );
 }
 
 #[tokio::test]
