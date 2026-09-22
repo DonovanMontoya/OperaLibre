@@ -1492,27 +1492,38 @@ pub(crate) fn match_local_book(
         return Some(matched.id.clone());
     }
 
-    let mut targets = vec![
-        normalize_match_key(&libation_book.title),
-        normalize_match_key(main_title(&libation_book.title)),
-    ];
-    if let Some(subtitle) = libation_book.subtitle.as_deref() {
-        targets.push(normalize_match_key(&format!(
-            "{} {subtitle}",
-            libation_book.title
-        )));
-    }
-    targets.retain(|target| !target.is_empty());
-    if targets.is_empty() {
+    let full_title = normalize_match_key(&libation_book.title);
+    let main_title = normalize_match_key(main_title(&libation_book.title));
+    if full_title.is_empty() {
         return None;
     }
+    let subtitle = libation_book
+        .subtitle
+        .as_deref()
+        .map(normalize_match_key)
+        .filter(|subtitle| !subtitle.is_empty());
+    let combined_title = subtitle
+        .as_ref()
+        .map(|subtitle| format!("{full_title} {subtitle}"));
+
+    // Prefer the full title even when a different book with the same main
+    // title appears earlier in the local catalogue.
+    if let Some(book) = local_books.iter().find(|book| {
+        !book.titles[0].is_empty()
+            && (book.titles[0] == full_title || combined_title.as_ref() == Some(&book.titles[0]))
+    }) {
+        return Some(book.id.clone());
+    }
+
+    let target_has_suffix = full_title != main_title || subtitle.is_some();
 
     local_books
         .iter()
         .find(|book| {
-            book.titles
-                .iter()
-                .any(|title| !title.is_empty() && targets.contains(title))
+            let local_has_suffix = book.titles[0] != book.titles[1];
+            !main_title.is_empty()
+                && book.titles[1] == main_title
+                && local_has_suffix != target_has_suffix
         })
         .map(|book| book.id.clone())
 }
@@ -1899,15 +1910,19 @@ pub(crate) async fn start_libation_download(
 
     let (job_id, created) =
         create_queued_job(state, "libation-liberate", Some(catalog_id.clone())).await;
-    if let Some(user_id) = grant_to_user {
+    let reported_job_id = if let Some(user_id) = grant_to_user {
         schedule_libation_access_grant(
             state.clone(),
             job_id.clone(),
+            catalog_id,
             profile.clone(),
             asin.clone(),
             user_id,
-        );
-    }
+        )
+        .await
+    } else {
+        job_id.clone()
+    };
     if created {
         tokio::spawn(run_job(
             state.clone(),
@@ -1915,7 +1930,9 @@ pub(crate) async fn start_libation_download(
             run_libation_liberate_job(state.clone(), job_id.clone(), profile, asin),
         ));
     }
-    Ok(Json(JobCreated { job_id }))
+    Ok(Json(JobCreated {
+        job_id: reported_job_id,
+    }))
 }
 
 /// One liberation run: download the book through the profile's Libation
@@ -2019,44 +2036,61 @@ async fn run_libation_liberate_job(
     }
 }
 
-pub(crate) fn schedule_libation_access_grant(
+pub(crate) async fn schedule_libation_access_grant(
     state: AppState,
-    job_id: String,
+    download_job_id: String,
+    catalog_id: String,
     profile: LibationProfile,
     asin: String,
     user_id: String,
-) {
-    tokio::spawn(async move {
-        if !await_job_outcome(&state, &job_id).await {
+) -> String {
+    // A download may be shared by several readers. Each needs an independent
+    // outcome so an approved request cannot complete before its grant does.
+    let (grant_job_id, _) = create_job_with_state(
+        &state,
+        "libation-access-grant",
+        Some(catalog_id),
+        "queued",
+        false,
+    )
+    .await;
+    let task_job_id = grant_job_id.clone();
+    tokio::spawn(run_job(state.clone(), grant_job_id.clone(), async move {
+        if !await_job_outcome(&state, &download_job_id).await {
+            update_job_finished(
+                &state,
+                &task_job_id,
+                "failed",
+                None,
+                Some("Libation download failed before access could be granted.".to_string()),
+            )
+            .await;
             return;
         }
+        update_job_running(&state, &task_job_id).await;
 
-        let book_id = find_book_id_by_asin(&state.library.read().await.books, &asin);
-        let Some(book_id) = book_id else { return };
-        // A liberate run can succeed without downloading anything, and the
-        // catalogue may already hold a book with this ASIN from elsewhere.
-        match profile_owns_asin(&state, &profile, &asin).await {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::warn!("{}", not_in_profile_message(&profile, &asin));
-                return;
+        let outcome = match find_book_id_by_asin(&state.library.read().await.books, &asin) {
+            Some(book_id) => {
+                // Liberation may succeed without downloading anything; an
+                // existing catalogue match alone cannot establish ownership.
+                match profile_owns_asin(&state, &profile, &asin).await {
+                    Ok(true) => grant_user_book_access(&state, &user_id, &book_id)
+                        .await
+                        .map_err(|error| error.message),
+                    Ok(false) => Err(not_in_profile_message(&profile, &asin)),
+                    Err(error) => Err(error.message),
+                }
             }
-            Err(error) => {
-                tracing::warn!(
-                    "could not confirm {asin} before granting access: {}",
-                    error.message
-                );
-                return;
+            None => Err(format!("{asin} was not found in the OperaLibre library.")),
+        };
+        match outcome {
+            Ok(()) => update_job_finished(&state, &task_job_id, "completed", None, None).await,
+            Err(message) => {
+                update_job_finished(&state, &task_job_id, "failed", None, Some(message)).await
             }
         }
-
-        if let Err(error) = grant_user_book_access(&state, &user_id, &book_id).await {
-            tracing::warn!(
-                "failed to grant requested Libation book access: {}",
-                error.message
-            );
-        }
-    });
+    }));
+    grant_job_id
 }
 
 /// Whether `asin` is in the profile's Audible library. A reader's download
