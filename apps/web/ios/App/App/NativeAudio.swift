@@ -37,11 +37,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             call.reject("The audio URL is invalid.")
             return
         }
-        // Loading is how the web player claims the engine. If a car session was
-        // running, its position is banked before this load replaces the player
-        // it lives in.
-        CarPlayCoordinator.shared.webLayerDidTakeOver()
-        engine.load(AudiobookLoadRequest(
+        let request = AudiobookLoadRequest(
             url: url,
             positionSeconds: call.getDouble("positionSeconds") ?? 0,
             rate: call.getDouble("rate") ?? 1,
@@ -52,7 +48,16 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
             recoveryTrackId: call.getString("recoveryTrackId"),
             recoveryBookOffsetSeconds: call.getDouble("recoveryBookOffsetSeconds") ?? 0,
             queue: queuedTracks(from: call.getArray("queue", JSObject.self) ?? [])
-        ))
+        )
+        // Loading is how the web player claims the engine. If a car session was
+        // running, its position is banked before this load replaces the player
+        // it lives in. Plugin calls arrive off the main thread and the car
+        // bookkeeping lives on it; queued ahead of the engine's own main-queue
+        // work, the handoff still runs before the teardown.
+        DispatchQueue.main.async {
+            CarPlayCoordinator.shared.webLayerDidTakeOver()
+        }
+        engine.load(request)
         call.resolve()
     }
 
