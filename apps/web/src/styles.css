@@ -16703,7 +16703,9 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
 @media (orientation: portrait) {
   html.native-app[data-fold-posture="closed"] .native-shell
     > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
-    padding-bottom: max(18px, env(safe-area-inset-bottom));
+    /* UIKit supplies this through its safe area; the HTML tab fallback
+       reserves its own bar height through the same variable. */
+    padding-bottom: max(18px, var(--tabs-h));
     & .native-now-controls { gap: 10px; }
     & .native-now-transport { gap: 8px; }
     & .native-now-transport > button:not(.native-now-play) { min-height: 64px; }
