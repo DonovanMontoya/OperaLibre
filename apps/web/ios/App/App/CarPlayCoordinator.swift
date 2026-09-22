@@ -34,8 +34,14 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     private let engine = AudiobookPlayer.shared
     private var lastSessionWrite = 0.0
     /// Whether the position this car session is about to save got there by a
-    /// jump rather than by playing forward.
+    /// jump rather than by playing forward. It lifts the server's reset guard,
+    /// so it lasts only until the app has saved a record written after the
+    /// jump; from then on the car's forward progress is checked as usual.
     private var deliberateRegression = false
+    /// When the current jump was stamped, in the checkpoint clock. Nil until
+    /// the stamp lands; the flag cannot be cleared before then.
+    private var deliberateRegressionSince: Double?
+    private var deliberateRegressionGeneration = 0
     /// A car session's position is written on a timer of its own rather than on
     /// every checkpoint: the engine checkpoints every two seconds, and the
     /// handoff record does not need that resolution.
@@ -118,7 +124,8 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
         recordSession(force: true)
         carOwnedBookId = book.id
         // Resuming is never a regression; a chapter jump and a restart both are.
-        deliberateRegression = requested != nil || book.isFinished
+        let isRegression = requested != nil || book.isFinished
+        if !isRegression { clearDeliberateRegression() }
 
         engine.load(AudiobookLoadRequest(
             url: first.url,
@@ -141,6 +148,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
             chapterDurationSeconds: nil,
             chapters: first.chapters
         ))
+        if isRegression { flagDeliberateRegression() }
         notifyWeb("carPlaybackStarted", data: [
             "bookId": book.id,
             "trackId": first.trackId,
@@ -160,9 +168,10 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
            position >= track.bookOffsetSeconds,
            position < track.bookOffsetSeconds + (track.durationSeconds ?? .greatestFiniteMagnitude)
         {
-            deliberateRegression = true
             engine.seek(toPositionSeconds: position - track.bookOffsetSeconds)
-            recordSession(force: true)
+            flagDeliberateRegression()
+            // Queued behind the seek, so the record carries its target.
+            DispatchQueue.main.async { [weak self] in self?.recordSession(force: true) }
             return
         }
         play(book: book, atBookPosition: position)
@@ -276,6 +285,34 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
 
     func acknowledgeSessions(_ acknowledged: [String: Double]) {
         store.acknowledgeSessions(acknowledged)
+        if let bookId = carOwnedBookId,
+           let since = deliberateRegressionSince,
+           let savedAt = acknowledged[bookId],
+           savedAt >= since
+        {
+            clearDeliberateRegression()
+        }
+    }
+
+    /// Flags a jump the listener asked for. Call it after the engine call that
+    /// makes the jump: engine calls run on a later main-queue turn, and
+    /// stamping behind them keeps every checkpoint that still shows the old
+    /// position older than the stamp.
+    private func flagDeliberateRegression() {
+        deliberateRegression = true
+        deliberateRegressionSince = nil
+        deliberateRegressionGeneration += 1
+        let generation = deliberateRegressionGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, generation == self.deliberateRegressionGeneration else { return }
+            self.deliberateRegressionSince = Date().timeIntervalSince1970 * 1000
+        }
+    }
+
+    private func clearDeliberateRegression() {
+        deliberateRegression = false
+        deliberateRegressionSince = nil
+        deliberateRegressionGeneration += 1
     }
 
     /// Banks where the car session has got to.
@@ -338,7 +375,7 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     }
 
     func audiobookPlayerDidSeekDeliberately(_ player: AudiobookPlayer) {
-        deliberateRegression = true
+        flagDeliberateRegression()
         recordSession(force: true)
     }
 }
