@@ -6,8 +6,9 @@
 //! all goes wrong, destroy the half-built database and keep running on the
 //! files that are already there.
 //!
-//! The JSON files are never deleted. A release that has to be rolled back can
-//! use `--export-json` to write the database back out in the original format.
+//! The JSON files are retained except for sessions, whose raw bearer tokens
+//! must not survive a successful import. A release that has to be rolled back
+//! can use `--export-json` to write the database back out in the original format.
 
 use crate::*;
 
@@ -75,6 +76,11 @@ fn back_up(layout: &JsonLayout, data_dir: &FsPath) -> anyhow::Result<PathBuf> {
     let backup_dir = data_dir.join("backup-pre-sqlite");
     create_private_directory(&backup_dir)?;
     for path in layout.all() {
+        // A failed import can retry from the original sessions file. A
+        // successful one must not leave a second copy of live tokens behind.
+        if path == &layout.sessions {
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
@@ -84,6 +90,24 @@ fn back_up(layout: &JsonLayout, data_dir: &FsPath) -> anyhow::Result<PathBuf> {
         std::fs::copy(path, backup_dir.join(name))?;
     }
     Ok(backup_dir)
+}
+
+/// Earlier imports copied sessions into the backup directory. Remove both
+/// legacy copies once the database is authoritative; the database retains the
+/// live sessions under digests, and --export-json can recreate safe JSON.
+fn remove_legacy_sessions(layout: &JsonLayout, data_dir: &FsPath) -> io::Result<()> {
+    let mut paths = vec![layout.sessions.clone()];
+    if let Some(name) = layout.sessions.file_name() {
+        paths.push(data_dir.join("backup-pre-sqlite").join(name));
+    }
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Import the JSON files into an empty database.
@@ -222,8 +246,8 @@ pub(crate) fn split_progress_key(key: &str) -> Option<(String, String)> {
 
 /// Bring an existing installation's JSON files into a new database.
 ///
-/// Does nothing when the database already exists, or when there is nothing to
-/// import. Never removes the JSON files.
+/// Does nothing when there is nothing to import. After a completed import,
+/// removes legacy session files that still contain usable bearer tokens.
 pub(crate) fn migrate_if_needed(
     database_path: &FsPath,
     data_dir: &FsPath,
@@ -231,6 +255,7 @@ pub(crate) fn migrate_if_needed(
 ) -> anyhow::Result<()> {
     if database_path.exists() && migration_completed(database_path)? {
         warn_about_newer_json(database_path, layout);
+        remove_legacy_sessions(layout, data_dir)?;
         return Ok(());
     }
     if !layout.any_present() {
@@ -259,8 +284,9 @@ pub(crate) fn migrate_if_needed(
             remove_database_files(database_path);
             std::fs::rename(&temporary_path, database_path)?;
             db::secure_database_files(database_path);
+            remove_legacy_sessions(layout, data_dir)?;
             tracing::info!(
-                "imported {rows} records. The original files were left in place; \
+                "imported {rows} records. The original non-session files were left in place; \
                  use --export-json to write them back out."
             );
             Ok(())
