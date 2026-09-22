@@ -52,6 +52,9 @@ private struct StoredBackgroundJob: Codable {
     var errors: [String]
     var enqueuedAt: Double?
     var files: [StoredBackgroundTask]?
+    // A replacement may observe a file after the move but before its task's
+    // completion callback. Do not count that callback a second time.
+    var precountedDestinations: [String]?
 }
 
 final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
@@ -120,15 +123,33 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         // Destinations the live job already has tasks for. A repeated enqueue
         // may list files the first one did not; only those need new tasks.
         var alreadyScheduled = Set<String>()
+        var replacedFiles = false
         let enqueueResult = mutateJobs { jobs -> (createTasks: Bool, shouldStart: Bool, completed: Bool) in
             if var existing = jobs[jobId], existing.state == "running" || existing.state == "queued" {
-                alreadyScheduled = Set((existing.files ?? []).map(\.destination))
+                let previousFiles = existing.files ?? []
+                alreadyScheduled = Set(previousFiles.map(\.destination))
+                let fileListChanged = previousFiles.count != descriptions.count
+                    || zip(previousFiles, descriptions).contains { pair in
+                        pair.0.destination != pair.1.destination
+                            || pair.0.source != pair.1.source
+                            || pair.0.required != pair.1.required
+                    }
+                replacedFiles = fileListChanged
                 let added = descriptions.filter {
                     !alreadyScheduled.contains($0.destination) && !existingDestinations.contains($0.destination)
                 }
                 existing.files = descriptions
                 existing.total = descriptions.count
                 existing.requiredTotal = requiredTotal
+                // Old counters may include files removed by this enqueue.
+                // Files already on disk are the only completed entries in the
+                // replacement list; retained active tasks count when they settle.
+                if fileListChanged {
+                    existing.completed = existingDestinations.count
+                    existing.completedRequired = completedRequired
+                    existing.errors = []
+                    existing.precountedDestinations = Array(existingDestinations)
+                }
                 existing.enqueuedAt = existing.enqueuedAt ?? Date().timeIntervalSince1970
                 reconcileFiles(in: &existing)
                 jobs[jobId] = existing
@@ -149,12 +170,13 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 handledTaskIds: [],
                 errors: [],
                 enqueuedAt: Date().timeIntervalSince1970,
-                files: descriptions
+                files: descriptions,
+                precountedDestinations: nil
             )
             return (!alreadyComplete, shouldStart, alreadyComplete)
         }
         if !enqueueResult.createTasks {
-            if enqueueResult.completed { recoverAndStartNextJob() }
+            if enqueueResult.completed || replacedFiles { recoverAndStartNextJob() }
             return
         }
 
@@ -357,11 +379,14 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             guard
                 var job = jobs[info.jobId],
                 job.state != "completed",
-                !job.handledTaskIds.contains(task.taskIdentifier)
+                !job.handledTaskIds.contains(task.taskIdentifier),
+                job.files?.contains(where: { $0.destination == info.destination }) != false
             else { return nil }
             job.handledTaskIds.append(task.taskIdentifier)
-            job.completed += 1
-            if info.required {
+            let wasPrecounted = job.precountedDestinations?.contains(info.destination) == true
+            job.precountedDestinations?.removeAll { $0 == info.destination }
+            if !wasPrecounted { job.completed += 1 }
+            if info.required && !wasPrecounted {
                 if succeeded {
                     job.completedRequired += 1
                 } else {
@@ -469,6 +494,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     job.completed = existingFiles.count
                     job.completedRequired = existingFiles.filter(\.required).count
                     job.handledTaskIds = []
+                    job.precountedDestinations = nil
                     for info in files where !existingFiles.contains(where: { $0.destination == info.destination }) {
                         guard
                             let sourceValue = info.source,
