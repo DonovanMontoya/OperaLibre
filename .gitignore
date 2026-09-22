@@ -15,8 +15,8 @@ nohup.out
 docs/_site
 docs/.jekyll-cache
 
-# Agent instruction files and tool config are kept local, not tracked.
-AGENTS.md
+# Local agent tool config and personal instruction files are not tracked.
+# AGENTS.md is shared project guidance and is tracked.
 CLAUDE.md
 .claude/
 .codex/
