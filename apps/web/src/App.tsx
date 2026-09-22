@@ -360,9 +360,10 @@ import {
 import {
   canPublishNativeQueue,
   nativeQueueEntryUrl,
-  nativeQueueIdentity,
+  nativeQueueIdentityAfterRestore,
   nativeQueueIsReady,
   nativeQueueRefreshShouldResume,
+  playbackRestoreBookAfterAction,
   resolveLocalFirstSources
 } from "./offlinePlayback";
 import {
@@ -4006,6 +4007,10 @@ function MainApp({
   const [playbackBookId, setPlaybackBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "playbackBookId")
   );
+  // Queue construction must wait for the async local/native recovery pass.
+  // Otherwise a downloaded first track can reach AVPlayer before the saved
+  // chapter does and become the apparent cold-start resume position.
+  const [restoredPlaybackBookId, setRestoredPlaybackBookId] = useState<string | null>(null);
   const playbackBookIdRef = useRef(playbackBookId);
   playbackBookIdRef.current = playbackBookId;
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
@@ -4722,9 +4727,11 @@ function MainApp({
   );
   const playbackBookDownloaded = !!playbackBook && downloadedBookIds.has(playbackBook.id);
   const mediaCredentialReady = !!getStoredMediaToken();
-  const requiredNativeAudioQueueKey = nativeQueueIdentity(
+  const requiredNativeAudioQueueKey = nativeQueueIdentityAfterRestore(
+    nativeAudio,
     playbackBook?.id ?? null,
     currentTrack?.id ?? null,
+    restoredPlaybackBookId,
     playbackBookDownloaded,
     mediaCredentialReady
   );
@@ -6005,6 +6012,7 @@ function MainApp({
 
     let cancelled = false;
     restoredProgressBookId.current = null;
+    setRestoredPlaybackBookId(null);
     if (!startupViewReadyRef.current) startupProgressAppliedRef.current = false;
     if (explicitSessionStartBookIdRef.current === playbackBook.id) {
       // A shelf play/restart chose this pending position deliberately. It is
@@ -6012,6 +6020,7 @@ function MainApp({
       // session (especially important for "Read it again" on a finished book).
       explicitSessionStartBookIdRef.current = null;
       restoredProgressBookId.current = playbackBook.id;
+      setRestoredPlaybackBookId(playbackBook.id);
       return () => {
         cancelled = true;
       };
@@ -6044,6 +6053,7 @@ function MainApp({
         : playbackBook.tracks[0];
       setDuration(restoredTrack?.durationSeconds ?? 0);
       restoredProgressBookId.current = playbackBook.id;
+      setRestoredPlaybackBookId(playbackBook.id);
       startupProgressAppliedRef.current = true;
       // The restored track and position are now known, so a queued shelf
       // Resume can safely play: both places that consume this flag apply the
@@ -7429,14 +7439,24 @@ function MainApp({
     seekTargetBookPosition?: number
   ) {
     playbackTouchedRef.current = true;
+    const bookId = seekBookId ?? playbackBook?.id ?? null;
     if (interruptRestore) {
       playbackActionVersionRef.current += 1;
       resumeAutoplayPendingRef.current = false;
       if (resumeReconciliationBookIdRef.current === playbackBook?.id) {
         resumeReconciliationBookIdRef.current = null;
       }
+      // The listener's action now owns the track and position. Let the stale
+      // recovery finish harmlessly, but release persistence and native queue
+      // attachment instead of leaving this book behind the recovery gate.
+      const resolvedBookId = playbackRestoreBookAfterAction(
+        restoredProgressBookId.current,
+        bookId,
+        true
+      );
+      restoredProgressBookId.current = resolvedBookId;
+      setRestoredPlaybackBookId(resolvedBookId);
     }
-    const bookId = seekBookId ?? playbackBook?.id;
     if (deliberateSeek && bookId) {
       intentionalSeekGenerationRef.current.set(
         bookId,
