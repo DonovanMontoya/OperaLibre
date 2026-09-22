@@ -4716,3 +4716,34 @@ async fn epub_entries_load_independently_with_media_auth_and_revalidation() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// Signing in to an account one holds must not reset the per-address counter,
+/// or guesses at other accounts could be interleaved with a real sign-in to
+/// stay under the address limit forever.
+#[tokio::test]
+async fn successful_login_keeps_the_address_throttle() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+
+    let address = std::net::IpAddr::from([127, 0, 0, 1]);
+    // One short of the address limit, counting mallory's own mistyped attempt
+    // below, so the real sign-in is still allowed.
+    let guesses = super::LOGIN_IP_MAX_FAILURES - 2;
+    for index in 0..guesses {
+        let keys = super::LoginThrottleKeys::new(address, &format!("victim-{index}"));
+        super::record_login_failures(&server.state, keys.all()).await;
+    }
+    let mallory = super::LoginThrottleKeys::new(address, "mallory");
+    super::record_login_failures(&server.state, mallory.all()).await;
+
+    server.add_reader(&owner, "mallory").await;
+
+    let attempts = server.state.login_attempts.lock().await;
+    assert_eq!(
+        attempts.get(&mallory.ip).map(|throttle| throttle.failures),
+        Some(guesses + 1),
+        "the address counter survives the sign-in"
+    );
+    assert!(!attempts.contains_key(&mallory.account));
+    assert!(!attempts.contains_key(&mallory.username));
+}
