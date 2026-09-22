@@ -26,6 +26,13 @@ const RELEASE_API_URL: &str =
 const RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/DonovanMontoya/OperaLibre/releases/download/";
 const RELEASE_PAGE_PREFIX: &str = "https://github.com/DonovanMontoya/OperaLibre/releases/";
+/// Base64 Ed25519 public key every downloaded release asset must be signed
+/// with. The matching private key is the release workflow's
+/// OPERALIBRE_RELEASE_SIGNING_KEY secret; see script/release_signing.mjs.
+const RELEASE_SIGNING_PUBLIC_KEY: &str = "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=";
+const RELEASE_SIGNATURE_SUFFIX: &str = ".sig";
+const RELEASE_SIGNATURE_DOMAIN: &str = "operalibre-release-asset-v1";
+const MAX_RELEASE_SIGNATURE_BYTES: u64 = 1024;
 const MAX_UPDATE_PACKAGE_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_FRONTEND_PACKAGE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_SYNC_ADDON_PACKAGE_BYTES: u64 = 900 * 1024 * 1024;
@@ -471,6 +478,7 @@ impl UpdateManager {
         let staging_dir = staging.path();
         let archive_path = self
             .download_verified_asset(
+                &release,
                 asset,
                 expected_digest,
                 staging_dir,
@@ -616,6 +624,7 @@ impl UpdateManager {
 
         let archive_path = self
             .download_verified_asset(
+                &release,
                 asset,
                 expected_digest,
                 &staging_dir,
@@ -695,6 +704,7 @@ impl UpdateManager {
 
         let archive_path = self
             .download_verified_asset(
+                &release,
                 asset,
                 expected_digest,
                 &staging_dir,
@@ -730,13 +740,27 @@ impl UpdateManager {
         })
     }
 
+    /// Downloads a release asset after checking the release's signature over
+    /// its published digest, then checks the bytes against that digest.
     async fn download_verified_asset(
         &self,
+        release: &GithubRelease,
         asset: &GithubReleaseAsset,
         expected_digest: &str,
         staging_dir: &Path,
         maximum_bytes: u64,
     ) -> anyhow::Result<PathBuf> {
+        // Before the package: a release without a valid signature is refused
+        // without spending a large download on it.
+        let signature = self.fetch_release_signature(release, asset).await?;
+        verify_release_signature(
+            RELEASE_SIGNING_PUBLIC_KEY,
+            &release.tag_name,
+            &asset.name,
+            expected_digest,
+            &signature,
+        )?;
+
         let mut response = self
             .client
             .get(&asset.browser_download_url)
@@ -775,6 +799,29 @@ impl UpdateManager {
             bail!("The downloaded update package failed SHA-256 verification.");
         }
         Ok(archive_path)
+    }
+
+    async fn fetch_release_signature(
+        &self,
+        release: &GithubRelease,
+        asset: &GithubReleaseAsset,
+    ) -> anyhow::Result<String> {
+        let signature_asset = find_signature_asset(release, asset)?;
+        let mut response = self
+            .client
+            .get(&signature_asset.browser_download_url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            body.extend_from_slice(&chunk);
+            if body.len() as u64 > MAX_RELEASE_SIGNATURE_BYTES {
+                bail!("The release signature for {} is too large.", asset.name);
+            }
+        }
+        String::from_utf8(body).context("The release signature is not text.")
     }
 
     async fn fetch_latest_release(&self) -> anyhow::Result<GithubRelease> {
@@ -1069,6 +1116,73 @@ fn check_release_asset<'a>(
         bail!("The {label} has an untrusted download URL.");
     }
     Ok((asset, digest))
+}
+
+fn find_signature_asset<'a>(
+    release: &'a GithubRelease,
+    asset: &GithubReleaseAsset,
+) -> anyhow::Result<&'a GithubReleaseAsset> {
+    let name = format!("{}{RELEASE_SIGNATURE_SUFFIX}", asset.name);
+    let signature = release
+        .assets
+        .iter()
+        .find(|candidate| candidate.name == name)
+        .ok_or_else(|| anyhow!("The release has no signature for {}.", asset.name))?;
+    if signature.size == 0 || signature.size > MAX_RELEASE_SIGNATURE_BYTES {
+        bail!(
+            "The release signature for {} has an invalid size.",
+            asset.name
+        );
+    }
+    if !signature
+        .browser_download_url
+        .starts_with(RELEASE_DOWNLOAD_PREFIX)
+    {
+        bail!(
+            "The release signature for {} has an untrusted download URL.",
+            asset.name
+        );
+    }
+    Ok(signature)
+}
+
+/// What a release signature covers. Binding the tag and the asset name means
+/// a signature can neither be moved to another file nor replayed from an
+/// older release. Must match signingMessage in script/release_signing.mjs.
+fn release_signing_message(tag: &str, asset_name: &str, sha256_hex: &str) -> Vec<u8> {
+    format!(
+        "{RELEASE_SIGNATURE_DOMAIN}\n{tag}\n{asset_name}\n{}",
+        sha256_hex.to_ascii_lowercase()
+    )
+    .into_bytes()
+}
+
+fn verify_release_signature(
+    public_key_base64: &str,
+    tag: &str,
+    asset_name: &str,
+    sha256_hex: &str,
+    signature_base64: &str,
+) -> anyhow::Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let public_key: [u8; 32] = STANDARD
+        .decode(public_key_base64)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| anyhow!("This build has no valid release signing key."))?;
+    let public_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+        .map_err(|_| anyhow!("This build has no valid release signing key."))?;
+    let signature: [u8; 64] = STANDARD
+        .decode(signature_base64.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| anyhow!("The release signature for {asset_name} is malformed."))?;
+    public_key
+        .verify_strict(
+            &release_signing_message(tag, asset_name, sha256_hex),
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .map_err(|_| anyhow!("The release signature for {asset_name} is not valid."))
 }
 
 fn find_update_asset<'a>(
@@ -2032,5 +2146,108 @@ mod tests {
             InstallGuard::acquire(&installing).is_none(),
             "a second install started while one was staged for restart"
         );
+    }
+
+    // The vector script/release_signing.test.mjs produces from its test-only
+    // seed (the bytes 0..31). Checking it here keeps the Node signer and this
+    // verifier agreeing on the signed message byte for byte.
+    const TEST_SIGNING_PUBLIC_KEY: &str = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
+    const TEST_FRONTEND_SIGNATURE: &str =
+        "S+dfVq5MbRa7X9TiSmWdMb8qv4UBayZ3Pyvq3czipsJY4dwCmJrHejnU9Rh8MFjW7I0vDGxFpDSb3AP0dfZTBQ==";
+
+    #[test]
+    fn release_signatures_from_the_signing_script_verify() {
+        let verify = |tag: &str, name: &str, digest: &str, signature: &str| {
+            super::verify_release_signature(TEST_SIGNING_PUBLIC_KEY, tag, name, digest, signature)
+        };
+        let frontend = "operalibre-1.2.3-frontend.zip";
+        let digest = "b".repeat(64);
+        assert!(verify("v1.2.3", frontend, &digest, TEST_FRONTEND_SIGNATURE).is_ok());
+        assert!(
+            verify(
+                "v1.2.3",
+                frontend,
+                &digest.to_uppercase(),
+                &format!("{TEST_FRONTEND_SIGNATURE}\n")
+            )
+            .is_ok(),
+            "digest case and a trailing newline in the .sig file do not matter"
+        );
+
+        assert!(verify("v1.2.2", frontend, &digest, TEST_FRONTEND_SIGNATURE).is_err());
+        assert!(
+            verify(
+                "v1.2.3",
+                "operalibre-1.2.3-update-linux-x64.zip",
+                &digest,
+                TEST_FRONTEND_SIGNATURE
+            )
+            .is_err()
+        );
+        assert!(verify("v1.2.3", frontend, &"c".repeat(64), TEST_FRONTEND_SIGNATURE).is_err());
+        assert!(verify("v1.2.3", frontend, &digest, "not base64!").is_err());
+        assert!(verify("v1.2.3", frontend, &digest, "AAAA").is_err());
+        assert!(
+            super::verify_release_signature(
+                "not-a-key",
+                "v1.2.3",
+                frontend,
+                &digest,
+                TEST_FRONTEND_SIGNATURE
+            )
+            .is_err()
+        );
+    }
+
+    /// The placeholder must never ship: every update would be refused.
+    #[test]
+    fn the_built_in_release_signing_key_is_a_valid_ed25519_key() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let bytes: [u8; 32] = STANDARD
+            .decode(super::RELEASE_SIGNING_PUBLIC_KEY)
+            .expect("RELEASE_SIGNING_PUBLIC_KEY is not base64")
+            .try_into()
+            .expect("RELEASE_SIGNING_PUBLIC_KEY is not 32 bytes");
+        assert!(ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn signatures_must_be_release_assets_named_for_their_package() {
+        let package = super::GithubReleaseAsset {
+            name: "operalibre-1.2.3-frontend.zip".to_string(),
+            browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip".to_string(),
+            size: 1024,
+            digest: Some(format!("sha256:{}", "b".repeat(64))),
+        };
+        let signature = super::GithubReleaseAsset {
+            name: "operalibre-1.2.3-frontend.zip.sig".to_string(),
+            browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip.sig".to_string(),
+            size: 89,
+            digest: None,
+        };
+        let mut release = super::GithubRelease {
+            tag_name: "v1.2.3".to_string(),
+            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
+                .to_string(),
+            published_at: None,
+            body: None,
+            assets: vec![package.clone()],
+        };
+        assert!(
+            super::find_signature_asset(&release, &package).is_err(),
+            "an unsigned release must be refused"
+        );
+
+        release.assets.push(signature.clone());
+        assert!(super::find_signature_asset(&release, &package).is_ok());
+
+        release.assets[1].browser_download_url = "https://example.com/forged.sig".to_string();
+        assert!(super::find_signature_asset(&release, &package).is_err());
+
+        release.assets[1] = super::GithubReleaseAsset {
+            size: super::MAX_RELEASE_SIGNATURE_BYTES + 1,
+            ..signature
+        };
+        assert!(super::find_signature_asset(&release, &package).is_err());
     }
 }
