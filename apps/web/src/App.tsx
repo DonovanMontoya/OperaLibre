@@ -1,4 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
+import { isBookPosture, useDeviceFold, usesFoldLayout } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -10,7 +11,7 @@ import {
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
-import { classifyPageGesture, narrationTextOffset } from "./readerPagination";
+import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
 import {
   pruneUntrackedHighlights,
   removeHighlight,
@@ -113,10 +114,15 @@ import {
   type ReaderThemeChoice
 } from "./readerTheme";
 import { readerDebugLog, shortCfi } from "./readerDebug";
+import {
+  READER_FONT_SCALE_MAX,
+  READER_FONT_SCALE_MIN,
+  readerFontScaleBucket,
+  readStoredFontScale
+} from "./readerFontScale";
 import { createScreenAwakeController } from "./screenAwake";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -909,6 +915,19 @@ const SHORT_LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 499px)"
 function readLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(LANDSCAPE_QUERY).matches;
 }
+
+function useLandscapeOrientation(): boolean {
+  const [landscape, setLandscape] = useState(readLandscape);
+  useEffect(() => {
+    const query = window.matchMedia(LANDSCAPE_QUERY);
+    const update = () => setLandscape(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return landscape;
+}
+
 function readShortLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
 }
@@ -942,7 +961,15 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 const SORT_MODE_STORAGE_KEY = "operalibre.sortMode";
+const PURCHASE_VIEW_MODE_STORAGE_KEY = "operalibre.purchaseViewMode";
 const LIBRARY_SOURCES: LibrarySource[] = ["local", "audible", "libro", "all"];
+
+function readStoredPurchaseViewMode(): ShelfViewMode {
+  const stored = readStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY);
+  return SHELF_VIEW_MODE_OPTIONS.some((option) => option.value === stored)
+    ? (stored as ShelfViewMode)
+    : "list";
+}
 
 // "account" only makes sense for the Audible shelf; "series"/"genre"/"progress" only
 // for the local library — an Audible row is a purchase that has not been downloaded yet,
@@ -1674,10 +1701,16 @@ export function EpubReadalong({
   const [appDark, setAppDark] = useState(currentAppPrefersDark);
   useEffect(() => watchAppPrefersDark(setAppDark), []);
   const readerTheme = resolveReaderTheme(readerThemeChoice, appDark);
-  const [fontScale, setFontScale] = useState(() => {
-    const stored = Number(readStoredValue("operalibre.readerFontScale"));
-    return Number.isFinite(stored) && stored >= 85 && stored <= 140 ? stored : 100;
-  });
+  // Held open like a book, the reader sets a page on each half, the gap
+  // between them on the fold. The change re-lays the chapter out, so it turns
+  // back to the remembered place the way a resize does.
+  const deviceFold = useDeviceFold();
+  const readerLandscape = useLandscapeOrientation();
+  const fontScaleBucket = readerFontScaleBucket(
+    deviceFold.posture,
+    readerLandscape ? "landscape" : "portrait"
+  );
+  const [fontScale, setFontScale] = useState(() => readStoredFontScale(fontScaleBucket, readStoredValue));
   // The look a freshly opened book is styled with, and what the open one has
   // been given so far, so a change re-styles it exactly once.
   const readerThemeRef = useRef(readerTheme);
@@ -1686,10 +1719,31 @@ export function EpubReadalong({
   fontScaleRef.current = fontScale;
   const appliedThemeRef = useRef<ReaderTheme | null>(null);
   const appliedFontScaleRef = useRef<number | null>(null);
+  const fontScaleBucketRef = useRef(fontScaleBucket);
+  const fontScaleBucketChanged = fontScaleBucketRef.current !== fontScaleBucket;
+  // Closing, opening, or rotating swaps to that layout's remembered size,
+  // rather than carrying whatever size the other layout was left at.
+  useEffect(() => {
+    if (fontScaleBucketRef.current === fontScaleBucket) return;
+    fontScaleBucketRef.current = fontScaleBucket;
+    setFontScale(readStoredFontScale(fontScaleBucket, readStoredValue));
+  }, [fontScaleBucket]);
   const [focusMode, setFocusMode] = useState(false);
   // Full screen: the native reader always, the web reader in focus mode. The
   // bars fade out for reading and a tap on blank page brings them back.
   const fullscreen = immersive || focusMode;
+  const bookSpread = fullscreen && isBookPosture(deviceFold);
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (!isReady || !rendition) return;
+    const mode = bookSpread ? "always" : "none";
+    if ((rendition.settings as { spread?: string }).spread === mode) return;
+    const anchor = anchorCfiRef.current;
+    if (anchor) beginRestore();
+    rendition.spread(mode, 0);
+    if (anchor) void rendition.display(anchor);
+    setRelayoutTick((tick) => tick + 1);
+  }, [beginRestore, bookSpread, isReady]);
   const fullscreenRef = useRef(fullscreen);
   fullscreenRef.current = fullscreen;
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -1792,13 +1846,20 @@ export function EpubReadalong({
   // window coordinates; this resolves the point to a page turn, a sentence
   // seek, or a bar toggle.
   const handleOverlayTap = useCallback(
-    (xFraction: number, clientX: number, clientY: number) => {
+    (x: number, clientX: number, clientY: number) => {
       const rendition = renditionRef.current;
-      if (xFraction < 0.25) {
+      const stageWidth = viewerRef.current?.getBoundingClientRect().width ?? 0;
+      // The app-layer catcher can extend into the stage wrapper's safe-area
+      // padding. Clamp that space to the page edge: otherwise a tap just past
+      // the iframe is rejected as an edge turn, then translated into the
+      // EPUB's next hidden column and mistaken for a sentence seek.
+      const stageX = Math.max(0, Math.min(stageWidth, x));
+      const edge = pageTurnAtEdge(stageX, stageWidth);
+      if (edge === "prev") {
         navigateByHand(() => rendition?.prev());
         return;
       }
-      if (xFraction > 0.75) {
+      if (edge === "next") {
         navigateByHand(() => rendition?.next());
         return;
       }
@@ -1875,7 +1936,7 @@ export function EpubReadalong({
         return;
       }
       if (gesture === "tap") {
-        handleOverlayTap((event.clientX - stage.left) / stage.width, event.clientX, event.clientY);
+        handleOverlayTap(event.clientX - stage.left, event.clientX, event.clientY);
         return;
       }
       readerDebugLog(`gesture ignored dx=${Math.round(deltaX)} dy=${Math.round(deltaY)} ${Math.round(duration)}ms`);
@@ -1986,21 +2047,23 @@ export function EpubReadalong({
       if (target?.closest?.("a, button, input, textarea, select, svg")) {
         return;
       }
-      // Full screen reads like a paper book: the outer quarters of the page
-      // turn it, the middle seeks to the tapped sentence, and a tap on nothing
-      // in particular shows or hides the bars.
+      // Full screen reads like a paper book: narrow outer margins turn it,
+      // the text seeks to the tapped sentence, and a tap on nothing in
+      // particular shows or hides the bars.
       if (fullscreenRef.current) {
         // The chapter is one wide, scrolled document; the visible page is
         // the stage's box in the app's own coordinates.
         const frame = doc.defaultView?.frameElement;
         const stage = viewerRef.current?.getBoundingClientRect();
         if (frame && stage && stage.width > 0) {
-          const x = (frame.getBoundingClientRect().left + clientX - stage.left) / stage.width;
-          if (x < 0.25) {
+          const rawX = frame.getBoundingClientRect().left + clientX - stage.left;
+          const x = Math.max(0, Math.min(stage.width, rawX));
+          const edge = pageTurnAtEdge(x, stage.width);
+          if (edge === "prev") {
             navigateByHand(() => rendition?.prev());
             return;
           }
-          if (x > 0.75) {
+          if (edge === "next") {
             navigateByHand(() => rendition?.next());
             return;
           }
@@ -2091,6 +2154,13 @@ export function EpubReadalong({
       setIsReady(true);
       if (rendition) {
         pruneReadalongMarks(rendition);
+        // A fold/resize can replace epub.js's page view after the resize
+        // observer has already requested a marker redraw. Once the new view
+        // actually exists, rerun the read-along effect so the still-active
+        // sentence is painted into that view as well.
+        if (highlightCfiRef.current) {
+          setRelayoutTick((tick) => tick + 1);
+        }
       }
       const contentsList = ([] as Contents[]).concat(
         (rendition?.getContents() as unknown as Contents[]) ?? []
@@ -2451,7 +2521,11 @@ export function EpubReadalong({
   }, [isReady, readerTheme]);
 
   useEffect(() => {
-    writeStoredValue("operalibre.readerFontScale", String(fontScale));
+    // The first render after a screen/orientation change still carries the
+    // previous layout's size. Wait for its remembered value instead of
+    // briefly saving or applying the old value under the new key.
+    if (fontScaleBucketChanged) return;
+    writeStoredValue(`operalibre.readerFontScale.${fontScaleBucket}`, String(fontScale));
     const rendition = renditionRef.current;
     if (!isReady || !rendition || appliedFontScaleRef.current === fontScale) {
       return;
@@ -2468,7 +2542,7 @@ export function EpubReadalong({
     rendition.clear();
     void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
-  }, [beginRestore, fontScale, isReady]);
+  }, [beginRestore, fontScale, fontScaleBucket, fontScaleBucketChanged, isReady]);
 
   useEffect(() => {
     if (!fullscreen) {
@@ -2544,7 +2618,13 @@ export function EpubReadalong({
   useEffect(() => {
     const rendition = renditionRef.current;
     const sentenceStyle = sentenceHighlightStyle(readerTheme);
-    if (!follow || !syncFragments || fragmentIndex < 0) {
+    // followRef, not the follow state: a page turned by hand stops following
+    // at once (see navigateByHand), but this effect can still re-run once
+    // more — retriggered by the turn's own relocation — before React
+    // re-renders with the new follow value. Reading the stale state here
+    // would re-highlight and re-page to wherever the narration currently is,
+    // which is exactly the jump a hand-turned page must not make.
+    if (!followRef.current || !syncFragments || fragmentIndex < 0) {
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
@@ -2763,8 +2843,8 @@ export function EpubReadalong({
       <button
         type="button"
         aria-label="Decrease reader text size"
-        disabled={fontScale <= 85}
-        onClick={() => setFontScale((size) => Math.max(85, size - 10))}
+        disabled={fontScale <= READER_FONT_SCALE_MIN}
+        onClick={() => setFontScale((size) => Math.max(READER_FONT_SCALE_MIN, size - 10))}
       >
         <Minus size={15} />
       </button>
@@ -2772,8 +2852,8 @@ export function EpubReadalong({
       <button
         type="button"
         aria-label="Increase reader text size"
-        disabled={fontScale >= 140}
-        onClick={() => setFontScale((size) => Math.min(140, size + 10))}
+        disabled={fontScale >= READER_FONT_SCALE_MAX}
+        onClick={() => setFontScale((size) => Math.min(READER_FONT_SCALE_MAX, size + 10))}
       >
         <Plus size={15} />
       </button>
@@ -3736,6 +3816,7 @@ function MainApp({
   const sharedProgressAvailable = capabilities.sharedActivity;
   const rotationLockAvailable = isRotationLockAvailable();
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
+  const playbackFold = useDeviceFold();
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   // The ebook reader ships off by default; the narration-follow highlight is a
   // sub-option beneath it, off by default and behind a warning.
@@ -4104,6 +4185,7 @@ function MainApp({
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
   const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
+  const [purchaseViewMode, setPurchaseViewMode] = useState<ShelfViewMode>(readStoredPurchaseViewMode);
   // iPad's two-page Shelf can give the whole screen to either page: the
   // player alone, or the collection alone at its larger grid.
   const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
@@ -4114,6 +4196,7 @@ function MainApp({
   const [libroRefreshKey, setLibroRefreshKey] = useState(0);
   const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
   const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
+  const libroAvailable = (!localMode && isOperaLibre) || supportsLibroDevice();
   const lastPurchaseSource = useRef<"audible" | "libro" | "all">("all");
   useEffect(() => {
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
@@ -4270,6 +4353,11 @@ function MainApp({
     viewBeforeWideShelfRef.current = null;
     setViewMode(mode);
     writeStoredShelfViewMode(mode);
+  }
+
+  function selectPurchaseViewMode(mode: ShelfViewMode) {
+    setPurchaseViewMode(mode);
+    writeStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY, mode);
   }
 
   function changeShelfLayout(next: ShelfLayout) {
@@ -4487,6 +4575,36 @@ function MainApp({
     });
     return sortReversed ? sorted.reverse() : sorted;
   }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
+
+  const visibleBookRuns = useMemo(() => {
+    const runs: Array<{
+      label: string | null;
+      items: Array<{ book: (typeof visibleBooks)[number]; index: number }>;
+    }> = [];
+    visibleBooks.forEach((book, index) => {
+      const label = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
+      const previous = runs[runs.length - 1];
+      if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
+        previous.items.push({ book, index });
+      } else {
+        runs.push({ label, items: [{ book, index }] });
+      }
+    });
+    return runs;
+  }, [shelfFilters.tags, sortMode, visibleBooks]);
+
+  const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
+  const visibleBookColumns = useMemo(() => {
+    if (!splitShelfIntoLeaves) return [visibleBookRuns];
+    const columns: typeof visibleBookRuns[] = [[], []];
+    const weights = [0, 0];
+    for (const run of visibleBookRuns) {
+      const column = weights[0] <= weights[1] ? 0 : 1;
+      columns[column].push(run);
+      weights[column] += run.items.length + 0.5;
+    }
+    return columns;
+  }, [splitShelfIntoLeaves, visibleBookRuns]);
 
   const audibleAccountLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -9050,6 +9168,34 @@ function MainApp({
       </section>
     ) : null;
 
+  const audibleManagement = (
+    <div className={native ? "store-settings-body audible-settings-body" : "purchase-console-body"}>
+      <p className="settings-hint">Add or reconnect Audible accounts in Libation. OperaLibre uses those connections to refresh purchases.</p>
+      {libationStatus?.accounts.length ? <div className="account-list">
+        {libationStatus.accounts.map((account) => <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
+          <span className="account-health-icon">{account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}</span>
+          <span className="account-list-copy">
+            <strong>{account.name || account.accountId}</strong>
+            <small>{account.locale.toUpperCase()}{account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}</small>
+            {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
+          </span>
+        </article>)}
+      </div> : null}
+      {native && libationError ? <p className="settings-hint settings-error" role="alert">{libationError}</p> : null}
+      <div className="store-settings-actions">
+        <button type="button" className="download-btn" onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}>
+          {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}
+          <span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
+        </button>
+        {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}>
+          {libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
+          <span>{libationAllPending || downloadAllLibationJob ? "Downloading purchases" : "Download all purchases"}</span>
+        </button> : null}
+      </div>
+      <p className="settings-hint">{libationStatus?.autoRefreshHours ? `Checks automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh manually to check for new purchases."}</p>
+    </div>
+  );
+
   return (
     <main
       ref={shellRef}
@@ -9061,7 +9207,7 @@ function MainApp({
     >
       {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
-      {native && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
+      {native && ipad && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
         <button
           type="button"
           className="shelf-reveal-button"
@@ -9177,7 +9323,7 @@ function MainApp({
             <span className="eyebrow"><Library size={13} /> The Collection</span>
             <h1>OperaLibre</h1>
           </div>
-          {native ? (
+          {native && ipad ? (
             <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
               {shelfLayout === "library" ? (
                 <button
@@ -9353,7 +9499,7 @@ function MainApp({
         </div>
 
         <div className="library-toolbar">
-          {!demoMode && ((isOperaLibre && !localMode) || supportsLibroDevice()) ? (
+          {!demoMode && libroAvailable ? (
             <>
               <div className="source-toggle shelf-navigation" role="group" aria-label="Library navigation">
                 <button type="button" className={librarySource === "local" ? "selected" : ""} onClick={showYourLibrary} aria-pressed={librarySource === "local"}>
@@ -9390,13 +9536,6 @@ function MainApp({
                     ))}
                   </div>
                 </div>
-                {(librarySource === "libro" || librarySource === "all") && supportsLibroDevice() && !localMode && isOperaLibre ? <label className="purchase-destination" htmlFor="libro-destination">
-                    <span>Download to</span>
-                    <select id="libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
-                      {!localMode && isOperaLibre ? <option value="server">OperaLibre server</option> : null}
-                      <option value="device">This device</option>
-                    </select>
-                  </label> : null}
               </>
               ) : null}
             </>
@@ -9464,23 +9603,25 @@ function MainApp({
             >
               {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
-            {librarySource !== "libro" && librarySource !== "all" ? <div className="view-toggle" role="group" aria-label="View mode">
+            <div className="view-toggle" role="group" aria-label={librarySource === "local" ? "View mode" : "Purchase view mode"}>
               {SHELF_VIEW_MODE_OPTIONS.map((option) => {
                 const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
+                const activeViewMode = librarySource === "local" ? viewMode : purchaseViewMode;
                 return (
                   <button
+                    type="button"
                     key={option.value}
-                    className={viewMode === option.value ? "selected" : ""}
-                    onClick={() => selectViewMode(option.value)}
+                    className={activeViewMode === option.value ? "selected" : ""}
+                    onClick={() => librarySource === "local" ? selectViewMode(option.value) : selectPurchaseViewMode(option.value)}
                     aria-label={option.label}
                     title={option.value === "compact" ? "Compact view · more books per screen" : option.label}
-                    aria-pressed={viewMode === option.value}
+                    aria-pressed={activeViewMode === option.value}
                   >
                     <Icon size={14} />
                   </button>
                 );
               })}
-            </div> : null}
+            </div>
           </div>
 
           {showShelfFilters && filtersOpen ? (
@@ -9616,94 +9757,41 @@ function MainApp({
         ) : null}
 
         <div id="purchase-results" className="purchase-results" role={librarySource !== "local" ? "tabpanel" : undefined} aria-labelledby={librarySource !== "local" ? `purchase-tab-${librarySource}` : undefined}>
+        <div className="purchase-settings-pane">
+        {!native && showAudiblePurchases && canBrowseLibation ? (
+          <details className="purchase-console">
+            <summary><span>Audible accounts &amp; downloads</span><ChevronDown size={15} /></summary>
+            {audibleManagement}
+          </details>
+        ) : null}
         {librarySource === "all" ? <label className="purchase-account-filter">
-          <span className="sr-only">Purchase account</span>
+          <span className="purchase-control-label">Account</span>
           <select aria-label="Purchase account" value={purchaseAccountFilter} onChange={event => setPurchaseAccountFilter(event.target.value)}>
             <option value="all">All accounts</option>
             {canBrowseLibation && allAudibleAccounts.length > 0 ? <optgroup label="Audible">{allAudibleAccounts.map(account => <option key={account.id} value={`audible:${account.id}`}>Audible · {account.name}</option>)}</optgroup> : null}
             {(libroAccounts?.length ?? 0) > 0 ? <optgroup label="Libro.fm">{libroAccounts!.map(account => <option key={account.email} value={`libro:${account.email}`}>Libro.fm · {account.nickname || account.email}</option>)}</optgroup> : null}
           </select>
         </label> : null}
-        {currentUser.isAdmin && showAudiblePurchases ? (
-          <section className="libation-panel audible-compact">
-            <div className="audible-toolbar">
-              {librarySource !== "all" ? <div className="libation-account-toolbar">
-                <label>
-                  <span className="sr-only">Audible account</span>
-                  <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
-                    <option value="all">All accounts</option>
-                    {libationStatus?.accounts.map((account) => (
-                      <option key={account.id} value={account.id}>{account.name || account.accountId}</option>
-                    ))}
-                  </select>
-                </label>
-              </div> : null}
-
-
-            </div>
-            {libationMessage ? <p role="status">{libationMessage}</p> : null}
-            {(libationStatus && (!libationStatus.enabled || !libationStatus.authenticated || brokenLibationAccounts.length > 0)) ? (
-              <p className="audible-attention" role="status"><AlertCircle size={14} />
-                {!libationStatus?.enabled ? "Audible is not configured." : brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention. Open Accounts & downloads to reconnect.` : "Sign in through Libation to connect your Audible account."}
-              </p>
-            ) : null}
-            <details className="audible-management">
-              <summary>Accounts &amp; downloads <ChevronDown size={15} /></summary>
-              <div className="audible-management-body">
-              <div className="libation-actions">
-                <button
-                  type="button"
-                  onClick={() => void startLibationSync()}
-                  aria-busy={isRefreshingAudible}
-                  disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}
-                >
-                  {refreshLibationJob?.status === "queued" ? (
-                    <List size={13} />
-                  ) : isRefreshingAudible ? (
-                    <LoaderCircle size={13} className="spin-icon" />
-                  ) : (
-                    <RefreshCcw size={13} />
-                  )}
-                  <span>{refreshLibationJob?.status === "queued" ? "Refresh queued" : isRefreshingAudible ? "Syncing" : librarySource === "all" ? "Refresh Audible" : "Refresh"}</span>
-                </button>
-              </div>
-                <p>Add or reconnect accounts in Libation.</p>
-                {libationStatus?.accounts.length ? (
-                  <div className="account-list">
-                    {libationStatus.accounts.map((account) => (
-                      <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
-                        <span className="account-health-icon">
-                          {account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}
-                        </span>
-                        <span className="account-list-copy">
-                          <strong>{account.name || account.accountId}</strong>
-                          <small>
-                            {account.locale.toUpperCase()}
-                            {account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}
-                          </small>
-                          {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
-                        </span>
-                      </article>
-                    ))}
-                  </div>
-                ) : null}
-
-                <div className="libation-actions">
-                  {currentUser.libationAccess === "direct" ? <button
-                    type="button"
-                    onClick={() => void startAllLiberation()}
-                    aria-busy={libationAllPending || !!downloadAllLibationJob}
-                    disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}
-                  >
-                    {downloadAllLibationJob?.status === "queued" ? <List size={13} /> : libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
-                    <span>{downloadAllLibationJob?.status === "queued" ? "All queued" : libationAllPending ? "Starting all" : downloadAllLibationJob ? "Downloading all" : "Download all"}</span>
-                  </button> : null}
-                </div>
-                <p>{libationStatus?.autoRefreshHours ? `Checks for new purchases automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh to check for new purchases."}</p>
-              </div>
-            </details>
-
-            {displayedLibationJobs.map((job) => {
+        {librarySource === "audible" && allAudibleAccounts.length > 1 ? <label className="purchase-account-filter">
+          <span className="purchase-control-label">Account</span>
+          <select aria-label="Audible account" value={audibleAccountFilter} onChange={event => setAudibleAccountFilter(event.currentTarget.value)}>
+            <option value="all">All Audible accounts</option>
+            {allAudibleAccounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+          </select>
+        </label> : null}
+        {showAudiblePurchases && (displayedLibationJobs.length > 0 || libationMessage || brokenLibationAccounts.length > 0) ? (
+          <details className="purchase-console">
+            <summary>
+              <span><CloudDownload size={14} /> Activity</span>
+              <strong>{displayedLibationJobs.some(isPendingJob) ? "Working" : brokenLibationAccounts.length > 0 ? "Needs attention" : "Up to date"}</strong>
+              <ChevronDown size={15} />
+            </summary>
+            <div className="purchase-console-body">
+              {libationMessage ? <p role="status">{libationMessage}</p> : null}
+              {native && brokenLibationAccounts.length > 0 ? <button type="button" className="purchase-settings-link" onClick={() => openNativeTab("settings")}>
+                <AlertCircle size={14} /> {brokenLibationAccounts.length} Audible account{brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention <ChevronRight size={14} />
+              </button> : null}
+              {displayedLibationJobs.map((job) => {
               const targetTitle = job.targetId
                 ? libationBooks.find((book) => book.catalogId === job.targetId)?.title
                 : null;
@@ -9743,49 +9831,16 @@ function MainApp({
                 ) : null}
               </details>
               );
-            })}
-          </section>
+              })}
+            </div>
+          </details>
         ) : null}
 
-        {!currentUser.isAdmin && showAudiblePurchases ? (
-          <section className="libation-panel reader-libation-panel">
-            <div className="libation-status"><Cloud size={15} /><span>Audible library</span></div>
-            {librarySource !== "all" && audibleProfiles.length > 1 ? (
-              <label className="reader-account-filter">
-                <span>Browsing</span>
-                <select value={audibleAccountFilter} onChange={(event) => setAudibleAccountFilter(event.currentTarget.value)}>
-                  <option value="all">All accounts</option>
-                  {audibleProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                </select>
-              </label>
-            ) : null}
-            <div className="libation-actions">
-              <button
-                type="button"
-                onClick={() => void startLibationSync()}
-                aria-busy={isRefreshingAudible}
-                disabled={!libationStatus?.enabled || libationLoading || isRefreshingAudible}
-              >
-                {isRefreshingAudible
-                  ? <LoaderCircle size={13} className="spin-icon" />
-                  : <RefreshCcw size={13} />}
-                <span>{isRefreshingAudible ? "Syncing" : "Refresh Audible"}</span>
-              </button>
-            </div>
-            <p>
-              {currentUser.libationAccess === "direct"
-                ? "Your administrator allows you to add titles directly to the shared library."
-                : "Choose Request on a title. An administrator must approve it before Libation downloads it."}
-              {" "}
-              {libationStatus?.manualRefreshesPerHour
-                ? `You can check for new purchases up to ${libationStatus.manualRefreshesPerHour} times per hour.`
-                : "You can check for new purchases at any time."}
-            </p>
-          </section>
-        ) : null}
+        </div>
+        <div className="purchase-books-pane">
 
         {librarySource === "libro" || librarySource === "all" ? (
-          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
+          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode={native ? "catalog" : "full"} polling={!native || nativeTab === "shelf"} onOpenSettings={native ? () => openNativeTab("settings") : undefined} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
         ) : null}
 
         {librarySource === "local" ? (
@@ -9867,7 +9922,17 @@ function MainApp({
             {/* Compact keeps the list layout and only tightens it, so it carries
                 both classes rather than forking every row rule. */}
             <div className={`book-list ${viewMode === "grid" ? "is-grid" : viewMode === "compact" ? "is-list is-compact" : "is-list"}`}>
-              {visibleBooks.map((book, index) => {
+              {visibleBookColumns.map((column, columnIndex) => (
+                <div className="book-leaf" key={`leaf-${columnIndex}`}>
+                {column.map((run) => (
+                <section className="book-sort-run" key={`${run.label ?? "book"}-${run.items[0].book.id}`}>
+                  {run.label ? (
+                    <div className="book-sort-group" role="heading" aria-level={2}>
+                      <span>{bookSortGroupCaption(sortMode)}</span>
+                      <strong>{run.label}</strong>
+                    </div>
+                  ) : null}
+                  {run.items.map(({ book, index }) => {
                 const progressPercent = book.progress?.percentComplete ?? 0;
                 const availableOnDevice =
                   demoMode
@@ -9889,19 +9954,9 @@ function MainApp({
                 const progressLabel = isCompactView ? compactProgressLabel(book) : bookProgressLabel(book);
                 const compactProgressTitle = isCompactView ? bookProgressLabel(book) : undefined;
                 const sortTag = tagForShelfSort(book, shelfFilters.tags);
-                const sortGroup = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
-                const previousSortGroup = index > 0
-                  ? bookSortGroupLabel(visibleBooks[index - 1], sortMode, shelfFilters.tags)
-                  : null;
                 return (
-                  <Fragment key={book.id}>
-                    {sortGroup && compareShelfLabels(sortGroup, previousSortGroup) !== 0 ? (
-                      <div className="book-sort-group" role="heading" aria-level={2}>
-                        <span>{bookSortGroupCaption(sortMode)}</span>
-                        <strong>{sortGroup}</strong>
-                      </div>
-                    ) : null}
                     <button
+                      key={book.id}
                       className={`book-row ${book.id === selectedBook?.id ? "active" : ""} ${book.id === playbackBook?.id ? "playing" : ""} ${book.progress?.status === "inProgress" ? "in-progress" : ""} ${unavailableOffline ? "offline-unavailable" : ""}`}
                       onClick={() => {
                         selectBook(book);
@@ -9991,14 +10046,17 @@ function MainApp({
                         ) : null}
                       </span>
                     </button>
-                  </Fragment>
                 );
-              })}
+                  })}
+                </section>
+                ))}
+                </div>
+              ))}
             </div>
           </>
         ) : showAudiblePurchases ? (
           <>
-            {librarySource === "all" ? <h2>Audible</h2> : null}
+            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
             {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
               <div className="empty-state">Loading Audible library…</div>
             ) : null}
@@ -10007,7 +10065,7 @@ function MainApp({
               <div className="empty-state">No Libation books loaded yet.</div>
             ) : null}
 
-            <div className="audible-list">
+            <div className={`audible-list purchase-book-list purchase-book-list--${purchaseViewMode} audible-list--${purchaseViewMode}`}>
               {visibleLibationBooks.map((book) => {
                 const isLocal = !!book.localBookId;
                 const downloadRequest = libationDownloadRequests.find(
@@ -10038,7 +10096,7 @@ function MainApp({
                   isLocal ? "In library" : book.bookStatus
                 ].filter(Boolean);
                 return (
-                  <div key={book.catalogId} className={`audible-row ${isLocal ? "is-local" : ""}`}>
+                  <div key={book.catalogId} className={`audible-row purchase-book-row ${isLocal ? "is-local" : ""}`}>
                     <LibationCoverArt book={book} />
                     <div className="audible-copy">
                       <strong>{book.title}</strong>
@@ -10098,12 +10156,16 @@ function MainApp({
           </>
         ) : null}
         </div>
+        </div>
       </aside>
 
       <section
         className={`player-pane native-player-view-${nativePlayerView} ${
           isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-        } ${showReaderInNowView ? "has-reader" : ""}`}
+        } ${showReaderInNowView ? "has-reader" : ""} ${
+          nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
+            ? "" : "fit-playback"
+        }`}
         ref={playerPaneRef}
         onScroll={handlePlayerPaneScroll}
         onTouchStart={beginBookDetailsBackSwipe}
@@ -10129,151 +10191,158 @@ function MainApp({
           <>
             {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
               <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
-                <div className="native-now-artwork">
-                  <CoverArt book={nowPlayingBook} size="large" />
-                </div>
-
-                <div className="native-now-copy">
-                  <span className="native-now-kicker">
-                    {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
-                  </span>
-                  <h2>{activeChapter?.title ?? currentTrack.title}</h2>
-                  <p>{nowPlayingBook.title}</p>
-                  <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
-                </div>
-
-                <div className="native-now-timeline">
-                  <ScrubSlider
-                    ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
-                    max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
-                    value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
-                    onPreview={setScrubPreview}
-                    onCommit={(value) => {
-                      if (activeChapter) {
-                        seekBookPosition(activeChapter.startSeconds + value);
-                      } else {
-                        seekTo(value);
-                      }
-                    }}
-                  />
-                  <div className="native-now-time-row">
-                    <span>{formatTime(scrubbedElapsed)}</span>
-                    <span>
-                      {activeChapter
-                        ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
-                        : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
-                    </span>
+                {/* The halves group the stack for a foldable phone, which sets
+                    them either side of its fold. Everywhere else they take no
+                    box and their children lay out in the card's grid. */}
+                <div className="native-now-half native-now-lead">
+                  <div className="native-now-artwork">
+                    <CoverArt book={nowPlayingBook} size="large" />
                   </div>
-                  {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
-                    <div
-                      className="book-time-row"
-                      aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
-                    >
-                      <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
-                      <span>{bookCompletionPercent}% complete</span>
+
+                  <div className="native-now-copy">
+                    <span className="native-now-kicker">
+                      {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
+                    </span>
+                    <h2>{activeChapter?.title ?? currentTrack.title}</h2>
+                    <p>{nowPlayingBook.title}</p>
+                    <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
+                  </div>
+                </div>
+
+                <div className="native-now-half native-now-controls">
+                  <div className="native-now-timeline">
+                    <ScrubSlider
+                      ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
+                      max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
+                      value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
+                      onPreview={setScrubPreview}
+                      onCommit={(value) => {
+                        if (activeChapter) {
+                          seekBookPosition(activeChapter.startSeconds + value);
+                        } else {
+                          seekTo(value);
+                        }
+                      }}
+                    />
+                    <div className="native-now-time-row">
+                      <span>{formatTime(scrubbedElapsed)}</span>
+                      <span>
+                        {activeChapter
+                          ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
+                          : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
+                      </span>
                     </div>
-                  ) : null}
-                </div>
+                    {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
+                      <div
+                        className="book-time-row"
+                        aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
+                      >
+                        <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
+                        <span>{bookCompletionPercent}% complete</span>
+                      </div>
+                    ) : null}
+                  </div>
 
-                <div className="native-now-transport">
-                  {activeChapter ? (
+                  <div className="native-now-transport">
+                    {activeChapter ? (
+                      <button
+                        type="button"
+                        className="native-now-chapter"
+                        aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
+                        onClick={restartOrPreviousChapter}
+                        disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                      >
+                        <SkipBack size={27} strokeWidth={1.65} />
+                        <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      className="native-now-chapter"
-                      aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
-                      onClick={restartOrPreviousChapter}
-                      disabled={chapterElapsed <= 5 && !hasPreviousChapter}
+                      className="native-now-seek"
+                      aria-label="Rewind 15 seconds"
+                      onClick={() => seekBy(-15)}
                     >
-                      <SkipBack size={27} strokeWidth={1.65} />
-                      <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
+                      <RotateCcw size={24} strokeWidth={1.7} />
+                      <span>15s</span>
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="native-now-seek"
-                    aria-label="Rewind 15 seconds"
-                    onClick={() => seekBy(-15)}
-                  >
-                    <RotateCcw size={24} strokeWidth={1.7} />
-                    <span>15s</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`native-now-play${playPending ? " play-pending" : ""}`}
-                    aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
-                    aria-busy={playPending}
-                    onClick={togglePlayback}
-                  >
-                    {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
-                    {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="native-now-seek"
-                    aria-label="Forward 30 seconds"
-                    onClick={() => seekBy(30)}
-                  >
-                    <RotateCw size={24} strokeWidth={1.7} />
-                    <span>30s</span>
-                  </button>
-                  {activeChapter ? (
                     <button
                       type="button"
-                      className="native-now-chapter"
-                      aria-label="Next chapter"
-                      onClick={nextChapter}
-                      disabled={!hasNextChapter}
+                      className={`native-now-play${playPending ? " play-pending" : ""}`}
+                      aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
+                      aria-busy={playPending}
+                      onClick={togglePlayback}
                     >
-                      <SkipForward size={27} strokeWidth={1.65} />
-                      <span>Next</span>
+                      {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
+                      {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
                     </button>
-                  ) : null}
-                </div>
+                    <button
+                      type="button"
+                      className="native-now-seek"
+                      aria-label="Forward 30 seconds"
+                      onClick={() => seekBy(30)}
+                    >
+                      <RotateCw size={24} strokeWidth={1.7} />
+                      <span>30s</span>
+                    </button>
+                    {activeChapter ? (
+                      <button
+                        type="button"
+                        className="native-now-chapter"
+                        aria-label="Next chapter"
+                        onClick={nextChapter}
+                        disabled={!hasNextChapter}
+                      >
+                        <SkipForward size={27} strokeWidth={1.65} />
+                        <span>Next</span>
+                      </button>
+                    ) : null}
+                  </div>
 
-                <div className="native-now-utility">
-                  <button
-                    type="button"
-                    onClick={() => openNativePlayerSheet("speed")}
-                  >
-                    <Gauge size={16} /> {speed}×
-                  </button>
-                  <button type="button" onClick={() => {
-                    setSleepCustomOpen(false);
-                    setSleepCustomDraft("");
-                    openNativePlayerSheet("sleep");
-                  }}>
-                    <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (playbackBook) setSelectedBookId(playbackBook.id);
-                      openNativePlayerSheet("details");
-                    }}
-                  >
-                    <Bookmark size={16} /> Details
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (playbackBook) setSelectedBookId(playbackBook.id);
-                      openNativePlayerSheet("chapters");
-                    }}
-                  >
-                    <ListMusic size={16} /> Chapters
-                  </button>
-                  {readalongEnabled && playbackBook?.readingFile ? (
+                  <div className="native-now-utility">
                     <button
                       type="button"
-                      className="native-now-read"
+                      onClick={() => openNativePlayerSheet("speed")}
+                    >
+                      <Gauge size={16} /> {speed}×
+                    </button>
+                    <button type="button" onClick={() => {
+                      setSleepCustomOpen(false);
+                      setSleepCustomDraft("");
+                      openNativePlayerSheet("sleep");
+                    }}>
+                      <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
-                        haptic("light");
-                        openReadalong(playbackBook);
+                        if (playbackBook) setSelectedBookId(playbackBook.id);
+                        openNativePlayerSheet("details");
                       }}
                     >
-                      <BookOpen size={16} /> Read along
+                      <Bookmark size={16} /> Details
                     </button>
-                  ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (playbackBook) setSelectedBookId(playbackBook.id);
+                        openNativePlayerSheet("chapters");
+                      }}
+                    >
+                      <ListMusic size={16} /> Chapters
+                    </button>
+                    {readalongEnabled && playbackBook?.readingFile ? (
+                      <button
+                        type="button"
+                        className="native-now-read"
+                        onClick={() => {
+                          haptic("light");
+                          openReadalong(playbackBook);
+                        }}
+                      >
+                        <BookOpen size={16} /> Read along
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
 
                 {!native ? (
@@ -10574,6 +10643,39 @@ function MainApp({
                   </div>
                 </div>
                 <h2>{selectedBook.title}</h2>
+                {native && !isViewingPlayingBook ? (
+                  <div className="book-quick-start">
+                    <button
+                      type="button"
+                      className="book-quick-play"
+                      aria-label={`Play ${selectedBook.title}`}
+                      onClick={() => void playSelectedBook(selectedBook)}
+                    >
+                      <span className="book-quick-play-icon"><Play size={20} fill="currentColor" /></span>
+                      <span className="book-quick-play-copy">
+                        <strong>
+                          {selectedBook.progress?.status === "inProgress"
+                            ? "Resume this book"
+                            : selectedBook.progress?.status === "finished"
+                              ? "Read it again"
+                              : "Begin this reading"}
+                        </strong>
+                        <small>
+                          {selectedBook.progress?.status === "inProgress"
+                            && formatDurationLabel(selectedBook.progress.remainingSeconds)
+                            ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
+                            : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
+                        </small>
+                      </span>
+                    </button>
+                    {playbackBook && playbackBook.id !== selectedBook.id ? (
+                      <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
+                        <Headphones size={14} />
+                        <span>Now playing <em>{playbackBook.title}</em></span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="book-credits">
                   {selectedBook.author ? <span>{selectedBook.author}</span> : null}
                   {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
@@ -11967,6 +12069,16 @@ function MainApp({
           {/* Grouped so a wide screen can set the cards in columns; on a phone the
               wrapper steps aside and they stack in the shell as before. */}
           <div className="settings-cards">
+            <div
+              className="settings-upper"
+              role="region"
+              aria-label="Listening and source settings. Scrolls independently."
+              tabIndex={0}
+            >
+            <div className="settings-pane-guide" aria-hidden="true">
+              <strong>Listening &amp; sources</strong>
+              <span><ArrowDown size={12} /> Scroll this half</span>
+            </div>
             <section className="settings-card">
               <span className="section-label"><Gauge size={13} /> Playback</span>
               <div className="settings-field">
@@ -12017,6 +12129,55 @@ function MainApp({
               </div> : null}
               {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
             </section> : null}
+
+            {(libroAvailable || canBrowseLibation) ? <section className="settings-card purchase-provider-settings">
+              <span className="section-label"><CloudDownload size={13} /> Book stores</span>
+              <p className="settings-hint">Connections and download behavior live here. Get Books stays focused on finding titles.</p>
+
+              {libroAvailable ? <details className="store-settings-group">
+                <summary>
+                  <span><strong>Libro.fm</strong><small>{libroAccounts?.length ? `${libroAccounts.length} connected account${libroAccounts.length === 1 ? "" : "s"}` : "Account and download settings"}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                <div className="store-settings-body">
+                  {supportsLibroDevice() && !localMode && isOperaLibre ? <label className="store-destination" htmlFor="settings-libro-destination">
+                    <span><strong>Download purchases to</strong><small>Choose where new Libro.fm imports are kept.</small></span>
+                    <select id="settings-libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
+                      <option value="server">OperaLibre server</option>
+                      <option value="device">This device</option>
+                    </select>
+                  </label> : null}
+                  <LibroCatalog
+                    key={`settings:${currentUser.id}:${libroOnDevice ? "device" : "server"}`}
+                    mode="management"
+                    polling={nativeTab === "settings"}
+                    device={libroOnDevice}
+                    refreshKey={libroRefreshKey}
+                    onAccountsChanged={setLibroAccounts}
+                    onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange}
+                  />
+                </div>
+              </details> : null}
+
+              {canBrowseLibation ? <details className="store-settings-group">
+                <summary>
+                  <span><strong>Audible</strong><small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention` : `${allAudibleAccounts.length} connected account${allAudibleAccounts.length === 1 ? "" : "s"}`}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                {audibleManagement}
+              </details> : null}
+            </section> : null}
+            </div>
+            <div
+              className="settings-lower"
+              role="region"
+              aria-label="Device and account settings. Scrolls independently."
+              tabIndex={0}
+            >
+            <div className="settings-pane-guide" aria-hidden="true">
+              <strong>Device &amp; account</strong>
+              <span><ArrowDown size={12} /> Scroll this half</span>
+            </div>
 
             <section className="settings-card">
               <span className="section-label"><Gamepad2 size={13} /> Extras</span>
@@ -12297,6 +12458,7 @@ function MainApp({
                 </button>
               </div>
             </section>
+            </div>
           </div>
         </section>
       ) : null}

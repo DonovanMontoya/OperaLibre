@@ -31,6 +31,9 @@ private final class TabsOverlayView: UIView {
         }
         let frame = hit.convert(hit.bounds, to: self)
         if frame.width >= bounds.width * 0.9 && frame.height >= bounds.height * 0.9 { return nil }
+        // A bar hung down the side runs the screen's full height, but only its
+        // platter of items is a control; the page owns the rest of the rail.
+        if hit is UITabBar && frame.height > frame.width { return nil }
         return hit
     }
 }
@@ -73,6 +76,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     // Whether the page was last told the floating top bar (rather than a
     // legacy bottom bar) is in play; nil until it has been told at all.
     private var sentFloatingTopBar: Bool?
+    // The side rail's free slot last handed to the page; nil when there is
+    // none, and unset until the page has been told either way.
+    private var sentRail: CGRect??
+    // A 44pt play/pause target plus padding can stay in the column even when
+    // Now Playing expands the system status area. The page drops secondary
+    // controls before giving up the rail.
+    private static let minimumRailHeight: CGFloat = 60
     // The color the visible screen carries, sent with every tab change. The
     // page covers the window, so this shows only where it cannot reach — a
     // rotation, an iPad's top-hung bar — and sets the status bar's polarity.
@@ -143,6 +153,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // The page may have reloaded and lost the clearance it was sent.
         sentTopClearance = -1
         sentFloatingTopBar = nil
+        sentRail = .none
         applyChrome(chrome, bar: bar)
         if visible != navigationVisible && navigation.parent != nil {
             // Showing or hiding the bar resizes the web view, and the page
@@ -399,6 +410,65 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             webView.evaluateJavaScript(
                 "document.documentElement.classList.toggle('floating-tabs', \(usesFloatingTopBar))")
         }
+        // A foldable's cover screen hangs the bar down one edge, in a column
+        // that also carries the clock or camera island. Which edge UIKit picks
+        // follows the device's landscape direction. The page runs under that
+        // column too and is told which part of it is free: below the system
+        // chrome and above the bar's platter of items.
+        var rail: CGRect?
+        let hasLeadingRail = frame.minX > view.bounds.minX + 0.5
+        let hasTrailingRail = frame.maxX < view.bounds.maxX - 0.5
+        if navigationVisible, navigation.parent != nil, !navigation.view.isHidden,
+           hasLeadingRail || hasTrailingRail {
+            let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
+            let barOnLeading = hasLeadingRail && bar.maxX < view.bounds.midX
+            let barOnTrailing = hasTrailingRail && bar.minX > view.bounds.midX
+            let column = barOnLeading
+                ? CGRect(x: view.bounds.minX, y: 0, width: frame.minX - view.bounds.minX, height: view.bounds.height)
+                : CGRect(x: frame.maxX, y: 0, width: view.bounds.maxX - frame.maxX, height: view.bounds.height)
+            if bar.height >= view.bounds.height / 2, bar.width < view.bounds.width / 4,
+               barOnLeading || barOnTrailing, let items = itemsPlatter(in: column) {
+                let top = railTop(in: column, above: items.minY)
+                if items.minY - top >= Self.minimumRailHeight {
+                    // Centred on the platter, not the column: the platter
+                    // sits a few points off the bar's frame, and the page's
+                    // controls stand in line with it.
+                    rail = CGRect(x: items.midX - column.width / 2 - view.bounds.minX, y: top,
+                                  width: column.width, height: items.minY - top)
+                    frame.origin.x = view.bounds.minX
+                    frame.size.width = view.bounds.width
+                }
+            }
+        } else if !navigationVisible || navigation.view.isHidden,
+                  view.bounds.height > view.bounds.width, view.safeAreaInsets.right >= 60 {
+            // With the bar hidden (the reader, for one), the column is free
+            // from below the clock to the bottom of the screen. Only a
+            // portrait screen with a column this wide beside it has one; a
+            // phone's notch margin in landscape is not a column.
+            let column = CGRect(x: view.bounds.maxX - view.safeAreaInsets.right, y: 0,
+                                width: view.safeAreaInsets.right, height: view.bounds.height)
+            let bottom = view.bounds.maxY - view.safeAreaInsets.bottom
+            let top = railTop(in: column, above: bottom)
+            if bottom - top >= 200 {
+                rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
+            }
+        }
+        if rail != sentRail, let webView = content.webView {
+            sentRail = .some(rail)
+            let script: String
+            if let rail {
+                script = """
+                (() => { const s = document.documentElement.style;
+                s.setProperty('--rail-x', '\(Int(rail.minX))px'); s.setProperty('--rail-width', '\(Int(rail.width))px');
+                s.setProperty('--rail-top', '\(Int(rail.minY))px'); s.setProperty('--rail-bottom', '\(Int(rail.maxY))px');
+                document.documentElement.dataset.railControls = '\(rail.height >= 216 ? "full" : rail.height >= 164 ? "transport" : "play")';
+                document.documentElement.classList.add('side-rail'); })()
+                """
+            } else {
+                script = "document.documentElement.classList.remove('side-rail'); delete document.documentElement.dataset.railControls"
+            }
+            webView.evaluateJavaScript(script)
+        }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]
         // These constraints always belong to the root, never a transient tab
@@ -406,6 +476,38 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         for (constraint, inset) in zip(contentConstraints, insets) where constraint.constant != inset {
             constraint.constant = inset
         }
+    }
+
+    /// Where the free part of a side column starts: below the clock and
+    /// anything else the system sets at the top of it.
+    private func railTop(in column: CGRect, above limit: CGFloat) -> CGFloat {
+        var top = view.safeAreaInsets.top
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            for region in view.reservedRegions(kind: .occlusion)
+            where region.frame.intersects(column) && region.frame.midY < limit {
+                top = max(top, region.frame.maxY)
+            }
+        }
+        #endif
+        return top
+    }
+
+    /// The platter holding a side-hung bar's items. Like iPad's floating bar,
+    /// it is not drawn inside `tabBar`, so it is found by where it sits: the
+    /// first visible view in the bar's column that is a control's height
+    /// rather than the column's.
+    private func itemsPlatter(in column: CGRect) -> CGRect? {
+        var queue: [UIView] = navigation.view.subviews
+        while !queue.isEmpty {
+            let candidate = queue.removeFirst()
+            guard !candidate.isHidden, candidate.alpha > 0 else { continue }
+            let frame = candidate.convert(candidate.bounds, to: view)
+            if frame.height >= 60, frame.height < column.height * 0.8, frame.width >= 30,
+               frame.minX >= column.minX - 1, frame.maxX <= column.maxX + 1 { return frame }
+            queue.append(contentsOf: candidate.subviews)
+        }
+        return nil
     }
 
     private func showSelectedContent() {

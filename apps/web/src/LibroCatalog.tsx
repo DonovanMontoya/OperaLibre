@@ -45,17 +45,21 @@ function LibroNickname({ account, busy, onSave }: { account: LibroAccountSummary
   </form>;
 }
 
-export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, onBooksChanged, onOpenBook, searchQuery, sortMode = "title", reversed = false, refreshKey = 0, device = false }: {
+export function LibroCatalog({ filterEmail, hidden = false, mode = "full", polling = true, onAccountsChanged, onBooksChanged, onOpenBook, onOpenSettings, searchQuery, sortMode = "title", reversed = false, refreshKey = 0, device = false, viewMode }: {
   filterEmail?: string | null;
   hidden?: boolean;
+  mode?: "full" | "catalog" | "management";
+  polling?: boolean;
   onAccountsChanged?: (accounts: LibroAccountSummary[]) => void;
   device?: boolean;
   refreshKey?: number;
   onBooksChanged: (books: Book[]) => void;
   onOpenBook?: (id: string) => void;
+  onOpenSettings?: () => void;
   searchQuery?: string;
   sortMode?: string;
   reversed?: boolean;
+  viewMode?: "grid" | "list" | "compact";
 }) {
   const backend = device ? libroDeviceBackend : serverBackend;
   const [account, setAccount] = useState<LibroAccountStatus | null>(null);
@@ -68,12 +72,14 @@ export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, o
   const [pollError, setPollError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("list");
+  const activeView = viewMode ?? view;
   const [refreshTick, setRefreshTick] = useState(0);
   const booksChanged = useRef(onBooksChanged);
   booksChanged.current = onBooksChanged;
   const completed = useRef(new Set<string>());
 
   useEffect(() => {
+    if (!polling) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -100,7 +106,7 @@ export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, o
     }
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [refreshTick, refreshKey, backend]);
+  }, [refreshTick, refreshKey, backend, polling]);
 
   async function act(key: string, action: () => Promise<unknown>) {
     setBusy(key);
@@ -138,8 +144,9 @@ export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, o
   const loadingLibrary = !!refreshJob && active(refreshJob);
   return <section className="libro-catalog" aria-label="Libro.fm library" style={hidden ? { display: "none" } : undefined}>
     <header className="libro-catalog-head">
-      <div><h2>Libro.fm</h2>{!account?.connected ? <p>Connect your account to browse and import your purchases.</p> : null}</div>
-      {account?.connected ? <details className="libro-account-details"><summary>Libro.fm accounts ({accounts.length})</summary>
+      {mode !== "management" || !account?.connected ? <div><h2>{mode === "management" ? "Connect Libro.fm" : "Libro.fm"}</h2>{!account?.connected ? <p>{mode === "catalog" ? "Connect your account in Settings to browse your purchases." : "Connect your account to browse and import your purchases."}</p> : null}</div> : null}
+      {mode === "catalog" && !account?.connected && onOpenSettings ? <button type="button" className="libro-settings-link" onClick={onOpenSettings}>Open Settings</button> : null}
+      {mode !== "catalog" && account?.connected ? <details className="libro-account-details"><summary>{mode === "management" ? "Manage connected accounts" : "Libro.fm accounts"} ({accounts.length})</summary>
         {accounts.map(item => <div key={item.email}><p><span className="purchase-provider-tag">Libro.fm</span> {item.nickname || item.email}</p>{item.nickname ? <p>{item.email}</p> : null}
           <LibroNickname account={item} busy={!!busy} onSave={nickname => void act("rename", () => backend.rename(item.email, nickname))} /><div className="libro-catalog-actions">
           <button type="button" disabled={!!busy} onClick={() => { setEmail(item.email); setReconnect(true); }}>Reconnect</button>
@@ -152,7 +159,7 @@ export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, o
       </details> : null}
     </header>
     {!account && !pollError ? <p role="status">Loading your connection…</p> : null}
-    {account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
+    {mode !== "catalog" && account && (!account.connected || reconnect) ? <form className="libro-connect" onSubmit={event => { event.preventDefault(); void act("connect", () => backend.connect(email, password)); }}>
       <label>Email<input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required disabled={!!busy} /></label>
       <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required disabled={!!busy} /></label>
       <button type="submit" disabled={!!busy}>{busy === "connect" ? <LoaderCircle size={15} className="spin-icon" /> : <CloudDownload size={15} />} Connect Libro.fm</button>
@@ -160,22 +167,22 @@ export function LibroCatalog({ filterEmail, hidden = false, onAccountsChanged, o
       <p>{device ? "Your sign-in goes directly from this device to Libro.fm. The token is kept in native secure storage, not sent to your server. This device connection and its cached purchases are shared by anyone using this app on this device. Disconnect before handing the device to another person." : "Your sign-in is sent to Libro.fm through this server. Only the connection token is saved. Your purchase list is private to your OperaLibre account; imported audio joins this server’s library."}</p>
     </form> : null}
     {error || pollError ? <p className="libro-catalog-error" role="alert">{error ?? pollError}</p> : null}
-    {account?.connected ? <>
+    {account?.connected && refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
+    {mode !== "management" && account?.connected ? <>
       {filterEmail === undefined && accounts.length > 1 ? <label className="libro-account-filter">Account<select aria-label="Libro.fm account" value={accountFilter} onChange={event => setAccountFilter(event.target.value)}><option value="all">All Libro.fm accounts</option>{accounts.map(item => <option key={item.email} value={item.email}>{item.nickname || item.email}</option>)}</select></label> : null}
       {searchQuery === undefined ? <label className="libro-catalog-search"><Search size={15} /><input type="search" aria-label="Search Libro.fm purchases" placeholder="Search your purchases…" value={query} onChange={event => setQuery(event.target.value)} /></label> : null}
       <div className="libro-view-toolbar">
         <p className="libro-catalog-summary" role="status">{loadingLibrary ? "Loading your Libro.fm library…" : `${books.length} of ${account.books.length} purchases`}</p>
-        <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
+        {viewMode === undefined ? <div className="libro-view-toggle" role="group" aria-label="Purchase layout">
           <button type="button" aria-label="Cover grid" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={18} /></button>
           <button type="button" aria-label="Compact list" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={18} /></button>
-        </div>
+        </div> : null}
       </div>
-      {refreshJob?.status === "failed" ? <p className="libro-catalog-error" role="alert">{refreshJob.error ?? "Library refresh failed. Try reconnecting."}</p> : null}
       {!books.length && !loadingLibrary ? <p className="libro-catalog-empty">{needle ? "No purchases match your search." : account.syncedAt ? "No audiobooks found in this account." : "Refresh your library to load your purchases."}</p> : null}
-      <ul className={`libro-purchases libro-purchases--${view}`}>{books.map(book => {
+      <ul className={`libro-purchases purchase-book-list purchase-book-list--${activeView} libro-purchases--${activeView}`}>{books.map(book => {
         const job = account.jobs.find(job => job.kind === "libro-download" && job.targetId?.endsWith(`:${book.isbn}`));
         const importing = !!job && active(job);
-        return <li key={`${book.accountEmail ?? ""}:${book.isbn}`}>
+        return <li className="purchase-book-row" key={`${book.accountEmail ?? ""}:${book.isbn}`}>
           <LibroCover book={book} device={device} />
           <div className="libro-purchase-copy"><h3>{book.title}</h3><small className="libro-purchase-account"><span className="purchase-provider-tag">Libro.fm</span> {accounts.find(item => item.email === (book.accountEmail ?? account.email))?.nickname || book.accountEmail || account.email}</small><p>{book.authors.join(", ")}</p><small>{book.audiobook_info.narrators.length ? `Narrated by ${book.audiobook_info.narrators.join(", ")}` : book.isbn}</small>
             {book.localBookId ? <span className="libro-owned-status">In library</span> : null}
