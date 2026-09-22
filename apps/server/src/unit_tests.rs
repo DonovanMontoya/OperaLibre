@@ -6329,3 +6329,34 @@ async fn job_list_filters_by_kind_and_preserves_unfiltered_listing() {
         }
     }
 }
+
+/// Hands out at most one byte per call, like a network mount under load.
+struct TrickleReader<'a>(&'a [u8]);
+
+impl std::io::Read for TrickleReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let Some((first, rest)) = self.0.split_first() else {
+            return Ok(0);
+        };
+        let Some(slot) = buffer.first_mut() else {
+            return Ok(0);
+        };
+        *slot = *first;
+        self.0 = rest;
+        Ok(1)
+    }
+}
+
+#[test]
+fn fingerprint_samples_are_filled_across_short_reads() {
+    let data = (0..=255u8).cycle().take(1_000).collect::<Vec<_>>();
+    let mut sample = [0_u8; 600];
+    let filled = super::read_sample(&mut TrickleReader(&data), &mut sample).unwrap();
+    assert_eq!(filled, 600);
+    assert_eq!(&sample[..], &data[..600]);
+
+    // A file shorter than the sample stops at its end.
+    let mut sample = [0_u8; 600];
+    let filled = super::read_sample(&mut TrickleReader(&data[..10]), &mut sample).unwrap();
+    assert_eq!(filled, 10);
+}
