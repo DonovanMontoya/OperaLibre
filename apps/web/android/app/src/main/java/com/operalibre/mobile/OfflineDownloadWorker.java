@@ -114,12 +114,17 @@ public class OfflineDownloadWorker extends Worker {
                 }
                 partial = new File(destination.getPath() + ".part");
                 try {
-                    download(jobId, job, item.getString("url"), partial, completedRequired, requiredTotal);
-                    if (destination.exists() && !destination.delete()) {
-                        throw new IllegalStateException("Could not replace an earlier download.");
-                    }
-                    if (!partial.renameTo(destination)) {
-                        throw new IllegalStateException("Could not finish writing the downloaded file.");
+                    // A file only reaches its final name once it is complete,
+                    // so one already there is from an earlier attempt at this
+                    // book and a retry need not fetch it again.
+                    if (!destination.isFile() || destination.length() == 0) {
+                        download(jobId, job, item.getString("url"), partial, completedRequired, requiredTotal);
+                        if (destination.exists() && !destination.delete()) {
+                            throw new IllegalStateException("Could not replace an earlier download.");
+                        }
+                        if (!partial.renameTo(destination)) {
+                            throw new IllegalStateException("Could not finish writing the downloaded file.");
+                        }
                     }
                     partial = null;
                 } catch (DownloadCancelledException cancelled) {
