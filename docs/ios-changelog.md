@@ -12,6 +12,31 @@ independently of the server releases.
 
 ## Unreleased
 
+## 1.2.6 (20)
+
+Prepared for the next iOS build on September 21, 2026; TestFlight/App Store
+Connect distribution is pending. App source:
+[`5b88c600`](https://github.com/DonovanMontoya/OperaLibre/commit/5b88c600766637fbe80ad489e634381b7faf3fd1).
+
+- Added iPhone Duo support: the shelf, player, reader, Settings, Ledger, and
+  Games adapt to folding, rotation, and the space around the hinge. Native
+  playback controls fit the side rail when space is available.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Reader text size is remembered separately for open and closed screens in
+  portrait and landscape, with a wider adjustment range. Page-edge taps turn
+  pages more reliably, and Follow Along keeps its highlight through fold
+  changes without pulling manually turned pages back to the narration.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Get Books has consistent grid, list, and compact views. Native book-store
+  connections and download settings live in Settings, with visible refresh
+  errors and continued account-management access in the browser.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Improved player and reader spacing, restored shelf ordering when closing
+  the device, and kept playback controls clear of navigation.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+
+These changes do not require a server update.
+
 ## 1.2.4 (18)
 
 Distributed via App Store Connect (TestFlight) on September 14, 2026. Source
