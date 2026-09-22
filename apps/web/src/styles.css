@@ -15358,19 +15358,6 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
   font-size: clamp(1.35rem, 4.4vh, 2rem);
 }
 
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-play {
-  width: 84px;
-  height: 84px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-transport .native-now-seek {
-  height: 54px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-now-utility button {
-  min-height: 50px;
-}
-
 /* Half open with the hinge down the middle, each half is a page of its own:
    two-column screens meet at the fold, and nothing is set across it. The
    fold sits at the middle of the screen, so equal padding either side and a
@@ -15398,6 +15385,14 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .ledger-dashboard >
   width: 100%;
   break-inside: avoid;
   margin-bottom: 18px;
+}
+
+/* Each open leaf is the width of the closed front display. Use that display's
+   two-card rhythm instead of choosing three columns from the full spread. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .ledger-dashboard .achievement-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
 }
 
 /* Games: what is read on the left page, the board or keyboard on the right,
@@ -15783,6 +15778,11 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.fullsc
 
 html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar-actions {
   justify-self: end;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .epub-reader.fullscreen
+  .epub-topbar > .epub-icon-button:first-child {
+  transform: translateX(16px);
 }
 
 /* Held like a laptop (hinge across), the words fill the upper half and the
@@ -16589,6 +16589,61 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
     & .native-now-controls { align-content: center; }
     & .native-now-copy { text-align: center; }
     & .native-now-copy h2 { margin-inline: auto; font-size: 1rem; }
+  }
+}
+
+/* The unfolded player's page has the height for proper touch targets. This
+   comes after fit-playback because that compact fallback owns the final base
+   sizes and would otherwise shrink the fold-specific controls back down. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell
+  > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+  & .native-now-controls { gap: 10px; }
+  & .native-now-transport { gap: 8px; }
+  & .native-now-transport > button:not(.native-now-play) { min-height: 64px; }
+  & .native-now-play { width: 92px; height: 92px; }
+  & .native-now-play svg { width: 42px; height: 42px; }
+  & .native-now-transport .native-now-seek {
+    flex-basis: 58px;
+    width: 58px;
+    height: 64px;
+  }
+  & .native-now-transport :is(.native-now-seek, .native-now-chapter) svg {
+    width: 30px;
+    height: 30px;
+  }
+  & .native-now-utility button {
+    min-height: 60px;
+    gap: 5px;
+    font-size: 0.56rem;
+  }
+  & .native-now-utility button svg { width: 21px; height: 21px; }
+}
+
+@media (orientation: portrait) {
+  html.native-app[data-fold-posture="closed"] .native-shell
+    > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+    & .native-now-controls { gap: 10px; }
+    & .native-now-transport { gap: 8px; }
+    & .native-now-transport > button:not(.native-now-play) { min-height: 64px; }
+    & .native-now-play { width: 92px; height: 92px; }
+    & .native-now-play svg { width: 42px; height: 42px; }
+    & .native-now-transport .native-now-seek {
+      flex-basis: 58px;
+      width: 58px;
+      height: 64px;
+    }
+    & .native-now-transport :is(.native-now-seek, .native-now-chapter) svg {
+      width: 30px;
+      height: 30px;
+    }
+    & .native-now-utility button {
+      min-height: 60px;
+      gap: 5px;
+      font-size: 0.56rem;
+    }
+    & .native-now-utility button svg { width: 21px; height: 21px; }
   }
 }
 
