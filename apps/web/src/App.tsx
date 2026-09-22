@@ -10639,7 +10639,7 @@ function MainApp({
                     return;
                   }
                   haptic("light");
-                  openPlaybackView("now");
+                  withWebViewTransition(() => openPlaybackView("now"));
                 }}
               >
                 {native && nativeTab === "shelf" ? (

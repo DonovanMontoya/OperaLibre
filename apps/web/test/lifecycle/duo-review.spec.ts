@@ -101,6 +101,29 @@ test('web book details offer one primary playback action', async ({ page }) => {
   await expect(play).toBeVisible();
 });
 
+test('web Back to Now Playing carries the page through a view transition', async ({ page }) => {
+  await page.addInitScript(() => {
+    const transitions = (window as unknown as { transitionCount: number });
+    transitions.transitionCount = 0;
+    const start = document.startViewTransition?.bind(document);
+    if (!start) return;
+    document.startViewTransition = ((update: () => void) => {
+      transitions.transitionCount += 1;
+      return start(update);
+    }) as typeof document.startViewTransition;
+  });
+  const { books } = await openShell(page, false);
+  await page.locator('.book-row').first().click();
+  await page.getByRole('button', { name: `Play ${books[0].title}`, exact: true }).click();
+  await page.locator('.book-row').nth(1).click();
+  const back = page.getByRole('button', { name: 'Back to Now Playing', exact: true });
+  await expect(back).toBeVisible();
+  const before = await page.evaluate(() => (window as unknown as { transitionCount: number }).transitionCount);
+  await back.click();
+  await expect(back).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { transitionCount: number }).transitionCount)).toBe(before + 1);
+});
+
 test('native Audible settings show failed refresh requests', async ({ page }) => {
   await openShell(page, true, true);
   await page.route('**/api/libation/sync', route => route.fulfill({ status: 429, json: { message: 'Refresh limit reached. Try again later.' } }));
