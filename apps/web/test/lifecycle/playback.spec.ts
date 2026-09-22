@@ -30,6 +30,36 @@ async function seekAndPause(page: Page) {
   return position(page);
 }
 
+/**
+ * Tracks the page's progress writes. The returned wait resolves once none is
+ * in flight and none has started for `quietMs`.
+ *
+ * `waitForLoadState('networkidle')` cannot do this: it reports a load state
+ * the page reached long ago and returns at once. And `audio.paused` flips
+ * before the element's `pause` event runs, so the save that event makes can
+ * still start after the test has moved on.
+ */
+function trackProgressWrites(page: Page) {
+  let inFlight = 0;
+  let lastActivity = Date.now();
+  const isWrite = (request: { method(): string; url(): string }) =>
+    request.method() === 'PUT' && new URL(request.url()).pathname.endsWith('/progress');
+  page.on('request', request => {
+    if (!isWrite(request)) return;
+    inFlight += 1;
+    lastActivity = Date.now();
+  });
+  const settle = (request: { method(): string; url(): string }) => {
+    if (!isWrite(request)) return;
+    inFlight -= 1;
+    lastActivity = Date.now();
+  };
+  page.on('requestfinished', settle);
+  page.on('requestfailed', settle);
+  return (quietMs = 500) =>
+    expect.poll(() => inFlight === 0 && Date.now() - lastActivity >= quietMs).toBe(true);
+}
+
 async function expectResume(page: Page, saved: number) {
   await expect.poll(async () => Math.abs(await position(page) - saved)).toBeLessThan(1);
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
@@ -102,6 +132,7 @@ for (const resumedBeforeResponse of [false, true]) {
 
 test('a paused player returning to the foreground adopts a rewind from another device', async ({ page, server }) => {
   const book = await setup(page, server);
+  const progressWritesSettled = trackProgressWrites(page);
   await play(page);
   const saved = await seekAndPause(page);
   await expect.poll(async () => Math.abs((await server.progress(book.id))!.positionSeconds - saved)).toBeLessThan(1);
@@ -110,7 +141,9 @@ test('a paused player returning to the foreground adopts a rewind from another d
     document.dispatchEvent(new Event('visibilitychange'));
   }, value);
   await visibility('hidden');
-  await page.waitForLoadState('networkidle');
+  // This device's pause and backgrounding saves must land before the rewind:
+  // the server keeps whichever write arrives last.
+  await progressWritesSettled();
   // Another device rewinds while this one is away, for longer than the
   // periodic save interval: a resume that saved would stamp the stale spot.
   await server.json(`/api/books/${book.id}/progress`, 'PUT', {

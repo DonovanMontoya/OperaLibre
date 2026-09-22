@@ -123,12 +123,21 @@ pub(crate) async fn upload_ebook(
     };
 
     // The guard removes partial bytes on errors and request cancellation.
-    let staged = tempfile::Builder::new()
+    // Bytes go through the handle tempfile created, never a reopen by path:
+    // a reopen still running on the blocking pool when a cancelled request
+    // drops the guard would recreate the file after the guard deleted it,
+    // stranding it in the book's folder.
+    let (staged_file, staged) = tempfile::Builder::new()
         .prefix(".operalibre-ebook-")
         .tempfile_in(&destination_dir)?
-        .into_temp_path();
-    let uploaded_name =
-        receive_ebook_upload(&staged, &mut multipart, state.max_upload_bytes).await?;
+        .into_parts();
+    let uploaded_name = receive_ebook_upload(
+        &staged,
+        fs::File::from_std(staged_file),
+        &mut multipart,
+        state.max_upload_bytes,
+    )
+    .await?;
     let name = forced_name.unwrap_or(uploaded_name);
     if name.len() > 255 {
         return Err(ApiError::bad_request(
@@ -228,6 +237,7 @@ pub(crate) async fn upload_ebook(
 
 async fn receive_ebook_upload(
     staged: &FsPath,
+    mut output: fs::File,
     multipart: &mut Multipart,
     max_upload_bytes: Option<u64>,
 ) -> Result<String, ApiError> {
@@ -246,7 +256,6 @@ async fn receive_ebook_upload(
         if file_name.len() > 255 || !file_name.to_ascii_lowercase().ends_with(".epub") {
             return Err(ApiError::bad_request("Choose an EPUB (.epub) file."));
         }
-        let mut output = fs::File::create(staged).await?;
         let mut bytes = 0u64;
         while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
             bytes = bytes.saturating_add(chunk.len() as u64);
@@ -269,6 +278,8 @@ async fn receive_ebook_upload(
     }
     let name =
         uploaded_name.ok_or_else(|| ApiError::bad_request("Choose one EPUB file to upload."))?;
+    // Closed before validation reopens the file by path.
+    drop(output);
     let path = staged.to_path_buf();
     tokio::task::spawn_blocking(move || validate_uploaded_epub(&path))
         .await
