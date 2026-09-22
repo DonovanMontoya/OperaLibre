@@ -1823,7 +1823,6 @@ pub(crate) async fn start_libation_download(
     if let Some(user_id) = grant_to_user.as_deref() {
         let local_book_id = find_book_id_by_asin(&state.library.read().await.books, &asin);
         if let Some(book_id) = local_book_id {
-            grant_user_book_access(state, user_id, &book_id).await?;
             let (job_id, _) = create_job_with_state(
                 state,
                 "libation-access-grant",
@@ -1832,7 +1831,29 @@ pub(crate) async fn start_libation_download(
                 false,
             )
             .await;
-            update_job_finished(state, &job_id, "completed", None, None).await;
+            // Confirming ownership can wait on the Libation lock, which a
+            // liberate job may hold for a long time, so it runs as the job.
+            let state = state.clone();
+            let user_id = user_id.to_string();
+            let grant_job_id = job_id.clone();
+            tokio::spawn(async move {
+                let outcome = match profile_owns_asin(&state, &profile, &asin).await {
+                    Ok(true) => grant_user_book_access(&state, &user_id, &book_id)
+                        .await
+                        .map_err(|error| error.message),
+                    Ok(false) => Err(not_in_profile_message(&profile, &asin)),
+                    Err(error) => Err(error.message),
+                };
+                match outcome {
+                    Ok(()) => {
+                        update_job_finished(&state, &grant_job_id, "completed", None, None).await;
+                    }
+                    Err(message) => {
+                        update_job_finished(&state, &grant_job_id, "failed", None, Some(message))
+                            .await;
+                    }
+                }
+            });
             return Ok(Json(JobCreated { job_id }));
         }
     }
@@ -1840,7 +1861,13 @@ pub(crate) async fn start_libation_download(
     let (job_id, created) =
         create_queued_job(state, "libation-liberate", Some(catalog_id.clone())).await;
     if let Some(user_id) = grant_to_user {
-        schedule_libation_access_grant(state.clone(), job_id.clone(), asin.clone(), user_id);
+        schedule_libation_access_grant(
+            state.clone(),
+            job_id.clone(),
+            profile.clone(),
+            asin.clone(),
+            user_id,
+        );
     }
     if created {
         tokio::spawn(run_job(
@@ -1956,6 +1983,7 @@ async fn run_libation_liberate_job(
 pub(crate) fn schedule_libation_access_grant(
     state: AppState,
     job_id: String,
+    profile: LibationProfile,
     asin: String,
     user_id: String,
 ) {
@@ -1966,6 +1994,22 @@ pub(crate) fn schedule_libation_access_grant(
 
         let book_id = find_book_id_by_asin(&state.library.read().await.books, &asin);
         let Some(book_id) = book_id else { return };
+        // A liberate run can succeed without downloading anything, and the
+        // catalogue may already hold a book with this ASIN from elsewhere.
+        match profile_owns_asin(&state, &profile, &asin).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("{}", not_in_profile_message(&profile, &asin));
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "could not confirm {asin} before granting access: {}",
+                    error.message
+                );
+                return;
+            }
+        }
 
         if let Err(error) = grant_user_book_access(&state, &user_id, &book_id).await {
             tracing::warn!(
@@ -1974,6 +2018,35 @@ pub(crate) fn schedule_libation_access_grant(
             );
         }
     });
+}
+
+/// Whether `asin` is in the profile's Audible library. A reader's download
+/// grants them the matching local book, so only a book the account actually
+/// owns may do that; naming any ASIN in the catalogue must not.
+async fn profile_owns_asin(
+    state: &AppState,
+    profile: &LibationProfile,
+    asin: &str,
+) -> Result<bool, ApiError> {
+    let owns = |books: &[LibationBook]| {
+        books
+            .iter()
+            .any(|book| book.asin.eq_ignore_ascii_case(asin))
+    };
+    if let Some(cached) = cached_libation_export(profile).await {
+        return Ok(owns(&cached.books));
+    }
+    let _libation_guard = acquire_libation_job_lock(state).await;
+    if let Some(cached) = cached_libation_export(profile).await {
+        return Ok(owns(&cached.books));
+    }
+    // Not cached: the listing's cache also carries account labels, which
+    // this export does not look up.
+    Ok(owns(&export_libation_books(profile).await?))
+}
+
+fn not_in_profile_message(profile: &LibationProfile, asin: &str) -> String {
+    format!("{asin} is not in the {} Audible library.", profile.name)
 }
 
 pub(crate) async fn grant_user_book_access(
