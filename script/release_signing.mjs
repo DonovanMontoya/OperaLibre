@@ -25,6 +25,8 @@ import { fileURLToPath } from "node:url";
 
 export const SIGNATURE_SUFFIX = ".sig";
 const MESSAGE_DOMAIN = "operalibre-release-asset-v1";
+// Must match the public key built into the server and macOS updater.
+export const RELEASE_SIGNING_PUBLIC_KEY = "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=";
 // DER prefixes that wrap a raw 32-byte Ed25519 seed or public key.
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -44,6 +46,12 @@ export function privateKeyFromSeed(seedBase64) {
 export function publicKeyBase64(privateKey) {
   const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
   return spki.subarray(SPKI_ED25519_PREFIX.length).toString("base64");
+}
+
+export function requireReleaseSigningKey(privateKey) {
+  if (publicKeyBase64(privateKey) !== RELEASE_SIGNING_PUBLIC_KEY) {
+    throw new Error("OPERALIBRE_RELEASE_SIGNING_KEY does not match the public key built into the updaters.");
+  }
 }
 
 export async function fileSha256Hex(file) {
@@ -83,6 +91,7 @@ async function main([command, ...args]) {
       throw new Error("OPERALIBRE_RELEASE_SIGNING_KEY is not set; refusing to publish unsigned assets.");
     }
     const privateKey = privateKeyFromSeed(seed);
+    requireReleaseSigningKey(privateKey);
     const [directory, tag] = args;
     const signed = await signDirectory(directory, tag, privateKey);
     if (signed.length === 0) throw new Error(`No release assets to sign in ${directory}.`);
