@@ -1488,7 +1488,11 @@ fi
   done
   printf 'start export\n' >> '{log}'
   sleep 0.02
-  printf '[]' > "$export_path"
+  if [ -f '{export}' ]; then
+    cp '{export}' "$export_path"
+  else
+    printf '[]' > "$export_path"
+  fi
   printf 'end export\n' >> '{log}'
   exit 0
 fi
@@ -1522,7 +1526,8 @@ printf 'end %s\n' "$asin" >> '{log}'
 exit 0
 "#,
         log = log_path.display(),
-        audio = audio_template.display()
+        audio = audio_template.display(),
+        export = root.join("libation-export.json").display()
     );
     std::fs::write(&cli_path, script).unwrap();
     let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
@@ -2180,6 +2185,107 @@ async fn successful_libation_exit_without_a_decrypted_book_is_failed() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_finished_job(state: &super::AppState, job_id: &str) -> super::JobStatus {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let job = state.jobs.read().await.get(job_id).cloned().unwrap();
+        if job.status == "completed" || job.status == "failed" {
+            return job;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job {job_id} never finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reader_download_grants_only_books_the_audible_account_owns() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let owned = "B000OWNED1";
+    let elsewhere = "B000ELSE01";
+    for asin in [owned, elsewhere] {
+        let folder = state
+            .libation_config
+            .library_root
+            .join(format!("Test [{asin}]"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::copy(
+            root.path().join("template.wav"),
+            folder.join(format!("Test [{asin}].wav")),
+        )
+        .unwrap();
+    }
+    super::rescan_library(&state).await.unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        format!(r#"[{{"Audible Product Id":"{owned}","Title":"Owned"}}]"#),
+    )
+    .unwrap();
+
+    let mut reader = stored_user("reader", false, false);
+    reader.allowed_book_ids = Some(Vec::new());
+    reader.libation_access = super::LibationAccess::Direct;
+    state
+        .users
+        .mutate(move |users| {
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let auth = super::AuthUser {
+        id: "reader".to_string(),
+        username: "reader".to_string(),
+        is_admin: false,
+        is_owner: false,
+        can_approve_libation_requests: false,
+        allowed_book_ids: Some(Vec::new()),
+        libation_access: super::LibationAccess::Direct,
+        share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
+    };
+    let granted = || async {
+        state.users.read().await.users[1]
+            .allowed_book_ids
+            .clone()
+            .unwrap_or_default()
+    };
+
+    // A book already in the catalogue, but not in the Audible account: naming
+    // its ASIN must not hand it over.
+    let refused = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(auth.clone()),
+        super::Path(elsewhere.to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &refused.job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(granted().await.is_empty());
+
+    let accepted = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(auth),
+        super::Path(owned.to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &accepted.job_id).await;
+    assert_eq!(job.status, "completed");
+    let owned_book_id =
+        super::find_book_id_by_asin(&state.library.read().await.books, owned).unwrap();
+    assert_eq!(granted().await, vec![owned_book_id]);
 }
 
 #[cfg(unix)]
