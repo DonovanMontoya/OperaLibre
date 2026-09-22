@@ -17,10 +17,10 @@ This integration is entirely optional. If you don't configure it, the relevant U
 
 ## Set it up
 
-The [one-line installer](installing-a-release.md#one-line-install-on-macos-and-linux) can do steps 1 and 2 of the prerequisites for you: it finds an existing Libation or downloads the official release into a `libation` folder inside your OperaLibre installation, then fills in `libation_cli_path`. Continue from step 2 below afterwards.
+The [one-line installer](installing-a-release.md#setting-up-the-audible-import-during-install) can install Libation, configure its settings folder, and guide you through signing in to Audible. Accept its optional sign-in prompt to launch Libation directly during setup. After a successful sign-in, continue from step 4 below. If you skip sign-in, the installer prints a command with the correct paths to connect later.
 
 1. Install Libation on the OperaLibre server and configure `libation_cli_path` (or place the CLI on `PATH`).
-2. Add every Audible account the server should browse in Libation itself, using Libation's own account settings. Accounts are not added from inside OperaLibre.
+2. Add every Audible account the server should browse in Libation itself, using its account settings or the installer's guided sign-in. Accounts are not added from inside OperaLibre.
 3. Point OperaLibre at that Libation installation with `libation_files_dir`, the directory holding `AccountsSettings.json` and `Settings.json`.
 4. Sign in to OperaLibre as an administrator and open **Audible**. The accounts Libation knows about appear in the account list with their connection status, and the **Browsing** filter narrows the catalog to one of them.
 
