@@ -3195,13 +3195,16 @@ fn libation_account_rows_keep_distinct_server_identities() {
 
 #[test]
 fn libation_commands_clear_inherited_invariant_globalization() {
-    let cli = std::path::Path::new("libationcli");
-    let command = super::libation_command(cli, vec!["scan".to_string()]);
+    let mut command = tokio::process::Command::new("libationcli");
+    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
+    super::clear_invariant_globalization(&mut command);
     assert!(command.as_std().get_envs().any(|(name, value)| {
         name == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" && value.is_none()
     }));
 
-    let command = super::interactive_libation_command(cli, &["login-external".to_string()]);
+    let mut command = portable_pty::CommandBuilder::new("libationcli");
+    command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
+    super::clear_interactive_invariant_globalization(&mut command);
     assert!(
         command
             .get_env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")
