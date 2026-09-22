@@ -876,7 +876,6 @@ libation_icu_available() {
 }
 
 report_missing_libation_icu() {
-  say "Libation needs the ICU runtime on Linux, but no ICU library was found."
   if need apt-get; then
     say "Install it as root with: apt-get update && apt-get install -y libicu-dev"
   elif need dnf; then
@@ -895,6 +894,77 @@ report_missing_libation_icu() {
   say "OperaLibre will still be installed, but Audible import will remain unavailable until ICU is installed."
 }
 
+run_libation_dependency_command() {
+  if [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
+    "$@"
+  elif need sudo; then
+    sudo "$@"
+  else
+    say "Installing ICU needs administrator access, but sudo is not available."
+    return 1
+  fi
+}
+
+install_libation_icu() {
+  say "Installing the ICU runtime required by Libation..."
+  if need apt-get; then
+    run_libation_dependency_command apt-get update || return 1
+    apt_icu_package=""
+    if need apt-cache; then
+      apt_icu_package=$(apt-cache depends libicu-dev 2>/dev/null |
+        sed -n 's/^[[:space:]]*Depends: \(libicu[0-9][0-9]*\)$/\1/p' | head -n 1)
+    fi
+    # Debian and Ubuntu version the runtime package. Resolve that dependency
+    # when possible so a minimal server does not receive development headers.
+    [ -n "$apt_icu_package" ] || apt_icu_package=libicu-dev
+    run_libation_dependency_command env DEBIAN_FRONTEND=noninteractive \
+      apt-get install -y --no-install-recommends "$apt_icu_package"
+  elif need dnf; then
+    run_libation_dependency_command dnf install -y libicu
+  elif need yum; then
+    run_libation_dependency_command yum install -y libicu
+  elif need apk; then
+    run_libation_dependency_command apk add icu-libs
+  elif need pacman; then
+    run_libation_dependency_command pacman -S --noconfirm icu
+  elif need zypper; then
+    run_libation_dependency_command zypper --non-interactive install libicu
+  else
+    say "This Linux distribution's package manager was not recognized."
+    return 1
+  fi
+}
+
+ensure_libation_icu() {
+  libation_icu_available && return 0
+
+  say "Libation needs the ICU runtime on Linux, but no ICU library was found."
+  # An unattended ordinary upgrade must not gain system packages as a side
+  # effect. --yes may install ICU only when the user explicitly requested
+  # Libation with --libation or --libation-path.
+  if [ "$INTERACTIVE" -ne 1 ] &&
+     { [ "$ASSUME_YES" -ne 1 ] || [ "$LIBATION_CHOICE" != yes ]; }; then
+    report_missing_libation_icu
+    return 1
+  fi
+  if ! confirm "Install the ICU runtime now?" y; then
+    report_missing_libation_icu
+    return 1
+  fi
+  if ! install_libation_icu; then
+    say "ICU could not be installed."
+    report_missing_libation_icu
+    return 1
+  fi
+  if ! libation_icu_available; then
+    say "ICU was installed, but its library still could not be found."
+    report_missing_libation_icu
+    return 1
+  fi
+  say "ICU is installed. Continuing Libation setup."
+  return 0
+}
+
 libation_asset() {
   # libation_asset TAG — the download for this computer, or nothing.
   libation_version=${1#v}
@@ -910,8 +980,8 @@ libation_asset() {
 }
 
 install_libation() {
-  # Installs Libation inside the OperaLibre folder, so no administrator
-  # password is needed and removing it is just deleting one folder.
+  # Installs Libation itself inside the OperaLibre folder. On Linux, its ICU
+  # runtime remains a system dependency handled separately above.
   say "Looking up the newest Libation release..."
   libation_json=$(fetch_stdout "https://api.github.com/repos/${LIBATION_REPOSITORY}/releases/latest") || {
     say "Could not reach GitHub to look up Libation."
@@ -997,8 +1067,8 @@ if [ "$LIBATION_CHOICE" != no ]; then
     LIBATION_CONFIGURED=$existing_libation_config
     # An explicit request can connect an account on a later installer run;
     # ordinary upgrades leave the existing account setup alone.
-    if ! libation_icu_available; then
-      report_missing_libation_icu
+    if ! ensure_libation_icu; then
+      :
     elif [ "$LIBATION_CHOICE" = yes ]; then
       LIBATION_LOGIN_OFFER=1
     else
@@ -1048,12 +1118,11 @@ if [ "$LIBATION_CHOICE" != no ]; then
       fi
 
       if [ -n "$LIBATION_PATH" ]; then
-        if libation_icu_available; then
+        if ensure_libation_icu; then
           set_config libation_cli_path "$LIBATION_PATH"
           LIBATION_CONFIGURED=$LIBATION_PATH
           LIBATION_LOGIN_OFFER=1
         else
-          report_missing_libation_icu
           LIBATION_PATH=""
         fi
       else
@@ -1069,8 +1138,7 @@ if [ "$LIBATION_LOGIN_OFFER" -eq 1 ]; then
     /*) ;;
     *) LIBATION_CONFIGURED="${INSTALL_DIR}/${LIBATION_CONFIGURED}" ;;
   esac
-  if ! libation_icu_available; then
-    report_missing_libation_icu
+  if ! ensure_libation_icu; then
     LIBATION_LOGIN_OFFER=0
   elif ensure_libation_files_dir; then
     offer_libation_login

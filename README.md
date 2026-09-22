@@ -32,7 +32,7 @@ On macOS and Linux, one command downloads the newest release for your computer, 
 curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh | sh
 ```
 
-It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you, without a system-wide install or an administrator password. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
+It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you. On Linux, it also offers to install Libation's ICU system dependency with administrator access when needed. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
 
 The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experimental features**; normal playback and chapter sync remain available with it disabled. Disabling the experiment keeps existing sync maps but pauses sentence following until it is enabled again.
 
