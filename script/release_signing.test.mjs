@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
+  RELEASE_SIGNING_PUBLIC_KEY,
   privateKeyFromSeed,
   publicKeyBase64,
   signAsset,
@@ -35,6 +38,16 @@ test("the shared test vector is stable", () => {
     signAsset(key, "v1.2.3", "operalibre-1.2.3-frontend.zip", "b".repeat(64)),
     TEST_FRONTEND_SIGNATURE
   );
+});
+
+test("the signer expects the public key embedded in both updaters", async () => {
+  for (const source of [
+    "../apps/server/src/updates.rs",
+    "../apps/macos/Sources/OperaLibre/ReleaseSignature.swift"
+  ]) {
+    const contents = await readFile(fileURLToPath(new URL(source, import.meta.url)), "utf8");
+    assert.ok(contents.includes(`"${RELEASE_SIGNING_PUBLIC_KEY}"`), source);
+  }
 });
 
 test("a signature binds the tag, the asset name and the digest", () => {
@@ -73,4 +86,22 @@ test("signing a directory writes a verifiable signature beside every asset", asy
 
 test("a seed of the wrong length is refused", () => {
   assert.throws(() => privateKeyFromSeed(Buffer.alloc(16).toString("base64")), /32-byte/);
+});
+
+test("the signing command refuses a mismatched secret before writing signatures", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "operalibre-signing-key-test-"));
+  try {
+    await writeFile(path.join(directory, "update.zip"), "update bytes");
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL("./release_signing.mjs", import.meta.url)), "sign", directory, "v1.2.3"
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, OPERALIBRE_RELEASE_SIGNING_KEY: TEST_SEED }
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /does not match the public key/);
+    assert.deepEqual(await readdir(directory), ["update.zip"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
