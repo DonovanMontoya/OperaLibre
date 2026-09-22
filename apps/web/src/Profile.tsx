@@ -183,6 +183,7 @@ export function ProfilePage({
         <p className="profile-status error">{error}</p>
       ) : displayedStats ? (
         <>
+          <div className="ledger-upper">
           {offlineSource ? (
             <p className="profile-status profile-offline-status" role="status">
               {offlineSource === "cache"
@@ -314,6 +315,8 @@ export function ProfilePage({
             </div>
           </section> : null}
 
+          </div>
+          <div className="ledger-lower">
           {(displayedStats.favoriteNarrator || displayedStats.favoriteGenre) && (
             <section className="profile-favorites">
               {displayedStats.favoriteNarrator ? (
@@ -365,6 +368,7 @@ export function ProfilePage({
               onSharingChanged={onSharingChanged}
             />
           ) : null}
+          </div>
         </>
       ) : null}
       </article>

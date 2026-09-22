@@ -32,6 +32,18 @@ export function narrationTextOffset(fragment: SyncFragment, seconds: number): nu
 
 export type PageGesture = "next" | "prev" | "tap" | null;
 
+/** Only the outer margin turns a page; sentence taps own the reading area.
+    32px capped at 8% left a corner tap on a wide unfolded screen an easy
+    miss — it would land just inside the margin and seek the narration to
+    whatever sentence was there instead of turning the page. */
+export function pageTurnAtEdge(x: number, width: number): "prev" | "next" | null {
+  if (!Number.isFinite(x) || !Number.isFinite(width) || width <= 0 || x < 0 || x > width) return null;
+  const edge = Math.min(80, width * 0.15);
+  if (x < edge) return "prev";
+  if (x > width - edge) return "next";
+  return null;
+}
+
 // A thumb holding the device sweeps in an arc, so a turn is judged by which
 // way the finger mostly travelled rather than by staying inside a straight
 // band. A short, quick flick counts too; a slow short drift does not.

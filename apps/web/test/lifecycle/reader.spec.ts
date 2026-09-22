@@ -36,7 +36,7 @@ const annotations = (page: Page) => page.evaluate(() =>
   Object.values((window as unknown as ReaderWindow).__operalibreReader.rendition.annotations._annotations).map(value => value.cfiRange));
 
 const place = (page: Page) => page.evaluate(() =>
-  (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.cfi);
+  (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start?.cfi);
 
 test('Focus preserves the EPUB host and rendition through resizing and returning inline', async ({ page }) => {
   await openReader(page);
@@ -54,9 +54,12 @@ test('Focus preserves the EPUB host and rendition through resizing and returning
       return Math.abs(stage.width - container.width) + Math.abs(stage.height - container.height);
     })).toBeLessThan(3);
   }
+  // The viewport has resized, but epub.js may still be calculating its new
+  // location. Wait for that location before comparing the next page turn.
+  await expect.poll(() => place(page)).toBeTruthy();
   const before = await place(page);
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect.poll(() => place(page)).not.toBe(before);
+  await expect.poll(async () => (await place(page)) ?? before).not.toBe(before);
 });
 
 test('chapter following opens at the current audiobook chapter before sentence sync is available', async ({ page }) => {
