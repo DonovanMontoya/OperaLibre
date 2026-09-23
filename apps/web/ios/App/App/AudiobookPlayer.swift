@@ -143,6 +143,13 @@ public final class AudiobookPlayer {
     private var shouldAutoplay = false
     private var wasPlayingBeforeInterruption = false
     private var interruptionIsActive = false
+    /// Counts interruption starts, so an activation that finishes after a
+    /// newer interruption began cannot resume playback that one paused.
+    private var interruptionSerial = 0
+    /// AVAudioSession calls can block while the audio server reconfigures a
+    /// route, which hangs the UI when they run on main. They run here instead;
+    /// the queue is serial, so activations and releases keep their order.
+    private let sessionQueue = DispatchQueue(label: "com.operalibre.audio-session", qos: .userInitiated)
     private var pendingRemoteIntentionalSeek = false
     private var generation = 0
     private var remoteCommandTargets: [Any] = []
@@ -313,10 +320,15 @@ public final class AudiobookPlayer {
             self.shouldAutoplay = true
             self.playIntentAt = Date.timeIntervalSinceReferenceDate
             if player.currentItem?.status == .readyToPlay && self.initialSeekComplete {
-                self.activateAudioSession()
-                player.playImmediately(atRate: self.desiredRate)
-                self.persistCheckpoint(force: true)
-                self.updateNowPlayingInfo()
+                self.activateAudioSession { [weak self] activated in
+                    guard let self, player === self.player else { return }
+                    // A pause that arrived during activation wins.
+                    if activated && self.shouldAutoplay {
+                        player.playImmediately(atRate: self.desiredRate)
+                    }
+                    self.persistCheckpoint(force: true)
+                    self.updateNowPlayingInfo()
+                }
             }
         }
     }
@@ -655,8 +667,12 @@ public final class AudiobookPlayer {
                         }
                         self.emitState()
                         if self.shouldAutoplay {
-                            self.activateAudioSession()
-                            player.playImmediately(atRate: self.desiredRate)
+                            self.activateAudioSession { [weak self] activated in
+                                guard let self, activated, self.shouldAutoplay,
+                                      player === self.player else { return }
+                                player.playImmediately(atRate: self.desiredRate)
+                                self.updateNowPlayingInfo()
+                            }
                         }
                         item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
                         self.prepareBoostForNextQueuedItem()
@@ -728,8 +744,12 @@ public final class AudiobookPlayer {
                 self.persistCheckpoint(force: true)
                 self.updateNowPlayingInfo()
                 if self.shouldAutoplay && player.timeControlStatus != .playing {
-                    self.activateAudioSession()
-                    player.playImmediately(atRate: self.desiredRate)
+                    self.activateAudioSession { [weak self] activated in
+                        guard let self, activated, self.shouldAutoplay,
+                              player === self.player,
+                              player.timeControlStatus != .playing else { return }
+                        player.playImmediately(atRate: self.desiredRate)
+                    }
                 }
                 if UIApplication.shared.applicationState == .active {
                     self.emitTrackChanged()
@@ -1061,6 +1081,7 @@ public final class AudiobookPlayer {
         switch type {
         case .began:
             interruptionIsActive = true
+            interruptionSerial += 1
             interruptionEndedWhileInactiveAt = nil
             // iOS may have already changed AVPlayer to paused by the time this
             // notification is delivered. The retained play intent is the
@@ -1135,10 +1156,14 @@ public final class AudiobookPlayer {
             // failed one keeps the play intent for the `.ended` notification.
             if shouldAutoplay {
                 if interruptionIsActive {
-                    guard activateAudioSession() else { break }
-                    interruptionIsActive = false
+                    activateAudioSession { [weak self] activated in
+                        guard let self, activated, self.shouldAutoplay else { return }
+                        self.interruptionIsActive = false
+                        self.resumeAfterInterruption()
+                    }
+                } else {
+                    resumeAfterInterruption()
                 }
-                resumeAfterInterruption()
             } else {
                 wasPlayingBeforeInterruption = false
                 persistCheckpoint(force: true)
@@ -1163,41 +1188,65 @@ public final class AudiobookPlayer {
         // starts playback once it lands, and playing now would start from
         // the top of the file until then.
         guard initialSeekComplete else { return }
-        activateAudioSession()
-        player.playImmediately(atRate: desiredRate)
-        persistCheckpoint(force: true)
-        updateNowPlayingInfo()
-        if UIApplication.shared.applicationState == .active { emitState() }
+        activateAudioSession { [weak self] activated in
+            guard let self, player === self.player else { return }
+            if activated && self.shouldAutoplay && !self.interruptionIsActive {
+                player.playImmediately(atRate: self.desiredRate)
+            }
+            self.persistCheckpoint(force: true)
+            self.updateNowPlayingInfo()
+            if UIApplication.shared.applicationState == .active { self.emitState() }
+        }
     }
 
-    @discardableResult
-    private func activateAudioSession() -> Bool {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio)
-            try session.setActive(true)
-            return true
-        } catch {
-            // iOS refuses activation while another interruption (a phone
-            // call) owns the session. That is expected, not a broken native
-            // player: keep the play intent and let the interruption's end
-            // resume playback instead of failing over to web audio for good.
-            if interruptionIsActive {
-                NSLog("Audio session activation deferred during an interruption: %@", error.localizedDescription)
-            } else {
-                emitError("Unable to activate background audio: \(error.localizedDescription)")
+    /// Activates the session on `sessionQueue` and calls `completion` on main
+    /// with whether playback may start. It reports false for a failure and
+    /// for an activation overtaken by a newer interruption. A teardown in the
+    /// meantime drops the completion: that player is gone.
+    private func activateAudioSession(then completion: @escaping (Bool) -> Void) {
+        let requestGeneration = generation
+        let requestInterruption = interruptionSerial
+        let interruptedAtRequest = interruptionIsActive
+        sessionQueue.async { [weak self] in
+            var failure: Error?
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .spokenAudio)
+                try session.setActive(true)
+            } catch {
+                failure = error
             }
-            return false
+            DispatchQueue.main.async {
+                guard let self, requestGeneration == self.generation else { return }
+                let overtaken = requestInterruption != self.interruptionSerial
+                guard let failure else {
+                    completion(!overtaken)
+                    return
+                }
+                // iOS refuses activation while another interruption (a phone
+                // call) owns the session. That is expected, not a broken
+                // native player: keep the play intent and let the
+                // interruption's end resume playback instead of failing over
+                // to web audio for good.
+                if interruptedAtRequest || overtaken || self.interruptionIsActive {
+                    NSLog("Audio session activation deferred during an interruption: %@", failure.localizedDescription)
+                } else {
+                    self.emitError("Unable to activate background audio: \(failure.localizedDescription)")
+                }
+                completion(false)
+            }
         }
     }
 
     /// Gives the audio session up after a teardown so other apps' audio can
     /// resume. Pausing keeps the session; only a stop releases it.
     private func deactivateAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            NSLog("Unable to deactivate the audio session: %@", error.localizedDescription)
+        sessionQueue.async {
+            do {
+                try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                NSLog("Unable to deactivate the audio session: %@", error.localizedDescription)
+            }
         }
     }
 
