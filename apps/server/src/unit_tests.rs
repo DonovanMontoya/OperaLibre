@@ -2303,6 +2303,86 @@ async fn a_reader_download_grants_only_books_the_audible_account_owns() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn approved_download_reports_grant_outcome_after_liberation() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let mut reader = stored_user("reader", false, false);
+    reader.allowed_book_ids = Some(Vec::new());
+    state
+        .users
+        .mutate(move |users| {
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    for (asin, export, expected_status) in [
+        ("B000GRANT1", "not valid JSON".to_string(), "failed"),
+        (
+            "B000GRANT2",
+            r#"[{"Audible Product Id":"B000GRANT2","Title":"Owned"}]"#.to_string(),
+            "completed",
+        ),
+    ] {
+        std::fs::write(root.path().join("libation-export.json"), export).unwrap();
+        let request = super::create_libation_download_request(
+            super::State(state.clone()),
+            super::Extension(approval_reader()),
+            super::Path(asin.to_string()),
+            super::Json(super::CreateLibationDownloadRequest {
+                title: "Requested title".to_string(),
+                profile_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let approved = super::decide_libation_download_request(
+            super::State(state.clone()),
+            super::LibationApprover(admin_user()),
+            super::Path(request.id.clone()),
+            super::Json(super::DecideLibationDownloadRequest { approved: true }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let job_id = approved.job_id.unwrap();
+        let job = wait_for_finished_job(&state, &job_id).await;
+        assert_eq!(job.kind, "libation-access-grant");
+        assert_eq!(job.status, expected_status);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let status = state
+                .libation_requests
+                .read()
+                .await
+                .requests
+                .iter()
+                .find(|item| item.id == request.id)
+                .unwrap()
+                .status
+                .clone();
+            if status == expected_status {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "request never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let book_id = super::find_book_id_by_asin(&state.library.read().await.books, asin).unwrap();
+        let granted = state.users.read().await.users[1]
+            .allowed_book_ids
+            .clone()
+            .unwrap();
+        assert_eq!(granted.contains(&book_id), expected_status == "completed");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn duplicate_download_requests_share_the_active_job() {
     let root = tempfile::tempdir().unwrap();
     let (state, log_path) = fake_libation_state(root.path());
@@ -3974,7 +4054,6 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
         &layout.progress_backups,
         &layout.book_settings,
         &layout.users,
-        &layout.sessions,
         &layout.activity,
         &layout.metadata_overrides,
     ]
@@ -3990,7 +4069,7 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
     assert!(database_path.is_file(), "the database was not created");
 
-    // Nothing was taken away: the originals stay, and a copy is kept.
+    // Non-session originals stay, and a copy is kept.
     for (name, contents) in &before {
         assert_eq!(
             &std::fs::read_to_string(data_dir.join(name)).unwrap(),
@@ -4002,6 +4081,14 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
             "{name} was not backed up"
         );
     }
+    assert!(
+        !layout.sessions.exists(),
+        "raw session tokens were left in JSON"
+    );
+    assert!(
+        !data_dir.join("backup-pre-sqlite/sessions.json").exists(),
+        "raw session tokens were left in the migration backup"
+    );
 
     let database = super::Database::open(&database_path).unwrap();
 
@@ -4080,22 +4167,14 @@ async fn an_existing_installation_imports_and_exports_unchanged() {
 
     // Sessions are the one deliberate change: the import keys them by digest,
     // so the export carries the same sessions under digests of the tokens.
-    let original_sessions: std::collections::HashMap<String, super::Session> =
-        serde_json::from_str(&std::fs::read_to_string(data_dir.join("sessions.json")).unwrap())
-            .unwrap();
     let exported_sessions: std::collections::HashMap<String, super::Session> =
         serde_json::from_str(&std::fs::read_to_string(exported_dir.join("sessions.json")).unwrap())
             .unwrap();
-    assert_eq!(original_sessions.len(), exported_sessions.len());
-    for (token, original) in &original_sessions {
-        let exported = &exported_sessions[&super::session_id_for_token(token)];
-        assert_eq!(exported.user_id, original.user_id);
-        assert_eq!(exported.created_at, original.created_at);
-        assert!(
-            !exported_sessions.contains_key(token),
-            "a raw token was exported"
-        );
-    }
+    assert_eq!(exported_sessions.len(), 1);
+    let exported = &exported_sessions[&super::session_id_for_token("token-abc")];
+    assert_eq!(exported.user_id, "alice");
+    assert_eq!(exported.created_at, 1750000000);
+    assert!(!exported_sessions.contains_key("token-abc"));
 
     for name in [
         "progress.json",
@@ -4150,7 +4229,20 @@ async fn a_second_start_does_not_import_again() {
     drop(store);
     drop(database);
 
+    // Builds before the session cleanup left raw tokens in both places.
+    let raw_sessions = serde_json::json!({
+        "token-abc": { "user_id": "alice", "created_at": 1750000000u64 }
+    });
+    std::fs::write(&layout.sessions, raw_sessions.to_string()).unwrap();
+    std::fs::write(
+        data_dir.join("backup-pre-sqlite/sessions.json"),
+        raw_sessions.to_string(),
+    )
+    .unwrap();
+
     super::migrate_if_needed(&database_path, &data_dir, &layout).unwrap();
+    assert!(!layout.sessions.exists());
+    assert!(!data_dir.join("backup-pre-sqlite/sessions.json").exists());
 
     let database = super::Database::open(&database_path).unwrap();
     let store = super::ProgressStore::new(database);
@@ -4213,6 +4305,10 @@ fn a_failed_import_leaves_no_database_behind() {
     assert_eq!(
         std::fs::read_to_string(&layout.users).unwrap(),
         "{ not json"
+    );
+    assert!(
+        layout.sessions.is_file(),
+        "failed import lost the session source"
     );
 }
 
@@ -6427,6 +6523,35 @@ fn libation_titles_match_subtitles_but_not_sequels() {
     assert_eq!(
         super::match_local_book(&only_sequel, &libation("Dune", None)),
         None
+    );
+    let books = vec![
+        local("new-hope", "Star Wars: A New Hope"),
+        local("empire", "Star Wars: The Empire Strikes Back"),
+    ];
+    let keys = super::local_book_keys(&books);
+    assert_eq!(
+        super::match_local_book(&keys, &libation("Star Wars: The Empire Strikes Back", None))
+            .as_deref(),
+        Some("empire")
+    );
+    assert_eq!(
+        super::match_local_book(
+            &keys[..1],
+            &libation("Star Wars: The Empire Strikes Back", None)
+        ),
+        None
+    );
+    assert_eq!(
+        super::match_local_book(
+            &keys[..1],
+            &libation("Star Wars", Some("The Empire Strikes Back"))
+        ),
+        None
+    );
+    let unsuffixed = super::local_book_keys(&[local("star-wars", "Star Wars")]);
+    assert_eq!(
+        super::match_local_book(&unsuffixed, &libation("Star Wars: A New Hope", None)).as_deref(),
+        Some("star-wars")
     );
     assert_eq!(
         super::main_title("Guns, Germs, and Steel"),
