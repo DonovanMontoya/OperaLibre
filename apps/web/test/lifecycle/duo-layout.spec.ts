@@ -568,6 +568,62 @@ test('a fold that turns on the spread and shortens the stage lays the page out a
   await expect.poll(page0).toEqual({ href: 'c1.xhtml', laidOut: true });
 });
 
+test('a spread change preserves a pending followed chapter', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&chapter-sync&listening=1`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 0, y: 320, width: 951, height: 31, axis: 'horizontal', active: true } });
+  });
+  const href = () => page.evaluate(() => (window as any).__operalibreReader.rendition.location?.start?.href);
+  await expect.poll(href).toBe('c1.xhtml');
+  // Keep geometry and the font-size bucket fixed to isolate changing the
+  // spread while epub.js is still loading the chapter requested by Follow.
+  await page.evaluate(async () => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const bounds = stage.getBoundingClientRect();
+    for (const prop of ['width', 'min-width', 'max-width']) stage.style.setProperty(prop, `${bounds.width}px`, 'important');
+    for (const prop of ['height', 'min-height', 'max-height']) stage.style.setProperty(prop, `${bounds.height}px`, 'important');
+    await (window as any).__operalibreReader.rendition.display('c1.xhtml#start');
+  });
+  await expect.poll(href).toBe('c1.xhtml');
+  await page.evaluate(() => {
+    const reader = (window as any).__operalibreReader;
+    const rendition = reader.rendition;
+    const display = rendition._display.bind(rendition);
+    let held = false;
+    rendition._display = (target: string | undefined) => {
+      if (!held && target?.startsWith('c2.xhtml')) {
+        held = true;
+        return new Promise(resolve => { reader.releaseChapter = () => resolve(display(target)); });
+      }
+      return display(target);
+    };
+  });
+  // The fixture control is behind the immersive reader.
+  await page.getByRole('button', { name: 'Advance audio (1)', exact: true }).evaluate(button => (button as HTMLButtonElement).click());
+  await expect.poll(() => page.evaluate(() => !!(window as any).__operalibreReader.releaseChapter)).toBe(true);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__operalibreReader.rendition.settings.spread)).toBe('always');
+  await page.evaluate(async () => {
+    const reader = (window as any).__operalibreReader;
+    reader.releaseChapter();
+    // Wait for every queued display and its location report, including any
+    // extra display scheduled by the spread, before checking the destination.
+    await reader.rendition.q.enqueue(() => undefined);
+    await reader.rendition.q.enqueue(() => undefined);
+  });
+  await expect.poll(href).toBe('c2.xhtml');
+});
+
 test('reader survives folding, rotating, flattening and closing without replacing its book', async ({ page }) => {
   await page.goto(`${url}test/reader-catch-up.html?immersive`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
