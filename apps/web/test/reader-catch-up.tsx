@@ -18,6 +18,9 @@ const params = new URLSearchParams(location.search);
 const narration = params.has("narration");
 const chapterSync = params.has("chapter-sync");
 const immersive = params.has("immersive");
+// The narrated chapter; the default is ahead of the reading place, which
+// offers the catch-up row.
+const listening = Number(params.get("listening") ?? 2);
 if (immersive) document.documentElement.classList.add("native-app");
 const fragments = [
   { startSeconds: 0, endSeconds: 10, href: "c1.xhtml", text: "Chapter 1, paragraph 1." },
@@ -29,7 +32,7 @@ const fragments = [
 
 function Fixture() {
   const [open, setOpen] = useState(true);
-  const [chapter, setChapter] = useState(2);
+  const [chapter, setChapter] = useState(listening);
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
   return <>
