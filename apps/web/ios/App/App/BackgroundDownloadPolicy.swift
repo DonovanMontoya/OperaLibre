@@ -186,3 +186,13 @@ func validatedBackgroundMediaDestination(_ destination: URL, under root: URL) th
 func validatedBackgroundMediaDestination(_ destination: URL) throws -> URL {
     try validatedBackgroundMediaDestination(destination, under: backgroundOfflineMediaRoot())
 }
+
+/// Rebuild completion totals from the replacement list, never from the old
+/// job's counters. Tasks still in flight count when their callbacks arrive.
+func completedBackgroundDownloadCounts(
+    files: [(destination: String, required: Bool)],
+    existingDestinations: Set<String>
+) -> (completed: Int, completedRequired: Int) {
+    let existingFiles = files.filter { existingDestinations.contains($0.destination) }
+    return (existingFiles.count, existingFiles.filter { $0.required }.count)
+}

@@ -101,6 +101,20 @@ struct CarLibraryTests {
         rewind.updatedAt = 20
         rewind.bookPositionSeconds = 200
         rewind.intentionalRegression = true
+        var advancing = rewind
+        advancing.updatedAt = 30
+        advancing.bookPositionSeconds = 205
+        let retained = CarPlaybackSession.remainingAfterAcknowledgement(
+            [advancing, drive], acknowledged: ["book": 20], clearRegressionForBookId: "book"
+        )
+        precondition(retained.count == 1 && retained[0].updatedAt == 30 &&
+                     retained[0].bookPositionSeconds == 205 && !retained[0].intentionalRegression,
+                     "a newer checkpoint survives after the acknowledged jump without reusing its reset bypass")
+        let unacknowledgedJump = CarPlaybackSession.remainingAfterAcknowledgement(
+            [advancing], acknowledged: ["book": 20], clearRegressionForBookId: nil
+        )
+        precondition(unacknowledgedJump[0].intentionalRegression,
+                     "an earlier acknowledgement cannot clear a later jump")
         precondition(snapshot.resuming(book(positionSeconds: 100), sessions: [rewind, drive]).resumePositionSeconds == 200,
                      "the newest drive wins even when it deliberately rewound")
         drive.finished = true
