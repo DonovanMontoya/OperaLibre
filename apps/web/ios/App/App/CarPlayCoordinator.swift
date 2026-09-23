@@ -294,12 +294,18 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     }
 
     func acknowledgeSessions(_ acknowledged: [String: Double]) {
-        store.acknowledgeSessions(acknowledged)
+        let acknowledgedJumpBookId: String?
         if let bookId = carOwnedBookId,
            let since = deliberateRegressionSince,
            let savedAt = acknowledged[bookId],
            savedAt >= since
         {
+            acknowledgedJumpBookId = bookId
+        } else {
+            acknowledgedJumpBookId = nil
+        }
+        store.acknowledgeSessions(acknowledged, clearRegressionForBookId: acknowledgedJumpBookId)
+        if acknowledgedJumpBookId != nil {
             clearDeliberateRegression()
         }
     }

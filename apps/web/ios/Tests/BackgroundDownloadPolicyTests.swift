@@ -114,5 +114,25 @@ struct BackgroundDownloadPolicyTests {
         try FileManager.default.createSymbolicLink(at: linkedDirectory, withDestinationURL: outsideDirectory)
         let throughSymlink = linkedDirectory.appendingPathComponent("track.mp3")
         precondition((try? validatedBackgroundMediaDestination(throughSymlink, under: root)) == nil)
+
+        // Replacing a four-file job after three old files settle must not
+        // carry those three completions into a new two-file request.
+        let replacement = [
+            (destination: "new-a", required: true),
+            (destination: "new-b", required: false)
+        ]
+        let freshCounts = completedBackgroundDownloadCounts(
+            files: replacement,
+            existingDestinations: ["old-a", "old-b", "old-c"]
+        )
+        precondition(freshCounts.completed == 0 && freshCounts.completedRequired == 0)
+
+        // A retained file already moved to disk counts once; an active task
+        // for the other file still has to settle before the job completes.
+        let retainedCounts = completedBackgroundDownloadCounts(
+            files: replacement,
+            existingDestinations: ["old-a", "new-a"]
+        )
+        precondition(retainedCounts.completed == 1 && retainedCounts.completedRequired == 1)
     }
 }
