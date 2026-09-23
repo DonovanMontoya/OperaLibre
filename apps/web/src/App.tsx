@@ -18,8 +18,6 @@ import {
   ScrollText
 } from "lucide-react";
 import {
-} from "./readalong";
-import {
   useCallback,
   useEffect,
   useMemo,
@@ -50,8 +48,6 @@ import {
   createBookGainSync,
   mergeServerBookGains
 } from "./bookVolume";
-import {
-} from "./shelfView";
 import {
   shelfDownloadScanKey
 } from "./shelfFilters";
@@ -156,8 +152,6 @@ import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled } from "./gamePreferences";
-import {
-} from "./readalongPreferences";
 import type {
   AuthUser,
   Book,
