@@ -324,8 +324,8 @@ pub(crate) async fn update_progress(
     let mut update = checkpoint.update;
     update.updated_at_ms =
         server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis);
-    // Cloned out of the library so the decision can travel to the database's
-    // blocking task, and so the library lock is not held across the write.
+    // Copied out of the library once, so the library lock is not held across
+    // the write; the decision on the database's blocking task shares it.
     let (book, track) = {
         let library = state.library.read().await;
         let book = library.book(&book_id)?;
@@ -335,12 +335,12 @@ pub(crate) async fn update_progress(
             .find(|candidate| candidate.id == update.track_id)
             .ok_or(ApiError::not_found("Track not found"))?
             .clone();
-        (book.clone(), track)
+        (Arc::new(book.clone()), track)
     };
 
     let decision_update = update.clone();
     let decided_book_id = book.id.clone();
-    let decision_book = book.clone();
+    let decision_book = Arc::clone(&book);
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &decided_book_id, move |previous| {
@@ -431,7 +431,7 @@ pub(crate) async fn update_book_completion(
     Json(update): Json<CompletionUpdate>,
 ) -> Result<Json<BookProgress>, ApiError> {
     require_book_access(&auth, &book_id)?;
-    let book = state.library.read().await.book(&book_id)?.clone();
+    let book = Arc::new(state.library.read().await.book(&book_id)?.clone());
     let first_track = book
         .tracks
         .first()
@@ -462,7 +462,7 @@ pub(crate) async fn update_book_completion(
     let records_completion = final_position.is_some();
 
     let now_millis = unix_now_millis();
-    let decision_book = book.clone();
+    let decision_book = Arc::clone(&book);
     let decision_update = update.clone();
     let completion_book_id = book.id.clone();
     let (saved, previous) = state

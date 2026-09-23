@@ -242,6 +242,11 @@ pub(crate) fn analyze_document(path: &FsPath) -> DocumentAnalysis {
             ..Default::default()
         };
     }
+    // An EPUB is read entry by entry from disk; scans analyze several
+    // documents at once, and holding each whole file adds up.
+    if extension == "epub" {
+        return epub_analysis(alignment::parse_epub_file(path));
+    }
     let Ok(bytes) = std::fs::read(path) else {
         return DocumentAnalysis {
             unreadable: true,
@@ -249,7 +254,6 @@ pub(crate) fn analyze_document(path: &FsPath) -> DocumentAnalysis {
         };
     };
     match extension.as_str() {
-        "epub" => analyze_epub(&bytes),
         "pdf" => analyze_pdf(&bytes),
         "html" | "htm" => DocumentAnalysis {
             text_characters: count_text(&alignment::html_to_text(&String::from_utf8_lossy(&bytes))),
@@ -282,8 +286,8 @@ fn count_html_images(document: &str) -> u32 {
     lower.matches("<img").count() as u32 + lower.matches("<svg").count() as u32
 }
 
-pub(crate) fn analyze_epub(bytes: &[u8]) -> DocumentAnalysis {
-    match alignment::parse_epub(bytes) {
+fn epub_analysis(parsed: anyhow::Result<alignment::EpubDocument>) -> DocumentAnalysis {
+    match parsed {
         Ok(epub) => DocumentAnalysis {
             text_characters: epub
                 .sections
