@@ -150,7 +150,6 @@ import {
   rescanLibrary,
   refreshLibroAccount,
   saveProgress,
-  setBookCompletion,
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
@@ -160,8 +159,6 @@ import {
   cacheLibrary,
   cacheOfflineUser,
   cacheProgress,
-  cancelBookOfflineDownload,
-  downloadBookForOffline,
   forgetOfflineUser,
   getBookBackgroundDownloadStatus,
   getCachedLibrary,
@@ -174,13 +171,11 @@ import {
   loadCompanionBytes,
   getCachedEpubBytes,
   releaseOfflineMediaUrl,
-  removeBookDownload,
   warnCacheFailure
 } from "./offline";
 import { haptic } from "./native";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
-import { nativeShellColor, nativeTabItems, nativeTabSelection, type NativeTab } from "./nativeTabs";
-import { useNativeTabs } from "./useNativeTabs";
+import { type NativeTab } from "./nativeTabs";
 import {
   isIPadNavigator,
   isRotationLockAvailable
@@ -208,7 +203,6 @@ import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
   canResolveStartupNavigation,
   canRestoreCachedNativeSession,
-  NATIVE_STARTUP_SETTLE_MS,
   shouldAcceptNativeTrackChange,
   shouldRefreshMediaCredential
 } from "./startup";
@@ -226,12 +220,9 @@ import {
   DEVICE_USER,
   getDeviceBooks,
   getDeviceProgress,
-  importAudiobookFromDevice,
   mergeDeviceAndServerBooks,
   migrateDeviceLibraryFileExtensions,
-  removeDeviceBook,
-  saveDeviceProgress,
-  setDeviceBookCompletion
+  saveDeviceProgress
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
@@ -330,6 +321,11 @@ import { usePurchases } from "./usePurchases";
 import { useCarPlay } from "./useCarPlay";
 import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
 import { GALLERY_COMPANION_ID, useReadalong } from "./useReadalong";
+import { useOfflineDownloads } from "./useOfflineDownloads";
+import { useBookCompletion } from "./useBookCompletion";
+import { useMediaSession } from "./useMediaSession";
+import { useStartupReveal } from "./useStartupReveal";
+import { useNativeChrome } from "./useNativeChrome";
 
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
@@ -804,35 +800,16 @@ function MainApp({
   markPlaybackTouchedRef.current = markPlaybackTouched;
   const pausePlaybackRef = useRef(pausePlayback);
   pausePlaybackRef.current = pausePlayback;
+  const {
+    scheduleStartupReveal,
+    setStartupViewReady,
+    startupProgressAppliedRef,
+    startupViewReady,
+    startupViewReadyRef
+  } = useStartupReveal({
+    native
+  });
 
-  // Authentication can be restored synchronously, but the native destination
-  // and playback position depend on cached state. Keep the launch surface
-  // visible until both are coherent so neither the default Shelf nor the
-  // first track at 0:00 flashes on the way to a restored session.
-  const [startupViewReady, setStartupViewReady] = useState(!native);
-  const startupViewReadyRef = useRef(!native);
-  const startupProgressAppliedRef = useRef(false);
-  const startupRevealTimerRef = useRef<number | null>(null);
-  const scheduleStartupReveal = useCallback(() => {
-    if (!native || startupViewReadyRef.current) return;
-    if (startupRevealTimerRef.current !== null) {
-      window.clearTimeout(startupRevealTimerRef.current);
-    }
-    // Progress can arrive from the library summary, IndexedDB, AVPlayer, and
-    // the server within a few frames. Reveal only after that burst goes quiet.
-    startupRevealTimerRef.current = window.setTimeout(() => {
-      startupRevealTimerRef.current = null;
-      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-        startupViewReadyRef.current = true;
-        setStartupViewReady(true);
-      }));
-    }, NATIVE_STARTUP_SETTLE_MS);
-  }, [native]);
-  useEffect(() => () => {
-    if (startupRevealTimerRef.current !== null) {
-      window.clearTimeout(startupRevealTimerRef.current);
-    }
-  }, []);
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
     readStoredBookId(currentUser.id, "selectedBookId")
@@ -1023,7 +1000,6 @@ function MainApp({
   // Set once native playback has attached, so the effect that sees the
   // player closed can tell that from the app's first render.
   const nativeAudioAttachedRef = useRef(false);
-  const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
   const {
     activeShelfFilterChips,
@@ -1073,7 +1049,6 @@ function MainApp({
   // Native jobs are persisted and serialized by iOS; this map only mirrors
   // their current queue/progress for the UI.
   const [activeDownloads, setActiveDownloads] = useState<Record<string, DeviceDownloadActivity>>({});
-  const activeDownloadIdsRef = useRef<Set<string>>(new Set());
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
   const [activeGame, setActiveGame] = useState<GameName>("match");
 
@@ -2462,23 +2437,28 @@ function MainApp({
     nativeAudio,
     playbackBookKey
   ]);
-
-  // Lock-screen and hardware-key handlers are registered once and delegate
-  // through this ref, which every render refreshes. Registering the handlers
-  // themselves was keyed on the chapter and track, so between re-registrations
-  // they held closures from an earlier render: "previous" saw a chapter
-  // elapsed of 0 and never restarted the chapter, and "play" engaged the
-  // gain chain with a stale gain.
-  const mediaSessionHandlersRef = useRef({
-    startPlayback,
+  const {
+    activeChapterId,
+    mediaSessionHandlersRef
+  } = useMediaSession({
+    activeChapter,
+    audioRef,
+    chapterDuration,
+    chapterElapsed,
+    currentTrackKey,
+    nativeAudio,
+    nextChapter,
     pausePlayback,
+    position,
+    restartOrPreviousChapter,
+    seekBookPosition,
     seekBy,
     seekTo,
-    seekBookPosition,
-    restartOrPreviousChapter,
-    nextChapter,
-    activeChapter
+    sliderMax,
+    speed,
+    startPlayback
   });
+
   mediaSessionHandlersRef.current = {
     startPlayback,
     pausePlayback,
@@ -2489,55 +2469,6 @@ function MainApp({
     nextChapter,
     activeChapter
   };
-
-  useEffect(() => {
-    if (nativeAudio || !("mediaSession" in navigator)) return;
-    const handlers = mediaSessionHandlersRef;
-    const session = navigator.mediaSession;
-    session.setActionHandler("play", () => handlers.current.startPlayback(audioRef.current));
-    session.setActionHandler("pause", () => handlers.current.pausePlayback(audioRef.current));
-    session.setActionHandler("seekbackward", () => handlers.current.seekBy(-15));
-    session.setActionHandler("seekforward", () => handlers.current.seekBy(30));
-    session.setActionHandler("previoustrack", () => handlers.current.restartOrPreviousChapter());
-    session.setActionHandler("nexttrack", () => handlers.current.nextChapter());
-    session.setActionHandler("seekto", (details) => {
-      if (details.seekTime === undefined) return;
-      const { activeChapter: chapter, seekBookPosition: seekBook, seekTo: seek } = handlers.current;
-      if (chapter) {
-        seekBook(chapter.startSeconds + details.seekTime);
-      } else {
-        seek(details.seekTime);
-      }
-    });
-    return () => {
-      for (const action of [
-        "play", "pause", "seekbackward", "seekforward", "previoustrack", "nexttrack", "seekto"
-      ] as MediaSessionAction[]) {
-        try {
-          session.setActionHandler(action, null);
-        } catch {
-          // An action the browser does not know cannot have been registered.
-        }
-      }
-    };
-  }, [nativeAudio]);
-
-  const activeChapterId = activeChapter?.id ?? null;
-  useEffect(() => {
-    if (nativeAudio || !("mediaSession" in navigator) || !currentTrackKey) return;
-    const duration = activeChapterId !== null ? chapterDuration : Math.max(1, sliderMax);
-    const lockPosition = activeChapterId !== null ? chapterElapsed : position;
-    if (!Number.isFinite(duration) || !Number.isFinite(lockPosition) || duration <= 0) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration,
-        position: Math.max(0, Math.min(lockPosition, duration)),
-        playbackRate: speed
-      });
-    } catch {
-      // Some WebViews expose Media Session metadata without position state.
-    }
-  }, [activeChapterId, chapterDuration, chapterElapsed, currentTrackKey, nativeAudio, position, sliderMax, speed]);
 
   useEffect(() => {
     if (!chaptersOpen || !isViewingPlayingBook || activeChapterId === null) return;
@@ -2893,289 +2824,66 @@ function MainApp({
     setNativePlayerView("now");
     if (native) setNativeTab("shelf");
   }
+  const {
+    changeBookCompletion,
+    confirmBookUnplayed,
+    markBookUnplayed
+  } = useBookCompletion({
+    audioRef,
+    clearPlaybackSession,
+    completionPendingBookId,
+    currentUser,
+    nativePlaybackPlayingRef,
+    pausePlayback,
+    playbackBookId,
+    playbackBookIdRef,
+    playbackReportRef,
+    playbackTouchedRef,
+    progressMutationVersion,
+    progressSaveAbortController,
+    progressSaveDrainPromiseRef,
+    queuedProgressSaves,
+    setBooks,
+    setCompletionError,
+    setCompletionPendingBookId,
+    setIsPlaying,
+    setUnplayedConfirmationBookId
+  });
 
-  async function changeBookCompletion(
-    book: Book,
-    finished: boolean,
-    finalProgress?: Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">,
-    resetToUnplayed = false
-  ) {
-    if (completionPendingBookId === book.id) return false;
-    setCompletionPendingBookId(book.id);
-    setCompletionError(null);
-    try {
-      const closingActiveBook = playbackBookId === book.id && (finished || resetToUnplayed);
-      const reporting = closingActiveBook ? playbackReportRef.current : null;
-      if (closingActiveBook || resetToUnplayed) {
-        // Freeze playback before any asynchronous reports. Otherwise a slow stop
-        // could let a new progress write land after the deliberate completion/reset.
-        if (closingActiveBook) {
-          playbackTouchedRef.current = false;
-          nativePlaybackPlayingRef.current = false;
-          pausePlayback(audioRef.current);
-          setIsPlaying(false);
-        }
-        queuedProgressSaves.current.delete(book.id);
-        progressSaveAbortController.current?.abort();
-        await progressSaveDrainPromiseRef.current;
-        queuedProgressSaves.current.delete(book.id);
-        // Drain the stop before changing completion. Teardown then has nothing
-        // left to report and cannot restore an old media clock after a reset.
-        await reporting?.stop();
-      }
-      const completedProgress: Progress | null = finalProgress
-        ? {
-            bookId: book.id,
-            ...finalProgress,
-            updatedAt: new Date().toISOString(),
-            finishedOverride: finished
-          }
-        : null;
-      let summary: NonNullable<Book["progress"]>;
-      if (book.source === "device") {
-        const result = setDeviceBookCompletion(book, finished, finalProgress);
-        summary = result.summary;
-        writeProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          result.progress
-        );
-        void cacheProgress(currentUser.id, result.progress).catch(warnCacheFailure("cache listening progress"));
-      } else {
-        summary = await setBookCompletion(book, finished, finalProgress);
-        if (book.deviceBookId) {
-          const deviceBook = getDeviceBooks().find(
-            (candidate) => candidate.id === book.deviceBookId
-          );
-          if (deviceBook) {
-            const trackIndex = finalProgress
-              ? book.tracks.findIndex((track) => track.id === finalProgress.trackId)
-              : -1;
-            const deviceTrack = trackIndex >= 0 ? deviceBook.tracks[trackIndex] : null;
-            setDeviceBookCompletion(
-              deviceBook,
-              finished,
-              finalProgress && deviceTrack
-                ? { ...finalProgress, trackId: deviceTrack.id }
-                : undefined
-            );
-          }
-        }
-      }
-      if (completedProgress) {
-        progressMutationVersion.current += 1;
-        writeProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          completedProgress
-        );
-        void cacheProgress(currentUser.id, completedProgress).catch(warnCacheFailure("cache listening progress"));
-      }
+  const {
+    cancelOfflineDownload,
+    deleteDeviceBook,
+    downloadForOffline,
+    importFromDevice,
+    removeOfflineDownload
+  } = useOfflineDownloads({
+    audioRef,
+    booksRef,
+    capabilities,
+    clearPlaybackSession,
+    currentTrack,
+    currentUser,
+    loadBooks,
+    nativeAudio,
+    nativePlaybackPlayingRef,
+    pausePlayback,
+    pendingSeekRef,
+    persistProgress,
+    playWhenTrackLoads,
+    playbackBook,
+    setActiveDownloads,
+    setBooks,
+    setDeviceImport,
+    setDownloadStatus,
+    setDownloadedBookIds,
+    setLibrarySource,
+    setNativeTab,
+    setOfflineSource,
+    setPendingSeek,
+    setPlaybackBookId,
+    setSelectedBookId
+  });
 
-      setBooks((existing) => {
-        const next = existing.map((candidate) =>
-          candidate.id === book.id ? { ...candidate, progress: summary } : candidate
-        );
-        if (Capacitor.isNativePlatform()) {
-          void cacheLibrary(
-            currentUser.id,
-            next.filter((candidate) => candidate.source !== "device")
-          ).catch(warnCacheFailure("cache the library"));
-        }
-        return next;
-      });
-      if (playbackBookIdRef.current === book.id && (finished || resetToUnplayed)) {
-        clearPlaybackSession();
-      }
-      return true;
-    } catch (completionFailure) {
-      setCompletionError({
-        bookId: book.id,
-        message: completionFailure instanceof Error
-          ? completionFailure.message
-          : resetToUnplayed
-            ? `Could not mark ${book.title} unplayed.`
-            : `Could not mark ${book.title} ${finished ? "finished" : "unfinished"}.`
-      });
-      return false;
-    } finally {
-      setCompletionPendingBookId(null);
-    }
-  }
-
-  function markBookUnplayed(book: Book) {
-    const firstTrack = book.tracks[0];
-    if (!firstTrack || completionPendingBookId === book.id) return;
-    haptic("light");
-    setCompletionError(null);
-    setUnplayedConfirmationBookId(book.id);
-  }
-
-  async function confirmBookUnplayed(book: Book) {
-    const firstTrack = book.tracks[0];
-    if (!firstTrack || completionPendingBookId === book.id) return;
-    haptic("light");
-    const changed = await changeBookCompletion(
-      book,
-      false,
-      {
-        trackId: firstTrack.id,
-        positionSeconds: 0,
-        bookPositionSeconds: 0,
-        durationSeconds: firstTrack.durationSeconds
-      },
-      true
-    );
-    if (changed) setUnplayedConfirmationBookId(null);
-  }
-
-  async function downloadForOffline(book: Book) {
-    if (!capabilities.downloads) return;
-    if (activeDownloadIdsRef.current.has(book.id)) return;
-    activeDownloadIdsRef.current.add(book.id);
-    const abortController = new AbortController();
-    downloadAbortControllersRef.current.set(book.id, abortController);
-    if (playbackBook?.id === book.id) {
-      persistProgress();
-    }
-    setDownloadStatus(null);
-    setActiveDownloads((existing) => ({
-      ...existing,
-      [book.id]: { bookId: book.id, title: book.title, fraction: null, state: "queued", queuedAt: Date.now() }
-    }));
-    try {
-      await downloadBookForOffline(book, mediaUrl, (done, total, percent, state) => {
-        const fraction = total > 0 ? Math.min(1, (done + (percent ?? 0) / 100) / total) : null;
-        setActiveDownloads((existing) => ({
-          ...existing,
-          [book.id]: {
-            bookId: book.id,
-            title: book.title,
-            fraction,
-            state: state === "queued" ? "queued" : "running",
-            queuedAt: existing[book.id]?.queuedAt ?? Date.now()
-          }
-        }));
-      }, abortController.signal);
-      // The files and the catalogue are one offline feature. Re-persist the
-      // current authorized shelf after the transfer so a quick app kill cannot
-      // leave durable audio with no metadata from which to render or play it.
-      await cacheLibrary(
-        currentUser.id,
-        booksRef.current.filter((candidate) => candidate.source !== "device")
-      );
-      setDownloadedBookIds((existing) => new Set(existing).add(book.id));
-      setDownloadStatus({ bookId: book.id, message: `${book.title} is available offline` });
-    } catch (downloadError) {
-      if (abortController.signal.aborted) return;
-      setDownloadStatus({
-        bookId: book.id,
-        message: `${book.title}: ${errorMessage(downloadError, "Download failed.")}`
-      });
-    } finally {
-      if (downloadAbortControllersRef.current.get(book.id) === abortController) {
-        downloadAbortControllersRef.current.delete(book.id);
-      }
-      activeDownloadIdsRef.current.delete(book.id);
-      setActiveDownloads((existing) => {
-        const next = { ...existing };
-        delete next[book.id];
-        return next;
-      });
-    }
-  }
-
-  async function cancelOfflineDownload(book: Pick<Book, "id" | "title">) {
-    const abortController = downloadAbortControllersRef.current.get(book.id);
-    if (!abortController) return;
-    abortController.abort();
-    setDownloadStatus({ bookId: book.id, message: `${book.title} download cancelled` });
-    try {
-      await cancelBookOfflineDownload(book);
-    } catch (error) {
-      setDownloadStatus({
-        bookId: book.id,
-        message: `${book.title}: ${errorMessage(error, "Could not cancel the download.")}`
-      });
-    }
-  }
-
-  useEffect(() => () => {
-    for (const controller of downloadAbortControllersRef.current.values()) controller.abort();
-    downloadAbortControllersRef.current.clear();
-  }, []);
-
-  async function importFromDevice() {
-    setDownloadStatus(null);
-    try {
-      setDeviceImport({ completed: 0, total: 0 });
-      const book = await importAudiobookFromDevice((completed, total) => setDeviceImport({ completed, total }));
-      setBooks((existing) => [...existing, book]);
-      setDownloadedBookIds((existing) => new Set(existing).add(book.id));
-      setSelectedBookId(book.id);
-      setPlaybackBookId(book.id);
-      setLibrarySource("local");
-      setDownloadStatus({ bookId: book.id, message: `${book.title} added from this device` });
-      setNativeTab("shelf");
-    } catch (error) {
-      const message = errorMessage(error, "The audiobook could not be imported.");
-      if (!/cancel/i.test(message)) setDownloadStatus({ message });
-    } finally {
-      setDeviceImport(null);
-    }
-  }
-
-  async function deleteDeviceBook(book: Book) {
-    const deviceBookId = book.deviceBookId ?? book.id;
-    if (!window.confirm(`Remove ${book.title} from this device? Your listening progress will be kept.`)) return;
-    const removingActiveBook =
-      playbackBook?.deviceBookId === deviceBookId || playbackBook?.id === deviceBookId;
-    if (removingActiveBook) {
-      persistProgress();
-    }
-    if (removingActiveBook) pausePlayback(audioRef.current);
-    await removeDeviceBook(deviceBookId);
-    if (removingActiveBook && book.source === "device") clearPlaybackSession();
-    await loadBooks();
-    setDownloadStatus({ message: "Device copy removed" });
-  }
-
-  async function removeOfflineDownload(book: Book) {
-    if (!window.confirm(`Remove the downloaded copy of ${book.title} from this device? Your listening progress will be kept.`)) return;
-    const removingActiveSource = playbackBook?.id === book.id && !!currentTrack && !!audioRef.current;
-    const resumeTrack = removingActiveSource ? currentTrack : null;
-    // A seek still queued for this track is the real position; the element
-    // reads 0 until its metadata loads, and staging that would replace it.
-    const resumePosition = removingActiveSource
-      ? Math.max(
-          0,
-          pendingSeekRef.current?.trackId === currentTrack!.id
-            ? pendingSeekRef.current.positionSeconds
-            : audioRef.current!.currentTime
-        )
-      : 0;
-    const resumePlayback = removingActiveSource
-      ? nativeAudio ? nativePlaybackPlayingRef.current : !audioRef.current!.paused
-      : false;
-    if (removingActiveSource && resumeTrack) {
-      persistProgress();
-      pausePlayback(audioRef.current);
-      setPendingSeek({ trackId: resumeTrack.id, positionSeconds: resumePosition });
-      playWhenTrackLoads.current = resumePlayback;
-    }
-    await removeBookDownload(book);
-    setDownloadedBookIds((existing) => {
-      const next = new Set(existing);
-      next.delete(book.id);
-      return next;
-    });
-    if (removingActiveSource && resumeTrack) {
-      setOfflineSource({ trackId: resumeTrack.id, url: null });
-    }
-    setDownloadStatus({ bookId: book.id, message: "Download removed" });
-  }
 
   /**
    * Draw the media element's clock without saving it. Returns false while a
@@ -4096,38 +3804,31 @@ function MainApp({
     await persistProgress();
     await flushProgressSaveQueue();
   }
+  const {
+    hasMiniPlayer,
+    nativeTabsReady,
+    nativeTabsShown,
+    showLedgerTab
+  } = useNativeChrome({
+    appearanceMode,
+    brokenLibationAccounts,
+    capabilities,
+    currentTrack,
+    currentUser,
+    gamesEnabled,
+    miniPlayerRef,
+    native,
+    nativeTab,
+    openNativeTab,
+    playbackBook,
+    readalongOpen,
+    readerClosing,
+    setReadalongOpen,
+    setReaderClosing,
+    shelfLayout,
+    shellRef
+  });
 
-  const showLedgerTab = native && capabilities.statistics;
-  const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
-    currentUser.isAdmin ? brokenLibationAccounts.length : 0);
-  const [chrome, setChrome] = useState<string | undefined>(undefined);
-  const [barTint, setBarTint] = useState<string | undefined>(undefined);
-  // The tab class carries the screen's colors, and the appearance switch flips
-  // the palette on the document, so watch both for the tones UIKit should hold.
-  useEffect(() => {
-    if (!native) return;
-    const read = () => {
-      setChrome(nativeShellColor(shellRef.current, "--native-chrome"));
-      setBarTint(nativeShellColor(shellRef.current, "--native-bar"));
-    };
-    read();
-    const observer = new MutationObserver(read);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, [native, nativeTab, shelfLayout]);
-  const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
-    tabs: iosTabs,
-    selected: nativeTabSelection(nativeTab, iosTabs),
-    visible: !readalongOpen || readerClosing,
-    appearance: appearanceMode,
-    chrome,
-    bar: barTint
-  }, openNativeTab);
-  useEffect(() => {
-    if (!readerClosing || (nativeTabsReady && !nativeTabsShown)) return;
-    setReaderClosing(false);
-    setReadalongOpen(false);
-  }, [nativeTabsReady, nativeTabsShown, readerClosing, setReadalongOpen, setReaderClosing]);
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "all") {
@@ -4148,30 +3849,6 @@ function MainApp({
     }
   }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
-  const hasMiniPlayer = Boolean(playbackBook && currentTrack);
-
-  useEffect(() => {
-    const shell = shellRef.current;
-    const player = miniPlayerRef.current;
-    if (!native || !shell || !player) {
-      shell?.style.removeProperty("--mini-player-height");
-      return;
-    }
-
-    const updatePlayerHeight = () => {
-      const height = Math.ceil(player.getBoundingClientRect().height);
-      // Reading hides the mini-player. Retain the last non-zero measurement so
-      // Shelf has the right clearance on the first frame after switching back.
-      if (height > 0) shell.style.setProperty("--mini-player-height", `${height}px`);
-    };
-    updatePlayerHeight();
-    const observer = new ResizeObserver(updatePlayerHeight);
-    observer.observe(player);
-    return () => {
-      observer.disconnect();
-      shell.style.removeProperty("--mini-player-height");
-    };
-  }, [hasMiniPlayer, native]);
 
   const userMenu = (
     <div className="user-menu" role="menu">
