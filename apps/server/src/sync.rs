@@ -320,8 +320,9 @@ pub(crate) async fn run_sync_generation(
     epub_path: &FsPath,
     tracks: &[SyncTrackInput],
 ) -> anyhow::Result<usize> {
-    let epub_bytes = fs::read(epub_path).await?;
-    let epub = tokio::task::spawn_blocking(move || alignment::parse_epub(&epub_bytes)).await??;
+    let epub_path_owned = epub_path.to_path_buf();
+    let epub =
+        tokio::task::spawn_blocking(move || alignment::parse_epub_file(&epub_path_owned)).await??;
     anyhow::ensure!(
         !epub.sections.is_empty(),
         "No readable text sections were found in the EPUB."
@@ -1272,7 +1273,7 @@ mod tests {
         let audio_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_AUDIO").unwrap());
         let epub_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_EPUB").unwrap());
         let metadata = read_track_metadata(&audio_path);
-        let epub = alignment::parse_epub(&std::fs::read(epub_path).unwrap()).unwrap();
+        let epub = alignment::parse_epub_file(&epub_path).unwrap();
         let track = SyncTrackInput {
             path: audio_path,
             title: metadata.title.unwrap_or_else(|| "Book".to_string()),
