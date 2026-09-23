@@ -150,6 +150,24 @@ struct CarPlaybackSession: Codable {
     /// client says the move was deliberate, so the car has to pass that intent
     /// along with the position.
     var intentionalRegression: Bool
+
+    /// A newer checkpoint survives an acknowledgement, but the reset-guard
+    /// bypass must not survive once the jump that set it has been saved.
+    static func remainingAfterAcknowledgement(
+        _ sessions: [CarPlaybackSession],
+        acknowledged: [String: Double],
+        clearRegressionForBookId: String?
+    ) -> [CarPlaybackSession] {
+        sessions.compactMap { session in
+            guard let savedAt = acknowledged[session.bookId] else { return session }
+            guard session.updatedAt > savedAt else { return nil }
+            var remaining = session
+            if session.bookId == clearRegressionForBookId {
+                remaining.intentionalRegression = false
+            }
+            return remaining
+        }
+    }
 }
 
 extension CarLibraryBook {
