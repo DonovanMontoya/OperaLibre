@@ -1279,6 +1279,7 @@ pub(crate) async fn list_libation_books(
         return Err(error);
     }
     let library = state.library.read().await;
+    let local_keys = local_book_keys(&library.books);
     for book in books.iter_mut() {
         if let Some(label) = profile_labels.get(&book.profile_id) {
             book.profile_name = label.clone();
@@ -1290,7 +1291,7 @@ pub(crate) async fn list_libation_books(
         if !auth.is_admin {
             book.account_id = None;
         }
-        book.local_book_id = match_local_book(&library.books, book);
+        book.local_book_id = match_local_book(&local_keys, book);
         if !auth.is_admin
             && book
                 .local_book_id
@@ -1452,8 +1453,34 @@ pub(crate) async fn get_libation_cover_art(
     Ok(Redirect::temporary(&cdn_url).into_response())
 }
 
+/// A catalogue book's matching keys, normalized once per listing rather than
+/// once per Libation book compared against it.
+pub(crate) struct LocalBookKeys {
+    id: String,
+    asin: Option<String>,
+    titles: [String; 2],
+}
+
+pub(crate) fn local_book_keys(books: &[Book]) -> Vec<LocalBookKeys> {
+    books
+        .iter()
+        .map(|book| LocalBookKeys {
+            id: book.id.clone(),
+            asin: book.asin.clone(),
+            titles: [
+                normalize_match_key(&book.title),
+                normalize_match_key(main_title(&book.title)),
+            ],
+        })
+        .collect()
+}
+
+/// The local book a Libation title already corresponds to: by ASIN, else by
+/// title. Titles match when equal, or when one is the other plus a subtitle
+/// or edition note (`Dune: Book One`, `Dune (Unabridged)`). A longer name
+/// that merely starts with the other (`Dune Messiah`) is a different book.
 pub(crate) fn match_local_book(
-    local_books: &[Book],
+    local_books: &[LocalBookKeys],
     libation_book: &LibationBook,
 ) -> Option<String> {
     let target_asin = normalize_asin(&libation_book.asin);
@@ -1465,28 +1492,51 @@ pub(crate) fn match_local_book(
         return Some(matched.id.clone());
     }
 
-    let target_key = normalize_match_key(&libation_book.title);
-    if target_key.is_empty() {
+    let full_title = normalize_match_key(&libation_book.title);
+    let main_title = normalize_match_key(main_title(&libation_book.title));
+    if full_title.is_empty() {
         return None;
     }
+    let subtitle = libation_book
+        .subtitle
+        .as_deref()
+        .map(normalize_match_key)
+        .filter(|subtitle| !subtitle.is_empty());
+    let combined_title = subtitle
+        .as_ref()
+        .map(|subtitle| format!("{full_title} {subtitle}"));
+
+    // Prefer the full title even when a different book with the same main
+    // title appears earlier in the local catalogue.
+    if let Some(book) = local_books.iter().find(|book| {
+        !book.titles[0].is_empty()
+            && (book.titles[0] == full_title || combined_title.as_ref() == Some(&book.titles[0]))
+    }) {
+        return Some(book.id.clone());
+    }
+
+    let target_has_suffix = full_title != main_title || subtitle.is_some();
 
     local_books
         .iter()
         .find(|book| {
-            let candidate = normalize_match_key(&book.title);
-            !candidate.is_empty() && titles_match(&candidate, &target_key)
+            let local_has_suffix = book.titles[0] != book.titles[1];
+            !main_title.is_empty()
+                && book.titles[1] == main_title
+                && local_has_suffix != target_has_suffix
         })
         .map(|book| book.id.clone())
 }
 
-pub(crate) fn titles_match(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let shorter = if a.len() <= b.len() { a } else { b };
-    let longer = if a.len() <= b.len() { b } else { a };
-    let prefix = format!("{shorter} ");
-    longer.starts_with(&prefix)
+/// A title without its subtitle or edition note: the part before the first
+/// colon, bracket or spaced dash. Commas are left alone; they belong to
+/// titles like `Guns, Germs, and Steel`.
+pub(crate) fn main_title(title: &str) -> &str {
+    [": ", ":", " (", " [", " - ", " – ", " — "]
+        .iter()
+        .filter_map(|separator| title.find(separator))
+        .min()
+        .map_or(title, |index| &title[..index])
 }
 
 pub(crate) fn normalize_match_key(value: &str) -> String {
@@ -2224,12 +2274,12 @@ pub(crate) async fn liberate_all_libation_books(
 pub(crate) fn libation_sidecar_for_group(
     group_key: &FsPath,
     grouped_files: &[PathBuf],
+    listings: &mut DirectoryFiles,
 ) -> Option<LibationSidecarMetadata> {
     let directory = grouped_files.first()?.parent()?;
-    let mut candidates = std::fs::read_dir(directory)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let mut candidates = listings
+        .files(directory)
+        .iter()
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
@@ -2238,6 +2288,7 @@ pub(crate) fn libation_sidecar_for_group(
                         .ends_with(LIBATION_METADATA_SIDECAR_SUFFIX)
                 })
         })
+        .cloned()
         .collect::<Vec<_>>();
     candidates.sort();
 

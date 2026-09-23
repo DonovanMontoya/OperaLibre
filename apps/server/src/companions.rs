@@ -142,6 +142,7 @@ pub(crate) fn discover_candidates(
     grouped_files: &[PathBuf],
     book_title: &str,
     embedded_cover: Option<&ScannedCover>,
+    listings: &mut DirectoryFiles,
 ) -> Vec<PathBuf> {
     let is_folder_book = group_key.is_dir();
     let Some(search_dir) = (if is_folder_book {
@@ -165,12 +166,9 @@ pub(crate) fn discover_candidates(
     .map(normalize_match_key);
     let title_key = normalize_match_key(book_title);
 
-    let mut candidates = WalkDir::new(&search_dir)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
+    let mut candidates = listings
+        .files(&search_dir)
+        .iter()
         .filter(|path| is_document(path) || is_image(path))
         .filter(|path| {
             let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
@@ -181,13 +179,20 @@ pub(crate) fn discover_candidates(
                 && (Some(&stem_key) == group_stem.as_ref()
                     || stem_key == title_key
                     || audio_stems.iter().any(|audio_stem| audio_stem == &stem_key));
+            // A book at the library root only takes files named for it. Decide
+            // that before reading any image: the root is shared by every such
+            // book, so reading each unrelated one would repeat per book.
+            if !is_folder_book && !matches_book {
+                return false;
+            }
             // Exporters commonly name the loose cover after the audio or book.
             // Keep identically named documents: those are reading companions.
             if is_image(path) && (matches_book || duplicates_cover(path, embedded_cover)) {
                 return false;
             }
-            is_folder_book || matches_book
+            true
         })
+        .cloned()
         .collect::<Vec<_>>();
     candidates.sort_by_key(|path| natural_path_key(path));
     candidates
@@ -686,10 +691,16 @@ mod tests {
         // Equal size alone must not hide a genuine illustration.
         std::fs::write(folder.join("illustration.jpg"), vec![b'x'; art.len()]).unwrap();
         let audio = vec![cover.source.clone()];
-        let names = discover_candidates(&folder, &audio, "Book Title", Some(&cover))
-            .into_iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let names = discover_candidates(
+            &folder,
+            &audio,
+            "Book Title",
+            Some(&cover),
+            &mut DirectoryFiles::default(),
+        )
+        .into_iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
         assert_eq!(
             names,
             [
@@ -700,15 +711,27 @@ mod tests {
             ]
         );
         assert!(
-            discover_candidates(&folder, &audio, "Book Title", None)
-                .contains(&folder.join("exported-art.jpeg"))
+            discover_candidates(
+                &folder,
+                &audio,
+                "Book Title",
+                None,
+                &mut DirectoryFiles::default(),
+            )
+            .contains(&folder.join("exported-art.jpeg"))
         );
         // At the shared library root, same-stem documents still belong to this
         // book, but its same-stem image is artwork and unrelated files stay out.
-        let names = discover_candidates(&audio[0], &audio, "Book Title", None)
-            .into_iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let names = discover_candidates(
+            &audio[0],
+            &audio,
+            "Book Title",
+            None,
+            &mut DirectoryFiles::default(),
+        )
+        .into_iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
         assert_eq!(names, ["Book Title.epub", "Book Title.pdf"]);
     }
 
