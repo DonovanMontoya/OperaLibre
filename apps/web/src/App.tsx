@@ -42,27 +42,23 @@ import {
   LogOut,
   Maximize2,
   Minimize2,
-  Moon,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
   Pause,
   Pencil,
   Play,
-  Plus,
   RefreshCcw,
   RotateCcw,
   RotateCw,
   Rows3,
   Search,
-  Smartphone,
   Settings,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
   Sparkles,
   Timer,
-  Trash2,
   Upload,
   ScrollText,
   UserCog,
@@ -180,8 +176,6 @@ import {
   getProgress,
   getServerStorageKey,
   getServerAliases,
-  getServerIdentityUrl,
-  getServerUrl,
   getServerType,
   getStoredMediaToken,
   getStoredToken,
@@ -203,7 +197,6 @@ import {
   reconnectUsingServerAliases,
   requestLibationBook,
   playbackReportingSession,
-  removeServerAlias,
   rescanLibrary,
   refreshLibroAccount,
   saveProgress,
@@ -390,7 +383,6 @@ import {
   sortModeStorageKey
 } from "./shelfSort";
 import {
-  bookSubtitle,
   currentTrackIndex,
   durationFromTracks,
   errorMessage,
@@ -416,22 +408,30 @@ import { EpubReadalong } from "./EpubReadalong";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
 import { CoverArt, DownloadRing, LibationCoverArt } from "./CoverArt";
 import { BookVolumeControl, PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
+import {
+  BookDetailsSheet,
+  ChapterSheet,
+  SleepTimerSheet,
+  SpeedSheet,
+  type NativePlayerSheet
+} from "./PlayerSheets";
+import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
+import { MetadataEditorDialog } from "./MetadataEditorDialog";
+import { SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
+import {
+  BookStoreSettings,
+  ConnectionSettings,
+  DeviceLibrarySettings,
+  DisplaySettings,
+  ExtrasSettings,
+  ServerDownloadSettings,
+  type DeviceDownloadActivity
+} from "./SettingsCards";
 
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
-type NativePlayerSheet = "speed" | "sleep" | "chapters" | "details" | null;
-type DeviceDownloadActivity = {
-  bookId: string;
-  // Kept alongside the id so the queue row survives the book leaving `books`
-  // (a library refresh, a filter, a server switch) with Cancel still reachable.
-  title: string;
-  fraction: number | null;
-  state: "queued" | "running";
-  queuedAt: number;
-};
-type DeviceNotice = { message: string; bookId?: string };
 type PendingSeek = { trackId: string; positionSeconds: number };
 type QueuedProgressSave = {
   bookId: string;
@@ -748,22 +748,6 @@ export default function App() {
   );
 }
 
-/**
- * Desktop browsers narrow the file dialog from this list. iOS is left
- * unfiltered instead: it resolves `accept` to UTIs and types `.m4b` as
- * `com.apple.protected-mpeg-4-audio-b`, which answers to no audio MIME type at
- * all, so filtering there greys out the audiobooks the picker exists to find.
- * Either way the chosen names are checked before anything is uploaded.
- */
-const UPLOAD_FILE_ACCEPT = [
-  ...SUPPORTED_AUDIO_EXTENSIONS.map((extension) => `.${extension}`),
-  "audio/mp4",
-  "audio/x-m4a",
-  "audio/x-m4b",
-  "audio/*"
-].join(",");
-
-const EPUB_FILE_ACCEPT = ".epub,application/epub+zip";
 
 /**
  * Remembers that the reader waved off the shelf's connect-a-server card. Kept
@@ -8209,642 +8193,92 @@ function MainApp({
       ) : null}
 
       {syncConfirmationBook ? (
-        <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
-          <section
-            className="modal-card unplayed-confirm-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="sync-confirm-title"
-            aria-describedby="sync-confirm-description"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setSyncConfirmationBook(null);
-            }}
-          >
-            <div className="modal-head">
-              <div>
-                <span className="eyebrow"><Sparkles size={13} /> Follow along</span>
-                <h2 id="sync-confirm-title">Re-sync this book?</h2>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Cancel re-sync"
-                onClick={() => setSyncConfirmationBook(null)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <p id="sync-confirm-description" className="unplayed-confirm-copy">
-              <strong>{syncConfirmationBook.title}</strong> already has sentence-by-sentence
-              narration sync. Rebuilding it can take a long time. Start only if the audio or text
-              changed, or the current sync needs replacing.
-            </p>
-            <div className="unplayed-confirm-actions">
-              <button
-                type="button"
-                className="unplayed-confirm-cancel"
-                autoFocus
-                onClick={() => setSyncConfirmationBook(null)}
-              >
-                Not now
-              </button>
-              <button
-                type="button"
-                className="unplayed-confirm-submit"
-                onClick={() => {
-                  const book = syncConfirmationBook;
-                  setSyncConfirmationBook(null);
-                  void startSyncGeneration(book);
-                }}
-              >
-                <Sparkles size={15} /> Start re-sync
-              </button>
-            </div>
-          </section>
-        </div>
+        <SyncConfirmationDialog
+          setSyncConfirmationBook={setSyncConfirmationBook}
+          startSyncGeneration={startSyncGeneration}
+          syncConfirmationBook={syncConfirmationBook}
+        />
       ) : null}
 
       {unplayedConfirmationBook ? (
-        <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
-          <section
-            className="modal-card unplayed-confirm-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="unplayed-confirm-title"
-            aria-describedby="unplayed-confirm-description"
-            aria-busy={completionPendingBookId === unplayedConfirmationBook.id}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && completionPendingBookId !== unplayedConfirmationBook.id) {
-                setUnplayedConfirmationBookId(null);
-                setCompletionError(null);
-              }
-            }}
-          >
-            <div className="modal-head">
-              <div>
-                <span className="eyebrow"><RotateCcw size={13} /> Listening progress</span>
-                <h2 id="unplayed-confirm-title">Mark as unplayed?</h2>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Cancel marking book unplayed"
-                disabled={completionPendingBookId === unplayedConfirmationBook.id}
-                onClick={() => {
-                  haptic("light");
-                  setUnplayedConfirmationBookId(null);
-                  setCompletionError(null);
-                }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <p id="unplayed-confirm-description" className="unplayed-confirm-copy">
-              <strong>{unplayedConfirmationBook.title}</strong> will return to the beginning. This
-              stops playback and removes it from Now Playing.
-            </p>
-            <div className="unplayed-confirm-summary" aria-label="Changes made by marking the book unplayed">
-              <span>Listening position</span><strong>Beginning</strong>
-              <span>Now Playing</span><strong>Cleared</strong>
-              <span>Library status</span><strong>Not started</strong>
-            </div>
-            {completionError?.bookId === unplayedConfirmationBook.id ? (
-              <p className="auth-error" role="alert">{completionError.message}</p>
-            ) : null}
-            <div className="unplayed-confirm-actions">
-              <button
-                type="button"
-                className="unplayed-confirm-cancel"
-                autoFocus
-                disabled={completionPendingBookId === unplayedConfirmationBook.id}
-                onClick={() => {
-                  haptic("light");
-                  setUnplayedConfirmationBookId(null);
-                  setCompletionError(null);
-                }}
-              >
-                Keep listening
-              </button>
-              <button
-                type="button"
-                className="unplayed-confirm-submit"
-                disabled={completionPendingBookId === unplayedConfirmationBook.id}
-                onClick={() => void confirmBookUnplayed(unplayedConfirmationBook)}
-              >
-                {completionPendingBookId === unplayedConfirmationBook.id ? (
-                  <><LoaderCircle size={15} className="spin-icon" /> Resetting…</>
-                ) : (
-                  <><RotateCcw size={15} /> Mark unplayed</>
-                )}
-              </button>
-            </div>
-          </section>
-        </div>
+        <UnplayedConfirmationDialog
+          completionError={completionError}
+          completionPendingBookId={completionPendingBookId}
+          confirmBookUnplayed={confirmBookUnplayed}
+          setCompletionError={setCompletionError}
+          setUnplayedConfirmationBookId={setUnplayedConfirmationBookId}
+          unplayedConfirmationBook={unplayedConfirmationBook}
+        />
       ) : null}
 
       {nativePlayerSheet === "details" && playbackBook ? (
-        <div className="sleep-sheet-layer" role="presentation">
-          <button
-            type="button"
-            className="sleep-sheet-scrim"
-            aria-label="Close book details"
-            onClick={() => setNativePlayerSheet(null)}
-          />
-          <section className="details-sheet" role="dialog" aria-modal="true" aria-labelledby="details-sheet-title">
-            <div className="details-sheet-grabber" aria-hidden="true" />
-            <header className="details-sheet-header">
-              <span className="eyebrow"><Bookmark size={13} /> Listening edition</span>
-              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
-                <X size={18} />
-              </button>
-            </header>
-
-            <div className="details-sheet-hero">
-              <CoverArt book={playbackBook} size="small" />
-              <div>
-                <span>{activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}</span>
-                <h2 id="details-sheet-title">{playbackBook.title}</h2>
-                <p>{bookSubtitle(playbackBook) || `${playbackBook.trackCount} audio tracks`}</p>
-              </div>
-            </div>
-
-            {bookCompletionPercent !== null ? (
-              <div className="details-sheet-progress">
-                <div>
-                  <span>Listening progress</span>
-                  <strong>{bookCompletionPercent}%</strong>
-                </div>
-                <div className="details-sheet-progressbar" role="img" aria-label={`${bookCompletionPercent}% complete`}>
-                  <i style={{ width: `${bookCompletionPercent}%` }} />
-                </div>
-                <small>
-                  {displayBookRemainingSeconds !== null && displayBookRemainingSeconds <= 0
-                    ? "Complete"
-                    : displayBookRemainingSeconds !== null
-                    ? `${formatDurationLabel(displayBookRemainingSeconds) ?? formatTime(displayBookRemainingSeconds)} remaining`
-                    : "Progress unavailable"}
-                </small>
-              </div>
-            ) : null}
-
-            <div className="details-sheet-facts">
-              <div>
-                <span>Runtime</span>
-                <strong>{formatDurationLabel(playbackBook.durationSeconds ?? durationFromTracks(playbackBook)) ?? "—"}</strong>
-              </div>
-              <div>
-                <span>Published</span>
-                <strong>{playbackBook.publishedDate ?? "—"}</strong>
-              </div>
-              <div>
-                <span>Tracks</span>
-                <strong>{playbackBook.trackCount}</strong>
-              </div>
-            </div>
-
-            {playbackBook.metadata.publisher || playbackBook.genres.length > 0 ? (
-              <div className="details-sheet-tags" aria-label="Book metadata">
-                {playbackBook.metadata.publisher ? <span>{playbackBook.metadata.publisher}</span> : null}
-                {playbackBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
-              </div>
-            ) : null}
-
-            {playbackDescription ? <p className="details-sheet-description">{playbackDescription}</p> : null}
-
-            <div className="details-sheet-actions">
-              {playbackBook.progress && playbackBook.progress.status !== "notStarted" ? (
-                <button
-                  type="button"
-                  className="details-sheet-reset"
-                  disabled={completionPendingBookId === playbackBook.id}
-                  onClick={() => markBookUnplayed(playbackBook)}
-                >
-                  {completionPendingBookId === playbackBook.id
-                    ? <LoaderCircle size={15} className="spin-icon" />
-                    : <RotateCcw size={15} />}
-                  Mark unplayed
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="details-sheet-completion"
-                disabled={completionPendingBookId === playbackBook.id}
-                aria-pressed={playbackBook.progress?.status === "finished"}
-                onClick={() => {
-                  haptic("light");
-                  void changeBookCompletion(
-                    playbackBook,
-                    playbackBook.progress?.status !== "finished"
-                  );
-                }}
-              >
-                {completionPendingBookId === playbackBook.id
-                  ? <LoaderCircle size={15} className="spin-icon" />
-                  : <CircleCheck size={15} />}
-                {playbackBook.progress?.status === "finished" ? "Mark unfinished" : "Mark finished"}
-              </button>
-              <button
-                type="button"
-                className="details-sheet-full"
-                onClick={() => {
-                  haptic("light");
-                  setNativePlayerSheet(null);
-                  openPlaybackView("details");
-                }}
-              >
-                Full book page <ChevronRight size={16} />
-              </button>
-            </div>
-          </section>
-        </div>
+        <BookDetailsSheet
+          activeChapter={activeChapter}
+          bookCompletionPercent={bookCompletionPercent}
+          changeBookCompletion={changeBookCompletion}
+          closeNativePlayerSheet={closeNativePlayerSheet}
+          completionPendingBookId={completionPendingBookId}
+          displayBookRemainingSeconds={displayBookRemainingSeconds}
+          markBookUnplayed={markBookUnplayed}
+          openPlaybackView={openPlaybackView}
+          playbackBook={playbackBook}
+          playbackDescription={playbackDescription}
+          setNativePlayerSheet={setNativePlayerSheet}
+        />
       ) : null}
 
       {nativePlayerSheet === "speed" ? (
-        <div className="sleep-sheet-layer" role="presentation">
-          <button
-            type="button"
-            className="sleep-sheet-scrim"
-            aria-label="Close playback settings"
-            onClick={() => setNativePlayerSheet(null)}
-          />
-          <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
-            <div className="sleep-sheet-grabber" aria-hidden="true" />
-            <header>
-              <div>
-                <span className="eyebrow"><Gauge size={13} /> Cadence</span>
-                <h2 id="speed-sheet-title">Playback</h2>
-              </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
-                <X size={18} />
-              </button>
-            </header>
-            <p className="sleep-sheet-hint">Fine-tune the pace in 0.05× steps or jump to a familiar preset.</p>
-            <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
-            {/* Noticing a book is too quiet happens mid-chapter, so the fix
-                lives with the other thing a listener reaches for while the
-                book is playing rather than on the book's own page. */}
-            {playbackBook ? (
-              <div className="speed-sheet-volume">
-                {/* The sheet labels its sections with gold eyebrows, not the
-                    grey card labels used on the book page. */}
-                <label className="eyebrow" htmlFor="speed-sheet-book-volume">
-                  <Volume2 size={13} /> Book Volume
-                </label>
-                <p className="sleep-sheet-hint">
-                  Lifts this book alone, for a title mastered quieter than the rest of the shelf.
-                </p>
-                <BookVolumeControl
-                  inputId="speed-sheet-book-volume"
-                  value={playbackGain}
-                  canBoost={playbackCanBoost}
-                  onChange={(db) => updateBookGain(playbackBook, db)}
-                />
-              </div>
-            ) : null}
-            <button
-              type="button"
-              className="speed-sheet-done"
-              onClick={() => {
-                haptic("light");
-                setNativePlayerSheet(null);
-              }}
-            >
-              Done
-            </button>
-          </section>
-        </div>
+        <SpeedSheet
+          closeNativePlayerSheet={closeNativePlayerSheet}
+          playbackBook={playbackBook}
+          playbackCanBoost={playbackCanBoost}
+          playbackGain={playbackGain}
+          setNativePlayerSheet={setNativePlayerSheet}
+          speed={speed}
+          updateBookGain={updateBookGain}
+          updateSpeed={updateSpeed}
+        />
       ) : null}
 
       {nativePlayerSheet === "chapters" && playbackBook ? (
-        <div className="sleep-sheet-layer" role="presentation">
-          <button
-            type="button"
-            className="sleep-sheet-scrim"
-            aria-label="Close chapters"
-            onClick={() => setNativePlayerSheet(null)}
-          />
-          <section className="sleep-sheet chapter-sheet" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
-            <div className="sleep-sheet-grabber" aria-hidden="true" />
-            <header>
-              <div>
-                <span className="eyebrow"><ListMusic size={13} /> Contents</span>
-                <h2 id="chapter-sheet-title">Chapters</h2>
-              </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
-                <X size={18} />
-              </button>
-            </header>
-            <p className="sleep-sheet-hint">{playbackBook.title} · {playbackBook.chapters.length} markers</p>
-            <div className="sleep-options chapter-sheet-options">
-              {chapterSegments.map((chapter, index) => (
-                <button
-                  type="button"
-                  key={chapter.id}
-                  className={activeChapter?.id === chapter.id ? "selected" : ""}
-                  onClick={() => jumpToChapterFromSheet(chapter)}
-                >
-                  <span className="chapter-sheet-label">
-                    <small>{String(index + 1).padStart(2, "0")}</small>
-                    <strong>{chapter.title}</strong>
-                  </span>
-                  {activeChapter?.id === chapter.id ? <em>Playing</em> : <span className="chapter-sheet-time">{formatTime(chapter.durationSeconds)}</span>}
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
+        <ChapterSheet
+          activeChapter={activeChapter}
+          chapterSegments={chapterSegments}
+          closeNativePlayerSheet={closeNativePlayerSheet}
+          jumpToChapterFromSheet={jumpToChapterFromSheet}
+          playbackBook={playbackBook}
+          setNativePlayerSheet={setNativePlayerSheet}
+        />
       ) : null}
 
       {nativePlayerSheet === "sleep" ? (
-        <div className="sleep-sheet-layer" role="presentation">
-          <button
-            type="button"
-            className="sleep-sheet-scrim"
-            aria-label="Close sleep timer"
-            onClick={() => setNativePlayerSheet(null)}
-          />
-          <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="sleep-sheet-title">
-            <div className="sleep-sheet-grabber" aria-hidden="true" />
-            <header>
-              <div>
-                <span className="eyebrow"><Timer size={13} /> Nightfall</span>
-                <h2 id="sleep-sheet-title">Sleep Timer</h2>
-              </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={closeNativePlayerSheet}>
-                <X size={18} />
-              </button>
-            </header>
-            <p className="sleep-sheet-hint">The timer only runs while your book is playing.</p>
-            <div className="sleep-options">
-              {!sleepCustomOpen && sleepChoices.map((minutes) => (
-                <button
-                  type="button"
-                  key={minutes}
-                  className={sleepMinutes === minutes && sleepRemaining > 0 ? "selected" : ""}
-                  onClick={() => configureSleepTimer(minutes)}
-                >
-                  <span>{formatSleepTimerMinutes(minutes)}</span>
-                  {sleepMinutes === minutes && sleepRemaining > 0 ? (
-                    <em>{formatTime(sleepRemaining)} left</em>
-                  ) : (
-                    <ChevronRight size={17} />
-                  )}
-                </button>
-              ))}
-              <button
-                type="button"
-                aria-expanded={sleepCustomOpen}
-                aria-controls="sleep-custom-editor"
-                onClick={() => {
-                  haptic("light");
-                  setSleepCustomOpen((open) => !open);
-                }}
-              >
-                <span>Custom duration</span>
-                {sleepCustomOpen ? <X size={17} /> : <ChevronRight size={17} />}
-              </button>
-              {!sleepCustomOpen && <button
-                type="button"
-                className={`sleep-off ${sleepRemaining === 0 ? "selected" : ""}`}
-                onClick={() => configureSleepTimer(0)}
-              >
-                <span>Off</span>
-                {sleepRemaining === 0 ? <em>Selected</em> : <X size={17} />}
-              </button>}
-            </div>
-            {sleepCustomOpen ? (
-              <form id="sleep-custom-editor" className="sleep-custom-editor" onSubmit={startCustomSleepTimer}>
-                <label className="eyebrow" htmlFor="sleep-custom-minutes">Duration in minutes</label>
-                <div className="sleep-custom sleep-custom-row">
-                  <input
-                    id="sleep-custom-minutes"
-                    autoFocus
-                    aria-describedby="sleep-custom-hint"
-                    type="number"
-                    inputMode="numeric"
-                    enterKeyHint="done"
-                    min={SLEEP_TIMER_MIN_MINUTES}
-                    max={SLEEP_TIMER_MAX_MINUTES}
-                    step={1}
-                    placeholder="Minutes"
-                    value={sleepCustomDraft}
-                    onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
-                  />
-                  <span className="sleep-custom-unit">min</span>
-                </div>
-                <p id="sleep-custom-hint" className="sleep-sheet-hint">
-                  {SLEEP_TIMER_MIN_MINUTES}–{SLEEP_TIMER_MAX_MINUTES} minutes · Saved for next time
-                </p>
-                <button className="speed-sheet-done" type="submit" disabled={sleepCustomMinutes === null}>Start timer</button>
-              </form>
-            ) : null}
-          </section>
-        </div>
+        <SleepTimerSheet
+          closeNativePlayerSheet={closeNativePlayerSheet}
+          configureSleepTimer={configureSleepTimer}
+          setNativePlayerSheet={setNativePlayerSheet}
+          setSleepCustomDraft={setSleepCustomDraft}
+          setSleepCustomOpen={setSleepCustomOpen}
+          sleepChoices={sleepChoices}
+          sleepCustomDraft={sleepCustomDraft}
+          sleepCustomMinutes={sleepCustomMinutes}
+          sleepCustomOpen={sleepCustomOpen}
+          sleepMinutes={sleepMinutes}
+          sleepRemaining={sleepRemaining}
+          startCustomSleepTimer={startCustomSleepTimer}
+        />
       ) : null}
 
       {metadataEditOpen && metadataForm ? (
-        <div className="modal-scrim" role="presentation">
-          <form className="modal-card metadata-editor-card" onSubmit={saveMetadata}>
-            <div className="modal-head">
-              <h2><Pencil size={18} /> Edit Book Info</h2>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Close metadata editor"
-                onClick={() => {
-                  setMetadataEditOpen(false);
-                  setMetadataForm(null);
-                  setMetadataError(null);
-                }}
-                disabled={metadataSaving}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="metadata-edit-form">
-              <label className="wide">
-                <span>Title</span>
-                <input
-                  type="text"
-                  value={metadataForm.title}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, title: event.currentTarget.value })
-                  }
-                  required
-                />
-              </label>
-              <label>
-                <span>Author</span>
-                <input
-                  type="text"
-                  value={metadataForm.author}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, author: event.currentTarget.value })
-                  }
-                />
-              </label>
-              <label>
-                <span>Narrator</span>
-                <input
-                  type="text"
-                  value={metadataForm.narrator}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, narrator: event.currentTarget.value })
-                  }
-                />
-              </label>
-              <label>
-                <span>Publisher</span>
-                <input
-                  type="text"
-                  value={metadataForm.publisher}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, publisher: event.currentTarget.value })
-                  }
-                />
-              </label>
-              <label>
-                <span>Series</span>
-                <input
-                  type="text"
-                  value={metadataForm.series}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, series: event.currentTarget.value })
-                  }
-                />
-              </label>
-              <label>
-                <span>Series number</span>
-                <input
-                  type="text"
-                  value={metadataForm.seriesPosition}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, seriesPosition: event.currentTarget.value })
-                  }
-                  placeholder="1"
-                />
-              </label>
-              <div className="wide metadata-tags-field">
-                <div className="metadata-tags-heading">
-                  <span>Tags</span>
-                  <button
-                    type="button"
-                    onClick={() => setMetadataForm({
-                      ...metadataForm,
-                      tags: [...metadataForm.tags, { name: "", position: "" }]
-                    })}
-                  >
-                    <Plus size={13} /> Add tag
-                  </button>
-                </div>
-                <p>Use tags for wider worlds or reading orders beyond the book’s immediate series.</p>
-                {metadataForm.tags.map((tag, index) => (
-                  <div className="metadata-tag-row" key={index}>
-                    <input
-                      type="text"
-                      value={tag.name}
-                      aria-label={`Tag ${index + 1} name`}
-                      onChange={(event) => setMetadataForm({
-                        ...metadataForm,
-                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? { ...candidate, name: event.currentTarget.value }
-                            : candidate
-                        )
-                      })}
-                      placeholder="Cosmere"
-                    />
-                    <input
-                      className="metadata-tag-position"
-                      type="text"
-                      value={tag.position}
-                      aria-label={`Tag ${index + 1} book number`}
-                      onChange={(event) => setMetadataForm({
-                        ...metadataForm,
-                        tags: metadataForm.tags.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? { ...candidate, position: event.currentTarget.value }
-                            : candidate
-                        )
-                      })}
-                      placeholder="Book # (optional)"
-                    />
-                    <button
-                      type="button"
-                      className="metadata-tag-remove"
-                      aria-label={`Remove ${tag.name || `tag ${index + 1}`}`}
-                      onClick={() => setMetadataForm({
-                        ...metadataForm,
-                        tags: metadataForm.tags.filter((_, candidateIndex) => candidateIndex !== index)
-                      })}
-                    >
-                      <X size={15} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <label>
-                <span>Published date</span>
-                <input
-                  type="text"
-                  value={metadataForm.publishedDate}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, publishedDate: event.currentTarget.value })
-                  }
-                  placeholder="YYYY-MM-DD or year"
-                />
-              </label>
-              <label className="wide">
-                <span>Genres</span>
-                <input
-                  type="text"
-                  value={metadataForm.genres}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, genres: event.currentTarget.value })
-                  }
-                  placeholder="Fantasy, Adventure"
-                />
-              </label>
-              <label className="wide">
-                <span>Audible ASIN</span>
-                <input
-                  type="text"
-                  value={metadataForm.asin}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, asin: event.currentTarget.value })
-                  }
-                  placeholder="B012345678"
-                />
-              </label>
-              <label className="wide">
-                <span>Description</span>
-                <textarea
-                  value={metadataForm.description}
-                  onChange={(event) =>
-                    setMetadataForm({ ...metadataForm, description: event.currentTarget.value })
-                  }
-                  rows={7}
-                />
-              </label>
-            </div>
-
-            {metadataError ? <p className="metadata-edit-error">{metadataError}</p> : null}
-
-            <div className="metadata-edit-actions">
-              <button
-                type="button"
-                onClick={() => selectedBook && setMetadataForm(metadataEditorFromBook(selectedBook))}
-                disabled={metadataSaving || !selectedBook}
-              >
-                Reset
-              </button>
-              <button type="submit" disabled={metadataSaving}>
-                {metadataSaving ? "Saving..." : "Save Info"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <MetadataEditorDialog
+          metadataError={metadataError}
+          metadataForm={metadataForm}
+          metadataSaving={metadataSaving}
+          saveMetadata={saveMetadata}
+          selectedBook={selectedBook}
+          setMetadataEditOpen={setMetadataEditOpen}
+          setMetadataError={setMetadataError}
+          setMetadataForm={setMetadataForm}
+        />
       ) : null}
 
       {capabilities.statistics && profileOpen ? (
@@ -8885,127 +8319,30 @@ function MainApp({
       ) : null}
 
       {capabilities.uploads && uploadModalOpen ? (
-        <div className="modal-scrim" role="presentation">
-          <form
-            className="modal-card upload-audiobook-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="upload-audiobook-title"
-            onSubmit={submitAudiobookUpload}
-          >
-            <div className="modal-head">
-              <div>
-                <span className="eyebrow"><Upload size={13} /> Add to the collection</span>
-                <h2 id="upload-audiobook-title">Upload audiobook</h2>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Close upload"
-                disabled={uploadBusy}
-                onClick={() => setUploadModalOpen(false)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <p className="upload-audiobook-hint">
-              Choose one file for an M4B or all audio tracks for a multi-file book. Files are kept
-              together in a new library folder.
-            </p>
-            <label className="upload-audiobook-field">
-              <span>Book name</span>
-              <input
-                value={uploadBookName}
-                onChange={(event) => setUploadBookName(event.currentTarget.value)}
-                placeholder="The name of the library folder"
-                maxLength={200}
-                required
-                disabled={uploadBusy}
-              />
-            </label>
-            <label className="upload-file-picker">
-              <Upload size={22} />
-              <strong>
-                {uploadFiles.length
-                  ? `${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"} selected`
-                  : "Choose audio files"}
-              </strong>
-              <span>AAC, AIFF, FLAC, M4A, M4B, MP3, MP4, OGG, Opus, or WAV</span>
-              <input
-                type="file"
-                accept={native ? undefined : UPLOAD_FILE_ACCEPT}
-                multiple
-                required
-                disabled={uploadBusy}
-                onChange={chooseUploadFiles}
-              />
-            </label>
-            {uploadFiles.length ? (
-              <ul className="upload-file-list">
-                {uploadFiles.map((file) => <li key={`${file.name}-${file.size}`}>{file.name}</li>)}
-              </ul>
-            ) : null}
-            {uploadError ? <p className="metadata-edit-error">{uploadError}</p> : null}
-            <div className="metadata-edit-actions">
-              <button type="button" disabled={uploadBusy} onClick={() => setUploadModalOpen(false)}>Cancel</button>
-              <button type="submit" disabled={uploadBusy || uploadFiles.length === 0}>
-                {uploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
-                {uploadBusy ? "Uploading…" : "Upload to library"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <AudiobookUploadDialog
+          chooseUploadFiles={chooseUploadFiles}
+          native={native}
+          setUploadBookName={setUploadBookName}
+          setUploadModalOpen={setUploadModalOpen}
+          submitAudiobookUpload={submitAudiobookUpload}
+          uploadBookName={uploadBookName}
+          uploadBusy={uploadBusy}
+          uploadError={uploadError}
+          uploadFiles={uploadFiles}
+        />
       ) : null}
 
       {capabilities.uploads && ebookUploadBook ? (
-        <div className="modal-scrim" role="presentation">
-          <form
-            className="modal-card upload-audiobook-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="upload-ebook-title"
-            onSubmit={submitEbookUpload}
-          >
-            <div className="modal-head">
-              <div>
-                <span className="eyebrow"><BookOpen size={13} /> Pair with this audiobook</span>
-                <h2 id="upload-ebook-title">Add matching EPUB</h2>
-              </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Close ebook upload"
-                disabled={ebookUploadBusy}
-                onClick={() => setEbookUploadBook(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <p className="upload-audiobook-hint">
-              Upload the EPUB for <strong>{ebookUploadBook.title}</strong>. It stays beside this audiobook and becomes its reading copy.
-            </p>
-            <label className="upload-file-picker">
-              <BookOpen size={22} />
-              <strong>{ebookUploadFile ? ebookUploadFile.name : "Choose EPUB file"}</strong>
-              <span>Unencrypted EPUB · up to 64 MiB</span>
-              <input
-                type="file"
-                accept={native ? undefined : EPUB_FILE_ACCEPT}
-                required
-                disabled={ebookUploadBusy}
-                onChange={chooseEbookUpload}
-              />
-            </label>
-            {ebookUploadError ? <p className="metadata-edit-error">{ebookUploadError}</p> : null}
-            <div className="metadata-edit-actions">
-              <button type="button" disabled={ebookUploadBusy} onClick={() => setEbookUploadBook(null)}>Cancel</button>
-              <button type="submit" disabled={ebookUploadBusy || !ebookUploadFile}>
-                {ebookUploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
-                {ebookUploadBusy ? "Uploading…" : "Add EPUB"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <EbookUploadDialog
+          chooseEbookUpload={chooseEbookUpload}
+          ebookUploadBook={ebookUploadBook}
+          ebookUploadBusy={ebookUploadBusy}
+          ebookUploadError={ebookUploadError}
+          ebookUploadFile={ebookUploadFile}
+          native={native}
+          setEbookUploadBook={setEbookUploadBook}
+          submitEbookUpload={submitEbookUpload}
+        />
       ) : null}
 
       {showLedgerTab && nativeTab === "ledger" ? (
@@ -9063,85 +8400,35 @@ function MainApp({
               </div>
             </section>
 
-            {ios || rotationLockAvailable ? <section className="settings-card">
-              <span className="section-label"><Smartphone size={13} /> Display</span>
-              {ios ? <div className="settings-toggle-row settings-appearance-row">
-                <span>
-                  <strong><Moon size={15} aria-hidden="true" /> Appearance</strong>
-                  <small>System follows your device's light or dark theme.</small>
-                </span>
-                <div className="settings-mode-toggle" role="radiogroup" aria-label="Appearance">
-                  {(["light", "dark", "system"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      role="radio"
-                      aria-checked={appearanceMode === mode}
-                      className={appearanceMode === mode ? "selected" : undefined}
-                      onClick={() => updateAppearanceMode(mode)}
-                    >
-                      {mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System"}
-                    </button>
-                  ))}
-                </div>
-              </div> : null}
-              {rotationLockAvailable ? <div className="settings-toggle-row">
-                <span>
-                  <strong>Rotation lock</strong>
-                  <small>Keeps OperaLibre in its current orientation, even when device rotation is on.</small>
-                </span>
-                <button
-                  type="button"
-                  className="settings-switch"
-                  role="switch"
-                  aria-checked={rotationLockEnabled}
-                  aria-label="Rotation lock"
-                  disabled={rotationLockBusy}
-                  onClick={() => void toggleRotationLock()}
-                >
-                  <span aria-hidden="true" />
-                </button>
-              </div> : null}
-              {rotationLockError ? <p className="settings-hint settings-error">{rotationLockError}</p> : null}
-            </section> : null}
+            {ios || rotationLockAvailable ? <DisplaySettings
+              appearanceMode={appearanceMode}
+              ios={ios}
+              rotationLockAvailable={rotationLockAvailable}
+              rotationLockBusy={rotationLockBusy}
+              rotationLockEnabled={rotationLockEnabled}
+              rotationLockError={rotationLockError}
+              toggleRotationLock={toggleRotationLock}
+              updateAppearanceMode={updateAppearanceMode}
+            /> : null}
 
-            {(libroAvailable || canBrowseLibation) ? <section className="settings-card purchase-provider-settings">
-              <span className="section-label"><CloudDownload size={13} /> Book stores</span>
-              <p className="settings-hint">Connections and download behavior live here. Get Books stays focused on finding titles.</p>
-
-              {libroAvailable ? <details className="store-settings-group">
-                <summary>
-                  <span><strong>Libro.fm</strong><small>{libroAccounts?.length ? `${libroAccounts.length} connected account${libroAccounts.length === 1 ? "" : "s"}` : "Account and download settings"}</small></span>
-                  <ChevronDown size={16} />
-                </summary>
-                <div className="store-settings-body">
-                  {supportsLibroDevice() && !localMode && isOperaLibre ? <label className="store-destination" htmlFor="settings-libro-destination">
-                    <span><strong>Download purchases to</strong><small>Choose where new Libro.fm imports are kept.</small></span>
-                    <select id="settings-libro-destination" value={libroOnDevice ? "device" : "server"} onChange={event => setLibroDestination(event.currentTarget.value === "device" ? "device" : "server")}>
-                      <option value="server">OperaLibre server</option>
-                      <option value="device">This device</option>
-                    </select>
-                  </label> : null}
-                  <LibroCatalog
-                    key={`settings:${currentUser.id}:${libroOnDevice ? "device" : "server"}`}
-                    mode="management"
-                    polling={nativeTab === "settings"}
-                    device={libroOnDevice}
-                    refreshKey={libroRefreshKey}
-                    onAccountsChanged={setLibroAccounts}
-                    onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange}
-                  />
-                </div>
-              </details> : null}
-
-              {canBrowseLibation ? <details className="store-settings-group">
-                <summary>
-                  <span><strong>Audible</strong><small>{brokenLibationAccounts.length > 0 ? `${brokenLibationAccounts.length} account${brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention` : `${allAudibleAccounts.length} connected account${allAudibleAccounts.length === 1 ? "" : "s"}`}</small></span>
-                  <ChevronDown size={16} />
-                </summary>
-                {audibleManagement}
-              </details> : null}
-            </section> : null}
+            {(libroAvailable || canBrowseLibation) ? <BookStoreSettings
+              allAudibleAccounts={allAudibleAccounts}
+              applyAdminLibraryChange={applyAdminLibraryChange}
+              audibleManagement={audibleManagement}
+              brokenLibationAccounts={brokenLibationAccounts}
+              canBrowseLibation={canBrowseLibation}
+              currentUser={currentUser}
+              isOperaLibre={isOperaLibre}
+              libroAccounts={libroAccounts}
+              libroAvailable={libroAvailable}
+              libroOnDevice={libroOnDevice}
+              libroRefreshKey={libroRefreshKey}
+              localMode={localMode}
+              nativeTab={nativeTab}
+              setBooks={setBooks}
+              setLibroAccounts={setLibroAccounts}
+              setLibroDestination={setLibroDestination}
+            /> : null}
             </div>
             <div
               className="settings-lower"
@@ -9154,90 +8441,17 @@ function MainApp({
               <span><ArrowDown size={12} /> Scroll this half</span>
             </div>
 
-            <section className="settings-card">
-              <span className="section-label"><Gamepad2 size={13} /> Extras</span>
-              <div className="settings-toggle-row">
-                <span>
-                  <strong>Games tab</strong>
-                  <small>Shows optional, on-device games in the bottom navigation.</small>
-                </span>
-                <button
-                  type="button"
-                  className="settings-switch"
-                  role="switch"
-                  aria-checked={gamesEnabled}
-                  aria-label="Games tab"
-                  onClick={toggleGamesEnabled}
-                >
-                  <span aria-hidden="true" />
-                </button>
-              </div>
-              <div className="settings-toggle-row">
-                <span>
-                  <strong>Ebook reader (beta)</strong>
-                  <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
-                </span>
-                <button
-                  type="button"
-                  className="settings-switch"
-                  role="switch"
-                  aria-checked={readalongEnabled}
-                  aria-label="Ebook reader"
-                  onClick={toggleReadalongEnabled}
-                >
-                  <span aria-hidden="true" />
-                </button>
-              </div>
-              {readalongEnabled && sentenceFollowAvailable ? (
-                <div className="settings-subrow settings-follow-group">
-                  <div className="settings-toggle-row">
-                    <span>
-                      <strong>Follow the narration</strong>
-                      <small>Highlights the sentence being read and turns the page with the audio.</small>
-                      <small className="settings-warning">
-                        Experimental: the highlight can drift, and turning it on may move the page to match
-                        the audio while you read.
-                      </small>
-                    </span>
-                    <button
-                      type="button"
-                      className="settings-switch"
-                      role="switch"
-                      aria-checked={followSyncEnabled}
-                      aria-label="Follow the narration"
-                      onClick={toggleFollowSyncEnabled}
-                    >
-                      <span aria-hidden="true" />
-                    </button>
-                  </div>
-                  {followSyncEnabled ? (
-                    <div className="follow-aggressiveness">
-                      <div className="follow-aggressiveness-heading">
-                        <label htmlFor="follow-aggressiveness">Aggressiveness</label>
-                        <output htmlFor="follow-aggressiveness" aria-live="polite">
-                          {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                        </output>
-                      </div>
-                      <input
-                        id="follow-aggressiveness"
-                        type="range"
-                        min="0"
-                        max="2"
-                        step="1"
-                        value={followAggressiveness}
-                        style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-                        aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                        onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-                      />
-                      <div className="follow-aggressiveness-labels" aria-hidden="true">
-                        <span>Current timing</span>
-                        <span>A little ahead</span>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </section>
+            <ExtrasSettings
+              followAggressiveness={followAggressiveness}
+              followSyncEnabled={followSyncEnabled}
+              gamesEnabled={gamesEnabled}
+              readalongEnabled={readalongEnabled}
+              sentenceFollowAvailable={sentenceFollowAvailable}
+              toggleFollowSyncEnabled={toggleFollowSyncEnabled}
+              toggleGamesEnabled={toggleGamesEnabled}
+              toggleReadalongEnabled={toggleReadalongEnabled}
+              updateFollowAggressiveness={updateFollowAggressiveness}
+            />
 
             {sharedProgressAvailable ? (
               <ProgressSharingCard
@@ -9247,192 +8461,44 @@ function MainApp({
               />
             ) : null}
 
-            <section className="settings-card">
-              <span className="section-label"><FolderOpen size={13} /> On this device</span>
-              <button type="button" className="download-btn" disabled={deviceImport !== null} onClick={() => void importFromDevice()}>
-                {deviceImport ? <LoaderCircle size={13} className="spin-icon" /> : <Plus size={13} />}
-                <span>{deviceImport ? `Importing ${deviceImport.completed}/${deviceImport.total || "…"}` : "Add audiobook files"}</span>
-              </button>
-              {getDeviceBooks().length ? (
-                <div className="settings-downloads">
-                  {getDeviceBooks().map((book) => (
-                    <div key={book.id} className="settings-download-row">
-                      <strong>{book.title}</strong>
-                      <button type="button" className="download-btn" onClick={() => void deleteDeviceBook(book)}>
-                        <Trash2 size={13} /><span>Remove</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
-              {downloadStatus ? <p className="settings-hint">{downloadStatus.message}</p> : null}
-            </section>
+            <DeviceLibrarySettings
+              deleteDeviceBook={deleteDeviceBook}
+              deviceImport={deviceImport}
+              downloadStatus={downloadStatus}
+              importFromDevice={importFromDevice}
+            />
 
-            {!localMode ? <section className="settings-card">
-              <span className="section-label"><Download size={13} /> Server downloads</span>
-              {demoMode ? (
-                <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
-              ) : (
-                <>
-                  {deviceDownloadQueue.length > 0 ? (
-                    <div className="settings-downloads" aria-label="Download queue">
-                      {deviceDownloadQueue.map((activity, index) => {
-                        const title = activity.title || "Audiobook";
-                        return (
-                          <div key={activity.bookId} className="settings-download-row">
-                            <strong>{title}</strong>
-                            <span className="download-status">
-                              {activity.state === "queued"
-                                ? `Queued${index > 0 ? ` · ${index + 1}` : ""}`
-                                : activity.fraction === null
-                                  ? "Starting…"
-                                  : `${Math.round(activity.fraction * 100)}%`}
-                            </span>
-                            <button
-                              type="button"
-                              className="download-btn"
-                              onClick={() => void cancelOfflineDownload({ id: activity.bookId, title })}
-                              aria-label={`Cancel download of ${title}`}
-                            >
-                              <X size={13} />
-                              <span>Cancel</span>
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                  {books.some((book) => downloadedBookIds.has(book.id) && !book.deviceBookId) ? (
-                    <div className="settings-downloads">
-                      {books
-                        .filter((book) => downloadedBookIds.has(book.id) && !book.deviceBookId)
-                        .map((book) => (
-                          <div key={book.id} className="settings-download-row">
-                            <strong>{book.title}</strong>
-                            <button
-                              type="button"
-                              className="download-btn"
-                              onClick={() => void removeOfflineDownload(book)}
-                              aria-label={`Remove downloaded copy of ${book.title}`}
-                            >
-                              <Trash2 size={13} />
-                              <span>Remove</span>
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  ) : deviceDownloadQueue.length === 0 ? (
-                    <p className="settings-hint">No books are downloaded for offline listening yet.</p>
-                  ) : null}
-                </>
-              )}
-            </section> : null}
+            {!localMode ? <ServerDownloadSettings
+              books={books}
+              cancelOfflineDownload={cancelOfflineDownload}
+              demoMode={demoMode}
+              deviceDownloadQueue={deviceDownloadQueue}
+              downloadedBookIds={downloadedBookIds}
+              removeOfflineDownload={removeOfflineDownload}
+            /> : null}
 
-            <section className="settings-card">
-              <span className="section-label"><Network size={13} /> Connection</span>
-              <div className="settings-kv">
-                <span>Server</span>
-                <span className="settings-value">
-                  {localMode ? "Not connected · on-device only" : demoMode ? "On-device demo · no network connection" : `${isOperaLibre ? "OperaLibre" : "Jellyfin"} · ${getServerUrl()}`}
-                </span>
-              </div>
-              <div className="settings-kv">
-                <span>Signed in as</span>
-                <span className="settings-value">
-                  {currentUser.username} · {localMode ? "No account required" : demoMode ? "Demo reader" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"}
-                </span>
-              </div>
-              {!demoMode && !localMode ? <div className="server-aliases">
-                <span className="settings-label">Address aliases</span>
-                <p className="settings-hint">
-                  Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
-                </p>
-                {[
-                  { id: "primary", name: "Original address", url: getServerIdentityUrl() },
-                  ...serverAliases
-                ].map((alias) => {
-                  const active = alias.url === getServerUrl();
-                  return (
-                    <div className="server-alias-row" key={alias.id}>
-                      <span>
-                        <strong>{alias.name}</strong>
-                        <small>{alias.url}</small>
-                      </span>
-                      <div>
-                        <button
-                          type="button"
-                          className="download-btn"
-                          disabled={active || switchingAliasId !== null}
-                          onClick={() => void switchToAlias(alias)}
-                        >
-                          {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : "Use"}
-                        </button>
-                        {alias.id !== "primary" ? (
-                          <button
-                            type="button"
-                            className="icon-btn"
-                            aria-label={`Remove ${alias.name} alias`}
-                            onClick={() => {
-                              removeServerAlias(alias.id);
-                              setServerAliases(getServerAliases());
-                            }}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
-                <form className="server-alias-form" onSubmit={saveAlias}>
-                  <input
-                    value={aliasName}
-                    onChange={(event) => setAliasName(event.currentTarget.value)}
-                    placeholder="Name (Tailscale)"
-                    aria-label="Alias name"
-                    required
-                  />
-                  <input
-                    value={aliasUrl}
-                    onChange={(event) => setAliasUrl(event.currentTarget.value)}
-                    placeholder="http://100.x.x.x:4920"
-                    aria-label="Alias server address"
-                    inputMode="url"
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    required
-                  />
-                  <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
-                </form>
-                {aliasError ? <p className="auth-error">{aliasError}</p> : null}
-              </div> : null}
-              <div className="settings-actions">
-                {localMode ? (
-                  <button type="button" className="download-btn connection-primary" onClick={() => {
-                    pausePlayback(audioRef.current);
-                    onConnectServer();
-                  }}>
-                    <Network size={13} />
-                    <span>Connect a server</span>
-                  </button>
-                ) : null}
-                {capabilities.administration ? (
-                  <>
-                    <button type="button" className="download-btn" onClick={() => setUploadModalOpen(true)}>
-                      <Upload size={13} />
-                      <span>Upload audiobook</span>
-                    </button>
-                  </>
-                ) : null}
-                <button type="button" className="download-btn" onClick={() => {
-                  pausePlayback(audioRef.current);
-                  void onLogout();
-                }}>
-                  <LogOut size={13} />
-                  <span>{localMode ? "Leave local mode" : "Sign out"}</span>
-                </button>
-              </div>
-            </section>
+            <ConnectionSettings
+              aliasError={aliasError}
+              aliasName={aliasName}
+              aliasUrl={aliasUrl}
+              audioRef={audioRef}
+              capabilities={capabilities}
+              currentUser={currentUser}
+              demoMode={demoMode}
+              isOperaLibre={isOperaLibre}
+              localMode={localMode}
+              onConnectServer={onConnectServer}
+              onLogout={onLogout}
+              pausePlayback={pausePlayback}
+              saveAlias={saveAlias}
+              serverAliases={serverAliases}
+              setAliasName={setAliasName}
+              setAliasUrl={setAliasUrl}
+              setServerAliases={setServerAliases}
+              setUploadModalOpen={setUploadModalOpen}
+              switchToAlias={switchToAlias}
+              switchingAliasId={switchingAliasId}
+            />
             </div>
           </div>
         </section>
