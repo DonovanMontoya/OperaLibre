@@ -8,9 +8,7 @@ import {
   playbackIntentBelongsToBook
 } from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
-import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
-import { Dialog } from "@capacitor/dialog";
-import { createAlignmentStatusUpdater, readAlignmentPreference, writeAlignmentPreference } from "./alignmentPreference";
+import { Capacitor } from "@capacitor/core";
 import {
   AlertCircle,
   ArrowDown,
@@ -69,24 +67,16 @@ import {
 import {
   READ_ALONG_MODE_LABELS,
   companionKindLabel,
-  describeCompanion,
-  groupCompanions,
-  hasExtras,
-  readAlongMode,
-  readerStorageKey,
-  syncMapPrecision
+  describeCompanion
 } from "./readalong";
-import { createScreenAwakeController } from "./screenAwake";
 import {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
   type CSSProperties
 } from "react";
-import { syncMapCacheReducer } from "./syncMapCache";
 import { createPortal, flushSync } from "react-dom";
 import {
   adoptableServerProgress,
@@ -136,15 +126,9 @@ import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   bookDownloadUrl,
   clearServerUrl,
-  generateSyncMap,
-  getAlignmentStatus,
   getAuthStatus,
   getBooks,
-  getJob,
-  getSyncMap,
   getLibationBooks,
-  getLibationAccess,
-  getLibationStatus,
   getMe,
   getFreshProgress,
   getProgress,
@@ -159,15 +143,9 @@ import {
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
-  liberateAllLibationBooks,
-  liberateLibationBook,
-  listLibationRequests,
-  listJobs,
   logout as apiLogout,
   mediaUrl,
-  readalongUrl,
   reconnectUsingServerAliases,
-  requestLibationBook,
   playbackReportingSession,
   rescanLibrary,
   refreshLibroAccount,
@@ -176,10 +154,8 @@ import {
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
-  setUnauthorizedHandler,
-  syncLibationLibrary
+  setUnauthorizedHandler
 } from "./api";
-import { hasPreciseSync, syncConfirmationMessage } from "./syncGeneration";
 import {
   cacheLibrary,
   cacheOfflineUser,
@@ -191,9 +167,6 @@ import {
   getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
-  getOfflineCompanionUrl,
-  getOfflineSyncMap,
-  saveOfflineSyncMap,
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
@@ -227,22 +200,10 @@ import {
 import { NativeForegroundSyncGate } from "./nativeAudioState";
 import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
-  acknowledgeCarSessions,
-  addCarPlayListener,
-  beginCarLibrarySession,
   clearCarLibrary,
   carPlaybackOwnsEngine,
-  getCarPlayState,
-  releaseCarPlaybackOwnership,
-  setCarPlaybackOwner,
-  supportsCarPlay,
-  syncCarLibrary
+  setCarPlaybackOwner
 } from "./carPlay";
-import {
-  buildCarLibrarySnapshot,
-  carSessionIsWorthSaving,
-  type CarPlaybackSession
-} from "./carLibrary.ts";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
   canResolveStartupNavigation,
@@ -274,9 +235,8 @@ import {
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
-import type { LibroAccountSummary } from "./types";
 import { LibroCatalog } from "./LibroCatalog";
-import { supportsLibroDevice, refreshLibroDevice } from "./libroDevice";
+import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { ProgressSharingCard } from "./ProgressSharing";
 import {
@@ -288,7 +248,6 @@ import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import {
   FOLLOW_AGGRESSIVENESS_LABELS,
   FOLLOW_AGGRESSIVENESS_LEAD_SECONDS,
-  writeReadalongEnabled,
   type FollowAggressiveness
 } from "./readalongPreferences";
 import { readerStatusLabel } from "./sharedProgress";
@@ -296,11 +255,6 @@ import type {
   AuthUser,
   Book,
   Chapter,
-  CompanionFile,
-  JobStatus,
-  LibationBook,
-  LibationDownloadRequest,
-  LibationStatus,
   Progress,
   Track
 } from "./types";
@@ -329,7 +283,6 @@ import {
   errorMessage,
   formatDurationLabel,
   formatElapsed,
-  formatLibationMessage,
   formatMinutes,
   formatTime,
   trackOffsetSeconds
@@ -339,8 +292,7 @@ import {
   jobDetailLines,
   jobStateLabel,
   jobSummary,
-  jobTitle,
-  reconcileLibationJobs
+  jobTitle
 } from "./jobLabels";
 import { PULL_REFRESH_THRESHOLD, usePullToRefresh } from "./usePullToRefresh";
 import { EpubReadalong } from "./EpubReadalong";
@@ -374,23 +326,13 @@ import { useUploads } from "./useUploads";
 import { useMetadataEditor } from "./useMetadataEditor";
 import { useSleepTimer } from "./useSleepTimer";
 import { useShelf } from "./useShelf";
+import { usePurchases } from "./usePurchases";
+import { useCarPlay } from "./useCarPlay";
+import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
+import { GALLERY_COMPANION_ID, useReadalong } from "./useReadalong";
 
-const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
-const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
-type PendingSeek = { trackId: string; positionSeconds: number };
-type QueuedProgressSave = {
-  bookId: string;
-  progress: Progress;
-  isPaused: boolean;
-  intentionalSeekGeneration: number;
-  // Whether the seek behind that generation also went backwards far enough to
-  // need the server's near-zero reset guard lifted (see
-  // shouldFlagIntentionalRegression). Decided when the save is queued, from
-  // the seek's own target rather than from whatever the clock reads later.
-  intentionalRegression: boolean;
-};
 
 function audioSourceMatches(audio: HTMLAudioElement, source: string) {
   if (!source) return false;
@@ -423,8 +365,6 @@ function canPreviewCompanion(extension: string) {
   return lower === "epub" || lower === "pdf" || lower === "txt" || lower === "html" || lower === "htm";
 }
 
-/** Pseudo companion id for the picture gallery tab. */
-const GALLERY_COMPANION_ID = "__gallery__";
 
 type AuthState =
   | { phase: "loading" }
@@ -983,65 +923,11 @@ function MainApp({
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
-  const [libroRefreshKey, setLibroRefreshKey] = useState(0);
-  const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
-  const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
-  const libroAvailable = (!localMode && isOperaLibre) || supportsLibroDevice();
   const lastPurchaseSource = useRef<"audible" | "libro" | "all">("all");
   useEffect(() => {
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
   }, [librarySource]);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const [readalongOpen, setReadalongOpen] = useState(false);
-  // The native reader stays up while UIKit brings the tab bar back.
-  const [readerClosing, setReaderClosing] = useState(false);
-  const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
-  const readalongPanelRef = useRef<HTMLElement | null>(null);
-  const alignmentScope = getServerStorageKey();
-  const cachedAlignmentStatus = useMemo(() => readAlignmentPreference(alignmentScope), [alignmentScope]);
-  const [alignmentState, setAlignmentState] = useState(() => ({ scope: alignmentScope, status: cachedAlignmentStatus }));
-  const alignmentStatus = alignmentState.scope === alignmentScope ? alignmentState.status : cachedAlignmentStatus;
-  const alignmentStatusUpdater = useMemo(() => createAlignmentStatusUpdater((status) => {
-    writeAlignmentPreference(alignmentScope, status);
-    setAlignmentState({ scope: alignmentScope, status });
-  }), [alignmentScope]);
-  const updateAlignmentStatus = alignmentStatusUpdater.update;
-  const sentenceFollowAvailable = capabilities.sentenceAlignment && alignmentStatus?.enabled === true;
-  const narrationFollowActive = readalongEnabled && followSyncEnabled && sentenceFollowAvailable;
-  const [{ maps: syncMaps, revision: syncMapRevision }, dispatchSyncMap] = useReducer(syncMapCacheReducer, { maps: {}, revision: 0 });
-  const [syncJob, setSyncJob] = useState<JobStatus | null>(null);
-  const [syncJobError, setSyncJobError] = useState<string | null>(null);
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
-  const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
-  const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
-  const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
-  const libationDownloadRequestsRef = useRef<LibationDownloadRequest[]>([]);
-  const libationRequestsLoadedRef = useRef(false);
-  const [libationLoading, setLibationLoading] = useState(false);
-  const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
-  const [libationError, setLibationError] = useState<string | null>(null);
-  const [libationRequests, setLibationRequests] = useState<Set<string>>(new Set());
-  const [libationAllPending, setLibationAllPending] = useState(false);
-  const [libationJobs, setLibationJobs] = useState<JobStatus[]>([]);
-  const libationJobsRef = useRef<JobStatus[]>([]);
-  const libationJobsGenerationRef = useRef(0);
-  const [libationFinalizingAsins, setLibationFinalizingAsins] = useState<Set<string>>(new Set());
-  const [libationFinalizationFailures, setLibationFinalizationFailures] = useState<Set<string>>(new Set());
-  const libationFinalizationStartedRef = useRef<Map<string, number>>(new Map());
-  const [libationRefreshPending, setLibationRefreshPending] = useState(false);
-  const [purchaseAccountFilter, setPurchaseAccountFilter] = useState("all");
-  const [libroAccounts, setLibroAccounts] = useState<LibroAccountSummary[] | null>(null);
-  useEffect(() => { setPurchaseAccountFilter("all"); setLibroAccounts(null); }, [libroOnDevice, currentUser.id]);
-  const [audibleAccountFilter, setAudibleAccountFilter] = useState("all");
-  const libationMessage = formatLibationMessage(libationStatus);
-  const brokenLibationAccounts = libationStatus?.accounts.filter((account) => !account.authenticated) ?? [];
-  const pendingLibationJobs = libationJobs.filter(isPendingJob);
-  const displayedLibationJobs = pendingLibationJobs.length > 0 ? pendingLibationJobs : libationJobs.slice(0, 1);
-  const refreshLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-sync");
-  const downloadAllLibationJob = pendingLibationJobs.find((job) => job.kind === "libation-liberate-all");
-  const isRefreshingAudible = libationRefreshPending || !!refreshLibationJob;
-  const canBrowseLibation = capabilities.imports && (currentUser.isAdmin || (native && !!libationStatus?.enabled));
-  const showAudiblePurchases = librarySource === "audible" || (librarySource === "all" && canBrowseLibation && !purchaseAccountFilter.startsWith("libro:"));
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const {
@@ -1179,17 +1065,6 @@ function MainApp({
     native,
     playbackFold
   });
-
-  /**
-   * The book CarPlay started on the shared native player, if any.
-   *
-   * While it is set the app leaves the player alone: the driver's book is
-   * playing through the same engine, and attaching this app's player to it
-   * would load another book over theirs.
-   */
-  const [carPlaybackBookId, setCarPlaybackBookId] = useState<string | null>(null);
-  /** When the app last claimed the player back from the car. */
-  const carTakeoverAtRef = useRef(0);
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<DeviceNotice | null>(null);
@@ -1212,76 +1087,6 @@ function MainApp({
     });
   };
   const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
-
-  const audibleAccountLabels = useMemo(() => {
-    const labels = new Map<string, string>();
-    for (const account of libationStatus?.accounts ?? []) {
-      if (account.name?.trim()) labels.set(account.id, account.name.trim());
-    }
-    for (const book of libationBooks) {
-      if (!labels.has(book.profileId)) labels.set(book.profileId, book.profileName);
-    }
-    return labels;
-  }, [libationBooks, libationStatus?.accounts]);
-
-  const visibleLibationBooks = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    const selectedAccount = librarySource === "all" ? (purchaseAccountFilter.startsWith("audible:") ? purchaseAccountFilter.slice(8) : "all") : audibleAccountFilter;
-    const accountBooks = selectedAccount === "all"
-      ? libationBooks
-      : libationBooks.filter((book) => book.profileId === selectedAccount);
-    const filtered = query
-      ? accountBooks.filter((book) =>
-          [book.title, book.subtitle, book.authors, book.narrators]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(query))
-        )
-      : accountBooks;
-
-    const sorted = [...filtered].sort((a, b) => {
-      if (sortMode === "account") {
-        const aLabel = audibleAccountLabels.get(a.profileId) ?? a.profileName;
-        const bLabel = audibleAccountLabels.get(b.profileId) ?? b.profileName;
-        return aLabel.localeCompare(bLabel) || a.title.localeCompare(b.title);
-      }
-      if (sortMode === "author") {
-        return (a.authors ?? "").localeCompare(b.authors ?? "") || a.title.localeCompare(b.title);
-      }
-      if (sortMode === "duration") {
-        return (b.lengthMinutes ?? 0) - (a.lengthMinutes ?? 0);
-      }
-      return a.title.localeCompare(b.title);
-    });
-    return sortReversed ? sorted.reverse() : sorted;
-  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed, librarySource, purchaseAccountFilter]);
-  const audibleProfiles = useMemo(() => {
-    const profiles = new Map<string, string>();
-    for (const book of libationBooks) {
-      profiles.set(book.profileId, audibleAccountLabels.get(book.profileId) ?? book.profileName);
-    }
-    return [...profiles].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [audibleAccountLabels, libationBooks]);
-
-  const allAudibleAccounts = useMemo(() => {
-    const accounts = new Map(audibleProfiles.map(account => [account.id, account.name]));
-    for (const account of libationStatus?.accounts ?? []) accounts.set(account.id, account.name || account.accountId);
-    return [...accounts].map(([id, name]) => ({ id, name }));
-  }, [audibleProfiles, libationStatus]);
-  useEffect(() => {
-    if (purchaseAccountFilter.startsWith("libro:") && libroAccounts && !libroAccounts.some(account => `libro:${account.email}` === purchaseAccountFilter)) setPurchaseAccountFilter("all");
-    if (purchaseAccountFilter.startsWith("audible:") && libationStatus && !allAudibleAccounts.some(account => `audible:${account.id}` === purchaseAccountFilter)) setPurchaseAccountFilter("all");
-  }, [purchaseAccountFilter, libroAccounts, libationStatus, allAudibleAccounts]);
-
-  // Accounts come and go in Libation, so a filter pinned to a departed account
-  // would quietly show an empty library under a select that reads "All accounts".
-  useEffect(() => {
-    if (audibleAccountFilter === "all") return;
-    const known = (libationStatus?.accounts ?? []).some((account) => account.id === audibleAccountFilter)
-      || audibleProfiles.some((profile) => profile.id === audibleAccountFilter);
-    if (!known && (libationStatus || audibleProfiles.length > 0)) {
-      setAudibleAccountFilter("all");
-    }
-  }, [audibleAccountFilter, audibleProfiles, libationStatus]);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -1427,6 +1232,28 @@ function MainApp({
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
+  const {
+    adoptCarPlaybackState,
+    carEventHandlersRef,
+    carPlaybackBook,
+    carPlaybackBookId,
+    setCarPlaybackBookId,
+    takeOverFromCar
+  } = useCarPlay({
+    acknowledgedSeekGenerationRef,
+    bookGains,
+    bookIdsKey,
+    books,
+    booksRef,
+    currentUser,
+    downloadedBookIds,
+    flushProgressSaveQueue,
+    progressMutationVersion,
+    queuedProgressSaves,
+    speed,
+    updateBookProgress
+  });
+
   booksRef.current = books;
   const playbackTrackIdsKey = useMemo(
     () => playbackBook?.tracks.map((track) => track.id).join("|") ?? "",
@@ -1582,117 +1409,6 @@ function MainApp({
 
   const selectedCanBoost = bookCanBoost(selectedBook);
   const playbackCanBoost = bookCanBoost(playbackBook);
-  const selectedCompanionGroups = useMemo(
-    () => (selectedBook ? groupCompanions(selectedBook) : { text: [], supplements: [], images: [] }),
-    [selectedBook]
-  );
-  const selectedCompanionList = useMemo(
-    () => [...selectedCompanionGroups.text, ...selectedCompanionGroups.supplements],
-    [selectedCompanionGroups]
-  );
-  const galleryAvailable = selectedCompanionGroups.images.length > 0;
-  const activeCompanion =
-    activeCompanionId === GALLERY_COMPANION_ID
-      ? null
-      : selectedCompanionList.find((companion) => companion.id === activeCompanionId)
-        ?? selectedCompanionList.find((companion) => companion.id === selectedBook?.readingFile?.id)
-        ?? selectedCompanionList[0]
-        ?? null;
-  const showGallery = activeCompanionId === GALLERY_COMPANION_ID || (!activeCompanion && galleryAvailable);
-  // The companion URL carries the media token. Until the token is known the
-  // URL would change a moment later and the reader would open the EPUB
-  // twice, so the reader waits for it.
-  const companionUrlReady = native || !isOperaLibre || !!getStoredMediaToken();
-  const activeCompanionUrl = activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null;
-  const companionFilesKey = JSON.stringify([...selectedCompanionList, ...selectedCompanionGroups.images].map((file) => [file.id, file.extension]));
-  const companionScope = `${getServerStorageKey()}:${currentUser.id}:${selectedBook?.id ?? ""}:${companionFilesKey}`;
-  const [localCompanions, setLocalCompanions] = useState<{ scope: string; urls: Record<string, string | null> } | null>(null);
-  useEffect(() => {
-    if (!native || !readalongOpen || !selectedBook) return;
-    let cancelled = false;
-    const resolved: string[] = [];
-    void Promise.all([...selectedCompanionList, ...selectedCompanionGroups.images].map(async (file) => {
-      const url = await getOfflineCompanionUrl(selectedBook, file).catch(() => null);
-      if (url) resolved.push(url);
-      return [file.id, url] as const;
-    })).then((entries) => {
-      if (cancelled) resolved.forEach(releaseOfflineMediaUrl);
-      else setLocalCompanions({ scope: companionScope, urls: Object.fromEntries(entries) });
-    });
-    return () => {
-      cancelled = true;
-      resolved.forEach(releaseOfflineMediaUrl);
-    };
-    // Stable file identities avoid filesystem work on playback progress updates.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [native, readalongOpen, companionScope, companionFilesKey]);
-  const companionPreviewUrl = (file: CompanionFile) => {
-    if (native && localCompanions?.scope !== companionScope) return undefined;
-    return (localCompanions?.scope === companionScope ? localCompanions.urls[file.id] : null) ?? readalongUrl(file.url);
-  };
-  const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
-  const selectedSyncMap = selectedBook ? syncMaps[selectedBook.id] ?? null : null;
-  // Only a forced alignment drives the marker. A map that is not one — an
-  // interpolated map a device cached before those were dropped — is left out
-  // entirely, so the reader falls back to chapter sync instead of following
-  // timings that do not match the narration.
-  const selectedSyncFragments =
-    isViewingPlayingBook && selectedSyncMap && syncMapPrecision(selectedSyncMap) === "sentence"
-      ? selectedSyncMap.fragments
-      : null;
-  const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
-  const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
-  const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
-  // The web now-playing view hides the details block, so while the selected
-  // book is the one playing the reader moves into the playback card instead
-  // of vanishing the moment Play is pressed.
-  // Decided without waiting for the track to resolve: mounting the reader in
-  // the hidden details block first and moving it here a moment later would
-  // open the EPUB twice.
-  const showReaderInNowView =
-    !native
-    && nativePlayerView === "now"
-    && isViewingPlayingBook
-    && readalongOpen
-    && (!!activeCompanion || showGallery);
-  const selectedSyncPrecise = hasPreciseSync(selectedBook);
-  const canGenerateSync =
-    currentUser.isAdmin &&
-    !!alignmentStatus?.enabled &&
-    selectedBook?.readingFile?.extension === "epub";
-  const readerScope = `${getServerStorageKey()}.${currentUser.id}`;
-
-  const readerOpenedThisSessionRef = useRef<Set<string>>(new Set());
-
-  function writeReaderOpenFlag(bookId: string, open: boolean) {
-    try {
-      window.localStorage.setItem(readerStorageKey(readerScope, bookId, "open"), open ? "1" : "0");
-    } catch {
-      // ignore storage failures
-    }
-  }
-
-  /** Opens the reader for a book and brings it on screen, on every layout. */
-  function openReadalong(book: Book, companionId: string | null = null) {
-    setSelectedBookId(book.id);
-    setActiveCompanionId(companionId);
-    setReadalongOpen(true);
-    readerOpenedThisSessionRef.current.add(book.id);
-    writeReaderOpenFlag(book.id, true);
-    if (native) {
-      // The native ebook reader covers the whole screen, so whatever is
-      // underneath is left alone; closing returns the listener to it. Extras
-      // (a PDF, pictures) still open inline on the details page.
-      if (!companionId && book.readingFile?.extension === "epub") {
-        return;
-      }
-      setNativeTab("shelf");
-      setNativePlayerView("details");
-    }
-    window.setTimeout(() => {
-      readalongPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 120);
-  }
 
   function closeReadalong() {
     // Removing the full-screen reader before the tab bar returns shows the
@@ -1705,50 +1421,6 @@ function MainApp({
     if (selectedBook) {
       writeReaderOpenFlag(selectedBook.id, false);
     }
-  }
-
-  /** Forget a book's loaded sync map so the next look at the reader refetches it. */
-  async function startSyncGeneration(book: Book) {
-    setSyncJobError(null);
-    setSyncNotice(null);
-    try {
-      const created = await generateSyncMap(book.id);
-      setSyncJob({
-        id: created.jobId,
-        kind: "sync-generate",
-        targetId: book.id,
-        status: "queued",
-        startedAt: "",
-        finishedAt: null,
-        exitCode: null,
-        output: "",
-        error: null
-      });
-    } catch (error) {
-      setSyncJobError(errorMessage(error, "Could not start readalong sync generation."));
-    }
-  }
-
-  async function requestSyncGeneration(book: Book) {
-    if (!hasPreciseSync(book)) {
-      await startSyncGeneration(book);
-      return;
-    }
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const { value } = await Dialog.confirm({
-          title: "Re-sync this book?",
-          message: syncConfirmationMessage(book),
-          okButtonTitle: "Start re-sync",
-          cancelButtonTitle: "Not now"
-        });
-        if (value) await startSyncGeneration(book);
-      } catch (error) {
-        setSyncJobError(errorMessage(error, "Could not open the re-sync confirmation."));
-      }
-      return;
-    }
-    setSyncConfirmationBook(book);
   }
 
   const loadBooks = useCallback(async () => {
@@ -1956,6 +1628,119 @@ function MainApp({
     // created this callback cannot hand them anything stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id, isOperaLibre, localMode, native]);
+  const {
+    activeCompanion,
+    activeCompanionIsBook,
+    activeCompanionUrl,
+    canGenerateSync,
+    companionPreviewUrl,
+    galleryAvailable,
+    narrationFollowActive,
+    openReadalong,
+    readalongAvailable,
+    readalongOpen,
+    readalongPanelRef,
+    readerClosing,
+    readerScope,
+    requestSyncGeneration,
+    selectedCompanionGroups,
+    selectedCompanionList,
+    selectedHasExtras,
+    selectedReadAlongMode,
+    selectedSyncFragments,
+    selectedSyncPrecise,
+    sentenceFollowAvailable,
+    setActiveCompanionId,
+    setReadalongOpen,
+    setReaderClosing,
+    showGallery,
+    showReaderInNowView,
+    startSyncGeneration,
+    syncJob,
+    syncJobError,
+    syncNotice,
+    toggleReadalongEnabled,
+    updateAlignmentStatus,
+    writeReaderOpenFlag
+  } = useReadalong({
+    capabilities,
+    currentUser,
+    demoMode,
+    followSyncEnabled,
+    isOperaLibre,
+    isViewingPlayingBook,
+    loadBooks,
+    localMode,
+    native,
+    nativePlayerView,
+    readalongEnabled,
+    selectedBook,
+    selectedBookId,
+    setNativePlayerView,
+    setNativeTab,
+    setReadalongEnabled,
+    setSelectedBookId,
+    setSyncConfirmationBook
+  });
+
+  const {
+    allAudibleAccounts,
+    audibleAccountFilter,
+    audibleAccountLabels,
+    brokenLibationAccounts,
+    canBrowseLibation,
+    displayedLibationJobs,
+    downloadAllLibationJob,
+    isRefreshingAudible,
+    libationAllPending,
+    libationBooks,
+    libationBooksLoaded,
+    libationBooksRef,
+    libationDownloadRequests,
+    libationError,
+    libationFinalizationFailures,
+    libationFinalizingAsins,
+    libationJobs,
+    libationLoading,
+    libationMessage,
+    libationRefreshPending,
+    libationRequests,
+    libationStatus,
+    libroAccounts,
+    libroAvailable,
+    libroOnDevice,
+    libroRefreshKey,
+    loadLibationBooks,
+    pendingLibationJobs,
+    purchaseAccountFilter,
+    refreshLibationJob,
+    setAudibleAccountFilter,
+    setLibationBooks,
+    setLibationBooksLoaded,
+    setLibroAccounts,
+    setLibroDestination,
+    setLibroRefreshKey,
+    setPurchaseAccountFilter,
+    showAudiblePurchases,
+    startAllLiberation,
+    startLibationSync,
+    startLiberation,
+    visibleLibationBooks
+  } = usePurchases({
+    capabilities,
+    currentUser,
+    demoMode,
+    isOperaLibre,
+    librarySource,
+    loadBooks,
+    localMode,
+    native,
+    onCurrentUserChanged,
+    searchQuery,
+    sortMode,
+    sortReversed
+  });
+
   loadBooksRef.current = loadBooks;
 
   useEffect(
@@ -2008,85 +1793,6 @@ function MainApp({
     // surviving server book even though its id stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloadScanKey]);
-
-  /**
-   * What the car needs to know about, reduced to the parts it acts on.
-   *
-   * Positions are bucketed to the minute on purpose: a snapshot costs a
-   * filesystem lookup per downloaded track, and rebuilding it every few seconds
-   * while a book plays would keep the disk busy for a resume point the car
-   * refines from the player's own checkpoint anyway.
-   */
-  const carLibrarySignature = useMemo(() => {
-    if (!supportsCarPlay()) return "";
-    return books
-      .map((book) => [
-        book.id,
-        Math.floor((book.progress?.bookPositionSeconds ?? 0) / 60),
-        book.progress?.status ?? "",
-        downloadedBookIds.has(book.id) ? "1" : "0",
-        book.tracks.length,
-        bookGains[book.id] ?? BOOK_GAIN_DEFAULT
-      ].join("~"))
-      .join("|");
-  }, [books, bookGains, downloadedBookIds]);
-  const carPlaybackBook = carPlaybackBookId
-    ? books.find((book) => book.id === carPlaybackBookId) ?? null
-    : null;
-
-  useEffect(() => {
-    beginCarLibrarySession(`${getServerStorageKey()}:${currentUser.id}`);
-  }, [currentUser.id]);
-
-  useEffect(() => {
-    if (!supportsCarPlay() || carLibrarySignature === "") return;
-    let active = true;
-    // Debounced: a library load, its progress fetch and the download scan all
-    // land within a moment of each other, and the car only needs the result.
-    const timer = window.setTimeout(() => {
-      void buildCarLibrarySnapshot({
-        scopePrefix: `${getServerStorageKey()}:${currentUser.id}`,
-        playbackRate: speed,
-        books,
-        downloadedBookIds,
-        bookGains,
-        coverUrl: async (book) => {
-          const local = await getOfflineCoverUrl(book).catch(() => null);
-          return local ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
-        },
-        resolveTrackUrl: async (book, track) => {
-          // Only a book with local files is worth a disk lookup; everything
-          // else streams, and the car will say so with a cloud marker.
-          const local = book.source === "device"
-            || book.deviceBookId
-            || downloadedBookIds.has(book.id)
-            ? await getOfflineTrackUrl(book, track).catch(() => null)
-            : null;
-          return local ?? (track.streamUrl ? mediaUrl(track.streamUrl) : null);
-        }
-      })
-        .then((snapshot) => {
-          if (active) return syncCarLibrary(snapshot);
-        })
-        .catch(() => undefined);
-    }, 1_500);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-    // Rebuilt from the signature rather than the book objects, which are
-    // replaced on every progress save.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carLibrarySignature, currentUser.id, speed]);
-
-  // Installed once per library, but the work they do reads the live player —
-  // which book, which track, where its clock is. Going through a ref keeps a
-  // listener from persisting progress against the track that was open when it
-  // was registered.
-  const carEventHandlersRef = useRef({
-    playbackStarted: (_bookId: string) => {},
-    sync: () => {}
-  });
   carEventHandlersRef.current = {
     playbackStarted: (bookId: string) => {
       // The driver started a book on the shared player. Claim it before any
@@ -2101,49 +1807,6 @@ function MainApp({
       void adoptCarPlaybackState();
     }
   };
-
-  useEffect(() => {
-    if (!supportsCarPlay()) return;
-    let active = true;
-    const handles: Array<PluginListenerHandle | null> = [];
-    const sync = () => {
-      if (active) carEventHandlersRef.current.sync();
-    };
-    void addCarPlayListener("carPlaybackStarted", (event) => {
-      if (!active) return;
-      carEventHandlersRef.current.playbackStarted(event.bookId);
-    }).then((handle) => {
-      if (!active) void handle?.remove();
-      else handles.push(handle);
-    });
-    void addCarPlayListener("carPlaybackEnded", () => {
-      if (!active) return;
-      setCarPlaybackOwner(null);
-      setCarPlaybackBookId(null);
-      sync();
-    }).then((handle) => {
-      if (!active) void handle?.remove();
-      else handles.push(handle);
-    });
-    void addCarPlayListener("carDisconnected", sync).then((handle) => {
-      if (!active) void handle?.remove();
-      else handles.push(handle);
-    });
-    // The listeners above only fire while JS is running. Everything that
-    // happened during a drive is collected here instead, whenever the app
-    // comes back to the foreground.
-    document.addEventListener("visibilitychange", sync);
-    sync();
-    return () => {
-      active = false;
-      document.removeEventListener("visibilitychange", sync);
-      for (const handle of handles) void handle?.remove();
-    };
-    // Keyed on the library rather than on nothing: a session for a book the app
-    // had not loaded yet is left pending, and this re-runs — and saves it — once
-    // that book is on the shelf.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookIdsKey, currentUser.id]);
 
   // Reattach the UI to persisted native jobs after a relaunch. Enqueueing is
   // idempotent, so this also supplies file metadata needed to recover jobs
@@ -2287,508 +1950,7 @@ function MainApp({
   useEffect(() => {
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
   }, [currentUser.id, playbackBookId]);
-
-  // A book the listener was reading along with reopens its reader when it is
-  // selected again; a book with nothing to read closes it.
-  const selectedBookIdForReader = selectedBook?.id ?? null;
-  const ebookReaderOpen = readalongOpen && activeCompanion?.extension === "epub" && !showGallery;
-  useEffect(() => {
-    const screenAwake = createScreenAwakeController();
-    screenAwake.setReadingActive(ebookReaderOpen);
-    return () => screenAwake.dispose();
-  }, [ebookReaderOpen]);
-
-  useEffect(() => {
-    if (!selectedBookIdForReader || !readalongAvailable) {
-      setReadalongOpen(false);
-      return;
-    }
-    setActiveCompanionId(null);
-    setSyncNotice(null);
-    let remembered = false;
-    try {
-      remembered =
-        window.localStorage.getItem(readerStorageKey(readerScope, selectedBookIdForReader, "open")) === "1";
-    } catch {
-      remembered = false;
-    }
-    // On the web the reader pane reopens where it was left. The native reader
-    // is a full-screen layer, so it only comes back for a book opened during
-    // this run, never over the shelf at launch.
-    setReadalongOpen(remembered && (!native || readerOpenedThisSessionRef.current.has(selectedBookIdForReader)));
-  }, [native, readalongAvailable, readerScope, selectedBookIdForReader]);
-
-  useEffect(() => {
-    if (!isOperaLibre || localMode || demoMode) return;
-    const refresh = () => {
-      if (document.visibilityState === "hidden") return;
-      void alignmentStatusUpdater.refresh(getAlignmentStatus);
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 30_000);
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      alignmentStatusUpdater.invalidate();
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [currentUser.id, isOperaLibre, localMode, demoMode, alignmentStatusUpdater]);
-
-  const syncMapBook = narrationFollowActive && readalongOpen && selectedBook?.syncFile ? selectedBook : null;
-  const syncMapBookId = syncMapBook?.id ?? null;
-  useEffect(() => {
-    if (!syncMapBookId) {
-      return;
-    }
-    const controller = new AbortController();
-    const { signal } = controller;
-    void (async () => {
-      const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-      if (signal.aborted) return null;
-      if (stored) dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
-      // Show the downloaded map immediately while checking in the background
-      // for an alignment that finished after this book came down.
-      return getSyncMap(syncMapBookId, signal);
-    })()
-      .then((map) => {
-        if (signal.aborted) return;
-        // Write the newer map back over the downloaded copy, which is
-        // otherwise only ever written once, when the book was downloaded.
-        if (map && syncMapBook) void saveOfflineSyncMap(syncMapBook, map, signal);
-        if (!signal.aborted) {
-          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map });
-        }
-      })
-      .catch(async () => {
-        if (signal.aborted) return;
-        // No server in reach: a downloaded book carries its own sync map.
-        const stored = syncMapBook ? await getOfflineSyncMap(syncMapBook) : null;
-        if (!signal.aborted) {
-          dispatchSyncMap({ type: "loaded", bookId: syncMapBookId, map: stored });
-        }
-      });
-    return () => {
-      controller.abort();
-    };
-    // Updating the visible map must not cancel its own background refresh.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncMapBookId, syncMapRevision]);
-
-  // Keyed on the job id and whether it is still pending, not the job object:
-  // every poll replaces the object, which would otherwise rebuild the timer
-  // on each tick.
-  const syncJobId = syncJob?.id ?? null;
-  const syncJobPending = !!syncJob && ["queued", "running"].includes(syncJob.status);
-  useEffect(() => {
-    if (!syncJobId || !syncJobPending) {
-      return;
-    }
-    let cancelled = false;
-    // A slow response must not overlap the next tick, or two polls can both
-    // see the completion and reload the library twice.
-    let requestInFlight = false;
-    const timer = window.setInterval(() => {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      void getJob(syncJobId)
-        .then((job) => {
-          if (cancelled) return;
-          setSyncJob(job);
-          if (job.status === "completed") {
-            dispatchSyncMap({ type: "reset" });
-            setSyncNotice("Sync improved: the narration is now aligned sentence by sentence.");
-            void loadBooks();
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          requestInFlight = false;
-        });
-    }, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [loadBooks, syncJobId, syncJobPending]);
-
-  // A sync run outlives the page that started it: it is a server job, and a
-  // long book takes far longer than a reload or a walk to another book. Adopt
-  // whatever is already running for this book so the progress comes back
-  // instead of the reader looking idle.
-  const syncJobBookId = syncJob?.targetId ?? null;
-  useEffect(() => {
-    if (
-      !canGenerateSync
-      || !readalongOpen
-      || !narrationFollowActive
-      || !selectedBookId
-      || syncJobBookId === selectedBookId
-    ) {
-      return;
-    }
-    let cancelled = false;
-    void listJobs()
-      .then((jobs) => {
-        const running = jobs.find(
-          (job) =>
-            job.kind === "sync-generate"
-            && job.targetId === selectedBookId
-            && ["queued", "running"].includes(job.status)
-        );
-        if (running && !cancelled) {
-          setSyncJob(running);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [canGenerateSync, narrationFollowActive, readalongOpen, selectedBookId, syncJobBookId]);
-
-  const loadLibationStatus = useCallback(async () => {
-    if (!isOperaLibre || (!currentUser.isAdmin && !native)) {
-      setLibationStatus(null);
-      return;
-    }
-    try {
-      if (currentUser.isAdmin) {
-        setLibationStatus(await getLibationStatus());
-      } else {
-        const access = await getLibationAccess();
-        setLibationStatus({
-          enabled: access.enabled,
-          cliPath: null,
-          libationFilesDir: null,
-          libraryRoot: "",
-          accounts: [],
-          authenticated: access.enabled,
-          message: access.enabled ? null : "Libation is not configured on this server.",
-          autoRefreshHours: access.autoRefreshHours,
-          manualRefreshesPerHour: access.manualRefreshesPerHour
-        });
-      }
-    } catch {
-      setLibationStatus(null);
-    }
-  }, [currentUser.isAdmin, isOperaLibre, native]);
-
-  const loadLibationBooks = useCallback(async (clearError = true) => {
-    setLibationLoading(true);
-    if (clearError) {
-      setLibationError(null);
-    }
-    try {
-      const nextBooks = await getLibationBooks();
-      setLibationBooks(nextBooks);
-      const confirmedAsins = new Set(nextBooks.filter((book) => !!book.localBookId).map((book) => book.catalogId));
-      setLibationFinalizingAsins((current) => {
-        const next = new Set([...current].filter((asin) => !confirmedAsins.has(asin)));
-        return next.size === current.size ? current : next;
-      });
-      setLibationBooksLoaded(true);
-      await loadLibationStatus();
-    } catch {
-      setLibationError("Libation books could not be loaded.");
-      setLibationBooksLoaded(true);
-    } finally {
-      setLibationLoading(false);
-    }
-  }, [loadLibationStatus]);
-
-  useEffect(() => {
-    if (currentUser.isAdmin || native) {
-      void loadLibationStatus();
-    }
-  }, [currentUser.isAdmin, loadLibationStatus, native]);
-
-  useEffect(() => {
-    if (!currentUser.isAdmin || !isOperaLibre) {
-      return;
-    }
-    const timer = window.setInterval(() => void loadLibationStatus(), 60_000);
-    return () => window.clearInterval(timer);
-  }, [currentUser.isAdmin, isOperaLibre, loadLibationStatus]);
-
-  useEffect(() => {
-    if (!currentUser.isAdmin) {
-      return;
-    }
-    let cancelled = false;
-    const generation = libationJobsGenerationRef.current;
-    void listJobs()
-      .then((jobs) => {
-        if (cancelled || generation !== libationJobsGenerationRef.current) {
-          return;
-        }
-        const next = reconcileLibationJobs(jobs, libationJobsRef.current);
-        libationJobsRef.current = next;
-        setLibationJobs(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUser.isAdmin]);
-
-  useEffect(() => {
-    if ((librarySource === "audible" || librarySource === "all") && libationStatus?.enabled && !libationBooksLoaded && !libationLoading) {
-      void loadLibationBooks();
-    }
-  }, [libationBooksLoaded, libationLoading, libationStatus?.enabled, librarySource, loadLibationBooks]);
-
-  useEffect(() => {
-    if (
-      (librarySource !== "audible" && librarySource !== "all") ||
-      currentUser.libationAccess !== "approval"
-    ) {
-      return;
-    }
-    let cancelled = false;
-    const refreshRequests = () => {
-      void listLibationRequests()
-        .then((requests) => {
-          if (cancelled) return;
-          const ownRequests = requests.filter((request) => request.userId === currentUser.id);
-          const prior = libationDownloadRequestsRef.current;
-          const newlyCompletedAsins = libationRequestsLoadedRef.current
-            ? ownRequests
-                .filter(
-                  (request) =>
-                    request.status === "completed" &&
-                    prior.find((item) => item.id === request.id)?.status !== "completed"
-                )
-                .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`))
-            : [];
-          libationDownloadRequestsRef.current = ownRequests;
-          libationRequestsLoadedRef.current = true;
-          setLibationDownloadRequests(ownRequests);
-          const approvedAsins = ownRequests
-            .filter((request) => request.status === "approved" && request.jobId)
-            .map((request) => request.catalogId ?? (request.profileId ? `${request.profileId}:${request.asin}` : libationBooks.find((book) => book.asin === request.asin)?.catalogId ?? `legacy:${request.asin}`));
-          const activeAsins = [...approvedAsins, ...newlyCompletedAsins];
-          if (activeAsins.length > 0) {
-            setLibationFinalizingAsins((current) => new Set([...current, ...activeAsins]));
-          }
-        })
-        .catch(() => undefined);
-    };
-    // Poll quickly only while a request is still moving (awaiting a decision
-    // or approved and downloading); otherwise a slow check still notices a
-    // new decision. A hidden page polls not at all and catches up on return.
-    let lastRefreshAt = 0;
-    const tick = (force = false) => {
-      if (document.visibilityState === "hidden") return;
-      const moving = libationDownloadRequestsRef.current.some(
-        (request) => request.status === "pending" || request.status === "approved"
-      );
-      const now = Date.now();
-      if (!force && !moving && now - lastRefreshAt < 60_000) return;
-      lastRefreshAt = now;
-      refreshRequests();
-    };
-    const onVisible = () => tick(true);
-    tick(true);
-    const timer = window.setInterval(() => tick(), 5000);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [currentUser.id, currentUser.libationAccess, libationBooks, librarySource]);
-
-  // Keyed on whether anything is pending, not on the job list itself: each
-  // poll replaces the list, which would otherwise rebuild the timer on every
-  // tick. The callback reads jobs and books through refs so it stays current.
-  const libationJobsPending = libationJobs.some(isPendingJob);
-  const libationBooksRef = useRef(libationBooks);
   libationBooksRef.current = libationBooks;
-  useEffect(() => {
-    if (!libationJobsPending) {
-      return;
-    }
-
-    let cancelled = false;
-    let requestInFlight = false;
-    const timer = window.setInterval(() => {
-      if (requestInFlight) {
-        return;
-      }
-      requestInFlight = true;
-      const generation = libationJobsGenerationRef.current;
-      const previous = libationJobsRef.current;
-      const jobsRequest = currentUser.isAdmin
-        ? listJobs()
-        : Promise.all(previous.filter(isPendingJob).map((job) => getJob(job.id))).then((updates) => {
-            const updatesById = new Map(updates.map((job) => [job.id, job]));
-            return previous.map((job) => updatesById.get(job.id) ?? job);
-          });
-      void jobsRequest
-        .then((jobs) => {
-          if (cancelled || generation !== libationJobsGenerationRef.current) {
-            return;
-          }
-          const next = reconcileLibationJobs(jobs, previous);
-          const nextById = new Map(next.map((job) => [job.id, job]));
-          const finishedJobs = previous
-            .map((job) => nextById.get(job.id))
-            .filter((current): current is JobStatus => !!current)
-            .filter((current) => {
-              const prior = previous.find((job) => job.id === current.id);
-              return !!prior && isPendingJob(prior) && !isPendingJob(current);
-            });
-          libationJobsRef.current = next;
-          setLibationJobs(next);
-          if (finishedJobs.length > 0) {
-            const completedAsins = finishedJobs.flatMap((job) => {
-              if (job.status !== "completed") {
-                return [];
-              }
-              if (job.kind === "libation-liberate" && job.targetId) {
-                return [job.targetId];
-              }
-              if (job.kind === "libation-liberate-all") {
-                return libationBooksRef.current.filter((book) => !book.localBookId).map((book) => book.catalogId);
-              }
-              return [];
-            });
-            if (completedAsins.length > 0) {
-              const now = Date.now();
-              for (const asin of completedAsins) {
-                libationFinalizationStartedRef.current.set(asin, now);
-              }
-              setLibationFinalizingAsins((current) => new Set([...current, ...completedAsins]));
-            }
-            void loadBooks();
-            if (!next.some(isPendingJob)) {
-              void loadLibationBooks(false);
-            }
-            const failedJob = finishedJobs.find((job) => job.status === "failed");
-            if (failedJob) {
-              setLibationError(jobSummary(failedJob));
-            }
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          requestInFlight = false;
-        });
-    }, 1200);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [currentUser.isAdmin, libationJobsPending, loadBooks, loadLibationBooks]);
-
-  useEffect(() => {
-    if (libationJobs.some(isPendingJob)) {
-      return;
-    }
-    const remainingAsins = new Set(
-      [...libationFinalizingAsins].filter(
-        (asin) =>
-          !libationFinalizationFailures.has(asin) &&
-          !libationBooks.some((book) => book.catalogId === asin && !!book.localBookId)
-      )
-    );
-    if (remainingAsins.size === 0) {
-      return;
-    }
-    for (const asin of remainingAsins) {
-      if (!libationFinalizationStartedRef.current.has(asin)) {
-        libationFinalizationStartedRef.current.set(asin, Date.now());
-      }
-    }
-
-    let cancelled = false;
-    let checking = false;
-    let timer: number | null = null;
-    const confirmDownloads = async () => {
-      if (checking || remainingAsins.size === 0) {
-        return;
-      }
-      checking = true;
-      try {
-        const nextBooks = await getLibationBooks();
-        if (cancelled) {
-          return;
-        }
-        setLibationBooks(nextBooks);
-        setLibationBooksLoaded(true);
-
-        const now = Date.now();
-        const failedAsins: string[] = [];
-        let confirmedDownload = false;
-        for (const asin of remainingAsins) {
-          const localBook = nextBooks.find((book) => book.catalogId === asin && !!book.localBookId);
-          if (localBook) {
-            confirmedDownload = true;
-            remainingAsins.delete(asin);
-            libationFinalizationStartedRef.current.delete(asin);
-            setLibationFinalizingAsins((current) => {
-              const next = new Set(current);
-              next.delete(asin);
-              return next;
-            });
-            continue;
-          }
-          const startedAt = libationFinalizationStartedRef.current.get(asin) ?? now;
-          const timeout = currentUser.isAdmin
-            ? LIBATION_CONFIRM_TIMEOUT_MS
-            : LIBATION_READER_DOWNLOAD_TIMEOUT_MS;
-          if (now - startedAt >= timeout) {
-            failedAsins.push(asin);
-            remainingAsins.delete(asin);
-            libationFinalizationStartedRef.current.delete(asin);
-          }
-        }
-
-        if (confirmedDownload) {
-          window.setTimeout(() => void loadBooks(), 250);
-        }
-
-        if (failedAsins.length > 0) {
-          setLibationFinalizingAsins((current) => {
-            const next = new Set(current);
-            for (const asin of failedAsins) {
-              next.delete(asin);
-            }
-            return next;
-          });
-          setLibationFinalizationFailures((current) => new Set([...current, ...failedAsins]));
-          const failedTitle = libationBooks.find((book) => book.asin === failedAsins[0])?.title;
-          setLibationError(
-            `${failedTitle ?? "The title"} never appeared in your library. Decryption or import may have failed.`
-          );
-        }
-        if (remainingAsins.size === 0 && timer !== null) {
-          window.clearInterval(timer);
-          timer = null;
-        }
-      } catch {
-        // Keep the title in Adding while the server is temporarily unreachable;
-        // a connection failure is not evidence that decryption failed.
-      } finally {
-        checking = false;
-      }
-    };
-
-    void confirmDownloads();
-    timer = window.setInterval(() => void confirmDownloads(), 1500);
-    return () => {
-      cancelled = true;
-      if (timer !== null) {
-        window.clearInterval(timer);
-      }
-    };
-    // libationBooks is read once, when the check starts; the check then fetches
-    // and stores fresh books itself, so listing it would restart the check
-    // after every fetch it makes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.isAdmin, libationFinalizationFailures, libationFinalizingAsins, libationJobs, loadBooks]);
 
   useEffect(() => {
     if (!playbackBook) {
@@ -3588,88 +2750,6 @@ function MainApp({
         };
       })
     );
-  }
-
-  /**
-   * Picks up whatever happened on the car screen: who owns the player, and the
-   * progress made during a drive.
-   */
-  async function adoptCarPlaybackState() {
-    if (!supportsCarPlay()) return;
-    const state = await getCarPlayState().catch(() => null);
-    if (!state) return;
-    // A take-over the app just performed is not yet visible natively — the
-    // hand-back happens on the load() the attach is about to make — so a
-    // reported owner from the moments after one is ignored rather than
-    // parking the player that is starting up.
-    const takeoverIsSettling = Date.now() - carTakeoverAtRef.current < 5_000;
-    if (!state.carOwnedBookId || !takeoverIsSettling) {
-      setCarPlaybackOwner(state.carOwnedBookId);
-      setCarPlaybackBookId(state.carOwnedBookId);
-    }
-    if (state.sessions.length > 0) await saveCarPlaybackSessions(state.sessions);
-  }
-
-  /**
-   * Saves what was listened to in the car.
-   *
-   * The car deliberately writes nothing itself: this goes through the same
-   * queue as every other checkpoint, so the local copy, the offline cache and
-   * the server's staleness and suspect-reset rules all apply exactly as they do
-   * to playback on the phone.
-   */
-  async function saveCarPlaybackSessions(sessions: CarPlaybackSession[]) {
-    const handled: CarPlaybackSession[] = [];
-    for (const session of sessions) {
-      const book = booksRef.current.find((candidate) => candidate.id === session.bookId);
-      // A book the app has not loaded yet is left pending rather than dropped;
-      // the next sync, once the library is in, will save it.
-      if (!book) continue;
-      handled.push(session);
-      if (!carSessionIsWorthSaving(session, book)) continue;
-      const progress: Progress = {
-        bookId: book.id,
-        trackId: session.trackId,
-        positionSeconds: Math.max(0, session.positionSeconds),
-        bookPositionSeconds: Math.max(0, session.bookPositionSeconds),
-        durationSeconds: session.durationSeconds ?? book.durationSeconds ?? null,
-        updatedAt: new Date(session.updatedAt).toISOString(),
-        finishedOverride: book.progress?.finishedOverride ?? null
-      };
-      progressMutationVersion.current += 1;
-      writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, progress);
-      void cacheProgress(currentUser.id, progress).catch(warnCacheFailure("cache listening progress"));
-      updateBookProgress(book.id, progress);
-      if (book.source === "device") continue;
-      queuedProgressSaves.current.set(book.id, {
-        bookId: book.id,
-        progress,
-        isPaused: true,
-        // A chapter jump or a restart in the car lands here as a backwards
-        // move the server would otherwise refuse. The generation has to clear
-        // the last acknowledged one for the flag to survive the queue.
-        intentionalSeekGeneration: session.intentionalRegression
-          ? (acknowledgedSeekGenerationRef.current.get(book.id) ?? 0) + 1
-          : 0,
-        intentionalRegression: session.intentionalRegression
-      });
-    }
-    if (queuedProgressSaves.current.size > 0) await flushProgressSaveQueue();
-    // Acknowledged even when the server write failed: the position is in the
-    // local checkpoint and the offline cache by now, and the usual retry owns
-    // it from here. Holding the session instead would replay it forever.
-    await acknowledgeCarSessions(handled).catch(() => undefined);
-  }
-
-  /**
-   * Takes the shared player back from the car. Ownership is dropped before the
-   * player attaches so the attach does its normal work — including the load()
-   * that tells the native side the app is driving again.
-   */
-  function takeOverFromCar() {
-    carTakeoverAtRef.current = Date.now();
-    releaseCarPlaybackOwnership();
-    setCarPlaybackBookId(null);
   }
 
   function storeCanonicalServerProgress(book: Book, saved: Progress) {
@@ -4937,16 +4017,6 @@ function MainApp({
     if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
-  function toggleReadalongEnabled() {
-    const enabled = !readalongEnabled;
-    writeReadalongEnabled(enabled);
-    setReadalongEnabled(enabled);
-    if (!enabled) {
-      setReadalongOpen(false);
-      if (selectedBook) writeReaderOpenFlag(selectedBook.id, false);
-    }
-  }
-
   async function refreshLibrary() {
     setIsLoading(true);
     if (localMode) {
@@ -5027,125 +4097,6 @@ function MainApp({
     await flushProgressSaveQueue();
   }
 
-  function trackLibationJob(job: JobStatus) {
-    // Any jobs response already in flight may have been captured before this
-    // POST reached the server. Invalidate it so it cannot erase the optimistic
-    // job and stop the poller.
-    libationJobsGenerationRef.current += 1;
-    const next = [job, ...libationJobsRef.current.filter((existing) => existing.id !== job.id)];
-    libationJobsRef.current = next;
-    setLibationJobs(next);
-  }
-
-  async function startLibationSync() {
-    setLibationError(null);
-    setLibationRefreshPending(true);
-    try {
-      const created = await syncLibationLibrary();
-      trackLibationJob({
-        id: created.jobId,
-        kind: "libation-sync",
-        targetId: null,
-        status: "queued",
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        exitCode: null,
-        output: "Checking Audible for new purchases.",
-        error: null
-      });
-    } catch (error) {
-      setLibationError(errorMessage(error, "The Audible library refresh could not be started."));
-    } finally {
-      setLibationRefreshPending(false);
-    }
-  }
-
-  async function startLiberation(book: LibationBook) {
-    setLibationError(null);
-    libationFinalizationStartedRef.current.delete(book.catalogId);
-    setLibationFinalizingAsins((current) => {
-      const next = new Set(current);
-      next.delete(book.catalogId);
-      return next;
-    });
-    setLibationFinalizationFailures((current) => {
-      const next = new Set(current);
-      next.delete(book.catalogId);
-      return next;
-    });
-    setLibationRequests((current) => new Set(current).add(book.catalogId));
-    try {
-      let actingUser = currentUser;
-      if (isOperaLibre && !demoMode && !localMode) {
-        try {
-          actingUser = await getMe();
-          onCurrentUserChanged(actingUser);
-        } catch {
-          // Let the acquisition request surface a useful server or network
-          // error if the account refresh is temporarily unavailable.
-        }
-      }
-      if (actingUser.libationAccess === "approval") {
-        const request = await requestLibationBook(book.asin, book.title, book.profileId);
-        setLibationDownloadRequests((current) => {
-          const next = [request, ...current.filter((item) => item.id !== request.id)];
-          libationDownloadRequestsRef.current = next;
-          libationRequestsLoadedRef.current = true;
-          return next;
-        });
-        return;
-      }
-      const created = await liberateLibationBook(book.profileId, book.asin);
-      if (actingUser.isAdmin) {
-        trackLibationJob({
-          id: created.jobId,
-          kind: "libation-liberate",
-          targetId: book.catalogId,
-          status: "queued",
-          startedAt: new Date().toISOString(),
-          finishedAt: null,
-          exitCode: null,
-          output: `Starting liberation for ${book.title}.`,
-          error: null
-        });
-      } else {
-        libationFinalizationStartedRef.current.set(book.catalogId, Date.now());
-        setLibationFinalizingAsins((current) => new Set([...current, book.catalogId]));
-      }
-    } catch (error) {
-      setLibationError(errorMessage(error, `The download could not be started for ${book.title}.`));
-    } finally {
-      setLibationRequests((current) => {
-        const next = new Set(current);
-        next.delete(book.catalogId);
-        return next;
-      });
-    }
-  }
-
-  async function startAllLiberation() {
-    setLibationError(null);
-    setLibationAllPending(true);
-    try {
-      const created = await liberateAllLibationBooks();
-      trackLibationJob({
-        id: created.jobId,
-        kind: "libation-liberate-all",
-        targetId: null,
-        status: "queued",
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        exitCode: null,
-        output: "Starting Audible library sync and download for all books.",
-        error: null
-      });
-    } catch (error) {
-      setLibationError(errorMessage(error, "Libation download-all could not be started."));
-    } finally {
-      setLibationAllPending(false);
-    }
-  }
-
   const showLedgerTab = native && capabilities.statistics;
   const iosTabs = nativeTabItems(gamesEnabled, showLedgerTab,
     currentUser.isAdmin ? brokenLibationAccounts.length : 0);
@@ -5176,7 +4127,7 @@ function MainApp({
     if (!readerClosing || (nativeTabsReady && !nativeTabsShown)) return;
     setReaderClosing(false);
     setReadalongOpen(false);
-  }, [nativeTabsReady, nativeTabsShown, readerClosing]);
+  }, [nativeTabsReady, nativeTabsShown, readerClosing, setReadalongOpen, setReaderClosing]);
 
   const refreshShelf = useCallback(async () => {
     if (librarySource === "all") {
@@ -5195,7 +4146,7 @@ function MainApp({
     } else {
       await loadBooks();
     }
-  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks]);
+  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
   const hasMiniPlayer = Boolean(playbackBook && currentTrack);
 
