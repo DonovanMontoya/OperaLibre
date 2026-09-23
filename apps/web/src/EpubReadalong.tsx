@@ -456,7 +456,12 @@ export function EpubReadalong({
       const anchor = anchorCfiRef.current;
       if (anchor) beginRestore();
       rendition.spread(mode, 0);
-      if (anchor) void rendition.display(anchor);
+      // spread() takes the stage's new size but leaves the page it already
+      // laid out at the old height. A fold changes both at once, and the
+      // resize that follows then finds nothing to do, so the page would
+      // overflow the stage. Lay it out again instead.
+      rendition.clear();
+      void rendition.display(anchor ?? undefined).catch(() => undefined);
       setRelayoutTick((tick) => tick + 1);
     };
     if (!webSpreadWindow) {
@@ -707,6 +712,7 @@ export function EpubReadalong({
     let book: EpubBook | null = null;
     let rendition: Rendition | null = null;
     let streamedAssets: ReturnType<typeof attachEpubReadArchive> | null = null;
+    let displayRequested = false;
     const handleRelocated = (nextLocation: Location) => {
       lastLocationRef.current = nextLocation;
       locationRef.current = nextLocation;
@@ -898,6 +904,22 @@ export function EpubReadalong({
       }
     };
 
+    // A resize clears epub.js's page and epub.js lays it out again only once
+    // it has reported a location, which trails the first display by a frame.
+    // A fold, rotation or late toolbar row in that frame would otherwise
+    // leave the reader blank.
+    const handleResized = () => {
+      const reported = !!(rendition as unknown as { location?: { start?: unknown } } | null)?.location?.start;
+      if (!displayRequested || cancelled || !rendition || reported) {
+        return;
+      }
+      readerDebugLog(`resize before first location anchor=${shortCfi(anchorCfiRef.current)}`);
+      if (anchorCfiRef.current) {
+        beginRestore();
+      }
+      void rendition.display(anchorCfiRef.current ?? undefined).catch(() => undefined);
+    };
+
     const openBook = async () => {
       try {
         const epubModule = await import("epubjs");
@@ -994,6 +1016,7 @@ export function EpubReadalong({
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
         rendition.on("rendered", handleRendered);
+        rendition.on("resized", handleResized);
         if (streamedAssets) {
           const assets = streamedAssets;
           // Streamed images and fonts load lazily in the page. If the network
@@ -1061,6 +1084,7 @@ export function EpubReadalong({
         if (startAt) {
           beginRestore();
         }
+        displayRequested = true;
         try {
           await rendition.display(startAt ?? undefined);
           if (!cancelled && startAt && startAt !== originalLocation) writeStoredValue(locationStorageKey, startAt);
@@ -1178,6 +1202,7 @@ export function EpubReadalong({
       try {
         rendition?.off("relocated", handleRelocated);
         rendition?.off("rendered", handleRendered);
+        rendition?.off("resized", handleResized);
         rendition?.destroy();
       } catch (error) {
         console.warn("EPUB rendition teardown failed", error);
