@@ -401,7 +401,15 @@ public final class AudiobookPlayer {
             self.emitState()
             self.persistCheckpoint(force: true)
             if self.shouldAutoplay, player.timeControlStatus != .playing {
-                player.playImmediately(atRate: self.desiredRate)
+                // Seeking may finish while the activation kicked off by Play
+                // is still waiting on AVAudioSession. Request activation here
+                // too so a seek cannot start the clock before audio is ready.
+                self.activateAudioSession { [weak self] activated in
+                    guard let self, activated, self.shouldAutoplay,
+                          player === self.player,
+                          player.timeControlStatus != .playing else { return }
+                    player.playImmediately(atRate: self.desiredRate)
+                }
             }
             item.asset.loadValuesAsynchronously(forKeys: ["duration"]) {}
             self.prepareBoostForNextQueuedItem()
