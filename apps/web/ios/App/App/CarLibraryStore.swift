@@ -111,11 +111,11 @@ final class CarLibraryStore {
     /// Drops the sessions the web layer has saved. Entries are matched on their
     /// timestamp as well as their book so a session that advanced between the
     /// read and the acknowledgement survives to be saved again.
-    func acknowledgeSessions(_ acknowledged: [String: Double]) {
-        let remaining = pendingSessions().filter { session in
-            guard let savedAt = acknowledged[session.bookId] else { return true }
-            return session.updatedAt > savedAt
-        }
+    func acknowledgeSessions(_ acknowledged: [String: Double], clearRegressionForBookId: String? = nil) {
+        let remaining = CarPlaybackSession.remainingAfterAcknowledgement(
+            pendingSessions(), acknowledged: acknowledged,
+            clearRegressionForBookId: clearRegressionForBookId
+        )
         persistSessions(remaining)
     }
 
