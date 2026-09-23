@@ -76,6 +76,72 @@ test('chapter following opens at the current audiobook chapter before sentence s
   )).toContain('c2.xhtml');
 });
 
+for (const timing of ['before the follow location', 'after the follow location'] as const) {
+  test(`a restore finishing ${timing} cannot strand narration`, async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await openReader(page, true);
+    await expect.poll(() => annotations(page)).toHaveLength(1);
+    const initial = await place(page);
+    await page.evaluate(timing => {
+      const reader = (window as any).__operalibreReader;
+      const rendition = reader.rendition;
+      const saved = rendition.currentLocation().start.cfi;
+      if (timing === 'before the follow location') {
+        const report = rendition.reportLocation.bind(rendition);
+        let skipped = false;
+        rendition.reportLocation = () => {
+          if (!skipped && rendition.currentLocation()?.start?.cfi !== saved) {
+            // A location report runs on the next animation frame. Simulate the
+            // stale restore replacing the page before that first report runs.
+            skipped = true;
+            reader.followLocationSkipped = true;
+            return Promise.resolve();
+          }
+          return report();
+        };
+      }
+      rendition.on('relocated', (location: { start?: { cfi?: string } }) => {
+        if (location.start?.cfi !== saved) reader.followArrived = true;
+      });
+      const display = rendition.manager.display.bind(rendition.manager);
+      let held = false;
+      rendition.manager.display = (section: unknown, target: string) => {
+        if (!held && target === saved) {
+          held = true;
+          // epub.js releases the rendition queue when the next display starts,
+          // even though this manager operation (e.g. waiting on assets) is still
+          // in flight. Let it finish after the narrated page has already landed.
+          return new Promise(resolve => { reader.releaseRestore = () => resolve(display(section, target)); });
+        }
+        return display(section, target);
+      };
+      void rendition.display(saved);
+    }, timing);
+    await expect.poll(() => page.evaluate(() => !!(window as any).__operalibreReader.releaseRestore)).toBe(true);
+    await page.getByLabel('Narration position').fill('51');
+    await expect.poll(place.bind(null, page)).not.toBe(initial);
+    await expect.poll(() => page.evaluate(timing => {
+      const reader = (window as any).__operalibreReader;
+      return !!(timing === 'before the follow location' ? reader.followLocationSkipped : reader.followArrived);
+    }, timing)).toBe(true);
+    const narrated = await place(page);
+    await page.evaluate(async () => {
+      const reader = (window as any).__operalibreReader;
+      reader.releaseRestore();
+      await reader.rendition.q.enqueue(() => undefined);
+      await reader.rendition.q.enqueue(() => undefined);
+    });
+    await expect.poll(() => place(page)).toBe(narrated);
+    await expect.poll(() => annotations(page)).toHaveLength(1);
+    await page.getByRole('button', { name: 'Previous page', exact: true }).click();
+    await expect.poll(() => place(page)).not.toBe(narrated);
+    const manual = await place(page);
+    await page.getByLabel('Narration position').fill('52');
+    await expect.poll(() => annotations(page)).toHaveLength(0);
+    expect(await place(page)).toBe(manual);
+  });
+}
+
 for (const failure of ['missing sentence', 'CFI conversion'] as const) {
   test(`${failure} clears the previous narration mark and cannot revive it on updates or relayout`, async ({ page }) => {
     await openReader(page, true);
