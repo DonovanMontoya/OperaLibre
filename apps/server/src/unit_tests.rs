@@ -1488,7 +1488,11 @@ fi
   done
   printf 'start export\n' >> '{log}'
   sleep 0.02
-  printf '[]' > "$export_path"
+  if [ -f '{export}' ]; then
+    cp '{export}' "$export_path"
+  else
+    printf '[]' > "$export_path"
+  fi
   printf 'end export\n' >> '{log}'
   exit 0
 fi
@@ -1522,7 +1526,8 @@ printf 'end %s\n' "$asin" >> '{log}'
 exit 0
 "#,
         log = log_path.display(),
-        audio = audio_template.display()
+        audio = audio_template.display(),
+        export = root.join("libation-export.json").display()
     );
     std::fs::write(&cli_path, script).unwrap();
     let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
@@ -2179,6 +2184,187 @@ async fn successful_libation_exit_without_a_decrypted_book_is_failed() {
             "failed decrypt was never reported"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_finished_job(state: &super::AppState, job_id: &str) -> super::JobStatus {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let job = state.jobs.read().await.get(job_id).cloned().unwrap();
+        if job.status == "completed" || job.status == "failed" {
+            return job;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job {job_id} never finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reader_download_grants_only_books_the_audible_account_owns() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let owned = "B000OWNED1";
+    let elsewhere = "B000ELSE01";
+    for asin in [owned, elsewhere] {
+        let folder = state
+            .libation_config
+            .library_root
+            .join(format!("Test [{asin}]"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::copy(
+            root.path().join("template.wav"),
+            folder.join(format!("Test [{asin}].wav")),
+        )
+        .unwrap();
+    }
+    super::rescan_library(&state).await.unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        format!(r#"[{{"Audible Product Id":"{owned}","Title":"Owned"}}]"#),
+    )
+    .unwrap();
+
+    let mut reader = stored_user("reader", false, false);
+    reader.allowed_book_ids = Some(Vec::new());
+    reader.libation_access = super::LibationAccess::Direct;
+    state
+        .users
+        .mutate(move |users| {
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let auth = super::AuthUser {
+        id: "reader".to_string(),
+        username: "reader".to_string(),
+        is_admin: false,
+        is_owner: false,
+        can_approve_libation_requests: false,
+        allowed_book_ids: Some(Vec::new()),
+        libation_access: super::LibationAccess::Direct,
+        share_progress: true,
+        announce_finishes: true,
+        notify_finishes: true,
+    };
+    let granted = || async {
+        state.users.read().await.users[1]
+            .allowed_book_ids
+            .clone()
+            .unwrap_or_default()
+    };
+
+    // A book already in the catalogue, but not in the Audible account: naming
+    // its ASIN must not hand it over.
+    let refused = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(auth.clone()),
+        super::Path(elsewhere.to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &refused.job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(granted().await.is_empty());
+
+    let accepted = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(auth),
+        super::Path(owned.to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &accepted.job_id).await;
+    assert_eq!(job.status, "completed");
+    let owned_book_id =
+        super::find_book_id_by_asin(&state.library.read().await.books, owned).unwrap();
+    assert_eq!(granted().await, vec![owned_book_id]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn approved_download_reports_grant_outcome_after_liberation() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let mut reader = stored_user("reader", false, false);
+    reader.allowed_book_ids = Some(Vec::new());
+    state
+        .users
+        .mutate(move |users| {
+            users.users = vec![stored_user("owner", true, true), reader];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    for (asin, export, expected_status) in [
+        ("B000GRANT1", "not valid JSON".to_string(), "failed"),
+        (
+            "B000GRANT2",
+            r#"[{"Audible Product Id":"B000GRANT2","Title":"Owned"}]"#.to_string(),
+            "completed",
+        ),
+    ] {
+        std::fs::write(root.path().join("libation-export.json"), export).unwrap();
+        let request = super::create_libation_download_request(
+            super::State(state.clone()),
+            super::Extension(approval_reader()),
+            super::Path(asin.to_string()),
+            super::Json(super::CreateLibationDownloadRequest {
+                title: "Requested title".to_string(),
+                profile_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let approved = super::decide_libation_download_request(
+            super::State(state.clone()),
+            super::LibationApprover(admin_user()),
+            super::Path(request.id.clone()),
+            super::Json(super::DecideLibationDownloadRequest { approved: true }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let job_id = approved.job_id.unwrap();
+        let job = wait_for_finished_job(&state, &job_id).await;
+        assert_eq!(job.kind, "libation-access-grant");
+        assert_eq!(job.status, expected_status);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let status = state
+                .libation_requests
+                .read()
+                .await
+                .requests
+                .iter()
+                .find(|item| item.id == request.id)
+                .unwrap()
+                .status
+                .clone();
+            if status == expected_status {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "request never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let book_id = super::find_book_id_by_asin(&state.library.read().await.books, asin).unwrap();
+        let granted = state.users.read().await.users[1]
+            .allowed_book_ids
+            .clone()
+            .unwrap();
+        assert_eq!(granted.contains(&book_id), expected_status == "completed");
     }
 }
 
@@ -6238,4 +6424,35 @@ async fn job_list_filters_by_kind_and_preserves_unfiltered_listing() {
             assert_eq!(list[0].id, sync_id);
         }
     }
+}
+
+/// Hands out at most one byte per call, like a network mount under load.
+struct TrickleReader<'a>(&'a [u8]);
+
+impl std::io::Read for TrickleReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let Some((first, rest)) = self.0.split_first() else {
+            return Ok(0);
+        };
+        let Some(slot) = buffer.first_mut() else {
+            return Ok(0);
+        };
+        *slot = *first;
+        self.0 = rest;
+        Ok(1)
+    }
+}
+
+#[test]
+fn fingerprint_samples_are_filled_across_short_reads() {
+    let data = (0..=255u8).cycle().take(1_000).collect::<Vec<_>>();
+    let mut sample = [0_u8; 600];
+    let filled = super::read_sample(&mut TrickleReader(&data), &mut sample).unwrap();
+    assert_eq!(filled, 600);
+    assert_eq!(&sample[..], &data[..600]);
+
+    // A file shorter than the sample stops at its end.
+    let mut sample = [0_u8; 600];
+    let filled = super::read_sample(&mut TrickleReader(&data[..10]), &mut sample).unwrap();
+    assert_eq!(filled, 10);
 }

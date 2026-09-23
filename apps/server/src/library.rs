@@ -1052,18 +1052,37 @@ pub(crate) fn file_identity_fingerprint(path: &FsPath) -> anyhow::Result<String>
     hasher.update(size.to_le_bytes());
 
     let mut sample = vec![0_u8; SAMPLE_BYTES];
-    let first_read = std::io::Read::read(&mut file, &mut sample)?;
+    let first_read = read_sample(&mut file, &mut sample)?;
     hasher.update((first_read as u64).to_le_bytes());
     hasher.update(&sample[..first_read]);
 
     if size > SAMPLE_BYTES as u64 {
         std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-(SAMPLE_BYTES as i64)))?;
-        let last_read = std::io::Read::read(&mut file, &mut sample)?;
+        let last_read = read_sample(&mut file, &mut sample)?;
         hasher.update((last_read as u64).to_le_bytes());
         hasher.update(&sample[..last_read]);
     }
 
     Ok(hex_digest(hasher.finalize()))
+}
+
+/// Fills `sample` unless the file ends first. A single `read` may return
+/// less on network and FUSE mounts, and a fingerprint taken from a short
+/// read would differ from the same file's next one.
+pub(crate) fn read_sample(
+    reader: &mut impl std::io::Read,
+    sample: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < sample.len() {
+        match reader.read(&mut sample[filled..]) {
+            Ok(0) => break,
+            Ok(count) => filled += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
 }
 
 /// A file that cannot be read keeps a stable identity derived from its path
