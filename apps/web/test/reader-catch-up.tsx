@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
-import { EpubReadalong } from "../src/App";
+import { EpubReadalong } from "../src/EpubReadalong";
 import "../src/styles.css";
 
 const zip = new JSZip();
