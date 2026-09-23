@@ -100,6 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var webServer: BundledWebServer?
     private var frontendUpdater: FrontendUpdater?
     private var isCheckingForUpdates = false
+    /// Set once the current page has finished loading. Until then a script
+    /// error means the frontend cannot start; afterwards it is one failed
+    /// action in a running app, and closing the app over it loses the session.
+    private var frontendLoaded = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -306,7 +310,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard message.name == "frontendError" else { return }
         let detail = String(describing: message.body)
         NSLog("Frontend error: %@", detail)
+        guard !frontendLoaded else { return }
         showStartupError("The bundled frontend failed to load.\n\n\(detail)")
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        frontendLoaded = false
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        frontendLoaded = true
     }
 
     private func installMainMenu() {
@@ -356,7 +369,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+        // Only web and mail links leave the app. NSWorkspace would otherwise
+        // open a file: URL or launch whatever app claims a custom scheme.
+        if navigationAction.targetFrame == nil,
+           let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https", "mailto"].contains(scheme)
+        {
             NSWorkspace.shared.open(url)
         }
         return nil
