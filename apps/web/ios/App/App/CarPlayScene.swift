@@ -197,9 +197,9 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
         if aTemplate === CPNowPlayingTemplate.shared { isShowingNowPlaying = true }
     }
 
-    private func configureNowPlayingButtons() {
+    private func configureNowPlayingButtons(rate: Double? = nil) {
         let template = CPNowPlayingTemplate.shared
-        template.updateNowPlayingButtons([speedButton()])
+        template.updateNowPlayingButtons([speedButton(rate: rate ?? coordinator.playbackRate)])
         template.isUpNextButtonEnabled = true
         template.upNextTitle = "Chapters"
     }
@@ -211,11 +211,12 @@ final class CarPlayLibraryController: NSObject, CPNowPlayingTemplateObserver, CP
     /// reads "0×", and the lock screen needs that zero, so it cannot be
     /// changed. Drawing the button here shows the speed the listener actually
     /// chose, and lets it be set in a serif, as the app's own type is.
-    private func speedButton() -> CPNowPlayingButton {
-        CPNowPlayingImageButton(image: speedImage(for: coordinator.playbackRate)) { [weak self] _ in
+    private func speedButton(rate: Double) -> CPNowPlayingButton {
+        CPNowPlayingImageButton(image: speedImage(for: rate)) { [weak self] _ in
             guard let self else { return }
-            _ = self.coordinator.advancePlaybackRate()
-            self.configureNowPlayingButtons()
+            // The engine applies the new rate on a later main-queue turn, so
+            // draw the rate that was chosen rather than reading it back.
+            self.configureNowPlayingButtons(rate: self.coordinator.advancePlaybackRate())
         }
     }
 
