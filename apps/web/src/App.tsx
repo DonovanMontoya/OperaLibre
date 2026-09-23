@@ -112,11 +112,8 @@ import {
 } from "./playbackSpeed";
 import {
   formatSleepTimerMinutes,
-  mergeCustomSleepTimer,
-  normalizeSleepTimerMinutes,
   SLEEP_TIMER_MAX_MINUTES,
-  SLEEP_TIMER_MIN_MINUTES,
-  sleepTimerChoices
+  SLEEP_TIMER_MIN_MINUTES
 } from "./sleepTimer";
 import {
   BOOK_GAIN_DEFAULT,
@@ -124,32 +121,13 @@ import {
   createBookGainSync,
   mergeServerBookGains
 } from "./bookVolume";
-import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 import {
-  SHELF_VIEW_MODE_OPTIONS,
-  readStoredShelfViewMode,
-  writeStoredShelfViewMode
+  SHELF_VIEW_MODE_OPTIONS
 } from "./shelfView";
-import type { ShelfViewMode } from "./shelfView";
 import {
-  bookMatchesFacet,
-  bookMatchesShelfDownload,
-  bookMatchesShelfSearch,
-  bookMatchesShelfStatus,
-  compareShelfAddedAt,
-  countActiveShelfFilters,
-  countShelfFacet,
-  EMPTY_SHELF_FILTERS,
   SHELF_STATUS_OPTIONS,
   shelfDownloadScanKey,
-  tagForShelfSort,
-  toggleShelfFacet,
-  updateShelfFacetCounts
-} from "./shelfFilters";
-import type {
-  ShelfFacetGroupKey,
-  ShelfFilters,
-  ShelfStatusFilter
+  toggleShelfFacet
 } from "./shelfFilters";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
 import { isLibationAdding } from "./libationState";
@@ -157,8 +135,6 @@ import { displayBookDescription, enrichBooksFromLibation, tagsForBook } from "./
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   bookDownloadUrl,
-  activateServerAlias,
-  addServerAlias,
   clearServerUrl,
   generateSyncMap,
   getAlignmentStatus,
@@ -169,13 +145,10 @@ import {
   getLibationBooks,
   getLibationAccess,
   getLibationStatus,
-  getFinishFeed,
   getMe,
-  markFinishFeedSeen,
   getFreshProgress,
   getProgress,
   getServerStorageKey,
-  getServerAliases,
   getServerType,
   getStoredMediaToken,
   getStoredToken,
@@ -192,7 +165,6 @@ import {
   listJobs,
   logout as apiLogout,
   mediaUrl,
-  pingServer,
   readalongUrl,
   reconnectUsingServerAliases,
   requestLibationBook,
@@ -205,12 +177,8 @@ import {
   setStoredMediaToken,
   setStoredToken,
   setUnauthorizedHandler,
-  syncLibationLibrary,
-  uploadAudiobook,
-  uploadEbook,
-  updateBookMetadata
+  syncLibationLibrary
 } from "./api";
-import type { ServerAlias } from "./api";
 import { hasPreciseSync, syncConfirmationMessage } from "./syncGeneration";
 import {
   cacheLibrary,
@@ -236,30 +204,22 @@ import {
   removeBookDownload,
   warnCacheFailure
 } from "./offline";
-import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
-import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
-import { applyAppearanceMode, readStoredAppearanceMode, writeAppearanceMode } from "./appearance";
-import type { AppearanceMode } from "./appearance";
+import { haptic } from "./native";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import { nativeShellColor, nativeTabItems, nativeTabSelection, type NativeTab } from "./nativeTabs";
 import { useNativeTabs } from "./useNativeTabs";
 import {
-  disableRotationLock,
-  enableRotationLock,
   isIPadNavigator,
-  isRotationLockAvailable,
-  readStoredRotationLock
+  isRotationLockAvailable
 } from "./rotationLock";
 import {
   attachNativeAudioPlayer,
   getNativeAudioRecovery,
-  getNativeAudioSleepTimer,
   pauseNativeAudio,
   playNativeAudio,
   releaseNativeAudioSession,
   seekNativeAudio,
   setNativeAudioGain,
-  setNativeAudioSleepTimer,
   updateNativeAudioNowPlaying,
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
@@ -318,26 +278,17 @@ import type { LibroAccountSummary } from "./types";
 import { LibroCatalog } from "./LibroCatalog";
 import { supportsLibroDevice, refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
-import { ProgressSharingCard, isNotifiedOfFinishes } from "./ProgressSharing";
+import { ProgressSharingCard } from "./ProgressSharing";
 import {
-  EMPTY_FINISH_FEED,
-  arrivedSince,
   finishAnnouncement,
-  finishBannerText,
   finishedAgoLabel
 } from "./finishFeed";
-import { ensureFinishBannerPermission, postFinishBanner } from "./finishNotifications";
 import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import {
   FOLLOW_AGGRESSIVENESS_LABELS,
   FOLLOW_AGGRESSIVENESS_LEAD_SECONDS,
-  readReadalongEnabled,
   writeReadalongEnabled,
-  readFollowSyncEnabled,
-  writeFollowSyncEnabled,
-  readFollowAggressiveness,
-  writeFollowAggressiveness,
   type FollowAggressiveness
 } from "./readalongPreferences";
 import { readerStatusLabel } from "./sharedProgress";
@@ -346,7 +297,6 @@ import type {
   Book,
   Chapter,
   CompanionFile,
-  FinishFeed,
   JobStatus,
   LibationBook,
   LibationDownloadRequest,
@@ -358,29 +308,20 @@ import {
   nativeAudioRecoveryScope,
   readStoredBookGains,
   readStoredBookId,
-  readStoredCustomSleepTimers,
   readStoredSpeed,
   readStoredValue,
   unsyncedBookGainStore,
   withoutCachedBookGains,
   writeStoredBookGains,
   writeStoredBookId,
-  writeStoredCustomSleepTimers,
   writeStoredSpeed,
   writeStoredValue
 } from "./appStorage";
 import {
-  bookSortGroupLabel,
-  compareShelfLabels,
   isSortModeSupported,
   type LibrarySource,
-  PURCHASE_VIEW_MODE_STORAGE_KEY,
-  readStoredPurchaseViewMode,
-  readStoredSortMode,
-  SHELF_TEXT_COLLATOR,
   SORT_OPTIONS,
-  type SortMode,
-  sortModeStorageKey
+  type SortMode
 } from "./shelfSort";
 import {
   currentTrackIndex,
@@ -401,8 +342,6 @@ import {
   jobTitle,
   reconcileLibationJobs
 } from "./jobLabels";
-import { metadataEditorFromBook, type MetadataEditorState, metadataUpdateFromEditor } from "./metadataEditor";
-import { LANDSCAPE_QUERY, readLandscape, readShortLandscape, SHORT_LANDSCAPE_QUERY } from "./useOrientation";
 import { PULL_REFRESH_THRESHOLD, usePullToRefresh } from "./usePullToRefresh";
 import { EpubReadalong } from "./EpubReadalong";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
@@ -427,6 +366,14 @@ import {
   ServerDownloadSettings,
   type DeviceDownloadActivity
 } from "./SettingsCards";
+import { useServerAliases } from "./useServerAliases";
+import { useFinishFeed } from "./useFinishFeed";
+import { useDisplaySettings } from "./useDisplaySettings";
+import { useReaderPreferences } from "./useReaderPreferences";
+import { useUploads } from "./useUploads";
+import { useMetadataEditor } from "./useMetadataEditor";
+import { useSleepTimer } from "./useSleepTimer";
+import { useShelf } from "./useShelf";
 
 const LIBATION_CONFIRM_TIMEOUT_MS = 12_000;
 const LIBATION_READER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
@@ -469,7 +416,6 @@ const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 const PLAY_PENDING_LIMIT_MS = 45_000;
 
 /** Which pages of the iPad Shelf spread are showing. */
-type ShelfLayout = "split" | "player" | "library";
 
 /** Formats the browser can show inline; anything else gets an "Open" link. */
 function canPreviewCompanion(extension: string) {
@@ -781,34 +727,39 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const playbackFold = useDeviceFold();
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
-  // The ebook reader ships off by default; the narration-follow highlight is a
-  // sub-option beneath it, off by default and behind a warning.
-  const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
-  const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
-  const [followAggressiveness, setFollowAggressiveness] = useState(readFollowAggressiveness);
-  const [rotationLockEnabled, setRotationLockEnabled] = useState(() => readStoredRotationLock() !== null);
-  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() =>
-    ios ? readStoredAppearanceMode() : "light"
-  );
-  const [rotationLockBusy, setRotationLockBusy] = useState(false);
-  const [rotationLockError, setRotationLockError] = useState<string | null>(null);
-  const [serverAliases, setServerAliases] = useState<ServerAlias[]>(getServerAliases);
+  const {
+    followAggressiveness,
+    followSyncEnabled,
+    readalongEnabled,
+    setReadalongEnabled,
+    toggleFollowSyncEnabled,
+    updateFollowAggressiveness
+  } = useReaderPreferences();
+  const {
+    appearanceMode,
+    rotationLockBusy,
+    rotationLockEnabled,
+    rotationLockError,
+    toggleRotationLock,
+    updateAppearanceMode
+  } = useDisplaySettings({
+    ios
+  });
+  const {
+    aliasError,
+    aliasName,
+    aliasUrl,
+    saveAlias,
+    serverAliases,
+    setAliasName,
+    setAliasUrl,
+    setServerAliases,
+    switchToAlias,
+    switchingAliasId
+  } = useServerAliases();
   const [connectPromptDismissed, setConnectPromptDismissed] = useState(
     () => readStoredValue(CONNECT_PROMPT_DISMISSED_KEY) === "true"
   );
-  const [aliasName, setAliasName] = useState("");
-  const [aliasUrl, setAliasUrl] = useState("");
-  const [aliasError, setAliasError] = useState<string | null>(null);
-  const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
-
-  function updateAppearanceMode(mode: AppearanceMode) {
-    if (mode === appearanceMode) return;
-    setAppearanceMode(mode);
-    writeAppearanceMode(window.localStorage, mode);
-    applyAppearanceMode(mode);
-    syncStatusBarStyle(mode);
-    haptic("light");
-  }
 
   useEffect(() => {
     if (!isOperaLibre || demoMode || localMode) {
@@ -830,131 +781,16 @@ function MainApp({
       window.removeEventListener("focus", refreshCurrentUser);
     };
   }, [demoMode, isOperaLibre, localMode, onCurrentUserChanged]);
-
-  // The shared "who finished what" feed. Polled on the same cadence as the
-  // account refresh above: a finish is news for hours, so a tighter loop would
-  // buy nothing and cost a request every few seconds.
-  const [finishFeed, setFinishFeed] = useState<FinishFeed>(EMPTY_FINISH_FEED);
-  const [finishFeedOpen, setFinishFeedOpen] = useState(false);
-  // The previous poll, so a banner fires only for what actually just arrived.
-  // Null until the first poll lands, which is what keeps a session opening on
-  // a backlog from announcing all of it at once.
-  const previousFinishFeedRef = useRef<FinishFeed | null>(null);
-  // Ticks once per feed request, whether a poll or a mark-as-seen. Answers are
-  // not guaranteed to arrive in the order they were asked for — a focus poll
-  // can overlap the interval one, and either can outlast the 30s gap — so only
-  // the newest request is allowed to touch the feed or the baseline above.
-  // An older answer landing would rewind the baseline, and the next poll would
-  // then treat already-announced finishes as new and banner them again.
-  const finishRequestRef = useRef(0);
-  const finishFeedAvailable =
-    capabilities.sharedActivity && isNotifiedOfFinishes(currentUser);
-
-  useEffect(() => {
-    if (!finishFeedAvailable) {
-      // Turning the setting off empties the bell rather than freezing the last
-      // feed behind it, and resets the baseline so re-enabling does not fire a
-      // burst of banners for everything that happened meanwhile.
-      setFinishFeed(EMPTY_FINISH_FEED);
-      setFinishFeedOpen(false);
-      previousFinishFeedRef.current = null;
-      return;
-    }
-    let cancelled = false;
-    const poll = () => {
-      const request = (finishRequestRef.current += 1);
-      void getFinishFeed()
-        .then(async (next) => {
-          if (cancelled || request !== finishRequestRef.current) return;
-          const arrivals = arrivedSince(previousFinishFeedRef.current, next);
-          previousFinishFeedRef.current = next;
-          setFinishFeed(next);
-          const banner = finishBannerText(arrivals);
-          // Permission is asked for here, the first time there is actually
-          // something to show, rather than at launch with no context.
-          if (banner && (await ensureFinishBannerPermission())) {
-            await postFinishBanner(banner);
-          }
-        })
-        .catch(() => undefined);
-    };
-    poll();
-    const timer = window.setInterval(poll, 30_000);
-    window.addEventListener("focus", poll);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      window.removeEventListener("focus", poll);
-    };
-  }, [finishFeedAvailable]);
-
-  function toggleFinishFeed() {
-    const opening = !finishFeedOpen;
-    setFinishFeedOpen(opening);
-    if (!opening) return;
-    haptic("light");
-    // Opening the panel is the listener reading it, so the badge clears from
-    // the top entry down. A finish that lands while it is open stays unseen
-    // until the next open, which is why this marks by id rather than "all".
-    const latest = finishFeed.latestId;
-    if (!latest || finishFeed.unseenCount === 0) return;
-    const request = (finishRequestRef.current += 1);
-    void markFinishFeedSeen(latest)
-      .then((next) => {
-        // Shares the sequence with the poll above: a request already in flight
-        // when the panel opened must not land afterwards and un-clear the
-        // badge the listener just read.
-        if (request !== finishRequestRef.current) return;
-        previousFinishFeedRef.current = next;
-        setFinishFeed(next);
-      })
-      .catch(() => undefined);
-  }
-
-  function saveAlias(event: React.FormEvent) {
-    event.preventDefault();
-    setAliasError(null);
-    try {
-      addServerAlias(aliasName, aliasUrl);
-      setServerAliases(getServerAliases());
-      setAliasName("");
-      setAliasUrl("");
-    } catch (error) {
-      setAliasError(error instanceof Error ? error.message : "Could not save that alias.");
-    }
-  }
-
-  async function switchToAlias(alias: ServerAlias) {
-    setAliasError(null);
-    setSwitchingAliasId(alias.id);
-    try {
-      await pingServer(getServerType(), alias.url);
-      activateServerAlias(alias);
-      window.location.reload();
-    } catch (error) {
-      setAliasError(error instanceof Error ? error.message : "Could not reach that address.");
-      setSwitchingAliasId(null);
-    }
-  }
-
-  async function toggleRotationLock() {
-    setRotationLockBusy(true);
-    setRotationLockError(null);
-    try {
-      if (rotationLockEnabled) {
-        await disableRotationLock();
-        setRotationLockEnabled(false);
-      } else {
-        await enableRotationLock();
-        setRotationLockEnabled(true);
-      }
-      haptic("light");
-    } catch (error) {
-      setRotationLockError(error instanceof Error ? error.message : "Could not change the rotation lock.");
-    } finally {
-      setRotationLockBusy(false);
-    }
-  }
+  const {
+    finishFeed,
+    finishFeedAvailable,
+    finishFeedOpen,
+    setFinishFeedOpen,
+    toggleFinishFeed
+  } = useFinishFeed({
+    capabilities,
+    currentUser
+  });
   const [nativePlayerView, setNativePlayerView] = useState<"now" | "details" | "chapters">("now");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
@@ -1016,6 +852,19 @@ function MainApp({
   const overruledSaveRef = useRef(new Map<string, Progress>());
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
+  // Timer and native-event callbacks run after later renders may have landed;
+  // they call the latest version of these functions rather than the one from
+  // the render that registered them (a stale persistProgress would save an
+  // outdated finished override, for one).
+  const startPlaybackRef = useRef(startPlayback);
+  startPlaybackRef.current = startPlayback;
+  const persistProgressRef = useRef(persistProgress);
+  persistProgressRef.current = persistProgress;
+  const markPlaybackTouchedRef = useRef(markPlaybackTouched);
+  markPlaybackTouchedRef.current = markPlaybackTouched;
+  const pausePlaybackRef = useRef(pausePlayback);
+  pausePlaybackRef.current = pausePlayback;
+
   // Authentication can be restored synchronously, but the native destination
   // and playback position depend on cached state. Keep the launch surface
   // visible until both are coherent so neither the default Shelf nor the
@@ -1126,18 +975,6 @@ function MainApp({
   // that pushes the gain across.
   const playbackGainRef = useRef(BOOK_GAIN_DEFAULT);
   const gainChainRef = useRef<PlaybackGainChain | null>(null);
-  const [sleepMinutes, setSleepMinutes] = useState(0);
-  const [sleepRemaining, setSleepRemaining] = useState(0);
-  const [customSleepTimers, setCustomSleepTimers] = useState<number[]>(readStoredCustomSleepTimers);
-  const [sleepCustomOpen, setSleepCustomOpen] = useState(false);
-  const [sleepCustomDraft, setSleepCustomDraft] = useState("");
-  const sleepChoices = useMemo(() => sleepTimerChoices(customSleepTimers), [customSleepTimers]);
-  const sleepCustomMinutes = normalizeSleepTimerMinutes(sleepCustomDraft);
-  const sleepDeadlineRef = useRef<number | null>(null);
-  const sleepRemainingRef = useRef(0);
-  useEffect(() => {
-    sleepRemainingRef.current = sleepRemaining;
-  }, [sleepRemaining]);
   const [nativePlayerSheet, setNativePlayerSheet] = useState<NativePlayerSheet>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1145,16 +982,6 @@ function MainApp({
   // without a local download can't actually play in this state.
   const [isOffline, setIsOffline] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
-  const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
-  const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
-  const [purchaseViewMode, setPurchaseViewMode] = useState<ShelfViewMode>(readStoredPurchaseViewMode);
-  // iPad's two-page Shelf can give the whole screen to either page: the
-  // player alone, or the collection alone at its larger grid.
-  const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
-  // The view the collection had before it was widened, restored when it
-  // folds back, so the grid it widens into never replaces a saved choice.
-  const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
   const [librarySource, setLibrarySource] = useState<LibrarySource>("local");
   const [libroRefreshKey, setLibroRefreshKey] = useState(0);
   const [libroDestination, setLibroDestination] = useState<"server" | "device">("server");
@@ -1164,11 +991,6 @@ function MainApp({
   useEffect(() => {
     if (librarySource !== "local") lastPurchaseSource.current = librarySource;
   }, [librarySource]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const shelfSearchRef = useRef<HTMLInputElement | null>(null);
-  const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const filterToggleRef = useRef<HTMLButtonElement | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [readalongOpen, setReadalongOpen] = useState(false);
   // The native reader stays up while UIKit brings the tab bar back.
@@ -1222,22 +1044,38 @@ function MainApp({
   const showAudiblePurchases = librarySource === "audible" || (librarySource === "all" && canBrowseLibation && !purchaseAccountFilter.startsWith("libro:"));
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadBookName, setUploadBookName] = useState("");
-  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [uploadBusy, setUploadBusy] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [ebookUploadBook, setEbookUploadBook] = useState<Book | null>(null);
-  const [ebookUploadFile, setEbookUploadFile] = useState<File | null>(null);
-  const [ebookUploadBusy, setEbookUploadBusy] = useState(false);
-  const [ebookUploadError, setEbookUploadError] = useState<string | null>(null);
+  const {
+    chooseEbookUpload,
+    chooseUploadFiles,
+    ebookUploadBook,
+    ebookUploadBusy,
+    ebookUploadError,
+    ebookUploadFile,
+    setEbookUploadBook,
+    setEbookUploadError,
+    setEbookUploadFile,
+    setUploadBookName,
+    setUploadError,
+    setUploadModalOpen,
+    submitAudiobookUpload,
+    submitEbookUpload,
+    uploadBookName,
+    uploadBusy,
+    uploadError,
+    uploadFiles,
+    uploadModalOpen
+  } = useUploads({
+    books,
+    reconcileServerBookGains,
+    setBooks,
+    setError,
+    setIsOffline,
+    setLibrarySource,
+    setSelectedBookId
+  });
   const [profileOpen, setProfileOpen] = useState(false);
-  const [metadataEditOpen, setMetadataEditOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
   const [showChapterJumpTop, setShowChapterJumpTop] = useState(false);
-  const [metadataForm, setMetadataForm] = useState<MetadataEditorState | null>(null);
-  const [metadataSaving, setMetadataSaving] = useState(false);
-  const [metadataError, setMetadataError] = useState<string | null>(null);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   // null while the disk lookup for the current track is in flight; url null
   // means the track is not downloaded and should stream.
@@ -1248,6 +1086,29 @@ function MainApp({
   const wantsAutoplayRef = useRef(false);
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
+  const {
+    configureSleepTimer,
+    setSleepCustomDraft,
+    setSleepCustomOpen,
+    setSleepMinutes,
+    setSleepRemaining,
+    sleepChoices,
+    sleepCustomDraft,
+    sleepCustomMinutes,
+    sleepCustomOpen,
+    sleepDeadlineRef,
+    sleepMinutes,
+    sleepRemaining,
+    sleepRemainingRef,
+    startCustomSleepTimer
+  } = useSleepTimer({
+    audioRef,
+    isPlaying,
+    nativeAudio,
+    pausePlaybackRef,
+    setNativePlayerSheet,
+    setPlaybackError
+  });
   // For long-lived callbacks that must see a fallback to web audio without
   // being recreated by it (recreating loadBooks would reload the library).
   const nativeAudioRef = useRef(nativeAudio);
@@ -1278,6 +1139,47 @@ function MainApp({
   const nativeAudioAttachedRef = useRef(false);
   const downloadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
+  const {
+    activeShelfFilterChips,
+    activeShelfFilterCount,
+    changeShelfLayout,
+    clearShelfFilters,
+    closeShelfFilters,
+    filterToggleRef,
+    filtersOpen,
+    purchaseViewMode,
+    reverseSort,
+    searchQuery,
+    selectPurchaseViewMode,
+    selectSortMode,
+    selectViewMode,
+    setFiltersOpen,
+    setSearchQuery,
+    setShelfFilters,
+    shelfFacets,
+    shelfFilters,
+    shelfFolded,
+    shelfLandscape,
+    shelfLayout,
+    shelfSearchRef,
+    showShelfFilters,
+    sortMode,
+    sortOrderLabel,
+    sortReversed,
+    viewMode,
+    visibleBookColumns,
+    visibleBooks
+  } = useShelf({
+    books,
+    demoMode,
+    downloadedBookIds,
+    ipad,
+    librarySource,
+    localMode,
+    native,
+    playbackFold
+  });
+
   /**
    * The book CarPlay started on the shared native player, if any.
    *
@@ -1298,266 +1200,7 @@ function MainApp({
   const [activeDownloads, setActiveDownloads] = useState<Record<string, DeviceDownloadActivity>>({});
   const activeDownloadIdsRef = useRef<Set<string>>(new Set());
   const [deviceImport, setDeviceImport] = useState<{ completed: number; total: number } | null>(null);
-
-  // Restores whatever sort was last chosen for this shelf rather than collapsing to
-  // "title": each source keeps its own persisted sort (see readStoredSortMode).
-  useEffect(() => {
-    setSortMode(readStoredSortMode(librarySource));
-    setSortReversed(readStoredValue(`operalibre.sortReversed.${librarySource}`) === "true");
-  }, [librarySource]);
-
-  function selectSortMode(mode: SortMode) {
-    setSortMode(mode);
-    writeStoredValue(sortModeStorageKey(librarySource), mode);
-  }
-
-  function reverseSort() {
-    setSortReversed(!sortReversed);
-    writeStoredValue(`operalibre.sortReversed.${librarySource}`, String(!sortReversed));
-  }
-
-  function selectViewMode(mode: ShelfViewMode) {
-    viewBeforeWideShelfRef.current = null;
-    setViewMode(mode);
-    writeStoredShelfViewMode(mode);
-  }
-
-  function selectPurchaseViewMode(mode: ShelfViewMode) {
-    setPurchaseViewMode(mode);
-    writeStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY, mode);
-  }
-
-  function changeShelfLayout(next: ShelfLayout) {
-    if (next === shelfLayout) return;
-    if (next === "library") {
-      viewBeforeWideShelfRef.current = viewMode;
-      setViewMode("grid");
-    } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
-      setViewMode(viewBeforeWideShelfRef.current);
-      viewBeforeWideShelfRef.current = null;
-    }
-    setShelfLayout(next);
-  }
-
-  useEffect(() => {
-    if (!native) return;
-    const wideShelf = window.matchMedia("(min-width: 720px) and (min-height: 500px)");
-    const restoreSplitLayout = () => {
-      if (wideShelf.matches || shelfLayout === "split") return;
-      if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
-        setViewMode(viewBeforeWideShelfRef.current);
-        viewBeforeWideShelfRef.current = null;
-      }
-      setShelfLayout("split");
-    };
-    restoreSplitLayout();
-    wideShelf.addEventListener("change", restoreSplitLayout);
-    return () => wideShelf.removeEventListener("change", restoreSplitLayout);
-  }, [native, shelfLayout]);
-
-  // Landscape shelves trade chrome for covers: a phone on its side, or an
-  // iPad in landscape, gets the dense book wall, and any shelf wide enough
-  // to run its controls along one toolbar folds its header into it.
-  const [landscape, setLandscape] = useState(() => readLandscape());
-  const [shortLandscape, setShortLandscape] = useState(() => readShortLandscape());
-  useEffect(() => {
-    if (!native) return;
-    const wide = window.matchMedia(LANDSCAPE_QUERY);
-    const short = window.matchMedia(SHORT_LANDSCAPE_QUERY);
-    const update = () => {
-      setLandscape(wide.matches);
-      setShortLandscape(short.matches);
-    };
-    update();
-    wide.addEventListener("change", update);
-    short.addEventListener("change", update);
-    return () => {
-      wide.removeEventListener("change", update);
-      short.removeEventListener("change", update);
-    };
-  }, [native]);
-  const shelfLandscape = native && landscape && (ipad || shortLandscape);
   const [activeGame, setActiveGame] = useState<GameName>("match");
-  const shelfFolded = native && ((!ipad && shortLandscape) || shelfLayout === "library");
-
-
-  function closeShelfFilters() {
-    setFiltersOpen(false);
-    filterToggleRef.current?.focus();
-  }
-
-  const sortOrderLabel = sortMode === "duration"
-    ? sortReversed ? "Shortest first" : "Longest first"
-    : sortMode === "added"
-    ? sortReversed ? "Oldest first" : "Newest first"
-    : sortMode === "progress"
-      ? sortReversed ? "Finished first" : "In progress first"
-      : sortMode === "tag" || sortMode === "series"
-        ? sortReversed ? "Reverse book order" : "Book order"
-        : sortReversed ? "Z–A" : "A–Z";
-
-  const allShelfFacets = useMemo(() => ({
-    genres: countShelfFacet(books, "genres"),
-    tags: countShelfFacet(books, "tags")
-  }), [books]);
-
-  // Each book scored once against every filter axis separately. Keeping the five
-  // verdicts apart is what lets the panel count a group over the books the
-  // *other* groups allow without walking the library again per chip.
-  const shelfMatches = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    return books.map((book) => ({
-      book,
-      search: bookMatchesShelfSearch(book, query),
-      status: bookMatchesShelfStatus(book, shelfFilters.status),
-      availableOnDevice:
-        demoMode
-        || localMode
-        || book.source === "device"
-        || !!book.deviceBookId
-        || downloadedBookIds.has(book.id),
-      genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
-      tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
-    })).map((match) => ({
-      ...match,
-      downloaded: bookMatchesShelfDownload(match.availableOnDevice, shelfFilters.downloadedOnly)
-    }));
-  }, [books, demoMode, downloadedBookIds, localMode, searchQuery, shelfFilters]);
-
-  const shelfFacets = useMemo(() => {
-    const forGenres: Book[] = [];
-    const forTags: Book[] = [];
-    const statusCounts: Record<ShelfStatusFilter, number> = {
-      all: 0,
-      inProgress: 0,
-      notStarted: 0,
-      finished: 0
-    };
-    let downloadedCount = 0;
-    for (const match of shelfMatches) {
-      if (match.search && match.status && match.tags && match.downloaded) forGenres.push(match.book);
-      if (match.search && match.status && match.genres && match.downloaded) forTags.push(match.book);
-      if (match.search && match.genres && match.tags && match.downloaded) {
-        statusCounts.all += 1;
-        statusCounts[readingStatus(match.book)] += 1;
-      }
-      if (match.search && match.status && match.genres && match.tags && match.availableOnDevice) {
-        downloadedCount += 1;
-      }
-    }
-    return {
-      genres: updateShelfFacetCounts(allShelfFacets.genres, forGenres, "genres"),
-      tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
-      statusCounts,
-      downloadedCount
-    };
-  }, [allShelfFacets, shelfMatches]);
-
-  const activeShelfFilterCount = countActiveShelfFilters(shelfFilters);
-  // Genres, tags and progress are all things only your own shelf records; the
-  // Audible list keeps its account filter instead. Any shelf with books on it
-  // can be filtered — every book has a reading status even when nothing has
-  // been given a genre or a tag yet, so this is deliberately not gated on the
-  // two chip groups having something in them. Hiding the control until the
-  // metadata showed up only made it missing whenever someone went looking.
-  const showShelfFilters = librarySource === "local" && books.length > 0;
-
-  // Reads back the chips that are on, so the summary line under the toolbar can
-  // name a filter and drop it without the panel being open.
-  const activeShelfFilterChips = useMemo(() => {
-    const chips: { id: string; caption: string; label: string; clear: () => void }[] = [];
-    if (shelfFilters.status !== "all") {
-      chips.push({
-        id: `status:${shelfFilters.status}`,
-        caption: "Status",
-        label: readingStatusLabel(shelfFilters.status),
-        clear: () => setShelfFilters((filters) => ({ ...filters, status: "all" }))
-      });
-    }
-    if (shelfFilters.downloadedOnly) {
-      chips.push({
-        id: "availability:downloaded",
-        caption: "Availability",
-        label: "Downloaded on Device",
-        clear: () => setShelfFilters((filters) => ({ ...filters, downloadedOnly: false }))
-      });
-    }
-    for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
-      const caption = group === "genres" ? "Genre" : "Tag";
-      for (const key of shelfFilters[group]) {
-        // Keep a removed/renamed value removable until the reader clears it.
-        const label = shelfFacets[group].find((option) => option.key === key)?.label ?? key;
-        chips.push({
-          id: `${group}:${key}`,
-          caption,
-          label,
-          clear: () => setShelfFilters((filters) => toggleShelfFacet(filters, group, key))
-        });
-      }
-    }
-    return chips;
-  }, [shelfFacets, shelfFilters]);
-
-  function clearShelfFilters() {
-    setShelfFilters(EMPTY_SHELF_FILTERS);
-  }
-
-  const visibleBooks = useMemo(() => {
-    const filtered = shelfMatches
-      .filter((match) => match.search && match.status && match.downloaded && match.genres && match.tags)
-      .map((match) => match.book);
-
-    const sorted = [...filtered];
-    sorted.sort((a, b) => {
-      switch (sortMode) {
-        case "author":
-          return SHELF_TEXT_COLLATOR.compare(a.author ?? "", b.author ?? "") || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        case "series":
-          return compareShelfLabels(a.metadata.series, b.metadata.series)
-            || compareShelfLabels(a.metadata.seriesPosition, b.metadata.seriesPosition)
-            || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        case "tag": {
-          const aTag = tagForShelfSort(a, shelfFilters.tags);
-          const bTag = tagForShelfSort(b, shelfFilters.tags);
-          return compareShelfLabels(aTag?.name, bTag?.name)
-            || compareShelfLabels(aTag?.position, bTag?.position)
-            || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        }
-        case "genre":
-          return compareShelfLabels(a.genres[0], b.genres[0]) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        case "progress":
-          return compareReadingStatus(a, b) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        case "duration":
-          return (b.durationSeconds ?? 0) - (a.durationSeconds ?? 0);
-        case "added":
-          // A book cached or imported before this field existed has no addedAt
-          // once it round-trips through storage, even though the type says it
-          // always does; treat that as the oldest possible addition.
-          return compareShelfAddedAt(a.addedAt, b.addedAt) || SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-        case "title":
-        default:
-          return SHELF_TEXT_COLLATOR.compare(a.title, b.title);
-      }
-    });
-    return sortReversed ? sorted.reverse() : sorted;
-  }, [shelfMatches, shelfFilters.tags, sortMode, sortReversed]);
-
-  const visibleBookRuns = useMemo(() => {
-    const runs: Array<{
-      label: string | null;
-      items: Array<{ book: (typeof visibleBooks)[number]; index: number }>;
-    }> = [];
-    visibleBooks.forEach((book, index) => {
-      const label = bookSortGroupLabel(book, sortMode, shelfFilters.tags);
-      const previous = runs[runs.length - 1];
-      if (label && previous?.label && compareShelfLabels(label, previous.label) === 0) {
-        previous.items.push({ book, index });
-      } else {
-        runs.push({ label, items: [{ book, index }] });
-      }
-    });
-    return runs;
-  }, [shelfFilters.tags, sortMode, visibleBooks]);
 
   // The memoized shelf needs a select handler with one identity for the
   // component's lifetime that still reaches the latest selectBook.
@@ -1569,19 +1212,6 @@ function MainApp({
     });
   };
   const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
-
-  const splitShelfIntoLeaves = native && playbackFold.posture !== "closed" && playbackFold.fold?.axis === "vertical";
-  const visibleBookColumns = useMemo(() => {
-    if (!splitShelfIntoLeaves) return [visibleBookRuns];
-    const columns: typeof visibleBookRuns[] = [[], []];
-    const weights = [0, 0];
-    for (const run of visibleBookRuns) {
-      const column = weights[0] <= weights[1] ? 0 : 1;
-      columns[column].push(run);
-      weights[column] += run.items.length + 0.5;
-    }
-    return columns;
-  }, [splitShelfIntoLeaves, visibleBookRuns]);
 
   const audibleAccountLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -1657,6 +1287,21 @@ function MainApp({
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
     [books, selectedBookId]
   );
+  const {
+    metadataEditOpen,
+    metadataError,
+    metadataForm,
+    metadataSaving,
+    openMetadataEditor,
+    saveMetadata,
+    setMetadataEditOpen,
+    setMetadataError,
+    setMetadataForm
+  } = useMetadataEditor({
+    reconcileServerBookGains,
+    selectedBook,
+    setBooks
+  });
   const selectedDescription = selectedBook ? displayBookDescription(selectedBook) : null;
   const selectedSharedReaders = (selectedBook?.sharedProgress ?? []).filter(
     (reader) => reader.status !== "notStarted"
@@ -2616,19 +2261,6 @@ function MainApp({
     playbackBookDownloaded,
     requiredNativeAudioQueueKey
   ]);
-
-  // Timer and native-event callbacks run after later renders may have landed;
-  // they call the latest version of these functions rather than the one from
-  // the render that registered them (a stale persistProgress would save an
-  // outdated finished override, for one).
-  const startPlaybackRef = useRef(startPlayback);
-  startPlaybackRef.current = startPlayback;
-  const persistProgressRef = useRef(persistProgress);
-  persistProgressRef.current = persistProgress;
-  const markPlaybackTouchedRef = useRef(markPlaybackTouched);
-  markPlaybackTouchedRef.current = markPlaybackTouched;
-  const pausePlaybackRef = useRef(pausePlayback);
-  pausePlaybackRef.current = pausePlayback;
 
   // Autoplay requested while the audio source was still resolving (native disk
   // lookup): start playback as soon as the source lands.
@@ -3754,102 +3386,6 @@ function MainApp({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeChapterId, chaptersOpen, isViewingPlayingBook]);
-
-  const sleepTimerArmed = sleepRemaining > 0;
-  useEffect(() => {
-    if (!isPlaying || !sleepTimerArmed) {
-      if (!sleepTimerArmed) sleepDeadlineRef.current = null;
-      return;
-    }
-
-    sleepDeadlineRef.current ??= Date.now() + sleepRemaining * 1000;
-    // The wall-clock deadline cannot see pauses that happen while the WebView
-    // is suspended, so on the native path AVPlayer's playing-time countdown is
-    // authoritative and this deadline only drives the displayed value.
-    const syncFromNative = () => {
-      void getNativeAudioSleepTimer().then((remaining) => {
-        const next = Math.ceil(remaining);
-        if (next > 0) {
-          sleepDeadlineRef.current = Date.now() + next * 1000;
-          setSleepRemaining(next);
-        }
-      }).catch(() => undefined);
-    };
-    if (nativeAudio) syncFromNative();
-    const timer = window.setInterval(() => {
-      const deadline = sleepDeadlineRef.current;
-      if (deadline === null) return;
-      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-      if (next === 0 && nativeAudio) {
-        // Native owns expiry: it pauses AVPlayer and emits sleepTimerEnded,
-        // which clears this state. Zeroing the native timer here would disarm
-        // a countdown that may legitimately still hold minutes after a pause
-        // this clock never saw.
-        syncFromNative();
-        return;
-      }
-      setSleepRemaining(next);
-      if (next === 0) {
-        sleepDeadlineRef.current = null;
-        pausePlaybackRef.current(audioRef.current);
-        setSleepMinutes(0);
-      }
-    }, 1000);
-
-    return () => {
-      window.clearInterval(timer);
-      const deadline = sleepDeadlineRef.current;
-      if (deadline === null) return;
-      sleepDeadlineRef.current = null;
-      // On the native path the countdown keeps its true value in AVPlayer and
-      // re-syncs when the effect re-arms; recomputing from the wall clock here
-      // could zero the UI while the native timer still holds minutes.
-      if (nativeAudio) return;
-      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-      setSleepRemaining(next);
-      if (next === 0) setSleepMinutes(0);
-    };
-    // sleepRemaining seeds the deadline once when the timer arms; after that
-    // the deadline ref drives the countdown, and re-arming on every tick
-    // would reset it each second.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, nativeAudio, sleepTimerArmed]);
-
-  function configureSleepTimer(minutes: number) {
-    haptic("light");
-    sleepDeadlineRef.current = isPlaying && minutes > 0
-      ? Date.now() + minutes * 60 * 1000
-      : null;
-    setSleepMinutes(minutes);
-    setSleepRemaining(minutes * 60);
-    if (nativeAudio) {
-      void setNativeAudioSleepTimer(minutes * 60).catch((error) => {
-        // Nothing enforces the timer once the WebView is suspended, so
-        // showing it armed after a failed native call would be a lie.
-        sleepDeadlineRef.current = null;
-        setSleepMinutes(0);
-        setSleepRemaining(0);
-        setPlaybackError(errorMessage(error, "The sleep timer could not be configured."));
-      });
-    }
-    setSleepCustomOpen(false);
-    setSleepCustomDraft("");
-    setNativePlayerSheet(null);
-  }
-
-  /**
-   * A duration the listener typed. It is remembered before being armed so it
-   * stays one tap away tomorrow night, whether or not tonight's timer runs out.
-   */
-  function startCustomSleepTimer(event: React.FormEvent) {
-    event.preventDefault();
-    const minutes = normalizeSleepTimerMinutes(sleepCustomDraft);
-    if (minutes === null) return;
-    const remembered = mergeCustomSleepTimer(customSleepTimers, minutes);
-    setCustomSleepTimers(remembered);
-    writeStoredCustomSleepTimers(remembered);
-    configureSleepTimer(minutes);
-  }
 
   useEffect(() => {
     const sync = createForegroundProgressSync(
@@ -5411,19 +4947,6 @@ function MainApp({
     }
   }
 
-  function toggleFollowSyncEnabled() {
-    const enabled = !followSyncEnabled;
-    writeFollowSyncEnabled(enabled);
-    setFollowSyncEnabled(enabled);
-  }
-
-  function updateFollowAggressiveness(value: FollowAggressiveness) {
-    if (value === followAggressiveness) return;
-    writeFollowAggressiveness(value);
-    setFollowAggressiveness(value);
-    selectionHaptic("change");
-  }
-
   async function refreshLibrary() {
     setIsLoading(true);
     if (localMode) {
@@ -5502,92 +5025,6 @@ function MainApp({
     pausePlayback(audioRef.current);
     await persistProgress();
     await flushProgressSaveQueue();
-  }
-
-  function chooseUploadFiles(event: React.ChangeEvent<HTMLInputElement>) {
-    const chosen = Array.from(event.currentTarget.files ?? []);
-    const files = chosen.filter((file) => isSupportedAudioFileName(file.name));
-    const skipped = chosen.filter((file) => !isSupportedAudioFileName(file.name));
-    setUploadFiles(files);
-    setUploadError(
-      skipped.length
-        ? `Left out ${skipped.map((file) => file.name).join(", ")}: the library takes ${SUPPORTED_AUDIO_EXTENSIONS.join(", ")} files.`
-        : null
-    );
-    if (!uploadBookName.trim() && files.length > 0) {
-      setUploadBookName(files[0].name.replace(/\.[^.]+$/, ""));
-    }
-  }
-
-  async function submitAudiobookUpload(event: React.FormEvent) {
-    event.preventDefault();
-    if (!uploadBookName.trim() || uploadFiles.length === 0) {
-      setUploadError("Enter a book name and choose at least one audiobook file.");
-      return;
-    }
-
-    setUploadBusy(true);
-    setUploadError(null);
-    const existingIds = new Set(books.map((book) => book.id));
-    try {
-      const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
-      const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
-      setBooks(nextBooks);
-      reconcileServerBookGains(nextBooks);
-      setIsOffline(false);
-      setError(null);
-      if (uploadedBook) {
-        setSelectedBookId(uploadedBook.id);
-      }
-      setLibrarySource("local");
-      setUploadModalOpen(false);
-      setUploadBookName("");
-      setUploadFiles([]);
-    } catch (error) {
-      setUploadError(errorMessage(error, "The audiobook could not be uploaded."));
-    } finally {
-      setUploadBusy(false);
-    }
-  }
-
-  function chooseEbookUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0] ?? null;
-    const error = file && !file.name.toLowerCase().endsWith(".epub")
-      ? "Choose an EPUB (.epub) file."
-      : file && (file.size === 0 || file.size > 64 * 1024 * 1024)
-        ? "Choose a non-empty EPUB up to 64 MiB." : null;
-    setEbookUploadFile(error ? null : file);
-    setEbookUploadError(error);
-  }
-
-  async function submitEbookUpload(event: React.FormEvent) {
-    event.preventDefault();
-    if (!ebookUploadBook || !ebookUploadFile || !ebookUploadFile.name.toLowerCase().endsWith(".epub")) {
-      setEbookUploadError("Choose an EPUB (.epub) file.");
-      return;
-    }
-    setEbookUploadBusy(true);
-    setEbookUploadError(null);
-    try {
-      const nextBooks = await uploadEbook(ebookUploadBook.id, ebookUploadFile);
-      const paired = nextBooks.find((book) => book.id === ebookUploadBook.id);
-      if (!paired?.readingFile || paired.readingFile.extension !== "epub") {
-        throw new Error("The server has not paired the EPUB yet. Refresh the library to check its status.");
-      }
-      // Upload responses may arrive after playback or device-library updates.
-      // Adopt only the paired files; keep current progress and local books.
-      setBooks((existing) => existing.map((book) => book.id === paired.id ? {
-        ...book, readingFile: paired.readingFile, companions: paired.companions, syncFile: paired.syncFile
-      } : book));
-      setIsOffline(false);
-      setError(null);
-      setEbookUploadBook(null);
-      setEbookUploadFile(null);
-    } catch (error) {
-      setEbookUploadError(errorMessage(error, "The EPUB could not be uploaded."));
-    } finally {
-      setEbookUploadBusy(false);
-    }
   }
 
   function trackLibationJob(job: JobStatus) {
@@ -5706,41 +5143,6 @@ function MainApp({
       setLibationError(errorMessage(error, "Libation download-all could not be started."));
     } finally {
       setLibationAllPending(false);
-    }
-  }
-
-  function openMetadataEditor(book: Book) {
-    setMetadataForm(metadataEditorFromBook(book));
-    setMetadataError(null);
-    setMetadataEditOpen(true);
-  }
-
-  async function saveMetadata(event: React.FormEvent) {
-    event.preventDefault();
-    if (!selectedBook || !metadataForm) {
-      return;
-    }
-
-    const update = metadataUpdateFromEditor(metadataForm);
-    if (!update.title) {
-      setMetadataError("Title is required.");
-      return;
-    }
-
-    setMetadataSaving(true);
-    setMetadataError(null);
-    try {
-      const updatedBook = await updateBookMetadata(selectedBook.id, update);
-      setBooks((existing) =>
-        existing.map((book) => (book.id === updatedBook.id ? updatedBook : book))
-      );
-      reconcileServerBookGains([updatedBook]);
-      setMetadataEditOpen(false);
-      setMetadataForm(null);
-    } catch (error) {
-      setMetadataError(errorMessage(error, "Book info could not be saved."));
-    } finally {
-      setMetadataSaving(false);
     }
   }
 
