@@ -306,7 +306,8 @@ import {
   loadCompanionBytes,
   getCachedEpubBytes,
   releaseOfflineMediaUrl,
-  removeBookDownload
+  removeBookDownload,
+  warnCacheFailure
 } from "./offline";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { haptic, selectionHaptic, syncStatusBarStyle } from "./native";
@@ -7151,7 +7152,7 @@ function MainApp({
     if (!reconciling) progressMutationVersion.current += 1;
     overruledSaveRef.current.delete(playbackBook.id);
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
-    void cacheProgress(currentUser.id, localProgress).catch(() => undefined);
+    void cacheProgress(currentUser.id, localProgress).catch(warnCacheFailure("cache listening progress"));
     if (playbackBook.deviceBookId) {
       const deviceBook = getDeviceBooks().find((book) => book.id === playbackBook.deviceBookId);
       const deviceTrack = deviceBook?.tracks[activeTrackIndex];
@@ -7335,7 +7336,7 @@ function MainApp({
       };
       progressMutationVersion.current += 1;
       writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, progress);
-      void cacheProgress(currentUser.id, progress).catch(() => undefined);
+      void cacheProgress(currentUser.id, progress).catch(warnCacheFailure("cache listening progress"));
       updateBookProgress(book.id, progress);
       if (book.source === "device") continue;
       queuedProgressSaves.current.set(book.id, {
@@ -7377,7 +7378,7 @@ function MainApp({
       currentUser.id,
       saved
     );
-    void cacheProgress(currentUser.id, saved).catch(() => undefined);
+    void cacheProgress(currentUser.id, saved).catch(warnCacheFailure("cache listening progress"));
     if (book.deviceBookId) {
       const deviceBook = getDeviceBooks().find((candidate) => candidate.id === book.deviceBookId);
       const serverTrackIndex = book.tracks.findIndex((track) => track.id === saved.trackId);
@@ -7558,7 +7559,7 @@ function MainApp({
           currentUser.id,
           result.progress
         );
-        void cacheProgress(currentUser.id, result.progress).catch(() => undefined);
+        void cacheProgress(currentUser.id, result.progress).catch(warnCacheFailure("cache listening progress"));
       } else {
         summary = await setBookCompletion(book, finished, finalProgress);
         if (book.deviceBookId) {
@@ -7588,7 +7589,7 @@ function MainApp({
           currentUser.id,
           completedProgress
         );
-        void cacheProgress(currentUser.id, completedProgress).catch(() => undefined);
+        void cacheProgress(currentUser.id, completedProgress).catch(warnCacheFailure("cache listening progress"));
       }
 
       setBooks((existing) => {
@@ -7599,7 +7600,7 @@ function MainApp({
           void cacheLibrary(
             currentUser.id,
             next.filter((candidate) => candidate.source !== "device")
-          ).catch(() => undefined);
+          ).catch(warnCacheFailure("cache the library"));
         }
         return next;
       });

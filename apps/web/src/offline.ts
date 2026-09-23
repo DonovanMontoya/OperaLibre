@@ -400,10 +400,25 @@ export async function getCachedLibrary(userId: string) {
     await readNativeLibrary(userId)
   );
   if (legacySnapshot && selected === legacySnapshot) {
-    await cacheLibrary(userId, legacySnapshot.books).catch(() => undefined);
-    await removeRecord("data", `library:${userId}`).catch(() => undefined);
+    // The legacy record goes only once the current store holds its books;
+    // otherwise the next load still has it to fall back on.
+    try {
+      await cacheLibrary(userId, legacySnapshot.books);
+      await removeRecord("data", `library:${userId}`);
+    } catch (error) {
+      console.warn("Could not migrate the cached library", error);
+    }
   }
   return selected?.books ?? [];
+}
+
+/**
+ * For a write that duplicates a copy kept elsewhere, such as progress that is
+ * already in the localStorage checkpoint: a failure costs only this copy, so
+ * it is logged rather than surfaced.
+ */
+export function warnCacheFailure(what: string) {
+  return (error: unknown) => console.warn(`Could not ${what}`, error);
 }
 
 export async function cacheProgress(userId: string, progress: Progress) {
@@ -415,8 +430,14 @@ export function getCachedProgress(userId: string, bookId: string) {
     if (scoped) return scoped;
     const legacy = await read<Progress>("data", `progress:${userId}:${bookId}`);
     if (legacy) {
-      await cacheProgress(userId, legacy);
-      await removeRecord("data", `progress:${userId}:${bookId}`);
+      // A failed migration still returns the position it read; the legacy
+      // record stays for the next attempt.
+      try {
+        await cacheProgress(userId, legacy);
+        await removeRecord("data", `progress:${userId}:${bookId}`);
+      } catch (error) {
+        console.warn("Could not migrate cached progress", error);
+      }
     }
     return legacy;
   });
