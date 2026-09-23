@@ -26,18 +26,7 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
 
     override public func load() {
         coordinator.onWebNotification = { [weak self] event, data in
-            guard let self else { return }
-            var payload = JSObject()
-            for (key, value) in data {
-                if let value = value as? String {
-                    payload[key] = value
-                } else if let value = value as? Bool {
-                    payload[key] = value
-                } else if let value = value as? Double {
-                    payload[key] = value
-                }
-            }
-            self.notifyListeners(event, data: payload)
+            self?.notifyListeners(event, data: bridgeEventPayload(from: data))
         }
     }
 
