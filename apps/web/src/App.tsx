@@ -133,7 +133,7 @@ import {
   type ReactNode
 } from "react";
 import { syncMapCacheReducer } from "./syncMapCache";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   adoptableServerProgress,
   endedShortOfTrack,
@@ -914,6 +914,23 @@ function useLandscapeOrientation(): boolean {
     return () => query.removeEventListener("change", update);
   }, []);
   return landscape;
+}
+
+// A browser window wide enough to hold a book open: two pages, each still a
+// comfortable measure. The web reader borrows the Duo's spread here.
+const WIDE_SPREAD_QUERY = "(min-width: 1100px) and (orientation: landscape)";
+function useWideSpreadWindow(): boolean {
+  const [wide, setWide] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.(WIDE_SPREAD_QUERY).matches
+  );
+  useEffect(() => {
+    const query = window.matchMedia(WIDE_SPREAD_QUERY);
+    const update = () => setWide(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return wide;
 }
 
 function readShortLandscape(): boolean {
@@ -1725,18 +1742,33 @@ export function EpubReadalong({
   // Full screen: the native reader always, the web reader in focus mode. The
   // bars fade out for reading and a tap on blank page brings them back.
   const fullscreen = immersive || focusMode;
-  const bookSpread = fullscreen && isBookPosture(deviceFold);
+  // Immersive is the native reader; only the web reader's focus mode borrows
+  // the spread from a wide window.
+  const webSpreadWindow = useWideSpreadWindow() && !immersive && !Capacitor.isNativePlatform();
+  const bookSpread = fullscreen && (isBookPosture(deviceFold) || webSpreadWindow);
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!isReady || !rendition) return;
     const mode = bookSpread ? "always" : "none";
     if ((rendition.settings as { spread?: string }).spread === mode) return;
-    const anchor = anchorCfiRef.current;
-    if (anchor) beginRestore();
-    rendition.spread(mode, 0);
-    if (anchor) void rendition.display(anchor);
-    setRelayoutTick((tick) => tick + 1);
-  }, [beginRestore, bookSpread, isReady]);
+    const applySpread = () => {
+      const anchor = anchorCfiRef.current;
+      if (anchor) beginRestore();
+      rendition.spread(mode, 0);
+      if (anchor) void rendition.display(anchor);
+      setRelayoutTick((tick) => tick + 1);
+    };
+    if (!webSpreadWindow) {
+      applySpread();
+      return;
+    }
+    // On the web the spread arrives with focus mode itself. Let the stage take
+    // its full-screen size first, or the columns keep the old page height.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(applySpread);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [beginRestore, bookSpread, isReady, webSpreadWindow]);
   const fullscreenRef = useRef(fullscreen);
   fullscreenRef.current = fullscreen;
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -4764,8 +4796,10 @@ function MainApp({
   // component's lifetime that still reaches the latest selectBook.
   const selectFromShelfRef = useRef<(book: Book) => void>(() => undefined);
   selectFromShelfRef.current = (book) => {
-    selectBook(book);
-    setLibraryOpen(false);
+    withWebViewTransition(() => {
+      selectBook(book);
+      setLibraryOpen(false);
+    });
   };
   const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
 
@@ -8180,6 +8214,24 @@ function MainApp({
     else setPlayPending(false);
   }
 
+  // On the web, changing books or returning to Now Playing reshapes the page
+  // as one surface, the way the Duo's posture changes do, with the cover
+  // carried across. The native shells keep their own navigation motion.
+  function withWebViewTransition(update: () => void) {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (callback: () => void) => unknown;
+    };
+    if (
+      native
+      || !transitionDocument.startViewTransition
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      update();
+      return;
+    }
+    transitionDocument.startViewTransition(() => flushSync(update));
+  }
+
   function selectBook(book: Book) {
     if (shelfLayout === "library") changeShelfLayout("split");
     setSelectedBookId(book.id);
@@ -8492,10 +8544,12 @@ function MainApp({
       openPlaybackView("now");
       return;
     }
-    if (playbackBook) {
-      setSelectedBookId(playbackBook.id);
-    }
-    setNativePlayerView("now");
+    withWebViewTransition(() => {
+      if (playbackBook) {
+        setSelectedBookId(playbackBook.id);
+      }
+      setNativePlayerView("now");
+    });
     playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -10585,7 +10639,7 @@ function MainApp({
                     return;
                   }
                   haptic("light");
-                  openPlaybackView("now");
+                  withWebViewTransition(() => openPlaybackView("now"));
                 }}
               >
                 {native && nativeTab === "shelf" ? (
@@ -10781,7 +10835,7 @@ function MainApp({
                   </div>
                 </div>
                 <h2>{selectedBook.title}</h2>
-                {native && !isViewingPlayingBook ? (
+                {!isViewingPlayingBook ? (
                   <div className="book-quick-start">
                     <button
                       type="button"
