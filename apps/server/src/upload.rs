@@ -313,8 +313,8 @@ fn validate_uploaded_epub(path: &FsPath) -> anyhow::Result<()> {
         );
         remaining -= count;
     }
-    let bytes = std::fs::read(path)?;
-    let epub = alignment::parse_epub(&bytes)?;
+    // Parsed from the archive already open, not a copy of the whole file.
+    let epub = alignment::parse_epub_archive(&mut archive)?;
     anyhow::ensure!(
         epub.sections
             .iter()

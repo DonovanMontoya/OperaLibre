@@ -81,18 +81,29 @@ pub struct EpubDocument {
     pub language: Option<String>,
 }
 
+#[cfg(test)]
 pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)?;
+    parse_epub_archive(&mut zip::ZipArchive::new(std::io::Cursor::new(bytes))?)
+}
+
+/// Parses an EPUB straight from disk. Only the entries the reader needs are
+/// decompressed, so the file is never held in memory whole.
+pub fn parse_epub_file(path: &std::path::Path) -> anyhow::Result<EpubDocument> {
+    parse_epub_archive(&mut zip::ZipArchive::new(std::fs::File::open(path)?)?)
+}
+
+pub fn parse_epub_archive<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> anyhow::Result<EpubDocument> {
     let mut remaining = 64 * 1024 * 1024;
 
-    let container = read_zip_text(&mut archive, "META-INF/container.xml", &mut remaining)?
+    let container = read_zip_text(archive, "META-INF/container.xml", &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB is missing META-INF/container.xml"))?;
     let opf_path = find_tags(&container, "rootfile")
         .iter()
         .find_map(|tag| attr_value(tag, "full-path"))
         .ok_or_else(|| anyhow::anyhow!("EPUB container.xml has no rootfile full-path"))?;
-    let opf = read_zip_text(&mut archive, &opf_path, &mut remaining)?
+    let opf = read_zip_text(archive, &opf_path, &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB package document `{opf_path}` was not found"))?;
     let opf_dir = parent_dir(&opf_path);
 
@@ -132,7 +143,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             continue;
         }
         let document_path = resolve_href(&opf_dir, &item.href);
-        let Some(document) = read_zip_text(&mut archive, &document_path, &mut remaining)? else {
+        let Some(document) = read_zip_text(archive, &document_path, &mut remaining)? else {
             continue;
         };
         let text = html_to_text(&document);
@@ -150,7 +161,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
         .find(|item| item.properties.split_whitespace().any(|p| p == "nav"));
     if let Some(nav_item) = nav_item {
         let nav_path = resolve_href(&opf_dir, &nav_item.href);
-        if let Some(nav_document) = read_zip_text(&mut archive, &nav_path, &mut remaining)? {
+        if let Some(nav_document) = read_zip_text(archive, &nav_path, &mut remaining)? {
             let nav_dir = parent_dir(&nav_path);
             toc_links = parse_nav_links(&nav_document, &nav_dir);
         }
@@ -161,7 +172,7 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
             .find(|item| item.media_type == "application/x-dtbncx+xml");
         if let Some(ncx_item) = ncx_item {
             let ncx_path = resolve_href(&opf_dir, &ncx_item.href);
-            if let Some(ncx_document) = read_zip_text(&mut archive, &ncx_path, &mut remaining)? {
+            if let Some(ncx_document) = read_zip_text(archive, &ncx_path, &mut remaining)? {
                 let ncx_dir = parent_dir(&ncx_path);
                 toc_links = parse_ncx_links(&ncx_document, &ncx_dir);
             }
