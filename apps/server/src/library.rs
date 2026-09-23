@@ -1862,13 +1862,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
         .insert(DEFAULT_ROOT_ID.to_string(), fingerprint_cache);
 
     let metadata_overrides = state.metadata_overrides.read().await.clone();
-    let mut track_paths = HashMap::new();
-    let mut book_paths = HashMap::new();
     let mut reading_paths = HashMap::new();
-    let mut sync_paths = HashMap::new();
-    let mut extracted_covers: Vec<(String, ScannedCover)> = Vec::new();
-    let mut books = Vec::new();
-    let mut pending_companions: Vec<(usize, Vec<PathBuf>)> = Vec::new();
 
     // Stage one: describe every scanned book. Resolution needs to see the whole
     // scan before it decides anything, so nothing is matched inside this loop.
@@ -1949,189 +1943,225 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     })
     .await?;
 
-    let added_at_by_book_id: HashMap<&str, u64> = identities
+    let added_at_by_book_id: HashMap<String, u64> = identities
         .books
         .iter()
-        .map(|identity| (identity.book_id.as_str(), identity.added_at))
+        .map(|identity| (identity.book_id.clone(), identity.added_at))
         .collect();
 
-    for (position, group) in prepared.into_iter().enumerate() {
-        let PreparedGroup {
-            group_key,
-            grouped_files,
-            ..
-        } = group;
-        let (book_id, track_ids) = resolved[position].clone();
-        book_paths.insert(book_id.clone(), group_key.clone());
-        let mut metadata = grouped_files
-            .iter()
-            .map(|file_path| metadata_by_path.remove(file_path).unwrap_or_default())
-            .collect::<Vec<_>>();
+    // Stage three: describe each book from its tags and the files beside it.
+    // Every book lists its directory and reads its sidecars, so this runs on
+    // a blocking thread rather than holding a runtime worker for the scan.
+    let library_root = state.library_root.clone();
+    let sync_dir = state.sync_dir.clone();
+    let (
+        metadata_overrides,
+        mut books,
+        book_paths,
+        track_paths,
+        sync_paths,
+        extracted_covers,
+        pending_companions,
+    ) = tokio::task::spawn_blocking(move || {
+        let mut listings = DirectoryFiles::default();
+        let mut track_paths = HashMap::new();
+        let mut book_paths = HashMap::new();
+        let mut sync_paths = HashMap::new();
+        let mut extracted_covers: Vec<(String, ScannedCover)> = Vec::new();
+        let mut books = Vec::new();
+        let mut pending_companions: Vec<(usize, Vec<PathBuf>)> = Vec::new();
+        for (position, group) in prepared.into_iter().enumerate() {
+            let PreparedGroup {
+                group_key,
+                grouped_files,
+                ..
+            } = group;
+            let (book_id, track_ids) = resolved[position].clone();
+            book_paths.insert(book_id.clone(), group_key.clone());
+            let mut metadata = grouped_files
+                .iter()
+                .map(|file_path| metadata_by_path.remove(file_path).unwrap_or_default())
+                .collect::<Vec<_>>();
 
-        let tracks = build_tracks(&book_id, &grouped_files, &track_ids, &metadata);
-        for (track, file_path) in tracks.iter().zip(&grouped_files) {
-            track_paths.insert(track.id.clone(), file_path.clone());
-        }
+            let tracks = build_tracks(&book_id, &grouped_files, &track_ids, &metadata);
+            for (track, file_path) in tracks.iter().zip(&grouped_files) {
+                track_paths.insert(track.id.clone(), file_path.clone());
+            }
 
-        let duration_seconds = tracks
-            .iter()
-            .map(|track| track.duration_seconds)
-            .try_fold(0.0, |sum, duration| duration.map(|value| sum + value));
+            let duration_seconds = tracks
+                .iter()
+                .map(|track| track.duration_seconds)
+                .try_fold(0.0, |sum, duration| duration.map(|value| sum + value));
 
-        let mut title = book_title_for_group(&group_key, &grouped_files, &metadata);
+            let mut title = book_title_for_group(&group_key, &grouped_files, &metadata);
 
-        // The first track carrying a picture supplies the book's cover.
-        let embedded_cover = grouped_files
-            .iter()
-            .find_map(|file_path| covers_by_path.remove(file_path));
-        let cover_art_url = embedded_cover
-            .as_ref()
-            .map(|_| format!("/api/books/{book_id}/cover"));
-        let mut metadata_summary = merge_metadata_summary(&metadata);
-        if let Some(imported) = libro_metadata_for_group(&group_key) {
-            title = clean_imported_title(&imported.title);
-            if let Some(first) = metadata.first_mut() {
-                if !imported.authors.is_empty() {
-                    first.author = Some(imported.authors.join(", "));
+            // The first track carrying a picture supplies the book's cover.
+            let embedded_cover = grouped_files
+                .iter()
+                .find_map(|file_path| covers_by_path.remove(file_path));
+            let cover_art_url = embedded_cover
+                .as_ref()
+                .map(|_| format!("/api/books/{book_id}/cover"));
+            let mut metadata_summary = merge_metadata_summary(&metadata);
+            if let Some(imported) = libro_metadata_for_group(&group_key) {
+                title = clean_imported_title(&imported.title);
+                if let Some(first) = metadata.first_mut() {
+                    if !imported.authors.is_empty() {
+                        first.author = Some(imported.authors.join(", "));
+                    }
+                    if !imported.audiobook_info.narrators.is_empty() {
+                        first.narrator = Some(imported.audiobook_info.narrators.join(", "));
+                    }
                 }
-                if !imported.audiobook_info.narrators.is_empty() {
-                    first.narrator = Some(imported.audiobook_info.narrators.join(", "));
-                }
+                let summary = MetadataSummary {
+                    description: (!imported.description.is_empty()).then_some(imported.description),
+                    publisher: (!imported.publisher.is_empty()).then_some(imported.publisher),
+                    published_date: (!imported.publication_date.is_empty())
+                        .then_some(imported.publication_date),
+                    series: imported.series,
+                    series_position: imported.series_num.map(|n| {
+                        n.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| n.to_string())
+                    }),
+                    genres: imported.genres.into_iter().map(|g| g.name).collect(),
+                    raw_fields: vec![MetadataField {
+                        key: "ISBN".into(),
+                        value: imported.isbn,
+                        description: None,
+                    }],
+                    ..Default::default()
+                };
+                metadata_summary = merge_two_summaries(summary, metadata_summary);
             }
-            let summary = MetadataSummary {
-                description: (!imported.description.is_empty()).then_some(imported.description),
-                publisher: (!imported.publisher.is_empty()).then_some(imported.publisher),
-                published_date: (!imported.publication_date.is_empty())
-                    .then_some(imported.publication_date),
-                series: imported.series,
-                series_position: imported.series_num.map(|n| {
-                    n.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| n.to_string())
-                }),
-                genres: imported.genres.into_iter().map(|g| g.name).collect(),
-                raw_fields: vec![MetadataField {
-                    key: "ISBN".into(),
-                    value: imported.isbn,
-                    description: None,
-                }],
-                ..Default::default()
-            };
-            metadata_summary = merge_two_summaries(summary, metadata_summary);
-        }
-        if let Some(sidecar) = libation_sidecar_for_group(&group_key, &grouped_files) {
-            // A Libation sidecar is a direct Audible record for this download,
-            // so it intentionally wins over lossy container tags. User edits
-            // are applied below and remain the final authority.
-            if let Some(sidecar_title) = sidecar.title {
-                title = clean_imported_title(&sidecar_title);
-            }
-            metadata_summary = merge_two_summaries(sidecar.summary, metadata_summary);
-            if let Some(subtitle) = sidecar.subtitle {
-                metadata_summary.subtitle = Some(subtitle);
-            }
-            if let Some(author) = sidecar.author {
-                metadata[0].author = Some(author);
-            }
-            if let Some(narrator) = sidecar.narrator {
-                metadata[0].narrator = Some(narrator);
-            }
-            if let Some(asin) = sidecar.asin {
-                metadata[0].asin = Some(asin);
-            }
-        }
-        let mut book_chapters = build_book_chapters(&tracks);
-        if book_chapters.is_empty() && tracks.len() > 1 {
-            book_chapters = derive_track_chapters(&tracks);
-        }
-        let sync_file = find_sync_file(
-            &book_id,
-            &group_key,
-            &grouped_files,
-            &title,
-            &state.sync_dir,
-        );
-        if let Some(sync_file) = sync_file.as_ref() {
-            sync_paths.insert(book_id.clone(), sync_file.path.clone());
-        }
-
-        let mut book = Book {
-            id: book_id.clone(),
-            title,
-            author: metadata.iter().find_map(|item| item.author.clone()),
-            narrator: metadata.iter().find_map(|item| item.narrator.clone()),
-            duration_seconds,
-            track_count: tracks.len(),
-            cover_art_url,
-            description: metadata_summary.description.clone(),
-            genres: metadata_summary.genres.clone(),
-            tags: Vec::new(),
-            published_date: metadata_summary.published_date.clone(),
-            asin: metadata.iter().find_map(|item| item.asin.clone()),
-            added_at: rfc3339_utc(
-                added_at_by_book_id
-                    .get(book_id.as_str())
-                    .copied()
-                    .unwrap_or(0),
-            ),
-            reading_file: None,
-            companions: Vec::new(),
-            sync_file: sync_file.map(|sync_file| sync_file.file),
-            chapters: book_chapters,
-            metadata: metadata_summary,
-            tracks,
-            progress: None,
-            shared_progress: Vec::new(),
-            volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
-        };
-        if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
-            apply_book_metadata_override(&mut book, metadata_override);
-        }
-        let mut companion_candidates = discover_candidates(
-            &group_key,
-            &grouped_files,
-            &book.title,
-            embedded_cover.as_ref(),
-        );
-        // Explicit pairing is authoritative even when a root-level audio stem
-        // normalizes to nothing (for example, `---.wav`) and cannot pass the
-        // heuristic companion-name matcher.
-        if let Some(name) = metadata_overrides
-            .books
-            .get(&book_id)
-            .and_then(|entry| entry.ebook_file_name.as_deref())
-            .filter(|name| sanitize_filename(name) == *name)
-        {
-            // Folder books already include every adjacent document. For a
-            // root-level book, enumerate the trusted library directory and
-            // compare names instead of constructing a path from stored data.
-            let paired_path = (!group_key.is_dir())
-                .then(|| {
-                    WalkDir::new(group_key.parent().unwrap_or(&state.library_root))
-                        .max_depth(1)
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .find(|entry| {
-                            entry.file_type().is_file()
-                                && entry.file_name().to_str() == Some(name)
-                                && is_document(entry.path())
-                        })
-                        .map(walkdir::DirEntry::into_path)
-                })
-                .flatten();
-            if let Some(paired_path) = paired_path
-                && !companion_candidates.contains(&paired_path)
+            if let Some(sidecar) =
+                libation_sidecar_for_group(&group_key, &grouped_files, &mut listings)
             {
-                companion_candidates.push(paired_path);
-                companion_candidates.sort_by_key(|path| natural_path_key(path));
+                // A Libation sidecar is a direct Audible record for this download,
+                // so it intentionally wins over lossy container tags. User edits
+                // are applied below and remain the final authority.
+                if let Some(sidecar_title) = sidecar.title {
+                    title = clean_imported_title(&sidecar_title);
+                }
+                metadata_summary = merge_two_summaries(sidecar.summary, metadata_summary);
+                if let Some(subtitle) = sidecar.subtitle {
+                    metadata_summary.subtitle = Some(subtitle);
+                }
+                if let Some(author) = sidecar.author {
+                    metadata[0].author = Some(author);
+                }
+                if let Some(narrator) = sidecar.narrator {
+                    metadata[0].narrator = Some(narrator);
+                }
+                if let Some(asin) = sidecar.asin {
+                    metadata[0].asin = Some(asin);
+                }
             }
+            let mut book_chapters = build_book_chapters(&tracks);
+            if book_chapters.is_empty() && tracks.len() > 1 {
+                book_chapters = derive_track_chapters(&tracks);
+            }
+            let sync_file = find_sync_file(
+                &book_id,
+                &group_key,
+                &grouped_files,
+                &title,
+                &sync_dir,
+                &mut listings,
+            );
+            if let Some(sync_file) = sync_file.as_ref() {
+                sync_paths.insert(book_id.clone(), sync_file.path.clone());
+            }
+
+            let mut book = Book {
+                id: book_id.clone(),
+                title,
+                author: metadata.iter().find_map(|item| item.author.clone()),
+                narrator: metadata.iter().find_map(|item| item.narrator.clone()),
+                duration_seconds,
+                track_count: tracks.len(),
+                cover_art_url,
+                description: metadata_summary.description.clone(),
+                genres: metadata_summary.genres.clone(),
+                tags: Vec::new(),
+                published_date: metadata_summary.published_date.clone(),
+                asin: metadata.iter().find_map(|item| item.asin.clone()),
+                added_at: rfc3339_utc(
+                    added_at_by_book_id
+                        .get(book_id.as_str())
+                        .copied()
+                        .unwrap_or(0),
+                ),
+                reading_file: None,
+                companions: Vec::new(),
+                sync_file: sync_file.map(|sync_file| sync_file.file),
+                chapters: book_chapters,
+                metadata: metadata_summary,
+                tracks,
+                progress: None,
+                shared_progress: Vec::new(),
+                volume_gain: BOOK_VOLUME_GAIN_DEFAULT,
+            };
+            if let Some(metadata_override) = metadata_overrides.books.get(&book_id) {
+                apply_book_metadata_override(&mut book, metadata_override);
+            }
+            let mut companion_candidates = discover_candidates(
+                &group_key,
+                &grouped_files,
+                &book.title,
+                embedded_cover.as_ref(),
+                &mut listings,
+            );
+            // Explicit pairing is authoritative even when a root-level audio stem
+            // normalizes to nothing (for example, `---.wav`) and cannot pass the
+            // heuristic companion-name matcher.
+            if let Some(name) = metadata_overrides
+                .books
+                .get(&book_id)
+                .and_then(|entry| entry.ebook_file_name.as_deref())
+                .filter(|name| sanitize_filename(name) == *name)
+            {
+                // Folder books already include every adjacent document. For a
+                // root-level book, enumerate the trusted library directory and
+                // compare names instead of constructing a path from stored data.
+                let paired_path = (!group_key.is_dir())
+                    .then(|| {
+                        WalkDir::new(group_key.parent().unwrap_or(&library_root))
+                            .max_depth(1)
+                            .into_iter()
+                            .filter_map(Result::ok)
+                            .find(|entry| {
+                                entry.file_type().is_file()
+                                    && entry.file_name().to_str() == Some(name)
+                                    && is_document(entry.path())
+                            })
+                            .map(walkdir::DirEntry::into_path)
+                    })
+                    .flatten();
+                if let Some(paired_path) = paired_path
+                    && !companion_candidates.contains(&paired_path)
+                {
+                    companion_candidates.push(paired_path);
+                    companion_candidates.sort_by_key(|path| natural_path_key(path));
+                }
+            }
+            if let Some(cover) = embedded_cover {
+                extracted_covers.push((book_id.clone(), cover));
+            }
+            pending_companions.push((books.len(), companion_candidates));
+            books.push(book);
         }
-        if let Some(cover) = embedded_cover {
-            extracted_covers.push((book_id.clone(), cover));
-        }
-        pending_companions.push((books.len(), companion_candidates));
-        books.push(book);
-    }
+        (
+            metadata_overrides,
+            books,
+            book_paths,
+            track_paths,
+            sync_paths,
+            extracted_covers,
+            pending_companions,
+        )
+    })
+    .await?;
 
     // Companion documents are opened to tell the book's text from a picture
     // supplement. That reads every EPUB and PDF beside the audio, so it runs
@@ -2224,6 +2254,16 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
 
     {
         let mut library = state.library.write().await;
+        // An edit saved while this scan ran was patched into the old books
+        // and would be lost with them. Read the overrides under the library
+        // lock: an edit that lands later waits for it and patches these.
+        let current_overrides = state.metadata_overrides.read().await;
+        for book in &mut books {
+            if let Some(metadata_override) = current_overrides.books.get(&book.id) {
+                apply_book_metadata_override(book, metadata_override);
+            }
+        }
+        drop(current_overrides);
         library.books = books;
         library.book_paths = book_paths;
         library.track_paths = track_paths;
@@ -2373,6 +2413,7 @@ fn find_companion_file(
     group_key: &FsPath,
     grouped_files: &[PathBuf],
     book_title: &str,
+    listings: &mut DirectoryFiles,
     is_candidate: impl Fn(&FsPath) -> bool,
     match_stem: impl Fn(&FsPath) -> Option<String>,
 ) -> Option<PathBuf> {
@@ -2393,13 +2434,11 @@ fn find_companion_file(
         .map(normalize_match_key);
     let title_key = normalize_match_key(book_title);
 
-    let mut candidates = WalkDir::new(&search_dir)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
+    let mut candidates = listings
+        .files(&search_dir)
+        .iter()
         .filter(|path| is_candidate(path))
+        .cloned()
         .collect::<Vec<_>>();
     candidates.sort_by_key(|a| natural_path_key(a));
 
@@ -2463,12 +2502,14 @@ pub(crate) fn find_sync_file(
     grouped_files: &[PathBuf],
     book_title: &str,
     sync_dir: &FsPath,
+    listings: &mut DirectoryFiles,
 ) -> Option<DiscoveredSyncFile> {
     let url = format!("/api/books/{book_id}/sync");
     let sidecar = find_companion_file(
         group_key,
         grouped_files,
         book_title,
+        listings,
         |path| {
             path.file_name()
                 .and_then(|name| name.to_str())
@@ -2525,6 +2566,26 @@ pub(crate) fn find_sync_file(
 /// ASCII-case-insensitive `.sync.json` check that never slices the name at a
 /// non-character boundary (file names can contain characters whose byte
 /// length changes under Unicode lowercasing).
+/// Regular files directly inside each directory a scan looks beside, listed
+/// once per scan. Books at the library root all share one directory, and
+/// listing it again for every one of them made a flat library quadratic.
+#[derive(Default)]
+pub(crate) struct DirectoryFiles(HashMap<PathBuf, Vec<PathBuf>>);
+
+impl DirectoryFiles {
+    pub(crate) fn files(&mut self, directory: &FsPath) -> &[PathBuf] {
+        self.0.entry(directory.to_path_buf()).or_insert_with(|| {
+            WalkDir::new(directory)
+                .max_depth(1)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .map(walkdir::DirEntry::into_path)
+                .collect()
+        })
+    }
+}
+
 pub(crate) fn has_sync_sidecar_suffix(name: &str) -> bool {
     name.len() > SYNC_SIDECAR_SUFFIX.len()
         && name.is_char_boundary(name.len() - SYNC_SIDECAR_SUFFIX.len())
@@ -2589,6 +2650,7 @@ pub(crate) fn group_files_into_books(
     files: Vec<PathBuf>,
 ) -> Vec<(PathBuf, Vec<PathBuf>)> {
     let mut groups = Vec::<(PathBuf, Vec<PathBuf>)>::new();
+    let mut group_index = HashMap::<PathBuf, usize>::new();
 
     for file_path in files {
         let parent = file_path.parent().unwrap_or(root);
@@ -2598,11 +2660,12 @@ pub(crate) fn group_files_into_books(
             parent.to_path_buf()
         };
 
-        if let Some((_, grouped_files)) = groups.iter_mut().find(|(candidate, _)| *candidate == key)
-        {
-            grouped_files.push(file_path);
-        } else {
-            groups.push((key, vec![file_path]));
+        match group_index.get(&key) {
+            Some(&index) => groups[index].1.push(file_path),
+            None => {
+                group_index.insert(key.clone(), groups.len());
+                groups.push((key, vec![file_path]));
+            }
         }
     }
 
