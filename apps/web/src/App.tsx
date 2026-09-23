@@ -1,5 +1,5 @@
 import { hasPlaybackSource } from "./nativeAudioStartup";
-import { useDeviceFold, usesFoldLayout } from "./deviceFold";
+import { useDeviceFold } from "./deviceFold";
 import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import {
@@ -10,74 +10,23 @@ import {
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
 import {
-  AlertCircle,
-  ArrowDown,
-  ArrowUp,
-  Bell,
-  BookOpen,
-  Bookmark,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  CircleCheck,
-  Cloud,
-  CloudDownload,
-  Download,
-  ExternalLink,
-  FileText,
-  FolderOpen,
   Gamepad2,
-  Gauge,
   Headphones,
-  Images,
-  KeyRound,
-  LoaderCircle,
-  LayoutGrid,
   Library,
-  List,
-  ListMusic,
-  LocateFixed,
-  LogOut,
-  Maximize2,
-  Minimize2,
-  Network,
-  PanelLeftClose,
   PanelLeftOpen,
-  Pause,
-  Pencil,
-  Play,
-  RefreshCcw,
-  RotateCcw,
-  RotateCw,
-  Rows3,
-  Search,
   Settings,
-  SkipBack,
-  SkipForward,
-  SlidersHorizontal,
-  Sparkles,
-  Timer,
-  Upload,
-  ScrollText,
-  UserCog,
-  Users,
-  Volume2,
-  X
+  ScrollText
 } from "lucide-react";
 import {
-  READ_ALONG_MODE_LABELS,
-  companionKindLabel,
-  describeCompanion
 } from "./readalong";
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
-  useState,
-  type CSSProperties
+  useState
 } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { flushSync } from "react-dom";
 import {
   adoptableServerProgress,
   endedShortOfTrack,
@@ -101,30 +50,20 @@ import {
   normalizePlaybackSpeed
 } from "./playbackSpeed";
 import {
-  formatSleepTimerMinutes,
-  SLEEP_TIMER_MAX_MINUTES,
-  SLEEP_TIMER_MIN_MINUTES
-} from "./sleepTimer";
-import {
   BOOK_GAIN_DEFAULT,
   bookGainFromDb,
   createBookGainSync,
   mergeServerBookGains
 } from "./bookVolume";
 import {
-  SHELF_VIEW_MODE_OPTIONS
 } from "./shelfView";
 import {
-  SHELF_STATUS_OPTIONS,
-  shelfDownloadScanKey,
-  toggleShelfFacet
+  shelfDownloadScanKey
 } from "./shelfFilters";
 import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
-import { isLibationAdding } from "./libationState";
-import { displayBookDescription, enrichBooksFromLibation, tagsForBook } from "./bookMetadata";
+import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
-  bookDownloadUrl,
   clearServerUrl,
   getAuthStatus,
   getBooks,
@@ -137,7 +76,6 @@ import {
   getStoredMediaToken,
   getStoredToken,
   hasUserConfiguredServer,
-  SERVER_SETUP_GUIDE_URL,
   isNetworkError,
   isServerNotReadyError,
   isLocalMode,
@@ -167,9 +105,6 @@ import {
   getOfflineTrackUrl,
   getOfflineUser,
   isBookDownloaded,
-  loadEpubSource,
-  loadCompanionBytes,
-  getCachedEpubBytes,
   releaseOfflineMediaUrl,
   warnCacheFailure
 } from "./offline";
@@ -226,22 +161,12 @@ import {
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
-import { LibroCatalog } from "./LibroCatalog";
 import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
-import { ProgressSharingCard } from "./ProgressSharing";
-import {
-  finishAnnouncement,
-  finishedAgoLabel
-} from "./finishFeed";
 import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
 import {
-  FOLLOW_AGGRESSIVENESS_LABELS,
-  FOLLOW_AGGRESSIVENESS_LEAD_SECONDS,
-  type FollowAggressiveness
 } from "./readalongPreferences";
-import { readerStatusLabel } from "./sharedProgress";
 import type {
   AuthUser,
   Book,
@@ -252,6 +177,7 @@ import type {
 import {
   nativeAudioRecoveryScope,
   readStoredBookGains,
+  CONNECT_PROMPT_DISMISSED_KEY,
   readStoredBookId,
   readStoredSpeed,
   readStoredValue,
@@ -259,37 +185,18 @@ import {
   withoutCachedBookGains,
   writeStoredBookGains,
   writeStoredBookId,
-  writeStoredSpeed,
-  writeStoredValue
+  writeStoredSpeed
 } from "./appStorage";
 import {
-  isSortModeSupported,
-  type LibrarySource,
-  SORT_OPTIONS,
-  type SortMode
+  type LibrarySource
 } from "./shelfSort";
 import {
   currentTrackIndex,
   durationFromTracks,
   errorMessage,
-  formatDurationLabel,
-  formatElapsed,
-  formatMinutes,
-  formatTime,
   trackOffsetSeconds
 } from "./formatting";
-import {
-  isPendingJob,
-  jobDetailLines,
-  jobStateLabel,
-  jobSummary,
-  jobTitle
-} from "./jobLabels";
-import { PULL_REFRESH_THRESHOLD, usePullToRefresh } from "./usePullToRefresh";
-import { EpubReadalong } from "./EpubReadalong";
-import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
-import { CoverArt, DownloadRing, LibationCoverArt } from "./CoverArt";
-import { BookVolumeControl, PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
+import { usePullToRefresh } from "./usePullToRefresh";
 import {
   BookDetailsSheet,
   ChapterSheet,
@@ -301,12 +208,6 @@ import { AudiobookUploadDialog, EbookUploadDialog } from "./UploadDialogs";
 import { MetadataEditorDialog } from "./MetadataEditorDialog";
 import { SyncConfirmationDialog, UnplayedConfirmationDialog, type DeviceNotice } from "./ConfirmDialogs";
 import {
-  BookStoreSettings,
-  ConnectionSettings,
-  DeviceLibrarySettings,
-  DisplaySettings,
-  ExtrasSettings,
-  ServerDownloadSettings,
   type DeviceDownloadActivity
 } from "./SettingsCards";
 import { useServerAliases } from "./useServerAliases";
@@ -320,12 +221,20 @@ import { useShelf } from "./useShelf";
 import { usePurchases } from "./usePurchases";
 import { useCarPlay } from "./useCarPlay";
 import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
-import { GALLERY_COMPANION_ID, useReadalong } from "./useReadalong";
+import { useReadalong } from "./useReadalong";
 import { useOfflineDownloads } from "./useOfflineDownloads";
 import { useBookCompletion } from "./useBookCompletion";
 import { useMediaSession } from "./useMediaSession";
 import { useStartupReveal } from "./useStartupReveal";
 import { useNativeChrome } from "./useNativeChrome";
+import { renderUserMenu } from "./UserMenu";
+import { describeSyncJob } from "./syncJobProgress";
+import { renderCompanionTabs, renderEpubReader, renderReadalongPanel, renderReaderSyncActions, renderReaderSyncMessages } from "./ReaderPanel";
+import { renderAudibleManagement } from "./AudibleManagement";
+import { SettingsPage } from "./SettingsPage";
+import { MiniPlayer } from "./MiniPlayer";
+import { PlayerPane } from "./PlayerPane";
+import { LibraryPane } from "./LibraryPane";
 
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
@@ -339,9 +248,6 @@ function audioSourceMatches(audio: HTMLAudioElement, source: string) {
   }
 }
 
-// Beyond this the segments are too thin to read or tap, and their fixed
-// borders/gaps overflow a phone screen; fall back to one continuous bar.
-const MAX_CHAPTER_SEGMENTS = 32;
 
 // The API client's own timeout is generous (30 s); a startup-critical read
 // that is allowed to fall back to a local copy should not wait that long.
@@ -355,11 +261,6 @@ const PLAY_PENDING_LIMIT_MS = 45_000;
 
 /** Which pages of the iPad Shelf spread are showing. */
 
-/** Formats the browser can show inline; anything else gets an "Open" link. */
-function canPreviewCompanion(extension: string) {
-  const lower = extension.toLowerCase();
-  return lower === "epub" || lower === "pdf" || lower === "txt" || lower === "html" || lower === "htm";
-}
 
 
 type AuthState =
@@ -631,12 +532,6 @@ export default function App() {
 }
 
 
-/**
- * Remembers that the reader waved off the shelf's connect-a-server card. Kept
- * separate from the server keys in api.ts: it describes the pitch, not the
- * connection, and must survive entering and leaving local mode.
- */
-const CONNECT_PROMPT_DISMISSED_KEY = "operalibre.connectPromptDismissed";
 
 function MainApp({
   currentUser,
@@ -663,36 +558,19 @@ function MainApp({
   const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
   const playbackFold = useDeviceFold();
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
+  const readerPreferences = useReaderPreferences();
   const {
-    followAggressiveness,
     followSyncEnabled,
     readalongEnabled,
     setReadalongEnabled,
-    toggleFollowSyncEnabled,
-    updateFollowAggressiveness
-  } = useReaderPreferences();
-  const {
-    appearanceMode,
-    rotationLockBusy,
-    rotationLockEnabled,
-    rotationLockError,
-    toggleRotationLock,
-    updateAppearanceMode
-  } = useDisplaySettings({
+  } = readerPreferences;
+  const displaySettings = useDisplaySettings({
     ios
   });
   const {
-    aliasError,
-    aliasName,
-    aliasUrl,
-    saveAlias,
-    serverAliases,
-    setAliasName,
-    setAliasUrl,
-    setServerAliases,
-    switchToAlias,
-    switchingAliasId
-  } = useServerAliases();
+    appearanceMode,
+  } = displaySettings;
+  const serverAliasesState = useServerAliases();
   const [connectPromptDismissed, setConnectPromptDismissed] = useState(
     () => readStoredValue(CONNECT_PROMPT_DISMISSED_KEY) === "true"
   );
@@ -717,13 +595,7 @@ function MainApp({
       window.removeEventListener("focus", refreshCurrentUser);
     };
   }, [demoMode, isOperaLibre, localMode, onCurrentUserChanged]);
-  const {
-    finishFeed,
-    finishFeedAvailable,
-    finishFeedOpen,
-    setFinishFeedOpen,
-    toggleFinishFeed
-  } = useFinishFeed({
+  const finishFeedState = useFinishFeed({
     capabilities,
     currentUser
   });
@@ -907,27 +779,7 @@ function MainApp({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
-  const {
-    chooseEbookUpload,
-    chooseUploadFiles,
-    ebookUploadBook,
-    ebookUploadBusy,
-    ebookUploadError,
-    ebookUploadFile,
-    setEbookUploadBook,
-    setEbookUploadError,
-    setEbookUploadFile,
-    setUploadBookName,
-    setUploadError,
-    setUploadModalOpen,
-    submitAudiobookUpload,
-    submitEbookUpload,
-    uploadBookName,
-    uploadBusy,
-    uploadError,
-    uploadFiles,
-    uploadModalOpen
-  } = useUploads({
+  const uploads = useUploads({
     books,
     reconcileServerBookGains,
     setBooks,
@@ -936,6 +788,24 @@ function MainApp({
     setLibrarySource,
     setSelectedBookId
   });
+  const {
+    chooseEbookUpload,
+    chooseUploadFiles,
+    ebookUploadBook,
+    ebookUploadBusy,
+    ebookUploadError,
+    ebookUploadFile,
+    setEbookUploadBook,
+    setUploadBookName,
+    setUploadModalOpen,
+    submitAudiobookUpload,
+    submitEbookUpload,
+    uploadBookName,
+    uploadBusy,
+    uploadError,
+    uploadFiles,
+    uploadModalOpen
+  } = uploads;
   const [profileOpen, setProfileOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
   const [showChapterJumpTop, setShowChapterJumpTop] = useState(false);
@@ -949,6 +819,14 @@ function MainApp({
   const wantsAutoplayRef = useRef(false);
   const [nativeAudioFailed, setNativeAudioFailed] = useState(false);
   const nativeAudio = usesNativeAudioPlayer() && !nativeAudioFailed;
+  const sleepTimer = useSleepTimer({
+    audioRef,
+    isPlaying,
+    nativeAudio,
+    pausePlaybackRef,
+    setNativePlayerSheet,
+    setPlaybackError
+  });
   const {
     configureSleepTimer,
     setSleepCustomDraft,
@@ -964,14 +842,7 @@ function MainApp({
     sleepRemaining,
     sleepRemainingRef,
     startCustomSleepTimer
-  } = useSleepTimer({
-    audioRef,
-    isPlaying,
-    nativeAudio,
-    pausePlaybackRef,
-    setNativePlayerSheet,
-    setPlaybackError
-  });
+  } = sleepTimer;
   // For long-lived callbacks that must see a fallback to web audio without
   // being recreated by it (recreating loadBooks would reload the library).
   const nativeAudioRef = useRef(nativeAudio);
@@ -1001,37 +872,7 @@ function MainApp({
   // player closed can tell that from the app's first render.
   const nativeAudioAttachedRef = useRef(false);
   const [downloadedBookIds, setDownloadedBookIds] = useState<Set<string>>(new Set());
-  const {
-    activeShelfFilterChips,
-    activeShelfFilterCount,
-    changeShelfLayout,
-    clearShelfFilters,
-    closeShelfFilters,
-    filterToggleRef,
-    filtersOpen,
-    purchaseViewMode,
-    reverseSort,
-    searchQuery,
-    selectPurchaseViewMode,
-    selectSortMode,
-    selectViewMode,
-    setFiltersOpen,
-    setSearchQuery,
-    setShelfFilters,
-    shelfFacets,
-    shelfFilters,
-    shelfFolded,
-    shelfLandscape,
-    shelfLayout,
-    shelfSearchRef,
-    showShelfFilters,
-    sortMode,
-    sortOrderLabel,
-    sortReversed,
-    viewMode,
-    visibleBookColumns,
-    visibleBooks
-  } = useShelf({
+  const shelf = useShelf({
     books,
     demoMode,
     downloadedBookIds,
@@ -1041,6 +882,15 @@ function MainApp({
     native,
     playbackFold
   });
+  const {
+    changeShelfLayout,
+    searchQuery,
+    shelfFolded,
+    shelfLandscape,
+    shelfLayout,
+    sortMode,
+    sortReversed,
+  } = shelf;
   const [downloadStatus, setDownloadStatus] = useState<DeviceNotice | null>(null);
   const [completionPendingBookId, setCompletionPendingBookId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<DeviceNotice | null>(null);
@@ -1067,21 +917,21 @@ function MainApp({
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
     [books, selectedBookId]
   );
+  const metadataEditor = useMetadataEditor({
+    reconcileServerBookGains,
+    selectedBook,
+    setBooks
+  });
   const {
     metadataEditOpen,
     metadataError,
     metadataForm,
     metadataSaving,
-    openMetadataEditor,
     saveMetadata,
     setMetadataEditOpen,
     setMetadataError,
     setMetadataForm
-  } = useMetadataEditor({
-    reconcileServerBookGains,
-    selectedBook,
-    setBooks
-  });
+  } = metadataEditor;
   const selectedDescription = selectedBook ? displayBookDescription(selectedBook) : null;
   const selectedSharedReaders = (selectedBook?.sharedProgress ?? []).filter(
     (reader) => reader.status !== "notStarted"
@@ -1207,14 +1057,7 @@ function MainApp({
   const bookIdsKey = useMemo(() => books.map((book) => book.id).join("|"), [books]);
   const downloadScanKey = useMemo(() => shelfDownloadScanKey(books), [books]);
   const booksRef = useRef<Book[]>(books);
-  const {
-    adoptCarPlaybackState,
-    carEventHandlersRef,
-    carPlaybackBook,
-    carPlaybackBookId,
-    setCarPlaybackBookId,
-    takeOverFromCar
-  } = useCarPlay({
+  const carPlay = useCarPlay({
     acknowledgedSeekGenerationRef,
     bookGains,
     bookIdsKey,
@@ -1228,6 +1071,13 @@ function MainApp({
     speed,
     updateBookProgress
   });
+  const {
+    adoptCarPlaybackState,
+    carEventHandlersRef,
+    carPlaybackBookId,
+    setCarPlaybackBookId,
+    takeOverFromCar
+  } = carPlay;
 
   booksRef.current = books;
   const playbackTrackIdsKey = useMemo(
@@ -1603,41 +1453,7 @@ function MainApp({
     // created this callback cannot hand them anything stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id, isOperaLibre, localMode, native]);
-  const {
-    activeCompanion,
-    activeCompanionIsBook,
-    activeCompanionUrl,
-    canGenerateSync,
-    companionPreviewUrl,
-    galleryAvailable,
-    narrationFollowActive,
-    openReadalong,
-    readalongAvailable,
-    readalongOpen,
-    readalongPanelRef,
-    readerClosing,
-    readerScope,
-    requestSyncGeneration,
-    selectedCompanionGroups,
-    selectedCompanionList,
-    selectedHasExtras,
-    selectedReadAlongMode,
-    selectedSyncFragments,
-    selectedSyncPrecise,
-    sentenceFollowAvailable,
-    setActiveCompanionId,
-    setReadalongOpen,
-    setReaderClosing,
-    showGallery,
-    showReaderInNowView,
-    startSyncGeneration,
-    syncJob,
-    syncJobError,
-    syncNotice,
-    toggleReadalongEnabled,
-    updateAlignmentStatus,
-    writeReaderOpenFlag
-  } = useReadalong({
+  const readalong = useReadalong({
     capabilities,
     currentUser,
     demoMode,
@@ -1657,51 +1473,18 @@ function MainApp({
     setSelectedBookId,
     setSyncConfirmationBook
   });
-
   const {
-    allAudibleAccounts,
-    audibleAccountFilter,
-    audibleAccountLabels,
-    brokenLibationAccounts,
-    canBrowseLibation,
-    displayedLibationJobs,
-    downloadAllLibationJob,
-    isRefreshingAudible,
-    libationAllPending,
-    libationBooks,
-    libationBooksLoaded,
-    libationBooksRef,
-    libationDownloadRequests,
-    libationError,
-    libationFinalizationFailures,
-    libationFinalizingAsins,
-    libationJobs,
-    libationLoading,
-    libationMessage,
-    libationRefreshPending,
-    libationRequests,
-    libationStatus,
-    libroAccounts,
-    libroAvailable,
-    libroOnDevice,
-    libroRefreshKey,
-    loadLibationBooks,
-    pendingLibationJobs,
-    purchaseAccountFilter,
-    refreshLibationJob,
-    setAudibleAccountFilter,
-    setLibationBooks,
-    setLibationBooksLoaded,
-    setLibroAccounts,
-    setLibroDestination,
-    setLibroRefreshKey,
-    setPurchaseAccountFilter,
-    showAudiblePurchases,
-    startAllLiberation,
-    startLibationSync,
-    startLiberation,
-    visibleLibationBooks
-  } = usePurchases({
+    readalongOpen,
+    readerClosing,
+    setReadalongOpen,
+    setReaderClosing,
+    startSyncGeneration,
+    syncJob,
+    updateAlignmentStatus,
+    writeReaderOpenFlag
+  } = readalong;
+
+  const purchases = usePurchases({
     capabilities,
     currentUser,
     demoMode,
@@ -1715,6 +1498,19 @@ function MainApp({
     sortMode,
     sortReversed
   });
+  const {
+    brokenLibationAccounts,
+    canBrowseLibation,
+    libationBooks,
+    libationBooksLoaded,
+    libationBooksRef,
+    libroAccounts,
+    libroOnDevice,
+    loadLibationBooks,
+    setLibationBooks,
+    setLibationBooksLoaded,
+    setLibroRefreshKey,
+  } = purchases;
 
   loadBooksRef.current = loadBooks;
 
@@ -2824,11 +2620,7 @@ function MainApp({
     setNativePlayerView("now");
     if (native) setNativeTab("shelf");
   }
-  const {
-    changeBookCompletion,
-    confirmBookUnplayed,
-    markBookUnplayed
-  } = useBookCompletion({
+  const bookCompletion = useBookCompletion({
     audioRef,
     clearPlaybackSession,
     completionPendingBookId,
@@ -2849,14 +2641,13 @@ function MainApp({
     setIsPlaying,
     setUnplayedConfirmationBookId
   });
-
   const {
-    cancelOfflineDownload,
-    deleteDeviceBook,
-    downloadForOffline,
-    importFromDevice,
-    removeOfflineDownload
-  } = useOfflineDownloads({
+    changeBookCompletion,
+    confirmBookUnplayed,
+    markBookUnplayed
+  } = bookCompletion;
+
+  const offlineDownloads = useOfflineDownloads({
     audioRef,
     booksRef,
     capabilities,
@@ -2883,6 +2674,9 @@ function MainApp({
     setPlaybackBookId,
     setSelectedBookId
   });
+  const {
+    downloadForOffline,
+  } = offlineDownloads;
 
 
   /**
@@ -3804,12 +3598,7 @@ function MainApp({
     await persistProgress();
     await flushProgressSaveQueue();
   }
-  const {
-    hasMiniPlayer,
-    nativeTabsReady,
-    nativeTabsShown,
-    showLedgerTab
-  } = useNativeChrome({
+  const nativeChrome = useNativeChrome({
     appearanceMode,
     brokenLibationAccounts,
     capabilities,
@@ -3828,6 +3617,11 @@ function MainApp({
     shelfLayout,
     shellRef
   });
+  const {
+    hasMiniPlayer,
+    nativeTabsReady,
+    showLedgerTab
+  } = nativeChrome;
 
 
   const refreshShelf = useCallback(async () => {
@@ -3850,457 +3644,97 @@ function MainApp({
   }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
-  const userMenu = (
-    <div className="user-menu" role="menu">
-      <div className="user-menu-head">
-        <strong>{currentUser.username}</strong>
-        <span>
-          {isOperaLibre
-            ? localMode ? "On-device library" : demoMode ? "On-device demo" : currentUser.isOwner ? "Owner" : currentUser.isAdmin ? "Administrator" : "Reader"
-            : currentUser.isAdmin ? "Jellyfin administrator" : "Jellyfin account"}
-        </span>
-      </div>
-      {capabilities.statistics ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            setUserMenuOpen(false);
-            if (native) {
-              openNativeTab("ledger");
-            } else {
-              setProfileOpen(true);
-            }
-          }}
-        >
-          <ScrollText size={14} /> Reader's ledger
-        </button>
-      ) : null}
-      {capabilities.administration ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            setUserMenuOpen(false);
-            if (native) {
-              openNativeTab("admin");
-            } else {
-              setUsersModalOpen(true);
-            }
-          }}
-        >
-          <UserCog size={14} /> Administration
-        </button>
-      ) : null}
-      {capabilities.administration && brokenLibationAccounts.length > 0 ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            setUserMenuOpen(false);
-            setLibrarySource("audible");
-            setLibraryOpen(true);
-            if (native) openNativeTab("shelf");
-          }}
-        >
-          <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
-        </button>
-      ) : null}
-      {capabilities.readingFiles ? (
-        <button
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={readalongEnabled}
-          onClick={toggleReadalongEnabled}
-        >
-          <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
-        </button>
-      ) : null}
-      {readalongEnabled && sentenceFollowAvailable ? (
-        <button
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={followSyncEnabled}
-          onClick={toggleFollowSyncEnabled}
-          title="Experimental: the highlight can drift and may move the page to match the audio."
-        >
-          <LocateFixed size={14} /> Follow narration: {followSyncEnabled ? "On" : "Off"} (experimental)
-        </button>
-      ) : null}
-      {!native && readalongEnabled && sentenceFollowAvailable && followSyncEnabled ? (
-        <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
-          <div>
-            <label id="menu-follow-aggressiveness-label" htmlFor="menu-follow-aggressiveness">
-              Aggressiveness
-            </label>
-            <output htmlFor="menu-follow-aggressiveness">
-              {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-            </output>
-          </div>
-          <input
-            id="menu-follow-aggressiveness"
-            type="range"
-            min="0"
-            max="2"
-            step="1"
-            value={followAggressiveness}
-            style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-            aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-            onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-          />
-          <small>Current timing <span>A little ahead</span></small>
-        </div>
-      ) : null}
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => {
-          setUserMenuOpen(false);
-          if (localMode) pausePlayback(audioRef.current);
-          void onLogout();
-        }}
-      >
-        <LogOut size={14} /> {localMode ? "Leave local mode" : "Sign out"}
-      </button>
-    </div>
-  );
+  const userMenu = renderUserMenu({
+    audioRef,
+    capabilities,
+    currentUser,
+    demoMode,
+    isOperaLibre,
+    localMode,
+    native,
+    onLogout,
+    openNativeTab,
+    pausePlayback,
+    purchases,
+    readalong,
+    readerPreferences,
+    setLibraryOpen,
+    setLibrarySource,
+    setProfileOpen,
+    setUserMenuOpen,
+    setUsersModalOpen
+  });
+  const {
+    syncJobForBook,
+    syncJobRunning,
+    syncProgressNote,
+    syncProgressPercent
+  } = describeSyncJob({
+    selectedBook,
+    syncJob
+  });
 
-  // Sync actions and notices, shared by the inline panel header and the
-  // full-screen reader's appearance sheet.
-  //
-  // A job belongs to one book, so only that book's reader shows its progress;
-  // the poll above keeps following it either way.
-  const syncJobForBook =
-    syncJob && selectedBook && syncJob.targetId === selectedBook.id ? syncJob : null;
-  const syncJobRunning = !!syncJobForBook && ["queued", "running"].includes(syncJobForBook.status);
-  const syncProgressPercent = (() => {
-    const fraction = syncJobForBook?.progress?.fraction;
-    return typeof fraction === "number" && Number.isFinite(fraction)
-      ? Math.min(100, Math.max(0, Math.round(fraction * 100)))
-      : null;
-  })();
-  const syncElapsedSeconds = (() => {
-    if (syncJobForBook?.status !== "running") return null;
-    const startedAt = Number(syncJobForBook.runningAt ?? syncJobForBook.startedAt);
-    return Number.isFinite(startedAt) && startedAt > 0
-      ? Math.max(0, (Date.now() - startedAt) / 1000)
-      : null;
-  })();
-  // Alignment runs at a fairly steady pace, so what it has done so far
-  // predicts the rest well enough to be worth saying — once there is enough of
-  // both to divide by.
-  const syncRemainingLabel = (() => {
-    const fraction = syncJobForBook?.progress?.fraction ?? null;
-    if (
-      syncJobForBook?.status !== "running"
-      || fraction === null
-      || fraction < 0.05
-      || syncElapsedSeconds === null
-      || syncElapsedSeconds < 60
-    ) {
-      return null;
-    }
-    return formatDurationLabel((syncElapsedSeconds * (1 - fraction)) / fraction);
-  })();
-  const syncProgressNote = [
-    syncElapsedSeconds !== null && syncElapsedSeconds >= 60
-      ? `${formatDurationLabel(syncElapsedSeconds)} so far`
-      : null,
-    syncRemainingLabel ? `about ${syncRemainingLabel} left` : null,
-    "keeps running if you close the reader"
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const readerSyncActions = selectedBook ? (
-    <>
-      {canGenerateSync && activeCompanionIsBook ? (
-        <button
-          type="button"
-          className="download-btn"
-          disabled={syncJobRunning}
-          onClick={() => void requestSyncGeneration(selectedBook)}
-          title={
-            selectedSyncPrecise
-              ? "Regenerate the narration sync map"
-              : "Align the narration to the text for sentence-exact highlighting"
-          }
-        >
-          {syncJobRunning ? (
-            <LoaderCircle size={13} className="spin-icon" />
-          ) : (
-            <Sparkles size={13} />
-          )}
-          <span>{selectedSyncPrecise ? "Re-sync" : "Improve sync"}</span>
-        </button>
-      ) : null}
-    </>
-  ) : null;
-  const readerSyncMessages = (
-    <>
-      {canGenerateSync && activeCompanionIsBook && !syncJobRunning ? (
-        <p className="readalong-synchint">
-          {selectedSyncPrecise
-            ? "This book is aligned sentence by sentence against its narration. Re-sync rebuilds that map from the audio and the text — worth doing when either file has been replaced."
-            : "This book has no alignment yet, so the reader only opens to the chapter being played. Improve sync listens to the narration on the server and matches it to the text sentence by sentence, so the highlight lands on the sentence being read. It runs in the background for everyone on this server and can take a long while on a full-length book."}
-        </p>
-      ) : null}
-      {syncJobForBook && syncJobRunning ? (
-        <div className="sync-progress" role="status" aria-live="polite">
-          <div className="sync-progress-head">
-            <span className="sync-progress-step">
-              {syncJobForBook.status === "queued"
-                ? "Waiting for another sync to finish"
-                : syncJobForBook.progress?.step ?? "Aligning the narration to the text"}
-            </span>
-            {syncProgressPercent !== null ? (
-              <span className="sync-progress-percent">{syncProgressPercent}%</span>
-            ) : null}
-          </div>
-          <div
-            className="sync-progress-track"
-            role="progressbar"
-            aria-label="Sync generation progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={syncProgressPercent ?? undefined}
-            aria-valuetext={
-              syncProgressPercent === null
-                ? "Starting"
-                : `${syncProgressPercent}% aligned`
-            }
-          >
-            {/* Nothing to measure yet: a sliding bar says "working" without
-                claiming a position the job has not reported. */}
-            <div
-              className={syncProgressPercent === null ? "sync-progress-fill waiting" : "sync-progress-fill"}
-              style={syncProgressPercent === null ? undefined : { width: `${syncProgressPercent}%` }}
-            />
-          </div>
-          <div className="sync-progress-note">{syncProgressNote}</div>
-        </div>
-      ) : syncJobForBook && syncJobForBook.status === "failed" ? (
-        <div className="readalong-genstatus error">
-          {syncJobForBook.error ?? "Readalong sync generation failed."}
-        </div>
-      ) : null}
-      {syncJobError ? <div className="readalong-genstatus error">{syncJobError}</div> : null}
-      {syncNotice ? <div className="readalong-genstatus notice">{syncNotice}</div> : null}
-
-    </>
-  );
-  const companionTabs =
-    selectedCompanionList.length + (galleryAvailable ? 1 : 0) > 1 ? (
-      <div className="readalong-tabs" role="tablist" aria-label="Companion files">
-        {selectedCompanionList.map((companion) => {
-          const selected = !showGallery && activeCompanion?.id === companion.id;
-          return (
-            <button
-              type="button"
-              role="tab"
-              key={companion.id}
-              aria-selected={selected}
-              className={selected ? "selected" : ""}
-              onClick={() => setActiveCompanionId(companion.id)}
-              title={describeCompanion(companion)}
-            >
-              {companion.kind === "book" ? <BookOpen size={12} /> : <FileText size={12} />}
-              <span>{companionKindLabel(companion)}</span>
-              <small>{companion.fileName}</small>
-            </button>
-          );
-        })}
-        {galleryAvailable ? (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={showGallery}
-            className={showGallery ? "selected" : ""}
-            onClick={() => setActiveCompanionId(GALLERY_COMPANION_ID)}
-          >
-            <Images size={12} />
-            <span>Pictures</span>
-            <small>{selectedCompanionGroups.images.length}</small>
-          </button>
-        ) : null}
-      </div>
-    ) : null;
-  const epubReaderElement =
-    selectedBook && activeCompanion && activeCompanionUrl && activeCompanion.extension === "epub" && !showGallery ? (
-      <EpubReadalong
-        key={`${readerScope}:${selectedBook.id}:${activeCompanion.id}`}
-        bookId={selectedBook.id}
-        storageScope={readerScope}
-        title={selectedBook.title}
-        url={activeCompanionUrl}
-        listeningChapter={activeCompanionIsBook
-          ? (isViewingPlayingBook ? activeChapter?.title : chapterAtBookPosition(selectedChapterSegments, selectedBook.progress?.bookPositionSeconds ?? 0)?.title) ?? null
-          : null}
-        loadSource={(companionUrl, signal) =>
-          loadEpubSource(selectedBook, activeCompanion, companionUrl, signal)
-        }
-        loadCachedSource={(signal) => getCachedEpubBytes(selectedBook, activeCompanion, signal)}
-        loadWholeFile={(companionUrl, signal) =>
-          loadCompanionBytes(selectedBook, activeCompanion, companionUrl, signal)
-        }
-        syncTarget={
-          readalongEnabled && activeCompanionIsBook && !(narrationFollowActive && selectedSyncFragments) && isViewingPlayingBook && activeChapter
-            ? activeChapter
-            : null
-        }
-        syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
-        positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
-        followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
-        onSeekTo={
-          narrationFollowActive
-            ? (seconds) => seekBookPositionInBook(selectedBook, seconds, true)
-            : undefined
-        }
-        immersive={native}
-        onClose={closeReadalong}
-        chapterTitle={isViewingPlayingBook ? activeChapter?.title ?? null : null}
-        positionLabel={
-          isViewingPlayingBook
-            ? formatTime(activeChapter ? Math.max(0, displayBookPosition - activeChapter.startSeconds) : displayBookPosition)
-            : null
-        }
-        playback={
-          isViewingPlayingBook
-            ? {
-                playing: isPlaying,
-                speed,
-                sleepRemaining,
-                onToggle: togglePlayback,
-                onSkip: seekBy,
-                onOpen: openNativePlayerSheet
-              }
-            : null
-        }
-        onListen={isViewingPlayingBook ? undefined : () => playSelectedBook(selectedBook)}
-        syncTools={
-          narrationFollowActive && (readerSyncActions || readerSyncMessages) ? (
-            <>
-              <div className="epub-sheet-row">{readerSyncActions}</div>
-              {readerSyncMessages}
-            </>
-          ) : null
-        }
-        companionSwitcher={companionTabs}
-      />
-    ) : null;
+  const readerSyncActions = renderReaderSyncActions({
+    readalong,
+    selectedBook,
+    syncJobRunning
+  });
+  const readerSyncMessages = renderReaderSyncMessages({
+    readalong,
+    syncJobForBook,
+    syncJobRunning,
+    syncProgressNote,
+    syncProgressPercent
+  });
+  const companionTabs = renderCompanionTabs({
+    readalong
+  });
+  const epubReaderElement = renderEpubReader({
+    activeChapter,
+    bookPosition,
+    closeReadalong,
+    companionTabs,
+    displayBookPosition,
+    isPlaying,
+    isViewingPlayingBook,
+    native,
+    openNativePlayerSheet,
+    playSelectedBook,
+    readalong,
+    readerPreferences,
+    readerSyncActions,
+    readerSyncMessages,
+    seekBookPositionInBook,
+    seekBy,
+    selectedBook,
+    selectedChapterSegments,
+    sleepTimer,
+    speed,
+    togglePlayback
+  });
   // The native ebook reader is a full-screen layer of its own; everything
   // else (extras, pictures, the web reader) lives in the inline panel.
   const immersiveEpub = native && !!epubReaderElement;
 
-  const readalongPanelElement =
-    readalongOpen && selectedBook && (activeCompanion || showGallery) ? immersiveEpub ? (
-      // Mount once UIKit has removed the tab bar, so the book lays out a
-      // single time at full screen instead of again as the web view grows.
-      nativeTabsReady && nativeTabsShown ? null : epubReaderElement
-    ) : (
-      <section
-        className="readalong-panel"
-        aria-label={`${selectedBook.title} read along`}
-        ref={readalongPanelRef}
-      >
-        <div className="readalong-header">
-          <div>
-            <span className="section-label">
-              {showGallery ? <Images size={13} /> : <BookOpen size={13} />}{" "}
-              {showGallery ? "Pictures" : activeCompanion?.kind === "supplement" ? "Extras" : "Read along"}
-            </span>
-            <strong>
-              {showGallery
-                ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
-                : activeCompanion?.fileName}
-            </strong>
-            <span className="readalong-mode">
-              {showGallery
-                ? "Loose pictures found beside the audio"
-                : activeCompanion
-                  ? `${activeCompanionIsBook && selectedReadAlongMode ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title} · ` : ""}${describeCompanion(activeCompanion)}`
-                  : null}
-            </span>
-          </div>
-          <div className="readalong-actions">
-            {narrationFollowActive ? readerSyncActions : null}
-            {activeCompanionUrl && !showGallery ? (
-              <a className="download-btn" href={activeCompanion ? companionPreviewUrl(activeCompanion) : undefined} target="_blank" rel="noreferrer">
-                <ExternalLink size={13} />
-                <span>Open</span>
-              </a>
-            ) : null}
-            <button type="button" className="download-btn" onClick={closeReadalong} aria-label="Close the reader">
-              <X size={13} />
-              <span>Close</span>
-            </button>
-          </div>
-        </div>
-        {companionTabs}
-        {narrationFollowActive ? readerSyncMessages : null}
-        {showGallery ? (
-          <div className="readalong-gallery">
-            {selectedCompanionGroups.images.map((image) => (
-              <a key={image.id} href={companionPreviewUrl(image)} target="_blank" rel="noreferrer">
-                <img src={companionPreviewUrl(image)} alt={image.fileName} loading="lazy" />
-                <span>{image.fileName}</span>
-              </a>
-            ))}
-          </div>
-        ) : epubReaderElement ? (
-          epubReaderElement
-        ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
-          <iframe
-            className="readalong-frame"
-            src={companionPreviewUrl(activeCompanion)}
-            title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
-            sandbox=""
-            referrerPolicy="no-referrer"
-          />
-        ) : activeCompanion ? (
-          <div className="readalong-fallback">
-            <ScrollText size={36} strokeWidth={1.4} />
-            <p>
-              {activeCompanion.extension.toUpperCase()} files are available to open, but this browser
-              cannot preview them inline yet.
-            </p>
-          </div>
-        ) : null}
-        {activeChapter && !showGallery ? (
-          <div className="readalong-sync">
-            <span>{activeChapter.title}</span>
-            <span>{formatTime(displayBookPosition)}</span>
-          </div>
-        ) : null}
-      </section>
-    ) : null;
+  const readalongPanelElement = renderReadalongPanel({
+    activeChapter,
+    closeReadalong,
+    companionTabs,
+    displayBookPosition,
+    epubReaderElement,
+    immersiveEpub,
+    nativeChrome,
+    readalong,
+    readerSyncActions,
+    readerSyncMessages,
+    selectedBook
+  });
 
-  const audibleManagement = (
-    <div className={native ? "store-settings-body audible-settings-body" : "purchase-console-body"}>
-      <p className="settings-hint">Add or reconnect Audible accounts in Libation. OperaLibre uses those connections to refresh purchases.</p>
-      {libationStatus?.accounts.length ? <div className="account-list">
-        {libationStatus.accounts.map((account) => <article key={account.id} className={account.authenticated ? "ok" : "warn"}>
-          <span className="account-health-icon">{account.authenticated ? <KeyRound size={13} /> : <AlertCircle size={13} />}</span>
-          <span className="account-list-copy">
-            <strong>{account.name || account.accountId}</strong>
-            <small>{account.locale.toUpperCase()}{account.authenticated ? " · Connected" : account.connectionState === "error" ? " · Connection error" : " · Sign-in required"}</small>
-            {!account.authenticated && account.lastError ? <em>{account.lastError}</em> : null}
-          </span>
-        </article>)}
-      </div> : null}
-      {native && libationError ? <p className="settings-hint settings-error" role="alert">{libationError}</p> : null}
-      <div className="store-settings-actions">
-        <button type="button" className="download-btn" onClick={() => void startLibationSync()} aria-busy={isRefreshingAudible} disabled={!libationStatus?.enabled || libationLoading || libationRefreshPending || !!refreshLibationJob}>
-          {isRefreshingAudible ? <LoaderCircle size={13} className="spin-icon" /> : <RefreshCcw size={13} />}
-          <span>{isRefreshingAudible ? "Refreshing purchases" : "Refresh purchases"}</span>
-        </button>
-        {currentUser.isAdmin && currentUser.libationAccess === "direct" ? <button type="button" className="download-btn" onClick={() => void startAllLiberation()} aria-busy={libationAllPending || !!downloadAllLibationJob} disabled={!libationStatus?.enabled || libationLoading || libationAllPending || !!downloadAllLibationJob}>
-          {libationAllPending || downloadAllLibationJob ? <LoaderCircle size={13} className="spin-icon" /> : <Download size={13} />}
-          <span>{libationAllPending || downloadAllLibationJob ? "Downloading purchases" : "Download all purchases"}</span>
-        </button> : null}
-      </div>
-      <p className="settings-hint">{libationStatus?.autoRefreshHours ? `Checks automatically every ${libationStatus.autoRefreshHours} hours.` : "Refresh manually to check for new purchases."}</p>
-    </div>
-  );
+  const audibleManagement = renderAudibleManagement({
+    currentUser,
+    native,
+    purchases
+  });
 
   return (
     <main
@@ -4407,1819 +3841,172 @@ function MainApp({
         onClick={() => setLibraryOpen(false)}
       />
 
-      <aside className={`library-pane ${libraryOpen ? "open" : ""} ${librarySource !== "local" ? "purchase-browsing" : ""}`} {...shelfPull.handlers}>
-        {native ? (
-          <div
-            className={`pull-indicator ${shelfPull.refreshing ? "refreshing" : ""}`}
-            style={
-              shelfPull.refreshing
-                ? undefined
-                : {
-                    opacity: Math.min(1, shelfPull.pull / PULL_REFRESH_THRESHOLD),
-                    transform: `translateX(-50%) rotate(${Math.round(shelfPull.pull * 2.8)}deg)`
-                  }
-            }
-            aria-hidden="true"
-          >
-            <RefreshCcw size={17} strokeWidth={2} />
-          </div>
-        ) : null}
-        <div className="pane-title">
-          <div>
-            <span className="eyebrow"><Library size={13} /> The Collection</span>
-            <h1>OperaLibre</h1>
-          </div>
-          {native && ipad ? (
-            <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
-              {shelfLayout === "library" ? (
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Show the player beside the shelf"
-                  title="Show the player"
-                  onClick={() => {
-                    haptic("light");
-                    changeShelfLayout("split");
-                  }}
-                >
-                  <Minimize2 size={16} />
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Hide the shelf"
-                    title="Hide the shelf"
-                    onClick={() => {
-                      haptic("light");
-                      changeShelfLayout("player");
-                    }}
-                  >
-                    <PanelLeftClose size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Expand the shelf to full screen"
-                    title="Expand the shelf"
-                    onClick={() => {
-                      haptic("light");
-                      changeShelfLayout("library");
-                    }}
-                  >
-                    <Maximize2 size={16} />
-                  </button>
-                </>
-              )}
-            </div>
-          ) : null}
-          <div className="pane-actions">
-            {native ? (
-              <button
-                className="icon-button"
-                aria-label="Add audiobook from device"
-                disabled={deviceImport !== null}
-                onClick={() => void importFromDevice()}
-              >
-                {deviceImport ? <LoaderCircle size={16} className="spin-icon" /> : <FolderOpen size={16} />}
-              </button>
-            ) : null}
-            {capabilities.uploads ? (
-              <button
-                className="icon-button"
-                aria-label="Upload audiobook"
-                onClick={() => {
-                  setUploadError(null);
-                  setUploadModalOpen(true);
-                }}
-              >
-                <Upload size={16} />
-              </button>
-            ) : null}
-            {finishFeedAvailable ? (
-              <div className="finish-feed-wrap">
-                <button
-                  className="icon-button finish-feed-button"
-                  aria-label={
-                    finishFeed.unseenCount > 0
-                      ? `Shared reading, ${finishFeed.unseenCount} new`
-                      : "Shared reading"
-                  }
-                  aria-expanded={finishFeedOpen}
-                  onClick={toggleFinishFeed}
-                >
-                  <Bell size={16} />
-                  {finishFeed.unseenCount > 0 ? (
-                    <span className="finish-feed-badge" aria-hidden="true">
-                      {finishFeed.unseenCount > 9 ? "9+" : finishFeed.unseenCount}
-                    </span>
-                  ) : null}
-                </button>
-                {finishFeedOpen ? (
-                  <div className="finish-feed-panel" role="dialog" aria-label="Shared reading">
-                    <header>
-                      <strong>Shared reading</strong>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="Close shared reading"
-                        onClick={() => setFinishFeedOpen(false)}
-                      >
-                        <X size={14} />
-                      </button>
-                    </header>
-                    {finishFeed.entries.length === 0 ? (
-                      <p className="finish-feed-empty">
-                        Nobody has finished a book yet. When someone does, it shows up here.
-                      </p>
-                    ) : (
-                      <ul>
-                        {finishFeed.entries.map((entry) => (
-                          <li key={entry.id} className={entry.unseen ? "unseen" : ""}>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const book = books.find((candidate) => candidate.id === entry.bookId);
-                                if (book) {
-                                  selectBook(book);
-                                  setLibraryOpen(false);
-                                }
-                                setFinishFeedOpen(false);
-                              }}
-                            >
-                              <span className="finish-feed-text">{finishAnnouncement(entry)}</span>
-                              <span className="finish-feed-when">
-                                {finishedAgoLabel(entry.finishedAt)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            <button
-              className="icon-button"
-              aria-label={capabilities.administration ? "Rescan library" : "Refresh library"}
-              onClick={() => void refreshLibrary()}
-            >
-              <RefreshCcw size={16} />
-            </button>
-            <div className="user-menu-wrap">
-              <button
-                className="icon-button"
-                aria-label="Account menu"
-                aria-expanded={userMenuOpen}
-                onClick={() => setUserMenuOpen((open) => !open)}
-              >
-                <span className="user-avatar">{currentUser.username.slice(0, 1).toUpperCase()}</span>
-              </button>
-              {userMenuOpen
-                ? native
-                  ? createPortal(
-                      <div className="user-menu-layer">
-                        <button
-                          type="button"
-                          className="user-menu-scrim"
-                          aria-label="Close menu"
-                          onClick={() => setUserMenuOpen(false)}
-                        />
-                        {userMenu}
-                      </div>,
-                      document.body
-                    )
-                  : userMenu
-                : null}
-            </div>
-            <button
-              className="icon-button library-close"
-              aria-label="Close library"
-              onClick={() => setLibraryOpen(false)}
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
+      <LibraryPane
+        applyAdminLibraryChange={applyAdminLibraryChange}
+        audibleManagement={audibleManagement}
+        audioRef={audioRef}
+        books={books}
+        capabilities={capabilities}
+        carPlay={carPlay}
+        connectPromptDismissed={connectPromptDismissed}
+        currentUser={currentUser}
+        demoMode={demoMode}
+        deviceImport={deviceImport}
+        downloadedBookIds={downloadedBookIds}
+        error={error}
+        finishFeedState={finishFeedState}
+        ipad={ipad}
+        isLoading={isLoading}
+        isOffline={isOffline}
+        isOperaLibre={isOperaLibre}
+        lastPurchaseSource={lastPurchaseSource}
+        libraryOpen={libraryOpen}
+        librarySource={librarySource}
+        localMode={localMode}
+        native={native}
+        nativeTab={nativeTab}
+        offlineDownloads={offlineDownloads}
+        onConnectServer={onConnectServer}
+        openBookDetails={openBookDetails}
+        openNativeTab={openNativeTab}
+        pausePlayback={pausePlayback}
+        playbackBook={playbackBook}
+        purchases={purchases}
+        readerPreferences={readerPreferences}
+        refreshLibrary={refreshLibrary}
+        resumeSelectedBook={resumeSelectedBook}
+        selectBook={selectBook}
+        selectFromShelf={selectFromShelf}
+        selectedBook={selectedBook}
+        setBooks={setBooks}
+        setConnectPromptDismissed={setConnectPromptDismissed}
+        setLibraryOpen={setLibraryOpen}
+        setLibrarySource={setLibrarySource}
+        setUserMenuOpen={setUserMenuOpen}
+        shelf={shelf}
+        shelfPull={shelfPull}
+        showYourLibrary={showYourLibrary}
+        uploads={uploads}
+        userMenu={userMenu}
+        userMenuOpen={userMenuOpen}
+      />
 
-        <div className="library-toolbar">
-          {!demoMode && libroAvailable ? (
-            <>
-              <div className="source-toggle shelf-navigation" role="group" aria-label="Library navigation">
-                <button type="button" className={librarySource === "local" ? "selected" : ""} onClick={showYourLibrary} aria-pressed={librarySource === "local"}>
-                  <Library size={16} /> Library
-                </button>
-                <button type="button" className={librarySource !== "local" ? "selected" : ""} onClick={() => setLibrarySource(lastPurchaseSource.current === "audible" && !canBrowseLibation ? "libro" : lastPurchaseSource.current)} aria-pressed={librarySource !== "local"}>
-                  <Cloud size={16} /> Get books
-                  {currentUser.isAdmin && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} Audible accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
-                </button>
-              </div>
-              {librarySource !== "local" ? (
-                <>
-                <div className="purchase-source">
-                  <div className="purchase-tabs" role="tablist" aria-label="Book stores">
-                    {(["all", "libro", ...(canBrowseLibation ? ["audible"] : [])] as LibrarySource[]).map(source => (
-                      <button key={source} id={`purchase-tab-${source}`} type="button" role="tab"
-                        aria-selected={librarySource === source} aria-controls="purchase-results"
-                        tabIndex={librarySource === source ? 0 : -1}
-                        onClick={() => { setAudibleAccountFilter("all"); setPurchaseAccountFilter("all"); setLibrarySource(source); }}
-                        onKeyDown={event => {
-                          const tabs = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-                          const index = tabs.indexOf(event.currentTarget);
-                          const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
-                            : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
-                            : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
-                          if (next < 0) return;
-                          event.preventDefault();
-                          tabs[next].focus();
-                          tabs[next].click();
-                        }}>
-                        {source === "all" ? "All accounts" : source === "libro" ? "Libro.fm" : "Audible"}
-                        {source === "audible" && brokenLibationAccounts.length > 0 ? <span className="source-health-badge" aria-label={`${brokenLibationAccounts.length} accounts need attention`}>{brokenLibationAccounts.length}</span> : null}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-              ) : null}
-            </>
-          ) : null}
-          <div className="library-search-row">
-            <div className="library-search">
-              <Search size={14} aria-hidden="true" />
-              <input
-                type="search"
-                ref={shelfSearchRef}
-                placeholder={librarySource === "local" ? "Search books, authors, tags…" : librarySource === "libro" ? "Search Libro.fm purchases…" : librarySource === "all" ? "Search all purchases…" : "Search Audible titles…"}
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.currentTarget.value)}
-                aria-label="Search library"
-              />
-              {searchQuery ? (
-                <button
-                  type="button"
-                  className="library-search-clear"
-                  aria-label="Clear search"
-                  onClick={() => { setSearchQuery(""); shelfSearchRef.current?.focus(); }}
-                >
-                  <X size={14} aria-hidden="true" />
-                </button>
-              ) : null}
-            </div>
-            {showShelfFilters ? (
-              <button
-                type="button"
-                ref={filterToggleRef}
-                className={`library-filter-toggle ${filtersOpen ? "open" : ""} ${activeShelfFilterCount > 0 ? "engaged" : ""}`}
-                onClick={() => setFiltersOpen(!filtersOpen)}
-                aria-expanded={filtersOpen}
-                aria-controls="library-filter-panel"
-              >
-                <SlidersHorizontal size={14} aria-hidden="true" />
-                <span>Filters</span>
-                {activeShelfFilterCount > 0 ? <em>{activeShelfFilterCount}</em> : null}
-              </button>
-            ) : null}
-          </div>
-
-          <div className="library-controls">
-            <label className="library-sort">
-              <span>Sort by</span>
-              <select
-                value={sortMode}
-                onChange={(event) => selectSortMode(event.currentTarget.value as SortMode)}
-                aria-label="Sort library by"
-              >
-                {SORT_OPTIONS.filter((option) => isSortModeSupported(librarySource, option.value)).map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="library-sort-direction"
-              onClick={reverseSort}
-              aria-label={`Reverse sort order (currently ${sortOrderLabel})`}
-              title={`Reverse sort order · ${sortOrderLabel}`}
-              aria-pressed={sortReversed}
-            >
-              {sortReversed ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
-            </button>
-            <div className="view-toggle" role="group" aria-label={librarySource === "local" ? "View mode" : "Purchase view mode"}>
-              {SHELF_VIEW_MODE_OPTIONS.map((option) => {
-                const Icon = option.value === "list" ? List : option.value === "compact" ? Rows3 : LayoutGrid;
-                const activeViewMode = librarySource === "local" ? viewMode : purchaseViewMode;
-                return (
-                  <button
-                    type="button"
-                    key={option.value}
-                    className={activeViewMode === option.value ? "selected" : ""}
-                    onClick={() => librarySource === "local" ? selectViewMode(option.value) : selectPurchaseViewMode(option.value)}
-                    aria-label={option.label}
-                    title={option.value === "compact" ? "Compact view · more books per screen" : option.label}
-                    aria-pressed={activeViewMode === option.value}
-                  >
-                    <Icon size={14} />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {showShelfFilters && filtersOpen ? (
-            <section
-              className="library-filters"
-              id="library-filter-panel"
-              aria-label="Library filters"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") { event.stopPropagation(); closeShelfFilters(); }
-              }}
-            >
-              <div className="library-filters-heading">
-                <strong>Find your next listen</strong>
-                <button type="button" className="library-clear-filters" onClick={closeShelfFilters}>Done</button>
-              </div>
-              <div className="library-filters-body">
-                <div className="shelf-facet shelf-facet-status">
-                  <div className="shelf-facet-heading">
-                    <span className="shelf-facet-title">Progress</span>
-                  </div>
-                  <div className="shelf-status-row" role="group" aria-label="Filter by reading progress">
-                    {SHELF_STATUS_OPTIONS.map((option) => {
-                      const isSelected = shelfFilters.status === option.value;
-                      const count = shelfFacets.statusCounts[option.value];
-                      return (
-                        <button
-                          type="button"
-                          key={option.value}
-                          className={isSelected ? "selected" : ""}
-                          aria-pressed={isSelected}
-                          disabled={count === 0 && !isSelected}
-                          onClick={() => setShelfFilters({ ...shelfFilters, status: option.value })}
-                        >
-                          <span>{option.label}</span>
-                          <em>{count}</em>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="shelf-facet shelf-facet-availability">
-                  <div className="shelf-facet-heading">
-                    <span className="shelf-facet-title">Availability</span>
-                  </div>
-                  <div className="shelf-facet-chips" role="group" aria-label="Filter by availability">
-                    <button
-                      type="button"
-                      className={`facet-chip ${shelfFilters.downloadedOnly ? "selected" : ""}`}
-                      aria-pressed={shelfFilters.downloadedOnly}
-                      disabled={shelfFacets.downloadedCount === 0 && !shelfFilters.downloadedOnly}
-                      onClick={() => setShelfFilters({
-                        ...shelfFilters,
-                        downloadedOnly: !shelfFilters.downloadedOnly
-                      })}
-                    >
-                      <span className="facet-chip-label">Downloaded on Device</span>
-                      <em>{shelfFacets.downloadedCount}</em>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="shelf-facet-groups">
-                  <ShelfFacetGroup
-                    title="Genres"
-                    hint="No genres on this shelf yet. Add them when you edit a book’s details."
-                    options={shelfFacets.genres}
-                    selected={shelfFilters.genres}
-                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "genres", key))}
-                  />
-                  <ShelfFacetGroup
-                    title="Tags"
-                    hint="No tags on this shelf yet. Tag books to gather a wider world or reading order."
-                    options={shelfFacets.tags}
-                    selected={shelfFilters.tags}
-                    onToggle={(key) => setShelfFilters(toggleShelfFacet(shelfFilters, "tags", key))}
-                  />
-                </div>
-                <p className="shelf-facet-hint">Choose any in each group. Combine groups to narrow your shelf.</p>
-              </div>
-            </section>
-          ) : null}
-
-          {showShelfFilters && activeShelfFilterCount > 0 ? (
-            <div className="library-active-filters">
-              <span className="library-active-filters-caption">Filtering</span>
-              {activeShelfFilterChips.map((chip) => (
-                <button
-                  type="button"
-                  key={chip.id}
-                  className="active-filter-chip"
-                  onClick={chip.clear}
-                  aria-label={`Remove ${chip.caption.toLowerCase()} filter ${chip.label}`}
-                >
-                  <span className="active-filter-caption">{chip.caption}</span>
-                  <span className="active-filter-label">{chip.label}</span>
-                  <X size={11} strokeWidth={2.5} aria-hidden="true" />
-                </button>
-              ))}
-              <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
-                Clear all
-              </button>
-            </div>
-          ) : null}
-
-          {librarySource !== "libro" && librarySource !== "all" ? <div className="library-results-summary" role="status" aria-live="polite" aria-atomic="true">
-            <span>
-              {librarySource === "local"
-                ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
-                : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
-            </span>
-            <span>{sortOrderLabel}</span>
-          </div> : null}
-
-        </div>
-
-        {carPlaybackBook ? (
-          <section className="carplay-banner">
-            <div className="carplay-banner-copy">
-              <strong>Audiobook playing</strong>
-              <span>{carPlaybackBook.title}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                takeOverFromCar();
-                resumeSelectedBook(carPlaybackBook);
-              }}
-            >
-              Open player
-            </button>
-          </section>
-        ) : null}
-
-        <div id="purchase-results" className="purchase-results" role={librarySource !== "local" ? "tabpanel" : undefined} aria-labelledby={librarySource !== "local" ? `purchase-tab-${librarySource}` : undefined}>
-        <div className="purchase-settings-pane">
-        {!native && showAudiblePurchases && canBrowseLibation ? (
-          <details className="purchase-console">
-            <summary><span>Audible accounts &amp; downloads</span><ChevronDown size={15} /></summary>
-            {audibleManagement}
-          </details>
-        ) : null}
-        {librarySource === "all" ? <label className="purchase-account-filter">
-          <span className="purchase-control-label">Account</span>
-          <select aria-label="Purchase account" value={purchaseAccountFilter} onChange={event => setPurchaseAccountFilter(event.target.value)}>
-            <option value="all">All accounts</option>
-            {canBrowseLibation && allAudibleAccounts.length > 0 ? <optgroup label="Audible">{allAudibleAccounts.map(account => <option key={account.id} value={`audible:${account.id}`}>Audible · {account.name}</option>)}</optgroup> : null}
-            {(libroAccounts?.length ?? 0) > 0 ? <optgroup label="Libro.fm">{libroAccounts!.map(account => <option key={account.email} value={`libro:${account.email}`}>Libro.fm · {account.nickname || account.email}</option>)}</optgroup> : null}
-          </select>
-        </label> : null}
-        {librarySource === "audible" && allAudibleAccounts.length > 1 ? <label className="purchase-account-filter">
-          <span className="purchase-control-label">Account</span>
-          <select aria-label="Audible account" value={audibleAccountFilter} onChange={event => setAudibleAccountFilter(event.currentTarget.value)}>
-            <option value="all">All Audible accounts</option>
-            {allAudibleAccounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
-          </select>
-        </label> : null}
-        {showAudiblePurchases && (displayedLibationJobs.length > 0 || libationMessage || brokenLibationAccounts.length > 0) ? (
-          <details className="purchase-console">
-            <summary>
-              <span><CloudDownload size={14} /> Activity</span>
-              <strong>{displayedLibationJobs.some(isPendingJob) ? "Working" : brokenLibationAccounts.length > 0 ? "Needs attention" : "Up to date"}</strong>
-              <ChevronDown size={15} />
-            </summary>
-            <div className="purchase-console-body">
-              {libationMessage ? <p role="status">{libationMessage}</p> : null}
-              {native && brokenLibationAccounts.length > 0 ? <button type="button" className="purchase-settings-link" onClick={() => openNativeTab("settings")}>
-                <AlertCircle size={14} /> {brokenLibationAccounts.length} Audible account{brokenLibationAccounts.length === 1 ? " needs" : "s need"} attention <ChevronRight size={14} />
-              </button> : null}
-              {displayedLibationJobs.map((job) => {
-              const targetTitle = job.targetId
-                ? libationBooks.find((book) => book.catalogId === job.targetId)?.title
-                : null;
-              return (
-              <details key={job.id} className={`job-card audible-job ${job.status}`}>
-                <summary className="job-card-head">
-                  <span className="job-state">
-                    {job.status === "queued" ? (
-                      <List size={13} />
-                    ) : job.status === "running" ? (
-                      <LoaderCircle size={13} className="spin-icon" />
-                    ) : job.status === "failed" ? (
-                      <AlertCircle size={13} />
-                    ) : (
-                      <CloudDownload size={13} />
-                    )}
-                    {jobStateLabel(job)}
-                  </span>
-                  <strong>{targetTitle ?? (job.kind === "libation-sync" && job.status === "completed" ? "Library refreshed" : jobTitle(job))}</strong>
-                  <ChevronDown size={15} />
-                </summary>
-                <p>{jobSummary(job)}</p>
-                <dl className="job-meta">
-                  <div>
-                    <dt>Elapsed</dt>
-                    <dd>{formatElapsed(job.startedAt, job.finishedAt) ?? "Starting"}</dd>
-                  </div>
-                  {job.exitCode !== null ? (
-                    <div>
-                      <dt>Exit</dt>
-                      <dd>{job.exitCode}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-                {!isPendingJob(job) || job.error ? (
-                  <pre className="job-output">{jobDetailLines(job).join("\n")}</pre>
-                ) : null}
-              </details>
-              );
-              })}
-            </div>
-          </details>
-        ) : null}
-
-        </div>
-        <div className="purchase-books-pane">
-
-        {librarySource === "libro" || librarySource === "all" ? (
-          <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode={native ? "catalog" : "full"} polling={!native || nativeTab === "shelf"} onOpenSettings={native ? () => openNativeTab("settings") : undefined} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
-        ) : null}
-
-        {librarySource === "local" ? (
-          <>
-            {localMode && !connectPromptDismissed && !hasUserConfiguredServer() ? (
-              <section className="connect-server-card" aria-label="Connect a server">
-                <span className="section-label"><Network size={13} /> Listening from this device</span>
-                <p>
-                  Everything here stays on this device — no server or account needed.
-                  When your OperaLibre or Jellyfin server is ready, connect it to
-                  stream a shared library and sync your progress.
-                </p>
-                <a
-                  className="connect-server-guide"
-                  href={SERVER_SETUP_GUIDE_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <ExternalLink size={12} aria-hidden="true" />
-                  <span>New to OperaLibre? Read the server setup guide</span>
-                </a>
-                <div className="connect-server-actions">
-                  <button
-                    type="button"
-                    className="download-btn"
-                    onClick={() => {
-                      pausePlayback(audioRef.current);
-                      onConnectServer();
-                    }}
-                  >
-                    <Network size={13} />
-                    <span>Connect a server</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="connect-server-dismiss"
-                    onClick={() => {
-                      writeStoredValue(CONNECT_PROMPT_DISMISSED_KEY, "true");
-                      setConnectPromptDismissed(true);
-                    }}
-                  >
-                    Maybe later
-                  </button>
-                </div>
-              </section>
-            ) : null}
-            {isLoading ? <div className="empty-state">Loading library…</div> : null}
-            {error ? <div className="empty-state error">{error}</div> : null}
-            {!isLoading && !error && books.length === 0 ? (
-              <div className="empty-state device-empty-state">
-                <span>{localMode ? "Your shelf is ready. Pick audiobook files from this device to start listening." : !isOperaLibre ? "No audiobooks are available to this account. Add audiobooks to a Books library in Jellyfin and check this account’s library access. Music libraries are not included." : "No audiobooks found in the configured library folder."}</span>
-                {native ? (
-                  <button type="button" className="download-btn" onClick={() => void importFromDevice()}>
-                    <FolderOpen size={14} /> Choose audiobook files
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {!isLoading && !error && books.length > 0 && visibleBooks.length === 0 ? (
-              <div className="empty-state shelf-empty-state">
-                <span>
-                  {searchQuery.trim()
-                    ? `Nothing matches “${searchQuery.trim()}”${activeShelfFilterCount > 0 ? " under these filters" : ""}.`
-                    : "No books match these filters."}
-                </span>
-                {activeShelfFilterCount > 0 ? (
-                  <button type="button" className="library-clear-filters" onClick={clearShelfFilters}>
-                    Clear filters
-                  </button>
-                ) : null}
-                {searchQuery ? (
-                  <button type="button" className="library-clear-filters" onClick={() => setSearchQuery("")}>
-                    Clear search
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-
-            {/* Compact keeps the list layout and only tightens it, so it carries
-                both classes rather than forking every row rule. */}
-            <ShelfBookList
-              columns={visibleBookColumns}
-              viewMode={viewMode}
-              sortMode={sortMode}
-              shelfTags={shelfFilters.tags}
-              selectedBookId={selectedBook?.id ?? null}
-              playbackBookId={playbackBook?.id ?? null}
-              downloadedBookIds={downloadedBookIds}
-              isOffline={isOffline}
-              demoMode={demoMode}
-              localMode={localMode}
-              native={native}
-              readalongEnabled={readalongEnabled}
-              onSelectBook={selectFromShelf}
-            />
-          </>
-        ) : showAudiblePurchases ? (
-          <>
-            {librarySource === "all" ? <h2 className="purchase-provider-heading">Audible</h2> : null}
-            {libationLoading || (libationStatus?.enabled && !libationBooksLoaded) ? (
-              <div className="empty-state">Loading Audible library…</div>
-            ) : null}
-            {libationError ? <div className="empty-state error">{libationError}</div> : null}
-            {!libationLoading && !libationError && libationBooksLoaded && libationStatus?.enabled && visibleLibationBooks.length === 0 ? (
-              <div className="empty-state">No Libation books loaded yet.</div>
-            ) : null}
-
-            <div className={`audible-list purchase-book-list purchase-book-list--${purchaseViewMode} audible-list--${purchaseViewMode}`}>
-              {visibleLibationBooks.map((book) => {
-                const isLocal = !!book.localBookId;
-                const downloadRequest = libationDownloadRequests.find(
-                  (request) => (request.catalogId ? request.catalogId === book.catalogId : request.profileId ? `${request.profileId}:${request.asin}` === book.catalogId : request.asin === book.asin) && request.status !== "rejected"
-                );
-                const isAwaitingApproval = downloadRequest?.status === "pending";
-                const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
-                const pendingDownloadJob =
-                  pendingLibationJobs.find(
-                    (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
-                  ) ?? downloadAllLibationJob;
-                const latestBookJob = libationJobs.find(
-                  (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
-                );
-                const isStarting = libationAllPending || libationRequests.has(book.catalogId);
-                const isQueued = pendingDownloadJob?.status === "queued";
-                const isDownloading = pendingDownloadJob?.status === "running";
-                const finalizationFailed = libationFinalizationFailures.has(book.catalogId);
-                const isFinalizing = isLibationAdding({
-                  isLocal,
-                  confirmationPending: libationFinalizingAsins.has(book.catalogId),
-                  confirmationFailed: finalizationFailed
-                });
-                const didFail = latestBookJob?.status === "failed" || finalizationFailed;
-                const metaParts = [
-                  book.authors,
-                  formatMinutes(book.lengthMinutes),
-                  isLocal ? "In library" : book.bookStatus
-                ].filter(Boolean);
-                return (
-                  <div key={book.catalogId} className={`audible-row purchase-book-row ${isLocal ? "is-local" : ""}`}>
-                    <LibationCoverArt book={book} />
-                    <div className="audible-copy">
-                      <strong>{book.title}</strong>
-                      <span>{metaParts.join(" · ")}</span>
-                      <small className="audible-account-badge"><span className="purchase-provider-tag">Audible</span><KeyRound size={10} /> {audibleAccountLabels.get(book.profileId) ?? book.profileName}</small>
-                    </div>
-                    {isLocal ? (
-                      <button
-                        type="button"
-                        className="local-marker"
-                        aria-label={`Open ${book.title} from your library`}
-                        onClick={() => {
-                          if (!book.localBookId) {
-                            return;
-                          }
-                          openBookDetails(book.localBookId);
-                          setLibrarySource("local");
-                          setLibraryOpen(false);
-                        }}
-                      >
-                        <CircleCheck size={14} />
-                        <span>In library</span>
-                      </button>
-                    ) : isAwaitingApproval ? (
-                      <span className="audible-download-status queued" role="status" aria-label={`Requested ${book.title}`}>
-                        <List size={14} />
-                        <span>Requested</span>
-                      </span>
-                    ) : isStarting || isQueued || isDownloading || isFinalizing || (isApprovedRequest && !finalizationFailed) ? (
-                      <span
-                        className={`audible-download-status ${
-                          isQueued ? "queued" : isDownloading ? "downloading" : isFinalizing || isApprovedRequest ? "finalizing" : "starting"
-                        }`}
-                        role="status"
-                        aria-label={`${
-                          isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding to library" : "Starting download"
-                        } ${book.title}`}
-                      >
-                        {isQueued ? <List size={14} /> : <LoaderCircle size={14} className="spin-icon" />}
-                        <span>{isQueued ? "Queued" : isDownloading ? "Downloading" : isFinalizing || isApprovedRequest ? "Adding" : "Starting"}</span>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className={`audible-download-action ${didFail ? "retry" : ""}`}
-                        aria-label={`${didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"} ${book.title}`}
-                        onClick={() => void startLiberation(book)}
-                      >
-                        <CloudDownload size={14} />
-                        <span>{didFail ? "Retry" : currentUser.libationAccess === "approval" ? "Request" : "Download"}</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-        </div>
-        </div>
-      </aside>
-
-      <section
-        className={`player-pane native-player-view-${nativePlayerView} ${
-          isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-        } ${showReaderInNowView ? "has-reader" : ""} ${
-          nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
-            ? "" : "fit-playback"
-        }`}
-        ref={playerPaneRef}
-        onScroll={handlePlayerPaneScroll}
-        onTouchStart={beginBookDetailsBackSwipe}
-        onTouchEnd={finishBookDetailsBackSwipe}
-        onTouchCancel={() => { bookDetailsSwipeStartRef.current = null; }}
-      >
-        <button
-          type="button"
-          className="library-open-btn"
-          aria-label="Open library"
-          onClick={() => setLibraryOpen(true)}
-        >
-          <Library size={16} />
-          <span>Library</span>
-        </button>
-        {/* The details view stands on its own: every block that needs a live
-            track is already gated on `isViewingPlayingBook`, so a book opened
-            from the shelf with nothing playing renders its preview + "Begin
-            this reading" instead of falling through to the empty player. The
-            empty player stays for the "now" view, which has nothing to show
-            until playback starts. */}
-        {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
-          <>
-            {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
-              <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
-                {/* The halves group the stack for a foldable phone, which sets
-                    them either side of its fold. Everywhere else they take no
-                    box and their children lay out in the card's grid. */}
-                <div className="native-now-half native-now-lead">
-                  <div className="native-now-artwork">
-                    <CoverArt book={nowPlayingBook} size="large" />
-                  </div>
-
-                  <div className="native-now-copy">
-                    <span className="native-now-kicker">
-                      {activeChapter ? `Chapter ${activeChapter.chapterNumber}` : "Now playing"}
-                    </span>
-                    <h2>{activeChapter?.title ?? currentTrack.title}</h2>
-                    <p>{nowPlayingBook.title}</p>
-                    <span>{nowPlayingBook.author ?? currentTrack.metadata.album ?? "Audiobook"}</span>
-                  </div>
-                </div>
-
-                <div className="native-now-half native-now-controls">
-                  <div className="native-now-timeline">
-                    <ScrubSlider
-                      ariaLabel={activeChapter ? `Playback position in ${activeChapter.title}` : "Playback position"}
-                      max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
-                      value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
-                      onPreview={setScrubPreview}
-                      onCommit={(value) => {
-                        if (activeChapter) {
-                          seekBookPosition(activeChapter.startSeconds + value);
-                        } else {
-                          seekTo(value);
-                        }
-                      }}
-                    />
-                    <div className="native-now-time-row">
-                      <span>{formatTime(scrubbedElapsed)}</span>
-                      <span>
-                        {activeChapter
-                          ? `−${formatTime(Math.max(0, chapterDuration - scrubbedElapsed))}`
-                          : `−${formatTime(Math.max(0, sliderMax - scrubbedElapsed))}`}
-                      </span>
-                    </div>
-                    {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
-                      <div
-                        className="book-time-row"
-                        aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
-                      >
-                        <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
-                        <span>{bookCompletionPercent}% complete</span>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="native-now-transport">
-                    {activeChapter ? (
-                      <button
-                        type="button"
-                        className="native-now-chapter"
-                        aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
-                        onClick={restartOrPreviousChapter}
-                        disabled={chapterElapsed <= 5 && !hasPreviousChapter}
-                      >
-                        <SkipBack size={27} strokeWidth={1.65} />
-                        <span>{chapterElapsed > 5 ? "Restart" : "Previous"}</span>
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="native-now-seek"
-                      aria-label="Rewind 15 seconds"
-                      onClick={() => seekBy(-15)}
-                    >
-                      <RotateCcw size={24} strokeWidth={1.7} />
-                      <span>15s</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`native-now-play${playPending ? " play-pending" : ""}`}
-                      aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
-                      aria-busy={playPending}
-                      onClick={togglePlayback}
-                    >
-                      {isPlaying || playPending ? <Pause size={39} fill="currentColor" /> : <Play size={39} fill="currentColor" />}
-                      {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
-                    </button>
-                    <button
-                      type="button"
-                      className="native-now-seek"
-                      aria-label="Forward 30 seconds"
-                      onClick={() => seekBy(30)}
-                    >
-                      <RotateCw size={24} strokeWidth={1.7} />
-                      <span>30s</span>
-                    </button>
-                    {activeChapter ? (
-                      <button
-                        type="button"
-                        className="native-now-chapter"
-                        aria-label="Next chapter"
-                        onClick={nextChapter}
-                        disabled={!hasNextChapter}
-                      >
-                        <SkipForward size={27} strokeWidth={1.65} />
-                        <span>Next</span>
-                      </button>
-                    ) : null}
-                  </div>
-
-                  <div className="native-now-utility">
-                    <button
-                      type="button"
-                      onClick={() => openNativePlayerSheet("speed")}
-                    >
-                      <Gauge size={16} /> {speed}×
-                    </button>
-                    <button type="button" onClick={() => {
-                      setSleepCustomOpen(false);
-                      setSleepCustomDraft("");
-                      openNativePlayerSheet("sleep");
-                    }}>
-                      <Timer size={16} /> {sleepRemaining > 0 ? `${Math.ceil(sleepRemaining / 60)}m left` : "Sleep timer"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (playbackBook) setSelectedBookId(playbackBook.id);
-                        openNativePlayerSheet("details");
-                      }}
-                    >
-                      <Bookmark size={16} /> Details
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (playbackBook) setSelectedBookId(playbackBook.id);
-                        openNativePlayerSheet("chapters");
-                      }}
-                    >
-                      <ListMusic size={16} /> Chapters
-                    </button>
-                    {readalongEnabled && playbackBook?.readingFile ? (
-                      <button
-                        type="button"
-                        className="native-now-read"
-                        onClick={() => {
-                          haptic("light");
-                          openReadalong(playbackBook);
-                        }}
-                      >
-                        <BookOpen size={16} /> Read along
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-
-                {!native ? (
-                  <div className="web-now-extras">
-                    <section className="web-now-panel web-now-about" aria-labelledby="web-now-about-title">
-                      <header className="web-now-panel-head">
-                        <div>
-                          <span className="web-now-panel-kicker"><ScrollText size={13} /> Edition</span>
-                          <h3 id="web-now-about-title">About this book</h3>
-                        </div>
-                        <button type="button" onClick={() => openNativePlayerSheet("details")}>View details</button>
-                      </header>
-                      <p>
-                        {playbackDescription
-                          ?? `${nowPlayingBook.title}${nowPlayingBook.author ? ` by ${nowPlayingBook.author}` : ""}${nowPlayingBook.narrator ? `, narrated by ${nowPlayingBook.narrator}` : ""}.`}
-                      </p>
-                      <div className="web-now-tags" aria-label="Book metadata">
-                        {nowPlayingBook.publishedDate ? <span>{nowPlayingBook.publishedDate}</span> : null}
-                        {nowPlayingBook.metadata.publisher ? <span>{nowPlayingBook.metadata.publisher}</span> : null}
-                        {nowPlayingBook.genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
-                      </div>
-                    </section>
-
-                    <section className="web-now-panel web-now-session" aria-labelledby="web-now-session-title">
-                      <header className="web-now-panel-head">
-                        <div>
-                          <span className="web-now-panel-kicker"><Headphones size={13} /> Session</span>
-                          <h3 id="web-now-session-title">Listening progress</h3>
-                        </div>
-                        <strong>{bookCompletionPercent ?? 0}%</strong>
-                      </header>
-                      <div className="web-now-progressbar" role="img" aria-label={`${bookCompletionPercent ?? 0}% complete`}>
-                        <span style={{ width: `${bookCompletionPercent ?? 0}%` }} />
-                      </div>
-                      <dl className="web-now-facts">
-                        <div>
-                          <dt>Remaining</dt>
-                          <dd>{displayBookRemainingSeconds !== null ? formatDurationLabel(displayBookRemainingSeconds) ?? formatTime(displayBookRemainingSeconds) : "—"}</dd>
-                        </div>
-                        <div>
-                          <dt>Runtime</dt>
-                          <dd>{formatDurationLabel(bookDuration) ?? formatTime(bookDuration)}</dd>
-                        </div>
-                        <div>
-                          <dt>Chapter</dt>
-                          <dd>{activeChapter ? `${activeChapter.chapterNumber} of ${chapterSegments.length}` : "—"}</dd>
-                        </div>
-                      </dl>
-                      <label className="web-now-volume" htmlFor="web-now-volume">
-                        <span><Volume2 size={13} /> Volume</span>
-                        <input
-                          id="web-now-volume"
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={volume}
-                          onChange={(event) => setVolume(Number(event.currentTarget.value))}
-                        />
-                        <strong>{Math.round(volume * 100)}%</strong>
-                      </label>
-                    </section>
-
-                    <section className="web-now-panel web-now-up-next" aria-labelledby="web-now-up-next-title">
-                      <header className="web-now-panel-head">
-                        <div>
-                          <span className="web-now-panel-kicker"><ListMusic size={13} /> Contents</span>
-                          <h3 id="web-now-up-next-title">Up next</h3>
-                        </div>
-                        <button type="button" onClick={() => openNativePlayerSheet("chapters")}>All chapters</button>
-                      </header>
-                      {upcomingChapters.length > 0 ? (
-                        <div className="web-now-chapter-list">
-                          {upcomingChapters.map((chapter) => (
-                            <button type="button" key={chapter.id} onClick={() => jumpToChapterFromSheet(chapter)}>
-                              <span>{String(chapter.chapterNumber).padStart(2, "0")}</span>
-                              <strong>{chapter.title}</strong>
-                              <em>{formatTime(chapter.durationSeconds)}</em>
-                              <ChevronRight size={15} />
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="web-now-end-copy">You’re in the final chapter of this book.</p>
-                      )}
-                    </section>
-                  </div>
-                ) : null}
-                {showReaderInNowView ? <div className="web-now-reader">{readalongPanelElement}</div> : null}
-              </section>
-            ) : null}
-            {/* On the shelf tab the details page is a child page of the library
-                list, so it always needs its own way back — even with nothing
-                playing. "Back to Now Playing" still requires a playing book. */}
-            {nativePlayerView !== "now" && (playbackBook || (native && nativeTab === "shelf")) ? (
-              <button
-                type="button"
-                className="native-player-return"
-                onClick={() => {
-                  if (native && nativeTab === "shelf") {
-                    returnToLibrary();
-                    return;
-                  }
-                  haptic("light");
-                  withWebViewTransition(() => openPlaybackView("now"));
-                }}
-              >
-                {native && nativeTab === "shelf" ? (
-                  <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Library</span></>
-                ) : (
-                  <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Now Playing</span></>
-                )}
-              </button>
-            ) : null}
-            <div className="folio">
-              <span>Vol. I <span className="dot">·</span> The Reading Room</span>
-              <span>Folio {String(activeTrackIndex + 1).padStart(3, "0")} / {String(selectedBook.tracks.length).padStart(3, "0")}</span>
-            </div>
-
-            <div className="book-heading">
-              <CoverArt book={selectedBook} size="large" />
-              <div className="meta">
-                <div className="heading-top">
-                  <span className="eyebrow">
-                    <Bookmark size={13} /> {isViewingPlayingBook ? "Now Reading" : "Book Details"}
-                  </span>
-                  <div className="heading-actions">
-                    {capabilities.metadataEditing && selectedBook.source !== "device" ? (
-                      <button
-                        className="download-btn"
-                        type="button"
-                        onClick={() => {
-                          haptic("light");
-                          openMetadataEditor(selectedBook);
-                        }}
-                        aria-label={`Edit info for ${selectedBook.title}`}
-                      >
-                        <Pencil size={13} />
-                        <span>Edit Info</span>
-                      </button>
-                    ) : null}
-                    {capabilities.uploads && selectedBook.readingFile?.extension !== "epub" && selectedBook.source !== "device" ? (
-                      <button
-                        className="download-btn"
-                        type="button"
-                        onClick={() => {
-                          haptic("light");
-                          setEbookUploadBook(selectedBook);
-                          setEbookUploadFile(null);
-                          setEbookUploadError(null);
-                        }}
-                        aria-label={`Upload matching ebook for ${selectedBook.title}`}
-                      >
-                        <BookOpen size={13} />
-                        <span>Add EPUB</span>
-                      </button>
-                    ) : null}
-                    <button
-                      className={`download-btn ${
-                        selectedBook.progress?.status === "finished" ? "active" : ""
-                      }`}
-                      type="button"
-                      onClick={() => {
-                        haptic("light");
-                        void changeBookCompletion(
-                          selectedBook,
-                          selectedBook.progress?.status !== "finished"
-                        );
-                      }}
-                      disabled={completionPendingBookId === selectedBook.id}
-                      aria-pressed={selectedBook.progress?.status === "finished"}
-                      aria-label={
-                        selectedBook.progress?.status === "finished"
-                          ? `Mark ${selectedBook.title} unfinished`
-                          : `Mark ${selectedBook.title} finished`
-                      }
-                    >
-                      {completionPendingBookId === selectedBook.id ? (
-                        <LoaderCircle size={13} className="spin-icon" />
-                      ) : (
-                        <CircleCheck size={13} />
-                      )}
-                      <span>
-                        {selectedBook.progress?.status === "finished"
-                          ? "Mark Unfinished"
-                          : "Mark Finished"}
-                      </span>
-                    </button>
-                    {selectedBook.progress && selectedBook.progress.status !== "notStarted" ? (
-                      <button
-                        className="download-btn"
-                        type="button"
-                        onClick={() => markBookUnplayed(selectedBook)}
-                        disabled={completionPendingBookId === selectedBook.id}
-                        aria-label={`Mark ${selectedBook.title} as unplayed and reset listening progress`}
-                      >
-                        {completionPendingBookId === selectedBook.id ? (
-                          <LoaderCircle size={13} className="spin-icon" />
-                        ) : (
-                          <RotateCcw size={13} />
-                        )}
-                        <span>Mark Unplayed</span>
-                      </button>
-                    ) : null}
-                    {readalongAvailable ? (
-                      <button
-                        className={`download-btn ${readalongOpen ? "active" : ""}`}
-                        type="button"
-                        onClick={() => {
-                          haptic("light");
-                          if (readalongOpen) closeReadalong();
-                          else openReadalong(selectedBook);
-                        }}
-                        aria-pressed={readalongOpen}
-                        aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
-                      >
-                        {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
-                        <span>{selectedBook.readingFile ? "Read Along" : "Extras"}</span>
-                      </button>
-                    ) : null}
-                    {selectedBook.deviceBookId ? (
-                      <span className="download-btn active device-status" aria-label="Imported from this device">
-                        <FolderOpen size={13} />
-                        <span>On device</span>
-                      </span>
-                    ) : demoMode ? (
-                      <span className="download-btn active device-status" aria-label="Included with the on-device demo">
-                        <CircleCheck size={13} />
-                        <span>On device</span>
-                      </span>
-                    ) : Capacitor.isNativePlatform() && (capabilities.downloads || downloadedBookIds.has(selectedBook.id) || selectedDownload) ? (
-                      <button
-                        className={`download-btn ${downloadedBookIds.has(selectedBook.id) ? "active" : ""} ${
-                          selectedDownload ? "downloading" : ""
-                        }`}
-                        type="button"
-                        onClick={() => {
-                          haptic("light");
-                          void (selectedDownload
-                            ? cancelOfflineDownload(selectedBook)
-                            : downloadedBookIds.has(selectedBook.id)
-                              ? removeOfflineDownload(selectedBook)
-                              : downloadForOffline(selectedBook));
-                        }}
-                        aria-label={
-                          selectedDownload
-                            ? `Cancel download of ${selectedBook.title}`
-                            : downloadedBookIds.has(selectedBook.id)
-                              ? `Remove downloaded copy of ${selectedBook.title}`
-                            : `Download ${selectedBook.title} for offline playback`
-                        }
-                      >
-                        {selectedDownload ? (
-                          <DownloadRing fraction={selectedDownload.fraction} />
-                        ) : (
-                          <Download size={13} />
-                        )}
-                        <span>
-                          {selectedDownload
-                            ? "Cancel"
-                            : downloadedBookIds.has(selectedBook.id)
-                              ? "Downloaded"
-                              : "Download"}
-                        </span>
-                      </button>
-                    ) : capabilities.bookArchive ? (
-                      <a
-                        className="download-btn"
-                        href={bookDownloadUrl(selectedBook.id)}
-                        download
-                        aria-label={`Download ${selectedBook.title} as zip`}
-                      >
-                        <Download size={13} />
-                        <span>Download</span>
-                      </a>
-                    ) : !native && capabilities.downloads ? (
-                      <details className="track-downloads">
-                        <summary className="download-btn"><Download size={13} /> Download tracks</summary>
-                        <ul>
-                          {selectedBook.tracks.map((track) => (
-                            <li key={track.id}>
-                              <a href={mediaUrl(track.downloadUrl ?? track.streamUrl)}
-                                target="_blank" rel="noreferrer" download>{track.title}</a>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    ) : null}
-                    {Capacitor.isNativePlatform() && downloadStatus?.bookId === selectedBook.id ? (
-                      <span className="download-status">{downloadStatus.message}</span>
-                    ) : null}
-                    {playbackError ? <span className="download-status">{playbackError}</span> : null}
-                    {completionError?.bookId === selectedBook.id ? (
-                      <span className="download-status" role="alert">
-                        {completionError.message}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-                <h2>{selectedBook.title}</h2>
-                {!isViewingPlayingBook ? (
-                  <div className="book-quick-start">
-                    <button
-                      type="button"
-                      className="book-quick-play"
-                      aria-label={`Play ${selectedBook.title}`}
-                      onClick={() => void playSelectedBook(selectedBook)}
-                    >
-                      <span className="book-quick-play-icon"><Play size={20} fill="currentColor" /></span>
-                      <span className="book-quick-play-copy">
-                        <strong>
-                          {selectedBook.progress?.status === "inProgress"
-                            ? "Resume this book"
-                            : selectedBook.progress?.status === "finished"
-                              ? "Read it again"
-                              : "Begin this reading"}
-                        </strong>
-                        <small>
-                          {selectedBook.progress?.status === "inProgress"
-                            && formatDurationLabel(selectedBook.progress.remainingSeconds)
-                            ? `${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                            : formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? "Start from the beginning"}
-                        </small>
-                      </span>
-                    </button>
-                    {playbackBook && playbackBook.id !== selectedBook.id ? (
-                      <button type="button" className="book-quick-return" onClick={scrollToPlayer}>
-                        <Headphones size={14} />
-                        <span>Now playing <em>{playbackBook.title}</em></span>
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-                <p className="book-credits">
-                  {selectedBook.author ? <span>{selectedBook.author}</span> : null}
-                  {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
-                  {!selectedBook.author && !selectedBook.narrator ? <span>{selectedBook.trackCount} tracks</span> : null}
-                </p>
-                {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
-                  <div className="book-runtime" aria-label="Total runtime">
-                    <span className="book-runtime-label">Runtime</span>
-                    <span className="book-runtime-value">
-                      {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook))}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="metadata-strip">
-              {selectedBook.metadata.series ? (
-                <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
-              ) : null}
-              {tagsForBook(selectedBook).map((tag) => (
-                <span className="metadata-custom-tag" key={tag.name}>
-                  {tag.name}{tag.position ? ` · #${tag.position}` : ""}
-                </span>
-              ))}
-              {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
-              {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
-              {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
-            </div>
-
-            {selectedSharedReaders.length > 0 ? (
-              <section className="shared-readers" aria-label="Other listeners">
-                <span className="section-label"><Users size={13} /> Also read by</span>
-                <ul>
-                  {selectedSharedReaders.map((reader) => (
-                    <li key={reader.userId} className={reader.status}>
-                      <span className="shared-reader-name">{reader.username}</span>
-                      <span className="shared-reader-status">{readerStatusLabel(reader)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ) : null}
-
-            {selectedDescription ? (
-              <div className="book-description-wrap">
-                <p
-                  className={`book-description ${descriptionCanExpand && !descriptionExpanded ? "clamped" : ""}`}
-                  id="selected-book-description"
-                >
-                  {selectedDescription}
-                </p>
-                {descriptionCanExpand ? (
-                  <button
-                    type="button"
-                    className="book-description-toggle"
-                    aria-controls="selected-book-description"
-                    aria-expanded={descriptionExpanded}
-                    onClick={() => {
-                      haptic("light");
-                      setDescriptionExpanded((expanded) => !expanded);
-                    }}
-                  >
-                    {descriptionExpanded ? "Less" : "More"}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-
-            {!readalongOpen && readalongAvailable ? (
-              <section className={`readalong-invite ${selectedBook.readingFile ? "" : "extras"}`} aria-label="Read along">
-                <span className="readalong-invite-icon" aria-hidden="true">
-                  {selectedBook.readingFile ? <BookOpen size={22} strokeWidth={1.4} /> : <Images size={22} strokeWidth={1.4} />}
-                </span>
-                <div className="readalong-invite-copy">
-                  <strong>
-                    {selectedBook.readingFile
-                      ? selectedHasExtras
-                        ? "Read along with the ebook — extras included"
-                        : "Read along with the ebook"
-                      : "Extras included with this book"}
-                  </strong>
-                  <span>
-                    {selectedBook.readingFile && selectedReadAlongMode
-                      ? `${READ_ALONG_MODE_LABELS[selectedReadAlongMode].title}. ${READ_ALONG_MODE_LABELS[selectedReadAlongMode].detail}`
-                      : [
-                          selectedCompanionGroups.supplements.length > 0
-                            ? `${selectedCompanionGroups.supplements.length} picture ${selectedCompanionGroups.supplements.length === 1 ? "document" : "documents"}`
-                            : null,
-                          selectedCompanionGroups.images.length > 0
-                            ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"}`
-                            : null
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="download-btn active"
-                  onClick={() => {
-                    haptic("light");
-                    openReadalong(selectedBook);
-                  }}
-                >
-                  {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
-                  <span>{selectedBook.readingFile ? "Open reader" : "View extras"}</span>
-                </button>
-              </section>
-            ) : null}
-
-            {showReaderInNowView ? null : readalongPanelElement}
-
-            {isViewingPlayingBook && currentTrack ? (
-              <>
-                <div className="track-line">
-                  <span className="title">{currentTrack.title}</span>
-                  <span className="ordinal">
-                    {String(activeTrackIndex + 1).padStart(2, "0")} / {String(selectedBook.tracks.length).padStart(2, "0")}
-                  </span>
-                </div>
-
-                <div className="transport">
-                  {activeChapter ? (
-                    <button
-                      className="round-button secondary transport-skip"
-                      aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
-                      onClick={restartOrPreviousChapter}
-                      disabled={chapterElapsed <= 5 && !hasPreviousChapter}
-                    >
-                      <SkipBack size={22} strokeWidth={1.7} />
-                      <small>{chapterElapsed > 5 ? "Restart" : "Previous"}</small>
-                    </button>
-                  ) : null}
-                  <button
-                    className="round-button secondary transport-skip"
-                    aria-label="Rewind 15 seconds"
-                    onClick={() => seekBy(-15)}
-                  >
-                    <RotateCcw size={22} strokeWidth={1.7} />
-                    <small>15s</small>
-                  </button>
-                  <button
-                    className={`round-button primary${playPending ? " play-pending" : ""}`}
-                    aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
-                    aria-busy={playPending}
-                    onClick={togglePlayback}
-                  >
-                    {isPlaying || playPending ? <Pause size={30} fill="currentColor" /> : <Play size={30} fill="currentColor" />}
-                    {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
-                  </button>
-                  <button
-                    className="round-button secondary transport-skip"
-                    aria-label="Forward 30 seconds"
-                    onClick={() => seekBy(30)}
-                  >
-                    <RotateCw size={22} strokeWidth={1.7} />
-                    <small>30s</small>
-                  </button>
-                  {activeChapter ? (
-                    <button
-                      className="round-button secondary transport-skip"
-                      aria-label="Next chapter"
-                      onClick={nextChapter}
-                      disabled={!hasNextChapter}
-                    >
-                      <SkipForward size={22} strokeWidth={1.7} />
-                      <small>Next</small>
-                    </button>
-                  ) : null}
-                </div>
-
-                <div className="timeline">
-                  {activeChapter && chapterSegments.length > 1 ? (
-                    <>
-                      <div className="chapter-now">
-                        <span>{activeChapter.title}</span>
-                        <span>
-                          Chapter {activeChapter.chapterNumber} / {chapterSegments.length}
-                        </span>
-                      </div>
-                      {chapterSegments.length <= MAX_CHAPTER_SEGMENTS ? (
-                        <div className="chapter-segments" aria-label="Book chapter progress">
-                          {chapterSegments.map((chapter) => {
-                            const isActive = chapter.id === activeChapter.id;
-                            const isComplete = bookPosition >= chapter.endSeconds;
-                            const fill =
-                              isComplete
-                                ? 100
-                                : isActive
-                                  ? Math.max(0, Math.min(100, (chapterElapsed / chapterDuration) * 100))
-                                  : 0;
-                            const segmentClass = `chapter-segment ${isActive ? "active" : ""} ${isComplete ? "complete" : ""}`;
-                            // On touch the slivers are impossible to hit on
-                            // purpose and far too easy to hit by accident —
-                            // keep them purely visual there; the chapter list
-                            // below handles deliberate jumps.
-                            return native ? (
-                              <div
-                                key={chapter.id}
-                                className={segmentClass}
-                                style={{ flexGrow: chapter.durationSeconds }}
-                                aria-hidden="true"
-                              >
-                                <span style={{ width: `${fill}%` }} />
-                              </div>
-                            ) : (
-                              <button
-                                key={chapter.id}
-                                className={segmentClass}
-                                style={{ flexGrow: chapter.durationSeconds }}
-                                title={`${chapter.title} · ${formatTime(chapter.startSeconds)}`}
-                                aria-label={`Jump to ${chapter.title}`}
-                                onClick={() => seekBookPosition(chapter.startSeconds)}
-                              >
-                                <span style={{ width: `${fill}%` }} />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="book-progressbar" aria-label="Book progress" role="img">
-                          <span
-                            style={{
-                              width: `${bookDuration > 0 ? Math.min(100, Math.max(0, (bookPosition / bookDuration) * 100)) : 0}%`
-                            }}
-                          />
-                        </div>
-                      )}
-                    </>
-                  ) : null}
-                  {activeChapter ? (
-                    <ScrubSlider
-                      ariaLabel={`Playback position in ${activeChapter.title}`}
-                      max={chapterDuration}
-                      value={Math.min(chapterElapsed, chapterDuration)}
-                      onPreview={setScrubPreview}
-                      onCommit={(value) => seekBookPosition(activeChapter.startSeconds + value)}
-                    />
-                  ) : (
-                    <ScrubSlider
-                      ariaLabel="Playback position"
-                      max={Math.max(1, sliderMax)}
-                      value={Math.min(position, Math.max(1, sliderMax))}
-                      onPreview={setScrubPreview}
-                      onCommit={seekTo}
-                    />
-                  )}
-                  <div className="time-row">
-                    <span className="elapsed">
-                      {formatTime(scrubbedElapsed)}
-                    </span>
-                    <span>
-                      {activeChapter ? formatTime(chapterDuration) : formatTime(sliderMax)}
-                    </span>
-                  </div>
-                  {displayBookRemainingSeconds !== null && bookCompletionPercent !== null ? (
-                    <div
-                      className="book-time-row"
-                      aria-label={`${formatTime(displayBookRemainingSeconds)} remaining in the book, ${bookCompletionPercent}% complete`}
-                    >
-                      <span>{formatTime(displayBookRemainingSeconds)} left in book</span>
-                      <span>{bookCompletionPercent}% complete</span>
-                    </div>
-                  ) : null}
-                </div>
-              </>
-            ) : (
-              <div className="book-preview-actions">
-                {native ? (
-                  <button
-                    type="button"
-                    className="preview-primary"
-                    aria-label={`Play ${selectedBook.title}`}
-                    onClick={() => void playSelectedBook(selectedBook)}
-                  >
-                    <span className="preview-primary-icon"><Play size={19} fill="currentColor" /></span>
-                    <span>
-                      {selectedBook.progress?.status === "inProgress"
-                        ? `Resume${
-                            formatDurationLabel(selectedBook.progress.remainingSeconds)
-                              ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                              : ""
-                          }`
-                        : selectedBook.progress?.status === "finished"
-                          ? "Read it again"
-                          : "Begin this reading"}
-                    </span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="round-button primary"
-                      aria-label={`Play ${selectedBook.title}`}
-                      onClick={() => void playSelectedBook(selectedBook)}
-                    >
-                      <Play size={30} fill="currentColor" />
-                    </button>
-                    <span className="preview-cta">
-                      {selectedBook.progress?.status === "inProgress"
-                        ? `Resume${
-                            formatDurationLabel(selectedBook.progress.remainingSeconds)
-                              ? ` · ${formatDurationLabel(selectedBook.progress.remainingSeconds)} left`
-                              : ""
-                          }`
-                        : selectedBook.progress?.status === "finished"
-                          ? "Read it again"
-                          : "Begin this reading"}
-                    </span>
-                  </>
-                )}
-                {playbackBook && playbackBook.id !== selectedBook.id ? (
-                  <button type="button" className="preview-return" onClick={scrollToPlayer}>
-                    {native ? (
-                      <><Play size={13} fill="currentColor" /><span>Return to <em>{playbackBook.title}</em></span></>
-                    ) : (
-                      <>Still playing · <em>{playbackBook.title}</em></>
-                    )}
-                  </button>
-                ) : null}
-              </div>
-            )}
-
-            <div className={`controls-grid controls-grid-${isViewingPlayingBook ? (native ? 3 : 4) : 1}`}>
-              {isViewingPlayingBook ? (
-                <>
-                  <section className="control-section">
-                    <div className="section-label"><Gauge size={13} /> Cadence</div>
-                    <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
-                  </section>
-
-                  {/* Phones have hardware volume buttons; a second software
-                      volume just adds a card. */}
-                  {!native ? (
-                    <section className="control-section">
-                      <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
-                      <input
-                        id="volume"
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={volume}
-                        onChange={(event) => setVolume(Number(event.currentTarget.value))}
-                      />
-                    </section>
-                  ) : null}
-
-                  <section className="control-section">
-                    <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
-                    <select
-                      id="sleep"
-                      value={sleepCustomOpen ? "custom" : String(sleepMinutes)}
-                      onChange={(event) => {
-                        const choice = event.currentTarget.value;
-                        if (choice === "custom") {
-                          setSleepCustomDraft(sleepMinutes > 0 ? String(sleepMinutes) : "");
-                          setSleepCustomOpen(true);
-                          return;
-                        }
-                        configureSleepTimer(Number(choice));
-                      }}
-                    >
-                      <option value="0">—</option>
-                      {sleepChoices.map((option) => (
-                        <option key={option} value={String(option)}>
-                          {formatSleepTimerMinutes(option)}
-                        </option>
-                      ))}
-                      <option value="custom">Custom…</option>
-                    </select>
-                    {sleepCustomOpen ? (
-                      <form className="sleep-custom" onSubmit={startCustomSleepTimer}>
-                        <input
-                          type="number"
-                          autoFocus
-                          inputMode="numeric"
-                          enterKeyHint="done"
-                          min={SLEEP_TIMER_MIN_MINUTES}
-                          max={SLEEP_TIMER_MAX_MINUTES}
-                          step={1}
-                          placeholder="Minutes"
-                          aria-label="Custom sleep timer in minutes"
-                          value={sleepCustomDraft}
-                          onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
-                        />
-                        <button type="submit" disabled={sleepCustomMinutes === null}>Set</button>
-                        <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => { haptic("light"); setSleepCustomOpen(false); }}><X size={16} /></button>
-                      </form>
-                    ) : null}
-                    {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
-                  </section>
-                </>
-              ) : null}
-
-              {/* Unlike the device volume this one belongs to the book, so it
-                  is offered on the book's own page whether or not it is the
-                  thing currently playing. */}
-              <section className="control-section">
-                <label className="section-label" htmlFor="book-volume">
-                  <Volume2 size={13} /> Book Volume
-                </label>
-                <BookVolumeControl
-                  compact
-                  inputId="book-volume"
-                  value={selectedGain}
-                  canBoost={selectedCanBoost}
-                  onChange={(db) => updateBookGain(selectedBook, db)}
-                />
-              </section>
-            </div>
-
-            {selectedChapterSegments.length > 0 ? (
-              <section className="track-list-section" ref={trackListSectionRef}>
-                <button
-                  type="button"
-                  className="track-list-header track-list-toggle"
-                  aria-expanded={chaptersOpen}
-                  onClick={() => {
-                    haptic("light");
-                    setChaptersOpen((open) => {
-                      if (open) setShowChapterJumpTop(false);
-                      return !open;
-                    });
-                  }}
-                >
-                  <span className="title-of-contents">Embedded Chapters</span>
-                  <span className="section-label">
-                    <ListMusic size={13} /> {selectedChapterSegments.length} Markers
-                    <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
-                  </span>
-                </button>
-                {chaptersOpen ? (
-                  <div className="track-list" ref={chaptersListRef}>
-                    {selectedChapterSegments.map((chapter, index) => (
-                      <button
-                        key={chapter.id}
-                        data-chapter-id={chapter.id}
-                        className={`track-row ${isViewingPlayingBook && chapter.id === activeChapter?.id ? "active" : ""}`}
-                        onClick={() => jumpToChapter(chapter)}
-                      >
-                        <span className="num">{String(index + 1).padStart(2, "0")}</span>
-                        <strong>{chapter.title}</strong>
-                        <em>{formatTime(chapter.durationSeconds)}</em>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-            {native && nativeTab === "shelf" && nativePlayerView === "details" && showChapterJumpTop ? (
-              <button type="button" className="chapter-jump-top" onClick={jumpToPlayerTop} aria-label="Jump to top of book details">
-                <ArrowUp size={16} />
-                <span>Top</span>
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <div className="empty-player">
-            <Headphones size={48} strokeWidth={1.25} />
-            {books.length > 0 ? (
-              <>
-                <h2>Nothing <em>playing</em></h2>
-                <p>Choose a book from your shelf to begin listening.</p>
-              </>
-            ) : (
-              <>
-                <h2>An empty <em>shelf</em></h2>
-                <p>{localMode
-                  ? "Choose audiobook files from this device to start listening."
-                  : isOperaLibre
-                    ? "Add audiobook files to your server’s library folder, then refresh the library."
-                    : "Check your Jellyfin Books library and this account’s access, then refresh the library."}</p>
-              </>
-            )}
-          </div>
-        )}
-      </section>
+      <PlayerPane
+        activeChapter={activeChapter}
+        activeTrackIndex={activeTrackIndex}
+        beginBookDetailsBackSwipe={beginBookDetailsBackSwipe}
+        bookCompletion={bookCompletion}
+        bookCompletionPercent={bookCompletionPercent}
+        bookDetailsSwipeStartRef={bookDetailsSwipeStartRef}
+        bookDuration={bookDuration}
+        bookPosition={bookPosition}
+        books={books}
+        capabilities={capabilities}
+        chapterDuration={chapterDuration}
+        chapterElapsed={chapterElapsed}
+        chapterSegments={chapterSegments}
+        chaptersListRef={chaptersListRef}
+        chaptersOpen={chaptersOpen}
+        closeReadalong={closeReadalong}
+        completionError={completionError}
+        completionPendingBookId={completionPendingBookId}
+        currentTrack={currentTrack}
+        demoMode={demoMode}
+        descriptionCanExpand={descriptionCanExpand}
+        descriptionExpanded={descriptionExpanded}
+        displayBookRemainingSeconds={displayBookRemainingSeconds}
+        downloadStatus={downloadStatus}
+        downloadedBookIds={downloadedBookIds}
+        finishBookDetailsBackSwipe={finishBookDetailsBackSwipe}
+        handlePlayerPaneScroll={handlePlayerPaneScroll}
+        hasNextChapter={hasNextChapter}
+        hasPreviousChapter={hasPreviousChapter}
+        isOperaLibre={isOperaLibre}
+        isPlaying={isPlaying}
+        isViewingPlayingBook={isViewingPlayingBook}
+        jumpToChapter={jumpToChapter}
+        jumpToChapterFromSheet={jumpToChapterFromSheet}
+        jumpToPlayerTop={jumpToPlayerTop}
+        localMode={localMode}
+        metadataEditor={metadataEditor}
+        native={native}
+        nativePlayerView={nativePlayerView}
+        nativeTab={nativeTab}
+        nextChapter={nextChapter}
+        nowPlayingBook={nowPlayingBook}
+        offlineDownloads={offlineDownloads}
+        openNativePlayerSheet={openNativePlayerSheet}
+        openPlaybackView={openPlaybackView}
+        playPending={playPending}
+        playSelectedBook={playSelectedBook}
+        playbackBook={playbackBook}
+        playbackDescription={playbackDescription}
+        playbackError={playbackError}
+        playbackFold={playbackFold}
+        playerPaneRef={playerPaneRef}
+        position={position}
+        readalong={readalong}
+        readalongPanelElement={readalongPanelElement}
+        readerPreferences={readerPreferences}
+        restartOrPreviousChapter={restartOrPreviousChapter}
+        returnToLibrary={returnToLibrary}
+        scrollToPlayer={scrollToPlayer}
+        scrubbedElapsed={scrubbedElapsed}
+        seekBookPosition={seekBookPosition}
+        seekBy={seekBy}
+        seekTo={seekTo}
+        selectedBook={selectedBook}
+        selectedCanBoost={selectedCanBoost}
+        selectedChapterSegments={selectedChapterSegments}
+        selectedDescription={selectedDescription}
+        selectedDownload={selectedDownload}
+        selectedGain={selectedGain}
+        selectedSharedReaders={selectedSharedReaders}
+        setChaptersOpen={setChaptersOpen}
+        setDescriptionExpanded={setDescriptionExpanded}
+        setLibraryOpen={setLibraryOpen}
+        setScrubPreview={setScrubPreview}
+        setSelectedBookId={setSelectedBookId}
+        setShowChapterJumpTop={setShowChapterJumpTop}
+        setVolume={setVolume}
+        showChapterJumpTop={showChapterJumpTop}
+        sleepTimer={sleepTimer}
+        sliderMax={sliderMax}
+        speed={speed}
+        togglePlayback={togglePlayback}
+        trackListSectionRef={trackListSectionRef}
+        upcomingChapters={upcomingChapters}
+        updateBookGain={updateBookGain}
+        updateSpeed={updateSpeed}
+        uploads={uploads}
+        volume={volume}
+        withWebViewTransition={withWebViewTransition}
+      />
 
       {playbackBook && currentTrack ? (
-        <aside ref={miniPlayerRef} className="mini-player" aria-label="Mini player">
-          <button className="mini-cover-button" type="button" onClick={scrollToPlayer} aria-label="Open current book">
-            <CoverArt book={playbackBook} size="small" />
-          </button>
-
-          <button className="mini-meta" type="button" onClick={scrollToPlayer}>
-            <strong>{playbackBook.title}</strong>
-            <span>{activeChapter?.title ?? currentTrack.title}</span>
-          </button>
-
-          <div className="mini-progress">
-            <ScrubSlider
-              ariaLabel="Mini player progress"
-              max={activeChapter ? chapterDuration : Math.max(1, sliderMax)}
-              value={activeChapter ? Math.min(chapterElapsed, chapterDuration) : Math.min(position, Math.max(1, sliderMax))}
-              onPreview={setScrubPreview}
-              onCommit={(nextValue) => {
-                if (activeChapter) {
-                  seekBookPosition(activeChapter.startSeconds + nextValue);
-                } else {
-                  seekTo(nextValue);
-                }
-              }}
-            />
-            <span>
-              {activeChapter
-                ? `${formatTime(scrubbedElapsed)} / ${formatTime(chapterDuration)}`
-                : `${formatTime(scrubbedElapsed)} / ${formatTime(sliderMax)}`}
-            </span>
-          </div>
-
-          <div className="mini-actions">
-            {activeChapter ? (
-              <button
-                type="button"
-                className="mini-chapter"
-                aria-label={chapterElapsed > 5 ? "Restart chapter" : "Previous chapter"}
-                onClick={restartOrPreviousChapter}
-                disabled={chapterElapsed <= 5 && !hasPreviousChapter}
-              >
-                <SkipBack size={17} />
-              </button>
-            ) : null}
-            <button type="button" className="mini-seek" aria-label="Rewind 15 seconds" onClick={() => seekBy(-15)}>
-              <RotateCcw size={16} />
-              <small>15</small>
-            </button>
-            <button
-              type="button"
-              className={`mini-play${playPending ? " play-pending" : ""}`}
-              aria-label={playPending ? "Cancel play" : isPlaying ? "Pause" : "Play"}
-              aria-busy={playPending}
-              onClick={togglePlayback}
-            >
-              {isPlaying || playPending ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-              {playPending ? <span className="play-pending-ring" aria-hidden="true" /> : null}
-            </button>
-            <button type="button" className="mini-seek" aria-label="Forward 30 seconds" onClick={() => seekBy(30)}>
-              <RotateCw size={16} />
-              <small>30</small>
-            </button>
-            {activeChapter ? (
-              <button
-                type="button"
-                className="mini-chapter"
-                aria-label="Next chapter"
-                onClick={nextChapter}
-                disabled={!hasNextChapter}
-              >
-                <SkipForward size={17} />
-              </button>
-            ) : null}
-          </div>
-        </aside>
+        <MiniPlayer
+          activeChapter={activeChapter}
+          chapterDuration={chapterDuration}
+          chapterElapsed={chapterElapsed}
+          currentTrack={currentTrack}
+          hasNextChapter={hasNextChapter}
+          hasPreviousChapter={hasPreviousChapter}
+          isPlaying={isPlaying}
+          miniPlayerRef={miniPlayerRef}
+          nextChapter={nextChapter}
+          playPending={playPending}
+          playbackBook={playbackBook}
+          position={position}
+          restartOrPreviousChapter={restartOrPreviousChapter}
+          scrollToPlayer={scrollToPlayer}
+          scrubbedElapsed={scrubbedElapsed}
+          seekBookPosition={seekBookPosition}
+          seekBy={seekBy}
+          seekTo={seekTo}
+          setScrubPreview={setScrubPreview}
+          sliderMax={sliderMax}
+          togglePlayback={togglePlayback}
+        />
       ) : null}
 
       {syncConfirmationBook ? (
@@ -6393,145 +4180,43 @@ function MainApp({
       {native && gamesEnabled && nativeTab === "games" ? <GamesPage onGameChange={setActiveGame} /> : null}
 
       {native && nativeTab === "settings" ? (
-        <section className="settings-shell" aria-label="Settings">
-          <header className="settings-head">
-            <div className="settings-heading">
-              <span className="eyebrow"><Settings size={13} /> The Study</span>
-              <h1>Settings</h1>
-            </div>
-            {capabilities.administration ? (
-              <button type="button" className="settings-admin-button" onClick={() => openNativeTab("admin")}>
-                <UserCog size={18} strokeWidth={1.6} />
-                <span>Administration</span>
-                <ChevronRight size={15} />
-              </button>
-            ) : null}
-          </header>
-
-          {/* Grouped so a wide screen can set the cards in columns; on a phone the
-              wrapper steps aside and they stack in the shell as before. */}
-          <div className="settings-cards">
-            <div
-              className="settings-upper"
-              role="region"
-              aria-label="Listening and source settings. Scrolls independently."
-              tabIndex={0}
-            >
-            <div className="settings-pane-guide" aria-hidden="true">
-              <strong>Listening &amp; sources</strong>
-              <span><ArrowDown size={12} /> Scroll this half</span>
-            </div>
-            <section className="settings-card">
-              <span className="section-label"><Gauge size={13} /> Playback</span>
-              <div className="settings-field">
-                <span className="settings-label">Cadence</span>
-                <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary />
-                <p className="settings-hint">Applies to every book and is remembered on this device.</p>
-              </div>
-            </section>
-
-            {ios || rotationLockAvailable ? <DisplaySettings
-              appearanceMode={appearanceMode}
-              ios={ios}
-              rotationLockAvailable={rotationLockAvailable}
-              rotationLockBusy={rotationLockBusy}
-              rotationLockEnabled={rotationLockEnabled}
-              rotationLockError={rotationLockError}
-              toggleRotationLock={toggleRotationLock}
-              updateAppearanceMode={updateAppearanceMode}
-            /> : null}
-
-            {(libroAvailable || canBrowseLibation) ? <BookStoreSettings
-              allAudibleAccounts={allAudibleAccounts}
-              applyAdminLibraryChange={applyAdminLibraryChange}
-              audibleManagement={audibleManagement}
-              brokenLibationAccounts={brokenLibationAccounts}
-              canBrowseLibation={canBrowseLibation}
-              currentUser={currentUser}
-              isOperaLibre={isOperaLibre}
-              libroAccounts={libroAccounts}
-              libroAvailable={libroAvailable}
-              libroOnDevice={libroOnDevice}
-              libroRefreshKey={libroRefreshKey}
-              localMode={localMode}
-              nativeTab={nativeTab}
-              setBooks={setBooks}
-              setLibroAccounts={setLibroAccounts}
-              setLibroDestination={setLibroDestination}
-            /> : null}
-            </div>
-            <div
-              className="settings-lower"
-              role="region"
-              aria-label="Device and account settings. Scrolls independently."
-              tabIndex={0}
-            >
-            <div className="settings-pane-guide" aria-hidden="true">
-              <strong>Device &amp; account</strong>
-              <span><ArrowDown size={12} /> Scroll this half</span>
-            </div>
-
-            <ExtrasSettings
-              followAggressiveness={followAggressiveness}
-              followSyncEnabled={followSyncEnabled}
-              gamesEnabled={gamesEnabled}
-              readalongEnabled={readalongEnabled}
-              sentenceFollowAvailable={sentenceFollowAvailable}
-              toggleFollowSyncEnabled={toggleFollowSyncEnabled}
-              toggleGamesEnabled={toggleGamesEnabled}
-              toggleReadalongEnabled={toggleReadalongEnabled}
-              updateFollowAggressiveness={updateFollowAggressiveness}
-            />
-
-            {sharedProgressAvailable ? (
-              <ProgressSharingCard
-                user={currentUser}
-                onUserChanged={onCurrentUserChanged}
-                onSharingChanged={() => void loadBooks()}
-              />
-            ) : null}
-
-            <DeviceLibrarySettings
-              deleteDeviceBook={deleteDeviceBook}
-              deviceImport={deviceImport}
-              downloadStatus={downloadStatus}
-              importFromDevice={importFromDevice}
-            />
-
-            {!localMode ? <ServerDownloadSettings
-              books={books}
-              cancelOfflineDownload={cancelOfflineDownload}
-              demoMode={demoMode}
-              deviceDownloadQueue={deviceDownloadQueue}
-              downloadedBookIds={downloadedBookIds}
-              removeOfflineDownload={removeOfflineDownload}
-            /> : null}
-
-            <ConnectionSettings
-              aliasError={aliasError}
-              aliasName={aliasName}
-              aliasUrl={aliasUrl}
-              audioRef={audioRef}
-              capabilities={capabilities}
-              currentUser={currentUser}
-              demoMode={demoMode}
-              isOperaLibre={isOperaLibre}
-              localMode={localMode}
-              onConnectServer={onConnectServer}
-              onLogout={onLogout}
-              pausePlayback={pausePlayback}
-              saveAlias={saveAlias}
-              serverAliases={serverAliases}
-              setAliasName={setAliasName}
-              setAliasUrl={setAliasUrl}
-              setServerAliases={setServerAliases}
-              setUploadModalOpen={setUploadModalOpen}
-              switchToAlias={switchToAlias}
-              switchingAliasId={switchingAliasId}
-            />
-            </div>
-          </div>
-        </section>
+        <SettingsPage
+          applyAdminLibraryChange={applyAdminLibraryChange}
+          audibleManagement={audibleManagement}
+          audioRef={audioRef}
+          books={books}
+          capabilities={capabilities}
+          currentUser={currentUser}
+          demoMode={demoMode}
+          deviceDownloadQueue={deviceDownloadQueue}
+          deviceImport={deviceImport}
+          displaySettings={displaySettings}
+          downloadStatus={downloadStatus}
+          downloadedBookIds={downloadedBookIds}
+          gamesEnabled={gamesEnabled}
+          ios={ios}
+          isOperaLibre={isOperaLibre}
+          loadBooks={loadBooks}
+          localMode={localMode}
+          nativeTab={nativeTab}
+          offlineDownloads={offlineDownloads}
+          onConnectServer={onConnectServer}
+          onCurrentUserChanged={onCurrentUserChanged}
+          onLogout={onLogout}
+          openNativeTab={openNativeTab}
+          pausePlayback={pausePlayback}
+          purchases={purchases}
+          readalong={readalong}
+          readerPreferences={readerPreferences}
+          rotationLockAvailable={rotationLockAvailable}
+          serverAliasesState={serverAliasesState}
+          setBooks={setBooks}
+          sharedProgressAvailable={sharedProgressAvailable}
+          speed={speed}
+          toggleGamesEnabled={toggleGamesEnabled}
+          updateSpeed={updateSpeed}
+          uploads={uploads}
+        />
       ) : null}
 
       {native && capabilities.administration && nativeTab === "admin" ? (
