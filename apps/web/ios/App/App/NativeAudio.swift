@@ -144,7 +144,7 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
     // MARK: - AudiobookPlayerObserver
 
     func audiobookPlayer(_ player: AudiobookPlayer, didEmit event: String, data: [String: Any]) {
-        notifyListeners(event, data: jsObject(from: data))
+        notifyListeners(event, data: bridgeEventPayload(from: data))
     }
 
     // MARK: - Conversions
@@ -188,21 +188,22 @@ public final class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin, AudiobookPlay
         }
     }
 
-    /// The engine speaks plain Swift values; the bridge only carries the
-    /// strings, numbers and booleans its event payloads are made of.
-    private func jsObject(from data: [String: Any]) -> JSObject {
-        var object = JSObject()
-        for (key, value) in data {
-            if let value = value as? String {
-                object[key] = value
-            } else if let value = value as? Bool {
-                object[key] = value
-            } else if let value = jsDouble(value) {
-                object[key] = value
-            }
+}
+
+/// Native event payloads are plain Swift values; the bridge only carries the
+/// strings, numbers and booleans they are made of.
+func bridgeEventPayload(from data: [String: Any]) -> JSObject {
+    var object = JSObject()
+    for (key, value) in data {
+        if let value = value as? String {
+            object[key] = value
+        } else if let value = value as? Bool {
+            object[key] = value
+        } else if let value = jsDouble(value) {
+            object[key] = value
         }
-        return object
     }
+    return object
 }
 
 private func jsDouble(_ value: Any?) -> Double? {
