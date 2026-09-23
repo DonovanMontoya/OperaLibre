@@ -65,16 +65,20 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func getState(_ call: CAPPluginCall) {
-        let sessions = coordinator.pendingSessions()
-        let encoded = (try? JSONEncoder().encode(sessions))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        var result = JSObject()
-        result["connected"] = coordinator.isConnected
-        result["sessions"] = encoded
-        if let carOwnedBookId = coordinator.carOwnedBookId {
-            result["carOwnedBookId"] = carOwnedBookId
+        // The coordinator and its store are driven from the main thread; plugin
+        // calls are not.
+        DispatchQueue.main.async {
+            let sessions = self.coordinator.pendingSessions()
+            let encoded = (try? JSONEncoder().encode(sessions))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+            var result = JSObject()
+            result["connected"] = self.coordinator.isConnected
+            result["sessions"] = encoded
+            if let carOwnedBookId = self.coordinator.carOwnedBookId {
+                result["carOwnedBookId"] = carOwnedBookId
+            }
+            call.resolve(result)
         }
-        call.resolve(result)
     }
 
     /// Called once the app has saved a car session's position. Sessions are
@@ -89,7 +93,11 @@ public final class CarPlayBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             guard let savedAt else { continue }
             acknowledged[bookId] = savedAt
         }
-        coordinator.acknowledgeSessions(acknowledged)
-        call.resolve()
+        // On the main thread, like the car's own session writes: the store's
+        // read-filter-write would otherwise drop a record written in between.
+        DispatchQueue.main.async {
+            self.coordinator.acknowledgeSessions(acknowledged)
+            call.resolve()
+        }
     }
 }

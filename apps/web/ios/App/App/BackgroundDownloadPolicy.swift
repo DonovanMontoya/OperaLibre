@@ -123,7 +123,23 @@ func isLibroDownloadURL(_ url: URL) -> Bool {
     return host == "libro.fm" || host.hasSuffix(".libro.fm") || host.hasSuffix(".amazonaws.com") || host.hasSuffix(".cloudfront.net")
 }
 
+private let offlineMediaRootLock = NSLock()
+private var cachedOfflineMediaRoot: URL?
+
+/// Every destination check and progress callback asks for the root, so it is
+/// prepared once and only rebuilt if the directory disappears.
 func backgroundOfflineMediaRoot() throws -> URL {
+    offlineMediaRootLock.lock()
+    defer { offlineMediaRootLock.unlock() }
+    if let root = cachedOfflineMediaRoot, FileManager.default.fileExists(atPath: root.path) {
+        return root
+    }
+    let root = try makeBackgroundOfflineMediaRoot()
+    cachedOfflineMediaRoot = root
+    return root
+}
+
+private func makeBackgroundOfflineMediaRoot() throws -> URL {
     guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
         throw BackgroundDownloadPolicyError.invalidDestination
     }
