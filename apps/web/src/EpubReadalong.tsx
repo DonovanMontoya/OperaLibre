@@ -518,10 +518,23 @@ export function EpubReadalong({
     return () => cancelAnimationFrame(raf);
   }, [sheet]);
 
+  // Following has taken ownership from the remembered reading page. The
+  // relocation it causes establishes the new anchor, so neither the post-open
+  // settling loop nor a restore still in progress pulls the reader back to
+  // the saved place a moment later (and strands a chapter jump that is only
+  // ever attempted once).
+  const followTakesPage = useCallback(() => {
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
+  }, []);
+
   const resumeFollowing = useCallback(() => {
-    readerDebugLog("follow on");
+    readerDebugLog(`follow on at ${shortCfi(locationRef.current?.start?.cfi)}`);
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
+    // A chapter jump that was pulled back or never landed must be retried:
+    // asking to follow again is exactly the listener saying "take me there".
+    autoNavHrefRef.current = null;
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
@@ -1373,7 +1386,8 @@ export function EpubReadalong({
       if (autoNavHrefRef.current !== fragment.href && followRef.current) {
         autoNavHrefRef.current = fragment.href;
         highlightedFragmentRef.current = -1;
-        readerDebugLog(`follow chapter ${fragment.href}`);
+        readerDebugLog(`follow chapter ${fragment.href} at ${Math.round(positionSeconds)}s from ${shortCfi(location.start?.cfi)}`);
+        followTakesPage();
         void rendition.display(fragment.href);
       }
       return;
@@ -1415,6 +1429,7 @@ export function EpubReadalong({
           }
           lastKeepRef.current = { cfi, from, layout: relayoutTick };
           readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
+          followTakesPage();
           void rendition.display(cfi);
         }
       } catch {
@@ -1482,7 +1497,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followRequest, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, followRequest, followTakesPage, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
