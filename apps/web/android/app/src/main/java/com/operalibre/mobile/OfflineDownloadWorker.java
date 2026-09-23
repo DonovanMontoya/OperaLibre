@@ -114,12 +114,24 @@ public class OfflineDownloadWorker extends Worker {
                 }
                 partial = new File(destination.getPath() + ".part");
                 try {
-                    download(jobId, job, item.getString("url"), partial, completedRequired, requiredTotal);
-                    if (destination.exists() && !destination.delete()) {
-                        throw new IllegalStateException("Could not replace an earlier download.");
-                    }
-                    if (!partial.renameTo(destination)) {
-                        throw new IllegalStateException("Could not finish writing the downloaded file.");
+                    // Only reuse a file after this job removed anything left by
+                    // an earlier enqueue. A stopped worker can then recognize a
+                    // file it renamed before its progress update was saved.
+                    boolean prepared = job.optInt("preparedFileIndex", -1) == index;
+                    if (!prepared || !destination.isFile() || destination.length() == 0) {
+                        if (!prepared) {
+                            if (destination.exists() && !destination.delete()) {
+                                throw new IllegalStateException("Could not replace an earlier download.");
+                            }
+                            job.put("preparedFileIndex", index);
+                            if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
+                                throw new DownloadCancelledException();
+                            }
+                        }
+                        download(jobId, job, item.getString("url"), partial, completedRequired, requiredTotal);
+                        if (!partial.renameTo(destination)) {
+                            throw new IllegalStateException("Could not finish writing the downloaded file.");
+                        }
                     }
                     partial = null;
                 } catch (DownloadCancelledException cancelled) {
