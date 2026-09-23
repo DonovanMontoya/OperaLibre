@@ -26,7 +26,6 @@ import {
   useRef,
   useState
 } from "react";
-import { flushSync } from "react-dom";
 import {
   adoptableServerProgress,
   endedShortOfTrack,
@@ -109,7 +108,6 @@ import {
   warnCacheFailure
 } from "./offline";
 import { haptic } from "./native";
-import { isLeftEdgeBackSwipe } from "./nativeNavigation";
 import { type NativeTab } from "./nativeTabs";
 import {
   isIPadNavigator,
@@ -164,7 +162,7 @@ import { AdminPanel } from "./Admin";
 import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { GamesPage, type GameName } from "./GameRoom";
-import { readGamesEnabled, writeGamesEnabled } from "./gamePreferences";
+import { readGamesEnabled } from "./gamePreferences";
 import {
 } from "./readalongPreferences";
 import type {
@@ -235,6 +233,7 @@ import { SettingsPage } from "./SettingsPage";
 import { MiniPlayer } from "./MiniPlayer";
 import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
+import { usePlayerNavigation } from "./usePlayerNavigation";
 
 const PROGRESS_SAVE_INTERVAL_MS = 2_000;
 
@@ -3098,106 +3097,48 @@ function MainApp({
     if (pendingOwnsActiveBook) pausePlayback(audio);
     else setPlayPending(false);
   }
+  const {
+    beginBookDetailsBackSwipe,
+    closeNativePlayerSheet,
+    finishBookDetailsBackSwipe,
+    handlePlayerPaneScroll,
+    jumpToPlayerTop,
+    openBookDetails,
+    openNativePlayerSheet,
+    openNativeTab,
+    openPlaybackView,
+    returnToLibrary,
+    scrollToPlayer,
+    selectBook,
+    showYourLibrary,
+    toggleGamesEnabled,
+    withWebViewTransition
+  } = usePlayerNavigation({
+    bookDetailsSwipeStartRef,
+    books,
+    changeShelfLayout,
+    chaptersOpen,
+    gamesEnabled,
+    isViewingPlayingBook,
+    librarySource,
+    native,
+    nativePlayerView,
+    nativeTab,
+    playbackBook,
+    playerPaneRef,
+    setChaptersOpen,
+    setGamesEnabled,
+    setLibrarySource,
+    setNativePlayerSheet,
+    setNativePlayerView,
+    setNativeTab,
+    setSelectedBookId,
+    setShowChapterJumpTop,
+    shelfLayout,
+    showChapterJumpTop,
+    trackListSectionRef
+  });
 
-  // On the web, changing books or returning to Now Playing reshapes the page
-  // as one surface, the way the Duo's posture changes do, with the cover
-  // carried across. The native shells keep their own navigation motion.
-  function withWebViewTransition(update: () => void) {
-    const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void) => unknown;
-    };
-    if (
-      native
-      || !transitionDocument.startViewTransition
-      || window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      update();
-      return;
-    }
-    transitionDocument.startViewTransition(() => flushSync(update));
-  }
-
-  function selectBook(book: Book) {
-    if (shelfLayout === "library") changeShelfLayout("split");
-    setSelectedBookId(book.id);
-    setNativePlayerView(book.id === playbackBook?.id ? "now" : "details");
-    if (native) {
-      setChaptersOpen(book.id === playbackBook?.id && book.chapters.length > 0);
-      setShowChapterJumpTop(false);
-      setNativeTab("shelf");
-      setNativePlayerView("details");
-      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-    }
-  }
-
-  function openBookDetails(bookId: string) {
-    if (shelfLayout === "library") changeShelfLayout("split");
-    setSelectedBookId(bookId);
-    setNativePlayerView("details");
-    if (native) {
-      const book = books.find((candidate) => candidate.id === bookId);
-      setChaptersOpen(bookId === playbackBook?.id && !!book?.chapters.length);
-      setShowChapterJumpTop(false);
-      haptic("light");
-      setNativeTab("shelf");
-      setNativePlayerView("details");
-      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-    }
-  }
-
-  function returnToLibrary() {
-    haptic("light");
-    setNativePlayerView("now");
-  }
-
-  function openNativePlayerSheet(sheet: Exclude<NativePlayerSheet, null>) {
-    haptic("light");
-    setNativePlayerSheet(sheet);
-  }
-
-  function closeNativePlayerSheet() {
-    haptic("light");
-    setNativePlayerSheet(null);
-  }
-
-  function beginBookDetailsBackSwipe(event: React.TouchEvent<HTMLElement>) {
-    if (!native || nativeTab !== "shelf" || nativePlayerView !== "details") {
-      return;
-    }
-    const touch = event.touches[0];
-    bookDetailsSwipeStartRef.current = touch
-      ? { clientX: touch.clientX, clientY: touch.clientY }
-      : null;
-  }
-
-  function finishBookDetailsBackSwipe(event: React.TouchEvent<HTMLElement>) {
-    const start = bookDetailsSwipeStartRef.current;
-    bookDetailsSwipeStartRef.current = null;
-    const touch = event.changedTouches[0];
-    if (
-      native
-      && nativeTab === "shelf"
-      && nativePlayerView === "details"
-      && start
-      && touch
-      && isLeftEdgeBackSwipe(start, touch)
-    ) {
-      returnToLibrary();
-    }
-  }
-
-  function openPlaybackView(view: "now" | "details" | "chapters") {
-    if (shelfLayout === "library") changeShelfLayout("split");
-    if (playbackBook) {
-      setSelectedBookId(playbackBook.id);
-    }
-    setNativeTab("reading");
-    setNativePlayerView(view);
-    if (view === "chapters") {
-      setChaptersOpen(true);
-    }
-    playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-  }
 
   function selectTrack(track: Track, autoPlay = true) {
     void persistProgress();
@@ -3423,39 +3364,6 @@ function MainApp({
     setPosition(0);
   }
 
-  function scrollToPlayer() {
-    if (native) {
-      haptic("light");
-      openPlaybackView("now");
-      return;
-    }
-    withWebViewTransition(() => {
-      if (playbackBook) {
-        setSelectedBookId(playbackBook.id);
-      }
-      setNativePlayerView("now");
-    });
-    playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function handlePlayerPaneScroll(event: React.UIEvent<HTMLElement>) {
-    if (!native || nativeTab !== "shelf" || nativePlayerView !== "details" || !chaptersOpen || !isViewingPlayingBook) {
-      if (showChapterJumpTop) setShowChapterJumpTop(false);
-      return;
-    }
-    const sectionTop = trackListSectionRef.current?.offsetTop ?? Number.POSITIVE_INFINITY;
-    const threshold = sectionTop + 140;
-    const shouldShow = event.currentTarget.scrollTop > threshold;
-    if (shouldShow !== showChapterJumpTop) setShowChapterJumpTop(shouldShow);
-  }
-
-  function jumpToPlayerTop() {
-    haptic("light");
-    playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    setShowChapterJumpTop(false);
-  }
-
   function updateSpeed(value: number) {
     const normalized = normalizePlaybackSpeed(value);
     setSpeed(normalized);
@@ -3488,35 +3396,6 @@ function MainApp({
       // again — see createBookGainSync.
       gainSyncRef.current?.write(book.id, gain);
     }
-  }
-
-  function showYourLibrary() {
-    setLibrarySource("local");
-  }
-
-  function openNativeTab(tab: NativeTab) {
-    if (tab === "games" && !gamesEnabled) return;
-    haptic("light");
-    // Re-tapping the active Shelf tab is an escape hatch from the Audible
-    // catalogue back to the listener's own library.
-    if (tab === "shelf" && nativeTab === "shelf" && librarySource !== "local") {
-      showYourLibrary();
-    }
-    // Reading belongs to the playing book. A book browsed from the shelf stays
-    // selected after its details page closes and must not follow into the tab.
-    if (tab === "reading") {
-      if (shelfLayout === "library") changeShelfLayout("split");
-      if (playbackBook) setSelectedBookId(playbackBook.id);
-    }
-    setNativeTab(tab);
-    if (tab === "reading" || tab === "shelf") setNativePlayerView("now");
-  }
-
-  function toggleGamesEnabled() {
-    const enabled = !gamesEnabled;
-    writeGamesEnabled(enabled);
-    setGamesEnabled(enabled);
-    if (!enabled && nativeTab === "games") setNativeTab("shelf");
   }
 
   async function refreshLibrary() {
