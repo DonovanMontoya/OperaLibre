@@ -17,7 +17,7 @@ import {
   resolveProgressLocation
 } from "./reliability";
 import { readStoredBookId, withoutCachedBookGains } from "./appStorage";
-import { canResolveStartupNavigation } from "./startup";
+import { startupDestinationAfterLoad } from "./startup";
 import { getBooks, getLibationBooks, getServerStorageKey, isServerNotReadyError, saveProgress } from "./api";
 import { cacheLibrary, getCachedLibrary, getCachedProgress } from "./offline";
 import type { NativeTab } from "./nativeTabs";
@@ -111,22 +111,24 @@ export function useLibrary({
         // A device-only first paint may not contain the stored server book.
         // Wait for the cached/live shelf before deciding that session vanished.
         if (!next && preferred && !preferredIsPresent && !definitive) return existing;
-        if (
-          !startupNavigationResolved.current
-          && canResolveStartupNavigation(next, preferred, preferredIsPresent, definitive)
-        ) {
+        const destination = native
+          ? startupDestinationAfterLoad(
+              startupNavigationResolved.current,
+              startupViewReadyRef.current,
+              next,
+              preferred,
+              preferredIsPresent,
+              definitive
+            )
+          : null;
+        if (destination) {
           startupNavigationResolved.current = true;
-          if (native) {
-            setNativeTab(next ? "reading" : "shelf");
-            // The stored selection may be a book last browsed on the shelf.
-            if (next) setSelectedBookId(next);
-            // A restored Reading tab still needs its saved track and position.
-            // Revealing it here paints the first track at 0:00 before the
-            // progress effect below resolves the real checkpoint.
-            if (!next) {
-              startupViewReadyRef.current = true;
-              setStartupViewReady(true);
-            }
+          setNativeTab(destination.tab);
+          // The stored selection may be a book last browsed on the shelf.
+          if (next) setSelectedBookId(next);
+          if (destination.reveal) {
+            startupViewReadyRef.current = true;
+            setStartupViewReady(true);
           }
         }
         return next;

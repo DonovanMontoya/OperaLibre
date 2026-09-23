@@ -4,7 +4,8 @@ import {
   canResolveStartupNavigation,
   canRestoreCachedNativeSession,
   shouldAcceptNativeTrackChange,
-  shouldRefreshMediaCredential
+  shouldRefreshMediaCredential,
+  startupDestinationAfterLoad
 } from "../src/startup.ts";
 
 test("downloaded books restore from the cached account without a media token", () => {
@@ -44,4 +45,33 @@ test("paused native queue churn cannot replace restored startup progress", () =>
 test("live playback and post-startup track changes remain authoritative", () => {
   assert.equal(shouldAcceptNativeTrackChange(false, true), true);
   assert.equal(shouldAcceptNativeTrackChange(true, false), true);
+});
+
+test("the first conclusive load picks the launch tab", () => {
+  // Reading waits for the restore to reveal; the Shelf reveals at once.
+  assert.deepEqual(
+    startupDestinationAfterLoad(false, false, "saved-book", "saved-book", true, false),
+    { tab: "reading", reveal: false }
+  );
+  assert.deepEqual(
+    startupDestinationAfterLoad(false, false, null, null, false, false),
+    { tab: "shelf", reveal: true }
+  );
+  assert.equal(startupDestinationAfterLoad(false, false, null, "saved-book", false, false), null);
+});
+
+test("a live listing that drops the restoring book reveals the Shelf", () => {
+  // Cached shelf: in progress, so Reading was chosen and the restore started.
+  // Live shelf: finished elsewhere, which cancels that restore before it
+  // could reveal the view.
+  assert.deepEqual(
+    startupDestinationAfterLoad(true, false, null, "finished-book", true, true),
+    { tab: "shelf", reveal: true }
+  );
+});
+
+test("later loads leave a resolved or revealed launch alone", () => {
+  assert.equal(startupDestinationAfterLoad(true, false, "saved-book", "saved-book", true, true), null);
+  assert.equal(startupDestinationAfterLoad(true, true, null, "finished-book", true, true), null);
+  assert.equal(startupDestinationAfterLoad(false, true, "saved-book", "saved-book", true, true), null);
 });
