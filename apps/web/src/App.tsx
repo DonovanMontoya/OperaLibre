@@ -1,5 +1,4 @@
 import { useDeviceFold } from "./deviceFold";
-import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import {
   playbackEventOwnsPendingPlay,
@@ -29,8 +28,6 @@ import {
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
-  resolveActivePlaybackBookId,
-  resolveBookId,
   resolveProgressLocation
 } from "./reliability";
 import {
@@ -47,8 +44,6 @@ import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   clearServerUrl,
   getAuthStatus,
-  getBooks,
-  getLibationBooks,
   getMe,
   getProgress,
   getServerStorageKey,
@@ -57,7 +52,6 @@ import {
   getStoredToken,
   hasUserConfiguredServer,
   isNetworkError,
-  isServerNotReadyError,
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
@@ -65,8 +59,6 @@ import {
   mediaUrl,
   reconnectUsingServerAliases,
   playbackReportingSession,
-  rescanLibrary,
-  refreshLibroAccount,
   saveProgress,
   setBookVolume,
   setStoredMediaToken,
@@ -78,7 +70,6 @@ import {
   cacheOfflineUser,
   forgetOfflineUser,
   getBookBackgroundDownloadStatus,
-  getCachedLibrary,
   getCachedProgress,
   getOfflineCoverUrl,
   getOfflineTrackUrl,
@@ -109,7 +100,6 @@ import {
 } from "./carPlay";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
-  canResolveStartupNavigation,
   canRestoreCachedNativeSession,
   shouldAcceptNativeTrackChange,
   shouldRefreshMediaCredential
@@ -123,22 +113,19 @@ import {
   resolveLocalFirstSources
 } from "./offlinePlayback";
 import {
-  backfillDeviceLibraryMetadata,
   DEVICE_USER,
   getDeviceBooks,
-  getDeviceProgress,
-  mergeDeviceAndServerBooks,
-  migrateDeviceLibraryFileExtensions
+  getDeviceProgress
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
-import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled } from "./gamePreferences";
 import type {
   AuthUser,
   Book,
+  LibationBook,
   Progress,
   Track
 } from "./types";
@@ -150,7 +137,6 @@ import {
   readStoredSpeed,
   readStoredValue,
   unsyncedBookGainStore,
-  withoutCachedBookGains,
   writeStoredBookGains,
   writeStoredBookId
 } from "./appStorage";
@@ -204,6 +190,8 @@ import { LibraryPane } from "./LibraryPane";
 import { usePlayerNavigation } from "./usePlayerNavigation";
 import { useProgressSync } from "./useProgressSync";
 import { audioSourceMatches, type PlaybackControls, usePlaybackControls } from "./usePlaybackControls";
+import { useLibrary } from "./useLibrary";
+import { useLibraryRefresh } from "./useLibraryRefresh";
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
 // How long a Play still waiting on the stream shows as loading.
@@ -1244,211 +1232,40 @@ function MainApp({
     }
   }
 
-  const loadBooks = useCallback(async () => {
-    const requestGeneration = ++libraryRequestGenerationRef.current;
-    const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
-    if (libraryRetryTimerRef.current !== null) {
-      window.clearTimeout(libraryRetryTimerRef.current);
-      libraryRetryTimerRef.current = null;
-    }
-    setIsLoading(true);
-    setError(null);
-    if (native) {
-      await migrateDeviceLibraryFileExtensions();
-      await backfillDeviceLibraryMetadata();
-    }
-    const deviceBooks = native ? getDeviceBooks() : [];
-    const applyLoadedBooks = (nextBooks: Book[], definitive = false) => {
-      if (!isCurrentRequest()) return;
-      setBooks(nextBooks);
-      setSelectedBookId((existing) =>
-        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      // A background refresh that lists the playing book as finished must not
-      // pull the session out from under the listener; only its absence can.
-      const isPlayingNow = nativeAudioRef.current
-        ? nativePlaybackPlayingRef.current
-        : !!audioRef.current && !audioRef.current.paused;
-      setPlaybackBookId((existing) => {
-        const preferred = existing ?? readStoredBookId(currentUser.id, "playbackBookId");
-        const next = resolveActivePlaybackBookId(nextBooks, preferred, isPlayingNow);
-        const preferredIsPresent = !!preferred && nextBooks.some((book) => book.id === preferred);
-        // A device-only first paint may not contain the stored server book.
-        // Wait for the cached/live shelf before deciding that session vanished.
-        if (!next && preferred && !preferredIsPresent && !definitive) return existing;
-        if (
-          !startupNavigationResolved.current
-          && canResolveStartupNavigation(next, preferred, preferredIsPresent, definitive)
-        ) {
-          startupNavigationResolved.current = true;
-          if (native) {
-            setNativeTab(next ? "reading" : "shelf");
-            // The stored selection may be a book last browsed on the shelf.
-            if (next) setSelectedBookId(next);
-            // A restored Reading tab still needs its saved track and position.
-            // Revealing it here paints the first track at 0:00 before the
-            // progress effect below resolves the real checkpoint.
-            if (!next) {
-              startupViewReadyRef.current = true;
-              setStartupViewReady(true);
-            }
-          }
-        }
-        return next;
-      });
-    };
-    if (localMode) {
-      applyLoadedBooks(deviceBooks, true);
-      if (isCurrentRequest()) {
-        setIsOffline(false);
-        setIsLoading(false);
-      }
-      return;
-    }
+  // Held here rather than in usePurchases: loadBooks fills them from the
+  // library response, and usePurchases itself needs loadBooks.
+  const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
+  const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
+  const {
+    loadBooks
+  } = useLibrary({
+    audioRef,
+    currentUser,
+    initialLibraryHydrated,
+    isOperaLibre,
+    libraryRequestGenerationRef,
+    libraryRetryTimerRef,
+    loadBooksRef,
+    localMode,
+    native,
+    nativeAudioRef,
+    nativePlaybackPlayingRef,
+    reconcileServerBookGains,
+    setBooks,
+    setError,
+    setIsLoading,
+    setIsOffline,
+    setLibationBooks,
+    setLibationBooksLoaded,
+    setNativeTab,
+    setPlaybackBookId,
+    setSelectedBookId,
+    setStartupViewReady,
+    startupNavigationResolved,
+    startupViewReadyRef,
+    storeCanonicalServerProgress
+  });
 
-    const liveLibraryRequest = getBooks().then(
-      (serverBooks) => ({ ok: true as const, serverBooks }),
-      (requestError: unknown) => ({ ok: false as const, requestError })
-    );
-    let hydratedServerBooks: Book[] = [];
-    if (!initialLibraryHydrated.current) {
-      initialLibraryHydrated.current = true;
-
-      // Device imports are synchronous, so they can paint on the first native
-      // frame. The IndexedDB shelf follows immediately on every platform while
-      // the live request runs.
-      if (deviceBooks.length) {
-        applyLoadedBooks(deviceBooks);
-        setIsLoading(false);
-      }
-      hydratedServerBooks = withoutCachedBookGains(
-        await getCachedLibrary(currentUser.id).catch(() => [])
-      );
-      if (!isCurrentRequest()) return;
-      const hydratedBooks = mergeDeviceAndServerBooks(hydratedServerBooks, deviceBooks);
-      if (hydratedBooks.length) {
-        applyLoadedBooks(hydratedBooks);
-        setIsOffline(false);
-        setIsLoading(false);
-      }
-    }
-
-    try {
-      const liveLibrary = await liveLibraryRequest;
-      if (!isCurrentRequest()) return;
-      if (!liveLibrary.ok) throw liveLibrary.requestError;
-      const serverBooks = liveLibrary.serverBooks;
-      const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
-      // Reconcile every durable local copy, not only imported device media.
-      // This brings progress recorded while offline back to the server even if
-      // the user opens a different book after reconnecting.
-      void Promise.all(nextBooks.map(async (book) => {
-        if (book.source !== "server") return;
-        const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
-        const deviceBook = book.deviceBookId
-          ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
-          : null;
-        const deviceTrackIndex = deviceBook?.tracks.findIndex(
-          (track) => track.id === deviceProgress?.trackId
-        ) ?? -1;
-        const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
-          ? {
-              ...deviceProgress,
-              bookId: book.id,
-              trackId: book.tracks[deviceTrackIndex].id
-            }
-          : null;
-        const checkpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-        if (!isCurrentRequest()) return;
-        const local = freshestProgress(mappedDevice, checkpoint, cached);
-        const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
-        if (
-          !local ||
-          (serverBook?.progress && progressTimestamp(local.updatedAt) <= progressTimestamp(serverBook.progress.updatedAt))
-        ) {
-          return;
-        }
-        const location = resolveProgressLocation(book.tracks, local);
-        if (!location) return;
-        if (!isCurrentRequest()) return;
-        const attempted: Progress = {
-          ...local,
-          trackId: location.trackId,
-          positionSeconds: location.positionSeconds
-        };
-        const saved = await saveProgress(
-          book.id,
-          attempted,
-          { isPaused: true }
-        ).catch(() => null);
-        if (!saved || !isCurrentRequest()) return;
-        const currentCheckpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        if (progressAfterSave(currentCheckpoint, attempted, saved) === saved) {
-          storeCanonicalServerProgress(book, saved);
-        }
-      })).catch(() => undefined);
-      if (!isCurrentRequest()) return;
-      applyLoadedBooks(nextBooks, true);
-      reconcileServerBookGains(serverBooks);
-      setIsOffline(false);
-      if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
-      if (isOperaLibre) {
-        // Audio tags commonly omit the publisher blurb. Libation already has
-        // the correct Audible description and returns its matched local book
-        // id, so enrich in the background without delaying the shelf.
-        void getLibationBooks()
-          .then((catalog) => {
-            if (!isCurrentRequest()) return;
-            setLibationBooks(catalog);
-            setLibationBooksLoaded(true);
-          })
-          .catch(() => undefined);
-      }
-    } catch (loadError) {
-      const cachedServer = hydratedServerBooks.length
-        ? hydratedServerBooks
-        : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
-      if (!isCurrentRequest()) return;
-      const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      applyLoadedBooks(cached, true);
-      if (isServerNotReadyError(loadError)) {
-        // The server answered: it is up, its startup scan just has not
-        // published a catalogue yet. Keep the cached shelf without muting
-        // anything, and ask again when it said to.
-        setIsOffline(false);
-        setError("The server is still loading its library. The shelf refreshes once it is ready.");
-        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
-        libraryRetryTimerRef.current = window.setTimeout(() => {
-          libraryRetryTimerRef.current = null;
-          void loadBooksRef.current();
-        }, delayMs);
-        return;
-      }
-      setIsOffline(true);
-      if (cached.length) {
-        setError("Offline mode — showing downloaded books and cached library.");
-      } else {
-        setError("The audiobook server is not reachable.");
-      }
-    } finally {
-      if (isCurrentRequest()) setIsLoading(false);
-    }
-    // storeCanonicalServerProgress and reconcileServerBookGains read only
-    // currentUser.id (listed), refs and state setters, so the render that
-    // created this callback cannot hand them anything stale.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, isOperaLibre, localMode, native]);
   const readalong = useReadalong({
     capabilities,
     currentUser,
@@ -1485,27 +1302,27 @@ function MainApp({
     currentUser,
     demoMode,
     isOperaLibre,
+    libationBooks,
+    libationBooksLoaded,
     librarySource,
     loadBooks,
     localMode,
     native,
     onCurrentUserChanged,
     searchQuery,
+    setLibationBooks,
+    setLibationBooksLoaded,
     sortMode,
     sortReversed
   });
   const {
     brokenLibationAccounts,
     canBrowseLibation,
-    libationBooks,
-    libationBooksLoaded,
     libationBooksRef,
     libroAccounts,
     libroOnDevice,
     loadLibationBooks,
-    setLibationBooks,
-    setLibationBooksLoaded,
-    setLibroRefreshKey,
+    setLibroRefreshKey
   } = purchases;
 
   loadBooksRef.current = loadBooks;
@@ -2490,86 +2307,43 @@ function MainApp({
     showChapterJumpTop,
     trackListSectionRef
   });
+  const {
+    applyAdminLibraryChange,
+    prepareForAdminLibraryMutation,
+    refreshLibrary,
+    refreshShelf
+  } = useLibraryRefresh({
+    audioRef,
+    canBrowseLibation,
+    currentUser,
+    flushProgressSaveQueue,
+    isOperaLibre,
+    libationBooksLoaded,
+    librarySource,
+    libroAccounts,
+    libroOnDevice,
+    loadBooks,
+    loadLibationBooks,
+    localMode,
+    native,
+    nativeAudio,
+    nativePlaybackPlayingRef,
+    pausePlayback,
+    persistProgress,
+    playbackBookIdRef,
+    reconcileServerBookGains,
+    setBooks,
+    setCurrentTrackId,
+    setError,
+    setIsLoading,
+    setIsOffline,
+    setLibroRefreshKey,
+    setNativeTab,
+    setPlaybackBookId,
+    setPosition,
+    setSelectedBookId
+  });
 
-  async function refreshLibrary() {
-    setIsLoading(true);
-    if (localMode) {
-      await loadBooks();
-      return;
-    }
-    try {
-      const nextBooks = isOperaLibre && !currentUser.isAdmin
-        ? await getBooks()
-        : await rescanLibrary();
-      const visibleBooks = native
-        ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
-        : nextBooks;
-      setBooks(visibleBooks);
-      reconcileServerBookGains(nextBooks);
-      setIsOffline(false);
-      setSelectedBookId((existing) =>
-        resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      // As in loadBooks: a listing that calls the playing book finished must
-      // not pull the session out from under the listener.
-      const isPlayingNow = nativeAudio
-        ? nativePlaybackPlayingRef.current
-        : !!audioRef.current && !audioRef.current.paused;
-      setPlaybackBookId((existing) =>
-        resolveActivePlaybackBookId(
-          visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          isPlayingNow
-        )
-      );
-      setError(null);
-    } catch (refreshError) {
-      if (isServerNotReadyError(refreshError)) {
-        // Up but still scanning: loadBooks keeps asking until it publishes.
-        setIsOffline(false);
-        setError("The server is still loading its library. The shelf refreshes once it is ready.");
-        void loadBooks();
-        return;
-      }
-      // A rescan rejected by a reachable server is not "offline" — only
-      // mute non-downloaded books when the server can't be reached at all.
-      setIsOffline(isNetworkError(refreshError));
-      setError("Library rescan failed.");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  function applyAdminLibraryChange(nextBooks: Book[]) {
-    const visibleBooks = native
-      ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
-      : nextBooks;
-    setBooks(visibleBooks);
-    reconcileServerBookGains(nextBooks);
-    setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
-    // Decided outside the state updater: updaters can run more than once and
-    // must stay pure, and the teardown below has to save first.
-    const isPlayingNow = nativeAudio
-      ? nativePlaybackPlayingRef.current
-      : !!audioRef.current && !audioRef.current.paused;
-    const currentPlaybackBookId = playbackBookIdRef.current;
-    const nextPlaybackBookId = resolveActivePlaybackBookId(visibleBooks, currentPlaybackBookId, isPlayingNow);
-    if (currentPlaybackBookId && !nextPlaybackBookId) {
-      pausePlayback(audioRef.current);
-      setCurrentTrackId(null);
-      setPosition(0);
-      if (native) setNativeTab("shelf");
-    }
-    playbackBookIdRef.current = nextPlaybackBookId;
-    setPlaybackBookId(nextPlaybackBookId);
-    if (libationBooksLoaded) void loadLibationBooks();
-  }
-
-  async function prepareForAdminLibraryMutation() {
-    pausePlayback(audioRef.current);
-    await persistProgress();
-    await flushProgressSaveQueue();
-  }
   const nativeChrome = useNativeChrome({
     appearanceMode,
     brokenLibationAccounts,
@@ -2594,26 +2368,6 @@ function MainApp({
     nativeTabsReady,
     showLedgerTab
   } = nativeChrome;
-
-
-  const refreshShelf = useCallback(async () => {
-    if (librarySource === "all") {
-      await refreshPurchaseSources([
-        ...(libroAccounts?.length ? [async () => {
-          try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
-          finally { setLibroRefreshKey(key => key + 1); }
-        }] : []),
-        ...(canBrowseLibation ? [loadLibationBooks] : [])
-      ]);
-    } else if (librarySource === "audible") {
-      await loadLibationBooks();
-    } else if (librarySource === "libro") {
-      await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
-      setLibroRefreshKey(key => key + 1);
-    } else {
-      await loadBooks();
-    }
-  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
   const userMenu = renderUserMenu({
