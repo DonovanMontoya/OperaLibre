@@ -416,6 +416,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // column too and is told which part of it is free: below the system
         // chrome and above the bar's platter of items.
         var rail: CGRect?
+        var sideBar = false
         let hasLeadingRail = frame.minX > view.bounds.minX + 0.5
         let hasTrailingRail = frame.maxX < view.bounds.maxX - 0.5
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden,
@@ -426,8 +427,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             let column = barOnLeading
                 ? CGRect(x: view.bounds.minX, y: 0, width: frame.minX - view.bounds.minX, height: view.bounds.height)
                 : CGRect(x: frame.maxX, y: 0, width: view.bounds.maxX - frame.maxX, height: view.bounds.height)
-            if bar.height >= view.bounds.height / 2, bar.width < view.bounds.width / 4,
-               barOnLeading || barOnTrailing, let items = itemsPlatter(in: column) {
+            sideBar = bar.height >= view.bounds.height / 2 && bar.width < view.bounds.width / 4
+                && (barOnLeading || barOnTrailing)
+            if sideBar, let items = itemsPlatter(in: column) {
                 let top = railTop(in: column, above: items.minY)
                 if items.minY - top >= Self.minimumRailHeight {
                     // Centred on the platter, not the column: the platter
@@ -468,6 +470,14 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                 script = "document.documentElement.classList.remove('side-rail'); delete document.documentElement.dataset.railControls"
             }
             webView.evaluateJavaScript(script)
+        }
+        if !sideBar {
+            // A phone's landscape notch margin is not a column either. The
+            // page runs under it and insets its own content by the safe area,
+            // as it already does with the bar hidden; trimming the web view
+            // left flat strips of container color beside a textured page.
+            frame.origin.x = view.bounds.minX
+            frame.size.width = view.bounds.width
         }
         let insets = [frame.minY, frame.maxY - view.bounds.height,
                       frame.minX, frame.maxX - view.bounds.width]

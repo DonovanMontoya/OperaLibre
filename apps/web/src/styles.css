@@ -8053,11 +8053,22 @@ html.native-app .native-now-timeline {
   min-width: 0;
 }
 
+/* The thumb's paper ring is a 3px shadow outside its box; the inline padding
+   keeps it from being clipped by the input at 0% and 100%. */
 html.native-app .native-now-timeline input[type="range"] {
   height: 28px;
+  padding-inline: 3px;
 }
 
-html.native-app .native-now-timeline input[type="range"]::-webkit-slider-runnable-track,
+/* Separate rules: WebKit drops a whole selector list containing ::-moz-*. */
+html.native-app .native-now-timeline input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background:
+    linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
+}
+
 html.native-app .native-now-timeline input[type="range"]::-moz-range-track {
   height: 6px;
   border-radius: 999px;
@@ -8545,6 +8556,7 @@ html:not(.native-app) .native-now-timeline {
 
 html:not(.native-app) .native-now-timeline input[type="range"] {
   height: 28px;
+  padding-inline: 3px;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-runnable-track {
@@ -11647,13 +11659,14 @@ html.native-app .recent-row {
 /* A compact bookplate for information needed during playback. The full
    library details page remains available as a deliberate second step. */
 .details-sheet {
+  --details-sheet-pad-bottom: max(22px, calc(env(safe-area-inset-bottom) + 14px));
   position: relative;
   z-index: 1;
   width: min(100%, 560px);
   max-height: min(86dvh, 760px);
   overflow-y: auto;
   padding: 13px max(20px, env(safe-area-inset-right))
-    max(22px, calc(env(safe-area-inset-bottom) + 14px))
+    var(--details-sheet-pad-bottom)
     max(20px, env(safe-area-inset-left));
   border: 1px solid rgba(139, 46, 31, 0.15);
   border-bottom: 0;
@@ -11853,15 +11866,18 @@ html.native-app .recent-row {
   font: 0.88rem/1.55 "Fraunces", serif;
 }
 
+/* The bar absorbs the sheet's bottom padding so it sits flush with the
+   sheet edge; the safe area is counted once, and scrolled text never shows
+   beneath or through the buttons. */
 .details-sheet-actions {
   position: sticky;
-  bottom: -22px;
+  bottom: calc(-1 * var(--details-sheet-pad-bottom));
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 8px;
-  margin: 16px -2px 0;
-  padding: 12px 2px max(2px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 24%);
+  margin: 16px -2px calc(-1 * var(--details-sheet-pad-bottom));
+  padding: 14px 2px var(--details-sheet-pad-bottom);
+  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 14px);
 }
 
 .details-sheet-actions button {
