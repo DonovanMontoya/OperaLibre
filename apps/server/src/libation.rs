@@ -1694,9 +1694,14 @@ pub(crate) async fn scan_libation_profile(profile: &LibationProfile) -> Vec<Liba
         }
         _ => Vec::new(),
     };
+    // `scan <id>` covers every marketplace an account is signed into, while
+    // `list-accounts` prints one row per marketplace.
+    let mut seen = HashSet::new();
     let accounts = accounts
         .into_iter()
-        .filter(|account| account.scan_library)
+        .filter(|account| {
+            account.scan_library && seen.insert(account.account_id.to_ascii_lowercase())
+        })
         .collect::<Vec<_>>();
     if accounts.len() < 2 {
         return vec![combined];
