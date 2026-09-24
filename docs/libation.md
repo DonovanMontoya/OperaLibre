@@ -66,7 +66,8 @@ Under the hood these map to API endpoints:
 | `POST /api/libation/accounts/login/{session_id}/complete` | Finish login with the final Amazon/Audible URL |
 | `GET /api/libation/books` | Account-aware Libation catalog; duplicate ownership stays visible |
 | `POST /api/libation/sync` | Tell Libation to refresh its library; available to authenticated readers, with the configured hourly limit applied to non-administrators |
-| `POST /api/libation/books/{asin}/liberate` | Download one title when the reader has direct permission |
+| `POST /api/libation/accounts/{profile_id}/books/{asin}/liberate` | Download a title from the selected Audible account when the reader has direct permission |
+| `POST /api/libation/books/{asin}/liberate` | Older ASIN-only route; requires an account choice when several accounts are configured |
 | `GET /api/libation/access` | Current reader's Libation policy and availability |
 | `GET /api/libation/requests` | Own requests, or all requests for an authorized approver |
 | `POST /api/libation/requests/{asin}` | Request approval for one title |

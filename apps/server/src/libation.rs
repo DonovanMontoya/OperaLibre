@@ -1010,6 +1010,7 @@ pub(crate) async fn create_libation_download_request(
     let profile = find_libation_profile(&state, profile_id)
         .await
         .ok_or(ApiError::not_found("Audible account not found."))?;
+    let profile = resolve_legacy_download_profile(&state, profile).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
     let title = payload.title.trim();
     if title.is_empty() || title.chars().count() > 500 {
@@ -2155,6 +2156,44 @@ pub(crate) fn find_book_id_by_asin(books: &[Book], asin: &str) -> Option<String>
         .map(|book| book.id.clone())
 }
 
+/// The older ASIN-only API has no account choice. Resolve it only when one
+/// account exists; otherwise require the account-scoped route so Libation
+/// cannot silently use whichever owner its shared database recorded last.
+async fn resolve_legacy_download_profile(
+    state: &AppState,
+    profile: LibationProfile,
+) -> Result<LibationProfile, ApiError> {
+    if profile.id != "legacy" {
+        return Ok(profile);
+    }
+    let output = run_libation(
+        &profile.config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+    if !output.status.success() {
+        return Err(ApiError::bad_gateway(command_output_text(&output)));
+    }
+    let accounts = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
+    match accounts.as_slice() {
+        [] => Ok(profile),
+        [account] => Ok(LibationProfile {
+            id: account.id.clone(),
+            name: account
+                .name
+                .clone()
+                .unwrap_or_else(|| "Audible account".to_string()),
+            account_id: Some(account.account_id.clone()),
+            managed: false,
+            config: state.libation_config.clone(),
+        }),
+        _ => Err(ApiError::bad_request(
+            "Choose an Audible account to download this title.",
+        )),
+    }
+}
+
 pub(crate) async fn start_libation_download(
     state: &AppState,
     profile_id: Option<String>,
@@ -2178,6 +2217,7 @@ pub(crate) async fn start_libation_download(
             .next()
             .ok_or(ApiError::bad_request("No Audible accounts are configured."))?
     };
+    let profile = resolve_legacy_download_profile(state, profile).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
 
     if let Some(user_id) = grant_to_user.as_deref() {

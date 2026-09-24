@@ -5754,6 +5754,52 @@ async fn selected_account_cannot_download_a_title_only_in_another_account() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn asin_only_download_requires_a_choice_when_accounts_are_shared() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let dad = "dad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        format!("marge@example.com\tMarge\tus\tyes\tyes\n{dad}"),
+    )
+    .unwrap();
+    let refused = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path("B000SHAR00".to_string()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.status, super::StatusCode::BAD_REQUEST);
+    assert!(state.jobs.read().await.is_empty());
+
+    // Existing ASIN-only clients still work with a single account, and the
+    // server resolves that account before starting the download.
+    std::fs::write(root.path().join("libation-accounts.tsv"), dad).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"dad@example.com","Locale":"us","Audible Product Id":"B000SHAR00","Title":"Dad title"}]"#,
+    )
+    .unwrap();
+    let created = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path("B000SHAR00".to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "completed", "{:?}; {}", job.error, job.output);
+    assert!(
+        job.target_id
+            .as_deref()
+            .is_some_and(|target| target.starts_with("legacy-") && target.ends_with(":B000SHAR00"))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn selected_account_access_grant_checks_current_ownership() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
