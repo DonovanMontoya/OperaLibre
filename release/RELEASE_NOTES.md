@@ -12,11 +12,12 @@ Add `| sh -s -- --help` to see its options, including `--server-only` for headle
 
 ### Which file should I download?
 
-- **Most people:** download a `combined` package for your computer. It includes the server and web app, starts in the background, and opens in your browser without leaving a Terminal window open.
-- **Server only:** download a `server` package when the frontend will be hosted separately or you are using another client.
+- **Most people:** download the `combined` package for your computer. It includes the server and web app, starts in the background, and opens in your browser without leaving a Terminal window open.
+- **Server only:** use the same `combined` package and set `web_dist_dir =` (blank) in its `server.config`, then start it with `start.sh` or `start.cmd`. The installer's `--server-only` option does this for you.
 - **Frontend only:** download the file ending in `frontend.zip` when you already have an OperaLibre or Jellyfin server and want to deploy only the static web app.
 - **Android:** the file ending in `android-unsigned.apk` is an unsigned release build for developers or distributors to sign before installation.
-- **Update packages:** files containing `update` are downloaded and verified automatically by compatible combined and server-only installations; you normally do not need to download them yourself.
+- **Update manifest:** `operalibre-manifest-v1.json` is what installations read to update themselves; you do not need to download it.
+- **Read-along sync add-on:** the optional sync add-on is published in its own `readalong-sync-v…` release, only when it changes. Install it from **Administration**; you do not need to download it yourself.
 - **Deployment profiles:** new installs start in `local` mode. Choose `lan` for a trusted LAN/VPN or `proxy` behind same-machine HTTPS; remote first-run setup uses a one-time server token.
 - **Transfer limits:** uploads, generated ZIP downloads, and simultaneous ZIP generation now have configurable server-side limits. Existing configs automatically receive safe defaults.
 

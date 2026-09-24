@@ -1,0 +1,39 @@
+{
+  "rootKeys": [
+    "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+  ],
+  "otherKey": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+  "direct": {
+    "payload": "{\n  \"type\": \"manifest\",\n  \"schema\": 1,\n  \"version\": \"1.2.3\",\n  \"published\": \"2026-01-01T00:00:00.000Z\",\n  \"releaseUrl\": \"https://github.com/DonovanMontoya/OperaLibre/releases/tag/1.2.3\",\n  \"notes\": \"Test notes\",\n  \"futureField\": {\n    \"ignored\": true\n  },\n  \"bridges\": [\n    {\n      \"component\": \"server\",\n      \"below\": \"1.0.0\",\n      \"manifest\": \"https://example.com/bridge.json\"\n    }\n  ],\n  \"packages\": [\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"tar.gz\",\n      \"component\": \"server\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-1.2.3-combined-linux-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"tar.zst\",\n      \"component\": \"server\",\n      \"platform\": \"windows-x64\",\n      \"root\": \"operalibre-1.2.3-combined-windows-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"server\",\n      \"platform\": \"windows-x64\",\n      \"root\": \"operalibre-1.2.3-combined-windows-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"frontend\",\n      \"platform\": \"any\",\n      \"root\": \"operalibre-1.2.3-frontend\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"future-component\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"future\"\n    },\n    {\n      \"version\": \"1.0.0\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"readalong-sync\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-readalong-sync-1.0.0-linux-x64\",\n      \"protocol\": 1\n    },\n    {\n      \"version\": \"2.0.0\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"readalong-sync\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-readalong-sync-2.0.0-linux-x64\",\n      \"protocol\": 2\n    }\n  ]\n}\n",
+    "signatures": [
+      {
+        "keyid": "56475aa75463474c",
+        "sig": "zAEO1w6LrogQDxkCUDaLn9mbtgBg93bNBmuagan9s7La8+tAdOUdb0XFQcrEhNSRAqvdAdB6PD5JolaoZX1sCg=="
+      }
+    ]
+  },
+  "rotated": {
+    "payload": "{\n  \"type\": \"manifest\",\n  \"schema\": 1,\n  \"version\": \"1.2.4\",\n  \"published\": \"2026-01-01T00:00:00.000Z\",\n  \"releaseUrl\": \"https://github.com/DonovanMontoya/OperaLibre/releases/tag/1.2.4\",\n  \"notes\": \"Test notes\",\n  \"futureField\": {\n    \"ignored\": true\n  },\n  \"bridges\": [\n    {\n      \"component\": \"server\",\n      \"below\": \"1.0.0\",\n      \"manifest\": \"https://example.com/bridge.json\"\n    }\n  ],\n  \"packages\": [\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"tar.gz\",\n      \"component\": \"server\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-1.2.3-combined-linux-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"tar.zst\",\n      \"component\": \"server\",\n      \"platform\": \"windows-x64\",\n      \"root\": \"operalibre-1.2.3-combined-windows-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"server\",\n      \"platform\": \"windows-x64\",\n      \"root\": \"operalibre-1.2.3-combined-windows-x64\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"frontend\",\n      \"platform\": \"any\",\n      \"root\": \"operalibre-1.2.3-frontend\"\n    },\n    {\n      \"version\": \"1.2.3\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"future-component\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"future\"\n    },\n    {\n      \"version\": \"1.0.0\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"readalong-sync\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-readalong-sync-1.0.0-linux-x64\",\n      \"protocol\": 1\n    },\n    {\n      \"version\": \"2.0.0\",\n      \"url\": \"https://example.com/package\",\n      \"sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"size\": 1024,\n      \"format\": \"zip\",\n      \"component\": \"readalong-sync\",\n      \"platform\": \"linux-x64\",\n      \"root\": \"operalibre-readalong-sync-2.0.0-linux-x64\",\n      \"protocol\": 2\n    }\n  ]\n}\n",
+    "signatures": [
+      {
+        "keyid": "24f6ed6acbfe1009",
+        "sig": "CTCRUkrGQ032YkjwPBRs2W77cnSs+45dCTMAzmFEDAMKoZUUKwJhlEUbyyvaAdVgRU0IR6E9pF8EJ2mTlW2qDw=="
+      }
+    ],
+    "roots": [
+      {
+        "payload": "{\n  \"type\": \"root\",\n  \"version\": 2,\n  \"threshold\": 1,\n  \"keys\": [\n    {\n      \"keyid\": \"24f6ed6acbfe1009\",\n      \"publicKey\": \"Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=\"\n    }\n  ]\n}\n",
+        "signatures": [
+          {
+            "keyid": "56475aa75463474c",
+            "sig": "UjHtrlKMEn9o7JghfOsHXRi1Ge5J2M03f5hl3NolhE00TqLULDCipWUNkOJdIMInInFZYPHQz8BVmMSi+e9jCQ=="
+          },
+          {
+            "keyid": "24f6ed6acbfe1009",
+            "sig": "MOfeDw6105+n/UZdzAMd32ermXUkmcGsnxyvlgx451iABb8UMlVOTKe1PyT6gyZ3sA2Lhk3bxkuPUD0CkxmrBw=="
+          }
+        ]
+      }
+    ]
+  }
+}
