@@ -1655,6 +1655,72 @@ pub(crate) async fn active_libation_sync_job(state: &AppState) -> Option<String>
     active_job_id(&*state.jobs.read().await, "libation-sync")
 }
 
+/// One `libationcli scan` run and the account it covered, when it covered
+/// only one.
+pub(crate) struct LibationScanAttempt {
+    pub(crate) account: Option<String>,
+    pub(crate) result: anyhow::Result<std::process::Output>,
+}
+
+impl LibationScanAttempt {
+    pub(crate) fn succeeded(&self) -> bool {
+        matches!(&self.result, Ok(output) if output.status.success())
+    }
+}
+
+/// Scans every Audible account in a profile. Libation's CLI aborts the whole
+/// scan when one account cannot sign in, and it files a title owned by
+/// several accounts under whichever one scanned it last, so a single expired
+/// login would freeze the library and strand shared titles on the broken
+/// account. When the combined scan fails for a profile with several
+/// accounts, each is scanned on its own so the healthy ones still refresh
+/// and take over the titles they share.
+pub(crate) async fn scan_libation_profile(profile: &LibationProfile) -> Vec<LibationScanAttempt> {
+    let combined = LibationScanAttempt {
+        account: None,
+        result: run_libation(&profile.config, vec!["scan".to_string()]).await,
+    };
+    if combined.succeeded() || profile.managed {
+        return vec![combined];
+    }
+    let accounts = match run_libation(
+        &profile.config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {
+            parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => Vec::new(),
+    };
+    // `scan <id>` covers every marketplace an account is signed into, while
+    // `list-accounts` prints one row per marketplace.
+    let mut seen = HashSet::new();
+    let accounts = accounts
+        .into_iter()
+        .filter(|account| {
+            account.scan_library && seen.insert(account.account_id.to_ascii_lowercase())
+        })
+        .collect::<Vec<_>>();
+    if accounts.len() < 2 {
+        return vec![combined];
+    }
+    let mut attempts = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let result = run_libation(
+            &profile.config,
+            vec!["scan".to_string(), account.account_id.clone()],
+        )
+        .await;
+        attempts.push(LibationScanAttempt {
+            account: Some(account.name.unwrap_or(account.account_id)),
+            result,
+        });
+    }
+    attempts
+}
+
 pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
         let _libation_guard = acquire_libation_job_lock(&state).await;
@@ -1665,38 +1731,44 @@ pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
         let mut exit_code = Some(0);
         for profile in profiles {
             update_job_output(&state, &job_id, &format!("\nChecking {}.\n", profile.name)).await;
-            match run_libation(&profile.config, vec!["scan".to_string()]).await {
-                Ok(output) if output.status.success() => {
-                    append_job_command_output(&state, &job_id, &output).await;
-                    if profile.managed {
-                        mark_managed_libation_account_refreshed(&state, &profile.id).await;
-                    }
+            for attempt in scan_libation_profile(&profile).await {
+                let name = attempt.account.as_deref().unwrap_or(&profile.name);
+                if let Some(account) = &attempt.account {
+                    update_job_output(&state, &job_id, &format!("Scanning {account}.\n")).await;
                 }
-                Ok(output) => {
-                    exit_code = output.status.code();
-                    append_job_command_output(&state, &job_id, &output).await;
-                    let message = format!("{} could not be refreshed.", profile.name);
-                    if profile.managed {
-                        mark_managed_libation_account_error(
-                            &state,
-                            &profile.id,
-                            &command_output_text(&output),
-                        )
-                        .await;
+                match attempt.result {
+                    Ok(output) if output.status.success() => {
+                        append_job_command_output(&state, &job_id, &output).await;
+                        if profile.managed {
+                            mark_managed_libation_account_refreshed(&state, &profile.id).await;
+                        }
                     }
-                    failures.push(message);
-                }
-                Err(error) => {
-                    exit_code = None;
-                    if profile.managed {
-                        mark_managed_libation_account_error(
-                            &state,
-                            &profile.id,
-                            &error.to_string(),
-                        )
-                        .await;
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state, &job_id, &output).await;
+                        let message = format!("{name} could not be refreshed.");
+                        if profile.managed {
+                            mark_managed_libation_account_error(
+                                &state,
+                                &profile.id,
+                                &command_output_text(&output),
+                            )
+                            .await;
+                        }
+                        failures.push(message);
                     }
-                    failures.push(format!("{}: {error}", profile.name));
+                    Err(error) => {
+                        exit_code = None;
+                        if profile.managed {
+                            mark_managed_libation_account_error(
+                                &state,
+                                &profile.id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        }
+                        failures.push(format!("{name}: {error}"));
+                    }
                 }
             }
         }
@@ -2191,24 +2263,39 @@ pub(crate) async fn liberate_all_libation_books(
                 &format!("\nScanning {}.\n", profile.name),
             )
             .await;
-            match run_libation(&profile.config, vec!["scan".to_string()]).await {
-                Ok(output) if output.status.success() => {
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                    if profile.managed {
-                        mark_managed_libation_account_refreshed(&state_for_job, &profile.id).await;
+            let mut scanned_any = false;
+            for attempt in scan_libation_profile(&profile).await {
+                let name = attempt.account.as_deref().unwrap_or(&profile.name);
+                if let Some(account) = &attempt.account {
+                    update_job_output(
+                        &state_for_job,
+                        &job_id_for_task,
+                        &format!("Scanning {account}.\n"),
+                    )
+                    .await;
+                }
+                match attempt.result {
+                    Ok(output) if output.status.success() => {
+                        scanned_any = true;
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        if profile.managed {
+                            mark_managed_libation_account_refreshed(&state_for_job, &profile.id)
+                                .await;
+                        }
+                    }
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        failures.push(format!("{name} scan failed"));
+                    }
+                    Err(error) => {
+                        exit_code = None;
+                        failures.push(format!("{name} scan failed: {error}"));
                     }
                 }
-                Ok(output) => {
-                    exit_code = output.status.code();
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                    failures.push(format!("{} scan failed", profile.name));
-                    continue;
-                }
-                Err(error) => {
-                    exit_code = None;
-                    failures.push(format!("{} scan failed: {error}", profile.name));
-                    continue;
-                }
+            }
+            if !scanned_any {
+                continue;
             }
 
             update_job_output(
