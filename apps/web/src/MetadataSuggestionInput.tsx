@@ -27,16 +27,35 @@ export function MetadataSuggestionInput({
 
   useLayoutEffect(() => {
     if (!matches.length || !document.documentElement.classList.contains("native-app")) return;
-    const field = fieldRef.current?.getBoundingClientRect();
-    const scroll = fieldRef.current?.closest(".metadata-edit-form")?.getBoundingClientRect();
-    if (!field || !scroll) return;
-    const below = Math.max(0, scroll.bottom - field.bottom);
-    const above = Math.max(0, field.top - scroll.top);
-    const openAbove = below < Math.min(listRef.current?.scrollHeight ?? 120, 120) && above > below;
-    const maxHeight = Math.max(44, Math.min(208, (openAbove ? above : below) - 6));
-    setPlacement((current) => current.above === openAbove && current.maxHeight === maxHeight
-      ? current
-      : { above: openAbove, maxHeight });
+    const scroll = fieldRef.current?.closest(".metadata-edit-form");
+    let frame: number | null = null;
+    const measure = () => {
+      frame = null;
+      const fieldBounds = fieldRef.current?.getBoundingClientRect();
+      const scrollBounds = scroll?.getBoundingClientRect();
+      if (!fieldBounds || !scrollBounds) return;
+      const below = Math.max(0, scrollBounds.bottom - fieldBounds.bottom);
+      const above = Math.max(0, fieldBounds.top - scrollBounds.top);
+      const openAbove = below < Math.min(listRef.current?.scrollHeight ?? 120, 120) && above > below;
+      const maxHeight = Math.max(44, Math.min(208, (openAbove ? above : below) - 6));
+      setPlacement((current) => current.above === openAbove && current.maxHeight === maxHeight
+        ? current
+        : { above: openAbove, maxHeight });
+    };
+    const scheduleMeasure = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    measure();
+    scroll?.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.visualViewport?.addEventListener("resize", scheduleMeasure, { passive: true });
+    window.visualViewport?.addEventListener("scroll", scheduleMeasure, { passive: true });
+    return () => {
+      scroll?.removeEventListener("scroll", scheduleMeasure);
+      window.visualViewport?.removeEventListener("resize", scheduleMeasure);
+      window.visualViewport?.removeEventListener("scroll", scheduleMeasure);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [matches.length, value]);
 
   useEffect(() => () => {
@@ -59,7 +78,7 @@ export function MetadataSuggestionInput({
       event.preventDefault();
       setActiveIndex((index) => event.key === "ArrowDown"
         ? (index + 1) % matches.length
-        : (index - 1 + matches.length) % matches.length);
+        : index < 0 ? matches.length - 1 : (index - 1 + matches.length) % matches.length);
     } else if (event.key === "Enter" && activeIndex >= 0 && matches[activeIndex]) {
       event.preventDefault();
       select(matches[activeIndex]);
