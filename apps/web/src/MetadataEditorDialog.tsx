@@ -1,9 +1,12 @@
 import { Pencil, Plus, X } from "lucide-react";
-import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { MetadataSuggestionInput } from "./MetadataSuggestionInput";
 import { metadataEditorFromBook, type MetadataEditorState } from "./metadataEditor";
+import { existingMetadataNames } from "./metadataSuggestions";
 import type { Book } from "./types";
 
 export function MetadataEditorDialog({
+  books,
   metadataError,
   metadataForm,
   metadataSaving,
@@ -13,6 +16,7 @@ export function MetadataEditorDialog({
   setMetadataError,
   setMetadataForm
 }: {
+  books: readonly Book[];
   metadataError: string | null;
   metadataForm: MetadataEditorState;
   metadataSaving: boolean;
@@ -22,8 +26,41 @@ export function MetadataEditorDialog({
   setMetadataError: Dispatch<SetStateAction<string | null>>;
   setMetadataForm: Dispatch<SetStateAction<MetadataEditorState | null>>;
 }) {
+  const seriesNames = useMemo(() => existingMetadataNames(books, "series"), [books]);
+  const tagNames = useMemo(() => existingMetadataNames(books, "tag"), [books]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const focusedFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const revealFocusedField = useCallback(() => {
+    const scroll = scrollRef.current;
+    const field = focusedFieldRef.current;
+    if (!scroll || !field || document.activeElement !== field) return;
+    const viewport = scroll.getBoundingClientRect();
+    const target = field.getBoundingClientRect();
+    if (target.bottom > viewport.bottom - 12) {
+      scroll.scrollTop += target.bottom - viewport.bottom + 12;
+    } else if (target.top < viewport.top + 12) {
+      scroll.scrollTop -= viewport.top + 12 - target.top;
+    }
+  }, []);
+
+  const scheduleReveal = useCallback(() => {
+    if (revealTimerRef.current !== null) clearTimeout(revealTimerRef.current);
+    revealTimerRef.current = setTimeout(revealFocusedField, 100);
+  }, [revealFocusedField]);
+
+  useEffect(() => {
+    if (!document.documentElement.classList.contains("native-app")) return;
+    window.visualViewport?.addEventListener("resize", scheduleReveal);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", scheduleReveal);
+      if (revealTimerRef.current !== null) clearTimeout(revealTimerRef.current);
+    };
+  }, [scheduleReveal]);
+
   return (
-    <div className="modal-scrim" role="presentation">
+    <div className="modal-scrim metadata-editor-scrim" role="presentation">
       <form className="modal-card metadata-editor-card" onSubmit={saveMetadata}>
         <div className="modal-head">
           <h2><Pencil size={18} /> Edit Book Info</h2>
@@ -42,7 +79,17 @@ export function MetadataEditorDialog({
           </button>
         </div>
 
-        <div className="metadata-edit-form">
+        <div
+          className="metadata-edit-form"
+          ref={scrollRef}
+          onFocusCapture={(event) => {
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+              focusedFieldRef.current = event.target;
+              revealFocusedField();
+              scheduleReveal();
+            }
+          }}
+        >
           <label className="wide">
             <span>Title</span>
             <input
@@ -84,16 +131,18 @@ export function MetadataEditorDialog({
               }
             />
           </label>
-          <label>
+          <div className="metadata-labeled-field">
             <span>Series</span>
-            <input
-              type="text"
+            <MetadataSuggestionInput
+              label="Series"
+              names={seriesNames}
+              suggestionsLabel="Existing series"
               value={metadataForm.series}
-              onChange={(event) =>
-                setMetadataForm({ ...metadataForm, series: event.currentTarget.value })
+              onChange={(series) =>
+                setMetadataForm((form) => form ? { ...form, series } : form)
               }
             />
-          </label>
+          </div>
           <label>
             <span>Series number</span>
             <input
@@ -121,18 +170,19 @@ export function MetadataEditorDialog({
             <p>Use tags for wider worlds or reading orders beyond the book’s immediate series.</p>
             {metadataForm.tags.map((tag, index) => (
               <div className="metadata-tag-row" key={index}>
-                <input
-                  type="text"
+                <MetadataSuggestionInput
+                  label={`Tag ${index + 1} name`}
+                  names={tagNames}
+                  suggestionsLabel="Existing tags"
                   value={tag.name}
-                  aria-label={`Tag ${index + 1} name`}
-                  onChange={(event) => setMetadataForm({
-                    ...metadataForm,
-                    tags: metadataForm.tags.map((candidate, candidateIndex) =>
+                  onChange={(name) => setMetadataForm((form) => form ? {
+                    ...form,
+                    tags: form.tags.map((candidate, candidateIndex) =>
                       candidateIndex === index
-                        ? { ...candidate, name: event.currentTarget.value }
+                        ? { ...candidate, name }
                         : candidate
                     )
-                  })}
+                  } : form)}
                   placeholder="Cosmere"
                 />
                 <input
