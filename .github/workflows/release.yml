@@ -32,6 +32,10 @@ jobs:
       tag: ${{ steps.release-ref.outputs.tag }}
       ref: ${{ steps.release-ref.outputs.ref }}
       tag_exists: ${{ steps.release-ref.outputs.tag_exists }}
+      sync_version: ${{ steps.sync-addon.outputs.version }}
+      sync_inputs: ${{ steps.sync-addon.outputs.inputs }}
+      sync_needed: ${{ steps.sync-addon.outputs.needed }}
+      legacy_assets: ${{ steps.policy.outputs.legacy_assets }}
     steps:
       - name: Resolve release tag and source
         id: release-ref
@@ -73,6 +77,59 @@ jobs:
             echo "ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
             echo "tag_exists=false" >> "${GITHUB_OUTPUT}"
           fi
+
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.release-ref.outputs.ref }}
+
+      # The read-along sync add-on is several hundred megabytes per platform
+      # and rarely changes, so it has its own release per add-on version
+      # (readalong-sync-v<version>) instead of riding along in every app
+      # release. It is built only when that release is missing or incomplete.
+      - name: Check sync add-on release
+        id: sync-addon
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p 'require("./addons/readalong-sync/package.json").version')"
+          tag="readalong-sync-v${version}"
+          inputs="$(cat addons/readalong-sync/package.json addons/readalong-sync/package-lock.json \
+            script/package_sync_addon.mjs | sha256sum | cut -d' ' -f1)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "inputs=${inputs}" >> "${GITHUB_OUTPUT}"
+
+          if ! release="$(gh release view "${tag}" --json body,assets)"; then
+            echo "needed=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! jq -e --arg inputs "Inputs: sha256:${inputs}" '.body | contains($inputs)' <<< "${release}" >/dev/null; then
+            echo "The sync add-on changed since ${tag} was published. Bump the version in" >&2
+            echo "addons/readalong-sync/package.json to publish it as a new add-on release." >&2
+            exit 1
+          fi
+          packages="$(jq '[.assets[].name | select(test("^operalibre-readalong-sync-.+\\.zip$"))] | length' <<< "${release}")"
+          if [[ "${packages}" -eq 5 ]]; then
+            echo "needed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "needed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # While on, releases also carry the per-file-signed update packages that
+      # servers older than the update manifest look for. See
+      # docs/update-manifest.md for when to turn it off.
+      - name: Read update policy
+        id: policy
+        shell: bash
+        run: |
+          # A single trusted key means losing it strands every installation;
+          # the offline backup key is what can sign a rotation to a new one.
+          if ! jq -e '.rootKeys | length >= 2' release/update-trust.json >/dev/null; then
+            echo "Add the offline backup key to release/update-trust.json first; see docs/update-manifest.md." >&2
+            exit 1
+          fi
+          echo "legacy_assets=$(jq -r '.legacyAssets == true' release/update-policy.json)" >> "${GITHUB_OUTPUT}"
 
   verify:
     name: Verify release source
@@ -273,6 +330,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      LEGACY_ASSETS: ${{ needs.prepare.outputs.legacy_assets }}
     strategy:
       fail-fast: false
       matrix:
@@ -317,9 +375,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install optional sync add-on runtime
-        run: npm ci --prefix addons/readalong-sync
-
       - name: Download built frontend
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -334,29 +389,15 @@ jobs:
       - name: Build background launcher
         run: cargo build --release --locked --manifest-path apps/launcher/Cargo.toml
 
+      # One package per platform: the server, its web app, the launchers and
+      # what an in-app update applies. Server-only installs switch the web app
+      # off in server.config.
       - name: Package for Linux or macOS
         if: runner.os != 'Windows'
         shell: bash
         run: |
           version="${RELEASE_TAG#v}"
-          server_package="operalibre-${version}-server-${{ matrix.platform }}"
           combined_package="operalibre-${version}-combined-${{ matrix.platform }}"
-          update_package="operalibre-${version}-update-${{ matrix.platform }}"
-          sync_package="operalibre-${version}-readalong-sync-${{ matrix.platform }}"
-
-          node script/package_release.mjs \
-            --kind server \
-            --platform "${{ matrix.platform }}" \
-            --binary "${{ matrix.executable }}" \
-            --launcher "${{ matrix.launcher }}" \
-            --output "staging/${server_package}" \
-            --version "${version}"
-
-          node script/package_sync_addon.mjs \
-            --platform "${{ matrix.platform }}" \
-            --output "staging/${sync_package}" \
-            --version "${version}"
-
           node script/package_release.mjs \
             --kind combined \
             --platform "${{ matrix.platform }}" \
@@ -365,44 +406,29 @@ jobs:
             --web web-dist \
             --output "staging/${combined_package}" \
             --version "${version}"
-
-          node script/package_release.mjs \
-            --kind update \
-            --platform "${{ matrix.platform }}" \
-            --binary "${{ matrix.executable }}" \
-            --launcher "${{ matrix.launcher }}" \
-            --web web-dist \
-            --output "staging/${update_package}" \
-            --version "${version}"
-
           mkdir -p dist
-          tar -C staging -czf "dist/${server_package}.tar.gz" "${server_package}"
-          tar -C staging -czf "dist/${combined_package}.tar.gz" "${combined_package}"
-          (cd staging && zip -qr "../dist/${update_package}.zip" "${update_package}")
-          (cd staging && zip -qr "../dist/${sync_package}.zip" "${sync_package}")
+          # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
+          COPYFILE_DISABLE=1 tar -C staging -czf "dist/${combined_package}.tar.gz" "${combined_package}"
+
+          if [[ "${LEGACY_ASSETS}" == "true" ]]; then
+            update_package="operalibre-${version}-update-${{ matrix.platform }}"
+            node script/package_release.mjs \
+              --kind update \
+              --platform "${{ matrix.platform }}" \
+              --binary "${{ matrix.executable }}" \
+              --launcher "${{ matrix.launcher }}" \
+              --web web-dist \
+              --output "staging/${update_package}" \
+              --version "${version}"
+            (cd staging && zip -qr "../dist/${update_package}.zip" "${update_package}")
+          fi
 
       - name: Package for Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = $env:RELEASE_TAG.TrimStart("v")
-          $serverPackage = "operalibre-$version-server-${{ matrix.platform }}"
           $combinedPackage = "operalibre-$version-combined-${{ matrix.platform }}"
-          $updatePackage = "operalibre-$version-update-${{ matrix.platform }}"
-          $syncPackage = "operalibre-$version-readalong-sync-${{ matrix.platform }}"
-
-          node script/package_release.mjs `
-            --kind server `
-            --platform "${{ matrix.platform }}" `
-            --binary "${{ matrix.executable }}" `
-            --output "staging/$serverPackage" `
-            --version "$version"
-
-          node script/package_sync_addon.mjs `
-            --platform "${{ matrix.platform }}" `
-            --output "staging/$syncPackage" `
-            --version "$version"
-
           node script/package_release.mjs `
             --kind combined `
             --platform "${{ matrix.platform }}" `
@@ -411,21 +437,21 @@ jobs:
             --web web-dist `
             --output "staging/$combinedPackage" `
             --version "$version"
-
-          node script/package_release.mjs `
-            --kind update `
-            --platform "${{ matrix.platform }}" `
-            --binary "${{ matrix.executable }}" `
-            --launcher "${{ matrix.launcher }}" `
-            --web web-dist `
-            --output "staging/$updatePackage" `
-            --version "$version"
-
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path "staging/$serverPackage" -DestinationPath "dist/$serverPackage.zip"
           Compress-Archive -Path "staging/$combinedPackage" -DestinationPath "dist/$combinedPackage.zip"
-          Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
-          Compress-Archive -Path "staging/$syncPackage" -DestinationPath "dist/$syncPackage.zip"
+
+          if ($env:LEGACY_ASSETS -eq "true") {
+            $updatePackage = "operalibre-$version-update-${{ matrix.platform }}"
+            node script/package_release.mjs `
+              --kind update `
+              --platform "${{ matrix.platform }}" `
+              --binary "${{ matrix.executable }}" `
+              --launcher "${{ matrix.launcher }}" `
+              --web web-dist `
+              --output "staging/$updatePackage" `
+              --version "$version"
+            Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
+          }
 
       - name: Upload native release packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -434,6 +460,133 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  sync-addon:
+    name: ${{ matrix.platform }} sync add-on
+    needs:
+      - prepare
+      - verify
+    if: needs.prepare.outputs.sync_needed == 'true'
+    runs-on: ${{ matrix.runner }}
+    env:
+      SYNC_VERSION: ${{ needs.prepare.outputs.sync_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: windows-x64
+            runner: windows-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      - name: Install sync add-on runtime
+        run: npm ci --prefix addons/readalong-sync
+
+      - name: Package for Linux or macOS
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          package="operalibre-readalong-sync-${SYNC_VERSION}-${{ matrix.platform }}"
+          node script/package_sync_addon.mjs \
+            --platform "${{ matrix.platform }}" \
+            --output "staging/${package}" \
+            --version "${SYNC_VERSION}"
+          mkdir -p dist
+          (cd staging && zip -qr "../dist/${package}.zip" "${package}")
+
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "operalibre-readalong-sync-$env:SYNC_VERSION-${{ matrix.platform }}"
+          node script/package_sync_addon.mjs `
+            --platform "${{ matrix.platform }}" `
+            --output "staging/$package" `
+            --version "$env:SYNC_VERSION"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "staging/$package" -DestinationPath "dist/$package.zip"
+
+      - name: Upload sync add-on package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sync-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  # The add-on packages need no signatures of their own: each app release's
+  # signed manifest lists their SHA-256, and servers check that.
+  publish-sync-addon:
+    name: Publish sync add-on release
+    needs:
+      - prepare
+      - sync-addon
+    runs-on: ubuntu-24.04
+    env:
+      SYNC_VERSION: ${{ needs.prepare.outputs.sync_version }}
+      SYNC_TAG: readalong-sync-v${{ needs.prepare.outputs.sync_version }}
+      SYNC_INPUTS: ${{ needs.prepare.outputs.sync_inputs }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download sync add-on packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: sync-*
+          path: sync-assets
+          merge-multiple: true
+
+      - name: Attest sync add-on packages
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: sync-assets/*
+
+      # Never "latest": the app release is what releases/latest must point at.
+      - name: Create or update sync add-on release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Optional read-along sync add-on ${SYNC_VERSION}. OperaLibre servers install it from"
+            echo "**Administration**; you do not need to download these files yourself. It is"
+            echo "published separately from app releases because it changes much less often."
+            echo
+            echo "Inputs: sha256:${SYNC_INPUTS}"
+          } > sync-notes.md
+          title="OperaLibre read-along sync add-on ${SYNC_VERSION}"
+          if gh release view "${SYNC_TAG}" >/dev/null 2>&1; then
+            gh release upload "${SYNC_TAG}" sync-assets/* --clobber
+            gh release edit "${SYNC_TAG}" --title "${title}" --notes-file sync-notes.md --latest=false
+          else
+            gh release create "${SYNC_TAG}" sync-assets/* \
+              --target "$(git rev-parse HEAD)" \
+              --latest=false \
+              --title "${title}" \
+              --notes-file sync-notes.md
+          fi
+
   publish:
     name: Publish GitHub release
     needs:
@@ -441,10 +594,16 @@ jobs:
       - frontend
       - android
       - native
+      - publish-sync-addon
+    # Runs when the sync add-on release was already published and its jobs
+    # were skipped, but never after any failure.
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_DESCRIPTION: ${{ inputs.release_notes }}
+      LEGACY_ASSETS: ${{ needs.prepare.outputs.legacy_assets }}
+      SYNC_TAG: readalong-sync-v${{ needs.prepare.outputs.sync_version }}
     permissions:
       contents: write
       id-token: write
@@ -456,14 +615,20 @@ jobs:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
-      # A rebuilt tag can predate release signing. Use the signer from the
-      # workflow revision while keeping the packages tied to the release tag.
+      # A rebuilt tag can predate the update manifest. Use the tools and trust
+      # files from the workflow revision while keeping the packages tied to
+      # the release tag.
       - name: Checkout release signing tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}
           path: release-signing-tools
-          sparse-checkout: script/release_signing.mjs
+          sparse-checkout: |
+            script/release_signing.mjs
+            script/release_manifest.mjs
+            release/update-policy.json
+            release/update-trust.json
+          sparse-checkout-cone-mode: false
 
       - name: Download release packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -477,29 +642,10 @@ jobs:
         with:
           node-version: 22
 
-      # Servers and the macOS app refuse any update without a valid .sig from
-      # this key, and the script fails when the secret is missing, so an
-      # unsigned release cannot be published.
-      - name: Sign release packages
-        shell: bash
-        env:
-          OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
-        run: node release-signing-tools/script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
-
-      - name: Create checksums
-        shell: bash
-        working-directory: release-assets
-        run: sha256sum * > SHA256SUMS.txt
-
-      - name: Attest release packages
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: release-assets/*
-
       - name: Build release notes
         shell: bash
         run: |
-          previous_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          previous_tag="$(git describe --tags --abbrev=0 --match '[0-9v]*' HEAD^ 2>/dev/null || true)"
           {
             echo "## What's changed"
             echo
@@ -516,6 +662,85 @@ jobs:
             echo
             cat release/RELEASE_NOTES.md
           } > release/RELEASE_BODY.md
+
+      # Every in-app updater reads this one signed file to find the release's
+      # packages; nothing else about the release is built into them.
+      - name: Build and sign the update manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${SYNC_TAG}" > "${RUNNER_TEMP}/sync-release.json"
+          node release-signing-tools/script/release_manifest.mjs \
+            --assets release-assets \
+            --version "${RELEASE_TAG#v}" \
+            --tag "${RELEASE_TAG}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --notes release/RELEASE_BODY.md \
+            --sync-release "${RUNNER_TEMP}/sync-release.json" \
+            --output "${RUNNER_TEMP}/manifest-payload.json"
+          node release-signing-tools/script/release_signing.mjs sign-envelope manifest \
+            "${RUNNER_TEMP}/manifest-payload.json" release-assets/operalibre-manifest-v1.json
+          node release-signing-tools/script/release_signing.mjs verify-manifest \
+            release-assets/operalibre-manifest-v1.json release-assets
+
+      # Servers older than the update manifest need per-file signatures.
+      - name: Sign legacy update packages
+        if: env.LEGACY_ASSETS == 'true'
+        shell: bash
+        env:
+          OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
+        run: node release-signing-tools/script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
+
+      # A release missing any of these would strand the installs that update
+      # from it, so refuse to publish it.
+      - name: Check packages that existing installs update from
+        shell: bash
+        working-directory: release-assets
+        run: |
+          version="${RELEASE_TAG#v}"
+          missing=0
+          require() {
+            if [[ ! -s "$1" ]]; then
+              echo "Missing $1, which existing installations update from." >&2
+              missing=1
+            fi
+          }
+          require operalibre-manifest-v1.json
+          require "operalibre-${version}-frontend.zip"
+          for platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
+            package="operalibre-${version}-combined-${platform}"
+            if [[ "${platform}" == windows-* ]]; then
+              archive="${package}.zip"
+              require "${archive}"
+              [[ ! -s "${archive}" ]] || unzip -l "${archive}" | grep -q " ${package}/UPDATE.json$" ||
+                { echo "${archive} has no UPDATE.json, so updaters cannot apply it." >&2; missing=1; }
+            else
+              archive="${package}.tar.gz"
+              require "${archive}"
+              [[ ! -s "${archive}" ]] || tar -tzf "${archive}" | grep -qx "${package}/UPDATE.json" ||
+                { echo "${archive} has no UPDATE.json, so updaters cannot apply it." >&2; missing=1; }
+            fi
+            if [[ "${LEGACY_ASSETS}" == "true" ]]; then
+              require "operalibre-${version}-update-${platform}.zip"
+              require "operalibre-${version}-update-${platform}.zip.sig"
+            fi
+          done
+          if [[ "${LEGACY_ASSETS}" == "true" ]]; then
+            require "operalibre-${version}-frontend.zip.sig"
+          fi
+          exit "${missing}"
+
+      - name: Create checksums
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Attest release packages
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/*
 
       - name: Create or update release
         shell: bash
@@ -535,6 +760,7 @@ jobs:
           else
             gh release create "${RELEASE_TAG}" release-assets/* \
               --verify-tag \
+              --latest \
               --title "${title}" \
               --notes-file release/RELEASE_BODY.md
           fi

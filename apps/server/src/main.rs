@@ -92,6 +92,7 @@ mod sync;
 mod sync_schedule;
 #[cfg(test)]
 mod unit_tests;
+mod update_manifest;
 mod updates;
 mod upload;
 mod util;

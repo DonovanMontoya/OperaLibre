@@ -66,24 +66,27 @@ async function writeMacApp({ destination, executable, name }) {
   );
 }
 
-async function stageNative({ binary, kind, launcher, output, platform, version, web }) {
+// The one package per platform, following the usual self-hosted media server
+// layout: the server with its web app, which server.config can switch off for
+// a headless install. It also carries what an in-app update applies
+// (operalibre-updater and UPDATE.json), so the update manifest points at it
+// directly; see docs/update-manifest.md.
+async function stageCombined({ binary, launcher, output, platform, version, web }) {
   const windows = platform.startsWith("windows");
   const macos = platform.startsWith("macos");
   const binaryName = windows ? "operalibre-server.exe" : "operalibre-server";
+  const updaterName = windows ? "operalibre-updater.exe" : "operalibre-updater";
 
   await copyExecutable(binary, path.join(output, binaryName));
-  await copyFile(
-    kind === "combined" ? "release/combined.config" : "release/server-only.config",
-    path.join(output, "server.config"),
-  );
-  await copyFile(
-    kind === "combined"
-      ? "release/START-HERE-combined.txt"
-      : "release/START-HERE-server.txt",
-    path.join(output, "START-HERE.txt"),
-  );
+  await copyExecutable(launcher, path.join(output, updaterName));
+  await copyFile("release/combined.config", path.join(output, "server.config"));
+  await copyFile("release/START-HERE-combined.txt", path.join(output, "START-HERE.txt"));
   await copyFile("LICENSE.md", path.join(output, "LICENSE.md"));
   await writeFile(path.join(output, "VERSION.txt"), `${version}\n`);
+  await writeFile(
+    path.join(output, "UPDATE.json"),
+    `${JSON.stringify({ schemaVersion: 1, version, platform }, null, 2)}\n`,
+  );
   await mkdir(path.join(output, "audiobooks"), { recursive: true });
   await writeFile(
     path.join(output, "audiobooks", "PUT_AUDIOBOOKS_HERE.txt"),
@@ -92,23 +95,18 @@ async function stageNative({ binary, kind, launcher, output, platform, version, 
   await mkdir(path.join(output, "data"), { recursive: true });
 
   if (platform.startsWith("linux")) {
-    if (!launcher) throw new Error("Linux packages require --launcher for systemd handoff.");
     await copyExecutable(launcher, path.join(output, "operalibre-service"));
     await cp("release/systemd", path.join(output, "systemd"), { recursive: true });
   }
 
-  if (kind === "combined") {
-    if (!web) {
-      throw new Error("Combined packages require --web.");
-    }
-    if (!launcher) {
-      throw new Error("Combined packages require --launcher.");
-    }
-    await cp(web, path.join(output, "web"), { recursive: true });
-    if (windows) {
-      await copyExecutable(launcher, path.join(output, "Open OperaLibre.exe"));
-      await copyExecutable(launcher, path.join(output, "Stop OperaLibre.exe"));
-    } else if (macos) {
+  await cp(web, path.join(output, "web"), { recursive: true });
+  if (windows) {
+    await copyExecutable(launcher, path.join(output, "Open OperaLibre.exe"));
+    await copyExecutable(launcher, path.join(output, "Stop OperaLibre.exe"));
+    // Runs the server in a console window, for headless or scripted setups.
+    await copyFile("release/start.cmd", path.join(output, "start.cmd"));
+  } else {
+    if (macos) {
       await writeMacApp({
         destination: path.join(output, "Open OperaLibre.app"),
         executable: launcher,
@@ -123,13 +121,13 @@ async function stageNative({ binary, kind, launcher, output, platform, version, 
       await copyExecutable(launcher, path.join(output, "open-operalibre"));
       await copyExecutable(launcher, path.join(output, "stop-operalibre"));
     }
-  } else if (windows) {
-    await copyFile("release/start.cmd", path.join(output, "start.cmd"));
-  } else {
     await copyExecutable("release/start.sh", path.join(output, "start.sh"));
   }
 }
 
+// Legacy update package for servers older than the update manifest, which
+// look up operalibre-<version>-update-<platform>.zip. Built only while
+// release/update-policy.json keeps legacyAssets on.
 async function stageUpdate({ binary, launcher, output, platform, version, web }) {
   const windows = platform.startsWith("windows");
   const binaryName = windows ? "operalibre-server.exe" : "operalibre-server";
@@ -151,7 +149,7 @@ async function main() {
   const output = path.resolve(requireOption(options, "output"));
   const version = requireOption(options, "version");
 
-  if (!["server", "frontend", "combined", "update"].includes(kind)) {
+  if (!["frontend", "combined", "update"].includes(kind)) {
     throw new Error(`Unsupported package kind: ${kind}`);
   }
 
@@ -179,14 +177,13 @@ async function main() {
     return;
   }
 
-  await stageNative({
+  await stageCombined({
     binary: requireOption(options, "binary"),
-    kind,
-    launcher: options.launcher,
+    launcher: requireOption(options, "launcher"),
     output,
     platform: requireOption(options, "platform"),
     version,
-    web: options.web,
+    web: requireOption(options, "web"),
   });
 }
 
