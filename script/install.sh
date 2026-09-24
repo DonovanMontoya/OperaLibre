@@ -308,7 +308,14 @@ if [ -f "${INSTALL_DIR}/operalibre-server" ]; then
   else
     installed_launcher="${INSTALL_DIR}/open-operalibre"
   fi
-  if [ -e "$installed_launcher" ]; then
+  # An empty web_dist_dir is what makes an installation server-only, and it
+  # outlasts in-app updates, which may add launchers to either kind.
+  configured_web=$(sed -n 's/^[[:space:]]*[Ww][Ee][Bb][-_][Dd][Ii][Ss][Tt][-_][Dd][Ii][Rr][[:space:]]*=[[:space:]]*//p' \
+    "${INSTALL_DIR}/server.config" 2>/dev/null | tail -n 1 | tr -d '[:space:]"'"'"'')
+  web_configured=$(grep -ci '^[[:space:]]*web[-_]dist[-_]dir[[:space:]]*=' "${INSTALL_DIR}/server.config" 2>/dev/null || true)
+  if [ "${web_configured:-0}" -gt 0 ] && [ -z "$configured_web" ]; then
+    installed_kind=server
+  elif [ -e "$installed_launcher" ]; then
     installed_kind=combined
   elif [ -f "${INSTALL_DIR}/start-operalibre.sh" ] || [ -f "${INSTALL_DIR}/start.sh" ]; then
     installed_kind=server
@@ -328,7 +335,8 @@ elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)"
 fi
 
 [ -n "$KIND" ] || KIND=combined
-PACKAGE="operalibre-${VERSION}-${KIND}-${PLATFORM}"
+# One package serves both kinds; a server-only install leaves out its web app.
+PACKAGE="operalibre-${VERSION}-combined-${PLATFORM}"
 ARCHIVE="${PACKAGE}.tar.gz"
 
 if [ "$UPGRADE" -eq 0 ]; then
@@ -396,6 +404,15 @@ tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}/extract" ||
   fail "Could not extract ${ARCHIVE}."
 STAGED="${WORK_DIR}/extract/${PACKAGE}"
 [ -d "$STAGED" ] || fail "The downloaded package has an unexpected layout."
+if [ "$KIND" = server ]; then
+  # Server-only: no web app or desktop launchers, and nothing configured to
+  # serve. An upgrade keeps the installed server.config, which already says so.
+  rm -rf "${STAGED}/web" "${STAGED}/Open OperaLibre.app" "${STAGED}/Stop OperaLibre.app" \
+    "${STAGED}/open-operalibre" "${STAGED}/stop-operalibre"
+  sed 's/^web_dist_dir = web$/web_dist_dir =/' "${STAGED}/server.config" >"${STAGED}/server.config.new" &&
+    mv "${STAGED}/server.config.new" "${STAGED}/server.config" ||
+    fail "Could not prepare the server-only configuration."
+fi
 
 # --- Install ----------------------------------------------------------------
 
@@ -1204,7 +1221,7 @@ if [ -n "$LIBATION_CONFIGURED" ]; then
   say ""
 fi
 if [ "$KIND" = server ] && [ "$UPGRADE" -eq 0 ]; then
-  say "This package has no bundled web app. Point an OperaLibre frontend at it,"
+  say "The web app is switched off. Point an OperaLibre frontend at this server,"
   say "or set web_dist_dir in server.config to a folder holding the frontend"
   say "release package. A frontend on another address also needs its origin"
   say "listed in allowed_origins."

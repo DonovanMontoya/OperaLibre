@@ -1,11 +1,60 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 const installer = await readFile(new URL("./install.sh", import.meta.url), "utf8");
+const releaseWorkflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+test("Release archive checks consume long listings and reject invalid packages", async (t) => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-release-guard-"));
+  const packageName = "operalibre-1.2.3-combined-linux-x64";
+  try {
+    await mkdir(path.join(fixture, packageName, "web"), { recursive: true });
+    await writeFile(path.join(fixture, packageName, "UPDATE.json"), "{}");
+    // Put UPDATE.json first, followed by more output than a pipe can buffer.
+    // Small archive fixtures hide the early-close failure under pipefail.
+    await Promise.all(Array.from({ length: 1000 }, (_, index) =>
+      writeFile(path.join(fixture, packageName, "web", `${index}-${"x".repeat(160)}.js`), "web")));
+    for (const format of ["tar.gz", "zip"]) {
+      await t.test(format, async () => {
+        const archive = `${packageName}.${format}`;
+        const listing = format === "zip" ? "unzip" : "tar";
+        // Exercise the actual pipeline from the workflow, including pipefail.
+        const command = releaseWorkflow.match(new RegExp(
+          `^.*\\|\\| (${listing} .*\\| grep .*?) \\|\\|$`, "m"))?.[1];
+        assert.ok(command, `Missing ${format} release archive check`);
+        const check = () => spawnSync("bash", ["-e", "-o", "pipefail", "-c", command], {
+          cwd: fixture, encoding: "utf8",
+          env: { ...process.env, archive, package: packageName },
+        });
+        const pack = (members) => execFileSync(format === "zip" ? "zip" : "tar",
+          format === "zip" ? ["-qr", archive, ...members] : ["-czf", archive, ...members],
+          { cwd: fixture });
+        pack([`${packageName}/UPDATE.json`, `${packageName}/web`]);
+        const valid = check();
+        assert.equal(valid.status, 0, valid.stderr);
+
+        // A late archive failure must still fail even after metadata matched.
+        if (format === "tar.gz") {
+          const bytes = await readFile(path.join(fixture, archive));
+          await writeFile(path.join(fixture, archive), bytes.subarray(0, bytes.length - 32));
+          assert.notEqual(check().status, 0, "Accepted a truncated archive");
+        }
+        await rm(path.join(fixture, archive));
+        // A similar filename must not satisfy the required metadata entry.
+        await writeFile(path.join(fixture, packageName, "UPDATE-json"), "{}");
+        pack([`${packageName}/UPDATE-json`, `${packageName}/web`]);
+        assert.notEqual(check().status, 0, "Accepted an archive without UPDATE.json");
+      });
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 const libationFunctions = ["config_value", "set_config", "configured_port", "configured_data_dir",
   "configured_libation_path", "configured_libation_files_dir", "ensure_libation_files_dir"].map((name) => {
   const definition = installer.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, "m"));
@@ -118,7 +167,8 @@ for (const [reader, key, alias, value, expected] of [
   });
 }
 
-for (const kind of ["server", "combined"]) {
+{
+  const kind = "combined";
   test(`Linux ${kind} package includes coordinated systemd handoff`, async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-package-test-"));
     try {
@@ -140,6 +190,12 @@ for (const kind of ["server", "combined"]) {
       const watcher = await readFile(path.join(output, "systemd/operalibre-update.path"), "utf8");
       assert.match(watcher, /^PathChanged=.*\/update-result\.txt$/m);
       assert.doesNotMatch(watcher, /^PathChanged=.*VERSION/m);
+      // Everything the in-app updater applies ships in the one package.
+      assert.equal(await readFile(path.join(output, "operalibre-updater"), "utf8"), "launcher fixture");
+      assert.deepEqual(JSON.parse(await readFile(path.join(output, "UPDATE.json"), "utf8")),
+        { schemaVersion: 1, version: "1.2.3", platform: "linux-x64" });
+      assert.equal(await readFile(path.join(output, "web/index.html"), "utf8"), "web fixture");
+      assert.ok((await readFile(path.join(output, "start.sh"), "utf8")).length > 0);
     } finally {
       await rm(fixture, { recursive: true, force: true });
     }
