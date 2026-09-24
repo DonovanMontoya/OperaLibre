@@ -77,16 +77,16 @@ Running the installer again preserves your existing Audible configuration and do
 
 ### Headless servers
 
-`--server-only` installs the server package instead of the combined one, for a machine that serves the frontend separately (or not at all):
+`--server-only` installs the same package without its web app and desktop launchers, for a machine that serves the frontend separately (or not at all):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/script/install.sh \
   | sh -s -- --server-only --dir /srv/operalibre --library /srv/audiobooks --mode lan --yes
 ```
 
-That package has no `Open`/`Stop` launcher, so the installer writes two helper scripts beside the server — `start-operalibre.sh` runs it in the background and records its process ID in `data/operalibre-server.pid`, and `stop-operalibre.sh` stops it. `web_dist_dir` stays blank; point a separately hosted frontend at the API and list its address in `allowed_origins`, or set `web_dist_dir` to a folder holding the frontend release package. To run it as a system service instead, see [Deployment](deployment.md) and the `operalibre.service` unit in the repository.
+The installer leaves out the `Open`/`Stop` launchers and writes two helper scripts beside the server instead — `start-operalibre.sh` runs it in the background and records its process ID in `data/operalibre-server.pid`, and `stop-operalibre.sh` stops it. `web_dist_dir` is left blank, which is what makes an installation server-only; point a separately hosted frontend at the API and list its address in `allowed_origins`, or set `web_dist_dir` to a folder holding the frontend release package. To run it as a system service instead, see [Deployment](deployment.md) and the `operalibre.service` unit in the repository.
 
-Re-running the installer on an existing folder keeps whichever package is already there. Installing the other kind requires a different `--dir`.
+Re-running the installer on an existing folder keeps whichever kind is already there. Installing the other kind requires a different `--dir`. To turn a downloaded package into a server-only installation by hand, set `web_dist_dir =` (blank) in its `server.config` and start it with `./start.sh`, or `start.cmd` on Windows.
 
 Windows is not covered by the installer. Follow the manual steps below, which also work on macOS and Linux if you would rather download the package yourself.
 
@@ -104,7 +104,7 @@ Most people should download a filename containing **combined**:
 | Normal Intel/AMD Linux computer | `combined-linux-x64.tar.gz` |
 | 64-bit ARM Linux or Raspberry Pi | `combined-linux-arm64.tar.gz` |
 
-The **combined** package includes both pieces OperaLibre needs: the audiobook server and the web app. The server-only and frontend-only files are intended for custom hosting.
+The **combined** package includes both pieces OperaLibre needs: the audiobook server and the web app. It is the only server download; to run the server without its web app, see [Headless servers](#headless-servers). The frontend-only file is for hosting the web app separately, including in front of a Jellyfin server.
 
 ## 2. Extract it
 
@@ -221,13 +221,13 @@ If `library_root` points somewhere else, back up that audiobook folder instead.
 
 On macOS and Linux, running the one-line installer again is the simplest update. It stops the server and waits for it to exit, stages the newest release beside the installation before replacing the old files, and preserves `data`, `audiobooks`, and `server.config`.
 
-OperaLibre checks the latest GitHub release when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its release signature and SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
+OperaLibre checks the latest release's signed update manifest when an administrator opens **Administration**. Every administrator sees an update banner when a newer server is available. An owner can choose **Update server** to download the package for the server computer, verify its release signature and SHA-256 digest, install it, restart OperaLibre, and reconnect the page.
 
 Under the hardened `operalibre.service` unit from [deployment](deployment.md) the install folder is read-only to the service, so the in-app updater is disabled. Either update manually and restart the service, or explicitly adopt the [managed-update systemd templates](deployment.md#opt-in-managed-updates-under-systemd). Making the folder writable alone is not sufficient: the updater must survive the old server's exit, and supervision must resume only after health checks or rollback finish. Do not use a watcher on `VERSION.txt`.
 
-Published packages also receive GitHub build-provenance attestations after the release workflow verifies that the source commit belongs to `main`, runs the Rust and web tests, lints Rust, and audits production dependencies. To verify a package manually with GitHub CLI, run `gh attestation verify FILE --repo DonovanMontoya/OperaLibre`. The in-app updaters (the server's and the macOS app's) enforce the release digest, the package structure, and an Ed25519 signature: every package they download (the `update`, `frontend` and read-along sync add-on packages) is published with a `.sig` file made in the release workflow, covering the release tag, the file name and its SHA-256, and an update without a valid signature from the key built into OperaLibre is refused. Packages meant for manual download are covered by `SHA256SUMS.txt` and the provenance attestation. Provenance verification is an additional manual check for security-sensitive installations.
+Published packages also receive GitHub build-provenance attestations after the release workflow verifies that the source commit belongs to `main`, runs the Rust and web tests, lints Rust, and audits production dependencies. To verify a package manually with GitHub CLI, run `gh attestation verify FILE --repo DonovanMontoya/OperaLibre`. The in-app updaters (the server's and the macOS app's) read one file from each release, `operalibre-manifest-v1.json`, which lists every package with its address, size and SHA-256 and is signed with an Ed25519 key built into OperaLibre. A manifest without a valid signature is refused, and a package that does not match its manifest entry is never installed. `SHA256SUMS.txt` and the provenance attestation cover packages you download yourself. How the manifest works, and how it can change without stranding older installations, is described in [Update manifest](update-manifest.md). Provenance verification is an additional manual check for security-sensitive installations.
 
-Automatic install is available for managed combined and server-only release packages. It preserves `data`, `audiobooks`, and `server.config`, so deployment profiles and custom paths survive upgrades. Configs from older versions remain compatible: a non-loopback `host` with no profile is inferred as `lan`. Combined updates replace the server, bundled web app, and launchers together; server-only updates replace only the server and leave a separately hosted frontend untouched. The prior managed files remain under `update-backups` inside `data_dir` for rollback; if the new server exits during startup, the launcher restores and starts the previous version automatically. A new server that is still scanning a large library when the launcher's wait runs out is left running, not rolled back.
+Automatic install is available for managed release installations, with or without the web app. It preserves `data`, `audiobooks`, and `server.config`, so deployment profiles and custom paths survive upgrades. Configs from older versions remain compatible: a non-loopback `host` with no profile is inferred as `lan`. Combined updates replace the server, bundled web app, and launchers together; server-only updates replace only the server and leave a separately hosted frontend untouched. The prior managed files remain under `update-backups` inside `data_dir` for rollback; if the new server exits during startup, the launcher restores and starts the previous version automatically. A new server that is still scanning a large library when the launcher's wait runs out is left running, not rolled back.
 
 New configuration keys use secure defaults when they are absent, so an existing managed installation does not need a manual config migration after an automatic update. Add the keys from `server.config.example` only when you want to override those defaults.
 
@@ -236,7 +236,7 @@ The browser frontend is tracked separately. When a newer standalone frontend pac
 Custom source deployments and system services still show the available version and release-notes link, but must be updated manually:
 
 1. Stop OperaLibre.
-2. Download and extract the new combined or server package into a new folder.
+2. Download and extract the new combined package into a new folder. For a server-only installation, also blank `web_dist_dir` in its `server.config`.
 3. Copy the old `data` folder into the new package, replacing the empty one.
 4. If you used the default library, copy the old `audiobooks` folder into the new package too.
 5. If you edited `server.config`, copy your settings into the new file.

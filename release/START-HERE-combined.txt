@@ -55,6 +55,19 @@ macOS:
 Linux:
   Double-click "stop-operalibre", or run ./stop-operalibre.
 
+RUN THE SERVER ONLY
+-------------------
+
+For a headless machine, a separately hosted frontend, or another client, set
+
+  web_dist_dir =
+
+in server.config and start the server with ./start.sh (start.cmd on Windows)
+instead of the Open launcher. When a frontend is hosted at a different
+address, also add its full origin to allowed_origins, for example:
+
+  allowed_origins = https://books.example.com
+
 ADD BOOKS
 ---------
 
