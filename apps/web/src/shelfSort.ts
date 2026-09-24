@@ -6,6 +6,7 @@ import { readStoredValue } from "./appStorage";
 
 export type SortMode = "title" | "author" | "series" | "tag" | "genre" | "progress" | "duration" | "account" | "added";
 export type LibrarySource = "local" | "audible" | "libro" | "all";
+export type ShelfLayout = "split" | "player" | "library";
 
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "title", label: "Title" },

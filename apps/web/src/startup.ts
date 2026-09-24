@@ -44,3 +44,32 @@ export function canResolveStartupNavigation(
 export function shouldAcceptNativeTrackChange(startupReady: boolean, isPlaying: boolean) {
   return startupReady || isPlaying;
 }
+
+export type StartupDestination = { tab: "reading" | "shelf"; reveal: boolean };
+
+/**
+ * Where a library load sends the native launch cover, or null to leave it.
+ *
+ * Once the Reading tab is chosen, the playback restore reveals the view. A
+ * later listing can still drop that book before the restore finishes (the
+ * cached shelf said in progress, the live one says finished elsewhere); the
+ * restore is cancelled and never reveals, so this load has to: there is
+ * nothing left to restore, and the Shelf is the useful place to land.
+ */
+export function startupDestinationAfterLoad(
+  navigationResolved: boolean,
+  viewReady: boolean,
+  restoredBookId: string | null,
+  preferredBookId: string | null,
+  preferredBookIsPresent: boolean,
+  definitive: boolean
+): StartupDestination | null {
+  if (viewReady) return null;
+  if (navigationResolved) return restoredBookId ? null : { tab: "shelf", reveal: true };
+  if (!canResolveStartupNavigation(restoredBookId, preferredBookId, preferredBookIsPresent, definitive)) {
+    return null;
+  }
+  // A restored Reading tab still needs its saved track and position; the
+  // restore reveals it once they are known.
+  return restoredBookId ? { tab: "reading", reveal: false } : { tab: "shelf", reveal: true };
+}

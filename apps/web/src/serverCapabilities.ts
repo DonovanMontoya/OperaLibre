@@ -24,3 +24,5 @@ export function serverCapabilities(
     uploads: connected && opera && user.isAdmin
   };
 }
+
+export type ServerCapabilities = ReturnType<typeof serverCapabilities>;

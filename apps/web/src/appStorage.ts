@@ -138,3 +138,10 @@ export function writeStoredBookId(userId: string, field: "selectedBookId" | "pla
 export function nativeAudioRecoveryScope(userId: string, bookId: string) {
   return `${getServerStorageKey()}:${userId}:${bookId}`;
 }
+
+/**
+ * Remembers that the reader waved off the shelf's connect-a-server card. Kept
+ * separate from the server keys in api.ts: it describes the pitch, not the
+ * connection, and must survive entering and leaving local mode.
+ */
+export const CONNECT_PROMPT_DISMISSED_KEY = "operalibre.connectPromptDismissed";

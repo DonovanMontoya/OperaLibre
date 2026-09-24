@@ -27,7 +27,8 @@ const fragments = [
   { startSeconds: 10, endSeconds: 20, href: "c1.xhtml", text: "This sentence is absent from the EPUB." },
   { startSeconds: 20, endSeconds: 30, href: "c1.xhtml", text: "Chapter 1, paragraph 2." },
   { startSeconds: 30, endSeconds: 40, href: "c2.xhtml", text: "This chapter also lacks the narrated sentence." },
-  { startSeconds: 40, endSeconds: 50, href: "c2.xhtml", text: "Chapter 2, paragraph 1." }
+  { startSeconds: 40, endSeconds: 50, href: "c2.xhtml", text: "Chapter 2, paragraph 1." },
+  { startSeconds: 50, endSeconds: 60, href: "c1.xhtml", text: "Chapter 1, paragraph 25." }
 ];
 
 function Fixture() {
