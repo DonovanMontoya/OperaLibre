@@ -1509,6 +1509,20 @@ fi
   printf 'end export\n' >> '{log}'
   exit 0
 fi
+if [ "$command" = "list-accounts" ]; then
+  if [ -f '{accounts}' ]; then
+    cat '{accounts}'
+  fi
+  exit 0
+fi
+if [ "$command" = "scan" ]; then
+  printf 'scan %s\n' "${{1-all}}" >> '{scans}'
+  if [ -f '{broken}' ] && {{ [ "$#" -eq 0 ] || [ "$1" = "$(cat '{broken}')" ]; }}; then
+    printf 'Authentication failed\n' >&2
+    exit 1
+  fi
+  exit 0
+fi
 if [ "$command" != "liberate" ]; then
   exit 0
 fi
@@ -1540,7 +1554,10 @@ exit 0
 "#,
         log = log_path.display(),
         audio = audio_template.display(),
-        export = root.join("libation-export.json").display()
+        export = root.join("libation-export.json").display(),
+        accounts = root.join("libation-accounts.tsv").display(),
+        scans = root.join("libation-scans.log").display(),
+        broken = root.join("libation-broken-account").display()
     );
     std::fs::write(&cli_path, script).unwrap();
     let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
@@ -5439,6 +5456,46 @@ fn audible_response_urls_reject_control_characters() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn one_broken_libation_login_does_not_block_the_other_accounts() {
+    // Libation's CLI aborts a scan of every account when one cannot sign in,
+    // and files a shared title under whichever account scanned it last.
+    // Without a per-account fallback, the healthy account never refreshes
+    // and its copies of shared titles stay stuck on the broken one.
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("libation-broken-account"),
+        "marge@example.com",
+    )
+    .unwrap();
+
+    let profile = super::all_libation_profiles(&state).await.remove(0);
+    let attempts = super::scan_libation_profile(&profile).await;
+    let outcomes = attempts
+        .iter()
+        .map(|attempt| (attempt.account.as_deref(), attempt.succeeded()))
+        .collect::<Vec<_>>();
+    assert_eq!(outcomes, vec![(Some("Marge"), false), (Some("Dad"), true)]);
+    let scans = std::fs::read_to_string(root.path().join("libation-scans.log")).unwrap();
+    assert_eq!(
+        scans.lines().collect::<Vec<_>>(),
+        vec!["scan all", "scan marge@example.com", "scan dad@example.com"]
+    );
+
+    // A healthy library keeps the single combined scan.
+    std::fs::remove_file(root.path().join("libation-broken-account")).unwrap();
+    std::fs::remove_file(root.path().join("libation-scans.log")).unwrap();
+    let attempts = super::scan_libation_profile(&profile).await;
+    assert_eq!(attempts.len(), 1);
+    assert!(attempts[0].account.is_none() && attempts[0].succeeded());
+}
+
 #[tokio::test]
 async fn concurrent_libation_listings_reuse_one_export() {
     let root = tempfile::tempdir().unwrap();
