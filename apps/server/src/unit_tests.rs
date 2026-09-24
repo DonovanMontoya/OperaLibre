@@ -5466,7 +5466,7 @@ async fn one_broken_libation_login_does_not_block_the_other_accounts() {
     let (state, _) = fake_libation_state(root.path());
     std::fs::write(
         root.path().join("libation-accounts.tsv"),
-        "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n",
+        "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\ndad@example.com\tDad\tuk\tyes\tyes\n",
     )
     .unwrap();
     std::fs::write(
