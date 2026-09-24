@@ -26,6 +26,14 @@ const RELEASE_API_URL: &str =
 const RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/DonovanMontoya/OperaLibre/releases/download/";
 const RELEASE_PAGE_PREFIX: &str = "https://github.com/DonovanMontoya/OperaLibre/releases/";
+/// The sync add-on version this server installs. The add-on changes far less
+/// often than the app, so it is published once per version in its own
+/// release, tagged `readalong-sync-v{version}`, instead of in every app
+/// release. Must match the version in addons/readalong-sync/package.json,
+/// which the release workflow reads to decide whether to publish it.
+const SYNC_ADDON_VERSION: &str = "1.0.0";
+const SYNC_ADDON_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/DonovanMontoya/OperaLibre/releases/tags/readalong-sync-v";
 /// Base64 Ed25519 public key every downloaded release asset must be signed
 /// with. The matching private key is the release workflow's
 /// OPERALIBRE_RELEASE_SIGNING_KEY secret; see script/release_signing.mjs.
@@ -413,12 +421,11 @@ impl UpdateManager {
             status.message = Some(error.to_string());
         }
 
-        match self.fetch_latest_release().await {
+        status.latest_version = Some(SYNC_ADDON_VERSION.to_string());
+        match self.fetch_sync_addon_release().await {
             Ok(release) => {
                 status.release_url = Some(release.html_url.clone());
-                let latest = normalize_version(&release.tag_name);
-                status.latest_version = Some(latest.clone());
-                match validated_sync_addon_asset(&release, &latest, platform) {
+                match validated_sync_addon_asset(&release, SYNC_ADDON_VERSION, platform) {
                     Ok((asset, _)) => {
                         status.package_bytes = Some(asset.size);
                         status.can_install = install_capability.is_ok();
@@ -426,7 +433,7 @@ impl UpdateManager {
                             .installed_version
                             .as_deref()
                             .and_then(|version| Version::parse(version).ok())
-                            .zip(Version::parse(&latest).ok())
+                            .zip(Version::parse(SYNC_ADDON_VERSION).ok())
                             .is_some_and(|(installed, latest)| latest > installed);
                     }
                     Err(error) if status.message.is_none() => {
@@ -463,12 +470,11 @@ impl UpdateManager {
         let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("Another OperaLibre package is already being installed.");
         };
-        let release = self.fetch_latest_release().await?;
-        let version = normalize_version(&release.tag_name);
-        Version::parse(&version).context("Invalid release version")?;
+        let release = self.fetch_sync_addon_release().await?;
+        let version = SYNC_ADDON_VERSION;
         let platform = platform_key()
             .ok_or_else(|| anyhow!("This server platform does not have a sync add-on package."))?;
-        let (asset, expected_digest) = validated_sync_addon_asset(&release, &version, platform)?;
+        let (asset, expected_digest) = validated_sync_addon_asset(&release, version, platform)?;
         let install = managed_install(self.web_dist_dir.as_deref())?;
         let updates_dir = self.data_dir.join("updates");
         fs::create_dir_all(&updates_dir).await?;
@@ -493,8 +499,8 @@ impl UpdateManager {
         )
         .await?;
         let package_root =
-            extract_dir.join(format!("operalibre-{version}-readalong-sync-{platform}"));
-        let metadata = validate_sync_addon_package(&package_root, &version, platform).await?;
+            extract_dir.join(format!("operalibre-readalong-sync-{version}-{platform}"));
+        let metadata = validate_sync_addon_package(&package_root, version, platform).await?;
         make_sync_addon_executables(&package_root, &metadata).await?;
         install_sync_addon_files(
             package_root,
@@ -825,8 +831,20 @@ impl UpdateManager {
     }
 
     async fn fetch_latest_release(&self) -> anyhow::Result<GithubRelease> {
+        self.fetch_release(RELEASE_API_URL).await
+    }
+
+    async fn fetch_sync_addon_release(&self) -> anyhow::Result<GithubRelease> {
+        let release = self
+            .fetch_release(&format!("{SYNC_ADDON_RELEASE_API_URL}{SYNC_ADDON_VERSION}"))
+            .await?;
+        check_sync_addon_release(&release)?;
+        Ok(release)
+    }
+
+    async fn fetch_release(&self, url: &str) -> anyhow::Result<GithubRelease> {
         self.client
-            .get(RELEASE_API_URL)
+            .get(url)
             .timeout(Duration::from_secs(30))
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2026-03-10")
@@ -987,13 +1005,25 @@ fn validated_sync_addon_asset<'a>(
     version: &str,
     platform: &str,
 ) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
-    let name = format!("operalibre-{version}-readalong-sync-{platform}.zip");
+    let name = format!("operalibre-readalong-sync-{version}-{platform}.zip");
     let asset = release
         .assets
         .iter()
         .find(|asset| asset.name == name)
         .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
     check_release_asset(asset, MAX_SYNC_ADDON_PACKAGE_BYTES, "sync add-on package")
+}
+
+fn check_sync_addon_release(release: &GithubRelease) -> anyhow::Result<()> {
+    if !release.html_url.starts_with(RELEASE_PAGE_PREFIX) {
+        bail!("GitHub returned an untrusted release URL.");
+    }
+    // Signatures cover the tag, so this is what ties the packages to the
+    // version this server expects.
+    if release.tag_name != format!("readalong-sync-v{SYNC_ADDON_VERSION}") {
+        bail!("GitHub returned a different sync add-on release.");
+    }
+    Ok(())
 }
 
 struct InstalledSyncAddon {
@@ -1789,11 +1819,11 @@ mod tests {
     }
 
     use super::{
-        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, SyncAddonPackageMetadata,
-        UpdateManager, install_frontend_files, install_layout, installed_frontend_version,
-        normalize_version, platform_key, prune_stale_staging, truncate_notes,
-        validate_installed_sync_addon, validated_frontend_asset, validated_sync_addon_asset,
-        validated_update_asset,
+        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, SYNC_ADDON_VERSION,
+        SyncAddonPackageMetadata, UpdateManager, check_sync_addon_release, install_frontend_files,
+        install_layout, installed_frontend_version, normalize_version, platform_key,
+        prune_stale_staging, truncate_notes, validate_installed_sync_addon,
+        validated_frontend_asset, validated_sync_addon_asset, validated_update_asset,
     };
     use std::sync::{
         Arc,
@@ -1883,16 +1913,17 @@ mod tests {
     #[test]
     fn sync_addon_assets_require_an_exact_platform_name_and_valid_digest() {
         let platform = platform_key().unwrap();
-        let name = format!("operalibre-1.2.3-readalong-sync-{platform}.zip");
+        let name = format!("operalibre-readalong-sync-1.2.3-{platform}.zip");
         let mut release = GithubRelease {
-            tag_name: "v1.2.3".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
-                .to_string(),
+            tag_name: "readalong-sync-v1.2.3".to_string(),
+            html_url:
+                "https://github.com/DonovanMontoya/OperaLibre/releases/tag/readalong-sync-v1.2.3"
+                    .to_string(),
             published_at: None,
             body: None,
             assets: vec![GithubReleaseAsset {
                 browser_download_url: format!(
-                    "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/{name}"
+                    "https://github.com/DonovanMontoya/OperaLibre/releases/download/readalong-sync-v1.2.3/{name}"
                 ),
                 name,
                 size: 1024,
@@ -1904,6 +1935,35 @@ mod tests {
         assert!(validated_sync_addon_asset(&release, "1.2.3", "wrong-platform").is_err());
         release.assets[0].digest = None;
         assert!(validated_sync_addon_asset(&release, "1.2.3", platform).is_err());
+    }
+
+    #[test]
+    fn sync_addon_release_must_be_the_expected_version() {
+        let mut release = GithubRelease {
+            tag_name: format!("readalong-sync-v{SYNC_ADDON_VERSION}"),
+            html_url: format!(
+                "https://github.com/DonovanMontoya/OperaLibre/releases/tag/readalong-sync-v{SYNC_ADDON_VERSION}"
+            ),
+            published_at: None,
+            body: None,
+            assets: Vec::new(),
+        };
+        assert!(check_sync_addon_release(&release).is_ok());
+        release.tag_name = "v9.9.9".to_string();
+        assert!(check_sync_addon_release(&release).is_err());
+        release.tag_name = format!("readalong-sync-v{SYNC_ADDON_VERSION}");
+        release.html_url = "https://example.com/releases/tag/readalong-sync-v1.0.0".to_string();
+        assert!(check_sync_addon_release(&release).is_err());
+    }
+
+    /// The release workflow publishes the add-on under the version in its
+    /// package.json; a server expecting any other version finds no package.
+    #[test]
+    fn sync_addon_version_matches_the_packaged_runtime() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../addons/readalong-sync/package.json"))
+                .unwrap();
+        assert_eq!(manifest["version"], SYNC_ADDON_VERSION);
     }
 
     #[test]

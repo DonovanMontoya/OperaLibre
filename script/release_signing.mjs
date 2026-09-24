@@ -7,8 +7,10 @@
 //     public key is built into the server and the macOS app.
 //
 //   node script/release_signing.mjs sign <asset-dir> <release-tag>
-//     Signs every file in the directory with the key in
-//     OPERALIBRE_RELEASE_SIGNING_KEY, writing <file>.sig beside each.
+//     Signs every package an in-app updater downloads (see isUpdaterAsset)
+//     with the key in OPERALIBRE_RELEASE_SIGNING_KEY, writing <file>.sig
+//     beside each. Packages people download by hand are covered by
+//     SHA256SUMS.txt and the build-provenance attestation instead.
 //
 // A signature covers the release tag, the asset name and the asset's SHA-256
 // (see signingMessage), so it cannot be moved to another file or replayed
@@ -30,6 +32,20 @@ export const RELEASE_SIGNING_PUBLIC_KEY = "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl
 // DER prefixes that wrap a raw 32-byte Ed25519 seed or public key.
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+// The packages the server and macOS updaters fetch, each with its .sig. Keep
+// in step with the asset names in apps/server/src/updates.rs and
+// apps/macos/Sources/OperaLibre/FrontendUpdater.swift: an updater refuses a
+// package whose signature is missing.
+const UPDATER_ASSET_PATTERNS = [
+  /^operalibre-[^/]+-frontend\.zip$/,
+  /^operalibre-[^/]+-update-[a-z0-9]+-[a-z0-9]+\.zip$/,
+  /^operalibre-readalong-sync-[^/]+-[a-z0-9]+-[a-z0-9]+\.zip$/
+];
+
+export function isUpdaterAsset(name) {
+  return UPDATER_ASSET_PATTERNS.some((pattern) => pattern.test(name));
+}
 
 export function signingMessage(tag, assetName, sha256Hex) {
   return Buffer.from(`${MESSAGE_DOMAIN}\n${tag}\n${assetName}\n${sha256Hex.toLowerCase()}`, "utf8");
@@ -68,7 +84,7 @@ export async function signDirectory(directory, tag, privateKey) {
   const signed = [];
   for (const name of (await readdir(directory)).sort()) {
     const file = path.join(directory, name);
-    if (name.endsWith(SIGNATURE_SUFFIX) || !(await stat(file)).isFile()) continue;
+    if (!isUpdaterAsset(name) || !(await stat(file)).isFile()) continue;
     const signature = signAsset(privateKey, tag, name, await fileSha256Hex(file));
     await writeFile(`${file}${SIGNATURE_SUFFIX}`, `${signature}\n`);
     signed.push(name);
@@ -94,8 +110,8 @@ async function main([command, ...args]) {
     requireReleaseSigningKey(privateKey);
     const [directory, tag] = args;
     const signed = await signDirectory(directory, tag, privateKey);
-    if (signed.length === 0) throw new Error(`No release assets to sign in ${directory}.`);
-    console.log(`Signed ${signed.length} assets for ${tag} with key ${publicKeyBase64(privateKey)}.`);
+    if (signed.length === 0) throw new Error(`No updater packages to sign in ${directory}.`);
+    console.log(`Signed ${signed.length} updater packages for ${tag} with key ${publicKeyBase64(privateKey)}.`);
     return;
   }
   throw new Error("Usage: release_signing.mjs generate <private-key-file> | sign <asset-dir> <release-tag>");

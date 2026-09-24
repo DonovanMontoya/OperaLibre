@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   RELEASE_SIGNING_PUBLIC_KEY,
+  isUpdaterAsset,
   privateKeyFromSeed,
   publicKeyBase64,
   signAsset,
@@ -61,11 +62,32 @@ test("a signature binds the tag, the asset name and the digest", () => {
   assert.ok(!verifies("v1.2.3", "operalibre-1.2.3-frontend.zip", "c".repeat(64)));
 });
 
-test("signing a directory writes a verifiable signature beside every asset", async () => {
+test("only the packages an updater downloads are signed", () => {
+  for (const name of [
+    "operalibre-1.2.3-frontend.zip",
+    "operalibre-1.2.3-update-linux-x64.zip",
+    "operalibre-1.2.3-update-windows-x64.zip",
+    "operalibre-readalong-sync-1.0.0-macos-arm64.zip"
+  ]) {
+    assert.ok(isUpdaterAsset(name), name);
+  }
+  for (const name of [
+    "operalibre-1.2.3-combined-linux-x64.tar.gz",
+    "operalibre-1.2.3-server-windows-x64.zip",
+    "operalibre-1.2.3-android-unsigned.apk",
+    "operalibre-1.2.3-frontend.zip.sig",
+    "SHA256SUMS.txt"
+  ]) {
+    assert.ok(!isUpdaterAsset(name), name);
+  }
+});
+
+test("signing a directory writes a verifiable signature beside every updater package", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "operalibre-signing-test-"));
   try {
     await writeFile(path.join(directory, "operalibre-1.2.3-frontend.zip"), "frontend bytes");
     await writeFile(path.join(directory, "operalibre-1.2.3-update-linux-x64.zip"), "update bytes");
+    await writeFile(path.join(directory, "operalibre-1.2.3-combined-linux-x64.tar.gz"), "combined bytes");
     const signed = await signDirectory(directory, "v1.2.3", privateKeyFromSeed(TEST_SEED));
     assert.deepEqual(signed, ["operalibre-1.2.3-frontend.zip", "operalibre-1.2.3-update-linux-x64.zip"]);
 
