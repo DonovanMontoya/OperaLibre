@@ -453,6 +453,58 @@ jobs:
             Compress-Archive -Path "staging/$updatePackage" -DestinationPath "dist/$updatePackage.zip"
           }
 
+      # Use the workflow revision's tests even when rebuilding an older tag.
+      - name: Checkout upgrade test tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: upgrade-test-tools
+          sparse-checkout: |
+            script/test_release_upgrade.py
+            script/release_signing.mjs
+            release/update-trust.json
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Python for upgrade tests
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Download and verify upgrade baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep a fixed older release so skipped-version upgrades stay tested.
+          baseline=0.4.6
+          extension=tar.gz
+          if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
+          mkdir -p upgrade-baseline
+          gh release download "${baseline}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "operalibre-${baseline}-combined-${{ matrix.platform }}.${extension}" \
+            --pattern operalibre-manifest-v1.json --dir upgrade-baseline
+          node upgrade-test-tools/script/release_signing.mjs verify-manifest \
+            upgrade-baseline/operalibre-manifest-v1.json upgrade-baseline
+
+      - name: Test packaged upgrade and rollback
+        shell: bash
+        run: |
+          baseline=0.4.6
+          version="${RELEASE_TAG#v}"
+          # Historical tags predate the launcher fixes exercised by this test.
+          # Preserve the existing ability to rebuild them with today's workflow.
+          case "${version}" in
+            0.[0-3].*|0.4.[0-6])
+              echo "::notice::Skipping upgrade smoke tests for historical release ${version}."
+              exit 0
+              ;;
+          esac
+          extension=tar.gz
+          if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
+          python upgrade-test-tools/script/test_release_upgrade.py \
+            --baseline "upgrade-baseline/operalibre-${baseline}-combined-${{ matrix.platform }}.${extension}" \
+            --candidate "dist/operalibre-${version}-combined-${{ matrix.platform }}.${extension}"
+
       - name: Upload native release packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
