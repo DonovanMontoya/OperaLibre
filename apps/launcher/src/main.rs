@@ -901,9 +901,11 @@ fn configured_port(config_path: &Path) -> Option<u16> {
     configured_value(config_path, "port")?.parse().ok()
 }
 
-/// The value of `key` in a `server.config` file. Keys match the server's
-/// rules: case-insensitive, with `-` and `_` interchangeable. Surrounding
-/// quotes are stripped from the value.
+/// The value of `key` in a `server.config` file, read the way the server
+/// reads it: keys are case-insensitive with `-` and `_` interchangeable, a
+/// repeated key takes its last value, and one matching pair of surrounding
+/// quotes is stripped. Reading a repeated `port` differently from the server
+/// would have the launcher wait on a port nothing listens on.
 fn configured_value(config_path: &Path, key: &str) -> Option<String> {
     let contents = fs::read_to_string(config_path).ok()?;
     configured_value_in(&contents, key)
@@ -911,19 +913,32 @@ fn configured_value(config_path: &Path, key: &str) -> Option<String> {
 
 fn configured_value_in(contents: &str, key: &str) -> Option<String> {
     let wanted = key.to_ascii_lowercase().replace('-', "_");
-    contents.lines().find_map(|raw_line| {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            return None;
-        }
-        let (candidate, value) = line.split_once('=')?;
-        (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted).then(|| {
-            value
-                .trim()
-                .trim_matches(|character| character == '"' || character == '\'')
-                .to_string()
+    contents
+        .lines()
+        // Searched from the end: the server keeps a repeated key's last value.
+        .rev()
+        .find_map(|raw_line| {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (candidate, value) = line.split_once('=')?;
+            (candidate.trim().to_ascii_lowercase().replace('-', "_") == wanted)
+                .then(|| unquote_config_value(value.trim()))
         })
-    })
+}
+
+/// One matching pair of surrounding quotes, as the server's
+/// `unquote_config_value` strips.
+fn unquote_config_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && bytes[0] == bytes[bytes.len() - 1]
+        && (bytes[0] == b'"' || bytes[0] == b'\'')
+    {
+        return value[1..value.len() - 1].to_string();
+    }
+    value.to_string()
 }
 
 fn server_readiness(port: u16) -> ServerReadiness {
@@ -1208,6 +1223,36 @@ mod tests {
             Some("state")
         );
         assert_eq!(configured_value_in(contents, "web_dist_dir"), None);
+    }
+
+    #[test]
+    fn a_repeated_key_takes_its_last_value_like_the_server() {
+        let contents = "port = 4920\n# port = 1\nPORT = 48917\n";
+        assert_eq!(
+            configured_value_in(contents, "port").as_deref(),
+            Some("48917")
+        );
+        assert_eq!(
+            configured_value_in("web_dist_dir = web\nweb-dist-dir =\n", "web_dist_dir").as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn only_one_matching_pair_of_quotes_is_stripped_like_the_server() {
+        for (value, expected) in [
+            ("\"state\"", "state"),
+            ("'state'", "state"),
+            ("\"state'", "\"state'"),
+            ("\"\"state\"\"", "\"state\""),
+            ("\"", "\""),
+        ] {
+            assert_eq!(
+                configured_value_in(&format!("data_dir = {value}\n"), "data_dir").as_deref(),
+                Some(expected),
+                "{value}"
+            );
+        }
     }
 
     #[test]
