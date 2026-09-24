@@ -1010,7 +1010,7 @@ pub(crate) async fn create_libation_download_request(
     let profile = find_libation_profile(&state, profile_id)
         .await
         .ok_or(ApiError::not_found("Audible account not found."))?;
-    let profile = resolve_legacy_download_profile(&state, profile).await?;
+    let profile = resolve_legacy_download_profile(&state, profile, &asin).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
     let title = payload.title.trim();
     if title.is_empty() || title.chars().count() > 500 {
@@ -1358,6 +1358,11 @@ pub(crate) fn restore_legacy_ownership_books(
             )
         })
         .collect::<HashMap<_, _>>();
+    let templates_by_asin = books
+        .iter()
+        .filter(|book| book.profile_id.starts_with("legacy-"))
+        .map(|book| (book.asin.to_ascii_uppercase(), book.clone()))
+        .collect::<HashMap<_, _>>();
     let mut present = books
         .iter()
         .map(|book| book.catalog_id.clone())
@@ -1376,12 +1381,16 @@ pub(crate) fn restore_legacy_ownership_books(
                 asin.to_ascii_uppercase(),
                 account.locale.to_ascii_lowercase()
             );
-            if let Some(template) = templates.get(&key) {
+            if let Some(template) = templates
+                .get(&key)
+                .or_else(|| templates_by_asin.get(&asin.to_ascii_uppercase()))
+            {
                 let mut book = template.clone();
                 book.catalog_id = catalog_id;
                 book.profile_id = profile_id.clone();
                 book.profile_name = account.account_id.clone();
                 book.account_id = Some(account.account_id.clone());
+                book.locale = non_empty_string(&account.locale);
                 books.push(book);
             }
         }
@@ -2157,11 +2166,12 @@ pub(crate) fn find_book_id_by_asin(books: &[Book], asin: &str) -> Option<String>
 }
 
 /// The older ASIN-only API has no account choice. Resolve it only when one
-/// account exists; otherwise require the account-scoped route so Libation
+/// login exists; otherwise require the account-scoped route so Libation
 /// cannot silently use whichever owner its shared database recorded last.
 async fn resolve_legacy_download_profile(
     state: &AppState,
     profile: LibationProfile,
+    asin: &str,
 ) -> Result<LibationProfile, ApiError> {
     if profile.id != "legacy" {
         return Ok(profile);
@@ -2176,22 +2186,42 @@ async fn resolve_legacy_download_profile(
         return Err(ApiError::bad_gateway(command_output_text(&output)));
     }
     let accounts = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
-    match accounts.as_slice() {
-        [] => Ok(profile),
-        [account] => Ok(LibationProfile {
-            id: account.id.clone(),
-            name: account
-                .name
-                .clone()
-                .unwrap_or_else(|| "Audible account".to_string()),
-            account_id: Some(account.account_id.clone()),
-            managed: false,
-            config: state.libation_config.clone(),
-        }),
-        _ => Err(ApiError::bad_request(
+    let Some(first) = accounts.first() else {
+        return Ok(profile);
+    };
+    if accounts
+        .iter()
+        .any(|account| !account.account_id.eq_ignore_ascii_case(&first.account_id))
+    {
+        return Err(ApiError::bad_request(
             "Choose an Audible account to download this title.",
-        )),
+        ));
     }
+    // One login can have several marketplace rows. Use the row Libation
+    // currently associates with this ASIN so the profile's locale matches.
+    let selected = if accounts.len() == 1 {
+        first
+    } else {
+        let books = export_libation_books(&profile).await?;
+        accounts
+            .iter()
+            .find(|account| {
+                books.iter().any(|book| {
+                    book.asin.eq_ignore_ascii_case(asin) && book.profile_id == account.id
+                })
+            })
+            .unwrap_or(first)
+    };
+    Ok(LibationProfile {
+        id: selected.id.clone(),
+        name: selected
+            .name
+            .clone()
+            .unwrap_or_else(|| "Audible account".to_string()),
+        account_id: Some(selected.account_id.clone()),
+        managed: false,
+        config: state.libation_config.clone(),
+    })
 }
 
 pub(crate) async fn start_libation_download(
@@ -2217,7 +2247,7 @@ pub(crate) async fn start_libation_download(
             .next()
             .ok_or(ApiError::bad_request("No Audible accounts are configured."))?
     };
-    let profile = resolve_legacy_download_profile(state, profile).await?;
+    let profile = resolve_legacy_download_profile(state, profile, &asin).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
 
     if let Some(user_id) = grant_to_user.as_deref() {

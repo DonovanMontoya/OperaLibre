@@ -5621,6 +5621,52 @@ async fn shared_legacy_title_remains_visible_under_both_accounts() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn shared_title_restores_an_owner_from_another_marketplace() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tuk\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"dad@example.com","Locale":"uk","Audible Product Id":"B000SHAR00","Title":"Shared title"}]"#,
+    )
+    .unwrap();
+    let marge_id = super::parse_libation_accounts(accounts)[0].id.clone();
+    state
+        .libation_refreshes
+        .mutate(|store| {
+            store.legacy_ownership.insert(
+                marge_id.clone(),
+                super::LegacyLibationOwnership {
+                    account_id: "marge@example.com".to_string(),
+                    locale: "us".to_string(),
+                    asins: vec!["B000SHAR00".to_string()],
+                },
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let books = super::list_libation_books(super::State(state), super::Extension(admin_user()))
+        .await
+        .unwrap()
+        .0;
+    let shared = books
+        .iter()
+        .filter(|book| book.asin == "B000SHAR00")
+        .collect::<Vec<_>>();
+    assert_eq!(shared.len(), 2);
+    assert_eq!(
+        shared
+            .iter()
+            .find(|book| book.profile_id == marge_id)
+            .and_then(|book| book.locale.as_deref()),
+        Some("us")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn first_refresh_preserves_the_existing_owner_when_its_login_is_broken() {
     let root = tempfile::tempdir().unwrap();
     let (state, _) = fake_libation_state(root.path());
@@ -5795,6 +5841,31 @@ async fn asin_only_download_requires_a_choice_when_accounts_are_shared() {
         job.target_id
             .as_deref()
             .is_some_and(|target| target.starts_with("legacy-") && target.ends_with(":B000SHAR00"))
+    );
+
+    // Two marketplace rows for Dad are still one login. The current book's
+    // locale determines which account-specific profile to resolve.
+    let markets = format!("{dad}dad@example.com\tDad UK\tuk\tyes\tyes\n");
+    std::fs::write(root.path().join("libation-accounts.tsv"), &markets).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"dad@example.com","Locale":"uk","Audible Product Id":"B000SHAR01","Title":"Dad UK title"}]"#,
+    )
+    .unwrap();
+    let created = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path("B000SHAR01".to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "completed", "{:?}; {}", job.error, job.output);
+    let uk_id = super::parse_libation_accounts(&markets)[1].id.clone();
+    assert_eq!(
+        job.target_id.as_deref(),
+        Some(format!("{uk_id}:B000SHAR01").as_str())
     );
 }
 
