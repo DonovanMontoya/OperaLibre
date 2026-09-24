@@ -63,6 +63,6 @@ jobs:
         run: |
           extension=tar.gz
           if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
-          python3 script/test_release_upgrade.py \
+          python script/test_release_upgrade.py \
             --baseline "fixtures/0.4.6/operalibre-0.4.6-combined-${{ matrix.platform }}.${extension}" \
             --candidate "fixtures/0.4.7/operalibre-0.4.7-combined-${{ matrix.platform }}.${extension}"
