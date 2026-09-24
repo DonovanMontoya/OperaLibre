@@ -221,11 +221,11 @@ pub(crate) async fn upload_ebook(
         ));
     }
     let library = state.library.read().await;
-    if !library
+    if library
         .book(&book_id)?
         .reading_file
         .as_ref()
-        .is_some_and(|file| file.file_name == name)
+        .is_none_or(|file| file.file_name != name)
     {
         return Err(ApiError::service_unavailable(
             "The EPUB was saved, but the library has not adopted it yet. Rescan the library to finish pairing.",
