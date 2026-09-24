@@ -1,12 +1,5 @@
-import { hasPlaybackSource } from "./nativeAudioStartup";
 import { useDeviceFold } from "./deviceFold";
-import { refreshPurchaseSources } from "./purchaseRefresh";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
-import {
-  ownsPendingPlay,
-  playbackEventOwnsPendingPlay,
-  playbackIntentBelongsToBook
-} from "./playbackPending";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
 import {
@@ -25,26 +18,14 @@ import {
   useState
 } from "react";
 import {
-  endedShortOfTrack,
   freshestProgress,
   isSuspectProgressReset,
-  PROGRESS_RESET_GUARD_SECONDS,
-  progressAfterSave,
   progressFromBookSummary,
-  progressTimestamp,
   readProgressCheckpoint,
-  resolveActivePlaybackBookId,
-  resolveBookId,
-  resolveProgressLocation,
-  shouldResumeSavedPosition,
-  summarizeBookProgress
+  resolveProgressLocation
 } from "./reliability";
 import {
-  normalizePlaybackSpeed
-} from "./playbackSpeed";
-import {
   BOOK_GAIN_DEFAULT,
-  bookGainFromDb,
   createBookGainSync,
   mergeServerBookGains
 } from "./bookVolume";
@@ -57,18 +38,13 @@ import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
   clearServerUrl,
   getAuthStatus,
-  getBooks,
-  getLibationBooks,
   getMe,
-  getFreshProgress,
-  getProgress,
   getServerStorageKey,
   getServerType,
   getStoredMediaToken,
   getStoredToken,
   hasUserConfiguredServer,
   isNetworkError,
-  isServerNotReadyError,
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
@@ -76,9 +52,6 @@ import {
   mediaUrl,
   reconnectUsingServerAliases,
   playbackReportingSession,
-  rescanLibrary,
-  refreshLibroAccount,
-  saveProgress,
   setBookVolume,
   setStoredMediaToken,
   setStoredToken,
@@ -89,13 +62,8 @@ import {
   cacheOfflineUser,
   forgetOfflineUser,
   getBookBackgroundDownloadStatus,
-  getCachedLibrary,
-  getCachedProgress,
-  getOfflineCoverUrl,
-  getOfflineTrackUrl,
   getOfflineUser,
-  isBookDownloaded,
-  releaseOfflineMediaUrl
+  isBookDownloaded
 } from "./offline";
 import { haptic } from "./native";
 import { type NativeTab } from "./nativeTabs";
@@ -104,14 +72,7 @@ import {
   isRotationLockAvailable
 } from "./rotationLock";
 import {
-  attachNativeAudioPlayer,
-  getNativeAudioRecovery,
-  pauseNativeAudio,
-  playNativeAudio,
   releaseNativeAudioSession,
-  seekNativeAudio,
-  setNativeAudioGain,
-  updateNativeAudioNowPlaying,
   usesNativeAudioPlayer,
   type NativeAudioQueueTrack
 } from "./nativeAudio";
@@ -119,58 +80,41 @@ import { NativeForegroundSyncGate } from "./nativeAudioState";
 import { createForegroundProgressSync } from "./foregroundProgressSync";
 import {
   clearCarLibrary,
-  carPlaybackOwnsEngine,
   setCarPlaybackOwner
 } from "./carPlay";
 import { DEMO_USER, enterDemoMode, exitDemoMode, isDemoMode } from "./demo";
 import {
-  canResolveStartupNavigation,
   canRestoreCachedNativeSession,
-  shouldAcceptNativeTrackChange,
   shouldRefreshMediaCredential
 } from "./startup";
 import {
-  canPublishNativeQueue,
   nativeQueueEntryUrl,
   nativeQueueIdentityAfterRestore,
-  nativeQueueIsReady,
-  nativeQueueRefreshShouldResume,
-  playbackRestoreBookAfterAction,
-  resolveLocalFirstSources
+  nativeQueueIsReady
 } from "./offlinePlayback";
 import {
-  backfillDeviceLibraryMetadata,
-  DEVICE_USER,
-  getDeviceBooks,
-  getDeviceProgress,
-  mergeDeviceAndServerBooks,
-  migrateDeviceLibraryFileExtensions
+  DEVICE_USER
 } from "./localLibrary";
 import { AuthGate, ServerSetup } from "./Auth";
 import { AdminPanel } from "./Admin";
-import { refreshLibroDevice } from "./libroDevice";
 import { ProfilePage } from "./Profile";
 import { GamesPage, type GameName } from "./GameRoom";
 import { readGamesEnabled } from "./gamePreferences";
 import type {
   AuthUser,
   Book,
-  Chapter,
-  Progress,
-  Track
+  LibationBook,
+  Progress
 } from "./types";
 import {
-  nativeAudioRecoveryScope,
   readStoredBookGains,
   CONNECT_PROMPT_DISMISSED_KEY,
   readStoredBookId,
   readStoredSpeed,
   readStoredValue,
   unsyncedBookGainStore,
-  withoutCachedBookGains,
   writeStoredBookGains,
-  writeStoredBookId,
-  writeStoredSpeed
+  writeStoredBookId
 } from "./appStorage";
 import {
   type LibrarySource
@@ -178,7 +122,6 @@ import {
 import {
   currentTrackIndex,
   durationFromTracks,
-  errorMessage,
   trackOffsetSeconds
 } from "./formatting";
 import { usePullToRefresh } from "./usePullToRefresh";
@@ -222,27 +165,13 @@ import { PlayerPane } from "./PlayerPane";
 import { LibraryPane } from "./LibraryPane";
 import { usePlayerNavigation } from "./usePlayerNavigation";
 import { useProgressSync } from "./useProgressSync";
-
-const PROGRESS_SAVE_INTERVAL_MS = 2_000;
-
-
-function audioSourceMatches(audio: HTMLAudioElement, source: string) {
-  if (!source) return false;
-  try {
-    return audio.currentSrc === new URL(source, document.baseURI).href;
-  } catch {
-    return audio.currentSrc === source;
-  }
-}
-
-
-// The API client's own timeout is generous (30 s); a startup-critical read
-// that is allowed to fall back to a local copy should not wait that long.
-// Before "Begin this reading" trusts a stale listing summary, the server gets
-// this long to say whether the book is actually well under way elsewhere.
-const START_OVER_PROGRESS_CHECK_MS = 2_500;
-// The restore effect's own /progress reads; local copies cover the wait.
-const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
+import { type PlaybackControls, usePlaybackControls } from "./usePlaybackControls";
+import { useLibrary } from "./useLibrary";
+import { useLibraryRefresh } from "./useLibraryRefresh";
+import { useNowPlaying } from "./useNowPlaying";
+import { useAudioElement } from "./useAudioElement";
+import { usePlaybackRestore } from "./usePlaybackRestore";
+import { useAudioSource } from "./useAudioSource";
 // How long a Play still waiting on the stream shows as loading.
 const PLAY_PENDING_LIMIT_MS = 45_000;
 
@@ -647,16 +576,12 @@ function MainApp({
   const overruledSaveRef = useRef(new Map<string, Progress>());
   const initialLibraryHydrated = useRef(false);
   const startupNavigationResolved = useRef(false);
-  // Timer and native-event callbacks run after later renders may have landed;
-  // they call the latest version of these functions rather than the one from
-  // the render that registered them (a stale persistProgress would save an
-  // outdated finished override, for one).
-  const startPlaybackRef = useRef(startPlayback);
-  startPlaybackRef.current = startPlayback;
-  const markPlaybackTouchedRef = useRef(markPlaybackTouched);
-  markPlaybackTouchedRef.current = markPlaybackTouched;
-  const pausePlaybackRef = useRef(pausePlayback);
-  pausePlaybackRef.current = pausePlayback;
+  // Hooks called before usePlaybackControls reach its functions through this
+  // object, which is filled in once that hook has run in the same render, so
+  // they call this render's functions just as they would a declaration above.
+  const later = {} as Pick<PlaybackControls, "pausePlayback" | "showMediaClock">;
+  // Set with the other latest-function refs once usePlaybackControls has run.
+  const pausePlaybackRef = useRef<PlaybackControls["pausePlayback"]>(null!);
   const {
     scheduleStartupReveal,
     setStartupViewReady,
@@ -798,7 +723,6 @@ function MainApp({
   // null while the disk lookup for the current track is in flight; url null
   // means the track is not downloaded and should stream.
   const [offlineSource, setOfflineSource] = useState<{ trackId: string; url: string | null } | null>(null);
-  const [mediaArtworkUrl, setMediaArtworkUrl] = useState<string | null>(null);
   const chaptersListRef = useRef<HTMLDivElement | null>(null);
   const trackListSectionRef = useRef<HTMLElement | null>(null);
   const wantsAutoplayRef = useRef(false);
@@ -996,7 +920,7 @@ function MainApp({
     nativeForegroundSyncGateRef,
     nativePlaybackPlayingRef,
     overruledSaveRef,
-    pausePlayback,
+    pausePlayback: (audio) => later.pausePlayback(audio),
     pendingSeekRef,
     playWhenTrackLoads,
     playbackActionVersionRef,
@@ -1022,10 +946,10 @@ function MainApp({
     setPendingSeek,
     setPlaybackBookId,
     setPosition,
-    showMediaClock,
+    showMediaClock: () => later.showMediaClock(),
     wantsAutoplayRef
   });
-  // Like the latest-function refs above, set once persistProgress exists.
+  // Like the latest-function refs set after usePlaybackControls below.
   const persistProgressRef = useRef(persistProgress);
   persistProgressRef.current = persistProgress;
 
@@ -1285,211 +1209,175 @@ function MainApp({
     }
   }
 
-  const loadBooks = useCallback(async () => {
-    const requestGeneration = ++libraryRequestGenerationRef.current;
-    const isCurrentRequest = () => requestGeneration === libraryRequestGenerationRef.current;
-    if (libraryRetryTimerRef.current !== null) {
-      window.clearTimeout(libraryRetryTimerRef.current);
-      libraryRetryTimerRef.current = null;
-    }
-    setIsLoading(true);
-    setError(null);
-    if (native) {
-      await migrateDeviceLibraryFileExtensions();
-      await backfillDeviceLibraryMetadata();
-    }
-    const deviceBooks = native ? getDeviceBooks() : [];
-    const applyLoadedBooks = (nextBooks: Book[], definitive = false) => {
-      if (!isCurrentRequest()) return;
-      setBooks(nextBooks);
-      setSelectedBookId((existing) =>
-        resolveBookId(nextBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      // A background refresh that lists the playing book as finished must not
-      // pull the session out from under the listener; only its absence can.
-      const isPlayingNow = nativeAudioRef.current
-        ? nativePlaybackPlayingRef.current
-        : !!audioRef.current && !audioRef.current.paused;
-      setPlaybackBookId((existing) => {
-        const preferred = existing ?? readStoredBookId(currentUser.id, "playbackBookId");
-        const next = resolveActivePlaybackBookId(nextBooks, preferred, isPlayingNow);
-        const preferredIsPresent = !!preferred && nextBooks.some((book) => book.id === preferred);
-        // A device-only first paint may not contain the stored server book.
-        // Wait for the cached/live shelf before deciding that session vanished.
-        if (!next && preferred && !preferredIsPresent && !definitive) return existing;
-        if (
-          !startupNavigationResolved.current
-          && canResolveStartupNavigation(next, preferred, preferredIsPresent, definitive)
-        ) {
-          startupNavigationResolved.current = true;
-          if (native) {
-            setNativeTab(next ? "reading" : "shelf");
-            // The stored selection may be a book last browsed on the shelf.
-            if (next) setSelectedBookId(next);
-            // A restored Reading tab still needs its saved track and position.
-            // Revealing it here paints the first track at 0:00 before the
-            // progress effect below resolves the real checkpoint.
-            if (!next) {
-              startupViewReadyRef.current = true;
-              setStartupViewReady(true);
-            }
-          }
-        }
-        return next;
-      });
-    };
-    if (localMode) {
-      applyLoadedBooks(deviceBooks, true);
-      if (isCurrentRequest()) {
-        setIsOffline(false);
-        setIsLoading(false);
-      }
-      return;
-    }
+  const bookCompletion = useBookCompletion({
+    audioRef,
+    clearPlaybackSession,
+    completionPendingBookId,
+    currentUser,
+    nativePlaybackPlayingRef,
+    pausePlayback: (audio) => later.pausePlayback(audio),
+    playbackBookId,
+    playbackBookIdRef,
+    playbackReportRef,
+    playbackTouchedRef,
+    progressMutationVersion,
+    progressSaveAbortController,
+    progressSaveDrainPromiseRef,
+    queuedProgressSaves,
+    setBooks,
+    setCompletionError,
+    setCompletionPendingBookId,
+    setIsPlaying,
+    setUnplayedConfirmationBookId
+  });
+  const {
+    changeBookCompletion,
+    confirmBookUnplayed,
+    markBookUnplayed
+  } = bookCompletion;
+  const {
+    applyPlaybackVolume,
+    cancelPendingPlayback,
+    clearPlayPendingForBook,
+    engageGainChain,
+    gainChain,
+    jumpToChapter,
+    jumpToChapterFromSheet,
+    markPlaybackTouched,
+    nextChapter,
+    onLoadedMetadata,
+    onTimeUpdate,
+    pausePlayback,
+    playNextTrack,
+    playSelectedBook,
+    restartOrPreviousChapter,
+    resumeSelectedBook,
+    seekBookPosition,
+    seekBookPositionInBook,
+    seekBy,
+    seekTo,
+    setPlaybackPosition,
+    showMediaClock,
+    startPlayback,
+    togglePlayback,
+    updateBookGain,
+    updateSpeed
+  } = usePlaybackControls({
+    activeChapter,
+    activeTrackIndex,
+    audioRef,
+    autoResumePlayEventPendingRef,
+    changeBookCompletion,
+    chapterElapsed,
+    chapterSegments,
+    currentTrack,
+    currentTrackKey,
+    currentUser,
+    duration,
+    explicitSessionStartBookIdRef,
+    gainChainRef,
+    gainSyncRef,
+    intentionalSeekGenerationRef,
+    intentionalSeekTargetRef,
+    isOffline,
+    localMode,
+    native,
+    nativeAudio,
+    nativeAudioQueueReady,
+    nativePlaybackPlayingRef,
+    pendingSeek,
+    pendingSeekRef,
+    persistProgress,
+    playCancelGenerationRef,
+    playPendingBookIdRef,
+    playPendingRef,
+    playWhenTrackLoads,
+    playbackActionVersionRef,
+    playbackBook,
+    playbackBookId,
+    playbackBookIdRef,
+    playbackGain,
+    playbackGainRef,
+    playbackTouchedRef,
+    playerPaneRef,
+    position,
+    restoredProgressBookId,
+    resumeAutoplayBookIdRef,
+    resumeAutoplayPendingRef,
+    resumeReconciliationBookIdRef,
+    saveStartedAt,
+    scheduleStartupReveal,
+    selectedBook,
+    setBookGains,
+    setCurrentTrackId,
+    setDuration,
+    setIsPlaying,
+    setNativeAudioFailed,
+    setNativePlayerSheet,
+    setNativePlayerView,
+    setNativeTab,
+    setPendingSeek,
+    setPlayPending,
+    setPlaybackBookId,
+    setPlaybackError,
+    setPosition,
+    setRestoredPlaybackBookId,
+    setSelectedBookId,
+    setSpeed,
+    speed,
+    startupProgressAppliedRef,
+    streamUrl,
+    takeOverFromCar,
+    updateBookProgress,
+    volume,
+    wantsAutoplayRef
+  });
+  later.pausePlayback = pausePlayback;
+  later.showMediaClock = showMediaClock;
+  // Timer and native-event callbacks run after later renders may have landed;
+  // they call the latest version of these functions rather than the one from
+  // the render that registered them (a stale persistProgress would save an
+  // outdated finished override, for one).
+  const startPlaybackRef = useRef(startPlayback);
+  startPlaybackRef.current = startPlayback;
+  const markPlaybackTouchedRef = useRef(markPlaybackTouched);
+  markPlaybackTouchedRef.current = markPlaybackTouched;
+  pausePlaybackRef.current = pausePlayback;
 
-    const liveLibraryRequest = getBooks().then(
-      (serverBooks) => ({ ok: true as const, serverBooks }),
-      (requestError: unknown) => ({ ok: false as const, requestError })
-    );
-    let hydratedServerBooks: Book[] = [];
-    if (!initialLibraryHydrated.current) {
-      initialLibraryHydrated.current = true;
+  // Held here rather than in usePurchases: loadBooks fills them from the
+  // library response, and usePurchases itself needs loadBooks.
+  const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
+  const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
+  const {
+    loadBooks
+  } = useLibrary({
+    audioRef,
+    currentUser,
+    initialLibraryHydrated,
+    isOperaLibre,
+    libraryRequestGenerationRef,
+    libraryRetryTimerRef,
+    loadBooksRef,
+    localMode,
+    native,
+    nativeAudioRef,
+    nativePlaybackPlayingRef,
+    reconcileServerBookGains,
+    setBooks,
+    setError,
+    setIsLoading,
+    setIsOffline,
+    setLibationBooks,
+    setLibationBooksLoaded,
+    setNativeTab,
+    setPlaybackBookId,
+    setSelectedBookId,
+    setStartupViewReady,
+    startupNavigationResolved,
+    startupViewReadyRef,
+    storeCanonicalServerProgress
+  });
 
-      // Device imports are synchronous, so they can paint on the first native
-      // frame. The IndexedDB shelf follows immediately on every platform while
-      // the live request runs.
-      if (deviceBooks.length) {
-        applyLoadedBooks(deviceBooks);
-        setIsLoading(false);
-      }
-      hydratedServerBooks = withoutCachedBookGains(
-        await getCachedLibrary(currentUser.id).catch(() => [])
-      );
-      if (!isCurrentRequest()) return;
-      const hydratedBooks = mergeDeviceAndServerBooks(hydratedServerBooks, deviceBooks);
-      if (hydratedBooks.length) {
-        applyLoadedBooks(hydratedBooks);
-        setIsOffline(false);
-        setIsLoading(false);
-      }
-    }
-
-    try {
-      const liveLibrary = await liveLibraryRequest;
-      if (!isCurrentRequest()) return;
-      if (!liveLibrary.ok) throw liveLibrary.requestError;
-      const serverBooks = liveLibrary.serverBooks;
-      const nextBooks = mergeDeviceAndServerBooks(serverBooks, deviceBooks);
-      // Reconcile every durable local copy, not only imported device media.
-      // This brings progress recorded while offline back to the server even if
-      // the user opens a different book after reconnecting.
-      void Promise.all(nextBooks.map(async (book) => {
-        if (book.source !== "server") return;
-        const deviceProgress = book.deviceBookId ? getDeviceProgress(book.deviceBookId) : null;
-        const deviceBook = book.deviceBookId
-          ? deviceBooks.find((candidate) => candidate.id === book.deviceBookId)
-          : null;
-        const deviceTrackIndex = deviceBook?.tracks.findIndex(
-          (track) => track.id === deviceProgress?.trackId
-        ) ?? -1;
-        const mappedDevice = deviceProgress && deviceTrackIndex >= 0 && book.tracks[deviceTrackIndex]
-          ? {
-              ...deviceProgress,
-              bookId: book.id,
-              trackId: book.tracks[deviceTrackIndex].id
-            }
-          : null;
-        const checkpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        const cached = await getCachedProgress(currentUser.id, book.id).catch(() => null);
-        if (!isCurrentRequest()) return;
-        const local = freshestProgress(mappedDevice, checkpoint, cached);
-        const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
-        if (
-          !local ||
-          (serverBook?.progress && progressTimestamp(local.updatedAt) <= progressTimestamp(serverBook.progress.updatedAt))
-        ) {
-          return;
-        }
-        const location = resolveProgressLocation(book.tracks, local);
-        if (!location) return;
-        if (!isCurrentRequest()) return;
-        const attempted: Progress = {
-          ...local,
-          trackId: location.trackId,
-          positionSeconds: location.positionSeconds
-        };
-        const saved = await saveProgress(
-          book.id,
-          attempted,
-          { isPaused: true }
-        ).catch(() => null);
-        if (!saved || !isCurrentRequest()) return;
-        const currentCheckpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        if (progressAfterSave(currentCheckpoint, attempted, saved) === saved) {
-          storeCanonicalServerProgress(book, saved);
-        }
-      })).catch(() => undefined);
-      if (!isCurrentRequest()) return;
-      applyLoadedBooks(nextBooks, true);
-      reconcileServerBookGains(serverBooks);
-      setIsOffline(false);
-      if (isCurrentRequest()) void cacheLibrary(currentUser.id, serverBooks);
-      if (isOperaLibre) {
-        // Audio tags commonly omit the publisher blurb. Libation already has
-        // the correct Audible description and returns its matched local book
-        // id, so enrich in the background without delaying the shelf.
-        void getLibationBooks()
-          .then((catalog) => {
-            if (!isCurrentRequest()) return;
-            setLibationBooks(catalog);
-            setLibationBooksLoaded(true);
-          })
-          .catch(() => undefined);
-      }
-    } catch (loadError) {
-      const cachedServer = hydratedServerBooks.length
-        ? hydratedServerBooks
-        : withoutCachedBookGains(await getCachedLibrary(currentUser.id));
-      if (!isCurrentRequest()) return;
-      const cached = mergeDeviceAndServerBooks(cachedServer, deviceBooks);
-      applyLoadedBooks(cached, true);
-      if (isServerNotReadyError(loadError)) {
-        // The server answered: it is up, its startup scan just has not
-        // published a catalogue yet. Keep the cached shelf without muting
-        // anything, and ask again when it said to.
-        setIsOffline(false);
-        setError("The server is still loading its library. The shelf refreshes once it is ready.");
-        const delayMs = Math.min(30_000, Math.max(2_000, (loadError.retryAfterSeconds ?? 5) * 1000));
-        libraryRetryTimerRef.current = window.setTimeout(() => {
-          libraryRetryTimerRef.current = null;
-          void loadBooksRef.current();
-        }, delayMs);
-        return;
-      }
-      setIsOffline(true);
-      if (cached.length) {
-        setError("Offline mode — showing downloaded books and cached library.");
-      } else {
-        setError("The audiobook server is not reachable.");
-      }
-    } finally {
-      if (isCurrentRequest()) setIsLoading(false);
-    }
-    // storeCanonicalServerProgress and reconcileServerBookGains read only
-    // currentUser.id (listed), refs and state setters, so the render that
-    // created this callback cannot hand them anything stale.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, isOperaLibre, localMode, native]);
   const readalong = useReadalong({
     capabilities,
     currentUser,
@@ -1526,27 +1414,27 @@ function MainApp({
     currentUser,
     demoMode,
     isOperaLibre,
+    libationBooks,
+    libationBooksLoaded,
     librarySource,
     loadBooks,
     localMode,
     native,
     onCurrentUserChanged,
     searchQuery,
+    setLibationBooks,
+    setLibationBooksLoaded,
     sortMode,
     sortReversed
   });
   const {
     brokenLibationAccounts,
     canBrowseLibation,
-    libationBooks,
-    libationBooksLoaded,
     libationBooksRef,
     libroAccounts,
     libroOnDevice,
     loadLibationBooks,
-    setLibationBooks,
-    setLibationBooksLoaded,
-    setLibroRefreshKey,
+    setLibroRefreshKey
   } = purchases;
 
   loadBooksRef.current = loadBooks;
@@ -1637,111 +1525,33 @@ function MainApp({
     // Stable ids prevent progress saves from repeatedly reattaching the queue.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookIdsKey]);
-
-  useEffect(() => {
-    let active = true;
-    let resolvedUrl: string | null = null;
-    setOfflineSource((source) => source?.trackId === currentTrack?.id ? source : null);
-    if (Capacitor.isNativePlatform() && playbackBook && currentTrack) {
-      const trackId = currentTrack.id;
-      void getOfflineTrackUrl(playbackBook, currentTrack)
-        .catch(() => null)
-        .then((url) => {
-          resolvedUrl = url;
-          if (active) setOfflineSource({ trackId, url });
-          else releaseOfflineMediaUrl(url);
-        });
-    }
-    return () => {
-      active = false;
-      releaseOfflineMediaUrl(resolvedUrl);
-    };
-    // Keyed on ids: resetting offlineSource on identity churn blanked the
-    // <audio> src mid-playback (native), stopping the book seconds after play.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, playbackBookKey, playbackBookDownloaded]);
-
-  useEffect(() => {
-    let active = true;
-    if (nativeQueueRefreshShouldResume(
-      nativeAudio,
-      nativePlaybackPlayingRef.current,
-      requiredNativeAudioQueueKey,
-      nativeAudioQueueReadyKey
-    ) && playbackBook) {
-      playWhenTrackLoads.current = true;
-      wantsAutoplayRef.current = true;
-      setPlayPending(true, playbackBook.id);
-    }
-    nativeAudioQueueRef.current = [];
-    setNativeAudioQueueReadyKey(null);
-    if (!nativeAudio || !playbackBook || !currentTrack) {
-      return;
-    }
-    const queueKey = requiredNativeAudioQueueKey;
-    if (!queueKey) return;
-    const tracks = playbackBook.tracks.slice(activeTrackIndex);
-    const entry = (track: Track, queueIndex: number, sourceUrl: string): NativeAudioQueueTrack => {
-      const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex + queueIndex);
-      return {
-        url: sourceUrl,
-        trackId: track.id,
-        bookOffsetSeconds: trackOffset,
-        title: track.title,
-        artist: playbackBook.author ?? "Audiobook",
-        album: playbackBook.title,
-        chapters: chapterSegments
-          .filter((chapter) => chapter.trackId === track.id)
-          .map((chapter) => ({
-            title: chapter.title,
-            startSeconds: chapter.startSeconds - trackOffset,
-            durationSeconds: chapter.durationSeconds
-          }))
-      };
-    };
-    const publish = (queue: NativeAudioQueueTrack[]) => {
-      if (!active) return;
-      nativeAudioQueueRef.current = queue;
-      setNativeAudioQueueReadyKey(queueKey);
-    };
-    // Resolve each item from disk regardless of whether the separate complete
-    // download scan has finished. Otherwise chapter one can be local while
-    // later AVQueuePlayer items still point at a dead server on a cold launch.
-    void resolveLocalFirstSources(
-      tracks,
-      (track) => getOfflineTrackUrl(playbackBook, track),
-      (track) => mediaUrl(track.streamUrl)
-    ).then((sources) => {
-      // A fully local queue is usable before background authentication. Any
-      // remote fallback must wait for its media credential, or AVPlayer can
-      // fail permanently on the tokenless URL before the refreshed queue lands.
-      if (!canPublishNativeQueue(sources, mediaCredentialReady)) return;
-      publish(tracks.map((track, index) => entry(track, index, sources[index].url)));
-    });
-    return () => {
-      active = false;
-    };
-    // Stable ids intentionally keep queue construction off progress-object
-    // churn while still rebuilding it for a real track transition.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
+  const {
+    
+  } = useAudioSource({
     activeTrackIndex,
+    audioRef,
+    chapterSegments,
+    currentTrack,
     currentTrackKey,
+    mediaCredentialReady,
     nativeAudio,
-    playbackBookKey,
+    nativeAudioQueueReady,
+    nativeAudioQueueReadyKey,
+    nativeAudioQueueRef,
+    nativePlaybackPlayingRef,
+    playWhenTrackLoads,
+    playbackBook,
     playbackBookDownloaded,
-    requiredNativeAudioQueueKey
-  ]);
+    playbackBookKey,
+    requiredNativeAudioQueueKey,
+    setNativeAudioQueueReadyKey,
+    setOfflineSource,
+    setPlayPending,
+    startPlaybackRef,
+    streamUrl,
+    wantsAutoplayRef
+  });
 
-  // Autoplay requested while the audio source was still resolving (native disk
-  // lookup): start playback as soon as the source lands.
-  useEffect(() => {
-    if (!streamUrl || !nativeAudioQueueReady || !wantsAutoplayRef.current) {
-      return;
-    }
-    wantsAutoplayRef.current = false;
-    window.setTimeout(() => startPlaybackRef.current(audioRef.current), 0);
-  }, [nativeAudioQueueReady, streamUrl]);
 
   useEffect(() => {
     void loadBooks();
@@ -1759,421 +1569,90 @@ function MainApp({
     writeStoredBookId(currentUser.id, "playbackBookId", playbackBookId);
   }, [currentUser.id, playbackBookId]);
   libationBooksRef.current = libationBooks;
-
-  useEffect(() => {
-    if (!playbackBook) {
-      return;
-    }
-
-    let cancelled = false;
-    restoredProgressBookId.current = null;
-    setRestoredPlaybackBookId(null);
-    if (!startupViewReadyRef.current) startupProgressAppliedRef.current = false;
-    if (explicitSessionStartBookIdRef.current === playbackBook.id) {
-      // A shelf play/restart chose this pending position deliberately. It is
-      // the beginning of a new session, not a request to restore the previous
-      // session (especially important for "Read it again" on a finished book).
-      explicitSessionStartBookIdRef.current = null;
-      restoredProgressBookId.current = playbackBook.id;
-      setRestoredPlaybackBookId(playbackBook.id);
-      return () => {
-        cancelled = true;
-      };
-    }
-    playbackTouchedRef.current = false;
-    const armResumeAutoplay = resumeAutoplayBookIdRef.current === playbackBook.id;
-    resumeAutoplayBookIdRef.current = null;
-    const restoreVersion = progressMutationVersion.current;
-    const restoreActionVersion = playbackActionVersionRef.current;
-    const restoreCancelGeneration = playCancelGenerationRef.current;
-    // Restoring places the player afresh; an earlier refused position is moot.
-    overruledSaveRef.current.delete(playbackBook.id);
-    if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
-    const applyProgress = (progress: Progress | null) => {
-      if (
-        cancelled ||
-        progressMutationVersion.current !== restoreVersion ||
-        playbackActionVersionRef.current !== restoreActionVersion
-      ) {
-        return;
-      }
-      const location = resolveProgressLocation(playbackBook.tracks, progress);
-      setCurrentTrackId(location?.trackId ?? null);
-      setPendingSeek(location);
-      // Show the restored time immediately; the media element seeks to it
-      // once metadata loads.
-      setPosition(location?.positionSeconds ?? 0);
-      const restoredTrack = location
-        ? playbackBook.tracks.find((track) => track.id === location.trackId)
-        : playbackBook.tracks[0];
-      setDuration(restoredTrack?.durationSeconds ?? 0);
-      restoredProgressBookId.current = playbackBook.id;
-      setRestoredPlaybackBookId(playbackBook.id);
-      startupProgressAppliedRef.current = true;
-      // The restored track and position are now known, so a queued shelf
-      // Resume can safely play: both places that consume this flag apply the
-      // pending seek before starting.
-      if (armResumeAutoplay && playCancelGenerationRef.current === restoreCancelGeneration) {
-        playWhenTrackLoads.current = true;
-        resumeAutoplayPendingRef.current = true;
-      }
-      // These updates are batched. The short quiet window also absorbs a
-      // fresher server reply or native metadata before the overlay leaves.
-      scheduleStartupReveal();
-    };
-
-    void (async () => {
-      // Independent local stores can answer concurrently; preserve the same
-      // freshest-copy reconciliation after both have completed.
-      const [recoveredNative, cached] = await Promise.all([
-        nativeAudio
-          ? getNativeAudioRecovery(nativeAudioRecoveryScope(currentUser.id, playbackBook.id)).catch(() => null)
-          : Promise.resolve(null),
-        getCachedProgress(currentUser.id, playbackBook.id).catch(() => null)
-      ]);
-      const recoveryTrack = recoveredNative
-        ? playbackBook.tracks.find((track) => track.id === recoveredNative.trackId)
-        : null;
-      const nativeProgress: Progress | null = recoveredNative && recoveryTrack
-        ? {
-            bookId: playbackBook.id,
-            trackId: recoveryTrack.id,
-            positionSeconds: recoveredNative.positionSeconds,
-            bookPositionSeconds: recoveredNative.bookPositionSeconds,
-            durationSeconds: recoveredNative.durationSeconds ?? recoveryTrack.durationSeconds,
-            updatedAt: new Date(recoveredNative.updatedAt).toISOString()
-          }
-        : null;
-      const deviceBookId = playbackBook.deviceBookId;
-      const device = deviceBookId ? getDeviceProgress(deviceBookId) : null;
-      const checkpoint = readProgressCheckpoint(
-        window.localStorage,
-        getServerStorageKey(),
-        currentUser.id,
-        playbackBook.id
-      );
-      if (playbackBook.source === "device") {
-        const local = freshestProgress(device, checkpoint, cached, nativeProgress);
-        if (local) updateBookProgress(playbackBook.id, local);
-        applyProgress(local);
-        return;
-      }
-      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
-      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
-      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
-      const mappedDevice = device && mappedServerTrack
-        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
-        : null;
-      // Progress saved on the device or while disconnected can be newer than
-      // the server. Resume from the freshest copy and converge the server.
-      const freshestLocal = freshestProgress(mappedDevice, checkpoint, cached, nativeProgress);
-      // The summary embedded in the library listing is also the server's
-      // copy. It backstops a failed or empty progress fetch — without it, a
-      // fresh install that hits one failed request opens the book at zero and
-      // the next save wipes the real position on the server too.
-      const listed = progressFromBookSummary(playbackBook.id, playbackBook.progress);
-      // Resume from the best copy already on the device before asking the
-      // server. Waiting on that request left the player at 0:00 for the whole
-      // network timeout whenever the server was unreachable. A near-zero
-      // local copy that outranks substantial listed progress by timestamp
-      // alone is distrusted the same way the reconciliation below distrusts
-      // it — showing 0:00 here is what tempts a listener to "fix" it.
-      const optimistic = isSuspectProgressReset(freshestLocal, listed)
-        ? listed
-        : freshestProgress(freshestLocal, listed);
-      applyProgress(optimistic);
-      let server: Progress | null = null;
-      let serverReachable = true;
-      // One failed fetch must not strand this device on a stale or empty
-      // copy — that is how a second device ends up at 0:00 and later pushes
-      // it over real progress. Retry briefly before reconciling.
-      // Each attempt is capped well below the client's 30 s default: local
-      // copies cover the wait, and no server checkpoint is queued until the
-      // window closes, so a long one is listening that goes unsynced.
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          server = await getProgress(playbackBook.id, RESTORE_PROGRESS_TIMEOUT_MS);
-          serverReachable = true;
-          break;
-        } catch {
-          serverReachable = false;
-        }
-        if (cancelled || attempt === 2) {
-          break;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 4_000 * (attempt + 1)));
-      }
-      if (cancelled) {
-        return;
-      }
-      if (playbackActionVersionRef.current !== restoreActionVersion) {
-        // The listener already moved playback in this session; their live
-        // position and its queued saves outrank whatever this late fetch
-        // returned, and re-applying it would yank playback.
-        return;
-      }
-      const lastKnownServer = server ?? listed;
-      if (lastKnownServer) {
-        acknowledgedServerPositionRef.current.set(
-          playbackBook.id,
-          lastKnownServer.bookPositionSeconds
-        );
-      }
-      const suspectLocalReset = isSuspectProgressReset(freshestLocal, lastKnownServer);
-      const localIsNewer =
-        !!freshestLocal &&
-        !suspectLocalReset &&
-        (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
-      let target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
-      let serverCorrectedLocal = false;
-      if (localIsNewer) {
-        updateBookProgress(playbackBook.id, freshestLocal);
-        if (serverReachable) {
-          const saved = await saveProgress(
-            playbackBook.id,
-            freshestLocal,
-            { isPaused: true }
-          ).catch(() => null);
-          if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
-          if (saved) {
-            const currentCheckpoint = readProgressCheckpoint(
-              window.localStorage,
-              getServerStorageKey(),
-              currentUser.id,
-              playbackBook.id
-            );
-            if (progressAfterSave(currentCheckpoint, freshestLocal, saved) === saved) {
-              serverCorrectedLocal = saved.trackId !== freshestLocal.trackId
-                || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
-              storeCanonicalServerProgress(playbackBook, saved);
-              target = saved;
-            }
-          }
-        }
-      }
-      // Re-seek only when the reconciled copy is genuinely fresher than what
-      // was already applied (or the applied copy was a distrusted reset);
-      // re-applying an equal copy would yank playback.
-      if (
-        !optimistic ||
-        suspectLocalReset ||
-        serverCorrectedLocal ||
-        (target && progressTimestamp(target.updatedAt) > progressTimestamp(optimistic.updatedAt))
-      ) {
-        applyProgress(target);
-      }
-    })().finally(() => {
-      // Let React commit a final reconciled seek before timeupdate is allowed
-      // to persist again; otherwise the optimistic media clock can win the
-      // narrow gap between setPendingSeek and its render.
-      window.setTimeout(() => {
-        if (resumeReconciliationBookIdRef.current === playbackBook.id) {
-          resumeReconciliationBookIdRef.current = null;
-        }
-      }, 0);
-    });
-
-    return () => {
-      cancelled = true;
-      if (resumeReconciliationBookIdRef.current === playbackBook.id) {
-        resumeReconciliationBookIdRef.current = null;
-      }
-    };
-    // Keyed on the book id: this must run only when playback moves to a
-    // different book. Re-running on object identity meant every successful
-    // progress save re-applied the server's copy, yanking playback back to
-    // the previous track/position around track boundaries.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, playbackBookKey]);
-
-  useEffect(() => {
-    if (!audioRef.current) {
-      return;
-    }
-    audioRef.current.playbackRate = speed;
-  }, [speed, currentTrackKey, nativeAudio]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!nativeAudio) return;
-    if (carPlaybackBookId) {
-      // CarPlay is driving the shared player. Attaching would load this app's
-      // book over the driver's, and the next detach would stop it outright.
-      // The element stays muted so nothing here can be heard over the car.
-      if (audio) audio.muted = true;
-      nativeAudioAttachedRef.current = false;
-      return;
-    }
-    if (!audio || !playbackBook || !currentTrack) {
-      // The player closed. The attach cleanup keeps the audio session so a
-      // track change does not hand audio to other apps between chapters;
-      // nothing follows this time, so give the session up. Skipped on the
-      // app's first render, where a WebView reload may have left native
-      // audio playing that React is about to pick back up.
-      if (nativeAudioAttachedRef.current) {
-        nativeAudioAttachedRef.current = false;
-        void releaseNativeAudioSession();
-      }
-      return;
-    }
-    // AVPlayer receives its complete local-first queue on the initial load.
-    // Attaching earlier would start a one-item player and tear it down again
-    // when slower filesystem checks for later chapters completed.
-    if (!nativeAudioQueueReady) return;
-    nativeAudioAttachedRef.current = true;
-    return attachNativeAudioPlayer(
-      audio,
-      (message) => {
-        setPlaybackError(message);
-      },
-      (position, resume) => {
-        const ownsIntent = playbackEventOwnsPendingPlay(
-          playPendingRef.current,
-          playPendingBookIdRef.current,
-          playbackBook.id
-        );
-        const resumeThisBook = resume && ownsIntent;
-        setPendingSeek({ trackId: currentTrack.id, positionSeconds: position });
-        playWhenTrackLoads.current = resumeThisBook;
-        if (ownsIntent) setPlayPending(resumeThisBook, playbackBook.id);
-        setNativeAudioFailed(true);
-      },
-      {
-        // The queue is the atomic local-first resolution. Its first item must
-        // also seed AVPlayer; using the separately resolved control source can
-        // overwrite a just-downloaded local chapter with its old remote URL.
-        source: nativeAttachmentSource,
-        settings: () => playbackSettingsRef.current,
-        scopeKey: nativeAudioRecoveryScope(currentUser.id, playbackBook.id),
-        trackId: currentTrack.id,
-        bookOffsetSeconds: trackOffsetSeconds(playbackBook, activeTrackIndex),
-        queue: () => nativeAudioQueueRef.current,
-        pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
-          ? pendingSeekRef.current.positionSeconds : undefined,
-        wantsPlayback: () => playbackIntentBelongsToBook(
-          playPendingRef.current,
-          playPendingBookIdRef.current,
-          playbackBook.id,
-          wantsAutoplayRef.current || playWhenTrackLoads.current
-        ),
-        gain: () => playbackGainRef.current,
-        sleepTimerSeconds: () => {
-          const deadline = sleepDeadlineRef.current;
-          if (deadline !== null) return Math.max(0, (deadline - Date.now()) / 1000);
-          return sleepRemainingRef.current;
-        }
-      },
-      (trackId, positionSeconds, _bookPositionSeconds, nativeIsPlaying) => {
-        if (!playbackBook.tracks.some((track) => track.id === trackId)) return false;
-        // getNativeAudioRecovery already participated in startup
-        // reconciliation. A paused trackChanged event emitted while AVPlayer
-        // rebuilds its queue is not a listener action and must not overwrite
-        // the restored checkpoint or make the player oscillate.
-        if (!shouldAcceptNativeTrackChange(startupViewReadyRef.current, nativeIsPlaying)) return false;
-        markPlaybackTouchedRef.current();
-        nativePlaybackPlayingRef.current = nativeIsPlaying;
-        playWhenTrackLoads.current = nativeIsPlaying;
-        wantsAutoplayRef.current = nativeIsPlaying;
-        setCurrentTrackId(trackId);
-        setPendingSeek({ trackId, positionSeconds });
-        setPosition(positionSeconds);
-        setDuration(playbackBook.tracks.find((track) => track.id === trackId)?.durationSeconds ?? 0);
-        scheduleStartupReveal();
-        return true;
-      },
-      () => {
-        // The native side has already moved the control clock to the seek.
-        // While a pending seek is still queued for this track it would win
-        // at loadedmetadata, so retarget it rather than let the lock-screen
-        // seek be undone.
-        const nativePosition = Math.max(0, audio.currentTime);
-        markPlaybackTouchedRef.current(
-          true,
-          undefined,
-          true,
-          trackOffsetSeconds(playbackBook, activeTrackIndex) + nativePosition
-        );
-        if (pendingSeekRef.current?.trackId === currentTrack.id) {
-          setPendingSeek({ trackId: currentTrack.id, positionSeconds: nativePosition });
-          setPosition(nativePosition);
-        }
-        void persistProgressRef.current();
-      },
-      () => {
-        sleepDeadlineRef.current = null;
-        setSleepMinutes(0);
-        setSleepRemaining(0);
-      },
-      () => {
-        foregroundProgressSyncRef.current?.nativeStateSynchronized();
-      }
-    );
-    // Attaching rebuilds the AVPlayer queue, so this is keyed on identity:
-    // playbackBook, currentTrack and activeTrackIndex through their ids, and
-    // functions with render state go through refs above. setPlayPending
-    // touches only refs and setters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    carPlaybackBookId,
-    currentTrackKey,
-    currentUser.id,
+  const {
+    
+  } = usePlaybackRestore({
+    acknowledgedServerPositionRef,
+    currentUser,
+    explicitSessionStartBookIdRef,
     nativeAudio,
-    nativeAudioQueueReady,
+    overruledSaveRef,
+    playCancelGenerationRef,
+    playWhenTrackLoads,
+    playbackActionVersionRef,
+    playbackBook,
     playbackBookKey,
-    requiredNativeAudioQueueKey,
+    playbackTouchedRef,
+    progressMutationVersion,
+    restoredProgressBookId,
+    resumeAutoplayBookIdRef,
+    resumeAutoplayPendingRef,
+    resumeReconciliationBookIdRef,
+    scheduleStartupReveal,
+    setCurrentTrackId,
+    setDuration,
+    setPendingSeek,
+    setPosition,
+    setRestoredPlaybackBookId,
+    startupProgressAppliedRef,
+    startupViewReadyRef,
+    storeCanonicalServerProgress,
+    updateBookProgress
+  });
+
+  const {
+    
+  } = useAudioElement({
+    activeTrackIndex,
+    applyPlaybackVolume,
+    audioRef,
+    carPlaybackBookId,
+    currentTrack,
+    currentTrackKey,
+    currentUser,
+    foregroundProgressSyncRef,
+    gainChain,
+    markPlaybackTouchedRef,
     nativeAttachmentSource,
-    scheduleStartupReveal
-  ]);
+    nativeAudio,
+    nativeAudioAttachedRef,
+    nativeAudioQueueReady,
+    nativeAudioQueueRef,
+    nativePlaybackPlayingRef,
+    pendingSeek,
+    pendingSeekRef,
+    persistProgressRef,
+    playPendingBookIdRef,
+    playPendingRef,
+    playWhenTrackLoads,
+    playbackBook,
+    playbackBookKey,
+    playbackGain,
+    playbackGainRef,
+    playbackSettingsRef,
+    requiredNativeAudioQueueKey,
+    resumeAutoplayPendingRef,
+    scheduleStartupReveal,
+    setCurrentTrackId,
+    setDuration,
+    setNativeAudioFailed,
+    setPendingSeek,
+    setPlayPending,
+    setPlaybackError,
+    setPlaybackPosition,
+    setPosition,
+    setSleepMinutes,
+    setSleepRemaining,
+    sleepDeadlineRef,
+    sleepRemainingRef,
+    speed,
+    startPlayback,
+    startupViewReadyRef,
+    streamUrl,
+    volume,
+    wantsAutoplayRef
+  });
 
-  // Progress often arrives after preload has already emitted loadedmetadata.
-  // Apply that late checkpoint as soon as the target media element is ready.
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (
-      pendingSeek === null ||
-      pendingSeek.trackId !== currentTrackKey ||
-      !audio ||
-      audio.readyState < HTMLMediaElement.HAVE_METADATA ||
-      !audioSourceMatches(audio, streamUrl)
-    ) {
-      return;
-    }
-    const restoredPosition = Math.max(
-      0,
-      Math.min(pendingSeek.positionSeconds, audio.duration || pendingSeek.positionSeconds)
-    );
-    if (!nativeAudio || Math.abs(audio.currentTime - restoredPosition) > 0.75) {
-      setPlaybackPosition(audio, restoredPosition);
-    }
-    setPosition(restoredPosition);
-    setPendingSeek(null);
-    // Mirrors onLoadedMetadata. A queued autoplay whose element had already
-    // loaded this exact source gets no second metadata event, so without this
-    // a shelf Resume onto the track that was already staged never starts.
-    if (playWhenTrackLoads.current) {
-      playWhenTrackLoads.current = false;
-      startPlayback(audio, !resumeAutoplayPendingRef.current);
-      resumeAutoplayPendingRef.current = false;
-    }
-    // setPlaybackPosition and startPlayback run synchronously here, from the
-    // render being committed; listing them would re-run the seek every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrackKey, pendingSeek, streamUrl, nativeAudio]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-    applyPlaybackVolume(audio);
-    if (gainChain().isAttachedTo(audio)) gainChain().setGain(playbackGain);
-    if (nativeAudio) void setNativeAudioGain(playbackGain).catch(() => undefined);
-    // applyPlaybackVolume reads only volume, playbackGain and nativeAudio,
-    // all listed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [volume, playbackGain, nativeAudio, currentTrackKey]);
-
-  playbackGainRef.current = playbackGain;
 
   // The server's copy is what follows the listener between devices, so a boost
   // set on the phone is already applied the first time the book opens here.
@@ -2194,82 +1673,23 @@ function MainApp({
     // land now; a no-op whenever nothing is owed.
     gainSyncRef.current?.retry();
   }
-
-  useEffect(() => {
-    let active = true;
-    const book = playbackBook;
-    if (!book || (!book.coverArtUrl && !book.localCoverPath)) {
-      setMediaArtworkUrl(null);
-      return;
-    }
-    const networkArtwork = book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null;
-    if (!native) {
-      setMediaArtworkUrl(networkArtwork);
-      return;
-    }
-    void getOfflineCoverUrl(book).then((localArtwork) => {
-      if (active) setMediaArtworkUrl(localArtwork ?? networkArtwork);
-    });
-    return () => {
-      active = false;
-    };
-    // Keyed on the fields the artwork comes from; a progress save replaces
-    // playbackBook without changing its cover.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [native, playbackBookKey, playbackBook?.coverArtUrl, playbackBook?.localCoverPath]);
-
-  useEffect(() => {
-    if (!playbackBook || !currentTrack) {
-      return;
-    }
-
-    const trackOffset = trackOffsetSeconds(playbackBook, activeTrackIndex);
-    const nowPlaying = {
-      title: activeChapter?.title ?? currentTrack.title,
-      artist: playbackBook.author ?? "Audiobook",
-      album: playbackBook.title,
-      artworkUrl: mediaArtworkUrl ?? undefined,
-      chapterStartSeconds: activeChapter
-        ? activeChapter.startSeconds - trackOffset
-        : undefined,
-      chapterDurationSeconds: activeChapter?.durationSeconds,
-      chapters: chapterSegments
-        .filter((chapter) => chapter.trackId === currentTrack.id)
-        .map((chapter) => ({
-          title: chapter.title,
-          // AVPlayer's clock is relative to the current audio file, while
-          // chapter markers are relative to the whole book.
-          startSeconds: chapter.startSeconds - trackOffset,
-          durationSeconds: chapter.durationSeconds
-        }))
-    };
-    if (nativeAudio) {
-      void updateNativeAudioNowPlaying(nowPlaying).catch((error) => {
-        setPlaybackError(error instanceof Error ? error.message : "Could not update iOS Now Playing.");
-      });
-      return;
-    }
-    if (!("mediaSession" in navigator)) return;
-
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: nowPlaying.title,
-      artist: nowPlaying.artist,
-      album: nowPlaying.album,
-      artwork: mediaArtworkUrl
-        ? [
-            { src: mediaArtworkUrl, sizes: "512x512", type: playbackBook.coverArtContentType ?? "image/jpeg" }
-          ]
-        : undefined
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeChapter?.id,
+  const {
+    
+  } = useNowPlaying({
+    activeChapter,
+    activeTrackIndex,
+    chapterSegments,
+    currentTrack,
     currentTrackChapterKey,
     currentTrackKey,
-    mediaArtworkUrl,
+    native,
     nativeAudio,
-    playbackBookKey
-  ]);
+    playbackBook,
+    playbackBookKey,
+    setPlaybackError
+  });
+
+
   const {
     activeChapterId,
     mediaSessionHandlersRef
@@ -2324,32 +1744,6 @@ function MainApp({
       foregroundProgressSyncRef.current = null;
     };
   }, [foregroundProgressActionsRef]);
-  const bookCompletion = useBookCompletion({
-    audioRef,
-    clearPlaybackSession,
-    completionPendingBookId,
-    currentUser,
-    nativePlaybackPlayingRef,
-    pausePlayback,
-    playbackBookId,
-    playbackBookIdRef,
-    playbackReportRef,
-    playbackTouchedRef,
-    progressMutationVersion,
-    progressSaveAbortController,
-    progressSaveDrainPromiseRef,
-    queuedProgressSaves,
-    setBooks,
-    setCompletionError,
-    setCompletionPendingBookId,
-    setIsPlaying,
-    setUnplayedConfirmationBookId
-  });
-  const {
-    changeBookCompletion,
-    confirmBookUnplayed,
-    markBookUnplayed
-  } = bookCompletion;
 
   const offlineDownloads = useOfflineDownloads({
     audioRef,
@@ -2381,427 +1775,6 @@ function MainApp({
   const {
     downloadForOffline,
   } = offlineDownloads;
-
-
-  /**
-   * Draw the media element's clock without saving it. Returns false while a
-   * restored checkpoint is still waiting to be applied, when there is nothing
-   * newer than that checkpoint to save.
-   */
-  function showMediaClock() {
-    const audio = audioRef.current;
-    if (!audio) {
-      return false;
-    }
-    // AVPlayer can emit its initial 0:00 clock before the pending restored
-    // seek reaches the media element. Keep the coherent checkpoint visible.
-    const restoring = pendingSeekRef.current;
-    if (restoring && restoring.trackId === currentTrackKey) {
-      setPosition(restoring.positionSeconds);
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : duration);
-      return false;
-    }
-    setPosition(audio.currentTime);
-    setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-    return true;
-  }
-
-  function onTimeUpdate() {
-    if (!showMediaClock()) {
-      return;
-    }
-    const now = Date.now();
-    if (now - saveStartedAt.current >= PROGRESS_SAVE_INTERVAL_MS) {
-      saveStartedAt.current = now;
-      void persistProgress();
-    }
-  }
-
-  // Marks that the listener moved playback in this session (and optionally
-  // that the move was a deliberate seek). persistProgress writes nothing
-  // until one of these has happened.
-  //
-  // A seek into a book that is not the one currently playing has to name that
-  // book: playbackBook still points at the previous book (or nothing) until
-  // the state update lands, and marking the wrong book leaves the jump
-  // unflagged — the server would then bill the skipped hours as listening.
-  //
-  // A deliberate seek also records the whole-book position it aimed at, which
-  // is what decides whether its saves may lift the server's reset guard.
-  function markPlaybackTouched(
-    deliberateSeek = false,
-    seekBookId?: string,
-    interruptRestore = true,
-    seekTargetBookPosition?: number
-  ) {
-    playbackTouchedRef.current = true;
-    const bookId = seekBookId ?? playbackBook?.id ?? null;
-    if (interruptRestore) {
-      playbackActionVersionRef.current += 1;
-      resumeAutoplayPendingRef.current = false;
-      if (resumeReconciliationBookIdRef.current === playbackBook?.id) {
-        resumeReconciliationBookIdRef.current = null;
-      }
-      // The listener's action now owns the track and position. Let the stale
-      // recovery finish harmlessly, but release persistence and native queue
-      // attachment instead of leaving this book behind the recovery gate.
-      const resolvedBookId = playbackRestoreBookAfterAction(
-        restoredProgressBookId.current,
-        bookId,
-        true
-      );
-      restoredProgressBookId.current = resolvedBookId;
-      setRestoredPlaybackBookId(resolvedBookId);
-    }
-    if (deliberateSeek && bookId) {
-      intentionalSeekGenerationRef.current.set(
-        bookId,
-        (intentionalSeekGenerationRef.current.get(bookId) ?? 0) + 1
-      );
-      if (seekTargetBookPosition !== undefined && Number.isFinite(seekTargetBookPosition)) {
-        intentionalSeekTargetRef.current.set(bookId, Math.max(0, seekTargetBookPosition));
-      } else {
-        intentionalSeekTargetRef.current.delete(bookId);
-      }
-    }
-  }
-
-  /** The whole-book position a track-relative seek on the playing book lands at. */
-  function seekTargetInPlaybackBook(trackPosition: number) {
-    if (!playbackBook) return undefined;
-    return trackOffsetSeconds(playbackBook, activeTrackIndex) + Math.max(0, trackPosition);
-  }
-
-  function gainChain() {
-    return (gainChainRef.current ??= new PlaybackGainChain());
-  }
-
-  /**
-   * Route the element through the boost chain, once, when this book actually
-   * asks for more than its own level. Unboosted books never touch Web Audio at
-   * all, which keeps the ordinary playback path exactly as it was.
-   *
-   * Called from user gestures wherever possible: an AudioContext first created
-   * outside one starts suspended, and a suspended context makes a routed
-   * element silent rather than loud.
-   */
-  function engageGainChain(
-    audio: HTMLAudioElement | null | undefined,
-    // Read from the ref, not the render: this runs from lock-screen handlers
-    // and media events whose closures can predate the current gain.
-    gain = playbackGainRef.current
-  ) {
-    if (!audio || nativeAudio) return;
-    if (!gainChain().isAttachedTo(audio)) {
-      if (gain <= BOOK_GAIN_DEFAULT) return;
-      if (!streamCanBeBoosted(audio.currentSrc || streamUrl)) return;
-      if (!gainChain().attach(audio)) return;
-    }
-    gainChain().resume();
-    gainChain().setGain(gain);
-    audio.volume = volume;
-  }
-
-  /**
-   * The device volume, and the book's gain when nothing else can carry it. The
-   * element's own volume cannot exceed unity, so this path can only ever cut a
-   * loud book down, never lift a quiet one.
-   */
-  function applyPlaybackVolume(audio: HTMLAudioElement) {
-    audio.volume = nativeAudio || gainChain().isAttachedTo(audio)
-      ? volume
-      : Math.min(1, volume * playbackGain);
-  }
-
-  function startPlayback(
-    audio: HTMLAudioElement | null | undefined,
-    interruptRestore = true
-  ) {
-    if (!audio) return;
-    if (carPlaybackOwnsEngine()) {
-      // Play, while the car holds the player, means take it back. The attach
-      // effect is parked on that flag, so it has to be cleared first — and the
-      // attach it then performs resumes from the checkpoint the car has been
-      // keeping current. Starting playback waits for that attach.
-      takeOverFromCar();
-      window.setTimeout(() => startPlayback(audioRef.current, interruptRestore), 0);
-      return;
-    }
-    markPlaybackTouched(false, undefined, interruptRestore);
-    const pendingRequest = {
-      bookId: playbackBookIdRef.current,
-      cancelGeneration: playCancelGenerationRef.current
-    };
-    if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) setPlayPending(true);
-    // Let the element's `play` event tell an automatic Shelf-Resume start
-    // apart from a listener's tap. A rejected start clears it again so the
-    // next play event — a real tap — counts as one.
-    autoResumePlayEventPendingRef.current = !interruptRestore;
-    engageGainChain(audio);
-    if (!nativeAudio) {
-      audio.play().catch(() => {
-        if (!ownsPendingPlay(
-          pendingRequest,
-          playCancelGenerationRef.current,
-          playPendingBookIdRef.current
-        )) return;
-        autoResumePlayEventPendingRef.current = false;
-        setPlayPending(false);
-      });
-      return;
-    }
-    void playNativeAudio().catch((error) => {
-      if (!ownsPendingPlay(
-        pendingRequest,
-        playCancelGenerationRef.current,
-        playPendingBookIdRef.current
-      )) return;
-      autoResumePlayEventPendingRef.current = false;
-      nativePlaybackPlayingRef.current = false;
-      audio.muted = false;
-      // This same request is about to continue on web audio. Keep its pending
-      // owner, timer, and second-tap cancellation until playback or an error.
-      stageWebAudioFallback(audio, true);
-      setPlaybackError(errorMessage(error, "Native audio playback failed."));
-    });
-  }
-
-  function pausePlayback(audio: HTMLAudioElement | null | undefined) {
-    setPlayPending(false);
-    if (!audio) return;
-    // While the car owns the player, the element is all this app controls.
-    // Pausing the native player here would stop the driver's book, and this
-    // runs on teardown paths that are not a listener asking for a pause.
-    if (!nativeAudio || carPlaybackOwnsEngine()) {
-      audio.pause();
-      return;
-    }
-    nativePlaybackPlayingRef.current = false;
-    setIsPlaying(false);
-    void pauseNativeAudio().catch((error) => {
-      audio.muted = false;
-      stageWebAudioFallback(audio, false);
-      setPlaybackError(errorMessage(error, "Native audio playback could not be paused."));
-    });
-  }
-
-  function stageWebAudioFallback(audio: HTMLAudioElement, resume: boolean, target?: number) {
-    if (currentTrackKey) {
-      const pending = pendingSeekRef.current;
-      setPendingSeek({
-        trackId: currentTrackKey,
-        positionSeconds: target ?? (pending?.trackId === currentTrackKey
-          ? pending.positionSeconds : audio.currentTime)
-      });
-    }
-    // React restores the real media source; its metadata event applies this
-    // checkpoint before playing. The native clock itself never fetched audio.
-    playWhenTrackLoads.current = resume;
-    setNativeAudioFailed(true);
-  }
-
-  function setPlaybackPosition(audio: HTMLAudioElement, value: number) {
-    const nextPosition = Math.max(0, Math.min(value, audio.duration || value));
-    audio.currentTime = nextPosition;
-    if (nativeAudio) {
-      const shouldResume = nativePlaybackPlayingRef.current;
-      void seekNativeAudio(nextPosition).catch((error) => {
-        nativePlaybackPlayingRef.current = false;
-        audio.muted = false;
-        stageWebAudioFallback(audio, shouldResume, nextPosition);
-        setPlaybackError(errorMessage(error, "Native audio could not seek."));
-      });
-    }
-    return nextPosition;
-  }
-
-  function onLoadedMetadata() {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-    setPlaybackError(null);
-    audio.playbackRate = speed;
-    // A boosted book is routed before it plays, so the lift is there from the
-    // first word rather than arriving a beat after playback starts.
-    engageGainChain(audio);
-    applyPlaybackVolume(audio);
-    setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-
-    if (
-      pendingSeek !== null &&
-      pendingSeek.trackId === currentTrackKey &&
-      audioSourceMatches(audio, streamUrl)
-    ) {
-      const restoredPosition = Math.min(
-        pendingSeek.positionSeconds,
-        audio.duration || pendingSeek.positionSeconds
-      );
-      if (!nativeAudio || Math.abs(audio.currentTime - restoredPosition) > 0.75) {
-        setPlaybackPosition(audio, restoredPosition);
-      }
-      setPosition(restoredPosition);
-      setPendingSeek(null);
-    } else if (pendingSeek !== null) {
-      // Ignore a late metadata event from the source being replaced. The
-      // target track still owns this pending resume position.
-      return;
-    } else {
-      setPosition(audio.currentTime);
-    }
-    if (playWhenTrackLoads.current) {
-      playWhenTrackLoads.current = false;
-      startPlayback(audio, !resumeAutoplayPendingRef.current);
-      resumeAutoplayPendingRef.current = false;
-    }
-    if (startupProgressAppliedRef.current) scheduleStartupReveal();
-  }
-
-  function seekBy(delta: number) {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-    haptic("light");
-    // While a seek is still queued the element reads 0 (metadata pending);
-    // the queued target is the real position, so move that instead.
-    const pending = pendingSeekRef.current;
-    const base = pending && pending.trackId === currentTrack?.id
-      ? pending.positionSeconds
-      : audio.currentTime;
-    seekTo(base + delta);
-  }
-
-  function seekTo(value: number) {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-    const pending = pendingSeekRef.current;
-    if (pending && currentTrack && pending.trackId === currentTrack.id) {
-      const nextPosition = Math.max(
-        0,
-        Math.min(value, currentTrack.durationSeconds ?? value)
-      );
-      markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(nextPosition));
-      setPendingSeek({ trackId: currentTrack.id, positionSeconds: nextPosition });
-      setPosition(nextPosition);
-      void persistProgress();
-      return;
-    }
-    const clamped = Math.max(0, Math.min(value, audio.duration || value));
-    markPlaybackTouched(true, undefined, true, seekTargetInPlaybackBook(clamped));
-    const nextPosition = setPlaybackPosition(audio, value);
-    setPosition(nextPosition);
-    void persistProgress();
-  }
-
-  function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
-    const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
-    const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
-    markPlaybackTouched(true, book.id, true, clampedValue);
-    if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
-    let offset = 0;
-    let targetTrack: Track | undefined = book.tracks[0];
-
-    for (const track of book.tracks) {
-      const trackDuration = track.durationSeconds ?? 0;
-      const nextOffset = offset + Math.max(1, trackDuration);
-      targetTrack = track;
-      if (clampedValue < nextOffset) {
-        break;
-      }
-      offset += trackDuration;
-    }
-
-    if (!targetTrack) {
-      return;
-    }
-
-    const trackPosition = Math.max(0, clampedValue - offset);
-    setPlaybackBookId(book.id);
-
-    if (playbackBook?.id === book.id && targetTrack.id === currentTrack?.id && audioRef.current) {
-      const nextPosition = setPlaybackPosition(audioRef.current, trackPosition);
-      setPosition(nextPosition);
-      void persistProgress();
-      if (autoPlay) {
-        startPlayback(audioRef.current);
-      }
-      return;
-    }
-
-    setCurrentTrackId(targetTrack.id);
-    setPendingSeek({ trackId: targetTrack.id, positionSeconds: trackPosition });
-    setPosition(trackPosition);
-    playWhenTrackLoads.current = autoPlay;
-    wantsAutoplayRef.current = autoPlay;
-  }
-
-  function seekBookPosition(value: number, autoPlay = false) {
-    if (!playbackBook) {
-      return;
-    }
-
-    seekBookPositionInBook(playbackBook, value, autoPlay);
-  }
-
-  // Start when the active engine has a source. The native control element
-  // deliberately has no src; only AVPlayer fetches its stream URL.
-  function playWhenReady() {
-    const audio = audioRef.current;
-    if (nativeAudioQueueReady && hasPlaybackSource(audio, nativeAudio, streamUrl)) {
-      startPlayback(audio);
-      return;
-    }
-    wantsAutoplayRef.current = true;
-    setPlayPending(true);
-  }
-
-  function togglePlayback() {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-
-    haptic("medium");
-    if (playPendingRef.current) {
-      cancelPendingPlayback(audio);
-      return;
-    }
-    // A disk lookup may still be resolving. Native readiness uses the
-    // stream URL, never the intentionally absent web element src.
-    if (!nativeAudioQueueReady || !hasPlaybackSource(audio, nativeAudio, streamUrl)) {
-      wantsAutoplayRef.current = true;
-      setPlayPending(true);
-      return;
-    }
-    if (nativeAudio ? !nativePlaybackPlayingRef.current : audio.paused) {
-      startPlayback(audio);
-    } else {
-      pausePlayback(audio);
-    }
-  }
-
-  function clearPlayPendingForBook(bookId: string | null) {
-    if (playbackEventOwnsPendingPlay(
-      playPendingRef.current,
-      playPendingBookIdRef.current,
-      bookId
-    )) setPlayPending(false);
-  }
-
-  function cancelPendingPlayback(audio: HTMLAudioElement | null | undefined) {
-    // Still waiting on the stream: this tap takes the start back. The
-    // generation also prevents an async shelf progress check from re-arming it.
-    const pendingOwnsActiveBook = playPendingBookIdRef.current === playbackBookIdRef.current;
-    playCancelGenerationRef.current += 1;
-    wantsAutoplayRef.current = false;
-    playWhenTrackLoads.current = false;
-    resumeAutoplayPendingRef.current = false;
-    if (pendingOwnsActiveBook) pausePlayback(audio);
-    else setPlayPending(false);
-  }
   const {
     beginBookDetailsBackSwipe,
     closeNativePlayerSheet,
@@ -2843,345 +1816,43 @@ function MainApp({
     showChapterJumpTop,
     trackListSectionRef
   });
+  const {
+    applyAdminLibraryChange,
+    prepareForAdminLibraryMutation,
+    refreshLibrary,
+    refreshShelf
+  } = useLibraryRefresh({
+    audioRef,
+    canBrowseLibation,
+    currentUser,
+    flushProgressSaveQueue,
+    isOperaLibre,
+    libationBooksLoaded,
+    librarySource,
+    libroAccounts,
+    libroOnDevice,
+    loadBooks,
+    loadLibationBooks,
+    localMode,
+    native,
+    nativeAudio,
+    nativePlaybackPlayingRef,
+    pausePlayback,
+    persistProgress,
+    playbackBookIdRef,
+    reconcileServerBookGains,
+    setBooks,
+    setCurrentTrackId,
+    setError,
+    setIsLoading,
+    setIsOffline,
+    setLibroRefreshKey,
+    setNativeTab,
+    setPlaybackBookId,
+    setPosition,
+    setSelectedBookId
+  });
 
-
-  function selectTrack(track: Track, autoPlay = true) {
-    void persistProgress();
-    const targetBook = selectedBook ?? playbackBook;
-    markPlaybackTouched(
-      true,
-      targetBook?.id,
-      true,
-      targetBook
-        ? trackOffsetSeconds(targetBook, targetBook.tracks.findIndex((candidate) => candidate.id === track.id))
-        : undefined
-    );
-    if (selectedBook && playbackBook?.id !== selectedBook.id) {
-      explicitSessionStartBookIdRef.current = selectedBook.id;
-    }
-    setNativePlayerView("now");
-    if (native) {
-      setNativeTab("reading");
-    }
-    if (
-      selectedBook?.id === playbackBook?.id &&
-      track.id === currentTrack?.id &&
-      audioRef.current
-    ) {
-      setPlaybackPosition(audioRef.current, 0);
-      setPosition(0);
-      if (autoPlay) {
-        startPlayback(audioRef.current);
-      }
-      return;
-    }
-    if (selectedBook) {
-      setPlaybackBookId(selectedBook.id);
-    }
-    setCurrentTrackId(track.id);
-    setPendingSeek({ trackId: track.id, positionSeconds: 0 });
-    setPosition(0);
-    playWhenTrackLoads.current = autoPlay;
-    wantsAutoplayRef.current = autoPlay;
-  }
-
-  /**
-   * The shelf's primary action. Its label already promises the right thing —
-   * "Resume · 6h 32m left" — and the handler has to agree. Starting the first
-   * track marks a deliberate session start, which suppresses the restore
-   * effect, so every in-progress book reopened at the opening credits. A
-   * resume instead hands the book to that effect, which reconciles the native,
-   * checkpoint, cached, listed and server copies before seeking.
-   */
-  async function playSelectedBook(book: Book) {
-    haptic("medium");
-    if (playPendingRef.current) {
-      const pendingBookId = playPendingBookIdRef.current;
-      cancelPendingPlayback(audioRef.current);
-      // A second activation of the same shelf action is cancellation. A tap
-      // on another book replaces the old pending request in one action.
-      if (pendingBookId === book.id) return;
-    }
-    const cancelGeneration = playCancelGenerationRef.current;
-    setPlayPending(true, book.id);
-    if (!shouldResumeSavedPosition(book.progress)) {
-      // The listing summary can lag the server (a cached shelf, a session on
-      // another device since the last refresh). Before "Begin this reading"
-      // writes a near-zero position with a deliberate seek attached — which
-      // the server would honour — ask for the live copy, briefly. Offline or
-      // unanswered, the summary stands as before.
-      const inProgressElsewhere = await freshProgressBeforeStartingOver(book);
-      if (playCancelGenerationRef.current !== cancelGeneration) return;
-      if (inProgressElsewhere) {
-        updateBookProgress(book.id, inProgressElsewhere);
-        resumeSelectedBook(book);
-        return;
-      }
-      // "Read it again" on a finished book, or one never opened: track one.
-      if (book.tracks[0]) selectTrack(book.tracks[0]);
-      else setPlayPending(false);
-      return;
-    }
-    resumeSelectedBook(book);
-  }
-
-  async function freshProgressBeforeStartingOver(book: Book): Promise<Progress | null> {
-    if (
-      book.source === "device" ||
-      localMode ||
-      isOffline ||
-      book.progress?.status === "finished"
-    ) {
-      return null;
-    }
-    try {
-      const server = await getFreshProgress(book, START_OVER_PROGRESS_CHECK_MS);
-      if (!server) return null;
-      const summary = summarizeBookProgress(book, server);
-      return summary?.status === "inProgress"
-        && server.bookPositionSeconds > PROGRESS_RESET_GUARD_SECONDS
-        ? server
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function resumeSelectedBook(book: Book) {
-    setNativePlayerView("now");
-    if (native) {
-      setNativeTab("reading");
-    }
-    if (playbackBook?.id === book.id) {
-      // Already restored in this session — its live position is authoritative.
-      playWhenReady();
-      return;
-    }
-    void persistProgress();
-    // Deliberately no explicit session start, no pending seek, and no autoplay
-    // flag yet: the restore effect owns all three. Arming autoplay here would
-    // start the first track — `currentTrack` falls back to track one while the
-    // restored id is still resolving — which is the very thing being fixed.
-    resumeAutoplayBookIdRef.current = book.id;
-    setPlayPending(true, book.id);
-    setPlaybackBookId(book.id);
-  }
-
-  function jumpToChapter(chapter: Chapter) {
-    if (!selectedBook) {
-      return;
-    }
-
-    haptic("light");
-    void persistProgress();
-    seekBookPositionInBook(selectedBook, chapter.startSeconds, true);
-    if (native) {
-      setNativeTab("reading");
-      setNativePlayerView("now");
-      playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
-    }
-  }
-
-  function jumpToChapterFromSheet(chapter: Chapter) {
-    if (!playbackBook) {
-      return;
-    }
-    haptic("light");
-    void persistProgress();
-    setSelectedBookId(playbackBook.id);
-    seekBookPositionInBook(playbackBook, chapter.startSeconds, true);
-    setNativePlayerSheet(null);
-  }
-
-  function restartOrPreviousChapter() {
-    if (!playbackBook || !activeChapter) {
-      seekBy(-15);
-      return;
-    }
-    const index = chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id);
-    const target = chapterElapsed > 5 || index <= 0
-      ? activeChapter
-      : chapterSegments[index - 1];
-    haptic("light");
-    seekBookPositionInBook(playbackBook, target.startSeconds, true);
-  }
-
-  function nextChapter() {
-    if (!playbackBook || !activeChapter) {
-      seekBy(30);
-      return;
-    }
-    const index = chapterSegments.findIndex((chapter) => chapter.id === activeChapter.id);
-    const target = chapterSegments[index + 1];
-    if (target) {
-      haptic("light");
-      seekBookPositionInBook(playbackBook, target.startSeconds, true);
-    }
-  }
-
-  function playNextTrack() {
-    // `ended` also fires when a stream is cut short (a truncated response, a
-    // proxy giving up). Advancing on that — or finishing the book on its last
-    // track — would file unheard time as listened. Stop where the clock is.
-    // Only the element's own duration is trusted here: the catalogue's tag
-    // estimate can run minutes long and would stop every track "early".
-    const endedAudio = audioRef.current;
-    if (
-      endedAudio &&
-      currentTrack &&
-      endedShortOfTrack(endedAudio.currentTime, endedAudio.duration)
-    ) {
-      playWhenTrackLoads.current = false;
-      wantsAutoplayRef.current = false;
-      pausePlayback(endedAudio);
-      setIsPlaying(false);
-      void persistProgress();
-      setPlaybackError("Playback stopped early; the file may be incomplete.");
-      return;
-    }
-    if (!playbackBook || activeTrackIndex >= playbackBook.tracks.length - 1) {
-      playWhenTrackLoads.current = false;
-      setPlayPending(false);
-      setIsPlaying(false);
-      if (playbackBook && currentTrack) {
-        const mediaDuration = audioRef.current?.duration;
-        const finalTrackPosition = Math.max(
-          0,
-          currentTrack.durationSeconds
-            ?? (Number.isFinite(mediaDuration) ? mediaDuration! : position)
-        );
-        void changeBookCompletion(playbackBook, true, {
-          trackId: currentTrack.id,
-          positionSeconds: finalTrackPosition,
-          bookPositionSeconds:
-            trackOffsetSeconds(playbackBook, activeTrackIndex) + finalTrackPosition,
-          durationSeconds: currentTrack.durationSeconds ?? (Number.isFinite(mediaDuration) ? mediaDuration! : null)
-        });
-      }
-      return;
-    }
-    void persistProgress();
-    playWhenTrackLoads.current = true;
-    wantsAutoplayRef.current = true;
-    setCurrentTrackId(playbackBook.tracks[activeTrackIndex + 1].id);
-    const nextTrack = playbackBook.tracks[activeTrackIndex + 1];
-    setPendingSeek({ trackId: nextTrack.id, positionSeconds: 0 });
-    setPosition(0);
-  }
-
-  function updateSpeed(value: number) {
-    const normalized = normalizePlaybackSpeed(value);
-    setSpeed(normalized);
-    writeStoredSpeed(normalized);
-  }
-
-  function updateBookGain(book: Book, db: number) {
-    const gain = bookGainFromDb(db);
-    setBookGains((existing) => {
-      const next = { ...existing };
-      if (gain === BOOK_GAIN_DEFAULT) delete next[book.id];
-      else next[book.id] = gain;
-      writeStoredBookGains(currentUser.id, next);
-      return next;
-    });
-    if (book.id === playbackBookId) {
-      // This runs inside the slider's own gesture, which is the moment an
-      // AudioContext is allowed to start. The new gain has to be passed in:
-      // the state update behind it has not been applied to this closure yet,
-      // so the very first boost would otherwise decline to build the chain.
-      engageGainChain(audioRef.current, gain);
-    }
-    // Device books exist only on this phone, so there is no server row to sync.
-    if (book.source !== "device") {
-      // Guards the book against a library payload older than this adjustment,
-      // and holds it until the server echoes the value back. Clearing the guard
-      // when the PUT settles would be too early: a getBooks() issued before the
-      // write can still answer after it, carrying the old gain. A write that
-      // never landed keeps the guard and is re-sent once the server answers
-      // again — see createBookGainSync.
-      gainSyncRef.current?.write(book.id, gain);
-    }
-  }
-
-  async function refreshLibrary() {
-    setIsLoading(true);
-    if (localMode) {
-      await loadBooks();
-      return;
-    }
-    try {
-      const nextBooks = isOperaLibre && !currentUser.isAdmin
-        ? await getBooks()
-        : await rescanLibrary();
-      const visibleBooks = native
-        ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
-        : nextBooks;
-      setBooks(visibleBooks);
-      reconcileServerBookGains(nextBooks);
-      setIsOffline(false);
-      setSelectedBookId((existing) =>
-        resolveBookId(visibleBooks, existing ?? readStoredBookId(currentUser.id, "selectedBookId"))
-      );
-      // As in loadBooks: a listing that calls the playing book finished must
-      // not pull the session out from under the listener.
-      const isPlayingNow = nativeAudio
-        ? nativePlaybackPlayingRef.current
-        : !!audioRef.current && !audioRef.current.paused;
-      setPlaybackBookId((existing) =>
-        resolveActivePlaybackBookId(
-          visibleBooks,
-          existing ?? readStoredBookId(currentUser.id, "playbackBookId"),
-          isPlayingNow
-        )
-      );
-      setError(null);
-    } catch (refreshError) {
-      if (isServerNotReadyError(refreshError)) {
-        // Up but still scanning: loadBooks keeps asking until it publishes.
-        setIsOffline(false);
-        setError("The server is still loading its library. The shelf refreshes once it is ready.");
-        void loadBooks();
-        return;
-      }
-      // A rescan rejected by a reachable server is not "offline" — only
-      // mute non-downloaded books when the server can't be reached at all.
-      setIsOffline(isNetworkError(refreshError));
-      setError("Library rescan failed.");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  function applyAdminLibraryChange(nextBooks: Book[]) {
-    const visibleBooks = native
-      ? mergeDeviceAndServerBooks(nextBooks, getDeviceBooks())
-      : nextBooks;
-    setBooks(visibleBooks);
-    reconcileServerBookGains(nextBooks);
-    setSelectedBookId((existing) => resolveBookId(visibleBooks, existing));
-    // Decided outside the state updater: updaters can run more than once and
-    // must stay pure, and the teardown below has to save first.
-    const isPlayingNow = nativeAudio
-      ? nativePlaybackPlayingRef.current
-      : !!audioRef.current && !audioRef.current.paused;
-    const currentPlaybackBookId = playbackBookIdRef.current;
-    const nextPlaybackBookId = resolveActivePlaybackBookId(visibleBooks, currentPlaybackBookId, isPlayingNow);
-    if (currentPlaybackBookId && !nextPlaybackBookId) {
-      pausePlayback(audioRef.current);
-      setCurrentTrackId(null);
-      setPosition(0);
-      if (native) setNativeTab("shelf");
-    }
-    playbackBookIdRef.current = nextPlaybackBookId;
-    setPlaybackBookId(nextPlaybackBookId);
-    if (libationBooksLoaded) void loadLibationBooks();
-  }
-
-  async function prepareForAdminLibraryMutation() {
-    pausePlayback(audioRef.current);
-    await persistProgress();
-    await flushProgressSaveQueue();
-  }
   const nativeChrome = useNativeChrome({
     appearanceMode,
     brokenLibationAccounts,
@@ -3206,26 +1877,6 @@ function MainApp({
     nativeTabsReady,
     showLedgerTab
   } = nativeChrome;
-
-
-  const refreshShelf = useCallback(async () => {
-    if (librarySource === "all") {
-      await refreshPurchaseSources([
-        ...(libroAccounts?.length ? [async () => {
-          try { await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount()); }
-          finally { setLibroRefreshKey(key => key + 1); }
-        }] : []),
-        ...(canBrowseLibation ? [loadLibationBooks] : [])
-      ]);
-    } else if (librarySource === "audible") {
-      await loadLibationBooks();
-    } else if (librarySource === "libro") {
-      await (libroOnDevice ? refreshLibroDevice() : refreshLibroAccount());
-      setLibroRefreshKey(key => key + 1);
-    } else {
-      await loadBooks();
-    }
-  }, [librarySource, libroOnDevice, libroAccounts, canBrowseLibation, loadBooks, loadLibationBooks, setLibroRefreshKey]);
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
   const userMenu = renderUserMenu({

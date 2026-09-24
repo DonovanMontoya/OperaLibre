@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supportsLibroDevice } from "./libroDevice";
 import type {
   AuthUser,
@@ -34,12 +34,16 @@ export function usePurchases({
   currentUser,
   demoMode,
   isOperaLibre,
+  libationBooks,
+  libationBooksLoaded,
   librarySource,
   loadBooks,
   localMode,
   native,
   onCurrentUserChanged,
   searchQuery,
+  setLibationBooks,
+  setLibationBooksLoaded,
   sortMode,
   sortReversed
 }: {
@@ -47,12 +51,16 @@ export function usePurchases({
   currentUser: AuthUser;
   demoMode: boolean;
   isOperaLibre: boolean;
+  libationBooks: LibationBook[];
+  libationBooksLoaded: boolean;
   librarySource: LibrarySource;
   loadBooks: () => Promise<void>;
   localMode: boolean;
   native: boolean;
   onCurrentUserChanged: (user: AuthUser) => void;
   searchQuery: string;
+  setLibationBooks: Dispatch<SetStateAction<LibationBook[]>>;
+  setLibationBooksLoaded: Dispatch<SetStateAction<boolean>>;
   sortMode: SortMode;
   sortReversed: boolean;
 }) {
@@ -61,12 +69,10 @@ export function usePurchases({
   const libroOnDevice = localMode || !isOperaLibre || libroDestination === "device";
   const libroAvailable = (!localMode && isOperaLibre) || supportsLibroDevice();
   const [libationStatus, setLibationStatus] = useState<LibationStatus | null>(null);
-  const [libationBooks, setLibationBooks] = useState<LibationBook[]>([]);
   const [libationDownloadRequests, setLibationDownloadRequests] = useState<LibationDownloadRequest[]>([]);
   const libationDownloadRequestsRef = useRef<LibationDownloadRequest[]>([]);
   const libationRequestsLoadedRef = useRef(false);
   const [libationLoading, setLibationLoading] = useState(false);
-  const [libationBooksLoaded, setLibationBooksLoaded] = useState(false);
   const [libationError, setLibationError] = useState<string | null>(null);
   const [libationRequests, setLibationRequests] = useState<Set<string>>(new Set());
   const [libationAllPending, setLibationAllPending] = useState(false);
@@ -209,7 +215,7 @@ export function usePurchases({
     } finally {
       setLibationLoading(false);
     }
-  }, [loadLibationStatus]);
+  }, [loadLibationStatus, setLibationBooks, setLibationBooksLoaded]);
 
   useEffect(() => {
     if (currentUser.isAdmin || native) {
