@@ -63,10 +63,51 @@ def digest(file):
 
 
 def stop_launcher(root):
-    if os.name == "nt":
-        return root / "Stop OperaLibre.exe"
     app = root / "Stop OperaLibre.app/Contents/MacOS/operalibre-launcher"
     return app if app.is_file() else root / "stop-operalibre"
+
+
+def stop_windows_test_server(root):
+    # Cleanup is independent of the shipped Stop launcher's path matching.
+    # Keep one process handle for identity checking and termination so a reused
+    # PID cannot cause us to stop an unrelated process.
+    import ctypes
+    from ctypes import wintypes
+
+    pid_file = root / "data/operalibre-server.pid"
+    if not pid_file.exists():
+        return
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    signatures = {
+        "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+        "QueryFullProcessImageNameW": ([wintypes.HANDLE, wintypes.DWORD,
+                                       wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL),
+        "TerminateProcess": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+        "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(kernel, name)
+        function.argtypes, function.restype = arguments, result
+    handle = kernel.OpenProcess(0x00100000 | 0x1000 | 0x0001, False, int(pid_file.read_text()))
+    if not handle:
+        if ctypes.get_last_error() == 87:  # Process has already exited.
+            return
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if kernel.WaitForSingleObject(handle, 0) == 0:
+            return
+        path = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(path))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(length)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        require(os.path.samefile(path.value, root / "operalibre-server.exe"),
+                "Refusing to stop a process outside the disposable installation")
+        if not kernel.TerminateProcess(handle, 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        require(kernel.WaitForSingleObject(handle, 10000) == 0, "Test server did not stop")
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def scenario(baseline, candidate, layout, rollback):
@@ -170,16 +211,18 @@ def scenario(baseline, candidate, layout, rollback):
                 print(f"PASS: {label}: {old_version} -> {expected_version}; "
                       "healthy, account/session, configuration and files preserved", flush=True)
             finally:
-                # All commands target launchers inside this disposable tree.
-                # Their stop path checks that the PID belongs to its server.
+                # Only stop processes belonging to this disposable installation.
                 if worker is not None and worker.poll() is None:
                     worker.kill()
                     worker.wait(timeout=10)
                 if old is not None and old.poll() is None:
                     old.terminate()
                     old.wait(timeout=15)
-                subprocess.run([str(stop_launcher(root)), "--stop"], env=environment,
-                               stdout=log, stderr=log, timeout=45, check=True)
+                if os.name == "nt":
+                    stop_windows_test_server(root)
+                else:
+                    subprocess.run([str(stop_launcher(root)), "--stop"], env=environment,
+                                   stdout=log, stderr=log, timeout=45, check=True)
 
 
 def main():
