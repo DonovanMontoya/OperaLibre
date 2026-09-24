@@ -30,7 +30,7 @@ import type { AppearanceMode } from "./appearance";
 import type { AuthUser, Book, LibationAccount, LibroAccountSummary } from "./types";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { NativeTab } from "./nativeTabs";
-import type { serverCapabilities } from "./serverCapabilities";
+import type { ServerCapabilities } from "./serverCapabilities";
 
 export type DeviceDownloadActivity = {
   bookId: string;
@@ -430,7 +430,7 @@ export function ConnectionSettings({
   aliasName: string;
   aliasUrl: string;
   audioRef: RefObject<HTMLAudioElement | null>;
-  capabilities: ReturnType<typeof serverCapabilities>;
+  capabilities: ServerCapabilities;
   currentUser: AuthUser;
   demoMode: boolean;
   isOperaLibre: boolean;
