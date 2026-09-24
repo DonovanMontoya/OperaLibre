@@ -898,7 +898,19 @@ fn signal_server(pid: u32, _force: bool) -> Result<(), String> {
 }
 
 fn configured_port(config_path: &Path) -> Option<u16> {
-    configured_value(config_path, "port")?.parse().ok()
+    port_from(configured_value(config_path, "port"), env::var("PORT").ok())
+}
+
+/// The server's rule: a blank or missing `port` falls back to the `PORT`
+/// environment variable. The caller supplies 4920 when both are unset.
+fn port_from(configured: Option<String>, environment: Option<String>) -> Option<u16> {
+    [configured, environment]
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())?
+        .parse()
+        .ok()
 }
 
 /// The value of `key` in a `server.config` file, read the way the server
@@ -1207,7 +1219,7 @@ mod tests {
 
     use super::{
         ServerReadiness, configured_value_in, data_dir, named_update_argument,
-        optional_named_update_argument, parse_health_response, process_command_matches,
+        optional_named_update_argument, parse_health_response, port_from, process_command_matches,
     };
     use std::{env, ffi::OsString, fs, path::Path};
 
@@ -1236,6 +1248,22 @@ mod tests {
             configured_value_in("web_dist_dir = web\nweb-dist-dir =\n", "web_dist_dir").as_deref(),
             Some("")
         );
+    }
+
+    #[test]
+    fn a_blank_port_falls_back_to_the_port_variable_like_the_server() {
+        let last_blank = configured_value_in("port = 4000\nport =\n", "port");
+        assert_eq!(
+            port_from(last_blank.clone(), Some("4000".into())),
+            Some(4000)
+        );
+        assert_eq!(port_from(last_blank, None), None);
+        assert_eq!(
+            port_from(Some("48917".into()), Some("4000".into())),
+            Some(48917)
+        );
+        assert_eq!(port_from(None, Some(" 4100 ".into())), Some(4100));
+        assert_eq!(port_from(None, Some(" ".into())), None);
     }
 
     #[test]
