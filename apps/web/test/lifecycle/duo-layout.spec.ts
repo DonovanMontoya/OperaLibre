@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { createServer, type ViteDevServer } from 'vite';
 import type { DeviceFoldState } from '../../src/deviceFold';
@@ -477,12 +477,26 @@ test('the reader remembers a different text size for the closed screen than the 
   await expect(size).toHaveText(/120%/);
 });
 
+// The reader fixture reads chapter 1 while the narration is in chapter 2, so
+// the catch-up row appears just after the first page and shrinks the stage.
+// epub.js then discards that page and lays the chapter out again; a tap in
+// between reaches no page. Settled means the row is in place and the page on
+// screen was laid out for the stage as it is now.
+async function readerSettled(page: Page) {
+  await expect(page.getByRole('button', { name: /Go to listening chapter/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const frame = stage.querySelector('iframe');
+    const rendition = (window as any).__operalibreReader.rendition;
+    return !!frame && frame.offsetHeight === stage.clientHeight && !!rendition.currentLocation()?.start?.cfi;
+  })).toBe(true);
+}
+
 test('a sentence near the left of the reader seeks narration instead of turning back', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
   await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);
-  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await readerSettled(page);
   const paragraph = page.frameLocator('.epub-stage iframe').locator('p').nth(1);
-  await expect(paragraph).toBeVisible();
   const box = (await paragraph.boundingBox())!;
   const stage = (await page.locator('.epub-stage').boundingBox())!;
   const edge = Math.min(80, stage.width * 0.15);
@@ -508,17 +522,106 @@ test('a tap in the wrapper padding at the right of the page turns forward instea
     const wrap = document.querySelector<HTMLElement>('.epub-stage-wrap')!;
     wrap.style.paddingInline = '84px';
   });
+  await readerSettled(page);
   const stage = (await page.locator('.epub-stage').boundingBox())!;
   const catcher = (await page.locator('.epub-tapzones').boundingBox())!;
   expect(catcher.x + catcher.width).toBeGreaterThan(stage.x + stage.width);
   const currentCfi = () => page.evaluate(() =>
     (window as any).__operalibreReader.rendition.currentLocation()?.start?.cfi as string | undefined);
-  await expect.poll(currentCfi).toBeTruthy();
   const before = await currentCfi();
   await page.mouse.click(catcher.x + catcher.width - 4, catcher.y + catcher.height / 2);
   await expect.poll(currentCfi).not.toBe(before);
   await expect(page.getByLabel('Narration position')).toHaveValue('0');
   await expect(page.getByText(/Reading freely/)).toBeVisible();
+});
+
+test('a fold that turns on the spread and shortens the stage lays the page out at the new height', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  // Listening where the reader opens means no catch-up row arrives to resize
+  // the stage before the fold does.
+  await page.goto(`${url}test/reader-catch-up.html?immersive&listening=1`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  const page0 = () => page.evaluate(() => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const frame = stage.querySelector('iframe');
+    const rendition = (window as any).__operalibreReader.rendition;
+    return { href: rendition.currentLocation()?.start?.href as string | undefined,
+      laidOut: !!frame && frame.offsetHeight === stage.clientHeight };
+  });
+  await expect.poll(page0).toEqual({ href: 'c1.xhtml', laidOut: true });
+  // The stage loses height in the same render that turns the spread on, as
+  // when the transport moves with the hinge, so epub.js measures the new
+  // size before the resize observer reports it.
+  await page.evaluate(async () => {
+    const rendition = (window as any).__operalibreReader.rendition;
+    const spread = rendition.spread.bind(rendition);
+    rendition.spread = (...args: unknown[]) => {
+      document.querySelector<HTMLElement>('.epub-stage-wrap')!.style.paddingBottom = '40px';
+      return spread(...args);
+    };
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__operalibreReader.rendition.settings.spread)).toBe('always');
+  await expect.poll(page0).toEqual({ href: 'c1.xhtml', laidOut: true });
+});
+
+test('a spread change preserves a pending followed chapter', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&chapter-sync&listening=1`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 0, y: 320, width: 951, height: 31, axis: 'horizontal', active: true } });
+  });
+  const href = () => page.evaluate(() => (window as any).__operalibreReader.rendition.location?.start?.href);
+  await expect.poll(href).toBe('c1.xhtml');
+  // Keep geometry and the font-size bucket fixed to isolate changing the
+  // spread while epub.js is still loading the chapter requested by Follow.
+  await page.evaluate(async () => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const bounds = stage.getBoundingClientRect();
+    for (const prop of ['width', 'min-width', 'max-width']) stage.style.setProperty(prop, `${bounds.width}px`, 'important');
+    for (const prop of ['height', 'min-height', 'max-height']) stage.style.setProperty(prop, `${bounds.height}px`, 'important');
+    await (window as any).__operalibreReader.rendition.display('c1.xhtml#start');
+  });
+  await expect.poll(href).toBe('c1.xhtml');
+  await page.evaluate(() => {
+    const reader = (window as any).__operalibreReader;
+    const rendition = reader.rendition;
+    const display = rendition._display.bind(rendition);
+    let held = false;
+    rendition._display = (target: string | undefined) => {
+      if (!held && target?.startsWith('c2.xhtml')) {
+        held = true;
+        return new Promise(resolve => { reader.releaseChapter = () => resolve(display(target)); });
+      }
+      return display(target);
+    };
+  });
+  // The fixture control is behind the immersive reader.
+  await page.getByRole('button', { name: 'Advance audio (1)', exact: true }).evaluate(button => (button as HTMLButtonElement).click());
+  await expect.poll(() => page.evaluate(() => !!(window as any).__operalibreReader.releaseChapter)).toBe(true);
+  await page.evaluate(async () => {
+    const modulePath = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(modulePath);
+    applyDeviceFold(document.documentElement, { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } });
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__operalibreReader.rendition.settings.spread)).toBe('always');
+  await page.evaluate(async () => {
+    const reader = (window as any).__operalibreReader;
+    reader.releaseChapter();
+    // Wait for every queued display and its location report, including any
+    // extra display scheduled by the spread, before checking the destination.
+    await reader.rendition.q.enqueue(() => undefined);
+    await reader.rendition.q.enqueue(() => undefined);
+  });
+  await expect.poll(href).toBe('c2.xhtml');
 });
 
 test('reader survives folding, rotating, flattening and closing without replacing its book', async ({ page }) => {
