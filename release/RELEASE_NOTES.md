@@ -17,6 +17,7 @@ Add `| sh -s -- --help` to see its options, including `--server-only` for headle
 - **Frontend only:** download the file ending in `frontend.zip` when you already have an OperaLibre or Jellyfin server and want to deploy only the static web app.
 - **Android:** the file ending in `android-unsigned.apk` is an unsigned release build for developers or distributors to sign before installation.
 - **Update packages:** files containing `update` are downloaded and verified automatically by compatible combined and server-only installations; you normally do not need to download them yourself.
+- **Read-along sync add-on:** the optional sync add-on is published in its own `readalong-sync-v…` release, only when it changes. Install it from **Administration**; you do not need to download it yourself.
 - **Deployment profiles:** new installs start in `local` mode. Choose `lan` for a trusted LAN/VPN or `proxy` behind same-machine HTTPS; remote first-run setup uses a one-time server token.
 - **Transfer limits:** uploads, generated ZIP downloads, and simultaneous ZIP generation now have configurable server-side limits. Existing configs automatically receive safe defaults.
 
