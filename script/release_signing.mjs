@@ -101,6 +101,20 @@ function publicKeyObject(base64) {
   });
 }
 
+/// A root the server and macOS verifiers would accept: a threshold from one
+/// to the number of keys, and each key a 32-byte key under its own key id.
+export function isValidRoot(root) {
+  return root?.type === "root"
+    && Number.isInteger(root.version)
+    && Array.isArray(root.keys)
+    && Number.isInteger(root.threshold)
+    && root.threshold >= 1
+    && root.threshold <= root.keys.length
+    && root.keys.every((key) => typeof key?.publicKey === "string"
+      && Buffer.from(key.publicKey, "base64").length === 32
+      && key.keyid === keyId(key.publicKey));
+}
+
 function envelopeVerifies(envelope, type, root) {
   const verified = new Set();
   for (const { keyid, sig } of envelope.signatures ?? []) {
@@ -123,7 +137,7 @@ export async function verifyManifestEnvelope(envelope, rootKeys) {
   };
   for (const rotation of envelope.roots ?? []) {
     const next = JSON.parse(rotation.payload);
-    if (next.type !== "root" || next.version !== root.version + 1) continue;
+    if (!isValidRoot(next) || next.version !== root.version + 1) continue;
     if (envelopeVerifies(rotation, "root", root) && envelopeVerifies(rotation, "root", next)) root = next;
   }
   if (!envelopeVerifies(envelope, "manifest", root)) {
@@ -209,6 +223,9 @@ async function main([command, ...args]) {
     if (!["manifest", "root"].includes(type)) throw new Error(`Unknown envelope type: ${type}`);
     const payload = await readFile(payloadFile, "utf8");
     if (JSON.parse(payload).type !== type) throw new Error(`The payload is not a ${type}.`);
+    if (type === "root" && !isValidRoot(JSON.parse(payload))) {
+      throw new Error("A root needs a threshold from 1 to its key count, and each key under its own key id.");
+    }
     const privateKey = environmentKey();
     // A new root is signed by the keys it introduces as well as the current
     // ones, so only a manifest is held to the current root here.
