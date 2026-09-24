@@ -330,6 +330,10 @@ export function EpubReadalong({
   // Chapter following clears the old CFI before epub.js reports the new one.
   // Relayouts in that gap must keep the requested chapter as their target.
   const pendingChapterHrefRef = useRef<string | null>(null);
+  const pendingFollowTargetRef = useRef<{
+    target: { href: string } | { cfi: string };
+    retried: boolean;
+  } | null>(null);
   // While the reader is putting the page back where it was — opening the
   // book, or laying it out again after a resize or a text-size change — it
   // passes through the pages between the top of the chapter and the
@@ -366,6 +370,7 @@ export function EpubReadalong({
     lastLocationRef.current = null;
     anchorCfiRef.current = null;
     pendingChapterHrefRef.current = null;
+    pendingFollowTargetRef.current = null;
     restoringUntilRef.current = 0;
     handNavigatedRef.current = false;
   }
@@ -527,10 +532,25 @@ export function EpubReadalong({
     return () => cancelAnimationFrame(raf);
   }, [sheet]);
 
+  // Following has taken ownership from the remembered reading page. The
+  // relocation it causes establishes the new anchor, so neither the post-open
+  // settling loop nor a restore still in progress pulls the reader back to
+  // the saved place a moment later (and strands a chapter jump that is only
+  // ever attempted once).
+  const followTakesPage = useCallback((target: { href: string } | { cfi: string }) => {
+    readerNavigationVersionRef.current += 1;
+    pendingFollowTargetRef.current = { target, retried: false };
+    anchorCfiRef.current = null;
+    restoringUntilRef.current = 0;
+  }, []);
+
   const resumeFollowing = useCallback(() => {
-    readerDebugLog("follow on");
+    readerDebugLog(`follow on at ${shortCfi(locationRef.current?.start?.cfi)}`);
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
+    // A chapter jump that was pulled back or never landed must be retried:
+    // asking to follow again is exactly the listener saying "take me there".
+    autoNavHrefRef.current = null;
     // Let the chapter-sync effect re-open the playing chapter on the next run.
     syncedTargetRef.current = null;
     setFollow(true);
@@ -551,6 +571,7 @@ export function EpubReadalong({
   const navigateByHand = useCallback((action: () => unknown) => {
     readerNavigationVersionRef.current += 1;
     pendingChapterHrefRef.current = null;
+    pendingFollowTargetRef.current = null;
     // Chapter-level following pulls the page just as a sentence marker does,
     // so a page turned by hand has to stop that too, or the reader is
     // dragged back to the narrator's chapter on the next run.
@@ -737,6 +758,41 @@ export function EpubReadalong({
         pendingChapterHrefRef.current = null;
       }
       const EpubCfiClass = epubCfiClassRef.current;
+      const pendingNavigation = pendingFollowTargetRef.current;
+      const pendingFollow = pendingNavigation?.target;
+      if (pendingFollow && followRef.current) {
+        let arrived = false;
+        if ("href" in pendingFollow) {
+          arrived = hrefsMatch(nextLocation.start?.href ?? "", pendingFollow.href);
+        } else if (EpubCfiClass && nextLocation.start?.cfi && nextLocation.end?.cfi) {
+          try {
+            const compare = new EpubCfiClass();
+            arrived = compare.compare(pendingFollow.cfi, nextLocation.start.cfi) >= 0
+              && compare.compare(pendingFollow.cfi, nextLocation.end.cfi) < 0;
+          } catch {
+            // A transient, incomplete location cannot acknowledge navigation.
+          }
+        }
+        // A restore that was already running can report its old page after
+        // Follow takes over. Do not adopt that page as the new reading anchor.
+        if (!arrived) {
+          // The stale restore can finish before Follow's first location report,
+          // so its original display may never be acknowledged. Reassert the
+          // destination once; retain the page-boundary loop guard if epub.js
+          // cannot put that point on screen even after the retry.
+          if (!pendingNavigation.retried) {
+            pendingNavigation.retried = true;
+            void rendition?.display("href" in pendingFollow ? pendingFollow.href : pendingFollow.cfi)
+              .catch(() => undefined);
+          }
+          return;
+        }
+        pendingFollowTargetRef.current = null;
+        // Only suppress a page correction that never arrived. Once it did,
+        // a later stale restore must be allowed to request the same turn again.
+        lastKeepRef.current = null;
+        autoNavHrefRef.current = null;
+      }
       const restoring = performance.now() < restoringUntilRef.current;
       const update = anchorAfterRelocation(
         anchorCfiRef.current,
@@ -1128,13 +1184,15 @@ export function EpubReadalong({
         // for a remembered place is usually an earlier one. Check back while
         // the layout settles and turn to the place again if it has moved off
         // the page — unless the listener has started reading somewhere else.
+        const restoreNavigationVersion = readerNavigationVersionRef.current;
         void (async () => {
           for (const delay of [300, 700, 1400, 2500]) {
             await new Promise((resolve) => window.setTimeout(resolve, delay));
             const anchor = anchorCfiRef.current;
             const EpubCfiClass = epubCfiClassRef.current;
             const page = locationRef.current;
-            if (cancelled || handNavigatedRef.current || !anchor || !rendition) {
+            if (cancelled || handNavigatedRef.current || !anchor || !rendition
+              || readerNavigationVersionRef.current !== restoreNavigationVersion) {
               return;
             }
             if (!EpubCfiClass || !page?.start?.cfi || !page.end?.cfi) {
@@ -1202,6 +1260,7 @@ export function EpubReadalong({
     return () => {
       cancelled = true;
       pendingChapterHrefRef.current = null;
+      pendingFollowTargetRef.current = null;
       debugLog("cleanup");
       readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
       abortController.abort();
@@ -1390,6 +1449,7 @@ export function EpubReadalong({
     // would re-highlight and re-page to wherever the narration currently is,
     // which is exactly the jump a hand-turned page must not make.
     if (!followRef.current || !syncFragments || fragmentIndex < 0) {
+      pendingFollowTargetRef.current = null;
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
@@ -1412,7 +1472,8 @@ export function EpubReadalong({
       if (autoNavHrefRef.current !== fragment.href && followRef.current) {
         autoNavHrefRef.current = fragment.href;
         highlightedFragmentRef.current = -1;
-        readerDebugLog(`follow chapter ${fragment.href}`);
+        readerDebugLog(`follow chapter ${fragment.href} at ${Math.round(positionSeconds)}s from ${shortCfi(location.start?.cfi)}`);
+        followTakesPage({ href: fragment.href });
         void rendition.display(fragment.href);
       }
       return;
@@ -1454,6 +1515,7 @@ export function EpubReadalong({
           }
           lastKeepRef.current = { cfi, from, layout: relayoutTick };
           readerDebugLog(`follow page ${shortCfi(cfi)} from ${shortCfi(from)}`);
+          followTakesPage({ cfi });
           void rendition.display(cfi);
         }
       } catch {
@@ -1521,7 +1583,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followRequest, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, followRequest, followTakesPage, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
