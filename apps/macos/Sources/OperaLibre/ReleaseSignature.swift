@@ -12,7 +12,11 @@ let updateManifestURL = URL(
 )!
 /// Root version 1: the keys this build trusts out of the box. Later roots are learned from
 /// the rotations a manifest carries. Must match `rootKeys` in release/update-trust.json.
-let releaseRootKeys = ["FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk="]
+let releaseRootKeys = [
+    "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=",
+    // Offline backup key; it signs only key rotations.
+    "ZRqn6x4T1s5YydV/orpMeF1Ec4VgpLXq7EUgAFIn0Ns=",
+]
 let updateManifestSchema = 1
 let maxUpdateManifestBytes = 1024 * 1024
 

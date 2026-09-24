@@ -26,7 +26,11 @@ const MAX_MANIFEST_HOPS: usize = 8;
 /// The keys this build trusts out of the box: root version 1. Later roots are
 /// learned from the rotations a manifest carries, each signed by the root
 /// before it. Must match `rootKeys` in release/update-trust.json.
-pub const ROOT_KEYS: &[&str] = &["FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk="];
+pub const ROOT_KEYS: &[&str] = &[
+    "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=",
+    // Offline backup key; it signs only key rotations.
+    "ZRqn6x4T1s5YydV/orpMeF1Ec4VgpLXq7EUgAFIn0Ns=",
+];
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
