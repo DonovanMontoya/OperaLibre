@@ -709,17 +709,19 @@ jobs:
           }
           require operalibre-manifest-v1.json
           require "operalibre-${version}-frontend.zip"
+          # Consume the full listing: grep -q can close the pipe early and
+          # make tar/unzip fail with SIGPIPE under the runner's pipefail.
           for platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
             package="operalibre-${version}-combined-${platform}"
             if [[ "${platform}" == windows-* ]]; then
               archive="${package}.zip"
               require "${archive}"
-              [[ ! -s "${archive}" ]] || unzip -l "${archive}" | grep -q " ${package}/UPDATE.json$" ||
+              [[ ! -s "${archive}" ]] || unzip -Z1 "${archive}" | grep -Fx "${package}/UPDATE.json" > /dev/null ||
                 { echo "${archive} has no UPDATE.json, so updaters cannot apply it." >&2; missing=1; }
             else
               archive="${package}.tar.gz"
               require "${archive}"
-              [[ ! -s "${archive}" ]] || tar -tzf "${archive}" | grep -qx "${package}/UPDATE.json" ||
+              [[ ! -s "${archive}" ]] || tar -tzf "${archive}" | grep -Fx "${package}/UPDATE.json" > /dev/null ||
                 { echo "${archive} has no UPDATE.json, so updaters cannot apply it." >&2; missing=1; }
             fi
             if [[ "${LEGACY_ASSETS}" == "true" ]]; then
