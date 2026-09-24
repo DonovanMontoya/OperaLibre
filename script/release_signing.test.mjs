@@ -11,6 +11,7 @@ import {
   addSignature,
   envelopeMessage,
   isLegacyUpdaterAsset,
+  isValidRoot,
   keyId,
   privateKeyFromSeed,
   publicKeyBase64,
@@ -216,7 +217,11 @@ test("a root rotation collects signatures from each key into one envelope", asyn
   try {
     const payload = path.join(directory, "root.json");
     const envelope = path.join(directory, "root.envelope.json");
-    await writeFile(payload, `${JSON.stringify({ type: "root", version: 2, threshold: 1, keys: [] })}\n`);
+    const keys = [TEST_SEED, OTHER_SEED].map((seed) => {
+      const publicKey = publicKeyBase64(privateKeyFromSeed(seed));
+      return { keyid: keyId(publicKey), publicKey };
+    });
+    await writeFile(payload, `${JSON.stringify({ type: "root", version: 2, threshold: 1, keys })}\n`);
     for (const seed of [TEST_SEED, OTHER_SEED]) {
       const result = spawnSync(process.execPath, [SIGNER, "sign-envelope", "root", payload, envelope], {
         encoding: "utf8",
@@ -295,5 +300,55 @@ test("the checked-in update policy is well formed", async () => {
   for (const bridge of policy.bridges) {
     assert.match(bridge.below, /^\d+\.\d+\.\d+$/);
     assert.match(bridge.manifest, /^https:\/\//);
+  }
+});
+
+test("a rotation the updaters would reject is refused by the release verifier too", async () => {
+  const fixture = JSON.parse(await readFile(FIXTURE, "utf8"));
+  const key = privateKeyFromSeed(TEST_SEED);
+  const other = privateKeyFromSeed(OTHER_SEED);
+  const otherKey = publicKeyBase64(other);
+  const payload = fixture.rotated.payload;
+  const good = { type: "root", version: 2, threshold: 1, keys: [{ keyid: keyId(otherKey), publicKey: otherKey }] };
+  // Signed by the rotated-in key, so accepting any of these roots would
+  // accept the manifest; only a valid rotation may.
+  const envelopeWith = (root) => {
+    const rotation = JSON.stringify(root);
+    return {
+      payload,
+      signatures: [signEnvelope(other, "manifest", payload)],
+      roots: [{ payload: rotation, signatures: [signEnvelope(key, "root", rotation), signEnvelope(other, "root", rotation)] }]
+    };
+  };
+  assert.ok(isValidRoot(good));
+  assert.equal((await verifyManifestEnvelope(envelopeWith(good), fixture.rootKeys)).version, "1.2.4");
+  for (const root of [
+    { ...good, threshold: 0 },
+    { ...good, threshold: 0, keys: [] },
+    { ...good, threshold: 2 },
+    { ...good, keys: [{ keyid: "0000000000000000", publicKey: otherKey }] }
+  ]) {
+    assert.ok(!isValidRoot(root), JSON.stringify(root));
+    await assert.rejects(verifyManifestEnvelope(envelopeWith(root), fixture.rootKeys), JSON.stringify(root));
+  }
+  // The zero-threshold case the review found: no manifest signature at all.
+  const unsigned = { ...envelopeWith({ ...good, threshold: 0 }), signatures: [] };
+  await assert.rejects(verifyManifestEnvelope(unsigned, fixture.rootKeys));
+});
+
+test("signing refuses a root the updaters would reject", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "operalibre-bad-root-test-"));
+  try {
+    const payload = path.join(directory, "root.json");
+    await writeFile(payload, `${JSON.stringify({ type: "root", version: 2, threshold: 0, keys: [] })}\n`);
+    const result = spawnSync(process.execPath, [SIGNER, "sign-envelope", "root", payload, path.join(directory, "out.json")], {
+      encoding: "utf8",
+      env: { ...process.env, OPERALIBRE_RELEASE_SIGNING_KEY: TEST_SEED }
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /threshold from 1/);
+    assert.deepEqual(await readdir(directory), ["root.json"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
