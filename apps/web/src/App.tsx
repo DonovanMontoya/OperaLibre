@@ -2322,6 +2322,7 @@ function MainApp({
 
       {metadataEditOpen && metadataForm ? (
         <MetadataEditorDialog
+          books={books}
           metadataError={metadataError}
           metadataForm={metadataForm}
           metadataSaving={metadataSaving}
