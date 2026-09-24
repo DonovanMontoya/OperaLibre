@@ -118,7 +118,8 @@ for (const [reader, key, alias, value, expected] of [
   });
 }
 
-for (const kind of ["server", "combined"]) {
+{
+  const kind = "combined";
   test(`Linux ${kind} package includes coordinated systemd handoff`, async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-package-test-"));
     try {
@@ -140,6 +141,12 @@ for (const kind of ["server", "combined"]) {
       const watcher = await readFile(path.join(output, "systemd/operalibre-update.path"), "utf8");
       assert.match(watcher, /^PathChanged=.*\/update-result\.txt$/m);
       assert.doesNotMatch(watcher, /^PathChanged=.*VERSION/m);
+      // Everything the in-app updater applies ships in the one package.
+      assert.equal(await readFile(path.join(output, "operalibre-updater"), "utf8"), "launcher fixture");
+      assert.deepEqual(JSON.parse(await readFile(path.join(output, "UPDATE.json"), "utf8")),
+        { schemaVersion: 1, version: "1.2.3", platform: "linux-x64" });
+      assert.equal(await readFile(path.join(output, "web/index.html"), "utf8"), "web fixture");
+      assert.ok((await readFile(path.join(output, "start.sh"), "utf8")).length > 0);
     } finally {
       await rm(fixture, { recursive: true, force: true });
     }

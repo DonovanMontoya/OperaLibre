@@ -1,34 +1,51 @@
 import Foundation
 
-// The vector script/release_signing.test.mjs produces from its test-only seed (the bytes
-// 0..31), so the Node signer and this verifier must agree on the message byte for byte.
-private let testPublicKey = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-private let testFrontendSignature =
-    "S+dfVq5MbRa7X9TiSmWdMb8qv4UBayZ3Pyvq3czipsJY4dwCmJrHejnU9Rh8MFjW7I0vDGxFpDSb3AP0dfZTBQ=="
+// Checks the manifest fixture script/release_signing.test.mjs writes from test-only keys, so
+// the Node signer and this verifier must agree byte for byte. Run from the repository root.
 
 @main
 struct ReleaseSignatureTests {
     static func main() {
-        let frontend = "operalibre-1.2.3-frontend.zip"
-        let digest = String(repeating: "b", count: 64)
-        func verifies(_ tag: String, _ name: String, _ digest: String, _ signature: String, key: String = testPublicKey) -> Bool {
-            verifyReleaseSignature(publicKeyBase64: key, tag: tag, assetName: name, sha256Hex: digest, signatureBase64: signature)
+        let fixtureData = try! Data(contentsOf: URL(fileURLWithPath: "script/fixtures/update-manifest.json"))
+        let fixture = try! JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+        let root = TrustedRoot(version: 1, threshold: 1, publicKeys: fixture["rootKeys"] as! [String])!
+        let untrusted = TrustedRoot(version: 1, threshold: 1, publicKeys: [fixture["otherKey"] as! String])!
+        func envelope(_ value: Any) -> Data {
+            try! JSONSerialization.data(withJSONObject: value)
+        }
+        func verifies(_ value: Any, _ root: TrustedRoot) -> UpdateManifest? {
+            try? verifyUpdateManifest(envelope(value), root: root)
         }
 
-        precondition(verifies("v1.2.3", frontend, digest, testFrontendSignature))
-        precondition(verifies("v1.2.3", frontend, digest.uppercased(), testFrontendSignature + "\n"))
-        precondition(!verifies("v1.2.2", frontend, digest, testFrontendSignature))
-        precondition(!verifies("v1.2.3", "operalibre-1.2.3-update-macos-arm64.zip", digest, testFrontendSignature))
-        precondition(!verifies("v1.2.3", frontend, String(repeating: "c", count: 64), testFrontendSignature))
-        precondition(!verifies("v1.2.3", frontend, digest, "not base64!"))
-        precondition(!verifies("v1.2.3", frontend, digest, "AAAA"))
-        precondition(!verifies("v1.2.3", frontend, digest, testFrontendSignature, key: "not-a-key"))
+        // A manifest signed by a root key, with fields and components this build ignores.
+        let direct = fixture["direct"] as! [String: Any]
+        let manifest = verifies(direct, root)
+        precondition(manifest?.version == "1.2.3")
+        precondition(manifest?.package("frontend")?.root == "operalibre-1.2.3-frontend")
+        precondition(manifest?.package("server") == nil, "platform packages are not frontend packages")
+        precondition(verifies(direct, untrusted) == nil)
 
-        // The placeholder must never ship: every frontend update would be refused.
-        precondition(
-            Data(base64Encoded: releaseSigningPublicKey)?.count == 32,
-            "releaseSigningPublicKey is not a 32-byte base64 key"
-        )
+        var tampered = direct
+        tampered["payload"] = (direct["payload"] as! String).replacingOccurrences(of: "1.2.3", with: "9.9.9")
+        precondition(verifies(tampered, root) == nil)
+
+        // A rotated key is trusted only through a rotation both keys signed.
+        let rotated = fixture["rotated"] as! [String: Any]
+        precondition(verifies(rotated, root)?.version == "1.2.4")
+        var withoutRotation = rotated
+        withoutRotation["roots"] = []
+        precondition(verifies(withoutRotation, root) == nil)
+        var rotations = rotated["roots"] as! [[String: Any]]
+        let signatures = rotations[0]["signatures"] as! [Any]
+        rotations[0]["signatures"] = [signatures[1]]
+        var forgedRotation = rotated
+        forgedRotation["roots"] = rotations
+        precondition(verifies(forgedRotation, root) == nil)
+
+        // A root's signature must not pass for a manifest's.
+        precondition(verifies((rotated["roots"] as! [Any])[0], root) == nil)
+
+        precondition(TrustedRoot.builtIn != nil, "releaseRootKeys must be valid Ed25519 keys")
         print("Release signature tests passed")
     }
 }
