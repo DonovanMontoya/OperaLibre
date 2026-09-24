@@ -66,7 +66,7 @@ test('chapter following opens at the current audiobook chapter before sentence s
   await page.goto(`${url}test/reader-catch-up.html?chapter-sync`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() =>
-    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
+    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation()?.start?.href
   )).toContain('c2.xhtml');
   // The remembered-page settling checks run at 300 ms and 1 s. The narrated
   // chapter must remain in control after both have had a chance to run.
@@ -111,7 +111,7 @@ for (const failure of ['missing sentence', 'CFI conversion'] as const) {
     expect(failedPlace).toBeTruthy();
     await page.getByLabel('Narration position').fill('31');
     await expect.poll(() => page.evaluate(() =>
-      (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href)).toContain('c2.xhtml');
+      (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation()?.start?.href)).toContain('c2.xhtml');
     await expect.poll(() => annotations(page)).toHaveLength(0);
     await page.getByLabel('Narration position').fill('41');
     await expect.poll(() => annotations(page)).toHaveLength(1);
