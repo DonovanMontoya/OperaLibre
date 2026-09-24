@@ -126,6 +126,6 @@ python3 script/test_release_upgrade.py \
   --candidate /path/to/operalibre-0.4.7-combined-macos-arm64.tar.gz
 ```
 
-Use the packages for the machine running the test; Windows packages are ZIPs. The script only runs disposable installations and stops their servers afterward. Verify downloaded packages before running it yourself.
+Use the packages for the machine running the test; Windows packages are ZIPs. The script only runs disposable installations and stops their servers afterward. On Windows, cleanup checks the executable path and terminates that process directly; it does not validate the packaged Stop launcher. Verify downloaded packages before running it yourself.
 
 This gate tests package installation and recovery directly, before a candidate is signed or public. It does not exercise update discovery, signature rejection, populated-library migrations, or the entire Administration UI. Manifest/signature unit tests and the existing Linux managed-service handoff tests remain separate checks. Periodic tests through the real published update API are still useful; a healthy startup alone cannot establish that every feature or data migration works.
