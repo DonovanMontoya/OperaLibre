@@ -658,6 +658,27 @@ jobs:
           OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
         run: node release-signing-tools/script/release_signing.mjs sign release-assets "${RELEASE_TAG}"
 
+      # Every server since 0.1.2 updates itself by fetching these exact names
+      # from the latest release (0.4.5 and later also need the .sig), and the
+      # macOS app fetches the frontend package. A release without any of them
+      # would strand those installs, so refuse to publish it.
+      - name: Check packages that existing installs update from
+        shell: bash
+        working-directory: release-assets
+        run: |
+          version="${RELEASE_TAG#v}"
+          missing=0
+          for name in "operalibre-${version}-frontend.zip" \
+            operalibre-"${version}"-update-{linux-x64,linux-arm64,macos-x64,macos-arm64,windows-x64}.zip; do
+            for file in "${name}" "${name}.sig"; do
+              if [[ ! -s "${file}" ]]; then
+                echo "Missing ${file}, which existing installations update from." >&2
+                missing=1
+              fi
+            done
+          done
+          exit "${missing}"
+
       - name: Create checksums
         shell: bash
         working-directory: release-assets
