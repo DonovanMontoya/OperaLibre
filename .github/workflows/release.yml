@@ -501,7 +501,7 @@ jobs:
           esac
           extension=tar.gz
           if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
-          python3 upgrade-test-tools/script/test_release_upgrade.py \
+          python upgrade-test-tools/script/test_release_upgrade.py \
             --baseline "upgrade-baseline/operalibre-${baseline}-combined-${{ matrix.platform }}.${extension}" \
             --candidate "dist/operalibre-${version}-combined-${{ matrix.platform }}.${extension}"
 
