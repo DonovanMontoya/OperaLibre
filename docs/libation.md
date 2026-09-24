@@ -25,7 +25,9 @@ The [one-line installer](installing-a-release.md#setting-up-the-audible-import-d
 3. Point OperaLibre at that Libation installation with `libation_files_dir`, the directory holding `AccountsSettings.json` and `Settings.json`.
 4. Sign in to OperaLibre as an administrator and open **Audible**. The accounts Libation knows about appear in the account list with their connection status, and the **Browsing** filter narrows the catalog to one of them.
 
-Because Libation's shared database stores only one ownership row per book, a title owned by more than one account in the same Libation installation is recorded once. Accounts created as isolated OperaLibre-managed profiles under `data_dir/libation-accounts` preserve duplicate ownership, but those are no longer created from the OperaLibre interface.
+Libation's shared database stores only one ownership row per book. When OperaLibre refreshes a shared Libation installation, it first remembers the owners already in Libation's database, then scans each account separately and remembers which titles each account reported. A title owned by multiple accounts then appears under each account, including when another account later needs to sign in again. A newly connected account needs a successful refresh before its ownership can be remembered.
+
+**Download all purchases** scans and downloads one account at a time. If one account needs to sign in again, the job reports that failure while continuing with the other accounts. Libation has no account selector for downloads, so OperaLibre supplies only the ASINs confirmed for the account it just scanned.
 
 ## Configuration
 

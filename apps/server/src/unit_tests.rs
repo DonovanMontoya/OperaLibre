@@ -1521,17 +1521,26 @@ if [ "$command" = "scan" ]; then
     printf 'Authentication failed\n' >&2
     exit 1
   fi
+  if [ -f '{shared}' ] && [ "$#" -gt 0 ]; then
+    printf '[' > '{export}'
+    separator=''
+    while IFS= read -r asin || [ -n "$asin" ]; do
+      printf '%s{{"Account":"%s","Locale":"us","Audible Product Id":"%s","Title":"Shared title"}}' "$separator" "$1" "$asin" >> '{export}'
+      separator=','
+    done < '{shared}'
+    printf ']' >> '{export}'
+  fi
   exit 0
 fi
 if [ "$command" != "liberate" ]; then
   exit 0
 fi
-asin=""
+asins=""
 books=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
 --id)
-  asin="$2"
+  asins="$asins $2"
   shift 2
   ;;
 --override)
@@ -1543,13 +1552,17 @@ while [ "$#" -gt 0 ]; do
   ;;
   esac
 done
-printf 'start %s\n' "$asin" >> '{log}'
-sleep 0.08
-if [ "$asin" != "B000FAIL00" ]; then
-  mkdir -p "$books/Test [$asin]"
-  cp '{audio}' "$books/Test [$asin]/Test [$asin].wav"
-fi
-printf 'end %s\n' "$asin" >> '{log}'
+for asin in $asins; do
+  printf 'start %s\n' "$asin" >> '{log}'
+  sleep 0.08
+  if [ "$asin" = "B000THROT0" ]; then
+    printf 'Content license denied: CustomerThrottled\n' >&2
+  elif [ "$asin" != "B000FAIL00" ]; then
+    mkdir -p "$books/Test [$asin]"
+    cp '{audio}' "$books/Test [$asin]/Test [$asin].wav"
+  fi
+  printf 'end %s\n' "$asin" >> '{log}'
+done
 exit 0
 "#,
         log = log_path.display(),
@@ -1557,7 +1570,8 @@ exit 0
         export = root.join("libation-export.json").display(),
         accounts = root.join("libation-accounts.tsv").display(),
         scans = root.join("libation-scans.log").display(),
-        broken = root.join("libation-broken-account").display()
+        broken = root.join("libation-broken-account").display(),
+        shared = root.join("libation-shared-asin").display()
     );
     std::fs::write(&cli_path, script).unwrap();
     let mut permissions = std::fs::metadata(&cli_path).unwrap().permissions();
@@ -2215,6 +2229,24 @@ async fn successful_libation_exit_without_a_decrypted_book_is_failed() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_throttle_is_reported_instead_of_a_misleading_rescan_error() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let created = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path("B000THROT0".to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(job.error.unwrap().contains("Audible is throttling"));
 }
 
 #[cfg(unix)]
@@ -5485,15 +5517,267 @@ async fn one_broken_libation_login_does_not_block_the_other_accounts() {
     let scans = std::fs::read_to_string(root.path().join("libation-scans.log")).unwrap();
     assert_eq!(
         scans.lines().collect::<Vec<_>>(),
-        vec!["scan all", "scan marge@example.com", "scan dad@example.com"]
+        vec!["scan marge@example.com", "scan dad@example.com"]
     );
 
-    // A healthy library keeps the single combined scan.
+    // A healthy shared profile still scans each account so duplicate
+    // ownership can be captured before the next scan reassigns it.
     std::fs::remove_file(root.path().join("libation-broken-account")).unwrap();
     std::fs::remove_file(root.path().join("libation-scans.log")).unwrap();
     let attempts = super::scan_libation_profile(&profile).await;
-    assert_eq!(attempts.len(), 1);
-    assert!(attempts[0].account.is_none() && attempts[0].succeeded());
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts.iter().all(|attempt| attempt.succeeded()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_legacy_title_remains_visible_under_both_accounts() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(root.path().join("libation-shared-asin"), "B000SHAR00").unwrap();
+
+    let created =
+        super::sync_libation_library(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "completed", "{:?}; {}", job.error, job.output);
+    let connection = rusqlite::Connection::open(&state.database_path).unwrap();
+    let persisted: super::LibationRefreshStore =
+        super::read_document_store(&connection, super::LIBATION_REFRESHES_DOCUMENT).unwrap();
+    assert_eq!(persisted.legacy_ownership.len(), 2);
+
+    let books =
+        super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let shared = books
+        .iter()
+        .filter(|book| book.asin == "B000SHAR00")
+        .collect::<Vec<_>>();
+    assert_eq!(shared.len(), 2);
+    let ids = super::parse_libation_accounts(accounts)
+        .into_iter()
+        .map(|account| account.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        shared
+            .iter()
+            .map(|book| book.profile_id.clone())
+            .collect::<std::collections::HashSet<_>>(),
+        ids
+    );
+
+    // A later broken Marge login must not erase her last confirmed ownership,
+    // while Dad's healthy scan still refreshes his copy.
+    std::fs::write(
+        root.path().join("libation-broken-account"),
+        "marge@example.com",
+    )
+    .unwrap();
+    let created =
+        super::sync_libation_library(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "failed");
+    let books =
+        super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    assert_eq!(
+        books
+            .iter()
+            .filter(|book| book.asin == "B000SHAR00")
+            .count(),
+        2
+    );
+
+    let dad_id = super::parse_libation_accounts(accounts)[1].id.clone();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"marge@example.com","Locale":"us","Audible Product Id":"B000SHAR00","Title":"Shared title"}]"#,
+    )
+    .unwrap();
+    let created = super::liberate_profile_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path((dad_id, "B000SHAR00".to_string())),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "completed", "{:?}; {}", job.error, job.output);
+    let scans = std::fs::read_to_string(root.path().join("libation-scans.log")).unwrap();
+    assert_eq!(scans.lines().last(), Some("scan dad@example.com"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn first_refresh_preserves_the_existing_owner_when_its_login_is_broken() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"marge@example.com","Locale":"us","Audible Product Id":"B000SHAR00","Title":"Shared title"}]"#,
+    )
+    .unwrap();
+    std::fs::write(root.path().join("libation-shared-asin"), "B000SHAR00").unwrap();
+    std::fs::write(
+        root.path().join("libation-broken-account"),
+        "marge@example.com",
+    )
+    .unwrap();
+
+    let created =
+        super::sync_libation_library(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(
+        job.status, "failed",
+        "Marge's scan should still be reported"
+    );
+    let books =
+        super::list_libation_books(super::State(state.clone()), super::Extension(admin_user()))
+            .await
+            .unwrap()
+            .0;
+    let owners = books
+        .iter()
+        .filter(|book| book.asin == "B000SHAR00")
+        .map(|book| book.profile_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let expected = super::parse_libation_accounts(accounts)
+        .into_iter()
+        .map(|account| account.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(owners, expected);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bulk_download_uses_the_healthy_account_for_shared_books() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, log_path) = fake_libation_state(root.path());
+    std::fs::write(
+        root.path().join("libation-accounts.tsv"),
+        "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("libation-broken-account"),
+        "marge@example.com",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("libation-shared-asin"),
+        "B000SHAR00\nB000SHAR01\n",
+    )
+    .unwrap();
+
+    let created = super::liberate_all_libation_books(
+        super::State(state.clone()),
+        super::AdminUser(admin_user()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "failed", "Marge's failed scan must be reported");
+    assert!(job.error.unwrap().contains("Marge scan failed"));
+    let scans = std::fs::read_to_string(root.path().join("libation-scans.log")).unwrap();
+    assert_eq!(
+        scans.lines().collect::<Vec<_>>(),
+        vec!["scan marge@example.com", "scan dad@example.com"]
+    );
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains("start B000SHAR00"));
+    assert!(log.contains("start B000SHAR01"));
+    let library = state.library.read().await;
+    for asin in ["B000SHAR00", "B000SHAR01"] {
+        assert!(
+            library
+                .books
+                .iter()
+                .any(|book| book.asin.as_deref() == Some(asin)),
+            "Dad's {asin} was not downloaded"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn selected_account_cannot_download_a_title_only_in_another_account() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, log_path) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"marge@example.com","Locale":"us","Audible Product Id":"B000SHAR00","Title":"Marge only"}]"#,
+    )
+    .unwrap();
+    let dad_id = super::parse_libation_accounts(accounts)[1].id.clone();
+    let created = super::liberate_profile_libation_book(
+        super::State(state.clone()),
+        super::Extension(admin_user()),
+        super::Path((dad_id, "B000SHAR00".to_string())),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(
+        job.error
+            .unwrap()
+            .contains("not found in the selected Audible account")
+    );
+    assert!(
+        !std::fs::read_to_string(log_path)
+            .unwrap()
+            .contains("start B000SHAR00"),
+        "Libation tried to liberate through the wrong account"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn selected_account_access_grant_checks_current_ownership() {
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let accounts = "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+    std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+    std::fs::write(
+        root.path().join("libation-export.json"),
+        r#"[{"Account":"marge@example.com","Locale":"us","Audible Product Id":"B000SHAR00","Title":"Shared title"}]"#,
+    )
+    .unwrap();
+    let dad_id = super::parse_libation_accounts(accounts)[1].id.clone();
+    let dad = super::find_libation_profile(&state, &dad_id).await.unwrap();
+    assert!(
+        !super::profile_owns_asin(&state, &dad, "B000SHAR00")
+            .await
+            .unwrap()
+    );
+
+    std::fs::write(root.path().join("libation-shared-asin"), "B000SHAR00").unwrap();
+    assert!(
+        super::profile_owns_asin(&state, &dad, "B000SHAR00")
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
