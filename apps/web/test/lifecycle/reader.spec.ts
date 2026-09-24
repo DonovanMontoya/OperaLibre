@@ -38,6 +38,35 @@ const annotations = (page: Page) => page.evaluate(() =>
 const place = (page: Page) => page.evaluate(() =>
   (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start?.cfi);
 
+test('a resize before the first page reports its location lays the page out again', async ({ page }) => {
+  // epub.js reports the first location a frame after the page is shown. Hold
+  // that report back and narrow the reader in the gap, as a fold, rotation
+  // or late toolbar row can.
+  await page.addInitScript(() => {
+    let reader: unknown;
+    Object.defineProperty(window, '__operalibreReader', {
+      configurable: true,
+      get: () => reader,
+      set(value: { rendition: { reportLocation(): unknown } }) {
+        reader = value;
+        const report = value.rendition.reportLocation.bind(value.rendition);
+        let first = true;
+        value.rendition.reportLocation = () => {
+          if (!first) return report();
+          first = false;
+          document.getElementById('root')!.style.width = '900px';
+          return new Promise(resolve => setTimeout(resolve, 500)).then(report);
+        };
+      }
+    });
+  });
+  await page.goto(`${url}test/reader-catch-up.html`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation()?.start?.href)).toContain('c1.xhtml');
+  await expect(page.frameLocator('.epub-stage iframe').locator('p').first()).toBeVisible();
+});
+
 test('Focus preserves the EPUB host and rendition through resizing and returning inline', async ({ page }) => {
   await openReader(page);
   const stage = await page.locator('.epub-stage').elementHandle();

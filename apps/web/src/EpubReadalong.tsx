@@ -327,6 +327,9 @@ export function EpubReadalong({
   // off screen, so a relayout that starts the same page a few words earlier
   // does not walk the remembered place backwards on every reopen.
   const anchorCfiRef = useRef<string | null>(null);
+  // Chapter following clears the old CFI before epub.js reports the new one.
+  // Relayouts in that gap must keep the requested chapter as their target.
+  const pendingChapterHrefRef = useRef<string | null>(null);
   const pendingFollowTargetRef = useRef<{
     target: { href: string } | { cfi: string };
     retried: boolean;
@@ -366,6 +369,7 @@ export function EpubReadalong({
     readerUrlRef.current = url;
     lastLocationRef.current = null;
     anchorCfiRef.current = null;
+    pendingChapterHrefRef.current = null;
     pendingFollowTargetRef.current = null;
     restoringUntilRef.current = 0;
     handNavigatedRef.current = false;
@@ -461,7 +465,12 @@ export function EpubReadalong({
       const anchor = anchorCfiRef.current;
       if (anchor) beginRestore();
       rendition.spread(mode, 0);
-      if (anchor) void rendition.display(anchor);
+      // spread() takes the stage's new size but leaves the page it already
+      // laid out at the old height. A fold changes both at once, and the
+      // resize that follows then finds nothing to do, so the page would
+      // overflow the stage. Lay it out again instead.
+      rendition.clear();
+      void rendition.display(pendingChapterHrefRef.current ?? anchor ?? undefined).catch(() => undefined);
       setRelayoutTick((tick) => tick + 1);
     };
     if (!webSpreadWindow) {
@@ -561,6 +570,7 @@ export function EpubReadalong({
   // ask to return.
   const navigateByHand = useCallback((action: () => unknown) => {
     readerNavigationVersionRef.current += 1;
+    pendingChapterHrefRef.current = null;
     pendingFollowTargetRef.current = null;
     // Chapter-level following pulls the page just as a sentence marker does,
     // so a page turned by hand has to stop that too, or the reader is
@@ -728,6 +738,7 @@ export function EpubReadalong({
     let book: EpubBook | null = null;
     let rendition: Rendition | null = null;
     let streamedAssets: ReturnType<typeof attachEpubReadArchive> | null = null;
+    let displayRequested = false;
     const handleRelocated = (nextLocation: Location) => {
       lastLocationRef.current = nextLocation;
       locationRef.current = nextLocation;
@@ -738,6 +749,13 @@ export function EpubReadalong({
         debugLog(
           `relocated:${nextLocation.start?.cfi}..${nextLocation.end?.cfi}:p${nextLocation.start?.displayed?.page}/${nextLocation.start?.displayed?.total}:sl${container?.scrollLeft}/${container?.clientWidth}/${container?.scrollWidth}:anchor=${anchorCfiRef.current}`
         );
+      }
+      const pendingChapter = pendingChapterHrefRef.current;
+      if (pendingChapter) {
+        // An old page may report while the requested chapter is loading.
+        // It must not become the saved anchor for a subsequent relayout.
+        if (!hrefsMatch(nextLocation.start?.href ?? "", pendingChapter)) return;
+        pendingChapterHrefRef.current = null;
       }
       const EpubCfiClass = epubCfiClassRef.current;
       const pendingNavigation = pendingFollowTargetRef.current;
@@ -954,6 +972,22 @@ export function EpubReadalong({
       }
     };
 
+    // A resize clears epub.js's page and epub.js lays it out again only once
+    // it has reported a location, which trails the first display by a frame.
+    // A fold, rotation or late toolbar row in that frame would otherwise
+    // leave the reader blank.
+    const handleResized = () => {
+      const reported = !!(rendition as unknown as { location?: { start?: unknown } } | null)?.location?.start;
+      if (!displayRequested || cancelled || !rendition || reported) {
+        return;
+      }
+      readerDebugLog(`resize before first location anchor=${shortCfi(anchorCfiRef.current)}`);
+      if (anchorCfiRef.current) {
+        beginRestore();
+      }
+      void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined).catch(() => undefined);
+    };
+
     const openBook = async () => {
       try {
         const epubModule = await import("epubjs");
@@ -1050,6 +1084,7 @@ export function EpubReadalong({
         renditionRef.current = rendition;
         rendition.on("relocated", handleRelocated);
         rendition.on("rendered", handleRendered);
+        rendition.on("resized", handleResized);
         if (streamedAssets) {
           const assets = streamedAssets;
           // Streamed images and fonts load lazily in the page. If the network
@@ -1059,7 +1094,7 @@ export function EpubReadalong({
               void assets.recoverAssets().then((recovered) => {
                 if (!recovered || cancelled || !rendition) return;
                 rendition.clear();
-                void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+                void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
               }).catch(() => undefined);
             };
             contents.document.addEventListener("error", (event) => {
@@ -1117,6 +1152,7 @@ export function EpubReadalong({
         if (startAt) {
           beginRestore();
         }
+        displayRequested = true;
         try {
           await rendition.display(startAt ?? undefined);
           if (!cancelled && startAt && startAt !== originalLocation) writeStoredValue(locationStorageKey, startAt);
@@ -1213,7 +1249,7 @@ export function EpubReadalong({
         (rendition as unknown as { resize(width: number, height: number, cfi?: string): void }).resize(
           Math.floor(bounds.width),
           Math.floor(bounds.height),
-          anchorCfiRef.current ?? undefined
+          pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined
         );
         setRelayoutTick((tick) => tick + 1);
       }
@@ -1223,6 +1259,7 @@ export function EpubReadalong({
 
     return () => {
       cancelled = true;
+      pendingChapterHrefRef.current = null;
       pendingFollowTargetRef.current = null;
       debugLog("cleanup");
       readerDebugLog(`close anchor=${shortCfi(anchorCfiRef.current)}`);
@@ -1237,6 +1274,7 @@ export function EpubReadalong({
       try {
         rendition?.off("relocated", handleRelocated);
         rendition?.off("rendered", handleRendered);
+        rendition?.off("resized", handleResized);
         rendition?.destroy();
       } catch (error) {
         console.warn("EPUB rendition teardown failed", error);
@@ -1325,7 +1363,7 @@ export function EpubReadalong({
     // the old page, which now holds different words. Lay the chapter out
     // afresh and turn to the place being read.
     rendition.clear();
-    void rendition.display(anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
+    void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? locationRef.current?.start?.cfi ?? undefined);
     setRelayoutTick((tick) => tick + 1);
   }, [beginRestore, fontScale, fontScaleBucket, fontScaleBucketChanged, isReady]);
 
@@ -1371,6 +1409,7 @@ export function EpubReadalong({
     // relocation establish a new anchor in the narrated chapter so the
     // post-open settling loop cannot pull the reader back a moment later.
     anchorCfiRef.current = null;
+    pendingChapterHrefRef.current = href;
     restoringUntilRef.current = 0;
     setActiveHref(href);
     readerDebugLog(`chapterJump ${href}`);
