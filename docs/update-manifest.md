@@ -107,3 +107,25 @@ node script/release_signing.mjs verify-manifest operalibre-manifest-v1.json [fol
 ```
 
 This applies the same checks as the updaters and, given a folder, confirms that every package in it matches its manifest entry. The release workflow runs it before publishing, and it refuses to publish a release missing the manifest, a platform package, the frontend package, or, while legacy assets are on, the files older servers need.
+
+## Testing packaged upgrades
+
+Before uploading each platform's packages, the release workflow runs `script/test_release_upgrade.py`. It starts a real 0.4.6 server in a temporary installation and applies the newly built combined archive using its packaged updater. The baseline stays pinned to the first manifest release so this also tests skipping releases. The baseline archive is checked against its signed manifest before any executable is run.
+
+Rebuilds of historical tags through 0.4.6 skip this gate because they predate the launcher fixes it exercises. Releases from 0.4.7 onward run it.
+
+Each platform tests combined and server-only installations, with both a successful upgrade and rollback after a deliberately invalid new server cannot start. Checks cover server and web versions, the installed binary, health after restart, the authenticated account session, exact configuration preservation, and sample data/library files. Duplicate port settings and the blank-port `PORT` fallback are exercised as well. A failure blocks publication.
+
+Changes to the harness and release workflow also run the `Release upgrade tests` PR checks on all five platforms, using the published 0.4.6 and 0.4.7 packages. These checks validate the test harness without publishing a release; the release gate is what validates newly built application code.
+
+To run against downloaded packages locally (Python 3.12 or later):
+
+```bash
+python3 script/test_release_upgrade.py \
+  --baseline /path/to/operalibre-0.4.6-combined-macos-arm64.tar.gz \
+  --candidate /path/to/operalibre-0.4.7-combined-macos-arm64.tar.gz
+```
+
+Use the packages for the machine running the test; Windows packages are ZIPs. The script only runs disposable installations and stops their servers afterward. On Windows, cleanup checks the executable path and terminates that process directly; it does not validate the packaged Stop launcher. Verify downloaded packages before running it yourself.
+
+This gate tests package installation and recovery directly, before a candidate is signed or public. It does not exercise update discovery, signature rejection, populated-library migrations, or the entire Administration UI. Manifest/signature unit tests and the existing Linux managed-service handoff tests remain separate checks. Periodic tests through the real published update API are still useful; a healthy startup alone cannot establish that every feature or data migration works.
