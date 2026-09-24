@@ -1,0 +1,68 @@
+name: Release upgrade tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/upgrade-tests.yml'
+      - '.github/workflows/release.yml'
+      - 'script/test_release_upgrade.py'
+      - 'script/release_signing.mjs'
+      - 'release/update-trust.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: ${{ matrix.platform }} upgrade fixtures
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: windows-x64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      # Known releases exercise the harness on every supported platform.
+      # release.yml separately tests each newly built candidate before publish.
+      - name: Download and verify release fixtures
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          extension=tar.gz
+          if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
+          for version in 0.4.6 0.4.7; do
+            gh release download "${version}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern "operalibre-${version}-combined-${{ matrix.platform }}.${extension}" \
+              --pattern operalibre-manifest-v1.json --dir "fixtures/${version}"
+            node script/release_signing.mjs verify-manifest \
+              "fixtures/${version}/operalibre-manifest-v1.json" "fixtures/${version}"
+          done
+
+      - name: Test packaged upgrade and rollback
+        shell: bash
+        run: |
+          extension=tar.gz
+          if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
+          python3 script/test_release_upgrade.py \
+            --baseline "fixtures/0.4.6/operalibre-0.4.6-combined-${{ matrix.platform }}.${extension}" \
+            --candidate "fixtures/0.4.7/operalibre-0.4.7-combined-${{ matrix.platform }}.${extension}"
