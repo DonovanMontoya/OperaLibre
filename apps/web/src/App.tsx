@@ -1178,7 +1178,6 @@ function MainApp({
     : chapterSegments.slice(0, 3);
   const isViewingPlayingBook = !!selectedBook && !!playbackBook && selectedBook.id === playbackBook.id;
   const playbackGain = playbackBook ? bookGains[playbackBook.id] ?? BOOK_GAIN_DEFAULT : BOOK_GAIN_DEFAULT;
-  const selectedGain = selectedBook ? bookGains[selectedBook.id] ?? BOOK_GAIN_DEFAULT : BOOK_GAIN_DEFAULT;
   // Above unity the boost needs an engine that can supply it: AVPlayer's mixer
   // on iOS, or a Web Audio chain everywhere else — and that chain can only tap
   // a stream this page is allowed to read. That is a property of the book's own
@@ -1194,7 +1193,6 @@ function MainApp({
     return !!firstTrack && streamCanBeBoosted(mediaUrl(firstTrack.streamUrl));
   }
 
-  const selectedCanBoost = bookCanBoost(selectedBook);
   const playbackCanBoost = bookCanBoost(playbackBook);
 
   function closeReadalong() {
@@ -2192,11 +2190,9 @@ function MainApp({
         seekBy={seekBy}
         seekTo={seekTo}
         selectedBook={selectedBook}
-        selectedCanBoost={selectedCanBoost}
         selectedChapterSegments={selectedChapterSegments}
         selectedDescription={selectedDescription}
         selectedDownload={selectedDownload}
-        selectedGain={selectedGain}
         selectedSharedReaders={selectedSharedReaders}
         setChaptersOpen={setChaptersOpen}
         setDescriptionExpanded={setDescriptionExpanded}
@@ -2212,7 +2208,6 @@ function MainApp({
         togglePlayback={togglePlayback}
         trackListSectionRef={trackListSectionRef}
         upcomingChapters={upcomingChapters}
-        updateBookGain={updateBookGain}
         updateSpeed={updateSpeed}
         uploads={uploads}
         volume={volume}

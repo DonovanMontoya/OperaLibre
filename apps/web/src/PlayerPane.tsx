@@ -36,7 +36,7 @@ import {
   X
 } from "lucide-react";
 import { CoverArt, DownloadRing } from "./CoverArt";
-import { BookVolumeControl, PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
+import { PlaybackSpeedControl, ScrubSlider } from "./PlaybackControls";
 import { durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
 import { haptic } from "./native";
 import { Capacitor } from "@capacitor/core";
@@ -123,11 +123,9 @@ export function PlayerPane({
   seekBy,
   seekTo,
   selectedBook,
-  selectedCanBoost,
   selectedChapterSegments,
   selectedDescription,
   selectedDownload,
-  selectedGain,
   selectedSharedReaders,
   setChaptersOpen,
   setDescriptionExpanded,
@@ -143,7 +141,6 @@ export function PlayerPane({
   togglePlayback,
   trackListSectionRef,
   upcomingChapters,
-  updateBookGain,
   updateSpeed,
   uploads,
   volume,
@@ -213,11 +210,9 @@ export function PlayerPane({
   seekBy: (delta: number) => void;
   seekTo: (value: number) => void;
   selectedBook: Book;
-  selectedCanBoost: boolean;
   selectedChapterSegments: ChapterSegment[];
   selectedDescription: string | null;
   selectedDownload: DeviceDownloadActivity | undefined;
-  selectedGain: number;
   selectedSharedReaders: SharedProgress[];
   setChaptersOpen: Dispatch<SetStateAction<boolean>>;
   setDescriptionExpanded: Dispatch<SetStateAction<boolean>>;
@@ -233,7 +228,6 @@ export function PlayerPane({
   togglePlayback: () => void;
   trackListSectionRef: RefObject<HTMLElement | null>;
   upcomingChapters: ChapterSegment[];
-  updateBookGain: (book: Book, db: number) => void;
   updateSpeed: (value: number) => void;
   uploads: ReturnType<typeof useUploads>;
   volume: number;
@@ -765,7 +759,12 @@ export function PlayerPane({
                   ) : null}
                 </div>
               </div>
-              <h2>{selectedBook.title}</h2>
+              {/* The web sets the title in one of three sizes by its length, in
+                  a box of fixed height, so a long title neither pushes the rest
+                  of the page down nor needs a different layout. */}
+              <h2 data-length={titleLengthClass(selectedBook.title)}>
+                <span>{selectedBook.title}</span>
+              </h2>
               {!isViewingPlayingBook ? (
                 <div className="book-quick-start">
                   <button
@@ -799,12 +798,12 @@ export function PlayerPane({
                   ) : null}
                 </div>
               ) : null}
-              <p className="book-credits">
+              <p className="book-credits" title={[selectedBook.author, selectedBook.narrator ? `Narrated by ${selectedBook.narrator}` : null].filter(Boolean).join(" • ") || undefined}>
                 {selectedBook.author ? <span>{selectedBook.author}</span> : null}
                 {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
                 {!selectedBook.author && !selectedBook.narrator ? <span>{selectedBook.trackCount} tracks</span> : null}
               </p>
-              {formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
+              {native && formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
                 <div className="book-runtime" aria-label="Total runtime">
                   <span className="book-runtime-label">Runtime</span>
                   <span className="book-runtime-value">
@@ -812,22 +811,61 @@ export function PlayerPane({
                   </span>
                 </div>
               ) : null}
+              {/* On the web every book gets the same four facts in the same
+                  places, blank or not, and the subjects keep to a single
+                  scrolling line, so the page holds its shape from one book to
+                  the next. */}
+              {!native ? (
+                <>
+                  <dl className="book-colophon">
+                    {[
+                      {
+                        label: "Series",
+                        value: selectedBook.metadata.series
+                          ? `${selectedBook.metadata.series}${selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}`
+                          : null
+                      },
+                      { label: "Published", value: selectedBook.publishedDate || null },
+                      { label: "Publisher", value: selectedBook.metadata.publisher || null },
+                      {
+                        label: "Runtime",
+                        value: formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ?? null
+                      }
+                    ].map((fact) => (
+                      <div key={fact.label}>
+                        <dt>{fact.label}</dt>
+                        <dd title={fact.value ?? undefined}>{fact.value ?? "—"}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="metadata-strip book-subjects">
+                    {tagsForBook(selectedBook).map((tag) => (
+                      <span className="metadata-custom-tag" key={tag.name}>
+                        {tag.name}{tag.position ? ` · #${tag.position}` : ""}
+                      </span>
+                    ))}
+                    {selectedBook.genres.map((genre) => <span key={genre}>{genre}</span>)}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
-          <div className="metadata-strip">
-            {selectedBook.metadata.series ? (
-              <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
-            ) : null}
-            {tagsForBook(selectedBook).map((tag) => (
-              <span className="metadata-custom-tag" key={tag.name}>
-                {tag.name}{tag.position ? ` · #${tag.position}` : ""}
-              </span>
-            ))}
-            {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
-            {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
-            {selectedBook.genres.slice(0, native ? 2 : 3).map((genre) => <span key={genre}>{genre}</span>)}
-          </div>
+          {native ? (
+            <div className="metadata-strip">
+              {selectedBook.metadata.series ? (
+                <span>{selectedBook.metadata.series}{selectedBook.metadata.seriesPosition ? ` · #${selectedBook.metadata.seriesPosition}` : ""}</span>
+              ) : null}
+              {tagsForBook(selectedBook).map((tag) => (
+                <span className="metadata-custom-tag" key={tag.name}>
+                  {tag.name}{tag.position ? ` · #${tag.position}` : ""}
+                </span>
+              ))}
+              {selectedBook.publishedDate ? <span>{selectedBook.publishedDate}</span> : null}
+              {selectedBook.metadata.publisher ? <span>{selectedBook.metadata.publisher}</span> : null}
+              {selectedBook.genres.slice(0, 2).map((genre) => <span key={genre}>{genre}</span>)}
+            </div>
+          ) : null}
 
           {selectedSharedReaders.length > 0 ? (
             <section className="shared-readers" aria-label="Other listeners">
@@ -1123,94 +1161,76 @@ export function PlayerPane({
             </div>
           )}
 
-          <div className={`controls-grid controls-grid-${isViewingPlayingBook ? (native ? 3 : 4) : 1}`}>
-            {isViewingPlayingBook ? (
-              <>
-                <section className="control-section">
-                  <div className="section-label"><Gauge size={13} /> Cadence</div>
-                  <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
-                </section>
+          {isViewingPlayingBook ? (
+            <div className="controls-grid">
+              <section className="control-section">
+                <div className="section-label"><Gauge size={13} /> Cadence</div>
+                <PlaybackSpeedControl value={speed} onChange={updateSpeed} rotary={native} />
+              </section>
 
-                {/* Phones have hardware volume buttons; a second software
-                    volume just adds a card. */}
-                {!native ? (
-                  <section className="control-section">
-                    <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
+              {/* Phones have hardware volume buttons; a second software
+                  volume just adds a card. */}
+              {!native ? (
+                <section className="control-section">
+                  <label className="section-label" htmlFor="volume"><Volume2 size={13} /> Volume</label>
+                  <input
+                    id="volume"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={volume}
+                    onChange={(event) => setVolume(Number(event.currentTarget.value))}
+                  />
+                </section>
+              ) : null}
+
+              <section className="control-section">
+                <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
+                <select
+                  id="sleep"
+                  value={sleepCustomOpen ? "custom" : String(sleepMinutes)}
+                  onChange={(event) => {
+                    const choice = event.currentTarget.value;
+                    if (choice === "custom") {
+                      setSleepCustomDraft(sleepMinutes > 0 ? String(sleepMinutes) : "");
+                      setSleepCustomOpen(true);
+                      return;
+                    }
+                    configureSleepTimer(Number(choice));
+                  }}
+                >
+                  <option value="0">—</option>
+                  {sleepChoices.map((option) => (
+                    <option key={option} value={String(option)}>
+                      {formatSleepTimerMinutes(option)}
+                    </option>
+                  ))}
+                  <option value="custom">Custom…</option>
+                </select>
+                {sleepCustomOpen ? (
+                  <form className="sleep-custom" onSubmit={startCustomSleepTimer}>
                     <input
-                      id="volume"
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={volume}
-                      onChange={(event) => setVolume(Number(event.currentTarget.value))}
+                      type="number"
+                      autoFocus
+                      inputMode="numeric"
+                      enterKeyHint="done"
+                      min={SLEEP_TIMER_MIN_MINUTES}
+                      max={SLEEP_TIMER_MAX_MINUTES}
+                      step={1}
+                      placeholder="Minutes"
+                      aria-label="Custom sleep timer in minutes"
+                      value={sleepCustomDraft}
+                      onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
                     />
-                  </section>
+                    <button type="submit" disabled={sleepCustomMinutes === null}>Set</button>
+                    <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => { haptic("light"); setSleepCustomOpen(false); }}><X size={16} /></button>
+                  </form>
                 ) : null}
-
-                <section className="control-section">
-                  <label className="section-label" htmlFor="sleep"><Timer size={13} /> Nightfall</label>
-                  <select
-                    id="sleep"
-                    value={sleepCustomOpen ? "custom" : String(sleepMinutes)}
-                    onChange={(event) => {
-                      const choice = event.currentTarget.value;
-                      if (choice === "custom") {
-                        setSleepCustomDraft(sleepMinutes > 0 ? String(sleepMinutes) : "");
-                        setSleepCustomOpen(true);
-                        return;
-                      }
-                      configureSleepTimer(Number(choice));
-                    }}
-                  >
-                    <option value="0">—</option>
-                    {sleepChoices.map((option) => (
-                      <option key={option} value={String(option)}>
-                        {formatSleepTimerMinutes(option)}
-                      </option>
-                    ))}
-                    <option value="custom">Custom…</option>
-                  </select>
-                  {sleepCustomOpen ? (
-                    <form className="sleep-custom" onSubmit={startCustomSleepTimer}>
-                      <input
-                        type="number"
-                        autoFocus
-                        inputMode="numeric"
-                        enterKeyHint="done"
-                        min={SLEEP_TIMER_MIN_MINUTES}
-                        max={SLEEP_TIMER_MAX_MINUTES}
-                        step={1}
-                        placeholder="Minutes"
-                        aria-label="Custom sleep timer in minutes"
-                        value={sleepCustomDraft}
-                        onChange={(event) => setSleepCustomDraft(event.currentTarget.value)}
-                      />
-                      <button type="submit" disabled={sleepCustomMinutes === null}>Set</button>
-                      <button type="button" className="sleep-custom-cancel" aria-label="Cancel custom timer" onClick={() => { haptic("light"); setSleepCustomOpen(false); }}><X size={16} /></button>
-                    </form>
-                  ) : null}
-                  {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
-                </section>
-              </>
-            ) : null}
-
-            {/* Unlike the device volume this one belongs to the book, so it
-                is offered on the book's own page whether or not it is the
-                thing currently playing. */}
-            <section className="control-section">
-              <label className="section-label" htmlFor="book-volume">
-                <Volume2 size={13} /> Book Volume
-              </label>
-              <BookVolumeControl
-                compact
-                inputId="book-volume"
-                value={selectedGain}
-                canBoost={selectedCanBoost}
-                onChange={(db) => updateBookGain(selectedBook, db)}
-              />
-            </section>
-          </div>
+                {sleepRemaining > 0 ? <span className="sleep-copy">{formatTime(sleepRemaining)} remaining</span> : null}
+              </section>
+            </div>
+          ) : null}
 
           {selectedChapterSegments.length > 0 ? (
             <section className="track-list-section" ref={trackListSectionRef}>
@@ -1279,4 +1299,10 @@ export function PlayerPane({
       )}
     </section>
   );
+}
+
+function titleLengthClass(title: string) {
+  if (title.length <= 22) return "short";
+  if (title.length <= 44) return "medium";
+  return "long";
 }
