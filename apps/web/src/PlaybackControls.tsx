@@ -90,8 +90,10 @@ export function BookVolumeControl({
 
   const hint = canBoost ? null : (
     <span className="book-volume-hint">
-      This page can only quiet a book. Lifting one needs the phone or desktop app, or a frontend
-      served by OperaLibre itself.
+      Boost is unavailable in this browser or for this stream. Safari boost is disabled
+      to avoid distorted audio. Use the iOS app, or desktop Chrome or Firefox with a frontend
+      served by OperaLibre.
+      {db > 0 ? ` Your saved ${formatBookGainDb(db)} boost is kept for supported players.` : null}
     </span>
   );
 
@@ -101,7 +103,7 @@ export function BookVolumeControl({
     return (
       <div className="book-volume book-volume-compact">
         {slider}
-        <span className="book-volume-value">{formatBookGainDb(db)}</span>
+        <span className="book-volume-value">{formatBookGainDb(position)}</span>
         {hint}
       </div>
     );
@@ -113,7 +115,7 @@ export function BookVolumeControl({
   return (
     <div className="book-volume book-volume-full">
       <div className="book-volume-heading">
-        <output aria-live="polite">{formatBookGainDb(db)}</output>
+        <output aria-live="polite">{formatBookGainDb(position)}</output>
         <span>{BOOK_GAIN_DB_STEP} dB steps</span>
       </div>
       <div className="book-volume-slider-row">
