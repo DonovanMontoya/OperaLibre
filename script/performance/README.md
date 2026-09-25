@@ -54,6 +54,23 @@ Do not compare local timing to shared CI runners or treat a single small percent
 The manually dispatched `Performance baseline` workflow runs the portable suite and retains artifacts;
 iOS is a local Mac check. The workflow has not been dispatched as part of setup.
 
+### Readalong generation
+
+```sh
+cargo test --release --locked --manifest-path apps/server/Cargo.toml transcript_cursor_performance -- --ignored --nocapture
+cargo test --locked --manifest-path apps/server/Cargo.toml sync::tests -- --nocapture
+```
+
+The transcript benchmark compares the previous full-text scans with the advancing
+cursor over the same 600-window Unicode transcript. It checks equal output sizes
+and reports elapsed times without a timing gate. The regular tests compare text,
+section offsets, sentence boundaries, and recognition anchors across Unicode
+boundaries. With FFmpeg and FFprobe installed, the sync tests also check real AAC,
+MP3, and FLAC extraction, including exact preservation of the cached PCM samples.
+Those tests skip the codec check when the tools are absent. The timing benchmark
+excludes speech recognition and forced alignment; it does not measure whole-book
+generation speed or recognition quality.
+
 ## What the suite proves
 
 | Target | Production path | Behavior checks | Measurements |
