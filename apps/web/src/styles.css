@@ -16984,12 +16984,12 @@ html:not(.native-app) .book-subjects span {
   }
 }
 
-/* Wider than a phone the heading sits on a fixed grid: the toolbar runs
-   across the top, and the cover is pinned beside the title rather than
-   sinking to the bottom of however many lines the title and credits take. */
+/* Wider than a phone the heading sits on a fixed grid: the eyebrow and
+   actions head the text column, and the cover is pinned beside the title
+   rather than sinking to the bottom of however many lines the title and
+   credits take. */
 @media (min-width: 621px) {
   html:not(.native-app) .book-heading {
-    container: book-heading / inline-size;
     grid-template-columns: clamp(150px, 15vw, 220px) minmax(0, 1fr);
     grid-template-rows: auto auto auto auto auto auto 1fr;
     column-gap: clamp(24px, 3.2vw, 48px);
@@ -17004,7 +17004,7 @@ html:not(.native-app) .book-subjects span {
   /* Every slot below has a fixed height, so the heading is the same size
      for every book and nothing under it moves when the next one opens. */
   html:not(.native-app) .book-heading .heading-top {
-    grid-column: 1 / -1;
+    container: heading-top / inline-size;
     grid-row: 1;
     flex-wrap: nowrap;
     height: 34px;
@@ -17016,10 +17016,18 @@ html:not(.native-app) .book-subjects span {
     white-space: nowrap;
   }
 
+  /* Safe alignment and a sideways scroll are the last resort: whatever the
+     label rules below get wrong, no action can end up out of reach. */
   html:not(.native-app) .book-heading .heading-actions {
     flex-wrap: nowrap;
-    justify-content: flex-end;
+    justify-content: safe flex-end;
     min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions::-webkit-scrollbar {
+    display: none;
   }
 
   html:not(.native-app) .book-heading .heading-actions .download-btn {
@@ -17118,13 +17126,40 @@ html:not(.native-app) .book-subjects span {
     grid-row: 6;
   }
 
-  /* When the page is too narrow for every label, the actions keep one row
-     as icons; each already carries its full name as its accessible label. */
-  @container book-heading (max-width: 860px) {
+  /* When the row is too narrow for every label, the actions keep one row
+     as icons; each already carries its full name as its accessible label.
+     How narrow is too narrow depends on how many actions the book has: each
+     threshold is the eyebrow plus that many labelled buttons at their
+     longest wording (about 180px apiece at most), with a little to spare. */
+  @container heading-top (max-width: 660px) {
     html:not(.native-app) .book-heading .heading-actions .download-btn {
       padding-inline: 10px;
     }
     html:not(.native-app) .book-heading .heading-actions .download-btn > span {
+      display: none;
+    }
+  }
+  @container heading-top (max-width: 780px) {
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(4)) .download-btn {
+      padding-inline: 10px;
+    }
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(4)) .download-btn > span {
+      display: none;
+    }
+  }
+  @container heading-top (max-width: 920px) {
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(5)) .download-btn {
+      padding-inline: 10px;
+    }
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(5)) .download-btn > span {
+      display: none;
+    }
+  }
+  @container heading-top (max-width: 1070px) {
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(6)) .download-btn {
+      padding-inline: 10px;
+    }
+    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(6)) .download-btn > span {
       display: none;
     }
   }
