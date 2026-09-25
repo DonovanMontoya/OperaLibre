@@ -306,9 +306,11 @@ export function usePlaybackControls({
    * loud book down, never lift a quiet one.
    */
   function applyPlaybackVolume(audio: HTMLAudioElement) {
+    // Unsupported players retain the saved boost but play at Original. Clamp
+    // the book gain before multiplying so it cannot override device volume.
     audio.volume = nativeAudio || gainChain().isAttachedTo(audio)
       ? volume
-      : Math.min(1, volume * playbackGain);
+      : volume * Math.min(1, playbackGain);
   }
 
   function startPlayback(

@@ -32,7 +32,7 @@ import {
 import {
   shelfDownloadScanKey
 } from "./shelfFilters";
-import { PlaybackGainChain, streamCanBeBoosted } from "./playbackGain";
+import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "./playbackGain";
 import { displayBookDescription, enrichBooksFromLibation } from "./bookMetadata";
 import { buildChapterSegments, chapterAtBookPosition } from "./chapters";
 import {
@@ -1187,6 +1187,7 @@ function MainApp({
   // stream it came from would not be.
   function bookCanBoost(book: Book | null) {
     if (nativeAudio) return true;
+    if (!webAudioBoostSupported()) return false;
     if (!book) return false;
     if (book.source === "device" || downloadedBookIds.has(book.id)) return true;
     const [firstTrack] = book.tracks;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { streamCanBeBoosted } from "../src/playbackGain.ts";
+import { PlaybackGainChain, streamCanBeBoosted, webAudioBoostSupported } from "../src/playbackGain.ts";
 
 /**
  * `streamCanBeBoosted` decides whether the player may route an element through
@@ -8,10 +8,11 @@ import { streamCanBeBoosted } from "../src/playbackGain.ts";
  * page loaded opaquely outputs silence rather than sound, leaving a listener
  * with a book that looks like it is playing and cannot be heard.
  */
-function onPage(href: string, options: { webAudio?: boolean } = {}) {
+function onPage(href: string, options: { webAudio?: boolean; userAgent?: string } = {}) {
   const { origin } = new URL(href);
   (globalThis as unknown as { window: unknown }).window = {
     location: { href, origin },
+    navigator: { userAgent: options.userAgent ?? "" },
     ...(options.webAudio === false ? {} : { AudioContext: class {} })
   };
 }
@@ -20,6 +21,48 @@ test("a stream served by the same origin as the app can be boosted", () => {
   onPage("http://books.local:4000/app/");
   assert.equal(streamCanBeBoosted("http://books.local:4000/api/books/x/tracks/1/stream?token=t"), true);
   assert.equal(streamCanBeBoosted("/api/books/x/tracks/1/stream?token=t"), true);
+});
+
+test("WebKit never routes saved boosts, including offline and imported books", () => {
+  const webkitAgents = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/140.0 Mobile/15E148 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+  ];
+  for (const userAgent of webkitAgents) {
+    onPage("https://books.local/", { userAgent });
+    let contextsCreated = 0;
+    Object.assign(window, { AudioContext: class { constructor() { contextsCreated++; } } });
+    assert.equal(webAudioBoostSupported(), false, userAgent);
+    for (const stream of ["/track.m4b", "blob:https://books.local/book", "file:///book.m4b", "data:audio/wav;base64,AAAA"]) {
+      assert.equal(streamCanBeBoosted(stream), false, stream);
+    }
+    const chain = new PlaybackGainChain();
+    const element = fakeElement() as unknown as HTMLAudioElement;
+    for (const gain of [10 ** (2 / 20), 1, 0.5]) {
+      chain.setGain(gain);
+      assert.equal(chain.attach(element), false);
+      assert.equal(chain.isAttachedTo(element), false);
+    }
+    assert.equal(contextsCreated, 0, "do not tap the media element or create a context");
+  }
+});
+
+test("Chromium and Firefox keep same-origin Web Audio boost", () => {
+  for (const userAgent of [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+    "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15) Gecko/20100101 Firefox/140.0"
+  ]) {
+    onPage("https://books.local/", { userAgent });
+    assert.equal(webAudioBoostSupported(), true, userAgent);
+    assert.equal(streamCanBeBoosted("/track.m4b"), true);
+    assert.equal(streamCanBeBoosted("blob:https://books.local/book"), true);
+    assert.equal(streamCanBeBoosted("https://other.local/track.m4b"), false);
+  }
 });
 
 test("a separately hosted frontend cannot tap the server's audio", () => {
