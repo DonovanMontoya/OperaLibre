@@ -1426,6 +1426,98 @@ async fn save_position(
 }
 
 #[tokio::test]
+async fn linked_redownload_shows_finished_without_reusing_the_old_playback_position() {
+    let server = TestServer::start(2).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "other-reader").await;
+    let books = server.get("/api/books", &owner).await.json();
+    let first = books[0]["id"].as_str().unwrap();
+    let replacement = books[1]["id"].as_str().unwrap();
+    let work_store = server.get("/api/works", &owner).await.json();
+    let work_id = work_store["works"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|work| {
+            work["bookIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id == first)
+        })
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+
+    let marked = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{first}/completion"),
+            &owner,
+            serde_json::json!({"finished": true}),
+        )
+        .await;
+    assert_eq!(marked.status, StatusCode::OK, "{}", marked.text());
+    let linked = server
+        .send_json(
+            "POST",
+            "/api/works/link",
+            &owner,
+            serde_json::json!({"bookId": replacement, "workId": work_id}),
+        )
+        .await;
+    assert_eq!(linked.status, StatusCode::OK, "{}", linked.text());
+
+    let listed = server.get("/api/books", &owner).await.json();
+    let replacement_row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|book| book["id"] == replacement)
+        .unwrap();
+    assert_eq!(replacement_row["progress"]["status"], "finished");
+    assert_eq!(replacement_row["progress"]["bookPositionSeconds"], 0.0);
+    assert_eq!(
+        server
+            .get(&format!("/api/books/{replacement}"), &owner)
+            .await
+            .json()["progress"]["status"],
+        "finished"
+    );
+    assert!(
+        server
+            .get(&format!("/api/books/{replacement}/progress"), &owner)
+            .await
+            .json()
+            .is_null()
+    );
+
+    let other_view = server
+        .get(&format!("/api/books/{replacement}"), &reader)
+        .await
+        .json();
+    assert!(other_view["progress"].is_null());
+    assert_eq!(other_view["sharedProgress"][0]["status"], "finished");
+
+    let unmarked = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{replacement}/completion"),
+            &owner,
+            serde_json::json!({"finished": false}),
+        )
+        .await;
+    assert_eq!(unmarked.status, StatusCode::OK, "{}", unmarked.text());
+    assert_eq!(
+        server
+            .get(&format!("/api/books/{replacement}"), &owner)
+            .await
+            .json()["progress"]["status"],
+        "notStarted"
+    );
+}
+
+#[tokio::test]
 async fn marking_finished_changes_status_without_inventing_a_read_date() {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;

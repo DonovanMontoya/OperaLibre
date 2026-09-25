@@ -595,20 +595,41 @@ pub(crate) async fn enrich_books_with_progress(
     auth: &AuthUser,
     books: Vec<Book>,
 ) -> Result<Vec<Book>, ApiError> {
-    let own_progress = state.progress.list_for_user(&auth.id).await?;
-    let own_gains = state.book_settings.list_for_user(&auth.id).await?;
+    if books.is_empty() {
+        return Ok(books);
+    }
+    let own_gains = if let [book] = books.as_slice() {
+        HashMap::from([(
+            book.id.clone(),
+            state.book_settings.gain(&auth.id, &book.id).await?,
+        )])
+    } else {
+        state.book_settings.list_for_user(&auth.id).await?
+    };
     let sharers = progress_sharers(state, auth).await;
-    let shared_progress = state
-        .progress
-        .list_for_users(&sharers.iter().map(|(id, _)| id.clone()).collect())
-        .await?;
+    let user_ids: HashSet<String> = sharers
+        .iter()
+        .map(|(id, _)| id.clone())
+        .chain(std::iter::once(auth.id.clone()))
+        .collect();
+    let saved_progress = state.progress.list_for_users(&user_ids).await?;
+    let works = state.works.read().await;
+    let history = state.reading_history.read().await;
+    let finished_works = FinishedWorks::new(
+        &works,
+        &books,
+        &saved_progress,
+        &history.completions,
+        &user_ids,
+    );
+    drop(history);
+    drop(works);
     Ok(books
         .into_iter()
         .map(|mut book| {
-            book.progress = own_progress
-                .get(&book.id)
-                .map(|progress| summarize_book_progress(&book, progress));
-            book.shared_progress = collect_shared_progress(&book, &shared_progress, &sharers);
+            book.progress = progress_for_reader(&book, &auth.id, &saved_progress, &finished_works);
+            book.shared_progress =
+                collect_shared_progress(&book, &saved_progress, &sharers, &finished_works);
             book.volume_gain = own_gains
                 .get(&book.id)
                 .copied()
@@ -621,21 +642,12 @@ pub(crate) async fn enrich_books_with_progress(
 pub(crate) async fn book_with_progress(
     state: &AppState,
     auth: &AuthUser,
-    mut book: Book,
+    book: Book,
 ) -> Result<Book, ApiError> {
-    book.progress = state
-        .progress
-        .get(&auth.id, &book.id)
+    Ok(enrich_books_with_progress(state, auth, vec![book])
         .await?
-        .map(|progress| summarize_book_progress(&book, &progress));
-    let sharers = progress_sharers(state, auth).await;
-    let shared_progress = state
-        .progress
-        .list_for_users(&sharers.iter().map(|(id, _)| id.clone()).collect())
-        .await?;
-    book.shared_progress = collect_shared_progress(&book, &shared_progress, &sharers);
-    book.volume_gain = state.book_settings.gain(&auth.id, &book.id).await?;
-    Ok(book)
+        .pop()
+        .expect("one book was provided"))
 }
 
 /// The other listeners whose progress `auth` is allowed to see, as
@@ -658,16 +670,139 @@ pub(crate) fn visible_sharers(users: &[User], auth: &AuthUser) -> Vec<(String, S
         .collect()
 }
 
+/// A work can outlive the audiobook file that a reader finished. Keep this
+/// index separate from playback progress: a new edition inherits the finished
+/// label, but never a track or a resume position from another recording.
+#[derive(Default)]
+pub(crate) struct FinishedWorks {
+    work_by_book: HashMap<String, String>,
+    finished_at: HashMap<(String, String), String>,
+}
+
+impl FinishedWorks {
+    pub(crate) fn new(
+        works: &WorkStore,
+        books: &[Book],
+        saved_progress: &HashMap<String, Progress>,
+        completions: &[CompletionEvent],
+        user_ids: &HashSet<String>,
+    ) -> Self {
+        let requested: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        let mut index = Self::default();
+        for work in works.works.iter().filter(|work| {
+            work.book_ids
+                .iter()
+                .any(|id| requested.contains(id.as_str()))
+        }) {
+            for book_id in &work.book_ids {
+                index.work_by_book.insert(book_id.clone(), work.id.clone());
+            }
+            for user_id in user_ids {
+                for book_id in &work.book_ids {
+                    let Some(saved) = saved_progress.get(&progress_key(user_id, book_id)) else {
+                        continue;
+                    };
+                    let finished = match saved.finished_override {
+                        Some(choice) => choice,
+                        None => {
+                            let position = saved.book_position_seconds.max(0.0);
+                            let remaining = work
+                                .duration_seconds
+                                .map(|duration| (duration - position).max(0.0));
+                            book_progress_status(work.duration_seconds, remaining, position, None)
+                                == BookProgressStatus::Finished
+                        }
+                    };
+                    if finished {
+                        index.record(user_id, &work.id, &saved.updated_at);
+                    }
+                }
+            }
+        }
+        for completion in completions {
+            if !user_ids.contains(&completion.user_id) {
+                continue;
+            }
+            // An explicit later "mark unfinished" on this edition cancels its
+            // old completion as a source for the inherited shelf label.
+            if saved_progress
+                .get(&progress_key(&completion.user_id, &completion.book_id))
+                .is_some_and(|saved| saved.finished_override == Some(false))
+            {
+                continue;
+            }
+            if let Some(work_id) = index.work_by_book.get(&completion.book_id).cloned() {
+                index.record(
+                    &completion.user_id,
+                    &work_id,
+                    &completion.finished_at_ms.to_string(),
+                );
+            }
+        }
+        index
+    }
+
+    fn record(&mut self, user_id: &str, work_id: &str, updated_at: &str) {
+        let key = (user_id.to_string(), work_id.to_string());
+        let latest = self.finished_at.entry(key).or_default();
+        if progress_timestamp_millis(updated_at) >= progress_timestamp_millis(latest) {
+            *latest = updated_at.to_string();
+        }
+    }
+
+    fn finished_at(&self, user_id: &str, book_id: &str) -> Option<&str> {
+        let work_id = self.work_by_book.get(book_id)?;
+        self.finished_at
+            .get(&(user_id.to_string(), work_id.clone()))
+            .map(String::as_str)
+    }
+}
+
+pub(crate) fn progress_for_reader(
+    book: &Book,
+    user_id: &str,
+    saved_progress: &HashMap<String, Progress>,
+    finished_works: &FinishedWorks,
+) -> Option<BookProgress> {
+    let saved = saved_progress.get(&progress_key(user_id, &book.id));
+    let current = saved.map(|progress| summarize_book_progress(book, progress));
+    // A local completion choice or actual progress belongs to this edition
+    // and takes precedence over a finish inherited from another one.
+    if saved.is_some_and(|progress| progress.finished_override.is_some())
+        || current
+            .as_ref()
+            .is_some_and(|progress| progress.status != BookProgressStatus::NotStarted)
+    {
+        return current;
+    }
+    let Some(updated_at) = finished_works.finished_at(user_id, &book.id) else {
+        return current;
+    };
+    let duration = book
+        .duration_seconds
+        .filter(|duration| *duration > 0.0)
+        .or_else(|| known_duration_from_tracks(book));
+    Some(BookProgress {
+        status: BookProgressStatus::Finished,
+        finished_override: None,
+        book_position_seconds: 0.0,
+        duration_seconds: duration,
+        remaining_seconds: duration,
+        percent_complete: duration.map(|_| 0.0),
+        updated_at: updated_at.to_string(),
+    })
+}
+
 pub(crate) fn collect_shared_progress(
     book: &Book,
     saved_progress: &HashMap<String, Progress>,
     sharers: &[(String, String)],
+    finished_works: &FinishedWorks,
 ) -> Vec<SharedProgress> {
     let mut entries: Vec<SharedProgress> = sharers
         .iter()
         .filter_map(|(user_id, username)| {
-            let progress = saved_progress.get(&progress_key(user_id, book.id.as_str()))?;
-            let summary = summarize_book_progress(book, progress);
+            let summary = progress_for_reader(book, user_id, saved_progress, finished_works)?;
             // A row exists as soon as a book is opened, so untouched books
             // would otherwise report every user on the server as a reader.
             if summary.status == BookProgressStatus::NotStarted {
