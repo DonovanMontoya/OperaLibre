@@ -16,23 +16,13 @@ use std::{
 };
 use tokio::{fs, process::Command, sync::Mutex};
 
+use crate::update_manifest::{ArchiveFormat, Manifest, Package, fetch_manifest};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const RELEASE_API_URL: &str =
-    "https://api.github.com/repos/DonovanMontoya/OperaLibre/releases/latest";
-const RELEASE_DOWNLOAD_PREFIX: &str =
-    "https://github.com/DonovanMontoya/OperaLibre/releases/download/";
-const RELEASE_PAGE_PREFIX: &str = "https://github.com/DonovanMontoya/OperaLibre/releases/";
-/// Base64 Ed25519 public key every downloaded release asset must be signed
-/// with. The matching private key is the release workflow's
-/// OPERALIBRE_RELEASE_SIGNING_KEY secret; see script/release_signing.mjs.
-const RELEASE_SIGNING_PUBLIC_KEY: &str = "FhUko6re8/stEbHmAlnNv3+SwIzMSXNMUpPVl8BVifk=";
-const RELEASE_SIGNATURE_SUFFIX: &str = ".sig";
-const RELEASE_SIGNATURE_DOMAIN: &str = "operalibre-release-asset-v1";
-const MAX_RELEASE_SIGNATURE_BYTES: u64 = 1024;
 const MAX_UPDATE_PACKAGE_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_FRONTEND_PACKAGE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_SYNC_ADDON_PACKAGE_BYTES: u64 = 900 * 1024 * 1024;
@@ -194,23 +184,6 @@ struct SyncAddonPackageMetadata {
     ffmpeg: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    html_url: String,
-    published_at: Option<String>,
-    body: Option<String>,
-    assets: Vec<GithubReleaseAsset>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GithubReleaseAsset {
-    name: String,
-    browser_download_url: String,
-    size: u64,
-    digest: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallLayout {
     Combined,
@@ -275,8 +248,8 @@ impl UpdateManager {
             }
         }
 
-        let release = self.fetch_latest_release().await?;
-        let mut status = self.status_for_release(&release)?;
+        let manifest = self.server_manifest().await?;
+        let mut status = self.status_for_manifest(&manifest)?;
         status.last_update_result = self.last_update_result().await;
         *self.cache.lock().await = Some(CachedUpdateStatus {
             checked_at: Instant::now(),
@@ -325,9 +298,11 @@ impl UpdateManager {
             }
         }
 
-        let release = self.fetch_latest_release().await?;
+        let manifest = self
+            .frontend_manifest(reported_current_version.as_deref())
+            .await?;
         let status =
-            self.frontend_status_for_release(&release, reported_current_version.as_deref())?;
+            self.frontend_status_for_manifest(&manifest, reported_current_version.as_deref())?;
         *self.frontend_cache.lock().await = Some(CachedFrontendUpdateStatus {
             checked_at: Instant::now(),
             reported_current_version,
@@ -413,20 +388,19 @@ impl UpdateManager {
             status.message = Some(error.to_string());
         }
 
-        match self.fetch_latest_release().await {
-            Ok(release) => {
-                status.release_url = Some(release.html_url.clone());
-                let latest = normalize_version(&release.tag_name);
-                status.latest_version = Some(latest.clone());
-                match validated_sync_addon_asset(&release, &latest, platform) {
-                    Ok((asset, _)) => {
-                        status.package_bytes = Some(asset.size);
+        match self.server_manifest().await {
+            Ok(manifest) => {
+                status.release_url = Some(manifest.release_url.clone());
+                match sync_addon_package(&manifest, platform) {
+                    Ok(package) => {
+                        status.latest_version = Some(package.version.clone());
+                        status.package_bytes = Some(package.size);
                         status.can_install = install_capability.is_ok();
                         status.update_available = status
                             .installed_version
                             .as_deref()
                             .and_then(|version| Version::parse(version).ok())
-                            .zip(Version::parse(&latest).ok())
+                            .zip(Version::parse(&package.version).ok())
                             .is_some_and(|(installed, latest)| latest > installed);
                     }
                     Err(error) if status.message.is_none() => {
@@ -463,12 +437,10 @@ impl UpdateManager {
         let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("Another OperaLibre package is already being installed.");
         };
-        let release = self.fetch_latest_release().await?;
-        let version = normalize_version(&release.tag_name);
-        Version::parse(&version).context("Invalid release version")?;
+        let manifest = self.server_manifest().await?;
         let platform = platform_key()
             .ok_or_else(|| anyhow!("This server platform does not have a sync add-on package."))?;
-        let (asset, expected_digest) = validated_sync_addon_asset(&release, &version, platform)?;
+        let package = sync_addon_package(&manifest, platform)?;
         let install = managed_install(self.web_dist_dir.as_deref())?;
         let updates_dir = self.data_dir.join("updates");
         fs::create_dir_all(&updates_dir).await?;
@@ -477,24 +449,19 @@ impl UpdateManager {
             .tempdir_in(&updates_dir)?;
         let staging_dir = staging.path();
         let archive_path = self
-            .download_verified_asset(
-                &release,
-                asset,
-                expected_digest,
-                staging_dir,
-                MAX_SYNC_ADDON_PACKAGE_BYTES,
-            )
+            .download_package(package, staging_dir, MAX_SYNC_ADDON_PACKAGE_BYTES)
             .await?;
         let extract_dir = staging_dir.join("extracted");
-        extract_zip(
+        extract_package(
             archive_path,
+            package,
             extract_dir.clone(),
             MAX_SYNC_ADDON_EXTRACTED_BYTES,
         )
         .await?;
-        let package_root =
-            extract_dir.join(format!("operalibre-{version}-readalong-sync-{platform}"));
-        let metadata = validate_sync_addon_package(&package_root, &version, platform).await?;
+        let package_root = extract_dir.join(&package.root);
+        let metadata =
+            validate_sync_addon_package(&package_root, &package.version, platform).await?;
         make_sync_addon_executables(&package_root, &metadata).await?;
         install_sync_addon_files(
             package_root,
@@ -593,8 +560,8 @@ impl UpdateManager {
     }
 
     async fn install_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
-        let release = self.fetch_latest_release().await?;
-        let status = self.status_for_release(&release)?;
+        let manifest = self.server_manifest().await?;
+        let status = self.status_for_manifest(&manifest)?;
         if !status.update_available {
             bail!("OperaLibre is already up to date.");
         }
@@ -610,40 +577,35 @@ impl UpdateManager {
             .platform
             .as_deref()
             .ok_or_else(|| anyhow!("This server platform does not have an update package."))?;
-        let (asset, expected_digest) =
-            validated_update_asset(&release, &status.latest_version, platform)?;
+        let package = manifest
+            .package("server", Some(platform), None)
+            .ok_or_else(|| anyhow!("This server platform does not have an update package."))?;
 
         let install = managed_install(self.web_dist_dir.as_deref())?;
         // Probe afresh here: the cached answer a status check gave may be
         // hours old, and this is the moment a stale one would hurt.
         ensure_install_root_is_writable(&install.root)?;
         let updates_dir = self.data_dir.join("updates");
-        let staging_dir = updates_dir.join(format!("staging-{}-{platform}", status.latest_version));
+        let staging_dir = updates_dir.join(format!("staging-{}-{platform}", package.version));
         prune_stale_staging(&updates_dir, &staging_dir).await;
         reset_dir(&staging_dir).await?;
 
         let archive_path = self
-            .download_verified_asset(
-                &release,
-                asset,
-                expected_digest,
-                &staging_dir,
-                MAX_UPDATE_PACKAGE_BYTES,
-            )
+            .download_package(package, &staging_dir, MAX_UPDATE_PACKAGE_BYTES)
             .await?;
 
         let extract_dir = staging_dir.join("extracted");
-        extract_zip(
+        extract_package(
             archive_path,
+            package,
             extract_dir.clone(),
             MAX_UPDATE_EXTRACTED_BYTES,
         )
         .await?;
-        let package_root = extract_dir.join(format!(
-            "operalibre-{}-update-{platform}",
-            status.latest_version
-        ));
-        validate_update_package(&package_root, &status.latest_version, platform).await?;
+        // A combined package carries everything an update applies; the
+        // updater takes only the files this installation's layout uses.
+        let package_root = extract_dir.join(&package.root);
+        validate_update_package(&package_root, &package.version, platform).await?;
         make_package_executables(&package_root).await?;
 
         let updater_path = package_root.join(exe_name("operalibre-updater"));
@@ -676,14 +638,14 @@ impl UpdateManager {
             .with_context(|| format!("Could not start {}", updater_path.display()))?;
 
         Ok(UpdateInstallStarted {
-            version: status.latest_version,
+            version: package.version.clone(),
             restarting: true,
         })
     }
 
     async fn install_frontend_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
-        let release = self.fetch_latest_release().await?;
-        let status = self.frontend_status_for_release(&release, None)?;
+        let manifest = self.frontend_manifest(None).await?;
+        let status = self.frontend_status_for_manifest(&manifest, None)?;
         if !status.update_available {
             bail!("The web frontend is already up to date.");
         }
@@ -695,35 +657,31 @@ impl UpdateManager {
                 })
             );
         }
-        let (asset, expected_digest) = validated_frontend_asset(&release, &status.latest_version)?;
+        let package = manifest
+            .package("frontend", None, None)
+            .ok_or_else(|| anyhow!("This release has no web frontend package."))?;
         let web_dist_dir = managed_frontend_dir(self.web_dist_dir.as_deref())?;
         let updates_dir = self.data_dir.join("updates");
-        let staging_dir = updates_dir.join(format!("frontend-staging-{}", status.latest_version));
+        let staging_dir = updates_dir.join(format!("frontend-staging-{}", package.version));
         prune_stale_staging(&updates_dir, &staging_dir).await;
         reset_dir(&staging_dir).await?;
 
         let archive_path = self
-            .download_verified_asset(
-                &release,
-                asset,
-                expected_digest,
-                &staging_dir,
-                MAX_FRONTEND_PACKAGE_BYTES,
-            )
+            .download_package(package, &staging_dir, MAX_FRONTEND_PACKAGE_BYTES)
             .await?;
         let extract_dir = staging_dir.join("extracted");
-        extract_zip(
+        extract_package(
             archive_path,
+            package,
             extract_dir.clone(),
             MAX_UPDATE_EXTRACTED_BYTES,
         )
         .await?;
-        let package_root =
-            extract_dir.join(format!("operalibre-{}-frontend", status.latest_version));
-        validate_frontend_package(&package_root, &status.latest_version).await?;
+        let package_root = extract_dir.join(&package.root);
+        validate_frontend_package(&package_root, &package.version).await?;
         fs::write(
             package_root.join("web/VERSION.txt"),
-            format!("{}\n", status.latest_version),
+            format!("{}\n", package.version),
         )
         .await?;
         install_frontend_files(
@@ -735,47 +693,56 @@ impl UpdateManager {
         *self.frontend_cache.lock().await = None;
 
         Ok(UpdateInstallStarted {
-            version: status.latest_version,
+            version: package.version.clone(),
             restarting: false,
         })
     }
 
-    /// Downloads a release asset after checking the release's signature over
-    /// its published digest, then checks the bytes against that digest.
-    async fn download_verified_asset(
+    /// The manifest for this server build: the latest one, or the bridge
+    /// release it must pass through first. Sync add-on packages ride in the
+    /// same manifest, since which add-on fits depends on the server.
+    async fn server_manifest(&self) -> anyhow::Result<Manifest> {
+        let current = Version::parse(&current_version()).ok();
+        fetch_manifest(&self.client, "server", current.as_ref()).await
+    }
+
+    async fn frontend_manifest(&self, reported: Option<&str>) -> anyhow::Result<Manifest> {
+        let installed = reported
+            .map(str::to_string)
+            .or_else(|| installed_frontend_version(self.web_dist_dir.as_deref()).ok())
+            .and_then(|version| Version::parse(&version).ok());
+        fetch_manifest(&self.client, "frontend", installed.as_ref()).await
+    }
+
+    /// Downloads a package listed in a verified manifest and holds it to the
+    /// size and SHA-256 the manifest signed.
+    async fn download_package(
         &self,
-        release: &GithubRelease,
-        asset: &GithubReleaseAsset,
-        expected_digest: &str,
+        package: &Package,
         staging_dir: &Path,
         maximum_bytes: u64,
     ) -> anyhow::Result<PathBuf> {
-        // Before the package: a release without a valid signature is refused
-        // without spending a large download on it.
-        let signature = self.fetch_release_signature(release, asset).await?;
-        verify_release_signature(
-            RELEASE_SIGNING_PUBLIC_KEY,
-            &release.tag_name,
-            &asset.name,
-            expected_digest,
-            &signature,
-        )?;
-
+        if package.size > maximum_bytes {
+            bail!(
+                "The {} package is larger than this server accepts.",
+                package.component
+            );
+        }
         let mut response = self
             .client
-            .get(&asset.browser_download_url)
+            .get(&package.url)
             .timeout(Duration::from_secs(10 * 60))
             .send()
             .await?
             .error_for_status()?;
         if response
             .content_length()
-            .is_some_and(|content_length| content_length != asset.size)
+            .is_some_and(|content_length| content_length != package.size)
         {
-            bail!("The downloaded update package size did not match the release metadata.");
+            bail!("The downloaded update package size did not match the update manifest.");
         }
 
-        let archive_path = staging_dir.join("update.zip");
+        let archive_path = staging_dir.join("package");
         let mut archive = fs::File::create(&archive_path).await?;
         let mut digest = Sha256::new();
         let mut downloaded = 0_u64;
@@ -783,76 +750,38 @@ impl UpdateManager {
             downloaded = downloaded
                 .checked_add(chunk.len() as u64)
                 .ok_or_else(|| anyhow!("The downloaded update package is too large."))?;
-            if downloaded > maximum_bytes || downloaded > asset.size {
-                bail!("The downloaded update package is larger than the release metadata.");
+            if downloaded > package.size {
+                bail!("The downloaded update package is larger than the update manifest says.");
             }
             digest.update(&chunk);
             tokio::io::AsyncWriteExt::write_all(&mut archive, &chunk).await?;
         }
         tokio::io::AsyncWriteExt::flush(&mut archive).await?;
         drop(archive);
-        if downloaded != asset.size {
-            bail!("The downloaded update package size did not match the release metadata.");
+        if downloaded != package.size {
+            bail!("The downloaded update package size did not match the update manifest.");
         }
         let actual_digest = crate::hex_digest(digest.finalize());
-        if !actual_digest.eq_ignore_ascii_case(expected_digest) {
+        if !actual_digest.eq_ignore_ascii_case(&package.sha256) {
             bail!("The downloaded update package failed SHA-256 verification.");
         }
         Ok(archive_path)
     }
 
-    async fn fetch_release_signature(
-        &self,
-        release: &GithubRelease,
-        asset: &GithubReleaseAsset,
-    ) -> anyhow::Result<String> {
-        let signature_asset = find_signature_asset(release, asset)?;
-        let mut response = self
-            .client
-            .get(&signature_asset.browser_download_url)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await?
-            .error_for_status()?;
-        let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            body.extend_from_slice(&chunk);
-            if body.len() as u64 > MAX_RELEASE_SIGNATURE_BYTES {
-                bail!("The release signature for {} is too large.", asset.name);
-            }
-        }
-        String::from_utf8(body).context("The release signature is not text.")
-    }
-
-    async fn fetch_latest_release(&self) -> anyhow::Result<GithubRelease> {
-        self.client
-            .get(RELEASE_API_URL)
-            .timeout(Duration::from_secs(30))
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<GithubRelease>()
-            .await
-            .context("GitHub returned invalid release metadata")
-    }
-
-    fn status_for_release(&self, release: &GithubRelease) -> anyhow::Result<UpdateStatus> {
-        if !release.html_url.starts_with(RELEASE_PAGE_PREFIX) {
-            bail!("GitHub returned an untrusted release URL.");
-        }
+    fn status_for_manifest(&self, manifest: &Manifest) -> anyhow::Result<UpdateStatus> {
         let current = Version::parse(&current_version()).context("Invalid current version")?;
-        let latest_text = normalize_version(&release.tag_name);
-        let latest = Version::parse(&latest_text).context("Invalid release version")?;
         let platform = platform_key().map(str::to_string);
-        let package_available = platform.as_deref().is_some_and(|platform| {
-            validated_update_asset(release, &latest_text, platform).is_ok()
-        });
+        let package = platform
+            .as_deref()
+            .and_then(|platform| manifest.package("server", Some(platform), None));
+        let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
+        let latest = Version::parse(latest_text).context("Invalid release version")?;
         let capability = managed_install(self.web_dist_dir.as_deref());
-        let can_auto_update = package_available && capability.is_ok();
-        let message = if !package_available {
-            Some("No automatic update package is available for this server platform.".to_string())
+        let can_auto_update = package.is_some() && capability.is_ok();
+        let message = if package.is_none() {
+            Some(manifest_notice(manifest).unwrap_or_else(|| {
+                "No automatic update package is available for this server platform.".to_string()
+            }))
         } else {
             capability.err().map(|error| error.to_string())
         };
@@ -862,22 +791,19 @@ impl UpdateManager {
             update_available: latest > current,
             can_auto_update,
             platform,
-            release_url: release.html_url.clone(),
-            published_at: release.published_at.clone(),
-            notes: release.body.as_deref().map(truncate_notes),
+            release_url: manifest.release_url.clone(),
+            published_at: manifest.published.clone(),
+            notes: manifest.notes.as_deref().map(truncate_notes),
             message,
             last_update_result: None,
         })
     }
 
-    fn frontend_status_for_release(
+    fn frontend_status_for_manifest(
         &self,
-        release: &GithubRelease,
+        manifest: &Manifest,
         reported_current_version: Option<&str>,
     ) -> anyhow::Result<FrontendUpdateStatus> {
-        if !release.html_url.starts_with(RELEASE_PAGE_PREFIX) {
-            bail!("GitHub returned an untrusted release URL.");
-        }
         let installed_version = installed_frontend_version(self.web_dist_dir.as_deref());
         let installed_current = installed_version.as_ref().ok().cloned();
         let current_text = reported_current_version
@@ -886,9 +812,9 @@ impl UpdateManager {
             .unwrap_or_else(current_version);
         let current =
             Version::parse(&current_text).context("Invalid installed frontend version")?;
-        let latest_text = normalize_version(&release.tag_name);
-        let latest = Version::parse(&latest_text).context("Invalid release version")?;
-        let package_available = validated_frontend_asset(release, &latest_text).is_ok();
+        let package = manifest.package("frontend", None, None);
+        let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
+        let latest = Version::parse(latest_text).context("Invalid release version")?;
         // A combined release package ships its own web bundle, and the server
         // update replaces it wholesale. Installing the frontend on its own
         // would only let it run ahead of the server it talks to.
@@ -908,9 +834,11 @@ impl UpdateManager {
             }
             Ok(())
         });
-        let can_auto_update = package_available && capability.is_ok();
-        let message = if !package_available {
-            Some("No automatic web frontend package is available for this release.".to_string())
+        let can_auto_update = package.is_some() && capability.is_ok();
+        let message = if package.is_none() {
+            Some(manifest_notice(manifest).unwrap_or_else(|| {
+                "No automatic web frontend package is available for this release.".to_string()
+            }))
         } else {
             capability.err().map(|error| error.to_string())
         };
@@ -919,34 +847,35 @@ impl UpdateManager {
             latest_version: latest.to_string(),
             update_available: latest > current,
             can_auto_update,
-            release_url: release.html_url.clone(),
-            published_at: release.published_at.clone(),
-            notes: release.body.as_deref().map(truncate_notes),
+            release_url: manifest.release_url.clone(),
+            published_at: manifest.published.clone(),
+            notes: manifest.notes.as_deref().map(truncate_notes),
             message,
         })
     }
 }
 
-fn validated_update_asset<'a>(
-    release: &'a GithubRelease,
-    version: &str,
-    platform: &str,
-) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
-    let asset = find_update_asset(release, version, platform)?;
-    check_release_asset(asset, MAX_UPDATE_PACKAGE_BYTES, "release update package")
+/// The sync add-on runtime interface this server drives; see ADDON.json.
+const SYNC_ADDON_PROTOCOL: u32 = 1;
+
+fn sync_addon_package<'a>(manifest: &'a Manifest, platform: &str) -> anyhow::Result<&'a Package> {
+    manifest
+        .package("readalong-sync", Some(platform), Some(SYNC_ADDON_PROTOCOL))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                manifest_notice(manifest).unwrap_or_else(|| {
+                    "No sync add-on package is available for this server platform.".to_string()
+                })
+            )
+        })
 }
 
-fn validated_frontend_asset<'a>(
-    release: &'a GithubRelease,
-    version: &str,
-) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
-    let name = format!("operalibre-{version}-frontend.zip");
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == name)
-        .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
-    check_release_asset(asset, MAX_FRONTEND_PACKAGE_BYTES, "frontend package")
+fn manifest_notice(manifest: &Manifest) -> Option<String> {
+    manifest.notice.as_ref().map(|notice| match &notice.url {
+        Some(url) => format!("{} {url}", notice.message),
+        None => notice.message.clone(),
+    })
 }
 
 /// Removes every other entry under `updates_dir`, leaving only `keep`. Each
@@ -980,20 +909,6 @@ async fn prune_stale_staging(updates_dir: &Path, keep: &Path) {
             );
         }
     }
-}
-
-fn validated_sync_addon_asset<'a>(
-    release: &'a GithubRelease,
-    version: &str,
-    platform: &str,
-) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
-    let name = format!("operalibre-{version}-readalong-sync-{platform}.zip");
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == name)
-        .ok_or_else(|| anyhow!("Release asset {name} was not found."))?;
-    check_release_asset(asset, MAX_SYNC_ADDON_PACKAGE_BYTES, "sync add-on package")
 }
 
 struct InstalledSyncAddon {
@@ -1095,109 +1010,6 @@ fn exe_name(base: &str) -> String {
 
 /// The digest, size, and origin checks every release asset must pass before a
 /// byte of it is downloaded.
-fn check_release_asset<'a>(
-    asset: &'a GithubReleaseAsset,
-    max_bytes: u64,
-    label: &str,
-) -> anyhow::Result<(&'a GithubReleaseAsset, &'a str)> {
-    let digest = asset
-        .digest
-        .as_deref()
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| anyhow!("The {label} has no valid SHA-256 digest."))?;
-    if asset.size == 0 || asset.size > max_bytes {
-        bail!("The {label} has an invalid size.");
-    }
-    if !asset
-        .browser_download_url
-        .starts_with(RELEASE_DOWNLOAD_PREFIX)
-    {
-        bail!("The {label} has an untrusted download URL.");
-    }
-    Ok((asset, digest))
-}
-
-fn find_signature_asset<'a>(
-    release: &'a GithubRelease,
-    asset: &GithubReleaseAsset,
-) -> anyhow::Result<&'a GithubReleaseAsset> {
-    let name = format!("{}{RELEASE_SIGNATURE_SUFFIX}", asset.name);
-    let signature = release
-        .assets
-        .iter()
-        .find(|candidate| candidate.name == name)
-        .ok_or_else(|| anyhow!("The release has no signature for {}.", asset.name))?;
-    if signature.size == 0 || signature.size > MAX_RELEASE_SIGNATURE_BYTES {
-        bail!(
-            "The release signature for {} has an invalid size.",
-            asset.name
-        );
-    }
-    if !signature
-        .browser_download_url
-        .starts_with(RELEASE_DOWNLOAD_PREFIX)
-    {
-        bail!(
-            "The release signature for {} has an untrusted download URL.",
-            asset.name
-        );
-    }
-    Ok(signature)
-}
-
-/// What a release signature covers. Binding the tag and the asset name means
-/// a signature can neither be moved to another file nor replayed from an
-/// older release. Must match signingMessage in script/release_signing.mjs.
-fn release_signing_message(tag: &str, asset_name: &str, sha256_hex: &str) -> Vec<u8> {
-    format!(
-        "{RELEASE_SIGNATURE_DOMAIN}\n{tag}\n{asset_name}\n{}",
-        sha256_hex.to_ascii_lowercase()
-    )
-    .into_bytes()
-}
-
-fn verify_release_signature(
-    public_key_base64: &str,
-    tag: &str,
-    asset_name: &str,
-    sha256_hex: &str,
-    signature_base64: &str,
-) -> anyhow::Result<()> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let public_key: [u8; 32] = STANDARD
-        .decode(public_key_base64)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| anyhow!("This build has no valid release signing key."))?;
-    let public_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
-        .map_err(|_| anyhow!("This build has no valid release signing key."))?;
-    let signature: [u8; 64] = STANDARD
-        .decode(signature_base64.trim())
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| anyhow!("The release signature for {asset_name} is malformed."))?;
-    public_key
-        .verify_strict(
-            &release_signing_message(tag, asset_name, sha256_hex),
-            &ed25519_dalek::Signature::from_bytes(&signature),
-        )
-        .map_err(|_| anyhow!("The release signature for {asset_name} is not valid."))
-}
-
-fn find_update_asset<'a>(
-    release: &'a GithubRelease,
-    version: &str,
-    platform: &str,
-) -> anyhow::Result<&'a GithubReleaseAsset> {
-    let name = format!("operalibre-{version}-update-{platform}.zip");
-    release
-        .assets
-        .iter()
-        .find(|asset| asset.name == name)
-        .ok_or_else(|| anyhow!("Release asset {name} was not found."))
-}
-
 fn managed_frontend_dir(web_dist_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
     let web_dist_dir =
         web_dist_dir.ok_or_else(|| anyhow!("This server does not serve the web frontend."))?;
@@ -1614,42 +1426,108 @@ async fn make_sync_addon_executables(
     Ok(())
 }
 
-async fn extract_zip(
+async fn extract_package(
     archive_path: PathBuf,
+    package: &Package,
     output: PathBuf,
     maximum_extracted_bytes: u64,
 ) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        std::fs::create_dir_all(&output)?;
-        let file = std::fs::File::open(archive_path)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        let mut extracted_size = 0_u64;
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index)?;
-            extracted_size = extracted_size
-                .checked_add(entry.size())
-                .ok_or_else(|| anyhow!("The extracted update package is too large."))?;
-            if extracted_size > maximum_extracted_bytes {
-                bail!("The extracted update package is too large.");
-            }
-            let relative = entry
-                .enclosed_name()
-                .ok_or_else(|| anyhow!("The update archive contains an unsafe path."))?;
-            let target = output.join(relative);
-            if entry.is_dir() {
-                std::fs::create_dir_all(&target)?;
-                continue;
-            }
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut destination = std::fs::File::create(target)?;
-            std::io::copy(&mut entry, &mut destination)?;
-            destination.flush()?;
-        }
-        Ok(())
+    let format = package.archive_format().ok_or_else(|| {
+        anyhow!(
+            "The {} package uses an archive format this version cannot open.",
+            package.component
+        )
+    })?;
+    tokio::task::spawn_blocking(move || match format {
+        ArchiveFormat::Zip => extract_zip(&archive_path, &output, maximum_extracted_bytes),
+        ArchiveFormat::TarGz => extract_tar_gz(&archive_path, &output, maximum_extracted_bytes),
     })
     .await??;
+    Ok(())
+}
+
+fn extract_zip(
+    archive_path: &Path,
+    output: &Path,
+    maximum_extracted_bytes: u64,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(output)?;
+    let file = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut extracted_size = 0_u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        extracted_size = extracted_size
+            .checked_add(entry.size())
+            .ok_or_else(|| anyhow!("The extracted update package is too large."))?;
+        if extracted_size > maximum_extracted_bytes {
+            bail!("The extracted update package is too large.");
+        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| anyhow!("The update archive contains an unsafe path."))?;
+        let target = output.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut destination = std::fs::File::create(target)?;
+        std::io::copy(&mut entry, &mut destination)?;
+        destination.flush()?;
+    }
+    Ok(())
+}
+
+/// Extracts only plain files and folders with relative paths: a link or an
+/// absolute or `..` path could otherwise write outside the staging folder.
+fn extract_tar_gz(
+    archive_path: &Path,
+    output: &Path,
+    maximum_extracted_bytes: u64,
+) -> anyhow::Result<()> {
+    use std::path::Component;
+    std::fs::create_dir_all(output)?;
+    let file = std::fs::File::open(archive_path)?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut extracted_size = 0_u64;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let kind = entry.header().entry_type();
+        if !kind.is_file() && !kind.is_dir() {
+            bail!("The update archive contains a link or special file.");
+        }
+        let relative = entry.path()?.into_owned();
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            bail!("The update archive contains an unsafe path.");
+        }
+        extracted_size = extracted_size
+            .checked_add(entry.header().size()?)
+            .ok_or_else(|| anyhow!("The extracted update package is too large."))?;
+        if extracted_size > maximum_extracted_bytes {
+            bail!("The extracted update package is too large.");
+        }
+        let target = output.join(&relative);
+        if kind.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut destination = std::fs::File::create(&target)?;
+        std::io::copy(&mut entry, &mut destination)?;
+        destination.flush()?;
+        #[cfg(unix)]
+        if entry.header().mode()? & 0o111 != 0 {
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
     Ok(())
 }
 
@@ -1789,11 +1667,9 @@ mod tests {
     }
 
     use super::{
-        GithubRelease, GithubReleaseAsset, InstallGuard, InstallLayout, SyncAddonPackageMetadata,
-        UpdateManager, install_frontend_files, install_layout, installed_frontend_version,
-        normalize_version, platform_key, prune_stale_staging, truncate_notes,
-        validate_installed_sync_addon, validated_frontend_asset, validated_sync_addon_asset,
-        validated_update_asset,
+        InstallGuard, InstallLayout, SyncAddonPackageMetadata, UpdateManager, extract_tar_gz,
+        install_frontend_files, install_layout, installed_frontend_version, normalize_version,
+        platform_key, prune_stale_staging, truncate_notes, validate_installed_sync_addon,
     };
     use std::sync::{
         Arc,
@@ -1856,54 +1732,6 @@ mod tests {
         let truncated = truncate_notes(&notes);
         assert_eq!(truncated.chars().count(), 4_001);
         assert!(truncated.ends_with('…'));
-    }
-
-    #[test]
-    fn update_assets_require_an_exact_platform_name_and_valid_digest() {
-        let mut release = GithubRelease {
-            tag_name: "v1.2.3".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
-                .to_string(),
-            published_at: None,
-            body: None,
-            assets: vec![GithubReleaseAsset {
-                name: "operalibre-1.2.3-update-macos-arm64.zip".to_string(),
-                browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-update-macos-arm64.zip".to_string(),
-                size: 1024,
-                digest: Some(format!("sha256:{}", "a".repeat(64))),
-            }],
-        };
-
-        assert!(validated_update_asset(&release, "1.2.3", "macos-arm64").is_ok());
-        assert!(validated_update_asset(&release, "1.2.3", "macos-x64").is_err());
-        release.assets[0].digest = Some("sha256:not-a-digest".to_string());
-        assert!(validated_update_asset(&release, "1.2.3", "macos-arm64").is_err());
-    }
-
-    #[test]
-    fn sync_addon_assets_require_an_exact_platform_name_and_valid_digest() {
-        let platform = platform_key().unwrap();
-        let name = format!("operalibre-1.2.3-readalong-sync-{platform}.zip");
-        let mut release = GithubRelease {
-            tag_name: "v1.2.3".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
-                .to_string(),
-            published_at: None,
-            body: None,
-            assets: vec![GithubReleaseAsset {
-                browser_download_url: format!(
-                    "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/{name}"
-                ),
-                name,
-                size: 1024,
-                digest: Some(format!("sha256:{}", "b".repeat(64))),
-            }],
-        };
-
-        assert!(validated_sync_addon_asset(&release, "1.2.3", platform).is_ok());
-        assert!(validated_sync_addon_asset(&release, "1.2.3", "wrong-platform").is_err());
-        release.assets[0].digest = None;
-        assert!(validated_sync_addon_asset(&release, "1.2.3", platform).is_err());
     }
 
     #[test]
@@ -2012,28 +1840,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn frontend_assets_require_an_exact_name_and_valid_digest() {
-        let mut release = GithubRelease {
-            tag_name: "v1.2.3".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
-                .to_string(),
-            published_at: None,
-            body: None,
-            assets: vec![GithubReleaseAsset {
-                name: "operalibre-1.2.3-frontend.zip".to_string(),
-                browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip".to_string(),
-                size: 1024,
-                digest: Some(format!("sha256:{}", "b".repeat(64))),
-            }],
-        };
-
-        assert!(validated_frontend_asset(&release, "1.2.3").is_ok());
-        assert!(validated_frontend_asset(&release, "1.2.4").is_err());
-        release.assets[0].browser_download_url = "https://example.com/frontend.zip".to_string();
-        assert!(validated_frontend_asset(&release, "1.2.3").is_err());
-    }
-
     #[tokio::test]
     async fn frontend_install_replaces_files_and_keeps_a_rollback_copy() {
         let root = tempfile::tempdir().unwrap();
@@ -2078,22 +1884,17 @@ mod tests {
         std::fs::write(web.join("index.html"), "server frontend").unwrap();
         std::fs::write(web.join("VERSION.txt"), "1.0.0\n").unwrap();
         let manager = UpdateManager::new(root.path().join("data"), Some(web), 4000).unwrap();
-        let release = GithubRelease {
-            tag_name: "v2.0.0".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v2.0.0"
-                .to_string(),
-            published_at: None,
-            body: None,
-            assets: vec![GithubReleaseAsset {
-                name: "operalibre-2.0.0-frontend.zip".to_string(),
-                browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v2.0.0/operalibre-2.0.0-frontend.zip".to_string(),
-                size: 1024,
-                digest: Some(format!("sha256:{}", "c".repeat(64))),
-            }],
-        };
+        let manifest = crate::update_manifest::unsigned_manifest(&format!(
+            r#"{{"type":"manifest","schema":1,"version":"2.0.0",
+            "releaseUrl":"https://github.com/DonovanMontoya/OperaLibre/releases/tag/2.0.0",
+            "packages":[{{"component":"frontend","platform":"any","version":"2.0.0",
+            "url":"https://example.com/frontend.zip","sha256":"{}","size":1024,
+            "format":"zip","root":"operalibre-2.0.0-frontend"}}]}}"#,
+            "c".repeat(64)
+        ));
 
         let status = manager
-            .frontend_status_for_release(&release, Some("1.5.0"))
+            .frontend_status_for_manifest(&manifest, Some("1.5.0"))
             .unwrap();
         assert_eq!(status.current_version, "1.5.0");
         assert!(status.update_available);
@@ -2148,106 +1949,104 @@ mod tests {
         );
     }
 
-    // The vector script/release_signing.test.mjs produces from its test-only
-    // seed (the bytes 0..31). Checking it here keeps the Node signer and this
-    // verifier agreeing on the signed message byte for byte.
-    const TEST_SIGNING_PUBLIC_KEY: &str = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
-    const TEST_FRONTEND_SIGNATURE: &str =
-        "S+dfVq5MbRa7X9TiSmWdMb8qv4UBayZ3Pyvq3czipsJY4dwCmJrHejnU9Rh8MFjW7I0vDGxFpDSb3AP0dfZTBQ==";
+    /// Path, kind, contents and link target of one archive entry.
+    type TarEntry<'a> = (&'a str, tar::EntryType, &'a [u8], Option<&'a str>);
 
-    #[test]
-    fn release_signatures_from_the_signing_script_verify() {
-        let verify = |tag: &str, name: &str, digest: &str, signature: &str| {
-            super::verify_release_signature(TEST_SIGNING_PUBLIC_KEY, tag, name, digest, signature)
-        };
-        let frontend = "operalibre-1.2.3-frontend.zip";
-        let digest = "b".repeat(64);
-        assert!(verify("v1.2.3", frontend, &digest, TEST_FRONTEND_SIGNATURE).is_ok());
-        assert!(
-            verify(
-                "v1.2.3",
-                frontend,
-                &digest.to_uppercase(),
-                &format!("{TEST_FRONTEND_SIGNATURE}\n")
-            )
-            .is_ok(),
-            "digest case and a trailing newline in the .sig file do not matter"
-        );
-
-        assert!(verify("v1.2.2", frontend, &digest, TEST_FRONTEND_SIGNATURE).is_err());
-        assert!(
-            verify(
-                "v1.2.3",
-                "operalibre-1.2.3-update-linux-x64.zip",
-                &digest,
-                TEST_FRONTEND_SIGNATURE
-            )
-            .is_err()
-        );
-        assert!(verify("v1.2.3", frontend, &"c".repeat(64), TEST_FRONTEND_SIGNATURE).is_err());
-        assert!(verify("v1.2.3", frontend, &digest, "not base64!").is_err());
-        assert!(verify("v1.2.3", frontend, &digest, "AAAA").is_err());
-        assert!(
-            super::verify_release_signature(
-                "not-a-key",
-                "v1.2.3",
-                frontend,
-                &digest,
-                TEST_FRONTEND_SIGNATURE
-            )
-            .is_err()
-        );
-    }
-
-    /// The placeholder must never ship: every update would be refused.
-    #[test]
-    fn the_built_in_release_signing_key_is_a_valid_ed25519_key() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-        let bytes: [u8; 32] = STANDARD
-            .decode(super::RELEASE_SIGNING_PUBLIC_KEY)
-            .expect("RELEASE_SIGNING_PUBLIC_KEY is not base64")
-            .try_into()
-            .expect("RELEASE_SIGNING_PUBLIC_KEY is not 32 bytes");
-        assert!(ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok());
+    fn tar_gz(entries: &[TarEntry]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, kind, bytes, link) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(*kind);
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o755);
+            if let Some(link) = link {
+                header.set_link_name(link).unwrap();
+            }
+            // Written raw: the builder's own path checks would refuse the
+            // unsafe names these tests need.
+            let name = &mut header.as_old_mut().name;
+            name[..path.len()].copy_from_slice(path.as_bytes());
+            header.set_cksum();
+            builder.append(&header, *bytes).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
     }
 
     #[test]
-    fn signatures_must_be_release_assets_named_for_their_package() {
-        let package = super::GithubReleaseAsset {
-            name: "operalibre-1.2.3-frontend.zip".to_string(),
-            browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip".to_string(),
-            size: 1024,
-            digest: Some(format!("sha256:{}", "b".repeat(64))),
-        };
-        let signature = super::GithubReleaseAsset {
-            name: "operalibre-1.2.3-frontend.zip.sig".to_string(),
-            browser_download_url: "https://github.com/DonovanMontoya/OperaLibre/releases/download/v1.2.3/operalibre-1.2.3-frontend.zip.sig".to_string(),
-            size: 89,
-            digest: None,
-        };
-        let mut release = super::GithubRelease {
-            tag_name: "v1.2.3".to_string(),
-            html_url: "https://github.com/DonovanMontoya/OperaLibre/releases/tag/v1.2.3"
-                .to_string(),
-            published_at: None,
-            body: None,
-            assets: vec![package.clone()],
-        };
-        assert!(
-            super::find_signature_asset(&release, &package).is_err(),
-            "an unsigned release must be refused"
+    fn tar_packages_extract_files_and_executable_bits() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("package.tar.gz");
+        std::fs::write(
+            &archive,
+            tar_gz(&[
+                ("pkg/", tar::EntryType::Directory, b"", None),
+                (
+                    "pkg/operalibre-server",
+                    tar::EntryType::Regular,
+                    b"server",
+                    None,
+                ),
+                ("pkg/web/index.html", tar::EntryType::Regular, b"web", None),
+            ]),
+        )
+        .unwrap();
+        let output = root.path().join("out");
+        extract_tar_gz(&archive, &output, 1024).unwrap();
+        assert_eq!(
+            std::fs::read(output.join("pkg/operalibre-server")).unwrap(),
+            b"server"
         );
+        assert_eq!(
+            std::fs::read(output.join("pkg/web/index.html")).unwrap(),
+            b"web"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(output.join("pkg/operalibre-server"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+    }
 
-        release.assets.push(signature.clone());
-        assert!(super::find_signature_asset(&release, &package).is_ok());
+    #[test]
+    fn tar_packages_cannot_escape_or_link_out_of_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("package.tar.gz");
+        let cases: [&[TarEntry]; 4] = [
+            &[("../escape", tar::EntryType::Regular, b"x", None)],
+            &[("/absolute", tar::EntryType::Regular, b"x", None)],
+            &[(
+                "pkg/link",
+                tar::EntryType::Symlink,
+                b"",
+                Some("/etc/passwd"),
+            )],
+            &[("pkg/hard", tar::EntryType::Link, b"", Some("../escape"))],
+        ];
+        for entries in cases {
+            std::fs::write(&archive, tar_gz(entries)).unwrap();
+            let output = root.path().join("out");
+            assert!(
+                extract_tar_gz(&archive, &output, 1024).is_err(),
+                "{:?}",
+                entries[0].0
+            );
+        }
+        assert!(!root.path().join("escape").exists());
 
-        release.assets[1].browser_download_url = "https://example.com/forged.sig".to_string();
-        assert!(super::find_signature_asset(&release, &package).is_err());
-
-        release.assets[1] = super::GithubReleaseAsset {
-            size: super::MAX_RELEASE_SIGNATURE_BYTES + 1,
-            ..signature
-        };
-        assert!(super::find_signature_asset(&release, &package).is_err());
+        std::fs::write(
+            &archive,
+            tar_gz(&[("pkg/big", tar::EntryType::Regular, &[0; 2048], None)]),
+        )
+        .unwrap();
+        assert!(extract_tar_gz(&archive, &root.path().join("big"), 1024).is_err());
     }
 }

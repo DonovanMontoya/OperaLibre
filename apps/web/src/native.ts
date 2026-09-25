@@ -25,7 +25,9 @@ function installNativeViewportSync(root: HTMLElement): void {
     // small area above the keyboard.
     const layoutHeight = Math.max(1, Math.round(window.innerHeight));
     root.style.setProperty("--native-viewport-height", `${visibleHeight}px`);
+    root.style.setProperty("--native-viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
     root.style.setProperty("--native-layout-height", `${layoutHeight}px`);
+    root.classList.toggle("native-keyboard-open", layoutHeight - visibleHeight > 120);
   };
 
   const scheduleSync = () => {
@@ -53,6 +55,7 @@ function installNativeViewportSync(root: HTMLElement): void {
   window.addEventListener("resize", scheduleSync, { passive: true });
   window.addEventListener("orientationchange", handleOrientationChange, { passive: true });
   viewport?.addEventListener("resize", scheduleSync, { passive: true });
+  viewport?.addEventListener("scroll", scheduleSync, { passive: true });
 }
 
 /**

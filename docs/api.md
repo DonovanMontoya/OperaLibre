@@ -134,6 +134,8 @@ Audio tracks are streamed with HTTP range requests for seeking. The exact track 
 
 Book responses carry a `sharedProgress` array describing what the *other* accounts on the server have done with the book — `userId`, `username`, `status` (`inProgress` or `finished`), `percentComplete`, and `updatedAt`. Sharing is reciprocal and controlled by each account's `shareProgress` flag, which defaults to on: an account that has turned sharing off is omitted from everyone else's `sharedProgress` and receives an empty array itself. Books nobody else has started omit the field entirely.
 
+If a reader finished another edition linked to the same work, a book listing or detail response shows this edition as `finished` even when it has no saved playback position of its own. The inherited summary starts at position zero; `GET /api/books/{book_id}/progress` remains `null` until this edition has its own checkpoint. A completion choice or listening progress on this edition takes priority. Shared progress follows the same rule for readers who have opted into sharing.
+
 #### Companions
 
 Every document and picture found beside a book's audio is listed in the book's `companions` array, each classified by what it holds rather than by its extension:
