@@ -279,6 +279,7 @@ export function renderEpubReader({
             : null
         }
         syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
+        audioChapters={selectedBook.chapters}
         positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
         followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
         onSeekTo={

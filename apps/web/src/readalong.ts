@@ -251,10 +251,26 @@ export function findActiveFragmentIndex(
   if (best < 0) {
     return -1;
   }
-  // Advancing sentence selection should not make the final highlight disappear
-  // before its real end time.
-  const activeUntil = fragments[best + 1]?.startSeconds ?? fragments[best].endSeconds + boundedLead;
+  // A short pause belongs to the preceding sentence. A long unmapped stretch
+  // may be an illustrated page being narrated, so do not keep that sentence
+  // highlighted all the way into the next chapter.
+  const nextStart = fragments[best + 1]?.startSeconds;
+  const activeUntil = nextStart === undefined
+    ? fragments[best].endSeconds + boundedLead
+    : Math.min(nextStart, fragments[best].endSeconds + boundedLead + 5);
   return selectionSeconds < activeUntil ? best : -1;
+}
+
+/** A heading image can be off-screen even when its section is already open. */
+export function shouldTurnToIllustration(
+  gap: { href: string; cfi?: string; heading?: boolean },
+  currentHref: string,
+  currentPage: number | undefined,
+  cfiOnPage: boolean
+) {
+  if (cfiOnPage) return false;
+  if (gap.heading) return !hrefsMatch(currentHref, gap.href) || currentPage !== 1;
+  return !!gap.cfi || !hrefsMatch(currentHref, gap.href);
 }
 
 /**
