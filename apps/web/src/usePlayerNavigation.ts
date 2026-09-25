@@ -63,7 +63,7 @@ export function usePlayerNavigation({
   // carried across. The native shells keep their own navigation motion.
   function withWebViewTransition(update: () => void) {
     const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void) => unknown;
+      startViewTransition?: (callback: () => void | Promise<void>) => unknown;
     };
     if (
       native
@@ -71,9 +71,27 @@ export function usePlayerNavigation({
       || window.matchMedia("(prefers-reduced-motion: reduce)").matches
     ) {
       update();
+      showNewPageFromTop();
       return;
     }
-    transitionDocument.startViewTransition(() => flushSync(update));
+    // The page's sections rise in one after another when the app first
+    // loads. Replayed inside a page turn they would still be arriving after
+    // the turn has finished, and the heading — cover and all — would blink
+    // in behind the cover that has just landed. From the first turn on, the
+    // turn is the only motion.
+    document.documentElement.dataset.webPageTurned = "";
+    transitionDocument.startViewTransition(async () => {
+      flushSync(update);
+      // The old page has already been captured, so jumping is invisible;
+      // a smooth scroll would instead drag the new page while it fades in.
+      showNewPageFromTop();
+      await coverPainted(playerPaneRef.current);
+    });
+  }
+
+  function showNewPageFromTop() {
+    playerPaneRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function selectBook(book: Book) {
@@ -170,8 +188,6 @@ export function usePlayerNavigation({
       }
       setNativePlayerView("now");
     });
-    playerPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function handlePlayerPaneScroll(event: React.UIEvent<HTMLElement>) {
@@ -237,4 +253,19 @@ export function usePlayerNavigation({
     toggleGamesEnabled,
     withWebViewTransition
   };
+}
+
+/**
+ * Resolves once the page's large cover can be drawn, so the page turn
+ * captures the new cover rather than an empty frame that fills in once the
+ * turn has ended. A slow image is not worth holding the turn for: after a
+ * moment the turn goes ahead and the cover arrives as it would have anyway.
+ */
+function coverPainted(pane: HTMLElement | null) {
+  const covers = [...(pane?.querySelectorAll<HTMLImageElement>("img.large-cover") ?? [])];
+  if (covers.length === 0) return Promise.resolve();
+  return Promise.race([
+    Promise.all(covers.map((cover) => cover.decode().catch(() => undefined))).then(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 200))
+  ]);
 }
