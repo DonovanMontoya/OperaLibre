@@ -31,6 +31,7 @@ import {
   normalizeSyncNeedle,
   readerStorageKey,
   repeatedNarratedPageTurn,
+  shouldTurnToIllustration,
   shouldOpenPlayingChapter
 } from "./readalong";
 import {
@@ -52,9 +53,10 @@ import {
   readStoredFontScale
 } from "./readerFontScale";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
+import { findIllustrationGaps, illustrationGapAt, type IllustrationGap } from "./readerIllustrationGaps";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { SyncFragment } from "./types";
+import type { Chapter, SyncFragment } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import { useLandscapeOrientation, useWideSpreadWindow } from "./useOrientation";
 
@@ -258,6 +260,7 @@ export function EpubReadalong({
   listeningChapter,
   syncTarget,
   syncFragments,
+  audioChapters,
   positionSeconds,
   followLeadSeconds = 0,
   onSeekTo,
@@ -281,6 +284,7 @@ export function EpubReadalong({
   listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
+  audioChapters?: Chapter[];
   positionSeconds: number;
   /** A small optional lead for switching to the next narrated sentence. */
   followLeadSeconds?: number;
@@ -386,6 +390,7 @@ export function EpubReadalong({
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [illustrationGaps, setIllustrationGaps] = useState<IllustrationGap[]>([]);
   // The book is still downloading or unpacking after a while: worth a word
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
@@ -1416,12 +1421,30 @@ export function EpubReadalong({
     void renditionRef.current?.display(href);
   }, [follow, followRequest, isReady, syncTarget, toc]);
 
+  useEffect(() => {
+    const book = bookRef.current;
+    if (!isReady || !book || !syncFragments?.length) {
+      setIllustrationGaps([]);
+      return;
+    }
+    let cancelled = false;
+    void findIllustrationGaps(book, syncFragments, audioChapters).then((gaps) => {
+      if (!cancelled) setIllustrationGaps(gaps);
+    });
+    return () => { cancelled = true; };
+  }, [audioChapters, isReady, syncFragments, url]);
+
+  const illustrationGap = useMemo(
+    () => illustrationGapAt(illustrationGaps, positionSeconds),
+    [illustrationGaps, positionSeconds]
+  );
+
   const fragmentIndex = useMemo(
     () =>
-      syncFragments && syncFragments.length > 0
+      syncFragments && syncFragments.length > 0 && !illustrationGap
         ? findActiveFragmentIndex(syncFragments, positionSeconds, followLeadSeconds)
         : -1,
-    [followLeadSeconds, positionSeconds, syncFragments]
+    [followLeadSeconds, illustrationGap, positionSeconds, syncFragments]
   );
 
   const removeAnnotation = useCallback((cfi: string | null) => {
@@ -1454,6 +1477,26 @@ export function EpubReadalong({
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
       narratedRangeRef.current = null;
+      const pictureTarget = illustrationGap?.cfi ?? illustrationGap?.href;
+      const EpubCfiClass = epubCfiClassRef.current;
+      const cfiOnPage = !!(illustrationGap?.cfi && EpubCfiClass && location?.start?.cfi && location.end?.cfi
+        && anchorOnPage(
+          illustrationGap.cfi,
+          { start: location.start.cfi, end: location.end.cfi },
+          (a, b) => new EpubCfiClass().compare(a, b)
+        ));
+      if (followRef.current && illustrationGap && pictureTarget && isReady && rendition && location
+        && autoNavHrefRef.current !== pictureTarget
+        && shouldTurnToIllustration(
+          illustrationGap,
+          location.start?.href ?? "",
+          location.start?.displayed?.page,
+          cfiOnPage
+        )) {
+        autoNavHrefRef.current = pictureTarget;
+        followTakesPage(illustrationGap.cfi ? { cfi: illustrationGap.cfi } : { href: illustrationGap.href });
+        void rendition.display(pictureTarget);
+      }
       return;
     }
     if (!isReady || !rendition || !location) {
@@ -1583,7 +1626,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followRequest, followTakesPage, fragmentIndex, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
+  }, [ensureSearchIndex, follow, followRequest, followTakesPage, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, syncFragments, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
@@ -1614,7 +1657,9 @@ export function EpubReadalong({
     ? follow
       ? fragmentIndex >= 0
         ? `${followLabel} · ${locationLabel}`
-        : `Waiting for narration · ${locationLabel}`
+        : illustrationGap
+          ? `${illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"} · ${locationLabel}`
+          : `Waiting for narration · ${locationLabel}`
       : `Reading freely · ${locationLabel}`
     : syncTarget
       ? `Chapter sync · ${locationLabel}`

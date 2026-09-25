@@ -12,6 +12,7 @@ import {
   readAlongMode,
   readalongMatchScore,
   repeatedNarratedPageTurn,
+  shouldTurnToIllustration,
   shouldOpenPlayingChapter,
   syncMapPrecision
 } from "../src/readalong.ts";
@@ -89,6 +90,17 @@ describe("sync maps", () => {
     assert.equal(findActiveFragmentIndex(fragments, 3), 1);
     assert.equal(findActiveFragmentIndex(fragments, 7), 2);
     assert.equal(findActiveFragmentIndex(fragments, 9), -1);
+  });
+
+  it("clears the previous sentence during a long untexted chapter", () => {
+    const illustrated = [
+      { startSeconds: 0, endSeconds: 4, href: "chapter-one.xhtml", text: "The end." },
+      { startSeconds: 74, endSeconds: 79, href: "chapter-two.xhtml", text: "The beginning." }
+    ];
+    assert.equal(findActiveFragmentIndex(illustrated, 6), 0);
+    assert.equal(findActiveFragmentIndex(illustrated, 10), -1);
+    assert.equal(findActiveFragmentIndex(illustrated, 73), -1);
+    assert.equal(findActiveFragmentIndex(illustrated, 74), 1);
   });
 
   it("can switch a few syllables early without shortening the final sentence", () => {
@@ -261,6 +273,14 @@ describe("narrated page-turn dedupe", () => {
     assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 3), true);
     assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 4), false);
   });
+});
+
+it("returns to an image heading at the start of the current EPUB section", () => {
+  const heading = { href: "chapter.xhtml", heading: true };
+  assert.equal(shouldTurnToIllustration(heading, "chapter.xhtml", 4, false), true);
+  assert.equal(shouldTurnToIllustration(heading, "chapter.xhtml", 1, false), false);
+  assert.equal(shouldTurnToIllustration(heading, "previous.xhtml", 1, false), true);
+  assert.equal(shouldTurnToIllustration({ href: "chapter.xhtml" }, "chapter.xhtml", 4, false), false);
 });
 
 describe("is the remembered place on this page", () => {

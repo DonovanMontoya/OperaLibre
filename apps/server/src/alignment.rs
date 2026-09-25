@@ -1142,10 +1142,33 @@ pub fn find_window_anchor(
         .collect();
     let chain = longest_increasing_chain(&matches);
 
+    // The first five-word match can begin a few words into the transcript
+    // when recognition misspells a name near the start. Keep looking for a
+    // shorter match to the transcript's opening before that anchor. Otherwise
+    // the forced aligner spreads a narrated image heading across the first
+    // real text sentences.
     let lead_in_seconds = chain
         .first()
-        .filter(|(_, word_index)| *word_index == 0)
-        .map(|(recognized_index, _)| recognized[*recognized_index].start_time.max(0.0))
+        .and_then(|(recognized_index, word_index)| {
+            if *word_index == 0 {
+                return Some(recognized[*recognized_index].start_time.max(0.0));
+            }
+            if *word_index > ANCHOR_NGRAM || *recognized_index < 2 {
+                return None;
+            }
+            for length in (2..=(*word_index).min(*recognized_index)).rev() {
+                for start in (0..=*recognized_index - length).rev() {
+                    if recognized[start..start + length]
+                        .iter()
+                        .map(|word| word.text.as_str())
+                        .eq(words[..length].iter().map(|word| word.text.as_str()))
+                    {
+                        return Some(recognized[start].start_time.max(0.0));
+                    }
+                }
+            }
+            None
+        })
         .unwrap_or(0.0);
 
     let end = chain
@@ -2302,6 +2325,24 @@ Go away said the cat. Then it rained for the rest of the day",
         // "cat." is recognized word 32 (10 unscripted + 11 + 7 + 5 words
         // before it): it ends at 32 * 0.5 + 0.4.
         assert!((end.seconds - 16.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn window_anchor_skips_an_image_heading_when_a_name_is_misrecognized() {
+        let transcript = "EIGHT YEARS AGO\n\nGavilar was starting to look worn. \
+Dalinar stood at the back of the room.";
+        let recognized = spoken(
+            "Part four names chapter voices eight years ago Gavallar was starting \
+to look worn Dalinar stood at the back of the room",
+            0.0,
+        );
+
+        let anchor = find_window_anchor(&recognized, transcript, 0, 1000, 100.0);
+
+        // The first five-word match begins at "was", but the three opening
+        // words were recognized just before the misspelled name.
+        assert!((anchor.lead_in_seconds - 2.5).abs() < 1e-9);
+        assert!(anchor.end.is_some());
     }
 
     #[test]

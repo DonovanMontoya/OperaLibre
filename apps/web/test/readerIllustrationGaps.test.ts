@@ -1,0 +1,210 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import type { Book as EpubBook } from "epubjs";
+import type { Chapter } from "../src/types.ts";
+import { findIllustrationGaps, illustrationGapAt } from "../src/readerIllustrationGaps.ts";
+
+function chapter(startSeconds: number): Chapter {
+  return { id: String(startSeconds), title: "Chapter", trackId: "audio", trackIndex: 0, startSeconds, endSeconds: null, source: "embedded" };
+}
+
+function headingBody() {
+  return {
+    children: [{ matches: () => false, querySelector: () => ({}), textContent: "" }],
+    textContent: "",
+    querySelector: () => ({})
+  };
+}
+
+it("shows an image-only spine page during an unmapped narrated interval", async () => {
+  const picture = {
+    href: "illustration.xhtml",
+    index: 1,
+    document: { body: { textContent: "", querySelector: () => ({}) } },
+    load: async () => undefined
+  };
+  const sections = [
+    { href: "before.xhtml", index: 0 },
+    picture,
+    { href: "after.xhtml", index: 2, prev: () => picture }
+  ];
+  const book = {
+    spine: {
+      get: (key: string | number) => sections.find((section) => section.href === key || section.index === key)
+    },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 4, href: "before.xhtml", text: "Before." },
+    { startSeconds: 74, endSeconds: 79, href: "after.xhtml", text: "After." }
+  ];
+
+  const gaps = await findIllustrationGaps(book, fragments);
+  assert.deepEqual(gaps, [{ startSeconds: 9, endSeconds: 74, href: "illustration.xhtml" }]);
+  assert.equal(illustrationGapAt(gaps, 8), null);
+  assert.equal(illustrationGapAt(gaps, 10)?.href, "illustration.xhtml");
+  assert.equal(illustrationGapAt(gaps, 74), null);
+});
+
+it("turns through two narrated picture pages at audiobook chapter markers", async () => {
+  const image = (href: string, index: number) => ({
+    href, index,
+    document: { body: { textContent: "", querySelector: () => ({}) } },
+    load: async () => undefined
+  });
+  const sections = [
+    { href: "before.html", index: 0 },
+    image("part-title.html", 1),
+    image("annotated-map.html", 2),
+    { href: "after.html", index: 3 }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 4, href: "before.html", text: "Before." },
+    { startSeconds: 184, endSeconds: 190, href: "after.html", text: "After." }
+  ];
+  const gaps = await findIllustrationGaps(book, fragments, [chapter(7), chapter(18), chapter(176)]);
+  assert.deepEqual(gaps, [
+    { startSeconds: 7, endSeconds: 18, href: "part-title.html" },
+    { startSeconds: 18, endSeconds: 184, href: "annotated-map.html" }
+  ]);
+  assert.equal(illustrationGapAt(gaps, 17)?.href, "part-title.html");
+  assert.equal(illustrationGapAt(gaps, 18)?.href, "annotated-map.html");
+});
+
+it("finds a narrated image between mapped snippets inside one EPUB section", async () => {
+  const text = (value: string) => ({ nodeType: 3, textContent: value });
+  const picture = { nodeType: 1, localName: "img", childNodes: [] };
+  const body = {
+    nodeType: 1, localName: "body",
+    childNodes: [text("THE TEN ESSENCES AND THEIR HISTORICAL ASSOCIATIONS"), picture, text("The preceding list is imperfect.")]
+  };
+  const section = {
+    href: "ars.html", index: 0,
+    document: { body },
+    load: async () => undefined,
+    cfiFromElement: (element: unknown) => element === picture ? "epubcfi(/6/2!/4/2)" : ""
+  };
+  const book = {
+    spine: { get: (key: string | number) => key === 0 || key === "ars.html" ? section : undefined },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 4, href: "ars.html", text: "THE TEN ESSENCES AND THEIR HISTORICAL ASSOCIATIONS" },
+    { startSeconds: 204, endSeconds: 210, href: "ars.html", text: "The preceding list is imperfect." }
+  ];
+  assert.deepEqual(await findIllustrationGaps(book, fragments), [{
+    startSeconds: 9, endSeconds: 204, href: "ars.html", cfi: "epubcfi(/6/2!/4/2)"
+  }]);
+});
+
+it("shows an image chapter heading at the audio marker despite an overlapping old fragment", async () => {
+  const sections = [
+    { href: "old.html", index: 0 },
+    { href: "new.html", index: 1, document: { body: headingBody() }, load: async () => undefined }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 12, href: "old.html", text: "Old sentence." },
+    { startSeconds: 16, endSeconds: 20, href: "new.html", text: "First body sentence." }
+  ];
+  assert.deepEqual(await findIllustrationGaps(book, fragments, [chapter(10)]), [
+    { startSeconds: 10, endSeconds: 16, href: "new.html", heading: true }
+  ]);
+});
+
+it("turns from a narrated picture to its image chapter heading before the first mapped sentence", async () => {
+  const picture = {
+    href: "picture.html", index: 1,
+    document: { body: { textContent: "", querySelector: () => ({}) } },
+    load: async () => undefined
+  };
+  const sections = [
+    { href: "old.html", index: 0 },
+    picture,
+    { href: "new.html", index: 2, document: { body: headingBody() }, load: async () => undefined }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 4, href: "old.html", text: "Old sentence." },
+    { startSeconds: 74, endSeconds: 80, href: "new.html", text: "First body sentence." }
+  ];
+  assert.deepEqual(await findIllustrationGaps(book, fragments, [chapter(7), chapter(69)]), [
+    { startSeconds: 7, endSeconds: 69, href: "picture.html" },
+    { startSeconds: 69, endSeconds: 74, href: "new.html", heading: true }
+  ]);
+  assert.deepEqual(await findIllustrationGaps(book, fragments, [chapter(7)]), [
+    { startSeconds: 7, endSeconds: 69, href: "picture.html" },
+    { startSeconds: 69, endSeconds: 74, href: "new.html", heading: true }
+  ]);
+});
+
+it("shows a brief image-only part page through the next chapter marker", async () => {
+  const sections = [
+    { href: "interlude.html", index: 0 },
+    {
+      href: "part04.html", index: 1,
+      document: { body: { textContent: "", querySelector: () => ({}) } },
+      load: async () => undefined
+    },
+    { href: "chapter88.html", index: 2, document: { body: headingBody() }, load: async () => undefined }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 4, href: "interlude.html", text: "This was her reward." },
+    { startSeconds: 7.85, endSeconds: 10, href: "chapter88.html", text: "EIGHT YEARS AGO" }
+  ];
+  const gaps = await findIllustrationGaps(book, fragments, [chapter(7.31)]);
+  assert.deepEqual(gaps, [
+    { startSeconds: 4, endSeconds: 7.85, href: "part04.html", divider: true }
+  ]);
+  assert.equal(illustrationGapAt(gaps, 7.31)?.href, "part04.html");
+  assert.equal(illustrationGapAt(gaps, 7.849)?.href, "part04.html");
+  assert.equal(illustrationGapAt(gaps, 7.85), null);
+});
+
+it("uses a picture audio chapter when the map wrongly continues highlighting text", async () => {
+  const picture = {
+    href: "sketchbook.html", index: 1,
+    document: { body: { textContent: "", querySelector: () => ({}) } },
+    load: async () => undefined
+  };
+  const sections = [
+    { href: "old.html", index: 0 },
+    picture,
+    { href: "new.html", index: 2, document: { body: headingBody() }, load: async () => undefined }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 5, href: "old.html", text: "Before." },
+    { startSeconds: 8, endSeconds: 20, href: "new.html", text: "A sentence wrongly timed over the picture." },
+    { startSeconds: 25, endSeconds: 70, href: "new.html", text: "Another sentence wrongly timed over the picture." },
+    { startSeconds: 71, endSeconds: 80, href: "new.html", text: "After." }
+  ];
+  const chapters = [
+    { ...chapter(10), title: "Shallan's Sketchbook: Honorspren" },
+    { ...chapter(60), title: "Chapter 36" }
+  ];
+  const gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.deepEqual(gaps, [
+    { startSeconds: 10, endSeconds: 60, href: "sketchbook.html" },
+    { startSeconds: 60, endSeconds: 71, href: "new.html", heading: true }
+  ]);
+  assert.equal(illustrationGapAt(gaps, 30)?.href, "sketchbook.html");
+  assert.equal(illustrationGapAt(gaps, 65)?.href, "new.html");
+});
