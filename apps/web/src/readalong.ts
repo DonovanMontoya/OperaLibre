@@ -261,6 +261,18 @@ export function findActiveFragmentIndex(
   return selectionSeconds < activeUntil ? best : -1;
 }
 
+/** A heading image can be off-screen even when its section is already open. */
+export function shouldTurnToIllustration(
+  gap: { href: string; cfi?: string; heading?: boolean },
+  currentHref: string,
+  currentPage: number | undefined,
+  cfiOnPage: boolean
+) {
+  if (cfiOnPage) return false;
+  if (gap.heading) return !hrefsMatch(currentHref, gap.href) || currentPage !== 1;
+  return !!gap.cfi || !hrefsMatch(currentHref, gap.href);
+}
+
 /**
  * The haystack index and this needle normalization must collapse text the
  * same way so indexOf offsets map back to DOM positions.
