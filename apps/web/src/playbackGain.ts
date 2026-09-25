@@ -34,6 +34,24 @@ function audioContextConstructor(): AudioContextConstructor | null {
 }
 
 /**
+ * In OperaLibre #196, the same file sounded clean through the media element but
+ * glitched through Web Audio even at unity gain, without the compressor, at 1x.
+ * Bypassing the limiter therefore cannot fix this media-element source issue.
+ * See also https://bugs.webkit.org/show_bug.cgi?id=221553.
+ * There is no capability test for audible corruption. Keep WebKit on the
+ * ordinary media-element path until
+ * we can verify a working engine version. Native iOS uses AVPlayer separately.
+ * iOS browsers and WKWebView share WebKit, including those without Safari in
+ * their user agent; desktop Chromium also advertises AppleWebKit.
+ */
+export function webAudioBoostSupported(): boolean {
+  if (!audioContextConstructor()) return false;
+  const ua = window.navigator?.userAgent ?? "";
+  const webkit = /AppleWebKit/i.test(ua) && !/(?:Chrome|Chromium)\//i.test(ua);
+  return !webkit;
+}
+
+/**
  * Whether a boost can be applied to this stream at all.
  *
  * Same-origin covers the deployments that matter: the server hosting the web
@@ -43,7 +61,7 @@ function audioContextConstructor(): AudioContextConstructor | null {
  */
 export function streamCanBeBoosted(streamUrl: string | null | undefined): boolean {
   if (!streamUrl || typeof window === "undefined") return false;
-  if (!audioContextConstructor()) return false;
+  if (!webAudioBoostSupported()) return false;
   try {
     const url = new URL(streamUrl, window.location.href);
     if (url.protocol === "blob:" || url.protocol === "data:" || url.protocol === "file:") {
@@ -78,6 +96,9 @@ export class PlaybackGainChain {
    * must keep applying volume to the element directly.
    */
   attach(element: HTMLAudioElement): boolean {
+    // Guard the irreversible routing itself, including callers with a saved
+    // boost from another device and local/blob streams that bypass CORS checks.
+    if (!webAudioBoostSupported()) return false;
     if (this.unavailable) return false;
     if (this.chain?.element === element) {
       this.resume();

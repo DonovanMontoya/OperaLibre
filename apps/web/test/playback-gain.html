@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safari gain comparison — OperaLibre #196</title>
+<style>
+  body { font: 16px system-ui; max-width: 760px; margin: 40px auto; padding: 0 20px; }
+  label, section { display: block; margin: 24px 0; }
+  button, input { font: inherit; }
+  button { margin-right: 12px; }
+  output { display: block; white-space: pre-wrap; }
+</style>
+<h1>Safari gain comparison</h1>
+<p>Choose an audio file that exhibits issue #196. The file stays on this device.
+  Compare the same passage at 1× using each path below. Start at a comfortable
+  system volume; the last two paths amplify the signal.</p>
+<label>Audio file <input id="file" type="file" accept="audio/*"></label>
+<label>Start at (seconds) <input id="position" type="number" min="0" value="0"></label>
+<div id="players"></div>
+<output id="status" role="status">Choose a file to begin.</output>
+<p>The gain-only path intentionally omits peak limiting to isolate the compressor.
+  It can clip on loud passages. Each path uses a separate audio element, so
+  Original really bypasses Web Audio, even after testing a boosted path.</p>
+<script type="module">
+  // Standalone diagnostic: deliberately bypass the application's Safari guard.
+  // Keep the compressor settings aligned with src/playbackGain.ts.
+  const modes = [
+    ['Original', false, 1, false],
+    ['Web Audio, unity gain', true, 1, false],
+    ['Web Audio, +2 dB, no compressor', true, 10 ** (2 / 20), false],
+    ['Web Audio, +2 dB, with compressor', true, 10 ** (2 / 20), true],
+  ];
+  const status = document.querySelector('#status');
+  const players = [];
+  let fileUrl;
+  let generation = 0;
+
+  async function stop() {
+    await Promise.all(players.map(async ({ audio, context }) => {
+      audio.pause();
+      if (context?.state === 'running') await context.suspend();
+    }));
+  }
+
+  document.querySelector('#file').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const current = ++generation;
+    await stop();
+    if (current !== generation) return;
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    fileUrl = URL.createObjectURL(file);
+    for (const { audio, play } of players) {
+      audio.src = fileUrl;
+      play.disabled = false;
+    }
+    status.textContent = `Loaded ${file.name}\n${navigator.userAgent}`;
+  });
+
+  for (const [name, routed, gainValue, compressed] of modes) {
+    const audio = new Audio();
+    const section = document.createElement('section');
+    const play = document.createElement('button');
+    play.textContent = name;
+    play.disabled = true;
+    const pause = document.createElement('button');
+    pause.textContent = 'Stop';
+    pause.addEventListener('click', () => { ++generation; void stop(); });
+    section.append(play, pause);
+    document.querySelector('#players').append(section);
+    const player = { audio, play, context: null };
+    players.push(player);
+    audio.addEventListener('ended', () => { void player.context?.suspend(); });
+    play.addEventListener('click', async () => {
+      const current = ++generation;
+      try {
+        // Create/resume synchronously within the gesture for Safari autoplay.
+        if (routed && !player.context) {
+          const Context = window.AudioContext || window.webkitAudioContext;
+          const context = player.context = new Context();
+          const source = context.createMediaElementSource(audio);
+          const gain = context.createGain();
+          gain.gain.value = gainValue;
+          source.connect(gain);
+          if (compressed) {
+            const limiter = context.createDynamicsCompressor();
+            limiter.threshold.value = -2;
+            limiter.knee.value = 0;
+            limiter.ratio.value = 20;
+            limiter.attack.value = 0.003;
+            limiter.release.value = 0.25;
+            gain.connect(limiter);
+            limiter.connect(context.destination);
+          } else {
+            gain.connect(context.destination);
+          }
+        }
+        for (const other of players) {
+          other.audio.pause();
+          if (other !== player && other.context) void other.context.suspend();
+        }
+        const resumed = player.context?.resume();
+        audio.currentTime = Math.max(0, Number(document.querySelector('#position').value) || 0);
+        audio.playbackRate = 1;
+        await Promise.all([resumed, audio.play()]);
+        if (current !== generation) return;
+        status.textContent = `${name}\nSample rate: ${player.context?.sampleRate ?? 'native media playback'}\n${navigator.userAgent}`;
+      } catch (error) {
+        if (current === generation) status.textContent = String(error);
+      }
+    });
+  }
+</script>
+</html>
