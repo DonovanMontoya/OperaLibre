@@ -31,6 +31,7 @@ import {
   normalizeSyncNeedle,
   readerStorageKey,
   repeatedNarratedPageTurn,
+  shouldTurnToIllustration,
   shouldOpenPlayingChapter
 } from "./readalong";
 import {
@@ -1477,9 +1478,21 @@ export function EpubReadalong({
       highlightedFragmentRef.current = -1;
       narratedRangeRef.current = null;
       const pictureTarget = illustrationGap?.cfi ?? illustrationGap?.href;
+      const EpubCfiClass = epubCfiClassRef.current;
+      const cfiOnPage = !!(illustrationGap?.cfi && EpubCfiClass && location?.start?.cfi && location.end?.cfi
+        && anchorOnPage(
+          illustrationGap.cfi,
+          { start: location.start.cfi, end: location.end.cfi },
+          (a, b) => new EpubCfiClass().compare(a, b)
+        ));
       if (followRef.current && illustrationGap && pictureTarget && isReady && rendition && location
         && autoNavHrefRef.current !== pictureTarget
-        && (illustrationGap.cfi || !hrefsMatch(location.start?.href ?? "", illustrationGap.href))) {
+        && shouldTurnToIllustration(
+          illustrationGap,
+          location.start?.href ?? "",
+          location.start?.displayed?.page,
+          cfiOnPage
+        )) {
         autoNavHrefRef.current = pictureTarget;
         followTakesPage(illustrationGap.cfi ? { cfi: illustrationGap.cfi } : { href: illustrationGap.href });
         void rendition.display(pictureTarget);

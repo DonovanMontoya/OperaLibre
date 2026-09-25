@@ -12,6 +12,7 @@ import {
   readAlongMode,
   readalongMatchScore,
   repeatedNarratedPageTurn,
+  shouldTurnToIllustration,
   shouldOpenPlayingChapter,
   syncMapPrecision
 } from "../src/readalong.ts";
@@ -272,6 +273,14 @@ describe("narrated page-turn dedupe", () => {
     assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 3), true);
     assert.equal(repeatedNarratedPageTurn(last, "spoken", "page-start", 4), false);
   });
+});
+
+it("returns to an image heading at the start of the current EPUB section", () => {
+  const heading = { href: "chapter.xhtml", heading: true };
+  assert.equal(shouldTurnToIllustration(heading, "chapter.xhtml", 4, false), true);
+  assert.equal(shouldTurnToIllustration(heading, "chapter.xhtml", 1, false), false);
+  assert.equal(shouldTurnToIllustration(heading, "previous.xhtml", 1, false), true);
+  assert.equal(shouldTurnToIllustration({ href: "chapter.xhtml" }, "chapter.xhtml", 4, false), false);
 });
 
 describe("is the remembered place on this page", () => {
