@@ -3816,18 +3816,6 @@ input[type="range"]::-moz-range-thumb {
   border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
 }
 
-/* The card count is not fixed: book volume belongs to the book rather than to
-   playback, so it is there for any book, while the other three only appear for
-   the one currently playing. Kept at this specificity so the narrow-screen
-   rules below still win. */
-.controls-grid-4 {
-  grid-template-columns: 1.5fr 1fr 1fr 1fr;
-}
-
-.controls-grid-1 {
-  grid-template-columns: minmax(0, 460px);
-}
-
 .control-section {
   display: grid;
   gap: 14px;
@@ -4237,14 +4225,15 @@ select:focus {
   margin: 0 45px;
 }
 
-/* The desktop card states its value the way the Nightfall card beside it
-   states its remaining time: one quiet monospace line under the control. */
-.book-volume-value {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--oxblood);
-  letter-spacing: 0.06em;
+.book-volume-range-labels {
+  position: relative;
+}
+
+.book-volume-zero-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--ink);
 }
 
 .book-volume-range-labels {
@@ -16900,6 +16889,247 @@ html:not(.native-app) .book-quick-return {
   cursor: pointer;
 }
 
+/* The title page's fixed facts: the same four cells for every book, so a
+   missing series or publisher leaves a dash rather than moving its
+   neighbours. */
+html:not(.native-app) .book-colophon {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 0.8fr);
+  max-width: 760px;
+  margin: 26px 0 0;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.18);
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.18);
+}
+
+html:not(.native-app) .book-colophon > div {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 11px 16px 12px;
+}
+
+html:not(.native-app) .book-colophon > div:first-child {
+  padding-left: 0;
+}
+
+html:not(.native-app) .book-colophon > div + div {
+  border-left: 1px solid rgba(var(--ink-rgb), 0.12);
+}
+
+html:not(.native-app) .book-colophon dt {
+  color: var(--ink-faded);
+  font: 0.6rem "JetBrains Mono", monospace;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+html:not(.native-app) .book-colophon dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font: 400 1.15rem/1.2 "Instrument Serif", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html:not(.native-app) .book-colophon > div:last-child dd {
+  color: var(--oxblood);
+  font-style: italic;
+}
+
+/* One line whatever the count: extra subjects scroll sideways under a fade
+   rather than wrapping into a second row that moves the page. */
+html:not(.native-app) .book-subjects {
+  flex-wrap: nowrap;
+  max-width: 760px;
+  /* A chip's height, so a book with no subjects keeps the same line. */
+  min-height: 30px;
+  margin-top: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent);
+}
+
+html:not(.native-app) .book-subjects::-webkit-scrollbar {
+  display: none;
+}
+
+html:not(.native-app) .book-subjects span {
+  flex: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  html:not(.native-app) .book-colophon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  html:not(.native-app) .book-colophon > div {
+    padding-inline: 0 12px;
+  }
+
+  html:not(.native-app) .book-colophon > div:nth-child(2n) {
+    padding-left: 12px;
+  }
+
+  html:not(.native-app) .book-colophon > div:nth-child(3) {
+    border-left: 0;
+  }
+
+  html:not(.native-app) .book-colophon > div:nth-child(n + 3) {
+    border-top: 1px solid rgba(var(--ink-rgb), 0.12);
+  }
+}
+
+/* Wider than a phone the heading sits on a fixed grid: the toolbar runs
+   across the top, and the cover is pinned beside the title rather than
+   sinking to the bottom of however many lines the title and credits take. */
+@media (min-width: 621px) {
+  html:not(.native-app) .book-heading {
+    container: book-heading / inline-size;
+    grid-template-columns: clamp(150px, 15vw, 220px) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto auto auto 1fr;
+    column-gap: clamp(24px, 3.2vw, 48px);
+    row-gap: 0;
+    align-items: start;
+  }
+
+  html:not(.native-app) .book-heading .meta {
+    display: contents;
+  }
+
+  /* Every slot below has a fixed height, so the heading is the same size
+     for every book and nothing under it moves when the next one opens. */
+  html:not(.native-app) .book-heading .heading-top {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    flex-wrap: nowrap;
+    height: 34px;
+    margin-bottom: clamp(20px, 2.6vw, 32px);
+  }
+
+  html:not(.native-app) .book-heading .eyebrow {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions .download-btn {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions .download-status {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .book-heading > .large-cover {
+    grid-column: 1;
+    grid-row: 2 / -1;
+    width: 100%;
+  }
+
+  html:not(.native-app) .book-heading .meta > * {
+    grid-column: 2;
+  }
+
+  /* Room for two lines at the largest size. Longer titles step down a size
+     (and the longest get a third line) instead of growing the box; the
+     title sits on the byline, like a title page. */
+  html:not(.native-app) .book-heading h2 {
+    --title-size: clamp(2.4rem, 4.4vw, 4.4rem);
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    height: calc(var(--title-size) * 2.12);
+    max-width: none;
+    margin: 0 0 14px;
+    overflow: hidden;
+    font-size: var(--title-size);
+    line-height: 1.02;
+  }
+
+  html:not(.native-app) .book-heading h2[data-length="medium"] {
+    font-size: calc(var(--title-size) * 0.78);
+  }
+
+  html:not(.native-app) .book-heading h2[data-length="long"] {
+    font-size: calc(var(--title-size) * 0.6);
+  }
+
+  html:not(.native-app) .book-heading h2 > span {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    padding-bottom: 0.06em;
+    text-wrap: balance;
+  }
+
+  html:not(.native-app) .book-heading h2[data-length="long"] > span {
+    -webkit-line-clamp: 3;
+  }
+
+  html:not(.native-app) .book-heading .book-credits {
+    grid-row: 3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  html:not(.native-app) .book-heading .book-quick-start {
+    grid-row: 4;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 18px;
+    width: auto;
+    min-height: 58px;
+    margin: 22px 0 0;
+  }
+
+  html:not(.native-app) .book-heading .book-quick-play {
+    flex: 0 1 340px;
+    min-width: 0;
+  }
+
+  html:not(.native-app) .book-heading .book-quick-return {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  html:not(.native-app) .book-heading .book-colophon {
+    grid-row: 5;
+  }
+
+  html:not(.native-app) .book-heading .book-subjects {
+    grid-row: 6;
+  }
+
+  /* When the page is too narrow for every label, the actions keep one row
+     as icons; each already carries its full name as its accessible label. */
+  @container book-heading (max-width: 860px) {
+    html:not(.native-app) .book-heading .heading-actions .download-btn {
+      padding-inline: 10px;
+    }
+    html:not(.native-app) .book-heading .heading-actions .download-btn > span {
+      display: none;
+    }
+  }
+}
+
 /* A phone-sized browser gets the iPhone's promoted transport: a larger play
    button and taller seek and utility targets under the cover. */
 @media (min-height: 660px) and (max-width: 719px) and (orientation: portrait) {
@@ -17050,15 +17280,30 @@ html:not(.native-app) .book-quick-return {
   html:not(.native-app)::view-transition-new(root) {
     animation: none;
   }
+  /* The old page is nearly gone before the new one starts to show, so the
+     two pages' text never sits on top of itself mid-turn. */
   html:not(.native-app)::view-transition-old(web-page) {
-    animation: web-page-out 170ms ease-in both;
+    animation: web-page-out 150ms ease-in both;
   }
   html:not(.native-app)::view-transition-new(web-page) {
-    animation: web-page-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) 60ms both;
+    animation: web-page-in 300ms cubic-bezier(0.2, 0.8, 0.2, 1) 110ms both;
   }
   html:not(.native-app)::view-transition-group(web-cover) {
     animation-duration: 420ms;
     animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  /* Two covers of different proportions would otherwise stretch through
+     the morph; each keeps its own shape inside the travelling frame. */
+  html:not(.native-app)::view-transition-old(web-cover),
+  html:not(.native-app)::view-transition-new(web-cover) {
+    height: 100%;
+    object-fit: cover;
+    animation-duration: 420ms;
+  }
+  /* See withWebViewTransition: after the first turn the sections no longer
+     rise in on their own. */
+  html[data-web-page-turned]:not(.native-app) .web-shell > .player-pane > * {
+    animation: none;
   }
 }
 

@@ -33,19 +33,12 @@ export function BookVolumeControl({
   value,
   onChange,
   canBoost,
-  inputId,
-  compact = false
+  inputId
 }: {
   value: number;
   onChange: (db: number) => void;
   canBoost: boolean;
   inputId: string;
-  /**
-   * The desktop card sits in a row of restrained controls — a bare slider, a
-   * select — so it stays a bare slider with a value under it. The full form,
-   * with its heading and tap-sized presets, is for the phone sheet.
-   */
-  compact?: boolean;
 }) {
   const db = bookGainToDb(value);
   const maximum = canBoost ? BOOK_GAIN_DB_MAX : 0;
@@ -96,18 +89,6 @@ export function BookVolumeControl({
       {db > 0 ? ` Your saved ${formatBookGainDb(db)} boost is kept for supported players.` : null}
     </span>
   );
-
-  if (compact) {
-    // Label, control, one line of state — the shape the Nightfall card beside
-    // it already uses.
-    return (
-      <div className="book-volume book-volume-compact">
-        {slider}
-        <span className="book-volume-value">{formatBookGainDb(position)}</span>
-        {hint}
-      </div>
-    );
-  }
 
   // Laid out like the cadence control it sits beside: the value reads above the
   // track, the ends of the range label themselves, and the presets close the
