@@ -35,6 +35,10 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # Audio extraction tests skip without FFmpeg.
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Test
         run: cargo test --locked
 

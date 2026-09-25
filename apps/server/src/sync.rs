@@ -821,12 +821,16 @@ impl Aligner<'_> {
                 }
             };
             let text_end = text_end.clamp(cursor.position(), text_len);
-            anyhow::ensure!(
-                text_end > cursor.position(),
-                "Windowed alignment of `{}` stalled at {:.0} s.",
-                scope.label,
-                position
-            );
+            if text_end <= cursor.position() {
+                if let Some(audio) = recognized_audio {
+                    let _ = fs::remove_file(audio).await;
+                }
+                anyhow::bail!(
+                    "Windowed alignment of `{}` stalled at {:.0} s.",
+                    scope.label,
+                    position
+                );
+            }
             let segment_start = position + lead_in;
             if segment_end - segment_start > 0.5 {
                 // Recognition already decoded this window to mono 16 kHz PCM.
@@ -846,12 +850,14 @@ impl Aligner<'_> {
                         windows,
                         "segment",
                     )
-                    .await?;
+                    .await;
                 // The retained recognition window is no longer needed once
-                // its segment has been extracted, even if alignment fails.
+                // its segment has been extracted, even if extraction or
+                // alignment fails.
                 if let Some(audio) = recognized_audio.take() {
                     let _ = fs::remove_file(audio).await;
                 }
+                let audio = audio?;
                 let window_transcript = cursor.window(text_end);
                 let segment_fragments = self
                     .align(
@@ -903,8 +909,13 @@ impl Aligner<'_> {
         let path = self
             .temp_dir
             .join(format!("audio-{scope_number}-{window}-{kind}.wav"));
-        extract_alignment_audio(ffmpeg, source, &path, start_seconds, end_seconds).await?;
-        Ok(path)
+        let extracted =
+            extract_alignment_audio(ffmpeg, source, &path, start_seconds, end_seconds).await;
+        if extracted.is_err() {
+            // FFmpeg can leave a partial file behind when it fails.
+            let _ = fs::remove_file(&path).await;
+        }
+        extracted.map(|()| path)
     }
 
     async fn transcribe(
@@ -1190,8 +1201,10 @@ mod tests {
             assert!(output.status.success());
             output
                 .stdout
-                .chunks_exact(2)
-                .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&sample| i16::from_le_bytes(sample))
                 .collect()
         }
         let root = tempfile::tempdir().unwrap();
@@ -1254,34 +1267,54 @@ mod tests {
                 let actual = pcm(&tools.ffmpeg, &reused).await;
                 let original = pcm(&tools.ffmpeg, &direct).await;
                 let first_sample = (lead_in * 16000.0).round() as usize;
-                let sample_count = (duration * 16000.0).round() as usize;
-                assert_eq!(actual.len(), sample_count, "{extension}");
-                assert_eq!(original.len(), sample_count, "{extension}");
+                // FFmpeg can return slightly less than requested after an AAC
+                // seek, so a segment ending at the window boundary is only as
+                // long as the decoded window.
+                let sample_count =
+                    ((duration * 16000.0).round() as usize).min(decoded.len() - first_sample);
                 assert_eq!(
                     actual,
                     decoded[first_sample..first_sample + sample_count],
                     "{extension}: trimming must preserve the decoded PCM samples"
                 );
-                // Direct decoding can start the resampler at a different
-                // phase. A chirp distinguishes shifts without the ambiguity
-                // of a repeating fixed tone; allow at most one millisecond.
-                let mse = |lag: i32| -> f64 {
-                    (100..actual.len() - 100)
-                        .step_by(8)
-                        .map(|index| {
-                            let difference = original[index] as f64
-                                - actual[(index as i32 + lag) as usize] as f64;
-                            difference * difference
-                        })
-                        .sum()
+                // Measure both extractions against the generated chirp, which
+                // has no repeating period to alias a shift. MP3 and FLAC seek
+                // exactly. FFmpeg 9 input seeking in AAC can start up to one
+                // encoder frame (1,024 samples at 44.1 kHz) late whether the
+                // segment is decoded directly or trimmed from the window, so
+                // reuse must stay within that same bound.
+                let offset = start + lead_in;
+                let lag = |samples: &[i16]| -> i32 {
+                    let mse = |lag: i32| -> f64 {
+                        (800..samples.len().min(30_000))
+                            .step_by(16)
+                            .map(|index| {
+                                let t = (index as i32 + lag) as f64 / 16000.0 + offset;
+                                let expected = 0.3
+                                    * (2.0 * std::f64::consts::PI * (300.0 * t + 20.0 * t * t))
+                                        .sin()
+                                    * 32767.0;
+                                let difference = samples[index] as f64 - expected;
+                                difference * difference
+                            })
+                            .sum()
+                    };
+                    (-400..=400)
+                        .min_by(|&a, &b| mse(a).total_cmp(&mse(b)))
+                        .unwrap()
                 };
-                let best_lag = (-32..=32)
-                    .min_by(|&a, &b| mse(a).total_cmp(&mse(b)))
-                    .unwrap();
-                assert!(
-                    best_lag.abs() <= 16,
-                    "{extension}: audio shifted {best_lag} samples"
-                );
+                let bound = if codec == "aac" {
+                    (1024.0 * 16000.0 / 44100.0_f64).ceil() as i32 + 16
+                } else {
+                    16
+                };
+                for (kind, samples) in [("direct", &original), ("reused", &actual)] {
+                    let shift = lag(samples);
+                    assert!(
+                        shift.abs() <= bound,
+                        "{extension}: {kind} audio shifted {shift} samples"
+                    );
+                }
             }
         }
     }
@@ -1574,6 +1607,7 @@ esac
             no_ffmpeg: bool,
             unknown_duration: bool,
             fail_command: Option<&'static str>,
+            fail_segment: bool,
         }
 
         async fn align_fake_book(
@@ -1607,7 +1641,14 @@ esac
             let narration_path = root.path().join("narration.txt");
             std::fs::write(&narration_path, narration(count, garbled, scope_start)).unwrap();
             let ffmpeg = root.path().join("ffmpeg");
-            write_script(&ffmpeg, FAKE_FFMPEG);
+            let mut ffmpeg_script = FAKE_FFMPEG.to_string();
+            if options.fail_segment {
+                // Fail after writing output, as a partial extraction would.
+                ffmpeg_script.push_str(
+                    "case \"$previous\" in *-segment.wav) echo 'fixture failure' >&2; exit 7;; esac\n",
+                );
+            }
+            write_script(&ffmpeg, &ffmpeg_script);
             let cli = root.path().join("echogarden");
             let mut script =
                 FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
@@ -1797,18 +1838,22 @@ esac
 
         #[tokio::test]
         async fn failed_recognition_or_alignment_removes_temporary_audio_and_text() {
-            for command in ["transcribe", "align"] {
-                let (result, _) = run_fake_book(
-                    200,
-                    0..0,
-                    0.0,
-                    0.0,
-                    FakeOptions {
-                        fail_command: Some(command),
-                        ..Default::default()
-                    },
-                )
-                .await;
+            let failures = [
+                FakeOptions {
+                    fail_command: Some("transcribe"),
+                    ..Default::default()
+                },
+                FakeOptions {
+                    fail_command: Some("align"),
+                    ..Default::default()
+                },
+                FakeOptions {
+                    fail_segment: true,
+                    ..Default::default()
+                },
+            ];
+            for options in failures {
+                let (result, _) = run_fake_book(200, 0..0, 0.0, 0.0, options).await;
                 assert!(result.unwrap_err().to_string().contains("fixture failure"));
             }
         }
