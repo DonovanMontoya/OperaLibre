@@ -486,13 +486,103 @@ fn shared_progress_skips_untouched_books_and_leads_with_finishers() {
         ("opened".to_string(), "Opened".to_string()),
         ("done".to_string(), "Done".to_string()),
     ];
-    let shared = super::collect_shared_progress(&book, &saved, &sharers);
+    let shared =
+        super::collect_shared_progress(&book, &saved, &sharers, &super::FinishedWorks::default());
 
     let names: Vec<&str> = shared.iter().map(|entry| entry.username.as_str()).collect();
     assert_eq!(names, vec!["Done", "Halfway"]);
     assert_eq!(shared[0].status, super::BookProgressStatus::Finished);
     assert_eq!(shared[1].status, super::BookProgressStatus::InProgress);
     assert_eq!(shared[1].percent_complete, Some(50.0));
+}
+
+#[test]
+fn a_new_edition_inherits_the_finished_label_without_inheriting_a_position() {
+    let book = book_with_tracks(
+        Some(1000.0),
+        vec![track_with_duration("new-track", 0, Some(1000.0))],
+    );
+    let works: super::WorkStore = serde_json::from_value(serde_json::json!({
+        "works": [{
+            "id": "work",
+            "title": "Same story",
+            "bookIds": ["old-edition", "book"],
+            "durationSeconds": 1000.0,
+            "createdAtMs": 1
+        }]
+    }))
+    .unwrap();
+    let old_progress = super::Progress {
+        book_id: "old-edition".to_string(),
+        track_id: "old-track".to_string(),
+        position_seconds: 1000.0,
+        book_position_seconds: 1000.0,
+        duration_seconds: Some(1000.0),
+        updated_at: "1000".to_string(),
+        finished_override: Some(true),
+    };
+    let mut saved = std::collections::HashMap::from([(
+        super::progress_key("reader", "old-edition"),
+        old_progress,
+    )]);
+    let readers = std::collections::HashSet::from(["reader".to_string(), "other".to_string()]);
+    let finished =
+        super::FinishedWorks::new(&works, std::slice::from_ref(&book), &saved, &[], &readers);
+
+    let inherited = super::progress_for_reader(&book, "reader", &saved, &finished).unwrap();
+    assert_eq!(inherited.status, super::BookProgressStatus::Finished);
+    assert_eq!(inherited.book_position_seconds, 0.0);
+    assert_eq!(inherited.finished_override, None);
+    assert!(super::progress_for_reader(&book, "other", &saved, &finished).is_none());
+    assert_eq!(
+        super::collect_shared_progress(
+            &book,
+            &saved,
+            &[("reader".to_string(), "Reader".to_string())],
+            &finished,
+        )[0]
+        .status,
+        super::BookProgressStatus::Finished
+    );
+
+    saved
+        .get_mut(&super::progress_key("reader", "old-edition"))
+        .unwrap()
+        .finished_override = None;
+    let naturally_finished =
+        super::FinishedWorks::new(&works, std::slice::from_ref(&book), &saved, &[], &readers);
+    assert_eq!(
+        super::progress_for_reader(&book, "reader", &saved, &naturally_finished)
+            .unwrap()
+            .status,
+        super::BookProgressStatus::Finished
+    );
+
+    saved.insert(
+        super::progress_key("reader", "book"),
+        super::Progress {
+            book_id: "book".to_string(),
+            track_id: "new-track".to_string(),
+            position_seconds: 0.0,
+            book_position_seconds: 0.0,
+            duration_seconds: Some(1000.0),
+            updated_at: "2000".to_string(),
+            finished_override: Some(false),
+        },
+    );
+    let unfinished = super::progress_for_reader(&book, "reader", &saved, &finished).unwrap();
+    assert_eq!(unfinished.status, super::BookProgressStatus::NotStarted);
+    saved
+        .get_mut(&super::progress_key("reader", "book"))
+        .unwrap()
+        .finished_override = None;
+    saved
+        .get_mut(&super::progress_key("reader", "book"))
+        .unwrap()
+        .book_position_seconds = 500.0;
+    let rereading = super::progress_for_reader(&book, "reader", &saved, &finished).unwrap();
+    assert_eq!(rereading.status, super::BookProgressStatus::InProgress);
+    assert_eq!(rereading.book_position_seconds, 500.0);
 }
 
 #[test]
