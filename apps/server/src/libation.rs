@@ -60,6 +60,18 @@ pub(crate) struct LibationRefreshStore {
     pub(crate) last_successful_scan: Option<u64>,
     #[serde(default)]
     pub(crate) manual_refreshes: HashMap<String, Vec<u64>>,
+    #[serde(default)]
+    pub(crate) legacy_ownership: HashMap<String, LegacyLibationOwnership>,
+}
+
+/// Ownership captured immediately after scanning one account in a shared
+/// Libation database. Libation itself keeps only one owner per ASIN.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LegacyLibationOwnership {
+    pub(crate) account_id: String,
+    pub(crate) locale: String,
+    pub(crate) asins: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -998,6 +1010,7 @@ pub(crate) async fn create_libation_download_request(
     let profile = find_libation_profile(&state, profile_id)
         .await
         .ok_or(ApiError::not_found("Audible account not found."))?;
+    let profile = resolve_legacy_download_profile(&state, profile, &asin).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
     let title = payload.title.trim();
     if title.is_empty() || title.chars().count() > 500 {
@@ -1253,9 +1266,7 @@ pub(crate) async fn list_libation_books(
                 && output.status.success()
             {
                 for account in parse_libation_accounts(&String::from_utf8_lossy(&output.stdout)) {
-                    if let Some(label) = account.name {
-                        labels.insert(account.id, label);
-                    }
+                    labels.insert(account.id, account.name.unwrap_or(account.account_id));
                 }
             }
             match export_libation_books(&profile).await {
@@ -1278,11 +1289,23 @@ pub(crate) async fn list_libation_books(
     {
         return Err(error);
     }
+    let legacy_ownership = state
+        .libation_refreshes
+        .read()
+        .await
+        .legacy_ownership
+        .clone();
+    restore_legacy_ownership_books(&mut books, &legacy_ownership, &profile_labels);
     let library = state.library.read().await;
     let local_keys = local_book_keys(&library.books);
     for book in books.iter_mut() {
         if let Some(label) = profile_labels.get(&book.profile_id) {
-            book.profile_name = label.clone();
+            book.profile_name =
+                if !auth.is_admin && book.account_id.as_deref() == Some(label.as_str()) {
+                    "Audible account".to_string()
+                } else {
+                    label.clone()
+                };
         } else if !auth.is_admin && book.account_id.as_deref() == Some(book.profile_name.as_str()) {
             // A legacy profile with no nickname is named by its Audible login
             // email, which a reader has no business seeing.
@@ -1307,6 +1330,71 @@ pub(crate) async fn list_libation_books(
         }
     }
     Ok(Json(books))
+}
+
+/// Rebuild account-specific catalogue rows from the last successful scan of
+/// each account. Libation's export contains only the most recent owner of a
+/// shared title, so that export supplies metadata while these snapshots
+/// supply the additional owners.
+pub(crate) fn restore_legacy_ownership_books(
+    books: &mut Vec<LibationBook>,
+    ownership: &HashMap<String, LegacyLibationOwnership>,
+    current_accounts: &HashMap<String, String>,
+) {
+    let templates = books
+        .iter()
+        .filter(|book| book.profile_id.starts_with("legacy-"))
+        .map(|book| {
+            (
+                format!(
+                    "{}:{}",
+                    book.asin.to_ascii_uppercase(),
+                    book.locale
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                ),
+                book.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let templates_by_asin = books
+        .iter()
+        .filter(|book| book.profile_id.starts_with("legacy-"))
+        .map(|book| (book.asin.to_ascii_uppercase(), book.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut present = books
+        .iter()
+        .map(|book| book.catalog_id.clone())
+        .collect::<HashSet<_>>();
+    for (profile_id, account) in ownership {
+        if !current_accounts.contains_key(profile_id) {
+            continue;
+        }
+        for asin in &account.asins {
+            let catalog_id = format!("{profile_id}:{asin}");
+            if !present.insert(catalog_id.clone()) {
+                continue;
+            }
+            let key = format!(
+                "{}:{}",
+                asin.to_ascii_uppercase(),
+                account.locale.to_ascii_lowercase()
+            );
+            if let Some(template) = templates
+                .get(&key)
+                .or_else(|| templates_by_asin.get(&asin.to_ascii_uppercase()))
+            {
+                let mut book = template.clone();
+                book.catalog_id = catalog_id;
+                book.profile_id = profile_id.clone();
+                book.profile_name = account.account_id.clone();
+                book.account_id = Some(account.account_id.clone());
+                book.locale = non_empty_string(&account.locale);
+                books.push(book);
+            }
+        }
+    }
 }
 
 /// One profile's library export, kept briefly so readers reloading the
@@ -1655,6 +1743,216 @@ pub(crate) async fn active_libation_sync_job(state: &AppState) -> Option<String>
     active_job_id(&*state.jobs.read().await, "libation-sync")
 }
 
+/// One `libationcli scan` run and the account it covered, when it covered
+/// only one.
+pub(crate) struct LibationScanAttempt {
+    pub(crate) account: Option<String>,
+    pub(crate) result: anyhow::Result<std::process::Output>,
+    pub(crate) ownership: Option<HashMap<String, LegacyLibationOwnership>>,
+}
+
+impl LibationScanAttempt {
+    #[cfg(test)]
+    pub(crate) fn succeeded(&self) -> bool {
+        matches!(&self.result, Ok(output) if output.status.success())
+    }
+}
+
+/// Scans each account in a shared Libation profile separately. Libation keeps
+/// one owner for a shared title and a combined scan can stop at an expired
+/// login. Capturing each successful account's export before the next scan
+/// preserves duplicate ownership and lets healthy accounts keep refreshing.
+pub(crate) async fn scan_libation_profile(profile: &LibationProfile) -> Vec<LibationScanAttempt> {
+    if profile.managed {
+        return vec![LibationScanAttempt {
+            account: None,
+            result: run_libation(&profile.config, vec!["scan".to_string()]).await,
+            ownership: None,
+        }];
+    }
+    let accounts = match run_libation(
+        &profile.config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {
+            parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => Vec::new(),
+    };
+    // `scan <id>` covers every marketplace an account is signed into, while
+    // `list-accounts` prints one row per marketplace. Scan each account and
+    // capture its export before the next scan reassigns any shared titles.
+    let mut seen = HashSet::new();
+    let enabled = accounts
+        .iter()
+        .filter(|account| {
+            account.scan_library && seen.insert(account.account_id.to_ascii_lowercase())
+        })
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return vec![LibationScanAttempt {
+            account: None,
+            result: run_libation(&profile.config, vec!["scan".to_string()]).await,
+            ownership: None,
+        }];
+    }
+    let mut attempts = Vec::with_capacity(enabled.len());
+    for account in enabled {
+        let result = run_libation(
+            &profile.config,
+            vec!["scan".to_string(), account.account_id.clone()],
+        )
+        .await;
+        let (result, ownership) = match result {
+            Ok(output) if output.status.success() => {
+                match capture_legacy_ownership(profile, &account.account_id, &accounts).await {
+                    Ok(ownership) => (Ok(output), Some(ownership)),
+                    Err(error) => (Err(error), None),
+                }
+            }
+            other => (other, None),
+        };
+        attempts.push(LibationScanAttempt {
+            account: Some(
+                account
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| account.account_id.clone()),
+            ),
+            result,
+            ownership,
+        });
+    }
+    attempts
+}
+
+async fn capture_legacy_ownership(
+    profile: &LibationProfile,
+    account_id: &str,
+    accounts: &[LibationAccount],
+) -> anyhow::Result<HashMap<String, LegacyLibationOwnership>> {
+    let mut ownership = accounts
+        .iter()
+        .filter(|account| account.account_id.eq_ignore_ascii_case(account_id))
+        .map(|account| {
+            (
+                account.id.clone(),
+                LegacyLibationOwnership {
+                    account_id: account.account_id.clone(),
+                    locale: account.locale.clone(),
+                    asins: Vec::new(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let books = export_libation_books(profile)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    for book in books {
+        if let Some(row) = ownership.get_mut(&book.profile_id)
+            && !row
+                .asins
+                .iter()
+                .any(|asin| asin.eq_ignore_ascii_case(&book.asin))
+        {
+            row.asins.push(book.asin);
+        }
+    }
+    Ok(ownership)
+}
+
+async fn record_legacy_ownership(
+    state: &AppState,
+    ownership: HashMap<String, LegacyLibationOwnership>,
+) -> Result<(), ApiError> {
+    state
+        .libation_refreshes
+        .mutate(|refreshes| {
+            refreshes.legacy_ownership.extend(ownership);
+            Ok(())
+        })
+        .await
+}
+
+/// On upgrade, save the owners already recorded by Libation before the first
+/// account-specific scan can replace them. A broken login cannot be scanned
+/// again, but its previously recorded books should remain visible.
+async fn preserve_unscanned_legacy_ownership(
+    state: &AppState,
+    profile: &LibationProfile,
+) -> Result<(), ApiError> {
+    let known = state
+        .libation_refreshes
+        .read()
+        .await
+        .legacy_ownership
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut ownership = HashMap::<String, LegacyLibationOwnership>::new();
+    for book in export_libation_books(profile).await? {
+        if !book.profile_id.starts_with("legacy-") || known.contains(&book.profile_id) {
+            continue;
+        }
+        let Some(account_id) = book.account_id else {
+            continue;
+        };
+        let row = ownership
+            .entry(book.profile_id)
+            .or_insert_with(|| LegacyLibationOwnership {
+                account_id,
+                locale: book.locale.unwrap_or_default(),
+                asins: Vec::new(),
+            });
+        if !row
+            .asins
+            .iter()
+            .any(|asin| asin.eq_ignore_ascii_case(&book.asin))
+        {
+            row.asins.push(book.asin);
+        }
+    }
+    if ownership.is_empty() {
+        return Ok(());
+    }
+    record_legacy_ownership(state, ownership).await
+}
+
+async fn record_selected_legacy_ownership(
+    state: &AppState,
+    profile: &LibationProfile,
+    account_id: &str,
+    asin: &str,
+) -> anyhow::Result<()> {
+    let listed = run_libation(
+        &profile.config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await?;
+    if !listed.status.success() {
+        anyhow::bail!("Could not list Audible accounts after scanning.");
+    }
+    let accounts = parse_libation_accounts(&String::from_utf8_lossy(&listed.stdout));
+    let ownership = capture_legacy_ownership(profile, account_id, &accounts).await?;
+    if ownership.is_empty() {
+        anyhow::bail!("Could not identify the selected Audible account.");
+    }
+    if !ownership.get(&profile.id).is_some_and(|row| {
+        row.asins
+            .iter()
+            .any(|owned| owned.eq_ignore_ascii_case(asin))
+    }) {
+        anyhow::bail!("{asin} was not found in the selected Audible account's library.");
+    }
+    record_legacy_ownership(state, ownership)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    invalidate_libation_export_cache().await;
+    Ok(())
+}
+
 pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
         let _libation_guard = acquire_libation_job_lock(&state).await;
@@ -1665,38 +1963,60 @@ pub(crate) fn spawn_libation_sync_job(state: AppState, job_id: String) {
         let mut exit_code = Some(0);
         for profile in profiles {
             update_job_output(&state, &job_id, &format!("\nChecking {}.\n", profile.name)).await;
-            match run_libation(&profile.config, vec!["scan".to_string()]).await {
-                Ok(output) if output.status.success() => {
-                    append_job_command_output(&state, &job_id, &output).await;
-                    if profile.managed {
-                        mark_managed_libation_account_refreshed(&state, &profile.id).await;
-                    }
+            if !profile.managed
+                && let Err(error) = preserve_unscanned_legacy_ownership(&state, &profile).await
+            {
+                failures.push(format!(
+                    "Could not preserve existing {} ownership: {}",
+                    profile.name, error.message
+                ));
+            }
+            for attempt in scan_libation_profile(&profile).await {
+                let name = attempt.account.as_deref().unwrap_or(&profile.name);
+                if let Some(account) = &attempt.account {
+                    update_job_output(&state, &job_id, &format!("Scanning {account}.\n")).await;
                 }
-                Ok(output) => {
-                    exit_code = output.status.code();
-                    append_job_command_output(&state, &job_id, &output).await;
-                    let message = format!("{} could not be refreshed.", profile.name);
-                    if profile.managed {
-                        mark_managed_libation_account_error(
-                            &state,
-                            &profile.id,
-                            &command_output_text(&output),
-                        )
-                        .await;
+                match attempt.result {
+                    Ok(output) if output.status.success() => {
+                        append_job_command_output(&state, &job_id, &output).await;
+                        if let Some(ownership) = attempt.ownership
+                            && let Err(error) = record_legacy_ownership(&state, ownership).await
+                        {
+                            failures.push(format!(
+                                "Could not save {name} ownership: {}",
+                                error.message
+                            ));
+                        }
+                        if profile.managed {
+                            mark_managed_libation_account_refreshed(&state, &profile.id).await;
+                        }
                     }
-                    failures.push(message);
-                }
-                Err(error) => {
-                    exit_code = None;
-                    if profile.managed {
-                        mark_managed_libation_account_error(
-                            &state,
-                            &profile.id,
-                            &error.to_string(),
-                        )
-                        .await;
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state, &job_id, &output).await;
+                        let message = format!("{name} could not be refreshed.");
+                        if profile.managed {
+                            mark_managed_libation_account_error(
+                                &state,
+                                &profile.id,
+                                &command_output_text(&output),
+                            )
+                            .await;
+                        }
+                        failures.push(message);
                     }
-                    failures.push(format!("{}: {error}", profile.name));
+                    Err(error) => {
+                        exit_code = None;
+                        if profile.managed {
+                            mark_managed_libation_account_error(
+                                &state,
+                                &profile.id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        }
+                        failures.push(format!("{name}: {error}"));
+                    }
                 }
             }
         }
@@ -1845,6 +2165,65 @@ pub(crate) fn find_book_id_by_asin(books: &[Book], asin: &str) -> Option<String>
         .map(|book| book.id.clone())
 }
 
+/// The older ASIN-only API has no account choice. Resolve it only when one
+/// login exists; otherwise require the account-scoped route so Libation
+/// cannot silently use whichever owner its shared database recorded last.
+async fn resolve_legacy_download_profile(
+    state: &AppState,
+    profile: LibationProfile,
+    asin: &str,
+) -> Result<LibationProfile, ApiError> {
+    if profile.id != "legacy" {
+        return Ok(profile);
+    }
+    let output = run_libation(
+        &profile.config,
+        vec!["list-accounts".to_string(), "--bare".to_string()],
+    )
+    .await
+    .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+    if !output.status.success() {
+        return Err(ApiError::bad_gateway(command_output_text(&output)));
+    }
+    let accounts = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout));
+    let Some(first) = accounts.first() else {
+        return Ok(profile);
+    };
+    if accounts
+        .iter()
+        .any(|account| !account.account_id.eq_ignore_ascii_case(&first.account_id))
+    {
+        return Err(ApiError::bad_request(
+            "Choose an Audible account to download this title.",
+        ));
+    }
+    // One login can have several marketplace rows. Use the row Libation
+    // currently associates with this ASIN so the profile's locale matches.
+    let selected = if accounts.len() == 1 {
+        first
+    } else {
+        let books = export_libation_books(&profile).await?;
+        accounts
+            .iter()
+            .find(|account| {
+                books.iter().any(|book| {
+                    book.asin.eq_ignore_ascii_case(asin) && book.profile_id == account.id
+                })
+            })
+            .unwrap_or(first)
+    };
+    Ok(LibationProfile {
+        id: selected.id.clone(),
+        name: selected
+            .name
+            .clone()
+            .unwrap_or_else(|| "Audible account".to_string()),
+        account_id: Some(selected.account_id.clone()),
+        managed: false,
+        config: state.libation_config.clone(),
+    })
+}
+
 pub(crate) async fn start_libation_download(
     state: &AppState,
     profile_id: Option<String>,
@@ -1868,6 +2247,7 @@ pub(crate) async fn start_libation_download(
             .next()
             .ok_or(ApiError::bad_request("No Audible accounts are configured."))?
     };
+    let profile = resolve_legacy_download_profile(state, profile, &asin).await?;
     let catalog_id = format!("{}:{asin}", profile.id);
 
     if let Some(user_id) = grant_to_user.as_deref() {
@@ -1956,6 +2336,95 @@ async fn run_libation_liberate_job(
     )
     .await;
 
+    if let Some(account_id) = profile.account_id.as_deref().filter(|_| !profile.managed) {
+        if let Err(error) = preserve_unscanned_legacy_ownership(&state, &profile).await {
+            update_job_finished(
+                &state,
+                &job_id,
+                "failed",
+                None,
+                Some(format!(
+                    "Could not preserve existing Audible ownership: {}",
+                    error.message
+                )),
+            )
+            .await;
+            return;
+        }
+        let selected_account_owns_record =
+            export_libation_books(&profile)
+                .await
+                .ok()
+                .is_some_and(|books| {
+                    books.iter().any(|book| {
+                        book.asin.eq_ignore_ascii_case(&asin) && book.profile_id == profile.id
+                    })
+                });
+        if !selected_account_owns_record {
+            update_job_output(
+                &state,
+                &job_id,
+                &format!("Scanning {} before downloading {asin}.\n", profile.name),
+            )
+            .await;
+            match run_libation(
+                &profile.config,
+                vec!["scan".to_string(), account_id.to_string()],
+            )
+            .await
+            {
+                Ok(output) if output.status.success() => {
+                    append_job_command_output(&state, &job_id, &output).await;
+                }
+                Ok(output) => {
+                    append_job_command_output(&state, &job_id, &output).await;
+                    update_job_finished(
+                        &state,
+                        &job_id,
+                        "failed",
+                        output.status.code(),
+                        Some(format!(
+                            "Could not scan {} before downloading {asin}.",
+                            profile.name
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    update_job_finished(
+                        &state,
+                        &job_id,
+                        "failed",
+                        None,
+                        Some(format!(
+                            "Could not scan {} before downloading {asin}: {error}",
+                            profile.name
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        if let Err(error) =
+            record_selected_legacy_ownership(&state, &profile, account_id, &asin).await
+        {
+            update_job_finished(
+                &state,
+                &job_id,
+                "failed",
+                None,
+                Some(format!(
+                    "Could not confirm {} owns {asin}: {error}",
+                    profile.name
+                )),
+            )
+            .await;
+            return;
+        }
+    }
+
     let books_override = format!("Books={}", profile.config.library_root.to_string_lossy());
     let result = run_libation(
         &profile.config,
@@ -1995,9 +2464,7 @@ async fn run_libation_liberate_job(
                     &job_id,
                     "failed",
                     output.status.code(),
-                    Some(format!(
-                        "Libation finished, but {asin} was not found in the OperaLibre library after rescanning."
-                    )),
+                    Some(missing_libation_book_error(&output, &asin)),
                 )
                 .await;
                 return;
@@ -2033,6 +2500,26 @@ async fn run_libation_liberate_job(
             }
             update_job_finished(&state, &job_id, "failed", None, Some(error.to_string())).await;
         }
+    }
+}
+
+/// Libation can exit successfully after a per-book license failure. Prefer
+/// the failure it reported over suggesting that the local rescan lost a file.
+fn missing_libation_book_error(output: &std::process::Output, asin: &str) -> String {
+    let text = command_output_text(output).to_ascii_lowercase();
+    if text.contains("customerthrottled") || text.contains("being throttled") {
+        format!(
+            "Audible is throttling the account and denied the content license for {asin}. Check the Libation job output and wait before retrying."
+        )
+    } else if text.contains("content license denied") || text.contains("content license was denied")
+    {
+        format!(
+            "Audible denied the content license for {asin}. Check the Libation job output for the reason and verify that the selected account can access this title."
+        )
+    } else {
+        format!(
+            "Libation finished, but {asin} was not found in the OperaLibre library after rescanning. Check the Libation job output for a failed or skipped download."
+        )
     }
 }
 
@@ -2096,16 +2583,41 @@ pub(crate) async fn schedule_libation_access_grant(
 /// Whether `asin` is in the profile's Audible library. A reader's download
 /// grants them the matching local book, so only a book the account actually
 /// owns may do that; naming any ASIN in the catalogue must not.
-async fn profile_owns_asin(
+pub(crate) async fn profile_owns_asin(
     state: &AppState,
     profile: &LibationProfile,
     asin: &str,
 ) -> Result<bool, ApiError> {
     let owns = |books: &[LibationBook]| {
-        books
-            .iter()
-            .any(|book| book.asin.eq_ignore_ascii_case(asin))
+        books.iter().any(|book| {
+            book.asin.eq_ignore_ascii_case(asin)
+                && (profile.id == "legacy" || book.profile_id == profile.id)
+        })
     };
+    if let Some(account_id) = profile.account_id.as_deref().filter(|_| !profile.managed) {
+        let _libation_guard = acquire_libation_job_lock(state).await;
+        preserve_unscanned_legacy_ownership(state, profile).await?;
+        if owns(&export_libation_books(profile).await?) {
+            return Ok(true);
+        }
+        let output = run_libation(
+            &profile.config,
+            vec!["scan".to_string(), account_id.to_string()],
+        )
+        .await
+        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        if !output.status.success() {
+            return Err(ApiError::bad_gateway(command_output_text(&output)));
+        }
+        invalidate_libation_export_cache().await;
+        if !owns(&export_libation_books(profile).await?) {
+            return Ok(false);
+        }
+        record_selected_legacy_ownership(state, profile, account_id, asin)
+            .await
+            .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        return Ok(true);
+    }
     if let Some(cached) = cached_libation_export(profile).await {
         return Ok(owns(&cached.books));
     }
@@ -2191,24 +2703,195 @@ pub(crate) async fn liberate_all_libation_books(
                 &format!("\nScanning {}.\n", profile.name),
             )
             .await;
-            match run_libation(&profile.config, vec!["scan".to_string()]).await {
-                Ok(output) if output.status.success() => {
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                    if profile.managed {
-                        mark_managed_libation_account_refreshed(&state_for_job, &profile.id).await;
+            if !profile.managed {
+                if let Err(error) =
+                    preserve_unscanned_legacy_ownership(&state_for_job, &profile).await
+                {
+                    failures.push(format!(
+                        "Could not preserve existing {} ownership: {}",
+                        profile.name, error.message
+                    ));
+                }
+                // Libation has no account selector for `liberate`. In a shared
+                // database, scan and download each account's ASINs before
+                // scanning the next account changes their recorded owner.
+                let listed = run_libation(
+                    &profile.config,
+                    vec!["list-accounts".to_string(), "--bare".to_string()],
+                )
+                .await;
+                let accounts = match listed {
+                    Ok(output) if output.status.success() => {
+                        parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+                    }
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        failures.push(format!("Could not list {} accounts", profile.name));
+                        continue;
+                    }
+                    Err(error) => {
+                        exit_code = None;
+                        failures.push(format!("Could not list {} accounts: {error}", profile.name));
+                        continue;
+                    }
+                };
+                let mut seen = HashSet::new();
+                let enabled = accounts
+                    .iter()
+                    .filter(|account| {
+                        account.scan_library && seen.insert(account.account_id.to_ascii_lowercase())
+                    })
+                    .collect::<Vec<_>>();
+                if enabled.is_empty() {
+                    failures.push(format!("No enabled Audible accounts in {}", profile.name));
+                    continue;
+                }
+                let books_override =
+                    format!("Books={}", profile.config.library_root.to_string_lossy());
+                for account in enabled {
+                    let name = account.name.as_deref().unwrap_or(&account.account_id);
+                    update_job_output(
+                        &state_for_job,
+                        &job_id_for_task,
+                        &format!("Scanning {name}.\n"),
+                    )
+                    .await;
+                    let scanned = run_libation(
+                        &profile.config,
+                        vec!["scan".to_string(), account.account_id.clone()],
+                    )
+                    .await;
+                    match scanned {
+                        Ok(output) if output.status.success() => {
+                            append_job_command_output(&state_for_job, &job_id_for_task, &output)
+                                .await;
+                        }
+                        Ok(output) => {
+                            exit_code = output.status.code();
+                            append_job_command_output(&state_for_job, &job_id_for_task, &output)
+                                .await;
+                            failures.push(format!("{name} scan failed"));
+                            continue;
+                        }
+                        Err(error) => {
+                            exit_code = None;
+                            failures.push(format!("{name} scan failed: {error}"));
+                            continue;
+                        }
+                    }
+                    let ownership =
+                        match capture_legacy_ownership(&profile, &account.account_id, &accounts)
+                            .await
+                        {
+                            Ok(ownership) => ownership,
+                            Err(error) => {
+                                failures.push(format!("Could not read {name} library: {error}"));
+                                continue;
+                            }
+                        };
+                    let mut asins = ownership
+                        .values()
+                        .flat_map(|row| row.asins.iter())
+                        .filter_map(|asin| normalize_asin(asin))
+                        .collect::<Vec<_>>();
+                    asins.sort_unstable();
+                    asins.dedup();
+                    if let Err(error) = record_legacy_ownership(&state_for_job, ownership).await {
+                        failures.push(format!(
+                            "Could not save {name} ownership: {}",
+                            error.message
+                        ));
+                        continue;
+                    }
+                    update_job_output(
+                        &state_for_job,
+                        &job_id_for_task,
+                        &format!("Downloading remaining books from {name}.\n"),
+                    )
+                    .await;
+                    // Repeated --id is supported by Libation. Bound each
+                    // invocation so very large libraries fit in argv.
+                    for batch in asins.chunks(100) {
+                        let mut args = vec![
+                            "liberate".to_string(),
+                            "--override".to_string(),
+                            books_override.clone(),
+                        ];
+                        for asin in batch {
+                            args.push("--id".to_string());
+                            args.push(asin.clone());
+                        }
+                        match run_libation(&profile.config, args).await {
+                            Ok(output) if output.status.success() => {
+                                append_job_command_output(
+                                    &state_for_job,
+                                    &job_id_for_task,
+                                    &output,
+                                )
+                                .await;
+                            }
+                            Ok(output) => {
+                                exit_code = output.status.code();
+                                append_job_command_output(
+                                    &state_for_job,
+                                    &job_id_for_task,
+                                    &output,
+                                )
+                                .await;
+                                failures.push(format!("{name} download failed"));
+                            }
+                            Err(error) => {
+                                exit_code = None;
+                                failures.push(format!("{name} download failed: {error}"));
+                            }
+                        }
                     }
                 }
-                Ok(output) => {
-                    exit_code = output.status.code();
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                    failures.push(format!("{} scan failed", profile.name));
-                    continue;
+                continue;
+            }
+            let mut scanned_any = false;
+            for attempt in scan_libation_profile(&profile).await {
+                let name = attempt.account.as_deref().unwrap_or(&profile.name);
+                if let Some(account) = &attempt.account {
+                    update_job_output(
+                        &state_for_job,
+                        &job_id_for_task,
+                        &format!("Scanning {account}.\n"),
+                    )
+                    .await;
                 }
-                Err(error) => {
-                    exit_code = None;
-                    failures.push(format!("{} scan failed: {error}", profile.name));
-                    continue;
+                match attempt.result {
+                    Ok(output) if output.status.success() => {
+                        scanned_any = true;
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        if let Some(ownership) = attempt.ownership
+                            && let Err(error) =
+                                record_legacy_ownership(&state_for_job, ownership).await
+                        {
+                            failures.push(format!(
+                                "Could not save {name} ownership: {}",
+                                error.message
+                            ));
+                        }
+                        if profile.managed {
+                            mark_managed_libation_account_refreshed(&state_for_job, &profile.id)
+                                .await;
+                        }
+                    }
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        failures.push(format!("{name} scan failed"));
+                    }
+                    Err(error) => {
+                        exit_code = None;
+                        failures.push(format!("{name} scan failed: {error}"));
+                    }
                 }
+            }
+            if !scanned_any {
+                continue;
             }
 
             update_job_output(
@@ -2606,11 +3289,34 @@ pub(crate) async fn find_libation_profile(
     state: &AppState,
     profile_id: &str,
 ) -> Option<LibationProfile> {
-    if profile_id == "legacy" || profile_id.starts_with("legacy-") {
+    if profile_id == "legacy" {
         return state.libation_config.enabled().then(|| LibationProfile {
             id: profile_id.to_string(),
             name: "Existing Libation accounts".to_string(),
             account_id: None,
+            managed: false,
+            config: state.libation_config.clone(),
+        });
+    }
+    if profile_id.starts_with("legacy-") {
+        let output = run_libation(
+            &state.libation_config,
+            vec!["list-accounts".to_string(), "--bare".to_string()],
+        )
+        .await
+        .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let account = parse_libation_accounts(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .find(|account| account.id == profile_id)?;
+        return Some(LibationProfile {
+            id: account.id,
+            name: account
+                .name
+                .unwrap_or_else(|| "Audible account".to_string()),
+            account_id: Some(account.account_id),
             managed: false,
             config: state.libation_config.clone(),
         });
@@ -2924,7 +3630,11 @@ pub(crate) async fn export_libation_books(
             let asin = non_empty_string(record.audible_product_id?)?;
             let locale = non_empty_string(record.locale.unwrap_or_default());
             let record_account = record.account.as_deref().and_then(non_empty_string);
-            let account_id = profile.account_id.clone().or(record_account);
+            let account_id = if profile.managed {
+                profile.account_id.clone().or(record_account)
+            } else {
+                record_account
+            };
             let profile_id = if profile.managed {
                 profile.id.clone()
             } else if let Some(account_id) = account_id.as_deref() {

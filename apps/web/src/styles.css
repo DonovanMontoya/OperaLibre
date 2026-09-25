@@ -6045,7 +6045,8 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   gap: 0.85rem 1rem;
 }
 
-.metadata-edit-form label {
+.metadata-edit-form label,
+.metadata-edit-form .metadata-labeled-field {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -6054,6 +6055,51 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-faded);
+}
+
+.metadata-suggestion-field {
+  position: relative;
+  min-width: 0;
+}
+
+.metadata-suggestions {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  z-index: 3;
+  max-height: 13rem;
+  overflow-y: auto;
+  padding: 0.3rem;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 10px;
+  background: rgb(var(--sheet-rgb));
+  box-shadow: 0 10px 24px rgba(26, 20, 16, 0.18);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.metadata-suggestions.above {
+  top: auto;
+  bottom: calc(100% + 3px);
+}
+
+.metadata-suggestions button {
+  display: block;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font: 0.92rem "Fraunces", serif;
+  text-align: left;
+}
+
+.metadata-suggestions button:hover,
+.metadata-suggestions button:focus-visible,
+.metadata-suggestions button.active {
+  background: rgba(var(--ink-rgb), 0.08);
 }
 
 .metadata-edit-form label.wide {
@@ -6776,6 +6822,7 @@ html.native-app {
      through WKWebView's multi-phase rotation. 100vh remains a safe fallback
      for the earliest supported iOS 15 releases, before dvh was available. */
   --native-viewport-height: 100vh;
+  --native-viewport-top: 0px;
   /* Unlike the visual viewport, this does not collapse behind the software
      keyboard. It is reserved for full-height, internally scrolling sheets. */
   --native-layout-height: 100vh;
@@ -8053,11 +8100,22 @@ html.native-app .native-now-timeline {
   min-width: 0;
 }
 
+/* The thumb's paper ring is a 3px shadow outside its box; the inline padding
+   keeps it from being clipped by the input at 0% and 100%. */
 html.native-app .native-now-timeline input[type="range"] {
   height: 28px;
+  padding-inline: 3px;
 }
 
-html.native-app .native-now-timeline input[type="range"]::-webkit-slider-runnable-track,
+/* Separate rules: WebKit drops a whole selector list containing ::-moz-*. */
+html.native-app .native-now-timeline input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background:
+    linear-gradient(var(--oxblood), var(--oxblood)) left center / var(--scrub-progress, 0%) 6px no-repeat,
+    linear-gradient(rgba(var(--ink-rgb), 0.16), rgba(var(--ink-rgb), 0.16)) left center / 100% 3px no-repeat;
+}
+
 html.native-app .native-now-timeline input[type="range"]::-moz-range-track {
   height: 6px;
   border-radius: 999px;
@@ -8545,6 +8603,7 @@ html:not(.native-app) .native-now-timeline {
 
 html:not(.native-app) .native-now-timeline input[type="range"] {
   height: 28px;
+  padding-inline: 3px;
 }
 
 html:not(.native-app) .native-now-timeline input[type="range"]::-webkit-slider-runnable-track {
@@ -10149,29 +10208,59 @@ html.native-app .modal-card {
   animation: sheet-up 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-/* Editing metadata is a long form, not a short confirmation sheet. On iOS
-   `visualViewport.height` contracts as the keyboard opens; using it here made
-   the whole form shrink and jump down the screen for every focused field.
-   Keep this one sheet screen-anchored and let its own scroll container move
-   the active field above the keyboard. */
+/* Keep the editor inside the visible screen as the keyboard opens. The header
+   and actions stay put while the fields have their own scroll area. */
+html.native-app .metadata-editor-scrim {
+  top: var(--native-viewport-top);
+  bottom: auto;
+  height: var(--native-viewport-height);
+  align-items: stretch;
+  padding-top: var(--status-h);
+}
+
 html.native-app .metadata-editor-card {
-  height: calc(var(--native-layout-height) - var(--status-h) - 12px);
-  max-height: calc(var(--native-layout-height) - var(--status-h) - 12px);
-  scroll-padding: 5rem 0 20rem;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+html.native-app .metadata-editor-card::before {
+  display: none;
+}
+
+html.native-app.native-keyboard-open .metadata-editor-card {
+  padding-bottom: 8px;
 }
 
 html.native-app .metadata-editor-card .modal-head {
-  position: sticky;
-  top: -12px;
-  z-index: 1;
+  flex-shrink: 0;
   margin: 0 -18px;
   padding: 12px 18px;
   background: rgba(var(--sheet-rgb), 0.98);
   box-shadow: 0 8px 14px rgba(26, 20, 16, 0.05);
 }
 
+html.native-app .metadata-edit-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-block: 12px 20px;
+  padding: 2px 0 12px;
+}
+
 html.native-app .metadata-editor-card :is(input, textarea) {
-  scroll-margin-block: 5rem 20rem;
+  scroll-margin-block: 12px 20px;
+}
+
+html.native-app .metadata-editor-card .metadata-edit-actions {
+  flex-shrink: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.12);
 }
 
 /* Sheet grabber */
@@ -11647,13 +11736,14 @@ html.native-app .recent-row {
 /* A compact bookplate for information needed during playback. The full
    library details page remains available as a deliberate second step. */
 .details-sheet {
+  --details-sheet-pad-bottom: max(22px, calc(env(safe-area-inset-bottom) + 14px));
   position: relative;
   z-index: 1;
   width: min(100%, 560px);
   max-height: min(86dvh, 760px);
   overflow-y: auto;
   padding: 13px max(20px, env(safe-area-inset-right))
-    max(22px, calc(env(safe-area-inset-bottom) + 14px))
+    var(--details-sheet-pad-bottom)
     max(20px, env(safe-area-inset-left));
   border: 1px solid rgba(139, 46, 31, 0.15);
   border-bottom: 0;
@@ -11853,15 +11943,18 @@ html.native-app .recent-row {
   font: 0.88rem/1.55 "Fraunces", serif;
 }
 
+/* The bar absorbs the sheet's bottom padding so it sits flush with the
+   sheet edge; the safe area is counted once, and scrolled text never shows
+   beneath or through the buttons. */
 .details-sheet-actions {
   position: sticky;
-  bottom: -22px;
+  bottom: calc(-1 * var(--details-sheet-pad-bottom));
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 8px;
-  margin: 16px -2px 0;
-  padding: 12px 2px max(2px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 24%);
+  margin: 16px -2px calc(-1 * var(--details-sheet-pad-bottom));
+  padding: 14px 2px var(--details-sheet-pad-bottom);
+  background: linear-gradient(180deg, rgba(var(--sheet-deep-rgb), 0), rgb(var(--sheet-deep-rgb)) 14px);
 }
 
 .details-sheet-actions button {

@@ -55,6 +55,7 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 9. [Deployment](deployment.md) — running on a home server or LAN
 10. [Troubleshooting](troubleshooting.md) — common problems and fixes
 11. [iOS Release Changelog](ios-changelog.md) — iPhone and iPad versions and build notes
+12. [Update Manifest](update-manifest.md) — how installations find and verify updates
 
 ## Architecture
 

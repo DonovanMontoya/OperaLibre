@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-private let releaseApiURL = URL(string: "https://api.github.com/repos/DonovanMontoya/OperaLibre/releases/latest")!
-private let releaseDownloadPrefix = "https://github.com/DonovanMontoya/OperaLibre/releases/download/"
+/// Redirects and bridges followed before giving up, which also ends a loop.
+private let maxManifestHops = 8
 private let maxFrontendPackageBytes = 50 * 1024 * 1024
 private let stagingPrefix = ".staging-"
 /// Records the fingerprint of the bundle the managed root was last reset from.
@@ -11,25 +11,11 @@ private let bundleStampName = ".bundle-stamp"
 /// than in use by a concurrently launching instance.
 private let staleStagingAge: TimeInterval = 60 * 60
 
-struct GithubReleaseAsset: Decodable {
-    let name: String
-    let browser_download_url: String
-    let size: Int
-    let digest: String?
-}
-
-struct GithubRelease: Decodable {
-    let tag_name: String
-    let assets: [GithubReleaseAsset]
-}
-
 enum FrontendUpdateError: LocalizedError {
     case noMatchingAsset
     case untrustedDownloadURL
-    case invalidDigest
     case digestMismatch
-    case missingSignature
-    case invalidSignature
+    case tooManyRedirects
     case invalidPackage(String)
     case httpStatus(String, Int)
     case network(Error)
@@ -37,17 +23,13 @@ enum FrontendUpdateError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noMatchingAsset:
-            return "The latest release does not include a macOS web frontend package."
+            return "The latest release does not include a web frontend package."
         case .untrustedDownloadURL:
-            return "The frontend package download URL was not from GitHub."
-        case .invalidDigest:
-            return "The frontend package has no valid SHA-256 digest."
+            return "The update manifest or frontend package address is not HTTPS."
         case .digestMismatch:
             return "The downloaded frontend package failed checksum verification."
-        case .missingSignature:
-            return "The release does not include a signature for the frontend package."
-        case .invalidSignature:
-            return "The frontend package's release signature is not valid."
+        case .tooManyRedirects:
+            return "The update manifest redirected too many times."
         case .invalidPackage(let reason):
             return "The frontend package is invalid: \(reason)"
         case .httpStatus(let context, let code):
@@ -64,10 +46,9 @@ struct FrontendUpdateStatus {
     let currentVersion: String
     let latestVersion: String
     let updateAvailable: Bool
-    let asset: GithubReleaseAsset?
-    /// The release's tag, which its asset signatures cover.
-    let releaseTag: String
-    let signatureAsset: GithubReleaseAsset?
+    /// From the verified manifest, which signs its address, size and SHA-256.
+    let package: UpdatePackage?
+    let notice: UpdateNotice?
 }
 
 /// Parses "1.2.3" (optional leading v) into [major, minor, patch]; nil for anything else, including "dev".
@@ -228,70 +209,76 @@ final class FrontendUpdater {
     }
 
     func checkForUpdate() async throws -> FrontendUpdateStatus {
-        var request = URLRequest(url: releaseApiURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-
-        let release: GithubRelease
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            // Without this an unauthenticated rate-limit (403) or an outage page reaches the
-            // decoder and is reported as a malformed-data error, which tells nobody anything.
-            try checkStatus(response, context: "The GitHub release feed")
-            release = try JSONDecoder().decode(GithubRelease.self, from: data)
-        } catch let error as FrontendUpdateError {
-            throw error
-        } catch {
-            throw FrontendUpdateError.network(error)
-        }
-
-        let latestVersion = release.tag_name.hasPrefix("v")
-            ? String(release.tag_name.dropFirst())
-            : release.tag_name
-        let assetName = "operalibre-\(latestVersion)-frontend.zip"
-        let asset = release.assets.first { $0.name == assetName }
-        let signatureAsset = release.assets.first { $0.name == assetName + releaseSignatureSuffix }
-
         let current = currentVersion
+        let manifest = try await fetchManifest(currentVersion: parseSemver(current))
+        let package = manifest.package("frontend")
+        let latestVersion = package?.version ?? manifest.version
+
         let updateAvailable: Bool
         if let currentParsed = parseSemver(current), let latestParsed = parseSemver(latestVersion) {
-            updateAvailable = isSemver(latestParsed, newerThan: currentParsed) && asset != nil
+            updateAvailable = isSemver(latestParsed, newerThan: currentParsed) && package != nil
         } else {
             // A "dev" build has no comparable version; any published release counts as available.
-            updateAvailable = asset != nil
+            updateAvailable = package != nil
         }
 
         return FrontendUpdateStatus(
             currentVersion: current,
             latestVersion: latestVersion,
             updateAvailable: updateAvailable,
-            asset: asset,
-            releaseTag: release.tag_name,
-            signatureAsset: signatureAsset
+            package: package,
+            notice: manifest.notice
         )
     }
 
+    /// The manifest that applies to this frontend: the latest one, or the one a redirect or a
+    /// bridge sends an older install to.
+    private func fetchManifest(currentVersion: [Int]?) async throws -> UpdateManifest {
+        guard let root = TrustedRoot.builtIn else {
+            throw UpdateManifestError.untrusted
+        }
+        var url = updateManifestURL
+        for _ in 0..<maxManifestHops {
+            let data: Data
+            do {
+                let (body, response) = try await URLSession.shared.data(from: url)
+                // Without this a rate limit or an outage page reaches the decoder and is
+                // reported as a malformed manifest, which tells nobody anything.
+                try checkStatus(response, context: "The update manifest")
+                data = body
+            } catch let error as FrontendUpdateError {
+                throw error
+            } catch {
+                throw FrontendUpdateError.network(error)
+            }
+            let manifest = try verifyUpdateManifest(data, root: root)
+            let bridge = currentVersion.flatMap { current in
+                manifest.bridges?.first { bridge in
+                    (bridge.component == nil || bridge.component == "frontend")
+                        && parseSemver(bridge.below).map { isSemver($0, newerThan: current) } == true
+                }
+            }
+            guard let next = manifest.redirect ?? bridge?.manifest else {
+                return manifest
+            }
+            guard next.hasPrefix("https://"), let nextURL = URL(string: next) else {
+                throw FrontendUpdateError.untrustedDownloadURL
+            }
+            url = nextURL
+        }
+        throw FrontendUpdateError.tooManyRedirects
+    }
+
     func install(_ status: FrontendUpdateStatus) async throws {
-        guard let asset = status.asset else {
+        guard let package = status.package else {
             throw FrontendUpdateError.noMatchingAsset
         }
-        guard asset.browser_download_url.hasPrefix(releaseDownloadPrefix) else {
-            throw FrontendUpdateError.untrustedDownloadURL
-        }
-        guard let digestField = asset.digest,
-            let expectedDigest = digestField.hasPrefix("sha256:") ? String(digestField.dropFirst(7)) : nil,
-            expectedDigest.count == 64
-        else {
-            throw FrontendUpdateError.invalidDigest
-        }
-        guard asset.size > 0, asset.size <= maxFrontendPackageBytes else {
+        guard package.size <= maxFrontendPackageBytes else {
             throw FrontendUpdateError.invalidPackage("unexpected package size")
         }
-        guard let downloadURL = URL(string: asset.browser_download_url) else {
+        guard let downloadURL = URL(string: package.url) else {
             throw FrontendUpdateError.untrustedDownloadURL
         }
-        // Checked before the package download: an unsigned or wrongly signed release is
-        // refused without fetching it. The package is then held to the signed digest.
-        try await verifySignature(for: asset, status: status, expectedDigest: expectedDigest)
 
         let fileManager = FileManager.default
         let workDir = fileManager.temporaryDirectory
@@ -304,7 +291,7 @@ final class FrontendUpdater {
 
         let downloadedData = try Data(contentsOf: archivePath, options: .mappedIfSafe)
         let actualDigest = SHA256.hash(data: downloadedData).map { String(format: "%02x", $0) }.joined()
-        guard actualDigest == expectedDigest.lowercased() else {
+        guard downloadedData.count == package.size, actualDigest == package.sha256.lowercased() else {
             throw FrontendUpdateError.digestMismatch
         }
 
@@ -312,7 +299,7 @@ final class FrontendUpdater {
         try fileManager.createDirectory(at: extractDir, withIntermediateDirectories: true)
         try runUnzip(archive: archivePath, destination: extractDir)
 
-        let packageRoot = extractDir.appendingPathComponent("operalibre-\(status.latestVersion)-frontend", isDirectory: true)
+        let packageRoot = extractDir.appendingPathComponent(package.root, isDirectory: true)
         let stagedWeb = packageRoot.appendingPathComponent("web", isDirectory: true)
         let stagedIndex = stagedWeb.appendingPathComponent("index.html")
         let stagedVersionMarker = stagedWeb.appendingPathComponent("VERSION.txt")
@@ -321,7 +308,7 @@ final class FrontendUpdater {
         }
         guard let stagedVersion = try? String(contentsOf: stagedVersionMarker, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
-            stagedVersion == status.latestVersion
+            stagedVersion == package.version
         else {
             throw FrontendUpdateError.invalidPackage("version marker does not match the release")
         }
@@ -343,38 +330,7 @@ final class FrontendUpdater {
             }
             throw error
         }
-        installedVersion = status.latestVersion
-    }
-
-    private func verifySignature(
-        for asset: GithubReleaseAsset,
-        status: FrontendUpdateStatus,
-        expectedDigest: String
-    ) async throws {
-        guard let signatureAsset = status.signatureAsset,
-            signatureAsset.size > 0, signatureAsset.size <= maxReleaseSignatureBytes
-        else {
-            throw FrontendUpdateError.missingSignature
-        }
-        guard signatureAsset.browser_download_url.hasPrefix(releaseDownloadPrefix),
-            let signatureURL = URL(string: signatureAsset.browser_download_url)
-        else {
-            throw FrontendUpdateError.untrustedDownloadURL
-        }
-        let (data, response) = try await URLSession.shared.data(from: signatureURL)
-        try checkStatus(response, context: "The frontend package signature download")
-        guard data.count <= maxReleaseSignatureBytes,
-            let signature = String(data: data, encoding: .utf8),
-            verifyReleaseSignature(
-                publicKeyBase64: releaseSigningPublicKey,
-                tag: status.releaseTag,
-                assetName: asset.name,
-                sha256Hex: expectedDigest,
-                signatureBase64: signature
-            )
-        else {
-            throw FrontendUpdateError.invalidSignature
-        }
+        installedVersion = package.version
     }
 
     /// Streams an update into our scoped workspace instead of asking URLSession to create an
