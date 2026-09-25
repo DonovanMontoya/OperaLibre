@@ -642,6 +642,11 @@ impl RecognitionSettings {
     }
 }
 
+/// A window's forced alignment, awaited alongside the next recognition.
+type AligningSegment<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<Vec<alignment::SyncFragment>>> + Send + 'a>,
+>;
+
 /// Runs the alignment CLI for one job, sharing its temp directory and tools.
 struct Aligner<'a> {
     state: &'a AppState,
@@ -754,21 +759,28 @@ impl Aligner<'_> {
         let book_offset = scope.time_offset_seconds - scope_start;
         let text_len = transcript.len_utf16();
         let pace = text_len as f64 / (scope_end - scope_start);
+        let done =
+            |end: f64| (end - scope_start) / (scope_end - scope_start).max(f64::MIN_POSITIVE);
         let mut position = scope_start;
         let mut cursor = transcript.cursor();
         let mut fragments = Vec::new();
         let mut windows = 0usize;
         let mut unanchored = 0usize;
+        // The next window starts at this one's anchor, which recognition alone
+        // decides, so each window is force-aligned while the next is being
+        // recognized. At most one alignment is in flight, which bounds the
+        // aligner's memory to a single window.
+        let mut aligning: Option<(AligningSegment<'_>, f64)> = None;
 
         while position < scope_end - 0.5 && cursor.position() < text_len {
             windows += 1;
             let remaining = scope_end - position;
-            let mut recognized_audio = None;
-            let (segment_end, text_end, lead_in) = if remaining <= MAX_SINGLE_PASS_SECONDS {
-                (scope_end, text_len, 0.0)
-            } else {
+            let recognize = async {
+                if remaining <= MAX_SINGLE_PASS_SECONDS {
+                    return anyhow::Ok((scope_end, text_len, 0.0, None));
+                }
                 let mut window = WINDOW_SECONDS;
-                let (anchor, window_end) = loop {
+                let (anchor, window_end, audio) = loop {
                     let window_end = (position + window).min(scope_end);
                     let audio = self
                         .slice(
@@ -794,31 +806,41 @@ impl Aligner<'_> {
                         window_end - position - WINDOW_MARGIN_SECONDS,
                     );
                     if anchor.end.is_some() || window >= WINDOW_SECONDS * 2.0 {
-                        recognized_audio = Some(audio);
-                        break (anchor, window_end);
+                        break (anchor, window_end, audio);
                     }
                     let _ = fs::remove_file(audio).await;
                     // Nothing usable: look twice as far once before giving up.
                     window *= 2.0;
                 };
-                match anchor.end {
-                    Some(end) => (
-                        position + end.seconds,
-                        end.text_end_utf16,
-                        anchor.lead_in_seconds,
-                    ),
+                let (segment_end, text_end) = match anchor.end {
+                    Some(end) => (position + end.seconds, end.text_end_utf16),
                     None => {
                         // Fall back to the scope's average pace for one window.
                         unanchored += 1;
                         let target = cursor.position() + (WINDOW_SECONDS * pace).ceil() as u64;
-                        let text_end = cursor.sentence_end_before(target.min(text_len));
                         (
                             (position + WINDOW_SECONDS).min(window_end),
-                            text_end,
-                            anchor.lead_in_seconds,
+                            cursor.sentence_end_before(target.min(text_len)),
                         )
                     }
+                };
+                Ok((segment_end, text_end, anchor.lead_in_seconds, Some(audio)))
+            };
+            let (segment_end, text_end, lead_in, mut recognized_audio) = match aligning.take() {
+                Some((segment, aligned_to)) => {
+                    // Let both finish so each removes its own files, even
+                    // when the other fails.
+                    let (segment_fragments, recognized) = tokio::join!(segment, recognize);
+                    if let (Err(_), Ok((.., Some(audio)))) = (&segment_fragments, &recognized) {
+                        let _ = fs::remove_file(audio).await;
+                    }
+                    fragments.extend(segment_fragments?);
+                    let recognized = recognized?;
+                    update_job_progress(self.state, self.job_id, progress.at(done(aligned_to)))
+                        .await;
+                    recognized
                 }
+                None => recognize.await?,
             };
             let text_end = text_end.clamp(cursor.position(), text_len);
             if text_end <= cursor.position() {
@@ -857,28 +879,28 @@ impl Aligner<'_> {
                 if let Some(audio) = recognized_audio.take() {
                     let _ = fs::remove_file(audio).await;
                 }
-                let audio = audio?;
-                let window_transcript = cursor.window(text_end);
-                let segment_fragments = self
-                    .align(
-                        &audio,
-                        &window_transcript,
-                        book_offset + segment_start,
-                        scope_number,
-                        windows,
-                        &scope.label,
-                    )
-                    .await;
-                let _ = fs::remove_file(audio).await;
-                fragments.extend(segment_fragments?);
+                let segment = Box::pin(self.align_segment(
+                    audio?,
+                    cursor.window(text_end),
+                    book_offset + segment_start,
+                    scope_number,
+                    windows,
+                    &scope.label,
+                ));
+                aligning = Some((segment, segment_end));
             }
             if let Some(audio) = recognized_audio {
                 let _ = fs::remove_file(audio).await;
             }
+            if aligning.is_none() {
+                update_job_progress(self.state, self.job_id, progress.at(done(segment_end))).await;
+            }
             position = segment_end;
             cursor.advance_to(text_end);
-            let done = (position - scope_start) / (scope_end - scope_start).max(f64::MIN_POSITIVE);
-            update_job_progress(self.state, self.job_id, progress.at(done)).await;
+        }
+        if let Some((segment, aligned_to)) = aligning {
+            fragments.extend(segment.await?);
+            update_job_progress(self.state, self.job_id, progress.at(done(aligned_to))).await;
         }
 
         let note = if unanchored > 0 {
@@ -893,6 +915,30 @@ impl Aligner<'_> {
         )
         .await;
         Ok(fragments)
+    }
+
+    /// Force-aligns one extracted segment, then removes its audio.
+    async fn align_segment(
+        &self,
+        audio: PathBuf,
+        transcript: alignment::Transcript,
+        time_offset_seconds: f64,
+        scope_number: usize,
+        window: usize,
+        label: &str,
+    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        let fragments = self
+            .align(
+                &audio,
+                &transcript,
+                time_offset_seconds,
+                scope_number,
+                window,
+                label,
+            )
+            .await;
+        let _ = fs::remove_file(audio).await;
+        fragments
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1608,6 +1654,7 @@ esac
             unknown_duration: bool,
             fail_command: Option<&'static str>,
             fail_segment: bool,
+            record_overlap: bool,
         }
 
         async fn align_fake_book(
@@ -1656,6 +1703,23 @@ esac
                 // Leave a partial timeline, as a process can do before exiting.
                 script = script.replace("case \"$command\" in", &format!(
                     "if [ \"$command\" = {command} ]; then\n  if [ {command} = align ]; then echo partial > \"$4\"; else echo partial > \"$3\"; fi\n  echo 'fixture failure' >&2\n  exit 7\nfi\ncase \"$command\" in"));
+            }
+            let overlap_log = root.path().join("overlap.log");
+            if options.record_overlap {
+                // Alignment holds a marker while it runs; recognition that
+                // starts meanwhile records the overlap.
+                script = script.replace(
+                    "case \"$command\" in",
+                    &format!(
+                        "marker=\"$(dirname \"$2\")/aligning\"\n\
+                         if [ \"$command\" = align ]; then touch \"$marker\"; sleep 0.3; fi\n\
+                         if [ \"$command\" = transcribe ]; then sleep 0.1; \
+                         if [ -f \"$marker\" ]; then echo overlap >> \"{}\"; fi; fi\n\
+                         case \"$command\" in",
+                        overlap_log.display()
+                    ),
+                );
+                script.push_str("if [ \"$command\" = align ]; then rm -f \"$marker\"; fi\n");
             }
             write_script(&cli, &script);
 
@@ -1733,6 +1797,12 @@ esac
                 } else {
                     assert!(reported.is_none(), "single-pass progress is indeterminate");
                 }
+            }
+            if options.record_overlap {
+                assert!(
+                    std::fs::read_to_string(&overlap_log).is_ok_and(|log| !log.is_empty()),
+                    "the next window should be recognized while the previous one aligns"
+                );
             }
             assert_eq!(
                 std::fs::read_to_string(&track.path).unwrap(),
@@ -1834,6 +1904,27 @@ esac
                 assert_eq!(fragments[0].start_seconds, 900.0 + scope_start);
                 assert!(!output.contains(" windows"));
             }
+        }
+
+        #[tokio::test]
+        async fn recognition_of_the_next_window_overlaps_alignment() {
+            let options = FakeOptions {
+                record_overlap: true,
+                ..Default::default()
+            };
+            let (result, output) = run_fake_book(200, 0..0, 0.0, 0.0, options).await;
+            let fragments = result.unwrap();
+            assert_eq!(fragments.len(), 200);
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                let expected = narrated_start(index);
+                assert!(
+                    (fragment.start_seconds - expected).abs() < 0.75,
+                    "sentence {index}: {} != {expected}",
+                    fragment.start_seconds
+                );
+            }
+            assert!(output.contains(" windows"), "{output}");
         }
 
         #[tokio::test]
