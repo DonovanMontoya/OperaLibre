@@ -91,6 +91,17 @@ describe("sync maps", () => {
     assert.equal(findActiveFragmentIndex(fragments, 9), -1);
   });
 
+  it("clears the previous sentence during a long untexted chapter", () => {
+    const illustrated = [
+      { startSeconds: 0, endSeconds: 4, href: "chapter-one.xhtml", text: "The end." },
+      { startSeconds: 74, endSeconds: 79, href: "chapter-two.xhtml", text: "The beginning." }
+    ];
+    assert.equal(findActiveFragmentIndex(illustrated, 6), 0);
+    assert.equal(findActiveFragmentIndex(illustrated, 10), -1);
+    assert.equal(findActiveFragmentIndex(illustrated, 73), -1);
+    assert.equal(findActiveFragmentIndex(illustrated, 74), 1);
+  });
+
   it("can switch a few syllables early without shortening the final sentence", () => {
     assert.equal(findActiveFragmentIndex(fragments, 2.49, 0.5), 0);
     assert.equal(findActiveFragmentIndex(fragments, 2.5, 0.5), 1);
