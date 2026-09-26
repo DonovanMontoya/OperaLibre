@@ -106,10 +106,12 @@ export function useReadalong({
   // URL would change a moment later and the reader would open the EPUB
   // twice, so the reader waits for it.
   const companionUrlReady = native || !isOperaLibre || !!getStoredMediaToken();
-  const activeCompanionUrl = activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null;
   const companionFilesKey = JSON.stringify([...selectedCompanionList, ...selectedCompanionGroups.images].map((file) => [file.id, file.extension]));
   const companionScope = `${getServerStorageKey()}:${currentUser.id}:${selectedBook?.id ?? ""}:${companionFilesKey}`;
   const [localCompanions, setLocalCompanions] = useState<{ scope: string; urls: Record<string, string | null> } | null>(null);
+  const activeCompanionUrl = selectedBook?.source === "device"
+    ? (localCompanions?.scope === companionScope && activeCompanion ? localCompanions.urls[activeCompanion.id] : null)
+    : (activeCompanion && companionUrlReady ? readalongUrl(activeCompanion.url) : null);
   useEffect(() => {
     if (!native || !readalongOpen || !selectedBook) return;
     let cancelled = false;
@@ -131,6 +133,7 @@ export function useReadalong({
   }, [native, readalongOpen, companionScope, companionFilesKey]);
   const companionPreviewUrl = (file: CompanionFile) => {
     if (native && localCompanions?.scope !== companionScope) return undefined;
+    if (selectedBook?.source === "device") return localCompanions?.urls[file.id] ?? undefined;
     return (localCompanions?.scope === companionScope ? localCompanions.urls[file.id] : null) ?? readalongUrl(file.url);
   };
   const activeCompanionIsBook = !!activeCompanion && activeCompanion.id === selectedBook?.readingFile?.id;
