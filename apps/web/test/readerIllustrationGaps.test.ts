@@ -476,3 +476,29 @@ it("uses a picture audio chapter when the map wrongly continues highlighting tex
   assert.equal(illustrationGapAt(gaps, 30)?.href, "sketchbook.html");
   assert.equal(illustrationGapAt(gaps, 65)?.href, "new.html");
 });
+
+it("ends a separate chapter title picture when its prose starts in the next spine section", async () => {
+  const sections = ["title.xhtml", "body.xhtml", "next.xhtml"].map((href, index) => ({
+    href, index, load: async () => undefined,
+    document: { body: { textContent: index ? "Chapter prose." : "", querySelector: () => index ? null : ({}) } }
+  }));
+  for (const includeNextEntry of [false, true]) {
+    const book = {
+      spine: { get: (key: string | number) => sections.find(section => section.href === key || section.index === key) },
+      load: async () => undefined,
+      loaded: { navigation: Promise.resolve({ toc: [
+        { href: "title.xhtml", label: "Chapter One" },
+        ...(includeNextEntry ? [{ href: "next.xhtml", label: "Chapter Two" }] : [])
+      ] }) }
+    } as unknown as EpubBook;
+    const fragments = [
+      { startSeconds: 5, endSeconds: 20, href: "body.xhtml", text: "Opening prose." },
+      { startSeconds: 25, endSeconds: 50, href: "body.xhtml", text: "More prose." }
+    ];
+    const gaps = await findIllustrationGaps(book, fragments,
+      [{ ...chapter(0), title: "Chapter One" }, { ...chapter(60), title: "Chapter Two" }]);
+    assert.equal(illustrationGapAt(gaps, 1)?.href, "title.xhtml");
+    assert.equal(illustrationGapAt(gaps, 5), null);
+    assert.equal(illustrationGapAt(gaps, 30), null);
+  }
+});
