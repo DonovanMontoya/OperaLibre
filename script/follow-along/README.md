@@ -245,3 +245,16 @@ CLI launcher, and runtime identity. New inputs run normally; forced alignment
 always runs afresh. Reports using replay are generator regressions against
 recorded recognition, not fresh recognizer validation. Failed commands are not
 cached, and the first output is never replaced by a later successful attempt.
+
+### Moving the frozen corpus to another private worker
+
+`bundle.py export --plan /private/plan.json --output /private/portable` copies the
+EPUBs and full chapter metadata, and extracts only the already-selected windows
+as lossless 16 kHz mono FLAC. It preserves source audio hashes, each clip's hash,
+and the original absolute book times. It never chooses replacement samples.
+Transfer that directory privately, then run
+`bundle.py relocate --plan /private/portable/plan.json --output /private/portable/local.json`
+on the receiving worker. Use the relocated plan with `verify.py` normally.
+The isolated Rust probe still parses the complete EPUB and scopes chapters from
+the original metadata. Only audio file offsets change; emitted map times remain
+absolute book times. Changed clip bytes or sample bounds fail validation.

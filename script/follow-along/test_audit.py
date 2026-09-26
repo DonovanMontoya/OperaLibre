@@ -80,6 +80,15 @@ class IndependentReferenceTests(unittest.TestCase):
         value['fragments'][1]['words'][0][0]=1.7
         self.assertEqual(result()['status'],'failed')
 
+    def test_changed_audio_cannot_reuse_an_old_reference(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); reference=root/'reference';reference.mkdir()
+            corpus.save(root/'input.json',{'sections':[]});(root/'audio').write_bytes(b'new recording')
+            corpus.save(root/'plan.json',{'books':[dict(id='one',title='Book',status='planned',scopes=[0],audio=str(root/'audio'),scopeManifest=str(root/'scopes.json'))]})
+            corpus.save(reference/'report.json',dict(planSha256=corpus.digest(root/'plan.json'),books=[dict(id='one',audioSha256='old-recording',scopes=[])]))
+            result=audit.compare(root/'plan.json',reference,root/'maps',root/'audit.json')
+            self.assertEqual(result['books'][0]['status'],'changed-reference-audio')
+
     def test_every_planned_scope_must_have_a_reference_and_map(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); reference=root/'reference'; reference.mkdir()

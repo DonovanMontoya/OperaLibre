@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from corpus import load, save, digest, validate_map
+from corpus import load, save, digest, validate_map, audio_fingerprint
 
 # Reference word clocks are ASR estimates. Keep the exact result, and gate a
 # separately named bounded result; a half-second lag must still fail.
@@ -173,7 +173,7 @@ def reference(plan_path, output, cli, ids, ffmpeg):
     selected = [b for b in plan['books'] if not ids or b['id'] in ids]
     if not selected or ids and set(ids) != {b['id'] for b in selected}: raise ValueError('Unknown book IDs')
     for book in selected:
-        row = {'id': book['id'], 'inputSha256': digest(Path(book['scopeManifest']).parent/'input.json'), 'audioSha256': digest(book['audio']), 'scopes': []}; report['books'].append(row)
+        row = {'id': book['id'], 'inputSha256': digest(Path(book['scopeManifest']).parent/'input.json'), **audio_fingerprint(book), 'scopes': []}; report['books'].append(row)
         folder = output/book['id']; folder.mkdir()
         scopes = {s['index']: s for s in load(book['scopeManifest'])}
         for index in book.get('scopes', []):
@@ -183,7 +183,10 @@ def reference(plan_path, output, cli, ids, ffmpeg):
             duration = min(60, max(0, b-a-10)); start = (a+b-duration)/2
             if duration < 15: continue
             wav = folder/f'{index}.wav'; target = folder/f'{index}.json'
-            subprocess.run([ffmpeg,'-nostdin','-v','error','-ss',str(start),'-i',book['audio'],'-t',str(duration),'-ac','1','-ar','16000',str(wav)],check=True)
+            clip=book.get('audioClips',{}).get(str(index))
+            audio=clip['path'] if clip else book['audio']
+            local_start=start-clip['start'] if clip else start
+            subprocess.run([ffmpeg,'-nostdin','-v','error','-ss',str(local_start),'-i',audio,'-t',str(duration),'-ac','1','-ar','16000',str(wav)],check=True)
             with (folder/f'{index}.log').open('w') as log:
                 subprocess.run([cli,'transcribe',str(wav),str(target),'--engine=whisper','--whisper.model=small.en','--language=en','--overwrite'],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=1800)
             row['scopes'].append({'index':index,'start':start,'duration':duration,'wavSha256':digest(wav),'referenceSha256':digest(target)})
@@ -240,6 +243,11 @@ def compare(plan_path, reference_path, run, output):
                 row.update(status='missing-reference'); continue
             if reference_book.get('inputSha256') and reference_book['inputSha256'] != digest(source):
                 row.update(status='changed-reference-input'); continue
+            if reference_book.get('audioSha256'):
+                current_audio=audio_fingerprint(book)
+                if reference_book['audioSha256'] != current_audio['audioSha256'] or (
+                    reference_book.get('clipSha256') and reference_book['clipSha256'] != current_audio.get('clipSha256')):
+                    row.update(status='changed-reference-audio'); continue
             scoped = {s['index']:s for s in load(book['scopeManifest'])}
             for index in book['scopes']:
                 scope = next((s for s in reference_book['scopes'] if s['index']==index),None)
