@@ -17002,54 +17002,61 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
 
 /* ===================== Web: carried over from the iPhone and Duo ===================== */
 
-/* Keep the navigation and folio together so the book starts near the top. */
-html:not(.native-app) .web-shell.player-view-details > .player-pane {
-  padding-top: clamp(22px, 2.5vw, 36px);
-  gap: 24px;
-}
-
+/* Phones keep the original stacked navigation and floating player. */
 .book-page-masthead {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px 24px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid rgba(var(--ink-rgb), 0.15);
+  display: contents;
 }
 
-html:not(.native-app) .book-page-masthead .native-player-return {
-  flex: none;
-  margin: 0;
-}
+@media (min-width: 621px) {
+  /* Keep the navigation and folio together so the book starts near the top. */
+  html:not(.native-app) .web-shell.player-view-details > .player-pane {
+    padding-top: clamp(22px, 2.5vw, 36px);
+    gap: 24px;
+  }
 
-.book-page-masthead .folio {
-  flex: 1 1 380px;
-  padding: 0;
-  border: 0;
-}
+  .book-page-masthead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 24px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid rgba(var(--ink-rgb), 0.15);
+  }
 
-/* Give the running footer its own grid row. The details scroll above it,
-   with room after the last section, instead of disappearing behind it. */
-html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
+  html:not(.native-app) .book-page-masthead .native-player-return {
+    flex: none;
+    margin: 0;
+  }
 
-html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .library-pane {
-  grid-row: 1 / -1;
-}
+  .book-page-masthead .folio {
+    flex: 1 1 380px;
+    padding: 0;
+    border: 0;
+  }
 
-html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .player-pane {
-  grid-column: -2 / -1;
-  grid-row: 1;
-  padding-bottom: 28px;
-}
+  /* Give the running footer its own grid row. The details scroll above it,
+     with room after the last section, instead of disappearing behind it. */
+  html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
 
-html:not(.native-app) .web-shell.player-view-details > .mini-player {
-  position: relative;
-  inset: auto;
-  grid-column: -2 / -1;
-  grid-row: 2;
-  margin: 16px clamp(14px, 2vw, 28px) clamp(12px, 2vw, 24px);
+  html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .library-pane {
+    grid-row: 1 / -1;
+  }
+
+  html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .player-pane {
+    grid-column: -2 / -1;
+    grid-row: 1;
+    padding-bottom: 28px;
+  }
+
+  html:not(.native-app) .web-shell.player-view-details > .mini-player {
+    position: relative;
+    inset: auto;
+    grid-column: -2 / -1;
+    grid-row: 2;
+    margin: 16px clamp(14px, 2vw, 28px) clamp(12px, 2vw, 24px);
+  }
 }
 
 /* The title page's single emphatic action, under the title as on the iPhone.
@@ -17171,28 +17178,28 @@ html:not(.native-app) .book-subjects span {
   }
 }
 
-/* Keep every action labelled on one line. A narrow viewport scrolls the
-   action strip sideways without hiding labels or creating a second row. */
-html:not(.native-app) .book-heading .heading-actions {
-  display: flex;
-  flex-wrap: nowrap;
-  justify-content: safe flex-end;
-  min-width: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-html:not(.native-app) .book-heading .heading-actions .download-btn {
-  flex: none;
-  white-space: nowrap;
-}
-
 /* Wider than a phone the heading sits on a fixed grid: the eyebrow and
    actions span the page, and the cover is pinned beside the title
    rather than sinking to the bottom of however many lines the title and
    credits take. */
 @media (min-width: 621px) {
+  /* Keep every action labelled on one line. A narrow desktop column scrolls the
+     action strip sideways without hiding labels or creating a second row. */
+  html:not(.native-app) .book-heading .heading-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: safe flex-end;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  html:not(.native-app) .book-heading .heading-actions .download-btn {
+    flex: none;
+    white-space: nowrap;
+  }
+
   html:not(.native-app) .book-heading {
     grid-template-columns: clamp(150px, 15vw, 220px) minmax(0, 1fr);
     grid-template-rows: auto auto auto auto auto auto 1fr;

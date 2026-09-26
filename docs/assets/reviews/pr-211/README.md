@@ -14,9 +14,12 @@ Captured from the running web client using the built-in demo library.
 | Desktop library and book details | [Before](desktop-details-before.png) | [After](desktop-details-after.png) |
 | Now Playing → Details → Full book page | [Before](current-book-before.png) | [After](current-book-after.png) |
 | Mobile library | [Before](mobile-library-before.png) | [After](mobile-library-after.png) |
-| Mobile book details | [Before](mobile-details-before.png) | [After](mobile-details-after.png) |
+| Mobile book details | [Original layout](mobile-details-before.png) | Original layout retained |
 
 The desktop comparisons show the compact header, labelled single-row actions,
 separate mini-player footer, Continue Reading section, and ebook availability.
 The mobile library comparison shows Continue Reading above the regular list.
-On narrow book-details pages, action labels stay on one horizontally scrollable row.
+Mobile book details retain the original stacked header, two-column labelled actions,
+and floating mini-player. The original mobile-details capture illustrates the retained
+layout; a fresh capture was unavailable because the preview screenshot tool failed.
+The restored layout was checked in the browser at 390 × 844 CSS pixels.
