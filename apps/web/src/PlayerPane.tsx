@@ -930,7 +930,7 @@ export function PlayerPane({
             </div>
           ) : null}
 
-          {!readalongOpen && readalongAvailable ? (
+          {!native && !readalongOpen && readalongAvailable ? (
             <section className={`readalong-invite ${selectedBook.readingFile ? "" : "extras"}`} aria-label="Read along">
               <span className="readalong-invite-icon" aria-hidden="true">
                 {selectedBook.readingFile ? <BookOpen size={22} strokeWidth={1.4} /> : <Images size={22} strokeWidth={1.4} />}

@@ -66,3 +66,10 @@ lint, and whitespace checks passed; the compact dock layout was also checked.
 
 The tall header was verified with and without the mini-player and after returning
 to the library and reopening a book. Chapters remain collapsed.
+
+## Mobile reader entry point
+
+The duplicate Read along / Open reader invitation is now omitted in the native
+app and hidden on web viewports up to 620 CSS pixels wide. Read Along / Extras
+remains in the book's labeled action buttons. Earlier captures showing the
+invitation panel predate this change.
