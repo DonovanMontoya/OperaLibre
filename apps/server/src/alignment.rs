@@ -1668,7 +1668,11 @@ const ANCHOR_NGRAM: usize = 5;
 
 /// Word locations supported by phrases unique in both the script and speech.
 /// Long recognizer words spanning silence are not clock evidence.
-fn unique_spoken_words(recognized: &[RecognizedWord], text: &str) -> HashMap<usize, usize> {
+fn unique_spoken_words(
+    recognized: &[RecognizedWord],
+    text: &str,
+    require_clocks: bool,
+) -> HashMap<usize, usize> {
     let mut occurrences = HashMap::new();
     for run in recognized.windows(ANCHOR_NGRAM) {
         *occurrences
@@ -1679,10 +1683,11 @@ fn unique_spoken_words(recognized: &[RecognizedWord], text: &str) -> HashMap<usi
     for (audio, script) in recognition_anchor_chain(recognized, text) {
         let run = &recognized[audio..audio + ANCHOR_NGRAM];
         if occurrences.get(&run.iter().map(|w| w.text.as_str()).collect::<Vec<_>>()) != Some(&1)
-            || run.iter().any(|w| !valid_word_clock(w))
-            || run
-                .windows(2)
-                .any(|p| p[1].start_time < p[0].start_time || p[1].end_time < p[0].end_time)
+            || (require_clocks
+                && (run.iter().any(|w| !valid_word_clock(w))
+                    || run.windows(2).any(|p| {
+                        p[1].start_time < p[0].start_time || p[1].end_time < p[0].end_time
+                    })))
         {
             continue;
         }
@@ -1719,7 +1724,11 @@ pub fn interrupted_passages(
     recognized: &[RecognizedWord],
 ) -> Vec<RecoveryAnchor> {
     let words = transcript_words(&transcript.text, 0, transcript.len_utf16());
-    let matches = unique_spoken_words(recognized, &transcript.text);
+    let matches = unique_spoken_words(recognized, &transcript.text, true);
+    // A collapsed word clock is not evidence that the word was unspoken.
+    // Lexical matches prevent dropping heard sentences; only valid clocks
+    // may establish the boundaries of a genuine interruption.
+    let spoken = unique_spoken_words(recognized, &transcript.text, false);
     let mut sentences = Vec::new();
     let mut start = 0;
     for (index, word) in words.iter().enumerate() {
@@ -1730,7 +1739,7 @@ pub fn interrupted_passages(
     }
     let supported = sentences
         .iter()
-        .map(|s| s.clone().any(|i| matches.contains_key(&i)))
+        .map(|s| s.clone().any(|i| spoken.contains_key(&i)))
         .collect::<Vec<_>>();
     let mut result = Vec::new();
     let mut index = 1;
@@ -1804,7 +1813,7 @@ pub fn reconcile_sentence_starts(
     recognized: &[RecognizedWord],
 ) {
     let words = transcript_words(transcript, 0, u64::MAX);
-    let matches = unique_spoken_words(recognized, transcript);
+    let matches = unique_spoken_words(recognized, transcript, true);
     fn visit(
         entries: &mut [TimelineEntry],
         words: &[TranscriptWord],
@@ -4105,6 +4114,29 @@ mod tests {
         let gaps = interrupted_passages(&transcript, &recognition);
         assert_eq!(gaps.len(), 1);
         assert!(gaps[0].end_seconds >= 18.0);
+    }
+
+    #[test]
+    fn recognized_short_sentences_with_collapsed_word_clocks_are_not_interruptions() {
+        let before = "A silver heron watched the quiet river beside the wooden bridge.";
+        let middle = "Please stay here. Watch the river.";
+        let after = "Under the old clock a musician practiced a melody before the morning market.";
+        let transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {middle} {after}"),
+        }]);
+        let mut recognition = spoken(before, 0.0);
+        let mut short = spoken(middle, 8.0);
+        for index in [0, 3] {
+            short[index].end_time = short[index].start_time;
+        }
+        recognition.extend(short);
+        let mut following = spoken(after, 13.0);
+        // Two misspelled opening words remove cross-sentence phrase anchors.
+        following[0].text = "anothername".into();
+        following[1].text = "misspelled".into();
+        recognition.extend(following);
+        assert!(interrupted_passages(&transcript, &recognition).is_empty());
     }
 
     #[test]
