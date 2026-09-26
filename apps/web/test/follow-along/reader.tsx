@@ -52,7 +52,8 @@ function privateAsset(path: string, extension: 'json' | 'epub') {
     || !url.pathname.endsWith(`.${extension}`) || /%|\\/.test(url.pathname)) {
     throw new Error('Private fixtures must be local development files in output/follow-along/private');
   }
-  return url.href;
+  // Keep the request origin fixed even independently of the validation above.
+  return "/@fs/" + url.pathname.slice(5).split("/").map(encodeURIComponent).join("/");
 }
 const privatePath = params.get('private');
 const privateFixture: PrivateFixture | null = privatePath ? await fetch(privateAsset(privatePath, 'json')).then(response => {
