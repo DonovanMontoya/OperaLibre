@@ -17517,3 +17517,83 @@ html:not(.native-app) .library-pane.purchase-browsing {
   & .purchase-account-filter { margin: 14px 0 12px; }
   & .purchase-account-filter select { min-height: 40px; padding: 7px 12px; font-size: 0.95rem; }
 }
+
+/* iPhone book details: keep the cover with the bibliographic header, then
+   give listening and library actions the full page width. */
+@media (max-width: 620px) {
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open > .player-pane {
+    padding-bottom: calc(var(--tabs-h) + var(--mini-player-height) + 24px);
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading {
+    grid-template-columns: minmax(88px, 28%) minmax(0, 1fr);
+    align-items: start;
+    gap: 8px 16px;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .meta {
+    display: contents;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+    grid-column: 1;
+    grid-row: 1 / 5;
+    align-self: start;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .eyebrow {
+    grid-column: 2;
+    grid-row: 1;
+    font-size: 0.58rem;
+    letter-spacing: 0.14em;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading h2 {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    font-size: clamp(1.4rem, 5.8vw, 1.85rem);
+    line-height: 1.08;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-credits {
+    grid-column: 2;
+    grid-row: 3;
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.3;
+    text-align: left;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-runtime {
+    grid-column: 2;
+    grid-row: 4;
+    margin: 0;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .book-quick-start {
+    grid-column: 1 / -1;
+    grid-row: 5;
+    width: 100%;
+    margin-top: 12px;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+    grid-column: 1 / -1;
+    grid-row: 6;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .heading-actions .download-btn {
+    min-height: 44px;
+    font-size: 0.62rem;
+    white-space: nowrap;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .heading-actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
