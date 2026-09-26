@@ -176,14 +176,13 @@ There is also an [OPDS](https://opds.io/) catalog for generic reading apps; see 
 
 ## Read along with the ebook
 
-Read along is a **beta feature and is off by default.** Turn it on per device under **Settings → Extras → Read along** in the phone and tablet apps, or from the account menu (**Read along: On/Off**) in the browser. With it off, none of the read-along controls appear.
+The ebook reader is available by default when a book has a text companion. Open it from the book details or the Read along button while listening.
 
 To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books that have one show a **Read along** tag in the library, and their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
 
-EPUBs support chapter sync. For sentence following, the owner must enable **Follow along** under **Administration → Experimental features**, and each reader must turn on **Follow the narration** in their settings or account menu. With both enabled:
+EPUBs support chapter sync. For sentence sync, the owner must enable **Follow along** under **Administration → Experimental features**. You can then tap a sentence to play from there. In the ebook, press **Follow** to start following the narration. Following starts off for a new reader and remembers the last choice afterward. With following on:
 
 - The narrated sentence is highlighted and the page turns with the narration.
-- Tap any sentence to play from there.
 - Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target button in the reader, or the **Follow** control), and the marker snaps to the narrated sentence again.
 - With approximate sync, the marker can drift within a long chapter. Choose **Sync here**, then tap the sentence the narrator is reading: the server keeps that anchor with the book and re-times the sentences around it for every listener. One or two taps in a long chapter keep it close. An administrator can clear the adjustments from the reader.
 - Themes, text size, and a full-screen focus mode are in the reader's toolbar. Arrow keys and swipes turn pages.

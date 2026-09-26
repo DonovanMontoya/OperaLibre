@@ -6333,6 +6333,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 
 .profile-back {
   align-self: flex-start;
+  justify-self: start;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -11282,18 +11283,12 @@ html.native-app .admin-shell:not(.admin-overlay) {
   gap: 4px;
 }
 
-/* The follow-narration sub-option sits indented beneath the reader toggle, with
-   a hairline on the left to read as nested. */
-.settings-subrow {
-  margin-top: 10px;
-  padding-left: 14px;
-  border-left: 2px solid rgba(var(--ink-rgb), 0.14);
-}
-
 .settings-follow-group {
   display: grid;
   gap: 16px;
   width: 100%;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .follow-aggressiveness {

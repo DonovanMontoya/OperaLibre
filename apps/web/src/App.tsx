@@ -477,8 +477,7 @@ function MainApp({
   const readerPreferences = useReaderPreferences();
   const {
     followSyncEnabled,
-    readalongEnabled,
-    setReadalongEnabled,
+    readalongEnabled
   } = readerPreferences;
   const displaySettings = useDisplaySettings({
     ios
@@ -1393,7 +1392,6 @@ function MainApp({
     selectedBookId,
     setNativePlayerView,
     setNativeTab,
-    setReadalongEnabled,
     setSelectedBookId,
     setSyncConfirmationBook
   });

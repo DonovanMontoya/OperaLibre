@@ -58,6 +58,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { createPortal } from "react-dom";
 import type { Chapter, SyncFragment } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
+import { readReaderFollowEnabled, writeReaderFollowEnabled } from "./readalongPreferences";
 import { useLandscapeOrientation, useWideSpreadWindow } from "./useOrientation";
 
 function flattenToc(items: NavItem[], depth = 0): Array<NavItem & { depth: number }> {
@@ -394,7 +395,7 @@ export function EpubReadalong({
   // The book is still downloading or unpacking after a while: worth a word
   // to the listener, never a reason to give up on a slow connection.
   const [slowToOpen, setSlowToOpen] = useState(false);
-  const [follow, setFollowState] = useState(() => readStoredValue("operalibre.readerFollow") !== "0");
+  const [follow, setFollowState] = useState(readReaderFollowEnabled);
   // Bumped when the listener explicitly asks to return. Follow may already be
   // on, so setting the same boolean is not enough to rerun navigation.
   const [followRequest, setFollowRequest] = useState(0);
@@ -414,7 +415,7 @@ export function EpubReadalong({
     setFollowState((prev) => {
       const next = typeof value === "function" ? value(prev) : value;
       followRef.current = next;
-      writeStoredValue("operalibre.readerFollow", next ? "1" : "0");
+      writeReaderFollowEnabled(next);
       return next;
     });
   }, []);
@@ -567,8 +568,7 @@ export function EpubReadalong({
     onSeekToRef.current?.(fragment.startSeconds);
     highlightedFragmentRef.current = -1;
     lastKeepRef.current = null;
-    setFollow(true);
-  },[setFollow]);
+  }, []);
 
   // Turning a page by hand means the listener wants to read ahead (or
   // back); the narration marker must not drag the page away again until they
