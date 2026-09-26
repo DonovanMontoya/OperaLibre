@@ -138,6 +138,33 @@ it("holds a closing illustration through the rest of its audio chapter", async (
   assert.equal(illustrationGapAt(gaps, 20), null);
 });
 
+it("finds a closing description's unique picture earlier in the completed chapter", async () => {
+  const text = (textContent: string) => ({ nodeType: 3, textContent });
+  const picture = { nodeType: 1, localName: "img", childNodes: [] };
+  const body = { nodeType: 1, localName: "body", childNodes: [
+    { ...picture }, text("First sentence. "), picture, text("Last sentence.")
+  ] as unknown[] };
+  const section = { href: "chapter.xhtml", index: 0, document: { body }, load: async () => undefined,
+    cfiFromElement: (element: unknown) => element === picture ? "picture-cfi" : "heading-cfi" };
+  const book = { spine: { get: () => section }, load: async () => undefined } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 2, endSeconds: 6, href: section.href, text: "First sentence." },
+    { startSeconds: 10, endSeconds: 15, href: section.href, text: "Last sentence." }
+  ];
+  const chapters = [{ ...chapter(0), title: "Chapter 7", endSeconds: 45 }];
+  const at = async () => illustrationGapAt(await findIllustrationGaps(book, fragments, chapters), 20);
+  assert.equal((await at())?.cfi, "picture-cfi");
+  // Short closing silence is not sufficient evidence of an earlier picture.
+  chapters[0].endSeconds = 25;
+  assert.equal(await at(), null);
+  chapters[0].endSeconds = 45;
+  body.childNodes.push(text(" More unmapped prose."));
+  assert.equal(await at(), null);
+  body.childNodes.pop();
+  body.childNodes.splice(3, 0, { ...picture });
+  assert.equal(await at(), null);
+});
+
 it("keeps a split chapter's earlier picture during its closing description without reopening the heading", async () => {
   const text = (textContent: string) => ({ nodeType: 3, textContent });
   const heading = { nodeType: 1, localName: "img", childNodes: [] };

@@ -70,7 +70,7 @@ function leadingImage(body: HTMLElement | null | undefined) {
 }
 
 /** Locate an image between the two mapped snippets in the same EPUB section. */
-function imageBetweenSnippets(body: HTMLElement, before: string, after?: string, requireUnique = false): Element | null {
+function imageBetweenSnippets(body: HTMLElement, before: string, after?: string, options: { unique?: boolean; endsDocument?: boolean } = {}): Element | null {
   const images: Array<{ element: Element; offset: number }> = [];
   let normalized = "";
   const visit = (node: Node) => {
@@ -101,9 +101,10 @@ function imageBetweenSnippets(body: HTMLElement, before: string, after?: string,
   const beforeAt = normalized.lastIndexOf(beforeNeedle, afterAt);
   if (afterAt < 0 || beforeAt < 0) return null;
   if (after === undefined && normalized.slice(beforeAt + beforeNeedle.length).trim()) return null;
+  if (options.endsDocument && normalized.slice(afterAt + afterNeedle.length).trim()) return null;
   const candidates = images.filter(({ offset }) => offset >= beforeAt + beforeNeedle.length && offset <= afterAt);
   // Several trailing figures need separate evidence for their order/timing.
-  if ((after === undefined || requireUnique) && candidates.length !== 1) return null;
+  if ((after === undefined || options.unique) && candidates.length !== 1) return null;
   return candidates[0]?.element ?? null;
 }
 
@@ -336,14 +337,15 @@ export async function findIllustrationGaps(
       await section.load(book.load.bind(book));
       const body = section.document?.body;
       let picture = body ? imageBetweenSnippets(body, last.text) : null;
-      // Some editions place a picture within the A section's prose but read
-      // its description after that prose, just before part B. Only accept a
-      // single picture inside the mapped span of A; exclude its heading and
-      // pictures belonging to other parts of the chapter.
+      // Some editions place the picture earlier in the prose but read its
+      // description at the end. Require one picture inside the mapped span,
+      // excluding the heading. Outside explicit A/B parts, also require the
+      // end of the document and a substantial remaining narration interval.
       const first = inChapter[0];
-      if (!picture && body && continuesChapter(chapter, sortedChapters[index + 1])
+      const continues = continuesChapter(chapter, sortedChapters[index + 1]);
+      if (!picture && body && (continues || endSeconds - last.endSeconds >= 15)
         && first.href === last.href && first !== last) {
-        picture = imageBetweenSnippets(body, first.text, last.text, true);
+        picture = imageBetweenSnippets(body, first.text, last.text, { unique: true, endsDocument: !continues });
       }
       if (picture) {
         const nextProse = continuesChapter(chapter, sortedChapters[index + 1])
