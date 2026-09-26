@@ -748,6 +748,80 @@ impl Transcript {
         (offset_utf16 >= section.start_utf16).then_some(section.href.as_str())
     }
 
+    /// Leave edition-only sentences unmatched when unique spoken phrases on
+    /// either side are adjacent in the audio. Preserve UTF-16 offsets so the
+    /// remaining text still maps to the original EPUB sections.
+    pub fn mask_unspoken_sentences(&mut self, recognized: &[RecognizedWord]) -> usize {
+        const CONTEXT: usize = 3;
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        let mut text_phrases = HashMap::new();
+        for (index, run) in words.windows(CONTEXT).enumerate() {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            text_phrases
+                .entry(key)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(index));
+        }
+        let mut audio_phrases = HashMap::new();
+        for run in recognized.windows(CONTEXT) {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            *audio_phrases.entry(key).or_insert(0usize) += 1;
+        }
+        let mut ranges = Vec::new();
+        for run in recognized.windows(CONTEXT * 2) {
+            let left: Vec<&str> = run[..CONTEXT]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            let right: Vec<&str> = run[CONTEXT..]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            if audio_phrases.get(&left) != Some(&1) || audio_phrases.get(&right) != Some(&1) {
+                continue;
+            }
+            let (Some(Some(left)), Some(Some(right))) =
+                (text_phrases.get(&left), text_phrases.get(&right))
+            else {
+                continue;
+            };
+            let after_left = left + CONTEXT;
+            let missing = right.saturating_sub(after_left);
+            // Require whole sentences and too little elapsed audio to contain
+            // their words, even at eight words per second. Recognition failure
+            // across a real spoken passage leaves time between the anchors.
+            let silence = run[CONTEXT].start_time - run[CONTEXT - 1].end_time;
+            if !(6..=128).contains(&missing)
+                || !words[after_left - 1].sentence_final
+                || !words[right - 1].sentence_final
+                || !silence.is_finite()
+                || !(0.0..=1.5).contains(&silence)
+                || missing as f64 <= (silence + 0.25) * 8.0
+            {
+                continue;
+            }
+            let start = words[after_left].start_utf16;
+            let end = words[*right].start_utf16;
+            // Never infer an omission across a document boundary or over an
+            // unmapped heading. Those regions have separate audio semantics.
+            if self.href_for_offset(start).filter(|href| !href.is_empty())
+                != self.href_for_offset(end.saturating_sub(1))
+            {
+                continue;
+            }
+            ranges.push((start, end));
+        }
+        ranges.sort_unstable();
+        ranges.dedup();
+        for &(start, end) in ranges.iter().rev() {
+            let start_byte = utf16_to_byte_index(&self.text, start);
+            let end_byte = utf16_to_byte_index(&self.text, end);
+            self.text
+                .replace_range(start_byte..end_byte, &" ".repeat((end - start) as usize));
+        }
+        ranges.len()
+    }
+
     pub fn len_utf16(&self) -> u64 {
         self.text.encode_utf16().count() as u64
     }
@@ -1065,6 +1139,7 @@ fn normalize_word(value: &str) -> String {
 
 struct TranscriptWord {
     text: String,
+    start_utf16: u64,
     end_utf16: u64,
     /// The token closes a sentence: it ends in terminal punctuation (allowing
     /// closing quotes or brackets after it) or is followed by a line break.
@@ -1093,6 +1168,7 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
             if !normalized.is_empty() {
                 out.push(TranscriptWord {
                     text: normalized,
+                    start_utf16: end - current.encode_utf16().count() as u64,
                     end_utf16: end,
                     sentence_final,
                 });
@@ -1137,6 +1213,49 @@ pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u
         .or(words.last())
         .map(|word| word.end_utf16)
         .unwrap_or(target_utf16)
+}
+
+/// Retry bounded recognition when it repeats itself or skips a large stretch
+/// of otherwise anchored text. A forced aligner cannot repair that evidence.
+pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> bool {
+    if recognized.len() < 20 {
+        return text.split_whitespace().take(20).count() == 20;
+    }
+    let mut repetitions = HashMap::new();
+    for run in recognized.windows(4) {
+        let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+        let count = repetitions.entry(key).or_insert(0usize);
+        *count += 1;
+        if *count >= 4 {
+            return true;
+        }
+    }
+    let words = transcript_words(text, 0, text.encode_utf16().count() as u64);
+    let mut phrases = HashMap::new();
+    for (index, run) in words.windows(ANCHOR_NGRAM).enumerate() {
+        let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+        phrases
+            .entry(key)
+            .and_modify(|value| *value = None)
+            .or_insert(Some(index));
+    }
+    let matches: Vec<_> = recognized
+        .windows(ANCHOR_NGRAM)
+        .enumerate()
+        .filter_map(|(index, run)| {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            Some((index, (*phrases.get(&key)?)?))
+        })
+        .collect();
+    let chain = longest_increasing_chain(&matches);
+    if chain.len() * 4 < recognized.len().saturating_sub(ANCHOR_NGRAM) {
+        return true;
+    }
+    chain.windows(2).any(|pair| {
+        let audio_words = pair[1].0 - pair[0].0;
+        let text_words = pair[1].1 - pair[0].1;
+        text_words >= 24 && text_words > audio_words * 2 + 12
+    })
 }
 
 const ANCHOR_NGRAM: usize = 5;
@@ -1728,7 +1847,10 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         let trimmed = value.trim_start();
         if let Some((parsed, consumed)) = parse_number_token(trimmed) {
             let rest = trimmed[consumed..].trim_start();
-            if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
+            if rest.is_empty() {
+                number = Some(parsed);
+                remainder.clear();
+            } else if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
                 number = Some(parsed);
                 remainder = rest.to_string();
             }
@@ -2482,6 +2604,35 @@ mod tests {
     }
 
     #[test]
+    fn bare_contents_numbers_match_spoken_chapter_labels() {
+        let toc = ["Prologue", "1", "2", "3", "Epilogue"]
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: (*title).into(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let titles = [
+            "Prologue",
+            "Chapter One",
+            "Chapter Two",
+            "Chapter Three",
+            "Epilogue",
+        ]
+        .map(str::to_string);
+        let scopes = build_chapter_scopes(&titles, &toc, 5).unwrap();
+        assert_eq!(scopes.len(), 5);
+        for (index, scope) in scopes.iter().enumerate() {
+            assert_eq!(scope.section_range, index..index + 1);
+        }
+        for label in ["7", "VII", "Seven"] {
+            assert_eq!(parse_label(label).number, Some(7));
+        }
+        assert!(parse_label("Seven Swans").number.is_none());
+    }
+
+    #[test]
     fn parse_label_extracts_numbers() {
         let label = parse_label("Chapter 12: The Long Road");
         assert_eq!(label.number, Some(12));
@@ -2525,6 +2676,136 @@ mod tests {
                 end_time: start_time + index as f64 * 0.5 + 0.4,
             })
             .collect()
+    }
+
+    #[test]
+    fn unreliable_recognition_requests_a_bounded_retry() {
+        let tokens = (0..60)
+            .map(|index| format!("word{index}"))
+            .collect::<Vec<_>>();
+        let text = tokens.join(" ");
+        assert!(!recognition_needs_retry(&spoken(&text, 0.0), &text));
+        let skipped = tokens[..15]
+            .iter()
+            .chain(&tokens[45..])
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(recognition_needs_retry(&spoken(&skipped, 0.0), &text));
+        assert!(recognition_needs_retry(
+            &spoken(&"this phrase keeps repeating ".repeat(6), 0.0),
+            &text
+        ));
+        assert!(recognition_needs_retry(&[], &text));
+        let mut names = tokens;
+        names[10] = "misspelled".into();
+        names[30] = "anothername".into();
+        assert!(!recognition_needs_retry(
+            &spoken(&names.join(" "), 0.0),
+            &text
+        ));
+        assert!(!recognition_needs_retry(
+            &spoken("A short sentence.", 0.0),
+            "A short sentence."
+        ));
+    }
+
+    #[test]
+    fn unspoken_sentences_keep_offsets_and_following_text() {
+        let before = "The river reached the old bridge.";
+        let absent = "An older edition added this entire explanation. Another unspoken line mentions café🦉.";
+        let after = "Tomorrow we cross into the forest.";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {absent} {after}"),
+        }]);
+        let length = transcript.len_utf16();
+        let after_offset = transcript.text.find(after).unwrap();
+        let after_utf16 = transcript.text[..after_offset].encode_utf16().count() as u64;
+        let recognition = spoken(&format!("{before} {after}"), 0.0);
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 1);
+        assert_eq!(transcript.len_utf16(), length);
+        assert_eq!(
+            transcript.href_for_offset(after_utf16),
+            Some("chapter.xhtml")
+        );
+        assert_eq!(
+            transcript
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            format!("{before} {after}")
+        );
+        assert_eq!(transcript.window(after_utf16, length).text, after);
+    }
+
+    #[test]
+    fn uncertain_recognition_does_not_remove_spoken_text() {
+        let text = "The river reached the old bridge. An older edition added this entire explanation. Tomorrow we cross into the forest.";
+        let original = || {
+            build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }])
+        };
+        let mut full = original();
+        assert_eq!(full.mask_unspoken_sentences(&spoken(text, 0.0)), 0);
+        let mut missing = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        for word in &mut missing[6..] {
+            word.start_time += 5.0;
+            word.end_time += 5.0;
+        }
+        let mut gap = original();
+        assert_eq!(gap.mask_unspoken_sentences(&missing), 0);
+        assert_eq!(gap.text, text);
+        let mut repeated = original();
+        let repeated_audio = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        assert_eq!(repeated.mask_unspoken_sentences(&repeated_audio), 0);
+        let mut partial = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.replace("bridge.", "bridge,"),
+        }]);
+        assert_eq!(
+            partial.mask_unspoken_sentences(&spoken(
+                "The river reached the old bridge. Tomorrow we cross into the forest.",
+                0.0
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn omissions_do_not_cross_documents_or_unmapped_headings() {
+        let mut transcript = build_transcript(&[
+            SpineSection {
+                href: "a.xhtml".into(),
+                text: "The river reached the old bridge. An older edition added".into(),
+            },
+            SpineSection {
+                href: "b.xhtml".into(),
+                text: "this entire explanation. Tomorrow we cross into the forest.".into(),
+            },
+        ]);
+        let recognition = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 0);
+        let mut heading = build_transcript(&[SpineSection {
+            href: "b.xhtml".into(),
+            text: "Tomorrow we cross into the forest.".into(),
+        }]);
+        heading.prepend_unmapped(
+            "The river reached the old bridge. An older edition added this entire explanation",
+        );
+        assert_eq!(heading.mask_unspoken_sentences(&recognition), 0);
     }
 
     /// UTF-16 offset just past the first occurrence of `needle`.
