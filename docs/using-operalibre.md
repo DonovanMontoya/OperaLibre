@@ -220,7 +220,7 @@ Add the Libation CLI path and `libation_files_dir` to `server.config`, restart O
 
 ## Games
 
-The installed iPhone and Android apps include an optional games tab with small on-device diversions — a daily word puzzle and a match-three board. It is hidden by default; turn it on in **Settings**, and it appears in the bottom navigation. The games run entirely on the device and send nothing to the server.
+The installed iPhone and Android apps include a games tab with small on-device diversions — a daily word puzzle and a match-three board. It appears in the bottom navigation by default, and you can hide it in **Settings**. The games run entirely on the device and send nothing to the server.
 
 ## Check for application updates
 
