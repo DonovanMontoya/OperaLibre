@@ -199,7 +199,7 @@ it("finds a narrated image between mapped snippets inside one EPUB section", asy
     { startSeconds: 204, endSeconds: 210, href: "ars.html", text: "The preceding list is imperfect." }
   ];
   assert.deepEqual(await findIllustrationGaps(book, fragments), [{
-    startSeconds: 9, endSeconds: 204, href: "ars.html", cfi: "epubcfi(/6/2!/4/2)"
+    startSeconds: 4, endSeconds: 204, href: "ars.html", cfi: "epubcfi(/6/2!/4/2)"
   }]);
 });
 

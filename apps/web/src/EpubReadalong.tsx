@@ -1489,7 +1489,9 @@ export function EpubReadalong({
     // would re-highlight and re-page to wherever the narration currently is,
     // which is exactly the jump a hand-turned page must not make.
     if (!followRef.current || !syncFragments || fragmentIndex < 0) {
-      pendingFollowTargetRef.current = null;
+      // Image navigation needs the same relocation acknowledgement as prose.
+      // Keep its pending target so a restore finishing late can be retried.
+      if (!followRef.current || !illustrationGap) pendingFollowTargetRef.current = null;
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
       highlightedFragmentRef.current = -1;
