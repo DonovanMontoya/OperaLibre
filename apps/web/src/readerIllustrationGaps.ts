@@ -306,8 +306,9 @@ export async function findIllustrationGaps(
     const chapter = sortedChapters[index];
     const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
     if (endSeconds == null || illustratedAudioTitle(chapter.title)) continue;
-    const last = fragments.filter((fragment) => fragment.startSeconds >= chapter.startSeconds
-      && fragment.startSeconds < endSeconds).at(-1);
+    const inChapter = fragments.filter((fragment) => fragment.startSeconds >= chapter.startSeconds
+      && fragment.startSeconds < endSeconds);
+    const last = inChapter[inChapter.length - 1];
     if (!last || endSeconds - last.endSeconds < 3) continue;
     const section = book.spine.get(last.href);
     if (!section) continue;
