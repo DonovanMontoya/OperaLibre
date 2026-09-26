@@ -1493,6 +1493,26 @@ mod tests {
             }
         );
         if let Ok(scopes) = result {
+            if let Some(output_path) = std::env::var_os("OPERALIBRE_PROBE_MANIFEST") {
+                let manifest = scopes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, scope)| {
+                        let transcript = scope_transcript(&epub, scope);
+                        serde_json::json!({
+                            "index": index,
+                            "label": scope.label,
+                            "audioRange": scope.audio_range,
+                            "sectionRange": [scope.section_range.start, scope.section_range.end],
+                            "text": transcript.text,
+                            "mappedText": alignment::build_transcript(&epub.sections[scope.section_range.clone()]).text,
+                            "hrefs": epub.sections[scope.section_range.clone()]
+                                .iter().map(|section| &section.href).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                std::fs::write(output_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            }
             for (index, scope) in scopes
                 .iter()
                 .enumerate()

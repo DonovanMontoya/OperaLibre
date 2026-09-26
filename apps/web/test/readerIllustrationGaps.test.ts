@@ -10,11 +10,45 @@ function chapter(startSeconds: number): Chapter {
 
 function headingBody() {
   return {
+    nodeType: 1, localName: "body",
+    childNodes: [{ nodeType: 1, localName: "section", childNodes: [
+      { nodeType: 1, localName: "header", childNodes: [{ nodeType: 1, localName: "img", childNodes: [] }] },
+      { nodeType: 3, textContent: "Chapter prose inside the same outer container as its heading image." }
+    ] }],
     children: [{ matches: () => false, querySelector: () => ({}), textContent: "" }],
     textContent: "",
     querySelector: () => ({})
   };
 }
+
+it("follows a chapter's trailing illustration before an unspoken part divider", async () => {
+  const picture = { nodeType: 1, localName: "img", childNodes: [] };
+  const sections = [
+    { href: "before.xhtml", index: 0, load: async () => undefined,
+      document: { body: { nodeType: 1, localName: "body", childNodes: [
+        { nodeType: 1, localName: "img", childNodes: [] },
+        { nodeType: 3, textContent: "The final sentence." }, picture
+      ] } },
+      cfiFromElement: (element: unknown) => element === picture ? "epubcfi(/6/2!/4/6)" : "wrong-heading"
+    },
+    { href: "part.xhtml", index: 1, load: async () => undefined, document: { body: headingBody() } },
+    { href: "after.xhtml", index: 2, load: async () => undefined, document: { body: headingBody() } }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 9, href: "before.xhtml", text: "The final sentence." },
+    { startSeconds: 75, endSeconds: 80, href: "after.xhtml", text: "Chapter prose." }
+  ];
+  const chapters = [{ ...chapter(10), title: "Part One: Illustration: A Study" }, chapter(70)];
+  const gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 30)?.href, "before.xhtml");
+  assert.equal(illustrationGapAt(gaps, 30)?.cfi, "epubcfi(/6/2!/4/6)");
+  assert.equal(illustrationGapAt(gaps, 71)?.href, "after.xhtml");
+  assert.equal(illustrationGapAt(gaps, 71)?.heading, true);
+});
 
 it("shows an image-only spine page during an unmapped narrated interval", async () => {
   const picture = {
@@ -44,6 +78,34 @@ it("shows an image-only spine page during an unmapped narrated interval", async 
   assert.equal(illustrationGapAt(gaps, 8), null);
   assert.equal(illustrationGapAt(gaps, 10)?.href, "illustration.xhtml");
   assert.equal(illustrationGapAt(gaps, 74), null);
+});
+
+it("turns between a named part image and illustration within the same document", async () => {
+  const part = { getAttribute: (name: string) => name === "alt" ? "Day Five: The travellers" : null };
+  const map = { getAttribute: (name: string) => name === "alt" ? "A mountain map. Description: A winding path." : null };
+  const sections = [
+    { href: "before.xhtml", index: 0 },
+    { href: "pictures.xhtml", index: 1, load: async () => undefined,
+      document: { body: { textContent: "", querySelector: () => part, querySelectorAll: () => [part, map] } },
+      cfiFromElement: (element: unknown) => element === part ? "part-cfi" : "map-cfi"
+    },
+    { href: "after.xhtml", index: 2 }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined,
+    loaded: { navigation: Promise.resolve({ toc: [{ href: "pictures.xhtml", label: "Day Five" }] }) }
+  } as unknown as EpubBook;
+  const gaps = await findIllustrationGaps(book, [
+    { startSeconds: 0, endSeconds: 4, href: "before.xhtml", text: "Before." },
+    { startSeconds: 100, endSeconds: 110, href: "after.xhtml", text: "After." }
+  ], [
+    { ...chapter(10), title: "Day Five" },
+    { ...chapter(25), title: "Day Five: Illustration: A mountain map" }, chapter(100)
+  ]);
+  assert.equal(illustrationGapAt(gaps, 12)?.cfi, "part-cfi");
+  assert.equal(illustrationGapAt(gaps, 26)?.cfi, "map-cfi");
+  assert.equal(illustrationGapAt(gaps, 99)?.cfi, "map-cfi");
 });
 
 it("turns through two narrated picture pages at audiobook chapter markers", async () => {

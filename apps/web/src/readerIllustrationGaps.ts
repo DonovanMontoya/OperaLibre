@@ -31,16 +31,22 @@ function imageOnlyBody(body: HTMLElement | null | undefined) {
 /** The first visible content is a picture containing the chapter heading. */
 function leadingImage(body: HTMLElement | null | undefined) {
   if (!body) return false;
-  for (const child of Array.from(body.children)) {
-    const image = child.matches("img, svg, image") || !!child.querySelector("img, svg, image");
-    if (image) return (child.textContent?.trim().length ?? 0) <= 40;
-    if (child.textContent?.trim()) return false;
-  }
-  return false;
+  const firstContent = (node: Node): "image" | "text" | null => {
+    if (node.nodeType === 3) return node.textContent?.trim() ? "text" : null;
+    if (node.nodeType !== 1) return null;
+    const element = node as Element;
+    if (/^(img|svg|image)$/i.test(element.localName)) return "image";
+    for (const child of Array.from(node.childNodes ?? [])) {
+      const content = firstContent(child);
+      if (content) return content;
+    }
+    return null;
+  };
+  return firstContent(body) === "image";
 }
 
 /** Locate an image between the two mapped snippets in the same EPUB section. */
-function imageBetweenSnippets(body: HTMLElement, before: string, after: string): Element | null {
+function imageBetweenSnippets(body: HTMLElement, before: string, after?: string): Element | null {
   const images: Array<{ element: Element; offset: number }> = [];
   let normalized = "";
   const visit = (node: Node) => {
@@ -65,12 +71,16 @@ function imageBetweenSnippets(body: HTMLElement, before: string, after: string):
   };
   visit(body);
   const beforeNeedle = normalizeSyncNeedle(before);
-  const afterNeedle = normalizeSyncNeedle(after);
-  if (!beforeNeedle || !afterNeedle) return null;
-  const afterAt = normalized.indexOf(afterNeedle);
+  const afterNeedle = after === undefined ? "" : normalizeSyncNeedle(after);
+  if (!beforeNeedle || (after !== undefined && !afterNeedle)) return null;
+  const afterAt = after === undefined ? normalized.length : normalized.indexOf(afterNeedle);
   const beforeAt = normalized.lastIndexOf(beforeNeedle, afterAt);
   if (afterAt < 0 || beforeAt < 0) return null;
-  return images.find(({ offset }) => offset >= beforeAt + beforeNeedle.length && offset <= afterAt)?.element ?? null;
+  if (after === undefined && normalized.slice(beforeAt + beforeNeedle.length).trim()) return null;
+  const candidates = images.filter(({ offset }) => offset >= beforeAt + beforeNeedle.length && offset <= afterAt);
+  // Several trailing figures need separate evidence for their order/timing.
+  if (after === undefined && candidates.length !== 1) return null;
+  return candidates[0]?.element ?? null;
 }
 
 function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: number[]) {
@@ -80,6 +90,17 @@ function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: numb
 
 function illustratedAudioTitle(title: string) {
   return /\b(sketchbook|annotated map|folio|glyphs? page|illustration)\b/i.test(title);
+}
+
+/** Accessible image descriptions can distinguish pictures sharing one page. */
+function pictureNamedByChapter(body: HTMLElement | null | undefined, title: string): Element | null {
+  const name = normalizeReadalongText(title.replace(/^.*?\billustration\s*:\s*/i, ""));
+  if (!name) return null;
+  const matches = Array.from(body?.querySelectorAll?.("img, svg") ?? []).filter((image) => {
+    const label = normalizeReadalongText(image.getAttribute("alt") ?? image.getAttribute("aria-label") ?? "");
+    return label === name || label.startsWith(`${name} `);
+  });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function overlayGap(gaps: IllustrationGap[], named: IllustrationGap) {
@@ -201,6 +222,33 @@ export async function findIllustrationGaps(
     if (!illustratedAudioTitle(chapter.title)) continue;
     const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
     if (endSeconds === undefined || endSeconds === null || endSeconds - chapter.startSeconds < 10) continue;
+    let lastBefore: SyncFragment | undefined;
+    for (let fragmentIndex = fragments.length - 1; fragmentIndex >= 0; fragmentIndex -= 1) {
+      if (fragments[fragmentIndex].endSeconds <= chapter.startSeconds) {
+        lastBefore = fragments[fragmentIndex];
+        break;
+      }
+    }
+    const previousText = lastBefore ? book.spine.get(lastBefore.href) : null;
+    if (previousText && lastBefore && chapter.startSeconds - lastBefore.endSeconds <= 10) {
+      try {
+        await previousText.load(book.load.bind(book));
+        const picture = previousText.document?.body
+          ? imageBetweenSnippets(previousText.document.body, lastBefore.text)
+          : null;
+        if (picture) {
+          gaps = overlayGap(gaps, {
+            startSeconds: chapter.startSeconds,
+            endSeconds,
+            href: previousText.href,
+            cfi: previousText.cfiFromElement(picture)
+          });
+          continue;
+        }
+      } catch {
+        // A trailing figure is optional; try the separate-page form below.
+      }
+    }
     const firstAfter = fragments.find((fragment) => fragment.startSeconds >= endSeconds);
     const nextText = firstAfter ? book.spine.get(firstAfter.href) : null;
     const illustration = nextText ? book.spine.get(nextText.index - 1) : null;
@@ -208,6 +256,14 @@ export async function findIllustrationGaps(
     try {
       await illustration.load(book.load.bind(book));
       if (!imageOnlyBody(illustration.document?.body)) continue;
+      const picture = pictureNamedByChapter(illustration.document?.body, chapter.title);
+      if (picture) {
+        gaps = overlayGap(gaps, {
+          startSeconds: chapter.startSeconds, endSeconds, href: illustration.href,
+          cfi: illustration.cfiFromElement(picture)
+        });
+        continue;
+      }
       if (!gaps.some((gap) => gap.href === illustration.href
         && gap.startSeconds <= chapter.startSeconds && gap.endSeconds >= endSeconds)) {
         gaps.push({ startSeconds: chapter.startSeconds, endSeconds, href: illustration.href });
@@ -310,7 +366,8 @@ export async function findIllustrationGaps(
       const title = normalizeReadalongText(chapter.title);
       const matches = entries.filter((entry) => {
         const label = normalizeReadalongText(entry.label);
-        return label.length >= 10 && (title === label || title.endsWith(` ${label}`));
+        return (label.length >= 3 && title === label)
+          || (label.length >= 10 && title.endsWith(` ${label}`));
       });
       if (matches.length !== 1) continue;
       const section = book.spine.get(matches[0].href.split("#")[0]);
@@ -321,10 +378,12 @@ export async function findIllustrationGaps(
       } catch {
         continue;
       }
+      const picture = pictureNamedByChapter(section.document?.body, chapter.title);
       gaps = overlayGap(gaps, {
         startSeconds: chapter.startSeconds,
         endSeconds,
-        href: section.href
+        href: section.href,
+        ...(picture ? { cfi: section.cfiFromElement(picture) } : {})
       });
     }
   } catch {

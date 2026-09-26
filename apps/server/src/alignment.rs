@@ -159,6 +159,16 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             href: item.href.clone(),
             text,
         });
+        // A separately narrated illustration may be the last element of a
+        // prose document rather than a separate spine item. Empty logical
+        // sections let its audio have a boundary without moving any text or
+        // changing the href used by sentence highlights.
+        for _ in 0..trailing_image_count(&document) {
+            sections.push(SpineSection {
+                href: item.href.clone(),
+                text: String::new(),
+            });
+        }
     }
 
     // Table of contents: prefer the EPUB 3 nav document, fall back to NCX.
@@ -228,6 +238,34 @@ fn starts_with_image(document: &str) -> bool {
             .trim()
             .is_empty()
     })
+}
+
+fn trailing_image_count(document: &str) -> usize {
+    let lower = document.to_ascii_lowercase();
+    let Some(body) = lower.find("<body") else {
+        return 0;
+    };
+    let count = ["<img", "<svg"]
+        .iter()
+        .flat_map(|tag| {
+            lower[body..]
+                .match_indices(tag)
+                .map(move |(at, _)| (body + at, tag.len()))
+        })
+        .filter(|(at, length)| {
+            matches!(
+                lower.as_bytes().get(at + length),
+                Some(b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
+            ) && html_to_text(&document[*at..]).trim().is_empty()
+        })
+        .count();
+    // The existing section already represents the first picture on an
+    // image-only page. Additional figures may have their own audio markers.
+    if html_to_text(document).trim().is_empty() {
+        count.saturating_sub(1)
+    } else {
+        count
+    }
 }
 
 /// Text content of the first `<name>...</name>` element, if any.
@@ -1678,8 +1716,26 @@ fn build_chapter_scopes_inner(
                         .is_some_and(|section| section.text.trim().is_empty())
                 })
                 .collect::<Vec<_>>();
-            if image_sections.len() == missing.len() {
-                for (chapter, spine) in missing.into_iter().zip(image_sections) {
+            // A trailing figure can be followed by an unspoken part divider.
+            // Prefer the exact run of figures attached to the preceding text
+            // over treating that divider as another narrated illustration.
+            let trailing = image_sections
+                .iter()
+                .copied()
+                .filter(|index| sections[*index].href == sections[before_spine].href)
+                .collect::<Vec<_>>();
+            let mut pictures = if trailing.len() == missing.len() {
+                trailing
+            } else {
+                image_sections
+            };
+            if pictures.len() != missing.len() {
+                // One narration can cover an entire image-only document,
+                // including its part heading and the following illustration.
+                pictures.dedup_by(|right, left| sections[*right].href == sections[*left].href);
+            }
+            if pictures.len() == missing.len() {
+                for (chapter, spine) in missing.into_iter().zip(pictures) {
                     matched[chapter] = Some(spine);
                 }
             }
@@ -1822,6 +1878,23 @@ pub fn parse_label(value: &str) -> ParsedLabel {
             series,
             key: normalize_label_text(&format!("{before} {after}")),
         };
+    }
+
+    // Publishers also spell the interlude series out: "Interludes:
+    // Interlude 3: A Visitor" is the same identity as "I-3. A Visitor".
+    if !lower.contains("chapter ")
+        && let Some(at) = lower.rfind("interlude ")
+        && (at == 0 || !lower.as_bytes()[at - 1].is_ascii_alphanumeric())
+        && let Some((parsed, consumed)) = parse_number_token(&value[at + 10..])
+    {
+        let rest = value[at + 10 + consumed..].trim_start();
+        if rest.is_empty() || rest.starts_with(LABEL_SEPARATORS) {
+            return ParsedLabel {
+                number: Some(parsed),
+                series: "i".to_string(),
+                key: normalize_label_text(rest.trim_start_matches(LABEL_SEPARATORS).trim_start()),
+            };
+        }
     }
 
     let prefix = lower
@@ -2520,6 +2593,88 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(build_chapter_scopes(&titles, &shared, 1).is_err());
+    }
+
+    #[test]
+    fn spelled_interlude_numbers_match_the_lettered_series() {
+        let audio = parse_label("Interludes: Interlude 3: A Visitor");
+        assert_eq!(
+            label_match_score(&audio, &parse_label("I-3. A Visitor")),
+            180
+        );
+        assert_eq!(label_match_score(&audio, &parse_label("Chapter 3")), 0);
+        assert_eq!(parse_label("Interlude Three: A Visitor").number, Some(3));
+        assert_eq!(parse_label("An Interlude Three Wishes").number, None);
+    }
+
+    #[test]
+    fn trailing_figures_have_audio_boundaries_without_moving_prose() {
+        let epub = parse_epub(&build_test_epub_with_text(
+            "<h1>Chapter 1</h1><p>The meadow was quiet.</p><figure><img src='map.png'/></figure>",
+            "<h1>Chapter 2</h1><p>The river ran fast.</p>",
+        ))
+        .unwrap();
+        assert_eq!(epub.sections.len(), 3);
+        assert_eq!(epub.sections[0].href, epub.sections[1].href);
+        assert!(epub.sections[1].text.is_empty());
+        assert_eq!(epub.toc[1].spine_index, 2);
+        let scopes = build_chapter_scopes_with_sections(
+            &[
+                "Chapter 1".into(),
+                "Illustration: The Meadow".into(),
+                "Chapter 2".into(),
+            ],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|scope| scope.section_range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..1, 1..2, 2..3]
+        );
+        assert_eq!(
+            build_transcript(&epub.sections).text,
+            "Chapter 1\n\nThe meadow was quiet.\n\nChapter 2\n\nThe river ran fast."
+        );
+        for html in [
+            "<body><img src='heading.png'/><p>Spoken prose.</p></body>",
+            "<body><img src='only-picture.png'/></body>",
+            "<body><p>Before.</p><img src='inline.png'/><p>After.</p></body>",
+        ] {
+            assert_eq!(trailing_image_count(html), 0);
+        }
+    }
+
+    #[test]
+    fn image_only_documents_allow_combined_or_separate_narration() {
+        let epub = parse_epub(&build_test_epub_with_text(
+            "<img src='part.png'/><img src='map.png'/>",
+            "<p>The river ran fast.</p>",
+        ))
+        .unwrap();
+        assert_eq!(epub.sections.len(), 3);
+        let separate = build_chapter_scopes_with_sections(
+            &[
+                "Chapter 1".into(),
+                "Illustration: Map".into(),
+                "Chapter 2".into(),
+            ],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(separate[0].section_range, 0..1);
+        assert_eq!(separate[1].section_range, 1..2);
+        let combined = build_chapter_scopes_with_sections(
+            &["Chapter 1".into(), "Chapter 2".into()],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(combined[0].section_range, 0..2);
     }
 
     #[test]
