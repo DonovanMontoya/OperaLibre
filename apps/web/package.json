@@ -15,7 +15,8 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "oxlint -c .oxlintrc.json src",
     "test:perf": "tsc -p tsconfig.performance.json && playwright test -c playwright.performance.config.ts",
-    "test:lifecycle": "tsc -p tsconfig.lifecycle.json && playwright test -c playwright.lifecycle.config.ts"
+    "test:lifecycle": "tsc -p tsconfig.lifecycle.json && playwright test -c playwright.lifecycle.config.ts",
+    "test:follow": "tsc -p tsconfig.follow-along.json && playwright test -c playwright.follow-along.config.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",

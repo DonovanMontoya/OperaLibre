@@ -681,6 +681,14 @@ impl RecognitionSettings {
             None => format!("whisper {}, language detected", self.model),
         }
     }
+
+    fn retry_model(&self) -> &'static str {
+        if self.language.as_deref() == Some("en") {
+            "base.en"
+        } else {
+            "base"
+        }
+    }
 }
 
 /// Runs the alignment CLI for one job, sharing its temp directory and tools.
@@ -857,14 +865,16 @@ impl Aligner<'_> {
                         "recovery",
                     )
                     .await?;
-                let remaining_text = transcript.window(cursor, text_len);
+                // Recovery requires an exact, unique sentence. The normal
+                // window model can have enough short anchors to avoid retry
+                // while still mishearing every complete sentence after noise.
+                // Use the stronger model for these bounded recovery scans.
                 let recognized = self
-                    .transcribe_checked(
+                    .transcribe(
                         &audio,
                         scope_number,
-                        windows,
-                        &remaining_text.text,
-                        scan_end - position,
+                        &windows.to_string(),
+                        self.recognition.retry_model(),
                     )
                     .await;
                 let _ = fs::remove_file(audio).await;
@@ -1186,11 +1196,7 @@ impl Aligner<'_> {
         if !alignment::recognition_needs_retry(&recognized, text) {
             return Ok(recognized);
         }
-        let model = if self.recognition.language.as_deref() == Some("en") {
-            "base.en"
-        } else {
-            "base"
-        };
+        let model = self.recognition.retry_model();
         update_job_output(
             self.state,
             self.job_id,
@@ -1573,6 +1579,64 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn failed_or_interrupted_generation_preserves_the_map_and_can_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let epub = root.path().join("book.epub");
+        std::fs::write(&epub, alignment::build_test_epub()).unwrap();
+        let cli = root.path().join("aligner");
+        let runtime = SyncAddonRuntime {
+            cli_path: cli.clone(),
+            cli_args: Vec::new(),
+            ffmpeg_path: None,
+        };
+        let tracks = vec![SyncTrackInput {
+            path: root.path().join("audio.wav"),
+            title: "Book".into(),
+            duration_seconds: None,
+            chapters: Vec::new(),
+        }];
+        fs::create_dir_all(&state.sync_dir).await.unwrap();
+        let destination = state.sync_dir.join(format!("fixture{SYNC_SIDECAR_SUFFIX}"));
+        let original = br#"{"version":2,"fragments":[{"startSeconds":20,"endSeconds":25,"href":"text/ch1.xhtml","text":"Previous usable timing."}]}"#;
+        fs::write(&destination, original).await.unwrap();
+        for script in [
+            "#!/bin/sh\nexit 7\n",
+            "#!/bin/sh\n: > \"$0.started\"\nexec sleep 60\n",
+        ] {
+            std::fs::write(&cli, script).unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let job = create_job(&state, "sync-fixture").await;
+            let result = tokio::time::timeout(
+                Duration::from_millis(500),
+                run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks),
+            )
+            .await;
+            if script.contains("sleep") {
+                assert!(result.is_err());
+                assert!(root.path().join("aligner.started").exists());
+            } else {
+                assert!(result.unwrap().is_err());
+            }
+            assert_eq!(fs::read(&destination).await.unwrap(), original);
+        }
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s' '[{\"type\":\"sentence\",\"text\":\"The meadow was quiet.\",\"startTime\":1,\"endTime\":3}]' > \"$4\"\n").unwrap();
+        let job = create_job(&state, "sync-fixture-retry").await;
+        assert_eq!(
+            run_sync_generation(&state, &job, "fixture", &runtime, &epub, &tracks)
+                .await
+                .unwrap(),
+            1
+        );
+        let published: alignment::SyncMap =
+            serde_json::from_slice(&fs::read(&destination).await.unwrap()).unwrap();
+        assert_eq!(published.fragments[0].start_seconds, 1.0);
+        assert_eq!(published.fragments[0].text, "The meadow was quiet.");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn hung_audio_extraction_times_out() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
@@ -1874,6 +1938,8 @@ mod tests {
                     scope.label, scope.audio_range, scope.section_range
                 );
             }
+        } else {
+            panic!("Could not establish chapter scopes for the supplied book");
         }
     }
 
@@ -1912,6 +1978,13 @@ mod tests {
                 .collect(),
         };
         let scopes = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true).unwrap();
+        if let Some(selected) = &selected {
+            assert!(!selected.is_empty(), "No scopes selected");
+            assert!(
+                selected.iter().all(|index| *index < scopes.len()),
+                "Unknown scope selected"
+            );
+        }
         std::fs::create_dir_all(&output).unwrap();
         let root = tempfile::tempdir().unwrap();
         let (state, _) = crate::unit_tests::fake_libation_state(root.path());
@@ -2409,6 +2482,22 @@ esac
             assert!(output.contains("Recovered at 1076.0 s"), "{output}");
             assert!(!output.contains("Recovered at 1072.0 s"), "{output}");
             assert_monotonic(&fragments);
+        }
+
+        #[tokio::test]
+        async fn different_editions_can_add_text_and_narration_in_the_same_scope() {
+            let (fragments, output) = align_fake_book(200, 0..0, Some(60), Some(130)).await;
+            assert_eq!(fragments.len(), 200, "{output}");
+            assert_monotonic(&fragments);
+            for (index, fragment) in fragments.iter().enumerate() {
+                assert_eq!(fragment.text, sentence(index));
+                let expected =
+                    narrated_start(index) + if index > 130 { SENTENCE_SECONDS } else { 0.0 };
+                assert!(
+                    (fragment.start_seconds - expected).abs() < 0.75,
+                    "{fragment:?}: expected {expected}"
+                );
+            }
         }
 
         #[tokio::test]
