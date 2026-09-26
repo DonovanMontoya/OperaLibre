@@ -200,6 +200,8 @@ When the experiment is enabled, EPUBs without a precise map use text timings est
 
 The reader explains what the button does before you press it, and shows a progress bar with the chapter being aligned, the percentage done, how long it has been running, and a rough estimate of the time left. The bar is read from the server, so closing the reader, moving to another book, or reloading the page does not stop the run — reopening the book picks the progress back up.
 
+Alignment matches numbered chapter labels across formats such as “Chapter One” and “1”. It keeps narrated image titles separate from prose. When confidently matched speech skips whole EPUB sentences, those sentences remain unhighlighted; surrounding narration keeps its own timing. Suspect speech-recognition windows are retried automatically with a stronger model, which can increase generation time. These improvements apply when generating a new map; updating the client alone does not regenerate saved timings.
+
 Generation downloads any missing model files, so initial use requires network access. Generation runs locally; audiobook contents are not uploaded anywhere. Jobs run one at a time; repeated requests for the same book reuse its queued or running job.
 
 To monitor several books together, open **Administration → Experiments** and expand **Sync activity** under the follow-along sync generator. It shows running and queued books, progress, elapsed time, and recent completed or failed results. Select a book title to open it. The view refreshes while expanded; collapsing it does not stop server jobs. Recent results are temporary and clear when the server restarts.
