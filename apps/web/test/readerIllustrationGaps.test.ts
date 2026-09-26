@@ -43,6 +43,18 @@ function headingBody() {
   };
 }
 
+it("targets the named heading image after a decorative flourish", async () => {
+  const ornament = { getAttribute: () => "flourish" };
+  const heading = { getAttribute: () => "Chapter Seven" };
+  const body = { ...headingBody(), querySelectorAll: () => [ornament, heading] };
+  const section = { href: "chapter.xhtml", index: 0, document: { body }, load: async () => undefined,
+    cfiFromElement: (element: unknown) => element === heading ? "heading-cfi" : "ornament-cfi" };
+  const book = { spine: { get: () => section }, load: async () => undefined } as unknown as EpubBook;
+  const gaps = await findIllustrationGaps(book, [{ startSeconds: 13, endSeconds: 18, href: section.href, text: "The first sentence." }], [{ ...chapter(0), title: "Dedication" }, { ...chapter(8), title: "Chapter 7 - A New Beginning" }]);
+  assert.equal(illustrationGapAt(gaps, 9)?.cfi, "heading-cfi");
+  assert.equal(illustrationGapAt(gaps, 9)?.startSeconds, 8);
+});
+
 it("follows a chapter's trailing illustration before an unspoken part divider", async () => {
   const picture = { nodeType: 1, localName: "img", childNodes: [] };
   const sections = [

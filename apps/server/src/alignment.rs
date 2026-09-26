@@ -930,17 +930,17 @@ impl Transcript {
     /// Additional narration after the final sentence needs no following text
     /// anchor. Only call this for the actual end of an alignment scope, never
     /// for a window whose recognizer looked beyond its audio cut.
-    pub fn include_unmapped_trailing_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+    fn trailing_narration_start(&self, recognized: &[RecognizedWord]) -> Option<usize> {
         let words = transcript_words(&self.text, 0, self.len_utf16());
-        if words.len() < ANCHOR_NGRAM || !words.last().unwrap().sentence_final {
-            return 0;
+        if words.len() < ANCHOR_NGRAM {
+            return None;
         }
         let tail = &words[words.len() - ANCHOR_NGRAM..];
         if self
             .href_for_offset(tail[0].start_utf16)
             .is_none_or(str::is_empty)
         {
-            return 0;
+            return None;
         }
         let key = tail
             .iter()
@@ -967,11 +967,11 @@ impl Transcript {
                 .count()
                 != 1
         {
-            return 0;
+            return None;
         }
         let extra = &recognized[matching[0] + ANCHOR_NGRAM..];
         if !(6..=512).contains(&extra.len()) {
-            return 0;
+            return None;
         }
         let duration = extra.last().unwrap().end_time - extra[0].start_time;
         if !duration.is_finite()
@@ -980,7 +980,7 @@ impl Transcript {
                 .windows(2)
                 .any(|pair| pair[0].start_time > pair[1].start_time)
         {
-            return 0;
+            return None;
         }
         let phrases = words
             .windows(ANCHOR_NGRAM)
@@ -997,8 +997,22 @@ impl Transcript {
                     .collect::<Vec<_>>(),
             )
         }) {
-            return 0;
+            return None;
         }
+        Some(matching[0] + ANCHOR_NGRAM)
+    }
+
+    pub fn narrated_text_end(&self, recognized: &[RecognizedWord]) -> Option<f64> {
+        let start = self.trailing_narration_start(recognized)?;
+        let end = recognized[start - 1].end_time;
+        (end.is_finite() && end > 0.0).then_some(end)
+    }
+
+    pub fn include_unmapped_trailing_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        let Some(start) = self.trailing_narration_start(recognized) else {
+            return 0;
+        };
+        let extra = &recognized[start..];
         let offset = self.len_utf16();
         self.text.push_str("\n\n");
         self.text.push_str(
@@ -1209,6 +1223,102 @@ fn entry_offsets(entry: &TimelineEntry) -> (Option<u64>, Option<u64>) {
         }
     }
     (start, end)
+}
+
+/// Recover a one-word utterance that the forced aligner collapsed to zero
+/// duration, but only when unique surrounding recognition phrases locate it
+/// near the aligner's own position. Missing or ambiguous speech stays unmapped.
+pub fn recover_zero_duration_sentences(
+    entries: &mut [TimelineEntry],
+    transcript: &str,
+    recognized: &[RecognizedWord],
+) {
+    let words = transcript_words(transcript, 0, transcript.encode_utf16().count() as u64);
+    fn visit(
+        entries: &mut [TimelineEntry],
+        words: &[TranscriptWord],
+        recognized: &[RecognizedWord],
+    ) {
+        for entry in entries {
+            if entry.kind != "sentence" {
+                if let Some(children) = &mut entry.timeline {
+                    visit(children, words, recognized);
+                }
+                continue;
+            }
+            if entry.end_time != entry.start_time || entry.text.split_whitespace().count() != 1 {
+                continue;
+            }
+            let Some(offset) = entry_offsets(entry).0 else {
+                continue;
+            };
+            let token = normalize_word(&entry.text);
+            let Some(index) = words.iter().position(|word| {
+                word.start_utf16 <= offset && offset < word.end_utf16 && word.text == token
+            }) else {
+                continue;
+            };
+            let mut candidate = None;
+            let mut ambiguous = false;
+            for start in index.saturating_sub(ANCHOR_NGRAM - 1)..=index {
+                let Some(context) = words.get(start..start + ANCHOR_NGRAM) else {
+                    continue;
+                };
+                let matches = recognized
+                    .windows(ANCHOR_NGRAM)
+                    .enumerate()
+                    .filter(|(_, run)| {
+                        run.iter()
+                            .map(|w| &w.text)
+                            .eq(context.iter().map(|w| &w.text))
+                    })
+                    .map(|(at, _)| at + index - start)
+                    .collect::<Vec<_>>();
+                if matches.len() != 1
+                    || words
+                        .windows(ANCHOR_NGRAM)
+                        .filter(|run| {
+                            run.iter()
+                                .map(|w| &w.text)
+                                .eq(context.iter().map(|w| &w.text))
+                        })
+                        .count()
+                        != 1
+                {
+                    continue;
+                }
+                if candidate.is_some_and(|previous| previous != matches[0]) {
+                    ambiguous = true;
+                    break;
+                }
+                candidate = Some(matches[0]);
+            }
+            let Some(word) = candidate.filter(|_| !ambiguous).map(|at| &recognized[at]) else {
+                continue;
+            };
+            if !word.start_time.is_finite()
+                || !word.end_time.is_finite()
+                || word.start_time < 0.0
+                || word.end_time <= word.start_time
+                || word.end_time - word.start_time > 2.0
+                || (word.start_time - entry.start_time).abs() > 2.0
+            {
+                continue;
+            }
+            entry.start_time = word.start_time;
+            entry.end_time = word.end_time;
+            if let Some(children) = &mut entry.timeline {
+                for child in children
+                    .iter_mut()
+                    .filter(|child| child.kind == "word" && normalize_word(&child.text) == token)
+                {
+                    child.start_time = word.start_time;
+                    child.end_time = word.end_time;
+                }
+            }
+        }
+    }
+    visit(entries, &words, recognized);
 }
 
 /// Converts an alignment timeline into sync fragments, shifting times by
@@ -3354,6 +3464,28 @@ mod tests {
     }
 
     #[test]
+    fn zero_duration_interjection_requires_unique_nearby_spoken_context() {
+        let text = "Someone reached the open door. But— Another visitor crossed the courtyard.";
+        let offset = text.find("But").unwrap() as u64;
+        let json = format!(
+            r#"[{{"type":"sentence","text":"But—","startTime":2.7,"endTime":2.7,"startOffsetUtf16":{offset}}}]"#
+        );
+        let mut timeline = parse_timeline(&json).unwrap();
+        let recognized = spoken(text, 0.0);
+        recover_zero_duration_sentences(&mut timeline, text, &recognized);
+        assert_eq!((timeline[0].start_time, timeline[0].end_time), (2.5, 2.9));
+        for speech in [
+            spoken(&text.replace("But— ", ""), 0.0),
+            spoken(text, 30.0),
+            spoken(&format!("{text} {text}"), 0.0),
+        ] {
+            let mut timeline = parse_timeline(&json).unwrap();
+            recover_zero_duration_sentences(&mut timeline, text, &speech);
+            assert_eq!(timeline[0].start_time, timeline[0].end_time);
+        }
+    }
+
+    #[test]
     fn trailing_description_keeps_prose_and_unicode_offsets_unchanged() {
         let text = "The café🦉 was quiet. Then we returned to the river.";
         let extra = "an illustration shows a wooden bridge crossing a wide river beside tall trees";
@@ -3374,6 +3506,17 @@ mod tests {
         assert_eq!(
             transcript.include_unmapped_trailing_narration(&recognition),
             0
+        );
+        let mut without_punctuation = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: "They returned to the café. THE END".into(),
+        }]);
+        assert_eq!(
+            without_punctuation.include_unmapped_trailing_narration(&spoken(
+                &format!("They returned to the café. THE END {extra}"),
+                0.0
+            )),
+            1
         );
         for speech in [
             format!("{text} a brief noise"),

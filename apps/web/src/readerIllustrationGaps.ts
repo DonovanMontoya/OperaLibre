@@ -1,5 +1,5 @@
 import type { Book as EpubBook, Contents } from "epubjs";
-import { normalizeReadalongText, normalizeSyncNeedle, parseReadalongLabel } from "./readalong.ts";
+import { normalizeReadalongText, normalizeSyncNeedle, parseReadalongLabel, readalongMatchScore, LABEL_MATCH_THRESHOLD } from "./readalong.ts";
 import type { Chapter, SyncFragment } from "./types";
 
 export type IllustrationGap = {
@@ -134,6 +134,17 @@ function pictureNamedByChapter(body: HTMLElement | null | undefined, title: stri
     return label === name || label.startsWith(`${name} `);
   });
   return matches.length === 1 ? matches[0] : null;
+}
+
+/** Decorations can paginate separately from the image that names the chapter. */
+function headingPicture(body: HTMLElement | null | undefined, title: string | undefined) {
+  if (!title) return null;
+  const target = parseReadalongLabel(title);
+  const images = Array.from(body?.querySelectorAll?.("img, svg") ?? []).filter((image) => {
+    const label = image.getAttribute("alt") ?? image.getAttribute("aria-label") ?? "";
+    return label.length > 0 && readalongMatchScore(target, parseReadalongLabel(label)) >= LABEL_MATCH_THRESHOLD;
+  });
+  return images.length === 1 ? images[0] : null;
 }
 
 function overlayGap(gaps: IllustrationGap[], named: IllustrationGap) {
@@ -382,7 +393,9 @@ export async function findIllustrationGaps(
         gap.endSeconds = Math.max(gap.startSeconds, headingStart);
       }
     }
-    gaps.push({ startSeconds: headingStart, endSeconds: after.startSeconds, href: after.href, heading: true });
+    const picture = headingPicture(section.document?.body, sortedChapters.find((chapter) => chapter.startSeconds === nearMarker)?.title);
+    gaps.push({ startSeconds: headingStart, endSeconds: after.startSeconds, href: after.href, heading: true,
+      ...(picture ? { cfi: section.cfiFromElement(picture) } : {}) });
   }
 
   // The aligner can start a new EPUB section before its audio chapter begins.
@@ -410,18 +423,25 @@ export async function findIllustrationGaps(
       }
       checkedHeadings.set(firstAfter.href, hasHeading);
     }
-    if (!hasHeading || gaps.some((gap) => gap.heading && gap.href === firstAfter.href
-      && gap.endSeconds === firstAfter.startSeconds)) continue;
+    if (!hasHeading) continue;
+    const existingHeading = gaps.find((gap) => gap.heading && gap.href === firstAfter.href
+      && gap.endSeconds === firstAfter.startSeconds);
+    if (existingHeading && existingHeading.startSeconds >= chapter.startSeconds) continue;
+    // With a partial map, an earlier dedication can see this same first
+    // fragment. The closest actual chapter marker owns its heading.
+    if (existingHeading) gaps = gaps.filter((gap) => gap !== existingHeading);
     for (const gap of gaps) {
       if (gap.href !== firstAfter.href && gap.startSeconds < chapter.startSeconds && gap.endSeconds > chapter.startSeconds) {
         gap.endSeconds = chapter.startSeconds;
       }
     }
+    const picture = headingPicture(section.document?.body, chapter.title);
     gaps.push({
       startSeconds: chapter.startSeconds,
       endSeconds: firstAfter.startSeconds,
       href: firstAfter.href,
-      heading: true
+      heading: true,
+      ...(picture ? { cfi: section.cfiFromElement(picture) } : {})
     });
   }
 
