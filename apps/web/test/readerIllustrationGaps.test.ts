@@ -75,6 +75,46 @@ it("turns through two narrated picture pages at audiobook chapter markers", asyn
   assert.equal(illustrationGapAt(gaps, 18)?.href, "annotated-map.html");
 });
 
+it("follows two named image chapters when forced text timing hides their gaps", async () => {
+  const image = (href: string, index: number) => ({
+    href, index,
+    document: { body: { textContent: "", querySelector: () => ({}) } },
+    load: async () => undefined
+  });
+  const sections = [
+    { href: "interlude.html", index: 0 },
+    image("part-four.html", 1),
+    image("glyphs.html", 2),
+    { href: "next-chapter.html", index: 3 }
+  ];
+  const book = {
+    spine: { get: (key: string | number) => sections.find((section) => section.href === key || section.index === key) },
+    load: async () => undefined,
+    loaded: { navigation: Promise.resolve({ toc: [
+      { href: "part-four.html", label: "Part Four: A Knowledge" },
+      { href: "glyphs.html", label: "Alethi Glyphs Page 2" }
+    ] }) }
+  } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 9, href: "interlude.html", text: "The Sword." },
+    { startSeconds: 15, endSeconds: 25, href: "next-chapter.html", text: "Forced alignment too early." },
+    { startSeconds: 70, endSeconds: 80, href: "next-chapter.html", text: "Still in the glyphs audio." }
+  ];
+  const chapters = [
+    { ...chapter(10), title: "Part Four: A Knowledge" },
+    { ...chapter(24), title: "Part Four: A Knowledge: Alethi Glyphs Page 2" },
+    { ...chapter(224), title: "Chapter 73" }
+  ];
+
+  const gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.deepEqual(gaps, [
+    { startSeconds: 10, endSeconds: 24, href: "part-four.html" },
+    { startSeconds: 24, endSeconds: 224, href: "glyphs.html" }
+  ]);
+  assert.equal(illustrationGapAt(gaps, 12)?.href, "part-four.html");
+  assert.equal(illustrationGapAt(gaps, 30)?.href, "glyphs.html");
+});
+
 it("finds a narrated image between mapped snippets inside one EPUB section", async () => {
   const text = (value: string) => ({ nodeType: 3, textContent: value });
   const picture = { nodeType: 1, localName: "img", childNodes: [] };

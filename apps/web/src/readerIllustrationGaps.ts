@@ -1,5 +1,5 @@
 import type { Book as EpubBook } from "epubjs";
-import { normalizeSyncNeedle } from "./readalong.ts";
+import { normalizeReadalongText, normalizeSyncNeedle } from "./readalong.ts";
 import type { Chapter, SyncFragment } from "./types";
 
 export type IllustrationGap = {
@@ -82,6 +82,19 @@ function illustratedAudioTitle(title: string) {
   return /\b(sketchbook|annotated map|folio|glyphs? page|illustration)\b/i.test(title);
 }
 
+function overlayGap(gaps: IllustrationGap[], named: IllustrationGap) {
+  return [
+    ...gaps.flatMap((gap) => {
+      if (gap.endSeconds <= named.startSeconds || gap.startSeconds >= named.endSeconds) return [gap];
+      return [
+        ...(gap.startSeconds < named.startSeconds ? [{ ...gap, endSeconds: named.startSeconds }] : []),
+        ...(gap.endSeconds > named.endSeconds ? [{ ...gap, startSeconds: named.endSeconds }] : [])
+      ];
+    }),
+    named
+  ];
+}
+
 /**
  * Find narrated pictures that have no sync fragments. EPUB spine order gives
  * their page order; audiobook chapter markers give exact turns when present.
@@ -91,7 +104,7 @@ export async function findIllustrationGaps(
   fragments: SyncFragment[],
   audioChapters: Chapter[] = []
 ): Promise<IllustrationGap[]> {
-  const gaps: IllustrationGap[] = [];
+  let gaps: IllustrationGap[] = [];
   const sortedChapters = [...audioChapters].sort((a, b) => a.startSeconds - b.startSeconds);
   const chapterStarts = sortedChapters.map((chapter) => chapter.startSeconds);
   for (const { before, after } of illustrationGapCandidates(fragments)) {
@@ -275,6 +288,47 @@ export async function findIllustrationGaps(
       href: firstAfter.href,
       heading: true
     });
+  }
+
+  // A forced map can assign text fragments to the audio of an image-only
+  // chapter, leaving no timing gap to discover. A matching EPUB contents entry
+  // and audiobook chapter marker give that page a more reliable interval.
+  try {
+    const navigation = await book.loaded.navigation;
+    const entries: Array<{ href: string; label: string }> = [];
+    const collect = (items: typeof navigation.toc) => {
+      for (const item of items) {
+        entries.push(item);
+        collect(item.subitems ?? []);
+      }
+    };
+    collect(navigation.toc);
+    for (let index = 0; index < sortedChapters.length; index += 1) {
+      const chapter = sortedChapters[index];
+      const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
+      if (endSeconds === null || endSeconds <= chapter.startSeconds) continue;
+      const title = normalizeReadalongText(chapter.title);
+      const matches = entries.filter((entry) => {
+        const label = normalizeReadalongText(entry.label);
+        return label.length >= 10 && (title === label || title.endsWith(` ${label}`));
+      });
+      if (matches.length !== 1) continue;
+      const section = book.spine.get(matches[0].href.split("#")[0]);
+      if (!section) continue;
+      try {
+        await section.load(book.load.bind(book));
+        if (!imageOnlyBody(section.document?.body)) continue;
+      } catch {
+        continue;
+      }
+      gaps = overlayGap(gaps, {
+        startSeconds: chapter.startSeconds,
+        endSeconds,
+        href: section.href
+      });
+    }
+  } catch {
+    // An unavailable contents list leaves the fragment-based gaps intact.
   }
   return gaps.filter((gap) => gap.endSeconds > gap.startSeconds).sort((a, b) => a.startSeconds - b.startSeconds);
 }
