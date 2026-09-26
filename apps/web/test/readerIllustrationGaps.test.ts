@@ -102,6 +102,30 @@ it("shows an image-only spine page during an unmapped narrated interval", async 
   assert.equal(illustrationGapAt(gaps, 74), null);
 });
 
+it("holds a closing illustration through the rest of its audio chapter", async () => {
+  const picture = { nodeType: 1, localName: "img", childNodes: [] };
+  const body = { nodeType: 1, localName: "body", childNodes: [
+    { nodeType: 3, textContent: "The final sentence." }, picture
+  ] as unknown[] };
+  const section = { href: "chapter.xhtml", index: 0, document: { body }, load: async () => undefined,
+    cfiFromElement: () => "closing-picture-cfi" };
+  const book = { spine: { get: () => section }, load: async () => undefined } as unknown as EpubBook;
+  const fragments = [{ startSeconds: 1, endSeconds: 10, href: section.href, text: "The final sentence." }];
+  const chapters = [{ ...chapter(0), endSeconds: 45 }];
+  let gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 20)?.cfi, "closing-picture-cfi");
+  assert.equal(illustrationGapAt(gaps, 44)?.cfi, "closing-picture-cfi");
+  assert.equal(illustrationGapAt(gaps, 45), null);
+  // A split audio chapter must not jump to the picture while prose remains.
+  body.childNodes.push({ nodeType: 3, textContent: "More prose is still ahead." });
+  gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 20), null);
+  // With two pictures there is no evidence for when to turn between them.
+  body.childNodes.pop(); body.childNodes.push(picture);
+  gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 20), null);
+});
+
 it("turns between a named part image and illustration within the same document", async () => {
   const part = { getAttribute: (name: string) => name === "alt" ? "Day Five: The travellers" : null };
   const map = { getAttribute: (name: string) => name === "alt" ? "A mountain map. Description: A winding path." : null };

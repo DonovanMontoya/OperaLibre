@@ -157,7 +157,10 @@ export function parseReadalongLabel(value: string): ParsedReadalongLabel {
     if (token) {
       const rest = trimmed.slice(token.consumed).replace(/^\s+/, "");
       const separator = rest.match(/^[.:)\-–—]\s*/);
-      if (separator) {
+      if (!rest || (/^\d/.test(trimmed) && /^\s/.test(trimmed.slice(token.consumed)))) {
+        number = token.number;
+        remainder = rest.replace(/^[.:)\-–—]*\s*/, "");
+      } else if (separator) {
         number = token.number;
         remainder = rest.slice(separator[0].length);
       }

@@ -299,6 +299,32 @@ export async function findIllustrationGaps(
     }
   }
 
+  // A closing illustration can be described inside the same audio chapter,
+  // without a separate marker or a following mapped sentence. Require the
+  // last mapped prose to end the document and exactly one image after it.
+  for (let index = 0; index < sortedChapters.length; index += 1) {
+    const chapter = sortedChapters[index];
+    const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
+    if (endSeconds == null || illustratedAudioTitle(chapter.title)) continue;
+    const last = fragments.filter((fragment) => fragment.startSeconds >= chapter.startSeconds
+      && fragment.startSeconds < endSeconds).at(-1);
+    if (!last || endSeconds - last.endSeconds < 3) continue;
+    const section = book.spine.get(last.href);
+    if (!section) continue;
+    try {
+      await section.load(book.load.bind(book));
+      const picture = section.document?.body ? imageBetweenSnippets(section.document.body, last.text) : null;
+      if (picture) {
+        gaps = overlayGap(gaps, {
+          startSeconds: last.endSeconds, endSeconds, href: section.href,
+          cfi: section.cfiFromElement(picture)
+        });
+      }
+    } catch {
+      // Missing image evidence leaves ordinary narration following intact.
+    }
+  }
+
   // Chapter names printed in a heading image are narrated before the first
   // mapped sentence. Follow the audio chapter marker even when the gap is only
   // a few seconds, or the previous fragment's timing overlaps that marker.

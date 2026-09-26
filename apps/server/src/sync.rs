@@ -591,13 +591,14 @@ fn chapter_alignment_scopes(
         .into_iter()
         .map(|scope| {
             let chapter = &track.chapters[scope.chapter_index];
+            let last_chapter = &track.chapters[scope.chapter_end_index - 1];
             let start_seconds = chapter.start_seconds;
-            let end_seconds = chapter
+            let end_seconds = last_chapter
                 .end_seconds
                 .or_else(|| {
                     track
                         .chapters
-                        .get(scope.chapter_index + 1)
+                        .get(scope.chapter_end_index)
                         .map(|next| next.start_seconds)
                 })
                 .or(track.duration_seconds)
@@ -767,7 +768,7 @@ impl Aligner<'_> {
                 .await?;
             self.mask_unspoken_sentences(&mut prepared, &recognized, 0..transcript.len_utf16())
                 .await;
-            self.include_unmapped_narration(&mut prepared, &recognized)
+            self.include_unmapped_narration(&mut prepared, &recognized, true)
                 .await;
         }
         let fragments = self
@@ -939,8 +940,12 @@ impl Aligner<'_> {
                     )
                     .await?;
                 let mut window_transcript = transcript.window(cursor, text_end);
-                self.include_unmapped_narration(&mut window_transcript, &recognized)
-                    .await;
+                self.include_unmapped_narration(
+                    &mut window_transcript,
+                    &recognized,
+                    text_end == text_len && (segment_end - scope_end).abs() < 0.001,
+                )
+                .await;
                 let segment_fragments = self
                     .align(
                         &audio,
@@ -1144,8 +1149,12 @@ impl Aligner<'_> {
         &self,
         transcript: &mut alignment::Transcript,
         recognized: &[alignment::RecognizedWord],
+        at_scope_end: bool,
     ) {
-        let count = transcript.include_unmapped_narration(recognized);
+        let mut count = transcript.include_unmapped_narration(recognized);
+        if at_scope_end {
+            count += transcript.include_unmapped_trailing_narration(recognized);
+        }
         if count > 0 {
             update_job_output(
                 self.state,
@@ -1436,6 +1445,32 @@ mod tests {
         assert_eq!(scopes[1].section_range, 2..3);
         assert_eq!(scopes[1].audio_range, Some((45.0, 95.0)));
         assert_eq!(scopes[1].time_offset_seconds, 45.0);
+    }
+
+    #[test]
+    fn split_chapter_scope_includes_every_audio_part() {
+        let track = SyncTrackInput {
+            path: PathBuf::from("book.m4b"),
+            title: "Book".into(),
+            duration_seconds: Some(120.0),
+            chapters: vec![
+                chapter("Chapter 1A", 0.0, Some(30.0)),
+                chapter("Chapter 1B", 30.0, Some(70.0)),
+                chapter("Chapter 2", 70.0, Some(120.0)),
+            ],
+        };
+        let toc = ["Chapter 1", "Chapter 2"]
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| alignment::TocEntry {
+                title: title.to_string(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = chapter_alignment_scopes(&track, &toc, &text_sections(2), true).unwrap();
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].audio_range, Some((0.0, 70.0)));
+        assert_eq!(scopes[1].audio_range, Some((70.0, 120.0)));
     }
 
     #[test]
@@ -2062,7 +2097,14 @@ esac
 
         #[tokio::test]
         async fn additional_narration_is_unmapped_in_short_middle_and_final_windows() {
-            for (count, after) in [(40, 10), (200, 20), (200, 51), (200, 180)] {
+            for (count, after) in [
+                (40, 10),
+                (40, 39),
+                (200, 20),
+                (200, 51),
+                (200, 180),
+                (200, 199),
+            ] {
                 let (fragments, output) = align_fake_book(count, 0..0, None, Some(after)).await;
                 assert_eq!(fragments.len(), count, "{output}");
                 assert!(output.contains("additional narration passage"), "{output}");

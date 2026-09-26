@@ -171,7 +171,8 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
         }
     }
 
-    // Table of contents: prefer the EPUB 3 nav document, fall back to NCX.
+    // Prefer EPUB 3 labels, but recover documents omitted from its TOC
+    // when the older NCX still lists them.
     let mut toc_links = Vec::new();
     let nav_item = manifest
         .values()
@@ -183,7 +184,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             toc_links = parse_nav_links(&nav_document, &nav_dir);
         }
     }
-    if toc_links.is_empty() {
+    {
         let ncx_item = manifest
             .values()
             .find(|item| item.media_type == "application/x-dtbncx+xml");
@@ -191,18 +192,23 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             let ncx_path = resolve_href(&opf_dir, &ncx_item.href);
             if let Some(ncx_document) = read_zip_text(archive, &ncx_path, &mut remaining)? {
                 let ncx_dir = parent_dir(&ncx_path);
-                toc_links = parse_ncx_links(&ncx_document, &ncx_dir);
+                for link in parse_ncx_links(&ncx_document, &ncx_dir) {
+                    if !toc_links.iter().any(|(path, _)| *path == link.0) {
+                        toc_links.push(link);
+                    }
+                }
             }
         }
     }
 
-    let toc = toc_links
+    let mut toc: Vec<_> = toc_links
         .into_iter()
         .filter_map(|(path, title)| {
             let spine_index = *section_paths.get(&path)?;
             Some(TocEntry { title, spine_index })
         })
         .collect();
+    toc.sort_by_key(|entry| entry.spine_index);
     let image_count = manifest
         .values()
         .filter(|item| item.media_type.starts_with("image/"))
@@ -921,6 +927,96 @@ impl Transcript {
         count
     }
 
+    /// Additional narration after the final sentence needs no following text
+    /// anchor. Only call this for the actual end of an alignment scope, never
+    /// for a window whose recognizer looked beyond its audio cut.
+    pub fn include_unmapped_trailing_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        if words.len() < ANCHOR_NGRAM || !words.last().unwrap().sentence_final {
+            return 0;
+        }
+        let tail = &words[words.len() - ANCHOR_NGRAM..];
+        if self
+            .href_for_offset(tail[0].start_utf16)
+            .is_none_or(str::is_empty)
+        {
+            return 0;
+        }
+        let key = tail
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>();
+        let matching = recognized
+            .windows(ANCHOR_NGRAM)
+            .enumerate()
+            .filter(|(_, run)| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .eq(key.iter().copied())
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matching.len() != 1
+            || words
+                .windows(ANCHOR_NGRAM)
+                .filter(|run| {
+                    run.iter()
+                        .map(|word| word.text.as_str())
+                        .eq(key.iter().copied())
+                })
+                .count()
+                != 1
+        {
+            return 0;
+        }
+        let extra = &recognized[matching[0] + ANCHOR_NGRAM..];
+        if !(6..=512).contains(&extra.len()) {
+            return 0;
+        }
+        let duration = extra.last().unwrap().end_time - extra[0].start_time;
+        if !duration.is_finite()
+            || duration < 3.0
+            || extra
+                .windows(2)
+                .any(|pair| pair[0].start_time > pair[1].start_time)
+        {
+            return 0;
+        }
+        let phrases = words
+            .windows(ANCHOR_NGRAM)
+            .map(|run| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        if extra.windows(ANCHOR_NGRAM).any(|run| {
+            phrases.contains(
+                &run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            return 0;
+        }
+        let offset = self.len_utf16();
+        self.text.push_str("\n\n");
+        self.text.push_str(
+            &extra
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        self.text.push('.');
+        self.sections.push(TranscriptSection {
+            href: String::new(),
+            start_utf16: offset,
+            end_utf16: self.len_utf16(),
+        });
+        1
+    }
+
     /// Leave edition-only sentences unmatched when unique spoken phrases on
     /// either side are adjacent in the audio. Preserve UTF-16 offsets so the
     /// remaining text still maps to the original EPUB sections.
@@ -1577,12 +1673,12 @@ pub struct TrackScope {
     pub section_range: std::ops::Range<usize>,
 }
 
-/// A matched embedded-audio chapter and the EPUB spine sections that belong
-/// to it. The audio timing stays in `sync.rs`; this type only describes the
-/// structural match so the matching policy can be tested without media files.
+/// A matched embedded-audio chapter (or consecutive A/B parts) and its EPUB
+/// sections. The exclusive chapter end preserves the full audio interval.
 #[derive(Debug, PartialEq)]
 pub struct ChapterScope {
     pub chapter_index: usize,
+    pub chapter_end_index: usize,
     pub section_range: std::ops::Range<usize>,
 }
 
@@ -1773,7 +1869,7 @@ pub fn align_labels(
 }
 
 /// Maps embedded audiobook chapters to EPUB chapter runs. Unmatched material
-/// at either edge is allowed (opening/closing credits are common), but a gap
+/// at either edge and reordered apparatus are allowed, but a prose gap
 /// between matched chapters is rejected: assigning that EPUB text to either
 /// neighbour would recreate the drift that chapter scoping is meant to stop.
 ///
@@ -1785,7 +1881,7 @@ pub fn build_chapter_scopes(
     toc: &[TocEntry],
     section_count: usize,
 ) -> Result<Vec<ChapterScope>, String> {
-    build_chapter_scopes_inner(chapter_titles, toc, section_count, None)
+    build_grouped_chapter_scopes(chapter_titles, toc, section_count, None)
 }
 
 pub fn build_chapter_scopes_with_sections(
@@ -1793,7 +1889,69 @@ pub fn build_chapter_scopes_with_sections(
     toc: &[TocEntry],
     sections: &[SpineSection],
 ) -> Result<Vec<ChapterScope>, String> {
-    build_chapter_scopes_inner(chapter_titles, toc, sections.len(), Some(sections))
+    build_grouped_chapter_scopes(chapter_titles, toc, sections.len(), Some(sections))
+}
+
+fn build_grouped_chapter_scopes(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    section_count: usize,
+    sections: Option<&[SpineSection]>,
+) -> Result<Vec<ChapterScope>, String> {
+    let labels = chapter_titles
+        .iter()
+        .map(|title| parse_label(title))
+        .collect::<Vec<_>>();
+    let items = toc
+        .iter()
+        .map(|entry| parse_label(&entry.title))
+        .collect::<Vec<_>>();
+    let mut titles = Vec::new();
+    let mut groups = Vec::new();
+    let mut index = 0;
+    while index < labels.len() {
+        let label = &labels[index];
+        let mut end = index + 1;
+        // Only explicit consecutive A/B/... parts of one numbered chapter,
+        // whose EPUB has an unsplit label. Distinct EPUB A/B chapters retain
+        // their own boundaries, as do repeated or missing part labels.
+        if label.number.is_some()
+            && label.series.is_empty()
+            && label.key == "a"
+            && items.iter().any(|item| {
+                item.number == label.number && item.series.is_empty() && item.key.is_empty()
+            })
+            && !items.iter().any(|item| {
+                item.number == label.number
+                    && item.series.is_empty()
+                    && item.key.len() == 1
+                    && item.key.as_bytes()[0].is_ascii_alphabetic()
+            })
+        {
+            while end < labels.len() && end - index < 26 {
+                let next = &labels[end];
+                let suffix = char::from(b'a' + (end - index) as u8).to_string();
+                if next.number != label.number || !next.series.is_empty() || next.key != suffix {
+                    break;
+                }
+                end += 1;
+            }
+        }
+        titles.push(if end > index + 1 {
+            format!("Chapter {}", label.number.unwrap())
+        } else {
+            chapter_titles[index].clone()
+        });
+        groups.push(index..end);
+        index = end;
+    }
+    let mut scopes = build_chapter_scopes_inner(&titles, toc, section_count, sections)?;
+    for scope in &mut scopes {
+        let group = &groups[scope.chapter_index];
+        scope.chapter_index = group.start;
+        scope.chapter_end_index = group.end;
+    }
+    Ok(scopes)
 }
 
 fn build_chapter_scopes_inner(
@@ -1906,11 +2064,22 @@ fn build_chapter_scopes_inner(
 
     let first = matched_indices.first().expect("checked above").0;
     let last = matched_indices.last().expect("checked above").0;
-    if let Some((index, _)) = matched
-        .iter()
-        .enumerate()
-        .find(|(index, spine)| *index > first && *index < last && spine.is_none())
-    {
+    if let Some((index, _)) = matched.iter().enumerate().find(|(index, spine)| {
+        *index > first
+            && *index < last
+            && spine.is_none()
+            && !(targets[*index].number.is_none()
+                && matches!(
+                    targets[*index].key.as_str(),
+                    "acknowledgments"
+                        | "acknowledgements"
+                        | "about the author"
+                        | "credits"
+                        | "opening credits"
+                        | "closing credits"
+                        | "end credits"
+                ))
+    }) {
         return Err(format!(
             "Embedded audio chapter `{}` could not be matched between two matched chapters.",
             chapter_titles[index]
@@ -1932,13 +2101,40 @@ fn build_chapter_scopes_inner(
     Ok(matched_indices
         .iter()
         .enumerate()
-        .map(|(position, (chapter_index, start))| ChapterScope {
-            chapter_index: *chapter_index,
-            section_range: *start
-                ..matched_indices
-                    .get(position + 1)
-                    .map(|(_, next_start)| *next_start)
-                    .unwrap_or(trailing_end),
+        .map(|(position, (chapter_index, start))| {
+            let next_start = matched_indices
+                .get(position + 1)
+                .map(|(_, next_start)| *next_start)
+                .unwrap_or(trailing_end);
+            // An unspoken acknowledgments page can sit after a dedication
+            // in print but be read at the end of the audiobook. Do not force
+            // that intervening apparatus into the preceding chapter's audio.
+            let end = toc
+                .iter()
+                .filter(|entry| {
+                    let label = parse_label(&entry.title);
+                    entry.spine_index > *start
+                        && entry.spine_index < next_start
+                        && label.number.is_none()
+                        && matches!(
+                            label.key.as_str(),
+                            "acknowledgments"
+                                | "acknowledgements"
+                                | "about the author"
+                                | "copyright"
+                                | "copyright page"
+                                | "table of contents"
+                                | "contents"
+                        )
+                })
+                .map(|entry| entry.spine_index)
+                .min()
+                .unwrap_or(next_start);
+            ChapterScope {
+                chapter_index: *chapter_index,
+                chapter_end_index: *chapter_index + 1,
+                section_range: *start..end,
+            }
         })
         .collect())
 }
@@ -2067,6 +2263,14 @@ pub fn parse_label(value: &str) -> ParsedLabel {
             if rest.is_empty() {
                 number = Some(parsed);
                 remainder.clear();
+            } else if trimmed.as_bytes()[0].is_ascii_digit()
+                && trimmed[consumed..].starts_with(char::is_whitespace)
+            {
+                number = Some(parsed);
+                remainder = rest
+                    .trim_start_matches(LABEL_SEPARATORS)
+                    .trim_start()
+                    .to_string();
             } else if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
                 number = Some(parsed);
                 remainder = rest.to_string();
@@ -2415,6 +2619,128 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ncx_fills_missing_nav_documents_without_replacing_nav_labels() {
+        use std::io::{Read, Write};
+        let bytes = super::build_test_epub();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            let mut text = String::new();
+            entry.read_to_string(&mut text).unwrap();
+            if name.ends_with(".opf") {
+                text = text.replace("</manifest>", "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/></manifest>");
+            }
+            if name == "OEBPS/nav.xhtml" {
+                text = "<nav epub:type=\"toc\"><a href=\"text/ch1.xhtml\">Chapter 1: Preferred</a></nav>".into();
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(text.as_bytes()).unwrap();
+        }
+        output
+            .start_file("OEBPS/toc.ncx", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        output.write_all(br#"<ncx><navMap><navPoint><navLabel><text>Old name</text></navLabel><content src="text/ch1.xhtml"/></navPoint><navPoint><navLabel><text>Chapter 2</text></navLabel><content src="text/ch2.xhtml"/></navPoint></navMap></ncx>"#).unwrap();
+        let epub = parse_epub(&output.finish().unwrap().into_inner()).unwrap();
+        assert_eq!(epub.toc.len(), 2);
+        assert_eq!(epub.toc[0].title, "Chapter 1: Preferred");
+        assert_eq!(epub.toc[1].title, "Chapter 2");
+        assert_eq!(epub.toc[1].spine_index, 1);
+    }
+
+    #[test]
+    fn numbered_titles_allow_whitespace_but_not_partial_words() {
+        let label = parse_label("16 The Crossing");
+        assert_eq!(label.number, Some(16));
+        assert_eq!(label.key, "the crossing");
+        assert_eq!(parse_label("16th Crossing").number, None);
+        assert_eq!(parse_label("Seven Swans").number, None);
+    }
+
+    #[test]
+    fn split_audio_parts_share_only_an_unsplit_epub_chapter() {
+        let titles = [
+            "Chapter 1",
+            "Chapter 2A",
+            "Chapter 2B",
+            "Chapter 2C",
+            "Chapter 3",
+        ]
+        .map(str::to_string);
+        let toc = ["Chapter 1", "Chapter 2", "Chapter 3"]
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: title.to_string(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &toc, 3).unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|s| (
+                    s.chapter_index,
+                    s.chapter_end_index,
+                    s.section_range.clone()
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 1, 0..1), (1, 4, 1..2), (4, 5, 2..3)]
+        );
+        let split_toc = titles
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: title.clone(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &split_toc, 5).unwrap();
+        assert_eq!(scopes.len(), 5);
+        assert!(
+            scopes
+                .iter()
+                .all(|s| s.chapter_end_index == s.chapter_index + 1)
+        );
+        let missing_part =
+            ["Chapter 1", "Chapter 2A", "Chapter 2C", "Chapter 3"].map(str::to_string);
+        assert!(build_chapter_scopes(&missing_part, &toc, 3).is_err());
+    }
+
+    #[test]
+    fn reordered_apparatus_does_not_expand_adjacent_audio_scopes() {
+        let titles = [
+            "Dedication",
+            "Chapter 1",
+            "Chapter 2",
+            "Acknowledgments",
+            "About the Author",
+        ]
+        .map(str::to_string);
+        let toc = [
+            "Dedication",
+            "Acknowledgments",
+            "Chapter 1",
+            "Chapter 2",
+            "About the Author",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(spine_index, title)| TocEntry {
+            title: title.to_string(),
+            spine_index,
+        })
+        .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &toc, 5).unwrap();
+        assert_eq!(scopes[0].section_range, 0..1);
+        assert_eq!(scopes.len(), 4);
+        assert!(!scopes.iter().any(|s| s.chapter_index == 3));
+    }
+
+    #[test]
     fn epub_text_budget_counts_repeated_reads() {
         let bytes = super::build_test_epub();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
@@ -2714,10 +3040,12 @@ mod tests {
             vec![
                 ChapterScope {
                     chapter_index: 1,
+                    chapter_end_index: 2,
                     section_range: 1..2,
                 },
                 ChapterScope {
                     chapter_index: 2,
+                    chapter_end_index: 3,
                     section_range: 2..3,
                 },
             ]
@@ -3023,6 +3351,45 @@ mod tests {
             &spoken("A short sentence.", 0.0),
             "A short sentence."
         ));
+    }
+
+    #[test]
+    fn trailing_description_keeps_prose_and_unicode_offsets_unchanged() {
+        let text = "The café🦉 was quiet. Then we returned to the river.";
+        let extra = "an illustration shows a wooden bridge crossing a wide river beside tall trees";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.into(),
+        }]);
+        let recognition = spoken(&format!("{text} {extra}"), 0.0);
+        assert_eq!(
+            transcript.include_unmapped_trailing_narration(&recognition),
+            1
+        );
+        let mapped = &transcript.sections[0];
+        assert_eq!(mapped.start_utf16, 0);
+        assert_eq!(mapped.end_utf16, text.encode_utf16().count() as u64);
+        assert_eq!(&transcript.text[..text.len()], text);
+        assert_eq!(transcript.href_for_offset(mapped.end_utf16 + 2), Some(""));
+        assert_eq!(
+            transcript.include_unmapped_trailing_narration(&recognition),
+            0
+        );
+        for speech in [
+            format!("{text} a brief noise"),
+            format!("{text} {extra} Then we returned to the river."),
+            format!("The café was quiet. Then we returned somewhere else. {extra}"),
+        ] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }]);
+            assert_eq!(
+                transcript.include_unmapped_trailing_narration(&spoken(&speech, 0.0)),
+                0
+            );
+            assert_eq!(transcript.text, text);
+        }
     }
 
     #[test]
