@@ -786,6 +786,128 @@ impl Transcript {
         (offset_utf16 >= section.start_utf16).then_some(section.href.as_str())
     }
 
+    /// Keep additional narration (for example an inline diagram description)
+    /// in the aligner's input, without assigning it to visible EPUB prose.
+    /// Unique phrases must bracket a sentence boundary in the text and a
+    /// substantial run of extra recognized speech in the audio.
+    pub fn include_unmapped_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        const CONTEXT: usize = 3;
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        let mut audio_phrases = HashMap::new();
+        for (index, run) in recognized.windows(CONTEXT).enumerate() {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            audio_phrases
+                .entry(key)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(index));
+        }
+        let mut text_counts = HashMap::new();
+        for run in words.windows(CONTEXT) {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            *text_counts.entry(key).or_insert(0usize) += 1;
+        }
+        let scripted_phrases = words
+            .windows(ANCHOR_NGRAM)
+            .map(|run| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut insertions = Vec::new();
+        for run in words.windows(CONTEXT * 2) {
+            if !run[CONTEXT - 1].sentence_final {
+                continue;
+            }
+            let left: Vec<&str> = run[..CONTEXT]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            let right: Vec<&str> = run[CONTEXT..]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            if text_counts.get(&left) != Some(&1) || text_counts.get(&right) != Some(&1) {
+                continue;
+            }
+            let (Some(Some(left)), Some(Some(right))) =
+                (audio_phrases.get(&left), audio_phrases.get(&right))
+            else {
+                continue;
+            };
+            let start = left + CONTEXT;
+            if !(6..=128).contains(&right.saturating_sub(start)) {
+                continue;
+            }
+            let extra = &recognized[start..*right];
+            // A recognizer can repeat a real passage with slightly different
+            // word splitting. Do not mistake that duplicate scripted speech
+            // for a new description merely because the boundary match is unique.
+            if extra.windows(ANCHOR_NGRAM).any(|run| {
+                scripted_phrases.contains(
+                    &run.iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<Vec<_>>(),
+                )
+            }) {
+                continue;
+            }
+            let duration = extra.last().unwrap().end_time - extra[0].start_time;
+            if !duration.is_finite()
+                || duration < 3.0
+                || extra
+                    .windows(2)
+                    .any(|pair| pair[0].start_time > pair[1].start_time)
+            {
+                continue;
+            }
+            let offset = run[CONTEXT].start_utf16;
+            if self
+                .href_for_offset(run[CONTEXT - 1].start_utf16)
+                .filter(|href| !href.is_empty())
+                != self.href_for_offset(offset)
+            {
+                continue;
+            }
+            let text = extra
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            insertions.push((offset, format!("{text}.\n\n")));
+        }
+        let count = insertions.len();
+        for (offset, text) in insertions.into_iter().rev() {
+            let length = text.encode_utf16().count() as u64;
+            self.text
+                .insert_str(utf16_to_byte_index(&self.text, offset), &text);
+            let mut sections = Vec::new();
+            for mut section in self.sections.drain(..) {
+                if section.start_utf16 >= offset {
+                    section.start_utf16 += length;
+                    section.end_utf16 += length;
+                } else if section.end_utf16 > offset {
+                    sections.push(TranscriptSection {
+                        href: section.href.clone(),
+                        start_utf16: section.start_utf16,
+                        end_utf16: offset,
+                    });
+                    section.start_utf16 = offset + length;
+                    section.end_utf16 += length;
+                }
+                sections.push(section);
+            }
+            sections.push(TranscriptSection {
+                href: String::new(),
+                start_utf16: offset,
+                end_utf16: offset + length,
+            });
+            sections.sort_by_key(|section| section.start_utf16);
+            self.sections = sections;
+        }
+        count
+    }
+
     /// Leave edition-only sentences unmatched when unique spoken phrases on
     /// either side are adjacent in the audio. Preserve UTF-16 offsets so the
     /// remaining text still maps to the original EPUB sections.
@@ -1268,6 +1390,23 @@ pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> boo
             return true;
         }
     }
+    let chain = recognition_anchor_chain(recognized, text);
+    if chain.len() * 4 < recognized.len().saturating_sub(ANCHOR_NGRAM) {
+        return true;
+    }
+    chain.windows(2).any(|pair| {
+        let audio_words = pair[1].0 - pair[0].0;
+        let text_words = pair[1].1 - pair[0].1;
+        text_words >= 16 && text_words > audio_words * 2
+    })
+}
+
+/// Comparable evidence when retrying the same audio with shorter windows.
+pub fn recognition_anchor_count(recognized: &[RecognizedWord], text: &str) -> usize {
+    recognition_anchor_chain(recognized, text).len()
+}
+
+fn recognition_anchor_chain(recognized: &[RecognizedWord], text: &str) -> Vec<(usize, usize)> {
     let words = transcript_words(text, 0, text.encode_utf16().count() as u64);
     let mut phrases = HashMap::new();
     for (index, run) in words.windows(ANCHOR_NGRAM).enumerate() {
@@ -1285,15 +1424,7 @@ pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> boo
             Some((index, (*phrases.get(&key)?)?))
         })
         .collect();
-    let chain = longest_increasing_chain(&matches);
-    if chain.len() * 4 < recognized.len().saturating_sub(ANCHOR_NGRAM) {
-        return true;
-    }
-    chain.windows(2).any(|pair| {
-        let audio_words = pair[1].0 - pair[0].0;
-        let text_words = pair[1].1 - pair[0].1;
-        text_words >= 24 && text_words > audio_words * 2 + 12
-    })
+    longest_increasing_chain(&matches)
 }
 
 const ANCHOR_NGRAM: usize = 5;
@@ -2863,6 +2994,123 @@ mod tests {
             &spoken("A short sentence.", 0.0),
             "A short sentence."
         ));
+    }
+
+    #[test]
+    fn additional_narration_is_unmapped_and_preserves_unicode_text_locations() {
+        let before = "The café doors stood open.";
+        let after = "We walked into the quiet courtyard.";
+        let extra = "this picture shows a river winding around the valley";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {after}"),
+        }]);
+        let recognized = spoken(&format!("{before} {extra} {after}"), 0.0);
+        assert_eq!(transcript.include_unmapped_narration(&recognized), 1);
+        let unmapped = &transcript.sections[1];
+        assert_eq!(transcript.href_for_offset(unmapped.start_utf16), Some(""));
+        let after_offset = transcript.text[..transcript.text.find(after).unwrap()]
+            .encode_utf16()
+            .count() as u64;
+        assert_eq!(
+            transcript.href_for_offset(after_offset),
+            Some("chapter.xhtml")
+        );
+        assert_eq!(
+            &transcript.text[utf16_to_byte_index(&transcript.text, after_offset)..],
+            after
+        );
+        assert_eq!(transcript.include_unmapped_narration(&recognized), 0);
+    }
+
+    #[test]
+    fn extra_speech_requires_unique_phrases_and_a_sentence_boundary() {
+        for (text, speech) in [
+            (
+                "The first door stood open. We went inside together.",
+                "The first door stood open. briefly then We went inside together.",
+            ),
+            (
+                "The first door stood open and we went inside together.",
+                "The first door stood open this picture shows a river winding around the valley and we went inside together.",
+            ),
+            (
+                "The first door stood open. We went inside together. We went inside together.",
+                "The first door stood open. this picture shows a river winding around the valley We went inside together. We went inside together.",
+            ),
+            (
+                "The tower stood above the mountain. Something’s wrong with my powers she whispered softly.",
+                "The tower stood above the mountain. some things wrong with my powers she whispered softly and could not understand it somethings wrong with my powers she whispered softly.",
+            ),
+        ] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }]);
+            assert_eq!(
+                transcript.include_unmapped_narration(&spoken(speech, 0.0)),
+                0
+            );
+            assert_eq!(transcript.text, text);
+        }
+        let mut transcript = build_transcript(&[
+            SpineSection {
+                href: "before.xhtml".into(),
+                text: "The first door stood open.".into(),
+            },
+            SpineSection {
+                href: "after.xhtml".into(),
+                text: "We went inside together.".into(),
+            },
+        ]);
+        assert_eq!(transcript.include_unmapped_narration(&spoken("The first door stood open. this picture shows a river winding around the valley We went inside together.", 0.0)), 0);
+    }
+
+    /// Check saved probe windows for additional narration without rerunning
+    /// recognition. Fixtures remain private and outside the source tree.
+    #[test]
+    #[ignore = "manual cached-recognition probe"]
+    fn manual_cached_narration_probe() {
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_CACHE").unwrap());
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            if !name.starts_with("alignment-") || !name.ends_with(".json") {
+                continue;
+            }
+            let recognition_path =
+                path.with_file_name(name.replacen("alignment-", "recognition-", 1));
+            if !recognition_path.exists() {
+                continue;
+            }
+            let timeline = parse_timeline(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let mut sentences = Vec::new();
+            collect_sentences(&timeline, &mut sentences);
+            let text = sentences
+                .iter()
+                .map(|sentence| sentence.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "probe.xhtml".into(),
+                text,
+            }]);
+            let recognized = recognized_words(
+                &parse_timeline(&std::fs::read_to_string(recognition_path).unwrap()).unwrap(),
+            );
+            let count = transcript.include_unmapped_narration(&recognized);
+            if count > 0 {
+                println!("{name}: {count} additional narration passage(s)");
+            }
+            if recognition_needs_retry(&recognized, &transcript.text) {
+                println!("{name}: recognition still uncertain");
+            }
+            checked += 1;
+        }
+        assert!(checked > 0);
+        println!("checked {checked} cached windows");
     }
 
     #[test]

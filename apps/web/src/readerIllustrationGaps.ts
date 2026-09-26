@@ -83,9 +83,9 @@ function imageBetweenSnippets(body: HTMLElement, before: string, after?: string)
   return candidates[0]?.element ?? null;
 }
 
-function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: number[]) {
+function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: number[], fallbackDelay = 5) {
   const first = chapterStarts.find((start) => start > before.endSeconds && start < after.startSeconds);
-  return first !== undefined && first - before.endSeconds <= 10 ? first : before.endSeconds + 5;
+  return first !== undefined && first - before.endSeconds <= 10 ? first : before.endSeconds + fallbackDelay;
 }
 
 function illustratedAudioTitle(title: string) {
@@ -132,7 +132,9 @@ export async function findIllustrationGaps(
     const previousText = book.spine.get(before.href);
     const nextText = book.spine.get(after.href);
     if (!previousText || !nextText) continue;
-    const startSeconds = gapStart(before, after, chapterStarts);
+    // An inline figure is the next content after the preceding sentence;
+    // show it as that sentence ends instead of waiting through its narration.
+    const startSeconds = gapStart(before, after, chapterStarts, previousText.index === nextText.index ? 0 : 5);
     if (startSeconds >= after.startSeconds) continue;
 
     if (previousText.index === nextText.index) {
