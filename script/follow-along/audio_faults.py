@@ -77,7 +77,7 @@ def generate(output, tts, ffmpeg):
             assert wav.getframerate() == rate
             chunks.append(wav.readframes(wav.getnframes()))
     labels = {}
-    for variant in ['clean', 'silence-opening', 'noise-opening', 'different-editions']:
+    for variant in ['clean', 'silence-opening', 'noise-opening', 'different-editions', 'repeated-noise']:
         folder = output / 'library' / variant; folder.mkdir(parents=True)
         printed = [list(SENTENCES[:12]), list(SENTENCES[12:])]
         if variant == 'different-editions':
@@ -85,29 +85,40 @@ def generate(output, tts, ffmpeg):
         make_epub(folder / 'book.epub', printed)
         frames, expected, elapsed = [], {"0": [], "1": []}, 0.0
         second_start = None
+        added_start = None
         rng = random.Random(47)
         for i, sentence in enumerate(SENTENCES):
             if i == 12:
                 second_start = elapsed
             own = expected[str(i // 12)]
             chunk = chunks[i]; duration = len(chunk) / (2 * rate)
-            damaged = i < 8 and variant in ('silence-opening', 'noise-opening')
+            damaged = (i < 8 and variant in ('silence-opening', 'noise-opening')
+                       or variant == 'repeated-noise' and i in (2, 3, 8, 9, 16, 17))
             if damaged:
                 chunk = (bytes(len(chunk)) if variant == 'silence-opening' else
                          array.array('h', (rng.randint(-5000, 5000) for _ in range(len(chunk) // 2))).tobytes())
-                own.append({'kind': 'hold', 'at': elapsed + duration / 2})
+                own.append({'kind': 'unmatched' if variant == 'repeated-noise' else 'hold',
+                            'at': elapsed + duration / 2,
+                            'reason': 'Known synthesized sentence replaced entirely by noise or silence'})
             else:
                 own.append({'kind': 'prose', 'at': elapsed + duration / 2, 'href': 'one.xhtml' if i < 12 else 'two.xhtml', 'text': sentence,
                                  'startSeconds': elapsed, 'toleranceSeconds': .75})
             frames.append(chunk); elapsed += duration
             if variant == 'different-editions' and i == 5:
+                added_start = elapsed
                 extra = chunks[-1]; duration = len(extra) / (2 * rate)
                 frames.append(extra)
                 own.append({'kind': 'unmatched', 'at': elapsed + duration / 2, 'reason': 'Original synthetic narration contains a passage absent from the synthetic EPUB'})
                 elapsed += duration
         write_wav(folder / 'source.wav', b''.join(frames), rate)
         metadata = folder / 'chapters.txt'
-        metadata.write_text(f';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND={round(second_start * 1000)}\ntitle=Chapter 1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART={round(second_start * 1000)}\nEND={round(elapsed * 1000)}\ntitle=Chapter 2\n')
+        boundaries = [(0, 'Chapter 1')]
+        if added_start is not None:
+            boundaries.append((added_start, 'An extra recollection'))
+        boundaries.append((second_start, 'Chapter 2'))
+        metadata.write_text(';FFMETADATA1\n' + ''.join(
+            f'[CHAPTER]\nTIMEBASE=1/1000\nSTART={round(start * 1000)}\nEND={round((boundaries[n+1][0] if n+1 < len(boundaries) else elapsed) * 1000)}\ntitle={title}\n'
+            for n, (start, title) in enumerate(boundaries)))
         subprocess.run([ffmpeg, '-nostdin', '-v', 'error', '-i', str(folder / 'source.wav'), '-i', str(metadata),
                         '-map_metadata', '1', '-map_chapters', '1', '-c:a', 'aac', '-b:a', '96k', str(folder / 'book.m4b')], check=True)
         # Keep the uncompressed input outside the paired book directory.

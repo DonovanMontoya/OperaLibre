@@ -136,3 +136,87 @@ metadata and reject stale asynchronous writes. Existing lifecycle tests cover
 progress persistence; run `npm run test:lifecycle` for the isolated server/crash
 environment. Complete packaged-device verification separately before making
 release-level claims.
+
+## Whole-library audit
+
+To include long chapters, freeze a bounded audio window inside each selected
+scope. The full chapter text is retained, so starting midway must locate itself
+from speech. Windows are selected before generation, including beginning,
+middle, and end strata; failure never causes replacement with an easier sample.
+
+```sh
+python3 script/follow-along/corpus.py plan \
+  --catalog /private/tests/catalog.json --output /private/tests/library-plan \
+  --seed library-baseline --scopes 3 --sample-seconds 480
+npm run test:follow:library -- \
+  --plan /private/tests/library-plan/plan.json \
+  --output /private/tests/library-run-001 --cli /path/to/echogarden
+```
+
+The library runner generates an independent `small.en` transcription of a frozen
+minute in each sample before generating that book's production map. The reference
+never reads production recognition or maps. Unique eight-word phrases locate
+reference words in the EPUB. The audit invokes the production reader selector
+under Node 22+ with no anticipatory lead, including its pause and recovery rules.
+It reports reader agreement and raw sentence overlap separately, along with wrong
+chapter matches and median/p95 word onset disagreement. It requires at least
+20 reference checks, 50% unique-phrase reference coverage, 97% reader agreement,
+and no wrong-chapter checks in each sample. Missing planned scopes, invalid maps,
+changed reference data, and interrupted jobs remain failures or need review.
+
+This is automated ASR agreement, not human ground truth: the reference and
+production recognizers share a model family. Small boundary disagreements can
+come from either recognizer. Unrecognized audio remains unverified; it is never
+silently declared an edition mismatch. Inspect the saved checks when a scope
+fails, and use independently labeled audio for recovery and edition tests.
+
+For a source regression, reuse the frozen reference without regenerating it:
+
+```sh
+npm run test:follow:library -- \
+  --plan /private/tests/library-plan/plan.json \
+  --reference /private/tests/library-run-001/reference \
+  --output /private/tests/library-run-002 --cli /path/to/echogarden
+```
+
+`--workers 1` through `4` controls private worker concurrency. Outputs are new
+on every run and include source fingerprints, progress, per-book receipts, maps,
+and `audit.json`. Keep these files private. A weekly local scheduler can invoke
+this command against an isolated checkout; update that checkout and retain the
+same plan when testing a new implementation. Re-plan deliberately when the
+library grows, preserving the previous plan and its failed first attempts.
+
+The real-speech suite also includes repeated mid-chapter noise interruptions and
+an audio-only chapter marker inside an edition addition. Browser tests include
+separate narration tracks for two pictures embedded in one prose document. Open
+`/test/follow-along/reader.html?inline` for that simulator fixture.
+
+### Replay a private EPUB through the reader
+
+The test page accepts `?private=/@fs/absolute/path/to/manifest.json` when Vite can
+read that path. Store the manifest under ignored `output/follow-along/private`.
+It contains `epubUrl` (a local Vite URL), `title`, `map` (generated sync map),
+`chapters` (client Chapter objects), initial `position` in book seconds, and
+`stops` (`[{"label":"Picture","at":123}]`). Controls replay positions through
+the production reader; they do not prove audio playback or native lifecycle.
+Use generated source maps and independently chosen chapter markers. Private
+content is neither embedded in the checked-in fixture nor uploaded by public CI.
+
+### Private weekly worker
+
+`worker.py --config /private/tests/worker.json` runs a complete library check,
+prevents overlapping scheduled runs with a file lock, retains dated outputs,
+and updates `latest-scheduled.json` with the exit status and evidence path.
+Settings are `source` (isolated checkout), `plan`, `cli`, optional `reference`,
+`node`, `ffmpeg`, `cargoTarget`, and `workers` (default 1). No production credentials
+are needed. Update the source path when adopting a newly verified implementation.
+
+The supplied user service/timer templates run Mondays at 03:30 local time with
+up to 15 minutes of jitter, low scheduling priority, and a four-core CPU ceiling.
+They expect an owner-only launcher at
+`~/.local/share/operalibre-follow-tests/run-library` which invokes the configured
+source's worker. Install under `~/.config/systemd/user/`, run
+`systemctl --user daemon-reload`, then
+`systemctl --user enable --now operalibre-follow-library.timer`. Check
+`systemctl --user status operalibre-follow-library.service` and `latest-scheduled.json` after
+a scheduled run. The private worker complements public generated-content CI.

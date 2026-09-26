@@ -92,6 +92,18 @@ test('two consecutive illustrated pages are visited in order before prose', asyn
   await seek(page, 61); await matched(page, 'lantern keeper');
 });
 
+test('separate description tracks revisit two inline pictures then resume the next chapter', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5187/test/follow-along/reader.html?inline');
+  await matched(page, 'first traveler');
+  await seek(page, 25); await matched(page, 'final traveler');
+  for (const [time, name] of [[35, 'River map'], [50, 'Observatory plan']] as const) {
+    await seek(page, time);
+    await expect.poll(async () => (await state(page)).count).toBe(0);
+    await expect(page.frameLocator('.epub-stage iframe').locator(`svg[aria-label="${name}"]`)).toBeInViewport();
+  }
+  await seek(page, 61); await matched(page, 'lantern keeper');
+});
+
 test('rotation and font reflow cannot revive an uncertain highlight', async ({ page }) => {
   await open(page); await seek(page, 35);
   await expect.poll(async () => (await state(page)).count).toBe(0);

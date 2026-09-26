@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly private follow-along library regression
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -50,6 +50,23 @@ class CorpusContracts(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(corpus.score_labels(value, [])['status'], 'unverified')
 
+    def test_audio_windows_are_frozen_bounded_and_keep_long_chapters_eligible(self):
+        scopes = [{'index': 0, 'audioRange': [10, 40]}, {'index': 1, 'audioRange': [100, 10000]}]
+        windows = corpus.sample_ranges(scopes, [0, 1], 300, 'fixed')
+        self.assertEqual(windows, corpus.sample_ranges(scopes, [0, 1], 300, 'fixed'))
+        self.assertEqual(windows['0'], [10, 40])
+        self.assertAlmostEqual(windows['1'][1] - windows['1'][0], 300)
+        self.assertGreater(windows['1'][0], 100)
+        self.assertLessEqual(windows['1'][1], 10000)
+
+    def test_clock_roundoff_is_allowed_but_real_out_of_bounds_gaps_fail(self):
+        scope = dict(audioRange=[12345.123,12350],hrefs=['one'],mappedText='A sentence.')
+        value = dict(fragments=[dict(startSeconds=12346,endSeconds=12347,href='one',text='A sentence.')],
+                     recoveryGaps=[dict(startSeconds=12345.123-1e-10,endSeconds=12346)])
+        self.assertEqual(corpus.validate_map(value,scope),[])
+        value['recoveryGaps'][0]['startSeconds']-=.01
+        self.assertIn('recovery gap outside chapter',corpus.validate_map(value,scope))
+
     def test_real_edition_differences_need_reasons_and_must_not_be_forced(self):
         value = {'fragments': [{'startSeconds': 10, 'endSeconds': 20, 'href': 'one', 'text': 'Shared passage.'}]}
         labels = [{'kind': 'unmatched', 'at': 5, 'reason': 'Narrator reads an added passage absent from this edition'},
