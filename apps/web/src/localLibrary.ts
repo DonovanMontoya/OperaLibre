@@ -536,6 +536,58 @@ export async function removeDeviceBook(bookId: string) {
   // progress record even when the on-device files are removed.
 }
 
+/** Pair one EPUB with an imported audiobook without contacting a server. */
+export async function addDeviceEpub(bookId: string, file: Pick<PickedFile, "name" | "path" | "size">): Promise<Book> {
+  if (!Capacitor.isNativePlatform()) throw new Error("Device EPUB import requires a native app.");
+  if (!file.name.toLowerCase().endsWith(".epub")) throw new Error("Choose an EPUB (.epub) file.");
+  if (!file.path) throw new Error("The file picker did not provide access to the EPUB.");
+  if (file.size === 0 || (file.size != null && file.size > 64 * 1024 * 1024)) {
+    throw new Error("Choose a non-empty EPUB up to 64 MiB.");
+  }
+  const books = storedBooks();
+  const index = books.findIndex((book) => book.id === bookId && book.source === "device");
+  if (index < 0) throw new Error("This device book is no longer in the library.");
+  const book = books[index];
+  if (book.readingFile?.extension === "epub") throw new Error("This book already has an EPUB.");
+  const directory = book.tracks[0]?.localFilePath?.split("/").slice(0, -1).join("/");
+  if (!directory) throw new Error("The audiobook has no local folder for its EPUB.");
+  const path = `${directory}/reading-${crypto.randomUUID()}.epub`;
+  const destination = await importStep("The EPUB destination could not be opened", () =>
+    Filesystem.getUri({ path, directory: Directory.Data })
+  );
+  try {
+    await importStep(`${file.name} could not be copied onto this device`, () =>
+      FilePicker.copyFile({ from: file.path!, to: destination.uri, overwrite: true })
+    );
+    const copied = await importStep("The copied EPUB could not be checked", () =>
+      Filesystem.stat({ path, directory: Directory.Data })
+    );
+    if (copied.size === 0 || copied.size > 64 * 1024 * 1024) {
+      throw new Error("Choose a non-empty EPUB up to 64 MiB.");
+    }
+  } catch (error) {
+    await Filesystem.deleteFile({ path, directory: Directory.Data }).catch(() => undefined);
+    throw error;
+  }
+  const readingFile = {
+    id: `${bookId}:epub`, fileName: file.name, extension: "epub",
+    contentType: "application/epub+zip", url: `/device-books/${encodeURIComponent(bookId)}/reading.epub`
+  };
+  const updated: Book = {
+    ...book,
+    readingFile,
+    companions: [{ ...readingFile, kind: "book", sizeBytes: file.size ?? 0, localFilePath: path }]
+  };
+  books[index] = updated;
+  try {
+    writeJson(LIBRARY_KEY, books);
+  } catch (error) {
+    await Filesystem.deleteFile({ path, directory: Directory.Data }).catch(() => undefined);
+    throw error;
+  }
+  return updated;
+}
+
 /** Attach a picked-file copy to an equivalent server book and hide the duplicate device row. */
 export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = getDeviceBooks()): Book[] {
   const unmatched = new Set(deviceBooks.map((book) => book.id));
