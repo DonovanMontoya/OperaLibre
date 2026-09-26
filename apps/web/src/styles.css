@@ -17716,3 +17716,42 @@ html:not(.native-app) .library-pane.purchase-browsing {
     & .heading-actions .download-status { grid-column: 1 / -1; }
   }
 }
+
+/* Only reserve space for a playback dock when one is actually present. */
+@media (max-width: 620px) {
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open:not(.has-mini-player) > .player-pane {
+    padding-bottom: calc(var(--tabs-h) + 24px);
+  }
+}
+
+/* A tall phone with no playback dock has room for a full title page. Use that
+   room for the artwork and readable book information, leaving chapters shut. */
+@media (max-width: 620px) and (min-height: 800px) {
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open:not(.has-mini-player) .book-heading {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    row-gap: 8px;
+
+    & .large-cover {
+      grid-column: 1;
+      grid-row: 1;
+      width: clamp(160px, 20vh, 200px);
+      justify-self: center;
+    }
+    & .eyebrow { grid-column: 1; grid-row: 2; margin-top: 6px; }
+    & h2 {
+      grid-column: 1;
+      grid-row: 3;
+      font-size: clamp(1.8rem, 7vw, 2.15rem);
+      text-align: center;
+    }
+    & .book-credits {
+      grid-column: 1;
+      grid-row: 4;
+      text-align: center;
+    }
+    & .book-runtime { grid-column: 1; grid-row: 5; }
+    & .book-quick-start { grid-column: 1; grid-row: 6; }
+    & .heading-actions { grid-column: 1; grid-row: 7; }
+  }
+}

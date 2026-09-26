@@ -51,3 +51,15 @@ The latest revision replaces the earlier mobile arrangements:
 The iOS capture has the same browser-fixture limitations described above.
 Responsive overflow and action labels were checked down to 320 CSS pixels;
 chapter expansion and returning to the preview were checked in the browser.
+
+## Tall iPhone title page
+
+The latest iOS revision uses a larger centered cover and title on phones at least
+800 CSS pixels tall when no mini-player is present. With a player dock, or on
+shorter phones, it keeps the compact two-column header. Bottom padding reserves
+space for the mini-player only when it is present. Chapters remain collapsed.
+
+The iOS screenshots above precede this revision. A fresh screenshot could not
+be saved because preview capture failed. Browser geometry at 430 × 932 confirmed
+that the collapsed chapter section ends about 30 pixels above the tabs. Build,
+lint, and whitespace checks passed; the compact dock layout was also checked.
