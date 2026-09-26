@@ -44,7 +44,9 @@ def digest(path):
 def source_identity():
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / 'apps/server/src').rglob('*.rs'))]
     paths += ['apps/server/Cargo.toml', 'apps/server/Cargo.lock',
-              'addons/readalong-sync/package-lock.json', 'script/follow-along/corpus.py']
+              'addons/readalong-sync/package-lock.json', 'apps/web/src/readalong.ts',
+              'script/follow-along/reader-selection.mjs']
+    paths += [str(p.relative_to(REPO)) for p in sorted((REPO / 'script/follow-along').glob('*.py'))]
     return {path: digest(REPO / path) for path in paths}
 
 
@@ -89,7 +91,7 @@ def inventory(library):
     return {'schema': 1, 'library': str(root), 'books': books}
 
 
-def probe(book, output, *, cli=None, scopes=None, ffmpeg='ffmpeg', timeout=7200):
+def probe(book, output, *, cli=None, scopes=None, samples=None, ffmpeg='ffmpeg', timeout=7200):
     # Do not inherit production configuration or another probe's settings.
     env = {k: v for k, v in os.environ.items() if not k.startswith(('OPERALIBRE_', 'LIBATION_'))}
     env.update(OPERALIBRE_PROBE_EPUB=book['epub'], OPERALIBRE_PROBE_AUDIO=book['audio'],
@@ -97,10 +99,13 @@ def probe(book, output, *, cli=None, scopes=None, ffmpeg='ffmpeg', timeout=7200)
     if cli:
         env.update(OPERALIBRE_PROBE_CLI=str(Path(cli).resolve()),
                    OPERALIBRE_PROBE_OUTPUT=str(output.resolve()),
-                   OPERALIBRE_PROBE_SCOPES=','.join(map(str, scopes)))
+               OPERALIBRE_PROBE_SCOPES=','.join(map(str, scopes)))
+        if samples:
+            env['OPERALIBRE_PROBE_SAMPLE_RANGES'] = json.dumps(samples)
         test = 'manual_real_book_alignment_probe'
     else:
         env['OPERALIBRE_PROBE_MANIFEST'] = str((output / 'scopes.json').resolve())
+        env['OPERALIBRE_PROBE_INPUT'] = str((output / 'input.json').resolve())
         test = 'manual_real_book_scope_probe'
     with (output / 'probe.log').open('w') as log:
         subprocess.run(['cargo', 'test', '--locked', '--manifest-path',
@@ -124,7 +129,23 @@ def select_scopes(scopes, seed, count=3, max_seconds=1800):
     return chosen
 
 
-def prepare(catalog, output, ids, seed, count, max_seconds):
+def sample_ranges(scopes, indices, seconds, seed):
+    """Freeze bounded windows before generating or scoring any map.
+
+    Retain the full chapter transcript: seeking into a long combined scope must
+    recover from speech, never from a guessed proportional text offset.
+    """
+    rng = random.Random(seed)
+    by_index = {s['index']: s for s in scopes}
+    result = {}
+    for index in indices:
+        start, end = by_index[index]['audioRange']
+        offset = rng.uniform(0, max(0, end - start - seconds))
+        result[str(index)] = [start + offset, min(start + offset + seconds, end)]
+    return result
+
+
+def prepare(catalog, output, ids, seed, count, max_seconds, sample_seconds=None):
     output.mkdir(parents=True, exist_ok=False)
     selected = [b for b in catalog['books'] if not ids or b['id'] in ids]
     if not selected or (ids and set(ids) != {b['id'] for b in selected}):
@@ -140,12 +161,15 @@ def prepare(catalog, output, ids, seed, count, max_seconds):
                 raise ValueError(f"Book is {book['status']}")
             probe(book, folder)
             scopes = load(folder / 'scopes.json')
-            indices = select_scopes(scopes, f"{seed}:{book['id']}", count, max_seconds)
+            indices = select_scopes(scopes, f"{seed}:{book['id']}", count,
+                                    math.inf if sample_seconds else max_seconds)
             if not indices:
                 raise ValueError('No bounded prose scopes; needs an explicit fixture')
             row.update(status='planned', scopes=indices,
                        scopeManifest=str((folder / 'scopes.json').resolve()),
                        epubSha256=digest(book['epub']))
+            if sample_seconds:
+                row['audioSamples'] = sample_ranges(scopes, indices, sample_seconds, f"{seed}:{book['id']}:windows")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             row.update(status='blocked', error=str(error))
         plan['books'].append(row)
@@ -161,7 +185,7 @@ def validate_map(value, scope):
     fragments = value.get('fragments', [])
     for i, fragment in enumerate(fragments):
         a, b = fragment['startSeconds'], fragment['endSeconds']
-        if not all(math.isfinite(t) for t in (a, b)) or not start <= a < b <= end + .05 or a < previous:
+        if not all(math.isfinite(t) for t in (a, b)) or not start - 1e-6 <= a < b <= end + .05 or a < previous - 1e-6:
             errors.append(f'fragment {i}: clock bounds/order')
         previous = a
         if fragment['href'] not in scope['hrefs']:
@@ -177,7 +201,7 @@ def validate_map(value, scope):
                 errors.append(f'fragment {i}: word bounds')
     for gap in value.get('recoveryGaps', []):
         a, b = gap['startSeconds'], gap['endSeconds']
-        if not all(math.isfinite(t) for t in (a, b)) or not start <= a < b <= end + .05:
+        if not all(math.isfinite(t) for t in (a, b)) or not start - 1e-6 <= a < b <= end + .05:
             errors.append('recovery gap outside chapter')
         if any(f['startSeconds'] < b - .001 and f['endSeconds'] > a + .001 for f in fragments):
             errors.append('recovery gap overlaps trusted timing')
@@ -254,12 +278,15 @@ def run_plan(plan_path, output, cli, ffmpeg, ids, labels_path=None):
             except FileExistsError:
                 row['attempt'] = 'repeat'
             row['role'] = book.get('role', 'unclassified')
-            probe(book, folder, cli=cli, scopes=book['scopes'], ffmpeg=ffmpeg)
+            probe(book, folder, cli=cli, scopes=book['scopes'], samples=book.get('audioSamples'), ffmpeg=ffmpeg)
             scopes = {s['index']: s for s in load(book['scopeManifest'])}
             row['scopes'] = []
             for index in book['scopes']:
                 value = load(folder / f'scope-{index}.json')
-                errors = validate_map(value, scopes[index])
+                scope = dict(scopes[index])
+                if str(index) in book.get('audioSamples', {}):
+                    scope['audioRange'] = book['audioSamples'][str(index)]
+                errors = validate_map(value, scope)
                 quality = score_labels(value, labels.get(book['id'], {}).get(str(index), []))
                 row['scopes'].append({'index': index, 'fragments': len(value['fragments']),
                                       'structuralErrors': errors, 'quality': quality})
@@ -287,6 +314,7 @@ def main():
     plan.add_argument('--seed', default='follow-along-v1')
     plan.add_argument('--scopes', type=int, default=3)
     plan.add_argument('--max-seconds', type=float, default=1800)
+    plan.add_argument('--sample-seconds', type=float, help='Freeze bounded audio windows, including long chapters; preserves full text for recovery')
     run = commands.add_parser('run')
     run.add_argument('--plan', type=Path, required=True)
     run.add_argument('--output', type=Path, required=True)
@@ -306,7 +334,9 @@ def main():
     elif args.command == 'plan':
         if args.scopes < 1 or args.max_seconds < 30:
             raise ValueError('Invalid sampling limits')
-        result = prepare(load(args.catalog), args.output, args.books, args.seed, args.scopes, args.max_seconds)
+        if args.sample_seconds is not None and (not math.isfinite(args.sample_seconds) or args.sample_seconds < 30):
+            raise ValueError('Invalid audio window length')
+        result = prepare(load(args.catalog), args.output, args.books, args.seed, args.scopes, args.max_seconds, args.sample_seconds)
         return int(any(b['status'] != 'planned' for b in result['books']))
     else:
         result = run_plan(args.plan, args.output, args.cli, args.ffmpeg, args.books, args.labels)

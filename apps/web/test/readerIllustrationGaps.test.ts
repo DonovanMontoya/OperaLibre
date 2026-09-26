@@ -66,6 +66,31 @@ function headingBody() {
   };
 }
 
+it("uses consecutive description markers to revisit inline figures in order", async () => {
+  const heading = { nodeType: 1, localName: "img", childNodes: [], getAttribute: () => "Chapter One" };
+  const pictures = ["River", "Mountain"].map(name => ({ nodeType: 1, localName: "img", childNodes: [], getAttribute: () => name }));
+  const body = { nodeType: 1, localName: "body", childNodes: [heading,
+    { nodeType: 3, textContent: "First sentence. " }, pictures[0],
+    { nodeType: 3, textContent: "Middle sentence. " }, pictures[1], { nodeType: 3, textContent: "Last sentence." }],
+    querySelectorAll: () => [heading, ...pictures] };
+  const section = { href: "one.xhtml", index: 0, document: { body }, load: async () => undefined,
+    cfiFromElement: (element: unknown) => `picture-${pictures.indexOf(element as typeof pictures[number])}` };
+  const book = { spine: { get: () => section }, load: async () => undefined } as unknown as EpubBook;
+  const fragments = [{ startSeconds: 2, endSeconds: 8, href: section.href, text: "First sentence." },
+    { startSeconds: 20, endSeconds: 29, href: section.href, text: "Last sentence." }];
+  const chapters = [chapter(0), { ...chapter(30), title: "Illustration Description 01" },
+    { ...chapter(50), title: "Illustration Description 02" }, chapter(70)];
+  const gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 35)?.cfi, "picture-0");
+  assert.equal(illustrationGapAt(gaps, 55)?.cfi, "picture-1");
+  const named = await findIllustrationGaps(book, fragments,
+    [chapter(0), { ...chapter(30), title: "Image Description: Mountain" }, chapter(50)]);
+  assert.equal(illustrationGapAt(named, 35)?.cfi, "picture-1");
+  const uncertain = await findIllustrationGaps(book, fragments,
+    [chapter(0), { ...chapter(30), title: "Illustration Description 01" }, chapter(50)]);
+  assert.equal(illustrationGapAt(uncertain, 35)?.cfi, undefined);
+});
+
 it("targets the named heading image after a decorative flourish", async () => {
   const ornament = { getAttribute: () => "flourish" };
   const heading = { getAttribute: () => "Chapter Seven" };

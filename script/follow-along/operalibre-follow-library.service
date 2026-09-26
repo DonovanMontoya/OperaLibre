@@ -1,0 +1,11 @@
+[Unit]
+Description=Private follow-along library regression
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/operalibre-follow-tests/run-library
+Nice=10
+CPUQuota=400%
+IOSchedulingClass=idle
+UMask=0077
+TimeoutStartSec=infinity

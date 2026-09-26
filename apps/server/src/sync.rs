@@ -250,6 +250,7 @@ pub(crate) struct SyncChapterInput {
     pub(crate) end_seconds: Option<f64>,
 }
 
+#[derive(Clone)]
 struct SyncAlignmentScope {
     track_index: usize,
     section_range: std::ops::Range<usize>,
@@ -448,7 +449,11 @@ pub(crate) async fn run_sync_generation(
     let total_weight = scope_weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
     let mut done_weight = 0.0f64;
     let mut fragments = Vec::new();
-    let mut recovery_gaps = Vec::new();
+    let mut recovery_gaps = if tracks.len() == 1 {
+        unscoped_audio_gaps(&tracks[0], &scopes)
+    } else {
+        Vec::new()
+    };
     for (scope_number, scope) in scopes.iter().enumerate() {
         let track = &tracks[scope.track_index];
         let progress = ScopeProgress {
@@ -627,6 +632,44 @@ fn chapter_alignment_scopes(
         .collect()
 }
 
+/// Skipped credits, reordered apparatus, and audio-only bonus chapters must
+/// hold the reader's place. A matched illustration scope remains covered even
+/// when it deliberately produces no text fragments.
+fn unscoped_audio_gaps(
+    track: &SyncTrackInput,
+    scopes: &[SyncAlignmentScope],
+) -> Vec<alignment::RecoveryGap> {
+    let Some(mut ranges) = scopes
+        .iter()
+        .map(|s| s.audio_range)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    ranges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut cursor: f64 = 0.0;
+    let mut gaps = Vec::new();
+    for (start, end) in ranges {
+        if start > cursor {
+            gaps.push(alignment::RecoveryGap {
+                start_seconds: cursor,
+                end_seconds: start,
+            });
+        }
+        cursor = cursor.max(end);
+    }
+    if let Some(end) = track
+        .duration_seconds
+        .filter(|end| end.is_finite() && *end > cursor)
+    {
+        gaps.push(alignment::RecoveryGap {
+            start_seconds: cursor,
+            end_seconds: end,
+        });
+    }
+    gaps
+}
+
 /// Audio the forced aligner sees at once. Its working set grows with input
 /// length (about 1.4 GB per 1,000 s of audio on a 55-hour test book), so
 /// longer scopes are cut into windows this size, each tied to the transcript
@@ -796,7 +839,7 @@ impl Aligner<'_> {
                 .await;
         }
         let fragments = self
-            .align(
+            .align_pass(
                 audio_path,
                 &prepared,
                 scope.time_offset_seconds,
@@ -917,6 +960,7 @@ impl Aligner<'_> {
                             windows,
                             &scope.label,
                             &shifted,
+                            end - start,
                         )
                         .await;
                     let _ = fs::remove_file(audio).await;
@@ -926,7 +970,7 @@ impl Aligner<'_> {
                         alignment::skip_whitespace_utf16(&transcript.text, anchor.text_end_utf16);
                     // Recognition alone is not enough: keep the gap open if
                     // forced alignment cannot produce a usable sentence.
-                    if let Some(first) = recovered.first() {
+                    if let Some(first) = recovered.fragments.first() {
                         if first.start_seconds > gap_start {
                             recovery_gaps.push(alignment::RecoveryGap {
                                 start_seconds: gap_start,
@@ -936,7 +980,8 @@ impl Aligner<'_> {
                         recovery_start = None;
                         recovering = false;
                         update_job_output(self.state, self.job_id, &format!("  Recovered at {:.1} s using a unique sentence; uncertain audio was left unmatched.\n", first.start_seconds)).await;
-                        fragments.extend(recovered);
+                        recovery_gaps.extend(recovered.recovery_gaps);
+                        fragments.extend(recovered.fragments);
                     }
                 } else {
                     position = if scan_end >= scope_end {
@@ -1122,10 +1167,13 @@ impl Aligner<'_> {
                         windows,
                         &scope.label,
                         &segment_recognition,
+                        segment_end - segment_start,
                     )
                     .await;
                 let _ = fs::remove_file(audio).await;
-                fragments.extend(segment_fragments?);
+                let aligned = segment_fragments?;
+                fragments.extend(aligned.fragments);
+                recovery_gaps.extend(aligned.recovery_gaps);
             }
             position = segment_end;
             cursor = alignment::skip_whitespace_utf16(&transcript.text, text_end);
@@ -1353,6 +1401,115 @@ impl Aligner<'_> {
         window: usize,
         label: &str,
         recognized: &[alignment::RecognizedWord],
+        duration: f64,
+    ) -> anyhow::Result<ScopeAlignment> {
+        let interruptions = alignment::interrupted_passages(transcript, recognized);
+        let mut fragments: Vec<alignment::SyncFragment> = Vec::new();
+        let mut recovery_gaps = Vec::new();
+        let mut text_start = 0;
+        let mut audio_start = 0.0;
+        if let Some(ffmpeg) = self.ffmpeg_path
+            && !interruptions.is_empty()
+        {
+            for (part, interruption) in interruptions
+                .iter()
+                .map(Some)
+                .chain(std::iter::once(None))
+                .enumerate()
+            {
+                let text_end = interruption.map_or(transcript.len_utf16(), |g| g.text_start_utf16);
+                let audio_end = interruption
+                    .map_or(duration, |g| g.start_seconds)
+                    .min(duration);
+                if audio_end > audio_start + 0.1 {
+                    let audio = self
+                        .slice(
+                            ffmpeg,
+                            audio_path,
+                            audio_start,
+                            audio_end,
+                            scope_number,
+                            window,
+                            &format!("trusted-{part}"),
+                        )
+                        .await?;
+                    let text = transcript.window(text_start, text_end);
+                    let speech = recognized
+                        .iter()
+                        .filter(|w| w.start_time >= audio_start && w.end_time <= audio_end)
+                        .cloned()
+                        .map(|mut w| {
+                            w.start_time -= audio_start;
+                            w.end_time -= audio_start;
+                            w
+                        })
+                        .collect::<Vec<_>>();
+                    let aligned = self
+                        .align_pass(
+                            &audio,
+                            &text,
+                            time_offset_seconds + audio_start,
+                            scope_number,
+                            window,
+                            label,
+                            &speech,
+                        )
+                        .await;
+                    let _ = fs::remove_file(audio).await;
+                    let aligned = aligned?;
+                    fragments.extend(aligned);
+                }
+                if let Some(gap) = interruption {
+                    text_start = gap.text_end_utf16;
+                    audio_start = gap.end_seconds;
+                }
+            }
+            for gap in &interruptions {
+                let start_seconds = fragments
+                    .iter()
+                    .rev()
+                    .find(|f| f.end_seconds <= time_offset_seconds + gap.start_seconds + 0.001)
+                    .map_or(time_offset_seconds, |f| f.end_seconds);
+                let end_seconds = fragments
+                    .iter()
+                    .find(|f| f.start_seconds >= time_offset_seconds + gap.end_seconds - 0.001)
+                    .map_or(time_offset_seconds + duration, |f| f.start_seconds);
+                if end_seconds > start_seconds {
+                    recovery_gaps.push(alignment::RecoveryGap {
+                        start_seconds,
+                        end_seconds,
+                    });
+                }
+            }
+        } else {
+            fragments = self
+                .align_pass(
+                    audio_path,
+                    transcript,
+                    time_offset_seconds,
+                    scope_number,
+                    window,
+                    label,
+                    recognized,
+                )
+                .await?;
+        }
+        Ok(ScopeAlignment {
+            fragments,
+            recovery_gaps,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn align_pass(
+        &self,
+        audio_path: &FsPath,
+        transcript: &alignment::Transcript,
+        time_offset_seconds: f64,
+        scope_number: usize,
+        window: usize,
+        label: &str,
+        recognized: &[alignment::RecognizedWord],
     ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
         // A recognizer may capture only the end of a closing description.
         // The unique final prose anchor still identifies where printed text
@@ -1419,6 +1576,7 @@ impl Aligner<'_> {
         }
         let mut entries = alignment::parse_timeline(&timeline_json)?;
         alignment::recover_zero_duration_sentences(&mut entries, &transcript.text, recognized);
+        alignment::reconcile_sentence_starts(&mut entries, &transcript.text, recognized);
         Ok(alignment::fragments_from_timeline(
             &entries,
             transcript,
@@ -1821,6 +1979,36 @@ mod tests {
     }
 
     #[test]
+    fn omitted_audio_is_uncertain_but_matched_picture_intervals_are_preserved() {
+        let track = SyncTrackInput {
+            path: "book.m4b".into(),
+            title: "Book".into(),
+            duration_seconds: Some(100.0),
+            chapters: Vec::new(),
+        };
+        let mut scopes = [(10.0, 30.0), (30.0, 40.0), (60.0, 80.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| SyncAlignmentScope {
+                track_index: 0,
+                section_range: i..i + 1,
+                audio_range: Some(range),
+                time_offset_seconds: range.0,
+                label: "Chapter or picture".into(),
+            })
+            .collect::<Vec<_>>();
+        let gaps = unscoped_audio_gaps(&track, &scopes);
+        assert_eq!(
+            gaps.iter()
+                .map(|g| (g.start_seconds, g.end_seconds))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 10.0), (40.0, 60.0), (80.0, 100.0)]
+        );
+        scopes[0].audio_range = None;
+        assert!(unscoped_audio_gaps(&track, &scopes).is_empty());
+    }
+
+    #[test]
     #[ignore = "manual real-book probe"]
     fn manual_real_book_scope_probe() {
         let epub_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_EPUB").unwrap());
@@ -1864,6 +2052,14 @@ mod tests {
             }
         };
 
+        if let Some(path) = std::env::var_os("OPERALIBRE_PROBE_INPUT") {
+            let input = serde_json::json!({
+                "toc": epub.toc.iter().map(|e| serde_json::json!({"title": e.title, "spine": e.spine_index})).collect::<Vec<_>>(),
+                "sections": epub.sections.iter().map(|s| serde_json::json!({"href": s.href, "text": s.text})).collect::<Vec<_>>(),
+                "chapters": track.chapters.iter().map(|c| serde_json::json!({"title": c.title, "start": c.start_seconds, "end": c.end_seconds})).collect::<Vec<_>>(),
+            });
+            std::fs::write(path, serde_json::to_vec(&input).unwrap()).unwrap();
+        }
         let result = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true);
         if result.is_err() {
             let mut ordered_toc = epub.toc.iter().collect::<Vec<_>>();
@@ -1978,6 +2174,10 @@ mod tests {
                 .collect(),
         };
         let scopes = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true).unwrap();
+        let samples: std::collections::HashMap<usize, (f64, f64)> =
+            std::env::var("OPERALIBRE_PROBE_SAMPLE_RANGES")
+                .map(|value| serde_json::from_str(&value).unwrap())
+                .unwrap_or_default();
         if let Some(selected) = &selected {
             assert!(!selected.is_empty(), "No scopes selected");
             assert!(
@@ -2010,6 +2210,16 @@ mod tests {
             if path.exists() {
                 continue;
             }
+            let mut scope = scope.clone();
+            if let Some(&(start, end)) = samples.get(&index) {
+                let (a, b) = scope.audio_range.unwrap();
+                assert!(
+                    start.is_finite() && end.is_finite() && a <= start && start < end && end <= b
+                );
+                scope.audio_range = Some((start, end));
+                scope.time_offset_seconds = start;
+            }
+            let scope = &scope;
             let transcript = scope_transcript(&epub, scope);
             let progress = ScopeProgress {
                 base: 0.0,

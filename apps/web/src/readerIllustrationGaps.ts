@@ -70,7 +70,7 @@ function leadingImage(body: HTMLElement | null | undefined) {
 }
 
 /** Locate an image between the two mapped snippets in the same EPUB section. */
-function imageBetweenSnippets(body: HTMLElement, before: string, after?: string, options: { unique?: boolean; endsDocument?: boolean } = {}): Element | null {
+function imageBetweenSnippets(body: HTMLElement, before: string, after?: string, options: { unique?: boolean; endsDocument?: boolean; sequence?: { index: number; count: number } } = {}): Element | null {
   const images: Array<{ element: Element; offset: number }> = [];
   let normalized = "";
   const visit = (node: Node) => {
@@ -103,6 +103,9 @@ function imageBetweenSnippets(body: HTMLElement, before: string, after?: string,
   if (after === undefined && normalized.slice(beforeAt + beforeNeedle.length).trim()) return null;
   if (options.endsDocument && normalized.slice(afterAt + afterNeedle.length).trim()) return null;
   const candidates = images.filter(({ offset }) => offset >= beforeAt + beforeNeedle.length && offset <= afterAt);
+  if (options.sequence) {
+    return candidates.length === options.sequence.count ? candidates[options.sequence.index]?.element ?? null : null;
+  }
   // Several trailing figures need separate evidence for their order/timing.
   if ((after === undefined || options.unique) && candidates.length !== 1) return null;
   return candidates[0]?.element ?? null;
@@ -123,12 +126,12 @@ function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: numb
 }
 
 function illustratedAudioTitle(title: string) {
-  return /\b(sketchbook|annotated map|folio|glyphs? page|illustration)\b/i.test(title);
+  return /\b(sketchbook|annotated map|folio|glyphs? page|illustration|image description)\b/i.test(title);
 }
 
 /** Accessible image descriptions can distinguish pictures sharing one page. */
 function pictureNamedByChapter(body: HTMLElement | null | undefined, title: string): Element | null {
-  const name = normalizeReadalongText(title.replace(/^.*?\billustration\s*:\s*/i, ""));
+  const name = normalizeReadalongText(title.replace(/^.*?\b(?:illustration(?: description)?|image description)\s*:\s*/i, ""));
   if (!name) return null;
   const matches = Array.from(body?.querySelectorAll?.("img, svg") ?? []).filter((image) => {
     const label = normalizeReadalongText(image.getAttribute("alt") ?? image.getAttribute("aria-label") ?? "");
@@ -269,20 +272,35 @@ export async function findIllustrationGaps(
     if (!illustratedAudioTitle(chapter.title)) continue;
     const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
     if (endSeconds === undefined || endSeconds === null || endSeconds - chapter.startSeconds < 10) continue;
+    let groupStart = index, groupEnd = index + 1;
+    while (groupStart > 0 && illustratedAudioTitle(sortedChapters[groupStart - 1].title)) groupStart--;
+    while (groupEnd < sortedChapters.length && illustratedAudioTitle(sortedChapters[groupEnd].title)) groupEnd++;
+    const firstMarker = sortedChapters[groupStart].startSeconds;
     let lastBefore: SyncFragment | undefined;
     for (let fragmentIndex = fragments.length - 1; fragmentIndex >= 0; fragmentIndex -= 1) {
-      if (fragments[fragmentIndex].endSeconds <= chapter.startSeconds) {
+      if (fragments[fragmentIndex].endSeconds <= firstMarker) {
         lastBefore = fragments[fragmentIndex];
         break;
       }
     }
     const previousText = lastBefore ? book.spine.get(lastBefore.href) : null;
-    if (previousText && lastBefore && chapter.startSeconds - lastBefore.endSeconds <= 10) {
+    if (previousText && lastBefore && firstMarker - lastBefore.endSeconds <= 10) {
       try {
         await previousText.load(book.load.bind(book));
-        const picture = previousText.document?.body
-          ? imageBetweenSnippets(previousText.document.body, lastBefore.text)
-          : null;
+        const body = previousText.document?.body;
+        let picture = pictureNamedByChapter(body, chapter.title);
+        if (!picture && body && groupEnd - groupStart === 1) picture = imageBetweenSnippets(body, lastBefore.text);
+        // Some editions place figures inside the prose but narrate their
+        // descriptions after it. Require a complete mapped chapter span and
+        // exactly as many pictures as consecutive description markers.
+        const proseStart = sortedChapters[groupStart - 1]?.startSeconds;
+        const first = proseStart === undefined ? undefined : fragments.find(fragment =>
+          fragment.startSeconds >= proseStart && fragment.endSeconds <= firstMarker && fragment.href === lastBefore.href);
+        if (!picture && body && first && first !== lastBefore) {
+          picture = imageBetweenSnippets(body, first.text, lastBefore.text, {
+            endsDocument: true, sequence: { index: index - groupStart, count: groupEnd - groupStart }
+          });
+        }
         if (picture) {
           gaps = overlayGap(gaps, {
             startSeconds: chapter.startSeconds,
