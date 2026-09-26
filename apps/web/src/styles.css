@@ -17610,6 +17610,9 @@ html:not(.native-app) .library-pane.purchase-browsing {
 /* Compact phone title pages keep the cover and navigation from consuming
    separate full-width rows before the book's useful information. */
 @media (max-width: 620px) {
+  /* Read Along / Extras is already available in the book's action buttons. */
+  .readalong-invite { display: none; }
+
   html:not(.native-app) .player-pane:not(:has(> .native-now-playing)) {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 16px 12px;
@@ -17701,18 +17704,6 @@ html:not(.native-app) .library-pane.purchase-browsing {
     & .book-runtime-label { font-size: 0.54rem; letter-spacing: 0.12em; }
     & .book-runtime-value { font-size: 1.25rem; }
     & .book-heading .book-quick-start { margin-top: 6px; }
-    & .readalong-invite {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 12px;
-      padding: 12px;
-      text-align: left;
-    }
-    & .readalong-invite-icon { display: none; }
-    & .readalong-invite-copy { align-items: start; }
-    & .readalong-invite-copy strong { font-size: 1rem; }
-    & .readalong-invite-copy span { font-size: 0.78rem; }
-    & .readalong-invite > .download-btn { grid-column: 2; grid-row: 1; min-height: 44px; padding: 8px 10px; white-space: nowrap; }
     & .heading-actions .download-status { grid-column: 1 / -1; }
   }
 }
