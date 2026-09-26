@@ -275,8 +275,6 @@ export function PlayerPane({
     setEbookUploadFile
   } = uploads;
 
-  const previewChapters = native && nativeTab === "shelf" && selectedChapterSegments.length > 1 && !chaptersOpen;
-
   const bookPageMasthead = (
     <>
       {/* On the shelf tab the details page is a child page of the library
@@ -1264,7 +1262,6 @@ export function PlayerPane({
                 type="button"
                 className="track-list-header track-list-toggle"
                 aria-expanded={chaptersOpen}
-                aria-label={previewChapters ? `Show all ${selectedChapterSegments.length} chapters` : undefined}
                 onClick={() => {
                   haptic("light");
                   setChaptersOpen((open) => {
@@ -1275,13 +1272,13 @@ export function PlayerPane({
               >
                 <span className="title-of-contents">Embedded Chapters</span>
                 <span className="section-label">
-                  <ListMusic size={13} /> {previewChapters ? `View all ${selectedChapterSegments.length}` : `${selectedChapterSegments.length} Markers`}
+                  <ListMusic size={13} /> {selectedChapterSegments.length} Markers
                   <ChevronDown size={14} className={`toggle-chevron ${chaptersOpen ? "open" : ""}`} />
                 </span>
               </button>
-              {chaptersOpen || previewChapters ? (
+              {chaptersOpen ? (
                 <div className="track-list" ref={chaptersListRef}>
-                  {(previewChapters ? selectedChapterSegments.slice(0, Math.min(3, selectedChapterSegments.length - 1)) : selectedChapterSegments).map((chapter, index) => (
+                  {selectedChapterSegments.map((chapter, index) => (
                     <button
                       key={chapter.id}
                       data-chapter-id={chapter.id}
