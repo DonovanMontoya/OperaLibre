@@ -8660,7 +8660,7 @@ html:not(.native-app) .native-now-playing {
 /* The library trigger belongs to the browser chrome, not the playback card's
    layout. Keeping it out of the grid gives Now Playing the full remaining
    viewport instead of forcing the card into a second, scrollable row. */
-html:not(.native-app) .web-shell.player-view-now .library-open-btn {
+html:not(.native-app) .web-shell.player-view-now .has-native-player > .library-open-btn {
   position: absolute;
   z-index: 2;
   top: 22px;

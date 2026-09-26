@@ -23,3 +23,16 @@ Mobile book details retain the original stacked header, two-column labelled acti
 and floating mini-player. The original mobile-details capture illustrates the retained
 layout; a fresh capture was unavailable because the preview screenshot tool failed.
 The restored layout was checked in the browser at 390 × 844 CSS pixels.
+
+## Follow-up captures
+
+Screenshot capture recovered for these follow-up changes:
+
+- [Mobile web header](mobile-header-fixed.png), 390 × 844: the Library button
+  stays in document flow when there is no Now Playing card, clear of the folio divider.
+- [iOS book details](ios-details-after.png), 430 × 932: production components
+  rendered through `test/duo-shell.html` with the built-in demo library. The cover
+  aligns with the title and credits; listening and labeled actions span the page.
+  This is a browser preview of the native shell, not an iPhone device capture.
+  System safe areas and the native iOS tab bar are not reproduced; the browser
+  fallback tab bar is shown. No book is playing in this capture.
