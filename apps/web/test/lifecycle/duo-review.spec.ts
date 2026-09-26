@@ -11,11 +11,17 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
-async function openShell(page: Page, native: boolean, admin = false) {
+async function openShell(page: Page, native: boolean, admin = false, inProgress = false) {
   const user = { id: 'review-reader', username: 'Reader', isAdmin: admin, isOwner: admin,
     canApproveLibationRequests: admin, allowedBookIds: null, libationAccess: 'direct',
     shareProgress: false, announceFinishes: false, notifyFinishes: false, createdAt: '1700000000' };
   const books = library(6);
+  if (inProgress) {
+    books[0].progress = {
+      status: 'inProgress', bookPositionSeconds: 60, durationSeconds: 240,
+      remainingSeconds: 180, percentComplete: 25, updatedAt: '2026-09-26T12:00:00Z'
+    };
+  }
   const writes: string[] = [];
   let connected = false;
   await page.addInitScript(() => {
@@ -42,6 +48,21 @@ async function openShell(page: Page, native: boolean, admin = false) {
   await expect(page.locator('.book-row')).toHaveCount(6);
   return { books, writes };
 }
+
+test('native phone shelf shows in-progress books and resumes playback', async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  const { books } = await openShell(page, true, false, true);
+  const shelf = page.getByRole('region', { name: 'Continue Reading' });
+  await expect(shelf).toBeVisible();
+  const resume = shelf.getByRole('button', { name: `Continue reading ${books[0].title}` });
+  await expect(resume).toBeVisible();
+  await expect(resume).toHaveCSS('border-radius', '14px');
+  await expect(shelf.locator('.continue-reading-meter')).toHaveCSS('border-radius', '999px');
+  await expect(shelf.getByRole('button')).toHaveCount(1);
+  await resume.click();
+  await expect(page.locator('.native-shell')).toHaveClass(/tab-reading/);
+  await expect(page.getByRole('region', { name: 'Now playing' })).toBeVisible();
+});
 
 test('web readers can connect Libro.fm without native Settings', async ({ page }) => {
   const { writes } = await openShell(page, false);
