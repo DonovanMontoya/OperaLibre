@@ -699,6 +699,7 @@ function MainApp({
     setSelectedBookId
   });
   const {
+    chooseDeviceEbookUpload,
     chooseEbookUpload,
     chooseUploadFiles,
     ebookUploadBook,
@@ -2381,8 +2382,9 @@ function MainApp({
         />
       ) : null}
 
-      {capabilities.uploads && ebookUploadBook ? (
+      {ebookUploadBook && (capabilities.uploads || (native && ebookUploadBook.source === "device")) ? (
         <EbookUploadDialog
+          chooseDeviceEbookUpload={chooseDeviceEbookUpload}
           chooseEbookUpload={chooseEbookUpload}
           ebookUploadBook={ebookUploadBook}
           ebookUploadBusy={ebookUploadBusy}
