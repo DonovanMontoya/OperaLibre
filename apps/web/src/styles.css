@@ -1466,6 +1466,136 @@ html:not(.native-app) .web-shell > .player-pane {
   transform: rotate(-180deg);
 }
 
+.continue-reading {
+  margin-bottom: 24px;
+}
+
+.continue-reading-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.continue-reading-heading h2 {
+  margin: 0;
+  color: var(--gold-soft);
+  font: 400 1.5rem/1.2 "Instrument Serif", serif;
+}
+
+.continue-reading-heading > span {
+  color: var(--gold-soft);
+  font: 0.65rem "JetBrains Mono", monospace;
+}
+
+.continue-reading-list {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.continue-reading-book {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(217, 181, 116, 0.24);
+  border-radius: 3px;
+  background: rgba(217, 181, 116, 0.06);
+  color: var(--paper);
+  text-align: left;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.continue-reading-book:hover {
+  border-color: var(--gold-soft);
+  background: rgba(217, 181, 116, 0.12);
+}
+
+.continue-reading-book:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 3px;
+}
+
+.continue-reading-book .cover-mark {
+  width: 44px;
+  height: 58px;
+  object-fit: contain;
+}
+
+.continue-reading-book img.cover-mark {
+  height: auto;
+  max-height: 58px;
+}
+
+.continue-reading-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.continue-reading-copy > strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font: 500 0.95rem/1.25 "Fraunces", serif;
+}
+
+.continue-reading-author {
+  overflow: hidden;
+  color: rgba(241, 231, 208, 0.65);
+  font: italic 0.85rem "Instrument Serif", serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continue-reading-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+  color: var(--gold-soft);
+  font: 0.58rem "JetBrains Mono", monospace;
+}
+
+.continue-reading-meter {
+  height: 3px;
+  overflow: hidden;
+  background: rgba(217, 181, 116, 0.18);
+}
+
+.continue-reading-meter > i {
+  display: block;
+  height: 100%;
+  background: var(--gold-soft);
+}
+
+.continue-reading-play {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--gold-soft);
+  color: var(--spine);
+}
+
+.continue-reading-library-heading {
+  margin: 0 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(217, 181, 116, 0.2);
+  color: rgba(241, 231, 208, 0.6);
+  font: 0.65rem "JetBrains Mono", monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
 .book-list {
   display: flex;
   flex-direction: column;
@@ -6333,6 +6463,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 
 .profile-back {
   align-self: flex-start;
+  justify-self: start;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -8455,6 +8586,13 @@ html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player 
 
 html:not(.native-app) .web-shell.player-view-now .player-pane.has-native-player
   > :not(.native-now-playing):not(.library-open-btn) {
+  display: none;
+}
+
+/* Full book details use the title page even for the playing book. Playback
+   stays in Now Playing and the mini-player beneath the page. */
+html:not(.native-app) .web-shell.player-view-details .player-pane
+  > :is(.track-line, .transport, .timeline, .controls-grid) {
   display: none;
 }
 
@@ -11282,18 +11420,12 @@ html.native-app .admin-shell:not(.admin-overlay) {
   gap: 4px;
 }
 
-/* The follow-narration sub-option sits indented beneath the reader toggle, with
-   a hairline on the left to read as nested. */
-.settings-subrow {
-  margin-top: 10px;
-  padding-left: 14px;
-  border-left: 2px solid rgba(var(--ink-rgb), 0.14);
-}
-
 .settings-follow-group {
   display: grid;
   gap: 16px;
   width: 100%;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .follow-aggressiveness {
@@ -16865,6 +16997,56 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
 
 /* ===================== Web: carried over from the iPhone and Duo ===================== */
 
+/* Keep the navigation and folio together so the book starts near the top. */
+html:not(.native-app) .web-shell.player-view-details > .player-pane {
+  padding-top: clamp(22px, 2.5vw, 36px);
+  gap: 24px;
+}
+
+.book-page-masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(var(--ink-rgb), 0.15);
+}
+
+html:not(.native-app) .book-page-masthead .native-player-return {
+  flex: none;
+  margin: 0;
+}
+
+.book-page-masthead .folio {
+  flex: 1 1 380px;
+  padding: 0;
+  border: 0;
+}
+
+/* Give the running footer its own grid row. The details scroll above it,
+   with room after the last section, instead of disappearing behind it. */
+html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .library-pane {
+  grid-row: 1 / -1;
+}
+
+html:not(.native-app) .web-shell.player-view-details:has(> .mini-player) > .player-pane {
+  grid-column: -2 / -1;
+  grid-row: 1;
+  padding-bottom: 28px;
+}
+
+html:not(.native-app) .web-shell.player-view-details > .mini-player {
+  position: relative;
+  inset: auto;
+  grid-column: -2 / -1;
+  grid-row: 2;
+  margin: 16px clamp(14px, 2vw, 28px) clamp(12px, 2vw, 24px);
+}
+
 /* The title page's single emphatic action, under the title as on the iPhone.
    It replaces the round play button further down the page. */
 html:not(.native-app) .book-heading .book-quick-start {
@@ -16984,8 +17166,25 @@ html:not(.native-app) .book-subjects span {
   }
 }
 
+/* Keep every action labelled on one line. A narrow viewport scrolls the
+   action strip sideways without hiding labels or creating a second row. */
+html:not(.native-app) .book-heading .heading-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: safe flex-end;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+html:not(.native-app) .book-heading .heading-actions .download-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* Wider than a phone the heading sits on a fixed grid: the eyebrow and
-   actions head the text column, and the cover is pinned beside the title
+   actions span the page, and the cover is pinned beside the title
    rather than sinking to the bottom of however many lines the title and
    credits take. */
 @media (min-width: 621px) {
@@ -17001,36 +17200,16 @@ html:not(.native-app) .book-subjects span {
     display: contents;
   }
 
-  /* Every slot below has a fixed height, so the heading is the same size
-     for every book and nothing under it moves when the next one opens. */
-  html:not(.native-app) .book-heading .heading-top {
-    container: heading-top / inline-size;
+  /* Use both columns for the labelled action row. */
+  html:not(.native-app) .book-heading .meta > .heading-top {
+    grid-column: 1 / -1;
     grid-row: 1;
     flex-wrap: nowrap;
     height: 34px;
-    margin-bottom: clamp(20px, 2.6vw, 32px);
+    margin-bottom: 20px;
   }
 
   html:not(.native-app) .book-heading .eyebrow {
-    flex: none;
-    white-space: nowrap;
-  }
-
-  /* Safe alignment and a sideways scroll are the last resort: whatever the
-     label rules below get wrong, no action can end up out of reach. */
-  html:not(.native-app) .book-heading .heading-actions {
-    flex-wrap: nowrap;
-    justify-content: safe flex-end;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  html:not(.native-app) .book-heading .heading-actions::-webkit-scrollbar {
-    display: none;
-  }
-
-  html:not(.native-app) .book-heading .heading-actions .download-btn {
     flex: none;
     white-space: nowrap;
   }
@@ -17126,43 +17305,7 @@ html:not(.native-app) .book-subjects span {
     grid-row: 6;
   }
 
-  /* When the row is too narrow for every label, the actions keep one row
-     as icons; each already carries its full name as its accessible label.
-     How narrow is too narrow depends on how many actions the book has: each
-     threshold is the eyebrow plus that many labelled buttons at their
-     longest wording (about 180px apiece at most), with a little to spare. */
-  @container heading-top (max-width: 660px) {
-    html:not(.native-app) .book-heading .heading-actions .download-btn {
-      padding-inline: 10px;
-    }
-    html:not(.native-app) .book-heading .heading-actions .download-btn > span {
-      display: none;
-    }
-  }
-  @container heading-top (max-width: 780px) {
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(4)) .download-btn {
-      padding-inline: 10px;
-    }
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(4)) .download-btn > span {
-      display: none;
-    }
-  }
-  @container heading-top (max-width: 920px) {
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(5)) .download-btn {
-      padding-inline: 10px;
-    }
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(5)) .download-btn > span {
-      display: none;
-    }
-  }
-  @container heading-top (max-width: 1070px) {
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(6)) .download-btn {
-      padding-inline: 10px;
-    }
-    html:not(.native-app) .book-heading .heading-actions:has(> :nth-child(6)) .download-btn > span {
-      display: none;
-    }
-  }
+
 }
 
 /* A phone-sized browser gets the iPhone's promoted transport: a larger play

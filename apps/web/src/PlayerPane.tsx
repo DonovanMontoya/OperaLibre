@@ -275,6 +275,38 @@ export function PlayerPane({
     setEbookUploadFile
   } = uploads;
 
+  const bookPageMasthead = (
+    <>
+      {/* On the shelf tab the details page is a child page of the library
+          list, so it always needs its own way back — even with nothing
+          playing. "Back to Now Playing" still requires a playing book. */}
+      {nativePlayerView !== "now" && (playbackBook || (native && nativeTab === "shelf")) ? (
+        <button
+          type="button"
+          className="native-player-return"
+          onClick={() => {
+            if (native && nativeTab === "shelf") {
+              returnToLibrary();
+              return;
+            }
+            haptic("light");
+            withWebViewTransition(() => openPlaybackView("now"));
+          }}
+        >
+          {native && nativeTab === "shelf" ? (
+            <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Library</span></>
+          ) : (
+            <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Now Playing</span></>
+          )}
+        </button>
+      ) : null}
+      <div className="folio">
+        <span>Vol. I <span className="dot">·</span> The Reading Room</span>
+        <span>Folio {String(activeTrackIndex + 1).padStart(3, "0")} / {String(selectedBook?.tracks.length ?? 0).padStart(3, "0")}</span>
+      </div>
+    </>
+  );
+
   return (
     <section
       className={`player-pane native-player-view-${nativePlayerView} ${
@@ -551,33 +583,7 @@ export function PlayerPane({
               {showReaderInNowView ? <div className="web-now-reader">{readalongPanelElement}</div> : null}
             </section>
           ) : null}
-          {/* On the shelf tab the details page is a child page of the library
-              list, so it always needs its own way back — even with nothing
-              playing. "Back to Now Playing" still requires a playing book. */}
-          {nativePlayerView !== "now" && (playbackBook || (native && nativeTab === "shelf")) ? (
-            <button
-              type="button"
-              className="native-player-return"
-              onClick={() => {
-                if (native && nativeTab === "shelf") {
-                  returnToLibrary();
-                  return;
-                }
-                haptic("light");
-                withWebViewTransition(() => openPlaybackView("now"));
-              }}
-            >
-              {native && nativeTab === "shelf" ? (
-                <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Library</span></>
-              ) : (
-                <><span className="native-player-return-icon"><ChevronLeft size={21} /></span><span>Back to Now Playing</span></>
-              )}
-            </button>
-          ) : null}
-          <div className="folio">
-            <span>Vol. I <span className="dot">·</span> The Reading Room</span>
-            <span>Folio {String(activeTrackIndex + 1).padStart(3, "0")} / {String(selectedBook.tracks.length).padStart(3, "0")}</span>
-          </div>
+          {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
 
           <div className="book-heading">
             <CoverArt book={selectedBook} size="large" />
@@ -596,6 +602,7 @@ export function PlayerPane({
                         openMetadataEditor(selectedBook);
                       }}
                       aria-label={`Edit info for ${selectedBook.title}`}
+                      title="Edit book info"
                     >
                       <Pencil size={13} />
                       <span>Edit Info</span>
@@ -612,6 +619,7 @@ export function PlayerPane({
                         setEbookUploadError(null);
                       }}
                       aria-label={`Upload matching ebook for ${selectedBook.title}`}
+                      title="Add a matching EPUB"
                     >
                       <BookOpen size={13} />
                       <span>Add EPUB</span>
@@ -636,6 +644,7 @@ export function PlayerPane({
                         ? `Mark ${selectedBook.title} unfinished`
                         : `Mark ${selectedBook.title} finished`
                     }
+                    title={selectedBook.progress?.status === "finished" ? "Mark unfinished" : "Mark finished"}
                   >
                     {completionPendingBookId === selectedBook.id ? (
                       <LoaderCircle size={13} className="spin-icon" />
@@ -655,6 +664,7 @@ export function PlayerPane({
                       onClick={() => markBookUnplayed(selectedBook)}
                       disabled={completionPendingBookId === selectedBook.id}
                       aria-label={`Mark ${selectedBook.title} as unplayed and reset listening progress`}
+                      title="Mark unplayed and reset listening progress"
                     >
                       {completionPendingBookId === selectedBook.id ? (
                         <LoaderCircle size={13} className="spin-icon" />
@@ -675,18 +685,19 @@ export function PlayerPane({
                       }}
                       aria-pressed={readalongOpen}
                       aria-label={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "read along" : "extras"} for ${selectedBook.title}`}
+                      title={`${readalongOpen ? "Close" : "Open"} ${selectedBook.readingFile ? "ebook reader" : "extras"}`}
                     >
                       {selectedBook.readingFile ? <BookOpen size={13} /> : <Images size={13} />}
                       <span>{selectedBook.readingFile ? "Read Along" : "Extras"}</span>
                     </button>
                   ) : null}
                   {selectedBook.deviceBookId ? (
-                    <span className="download-btn active device-status" aria-label="Imported from this device">
+                    <span className="download-btn active device-status" aria-label="Imported from this device" title="Imported from this device">
                       <FolderOpen size={13} />
                       <span>On device</span>
                     </span>
                   ) : demoMode ? (
-                    <span className="download-btn active device-status" aria-label="Included with the on-device demo">
+                    <span className="download-btn active device-status" aria-label="Included with the on-device demo" title="Included with the on-device demo">
                       <CircleCheck size={13} />
                       <span>On device</span>
                     </span>
@@ -711,6 +722,11 @@ export function PlayerPane({
                             ? `Remove downloaded copy of ${selectedBook.title}`
                           : `Download ${selectedBook.title} for offline playback`
                       }
+                      title={selectedDownload
+                        ? "Cancel download"
+                        : downloadedBookIds.has(selectedBook.id)
+                          ? "Remove downloaded copy"
+                          : "Download for offline listening"}
                     >
                       {selectedDownload ? (
                         <DownloadRing fraction={selectedDownload.fraction} />
@@ -731,13 +747,14 @@ export function PlayerPane({
                       href={bookDownloadUrl(selectedBook.id)}
                       download
                       aria-label={`Download ${selectedBook.title} as zip`}
+                      title="Download book as ZIP"
                     >
                       <Download size={13} />
                       <span>Download</span>
                     </a>
                   ) : !native && capabilities.downloads ? (
                     <details className="track-downloads">
-                      <summary className="download-btn"><Download size={13} /> Download tracks</summary>
+                      <summary className="download-btn" title="Download individual tracks"><Download size={13} /> Download tracks</summary>
                       <ul>
                         {selectedBook.tracks.map((track) => (
                           <li key={track.id}>
@@ -765,18 +782,25 @@ export function PlayerPane({
               <h2 data-length={titleLengthClass(selectedBook.title)}>
                 <span>{selectedBook.title}</span>
               </h2>
-              {!isViewingPlayingBook ? (
+              {!native || !isViewingPlayingBook ? (
                 <div className="book-quick-start">
                   <button
                     type="button"
                     className="book-quick-play"
-                    aria-label={`Play ${selectedBook.title}`}
-                    onClick={() => void playSelectedBook(selectedBook)}
+                    aria-label={isViewingPlayingBook ? "Return to Now Playing" : `Play ${selectedBook.title}`}
+                    onClick={() => {
+                      if (isViewingPlayingBook) scrollToPlayer();
+                      else void playSelectedBook(selectedBook);
+                    }}
                   >
-                    <span className="book-quick-play-icon"><Play size={20} fill="currentColor" /></span>
+                    <span className="book-quick-play-icon">
+                      {isViewingPlayingBook ? <Headphones size={20} /> : <Play size={20} fill="currentColor" />}
+                    </span>
                     <span className="book-quick-play-copy">
                       <strong>
-                        {selectedBook.progress?.status === "inProgress"
+                        {isViewingPlayingBook
+                          ? "Return to Now Playing"
+                          : selectedBook.progress?.status === "inProgress"
                           ? "Resume this book"
                           : selectedBook.progress?.status === "finished"
                             ? "Read it again"

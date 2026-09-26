@@ -19,7 +19,6 @@ import { errorMessage } from "./formatting";
 import { Capacitor } from "@capacitor/core";
 import { Dialog } from "@capacitor/dialog";
 import { createScreenAwakeController } from "./screenAwake";
-import { writeReadalongEnabled } from "./readalongPreferences";
 import type { ServerCapabilities } from "./serverCapabilities";
 import type { NativeTab } from "./nativeTabs";
 
@@ -42,7 +41,6 @@ export function useReadalong({
   selectedBookId,
   setNativePlayerView,
   setNativeTab,
-  setReadalongEnabled,
   setSelectedBookId,
   setSyncConfirmationBook
 }: {
@@ -61,7 +59,6 @@ export function useReadalong({
   selectedBookId: string | null;
   setNativePlayerView: Dispatch<SetStateAction<"details" | "now" | "chapters">>;
   setNativeTab: Dispatch<SetStateAction<NativeTab>>;
-  setReadalongEnabled: Dispatch<SetStateAction<boolean>>;
   setSelectedBookId: Dispatch<SetStateAction<string | null>>;
   setSyncConfirmationBook: Dispatch<SetStateAction<Book | null>>;
 }) {
@@ -400,16 +397,6 @@ export function useReadalong({
     };
   }, [canGenerateSync, narrationFollowActive, readalongOpen, selectedBookId, syncJobBookId]);
 
-  function toggleReadalongEnabled() {
-    const enabled = !readalongEnabled;
-    writeReadalongEnabled(enabled);
-    setReadalongEnabled(enabled);
-    if (!enabled) {
-      setReadalongOpen(false);
-      if (selectedBook) writeReaderOpenFlag(selectedBook.id, false);
-    }
-  }
-
   return {
     activeCompanion,
     activeCompanionIsBook,
@@ -441,7 +428,6 @@ export function useReadalong({
     syncJob,
     syncJobError,
     syncNotice,
-    toggleReadalongEnabled,
     updateAlignmentStatus,
     writeReaderOpenFlag
   };

@@ -41,6 +41,7 @@ import { isSortModeSupported, type LibrarySource, SORT_OPTIONS, type SortMode } 
 import { SHELF_VIEW_MODE_OPTIONS } from "./shelfView";
 import { SHELF_STATUS_OPTIONS, toggleShelfFacet } from "./shelfFilters";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
+import { ContinueReading } from "./ContinueReading";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
 import { LibroCatalog } from "./LibroCatalog";
@@ -62,6 +63,7 @@ export function LibraryPane({
   capabilities,
   carPlay,
   connectPromptDismissed,
+  continueReadingBook,
   currentUser,
   demoMode,
   deviceImport,
@@ -110,6 +112,7 @@ export function LibraryPane({
   capabilities: ServerCapabilities;
   carPlay: ReturnType<typeof useCarPlay>;
   connectPromptDismissed: boolean;
+  continueReadingBook: (book: Book) => void;
   currentUser: AuthUser;
   demoMode: boolean;
   deviceImport: { completed: number; total: number; } | null;
@@ -852,6 +855,13 @@ export function LibraryPane({
                 </button>
               ) : null}
             </div>
+          ) : null}
+
+          {!native && !isLoading && !error ? (
+            <ContinueReading
+              books={visibleBooks}
+              onContinue={continueReadingBook}
+            />
           ) : null}
 
           {/* Compact keeps the list layout and only tightens it, so it carries
