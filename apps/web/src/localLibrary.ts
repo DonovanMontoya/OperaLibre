@@ -3,6 +3,7 @@ import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { readAudioFileTags, rangeSource, type AudioFileTags, type EmbeddedCover } from "./audioTags";
 import { isSupportedAudioFileName, storedMediaExtension } from "./mediaFiles";
+import { mergeDeviceReadingFiles } from "./deviceEpub";
 import type { AuthUser, Book, Chapter, MetadataSummary, Progress, Track } from "./types";
 import {
   deviceBookMatchesServer,
@@ -608,6 +609,7 @@ export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = get
     );
     return {
       ...serverBook,
+      ...mergeDeviceReadingFiles(serverBook, deviceBook),
       tags: serverBook.tags ?? [],
       source: "server" as const,
       deviceBookId: deviceBook.id,
