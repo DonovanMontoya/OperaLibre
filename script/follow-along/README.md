@@ -230,3 +230,18 @@ source's worker. Install under `~/.config/systemd/user/`, run
 `systemctl --user enable --now operalibre-follow-library.timer`. Check
 `systemctl --user status operalibre-follow-library.service` and `latest-scheduled.json` after
 a scheduled run. The private worker complements public generated-content CI.
+
+### Replaying recognition when comparing generator changes
+
+`recognition_cache.py --cli /private/real-echogarden --identity /private/runtime.json
+--cache /private/recognition --mode record -- <echogarden arguments>` always runs
+fresh recognition and preserves its first successful output. Use this mode for
+weekly audits. The identity file must fingerprint the pinned Node runtime,
+package lock, and model files; regenerate it when those dependencies change.
+
+`--mode replay` can isolate an alignment/recovery change against that recorded
+recognition. A hit requires identical audio bytes, model/language arguments,
+CLI launcher, and runtime identity. New inputs run normally; forced alignment
+always runs afresh. Reports using replay are generator regressions against
+recorded recognition, not fresh recognizer validation. Failed commands are not
+cached, and the first output is never replaced by a later successful attempt.
