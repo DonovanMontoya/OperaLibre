@@ -857,7 +857,7 @@ export function LibraryPane({
             </div>
           ) : null}
 
-          {!native && !isLoading && !error ? (
+          {!isLoading && !error ? (
             <ContinueReading
               books={visibleBooks}
               onContinue={continueReadingBook}

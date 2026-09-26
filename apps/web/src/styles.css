@@ -9607,6 +9607,15 @@ html.native-app .track-row.active {
 }
 
 /* ===================== Shelf screen ===================== */
+html.native-app .continue-reading-book {
+  border-radius: var(--m-radius-sm);
+}
+
+html.native-app .continue-reading-meter,
+html.native-app .continue-reading-meter > i {
+  border-radius: 999px;
+}
+
 html.native-app .library-search {
   padding: 12px 14px;
   border-radius: var(--m-radius-sm);
