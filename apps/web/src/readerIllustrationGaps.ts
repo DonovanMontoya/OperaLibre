@@ -1,5 +1,5 @@
 import type { Book as EpubBook, Contents } from "epubjs";
-import { normalizeReadalongText, normalizeSyncNeedle } from "./readalong.ts";
+import { normalizeReadalongText, normalizeSyncNeedle, parseReadalongLabel } from "./readalong.ts";
 import type { Chapter, SyncFragment } from "./types";
 
 export type IllustrationGap = {
@@ -70,7 +70,7 @@ function leadingImage(body: HTMLElement | null | undefined) {
 }
 
 /** Locate an image between the two mapped snippets in the same EPUB section. */
-function imageBetweenSnippets(body: HTMLElement, before: string, after?: string): Element | null {
+function imageBetweenSnippets(body: HTMLElement, before: string, after?: string, requireUnique = false): Element | null {
   const images: Array<{ element: Element; offset: number }> = [];
   let normalized = "";
   const visit = (node: Node) => {
@@ -103,8 +103,17 @@ function imageBetweenSnippets(body: HTMLElement, before: string, after?: string)
   if (after === undefined && normalized.slice(beforeAt + beforeNeedle.length).trim()) return null;
   const candidates = images.filter(({ offset }) => offset >= beforeAt + beforeNeedle.length && offset <= afterAt);
   // Several trailing figures need separate evidence for their order/timing.
-  if (after === undefined && candidates.length !== 1) return null;
+  if ((after === undefined || requireUnique) && candidates.length !== 1) return null;
   return candidates[0]?.element ?? null;
+}
+
+/** A/B audio parts continue one printed chapter rather than repeat its title. */
+function continuesChapter(before: Chapter | undefined, after: Chapter | undefined) {
+  if (!before || !after) return false;
+  const left = parseReadalongLabel(before.title), right = parseReadalongLabel(after.title);
+  return left.number !== null && left.number === right.number && left.series === right.series
+    && /^[a-z]$/.test(left.key) && /^[a-z]$/.test(right.key)
+    && right.key.charCodeAt(0) === left.key.charCodeAt(0) + 1;
 }
 
 function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: number[], fallbackDelay = 5) {
@@ -314,10 +323,25 @@ export async function findIllustrationGaps(
     if (!section) continue;
     try {
       await section.load(book.load.bind(book));
-      const picture = section.document?.body ? imageBetweenSnippets(section.document.body, last.text) : null;
+      const body = section.document?.body;
+      let picture = body ? imageBetweenSnippets(body, last.text) : null;
+      // Some editions place a picture within the A section's prose but read
+      // its description after that prose, just before part B. Only accept a
+      // single picture inside the mapped span of A; exclude its heading and
+      // pictures belonging to other parts of the chapter.
+      const first = inChapter[0];
+      if (!picture && body && continuesChapter(chapter, sortedChapters[index + 1])
+        && first.href === last.href && first !== last) {
+        picture = imageBetweenSnippets(body, first.text, last.text, true);
+      }
       if (picture) {
+        const nextProse = continuesChapter(chapter, sortedChapters[index + 1])
+          ? fragments.find((fragment) => fragment.startSeconds >= endSeconds && fragment.href === last.href)
+          : undefined;
+        const pictureEnd = nextProse && nextProse.startSeconds - endSeconds <= 12
+          ? nextProse.startSeconds : endSeconds;
         gaps = overlayGap(gaps, {
-          startSeconds: last.endSeconds, endSeconds, href: section.href,
+          startSeconds: last.endSeconds, endSeconds: pictureEnd, href: section.href,
           cfi: section.cfiFromElement(picture)
         });
       }
@@ -364,7 +388,9 @@ export async function findIllustrationGaps(
   // The aligner can start a new EPUB section before its audio chapter begins.
   // The two fragments around the marker then have the same href, even though
   // the narrator is reading that section's image heading right now.
-  for (const chapter of sortedChapters) {
+  for (let chapterIndex = 0; chapterIndex < sortedChapters.length; chapterIndex += 1) {
+    const chapter = sortedChapters[chapterIndex];
+    if (continuesChapter(sortedChapters[chapterIndex - 1], chapter)) continue;
     if (illustratedAudioTitle(chapter.title)) continue;
     const firstAfter = fragments.find((fragment) => fragment.startSeconds >= chapter.startSeconds);
     if (!firstAfter || firstAfter.startSeconds - chapter.startSeconds > 20
