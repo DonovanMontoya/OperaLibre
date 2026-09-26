@@ -1,7 +1,8 @@
 import type { SyncFragment } from "./types.ts";
 
 /** UTF-16 position to keep visible, without changing the sentence highlight. */
-export function narrationTextOffset(fragment: SyncFragment, seconds: number): number {
+export function narrationTextOffset(fragment: SyncFragment, seconds: number, leadSeconds = 0): number {
+  seconds += Number.isFinite(leadSeconds) ? Math.max(0, leadSeconds) : 0;
   if (!Number.isFinite(seconds) || seconds <= fragment.startSeconds) return 0;
   const words = fragment.words?.filter(([start, end, offset, length]) =>
     Number.isFinite(start) && Number.isFinite(end) && end > start &&

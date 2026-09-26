@@ -74,6 +74,9 @@ pub struct TocEntry {
 pub struct EpubDocument {
     pub sections: Vec<SpineSection>,
     pub toc: Vec<TocEntry>,
+    /// Sections whose first visible content is an image, potentially a
+    /// narrated chapter title that is absent from the extracted text.
+    pub leading_image_sections: Vec<usize>,
     /// Pictures declared in the manifest. Used to tell an illustrated
     /// supplement from a text.
     pub image_count: usize,
@@ -128,6 +131,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     }
 
     let mut sections = Vec::new();
+    let mut leading_image_sections = Vec::new();
     let mut section_paths = HashMap::new();
     for tag in find_tags(&opf, "itemref") {
         let Some(idref) = attr_value(&tag, "idref") else {
@@ -147,6 +151,9 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             continue;
         };
         let text = html_to_text(&document);
+        if starts_with_image(&document) {
+            leading_image_sections.push(sections.len());
+        }
         section_paths.insert(document_path, sections.len());
         sections.push(SpineSection {
             href: item.href.clone(),
@@ -198,8 +205,28 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     Ok(EpubDocument {
         sections,
         toc,
+        leading_image_sections,
         language,
         image_count,
+    })
+}
+
+fn starts_with_image(document: &str) -> bool {
+    let lower = document.to_ascii_lowercase();
+    let Some(body) = lower
+        .find("<body")
+        .and_then(|start| lower[start..].find('>').map(|end| start + end + 1))
+    else {
+        return false;
+    };
+    let first_image = ["<img", "<svg"]
+        .iter()
+        .filter_map(|tag| lower[body..].find(tag))
+        .min();
+    first_image.is_some_and(|offset| {
+        html_to_text(&document[body..body + offset])
+            .trim()
+            .is_empty()
     })
 }
 
@@ -693,6 +720,26 @@ pub fn build_transcript(sections: &[SpineSection]) -> Transcript {
 }
 
 impl Transcript {
+    /// Consume narration printed in an image without emitting a highlight
+    /// for text that the EPUB DOM cannot contain.
+    pub fn prepend_unmapped(&mut self, heading: &str) {
+        let prefix = format!("{}.\n\n", heading.trim().trim_end_matches(['.', '!', '?']));
+        let length = prefix.encode_utf16().count() as u64;
+        for section in &mut self.sections {
+            section.start_utf16 += length;
+            section.end_utf16 += length;
+        }
+        self.sections.insert(
+            0,
+            TranscriptSection {
+                href: String::new(),
+                start_utf16: 0,
+                end_utf16: length,
+            },
+        );
+        self.text.insert_str(0, &prefix);
+    }
+
     pub fn href_for_offset(&self, offset_utf16: u64) -> Option<&str> {
         let index = self
             .sections
@@ -857,6 +904,9 @@ pub fn fragments_from_timeline(
         let Some(href) = href else {
             continue;
         };
+        if href.is_empty() {
+            continue;
+        }
         let words = word_timings(sentence, &text, time_offset_seconds);
         fragments.push(SyncFragment {
             start_seconds: time_offset_seconds + sentence.start_time,
@@ -2106,6 +2156,57 @@ mod tests {
         assert_eq!(transcript.href_for_offset(11), Some("a.xhtml"));
         assert_eq!(transcript.href_for_offset(14), Some("b.xhtml"));
         assert_eq!(transcript.href_for_offset(100), None);
+    }
+
+    #[test]
+    fn image_headings_consume_audio_without_becoming_text_highlights() {
+        assert!(starts_with_image(
+            "<html><head><title>Book</title></head><body><p><img src='title.jpg'/></p><p>Text</p></body></html>"
+        ));
+        assert!(!starts_with_image(
+            "<body><h1>Chapter one</h1><img src='decoration.jpg'/></body>"
+        ));
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: "I approach this project with inspiration renewed.".into(),
+        }]);
+        transcript.prepend_unmapped("47. A Cage Forged of Spirits");
+        let first_text = transcript.sections[1].start_utf16;
+        let entries = vec![
+            TimelineEntry {
+                kind: "sentence".into(),
+                text: "47. A Cage Forged of Spirits.".into(),
+                start_time: 0.5,
+                end_time: 5.5,
+                start_offset_utf16: Some(0),
+                end_offset_utf16: Some(first_text - 2),
+                timeline: None,
+            },
+            TimelineEntry {
+                kind: "sentence".into(),
+                text: "I approach this project with inspiration renewed.".into(),
+                start_time: 6.0,
+                end_time: 10.0,
+                start_offset_utf16: Some(first_text),
+                end_offset_utf16: Some(transcript.len_utf16()),
+                timeline: None,
+            },
+        ];
+        let fragments = fragments_from_timeline(&entries, &transcript, 100.0);
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].href, "chapter.xhtml");
+        assert_eq!(fragments[0].start_seconds, 106.0);
+        let mut without_offsets = entries;
+        for entry in &mut without_offsets {
+            entry.start_offset_utf16 = None;
+            entry.end_offset_utf16 = None;
+        }
+        let fallback = fragments_from_timeline(&without_offsets, &transcript, 100.0);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].text, fragments[0].text);
+        assert_eq!(fallback[0].start_seconds, 106.0);
+        let window = transcript.window(first_text, transcript.len_utf16());
+        assert_eq!(window.href_for_offset(0), Some("chapter.xhtml"));
     }
 
     #[test]
