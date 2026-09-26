@@ -11,17 +11,22 @@ function memoryStorage(initialValue: string | null = null) {
   };
 }
 
-test("games are hidden until explicitly enabled", () => {
-  assert.equal(readGamesEnabled(memoryStorage()), false);
+test("games are enabled unless explicitly disabled", () => {
+  assert.equal(readGamesEnabled(memoryStorage()), true);
   assert.equal(readGamesEnabled(memoryStorage("false")), false);
-  assert.equal(readGamesEnabled(memoryStorage("yes")), false);
+  assert.equal(readGamesEnabled(memoryStorage("yes")), true);
   assert.equal(readGamesEnabled(memoryStorage("true")), true);
+  assert.equal(readGamesEnabled({
+    getItem: () => { throw new Error("Storage unavailable"); },
+    setItem: () => {},
+    removeItem: () => {}
+  }), true);
 });
 
-test("the games preference can be enabled and returned to its default", () => {
+test("the games preference can be disabled and enabled again", () => {
   const storage = memoryStorage();
-  writeGamesEnabled(true, storage);
-  assert.equal(readGamesEnabled(storage), true);
   writeGamesEnabled(false, storage);
   assert.equal(readGamesEnabled(storage), false);
+  writeGamesEnabled(true, storage);
+  assert.equal(readGamesEnabled(storage), true);
 });
