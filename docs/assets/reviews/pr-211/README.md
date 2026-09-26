@@ -36,3 +36,18 @@ Screenshot capture recovered for these follow-up changes:
   This is a browser preview of the native shell, not an iPhone device capture.
   System safe areas and the native iOS tab bar are not reproduced; the browser
   fallback tab bar is shown. No book is playing in this capture.
+
+## More useful space
+
+The latest revision replaces the earlier mobile arrangements:
+
+- [iOS details](ios-details-compact.png), 430 × 932: larger cover alongside
+  compact credits/runtime, a smaller reader invitation, and a preview of up to
+  three chapters. View all expands the complete chapter list.
+- [Mobile web details](mobile-details-compact.png), 390 × 844: Library and folio
+  share a row; the cover sits beside the title and credits. Labeled actions
+  remain in two columns, with an odd final action spanning both columns.
+
+The iOS capture has the same browser-fixture limitations described above.
+Responsive overflow and action labels were checked down to 320 CSS pixels;
+chapter expansion and returning to the preview were checked in the browser.

@@ -17535,7 +17535,7 @@ html:not(.native-app) .library-pane.purchase-browsing {
   }
 
   html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading {
-    grid-template-columns: minmax(88px, 28%) minmax(0, 1fr);
+    grid-template-columns: minmax(100px, 35%) minmax(0, 1fr);
     align-items: start;
     gap: 8px 16px;
   }
@@ -17604,5 +17604,115 @@ html:not(.native-app) .library-pane.purchase-browsing {
 
   html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .heading-actions > :last-child:nth-child(odd) {
     grid-column: 1 / -1;
+  }
+}
+
+/* Compact phone title pages keep the cover and navigation from consuming
+   separate full-width rows before the book's useful information. */
+@media (max-width: 620px) {
+  html:not(.native-app) .player-pane:not(:has(> .native-now-playing)) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px 12px;
+  }
+
+  html:not(.native-app) .player-pane:not(:has(> .native-now-playing)) > * {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .player-pane:not(:has(> .native-now-playing)) > .library-open-btn {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  html:not(.native-app) .book-page-masthead:not(:has(.native-player-return)) .folio {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    padding: 0;
+    border: 0;
+    font-size: 0.54rem;
+    letter-spacing: 0.1em;
+  }
+
+  html:not(.native-app) .book-page-masthead:has(.native-player-return) > * {
+    grid-column: 1 / -1;
+  }
+
+  html:not(.native-app) .book-heading {
+    grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+    gap: 8px 14px;
+    margin-top: 0;
+  }
+
+  html:not(.native-app) .book-heading :is(.meta, .heading-top) { display: contents; }
+  html:not(.native-app) .book-heading > .large-cover {
+    grid-column: 1;
+    grid-row: 1 / 4;
+    width: 100%;
+    align-self: start;
+  }
+  html:not(.native-app) .book-heading .eyebrow {
+    grid-column: 2;
+    grid-row: 1;
+    font-size: 0.58rem;
+    letter-spacing: 0.13em;
+  }
+  html:not(.native-app) .book-heading h2 {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    font-size: clamp(1.5rem, 6vw, 1.9rem);
+    line-height: 1.08;
+  }
+  html:not(.native-app) .book-heading .book-credits {
+    grid-column: 2;
+    grid-row: 3;
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.3;
+  }
+  html:not(.native-app) .book-heading .book-quick-start {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    width: 100%;
+    margin: 8px 0 0;
+  }
+  html:not(.native-app) .book-heading .heading-actions {
+    grid-column: 1 / -1;
+    grid-row: 5;
+    margin: 4px 0;
+  }
+  html:not(.native-app) .book-heading .heading-actions .download-btn {
+    white-space: nowrap;
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    padding-inline: 8px;
+  }
+  html:not(.native-app) .book-heading .heading-actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+  html:not(.native-app) .book-heading :is(.book-colophon, .book-subjects) {
+    grid-column: 1 / -1;
+    margin: 4px 0;
+  }
+
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open {
+    & .book-heading .book-runtime { border: 0; padding: 0; gap: 8px; }
+    & .book-runtime-label { font-size: 0.54rem; letter-spacing: 0.12em; }
+    & .book-runtime-value { font-size: 1.25rem; }
+    & .book-heading .book-quick-start { margin-top: 6px; }
+    & .readalong-invite {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 12px;
+      text-align: left;
+    }
+    & .readalong-invite-icon { display: none; }
+    & .readalong-invite-copy { align-items: start; }
+    & .readalong-invite-copy strong { font-size: 1rem; }
+    & .readalong-invite-copy span { font-size: 0.78rem; }
+    & .readalong-invite > .download-btn { grid-column: 2; grid-row: 1; min-height: 44px; padding: 8px 10px; white-space: nowrap; }
+    & .heading-actions .download-status { grid-column: 1 / -1; }
   }
 }
