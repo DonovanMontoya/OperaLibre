@@ -101,6 +101,32 @@ test('web book details offer one primary playback action', async ({ page }) => {
   await expect(play).toBeVisible();
 });
 
+for (const native of [false, true]) {
+  test(`${native ? 'native' : 'web'} full book page from Now Playing uses the library details view`, async ({ page }) => {
+    const { books } = await openShell(page, native);
+    await page.locator('.book-row').first().click();
+    await page.getByRole('button', { name: `Play ${books[0].title}`, exact: true }).click();
+    await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+    await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+
+    await expect(page.locator('.details-sheet')).toHaveCount(0);
+    await expect(page.locator('.book-heading h2')).toHaveText(books[0].title);
+    for (const selector of ['.track-line', '.transport', '.timeline', '.controls-grid']) {
+      await expect(page.locator(`.player-pane > ${selector}`)).toBeHidden();
+    }
+    if (native) {
+      await expect(page.locator('.native-shell')).toHaveClass(/tab-shelf.*library-book-open/);
+      await expect(page.getByRole('button', { name: 'Back to Library', exact: true })).toBeVisible();
+    } else {
+      await expect(page.locator('.book-colophon')).toBeVisible();
+      const returnToPlayer = page.getByRole('button', { name: 'Return to Now Playing', exact: true });
+      await expect(returnToPlayer).toBeVisible();
+      await returnToPlayer.click();
+      await expect(page.getByRole('region', { name: 'Now playing', exact: true })).toBeVisible();
+    }
+  });
+}
+
 test('web Back to Now Playing carries the page through a view transition', async ({ page }) => {
   await page.addInitScript(() => {
     const transitions = (window as unknown as { transitionCount: number });
