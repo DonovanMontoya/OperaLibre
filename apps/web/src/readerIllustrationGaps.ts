@@ -480,16 +480,19 @@ export async function findIllustrationGaps(
       }
     };
     collect(navigation.toc);
-    for (let index = 0; index < sortedChapters.length; index += 1) {
-      const chapter = sortedChapters[index];
-      const endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
-      if (endSeconds === null || endSeconds <= chapter.startSeconds) continue;
+    const matchingEntries = (chapter: Chapter) => {
       const title = normalizeReadalongText(chapter.title);
-      const matches = entries.filter((entry) => {
+      return entries.filter((entry) => {
         const label = normalizeReadalongText(entry.label);
         return (label.length >= 3 && title === label)
           || (label.length >= 10 && title.endsWith(` ${label}`));
       });
+    };
+    for (let index = 0; index < sortedChapters.length; index += 1) {
+      const chapter = sortedChapters[index];
+      let endSeconds = sortedChapters[index + 1]?.startSeconds ?? chapter.endSeconds;
+      if (endSeconds === null || endSeconds <= chapter.startSeconds) continue;
+      const matches = matchingEntries(chapter);
       if (matches.length !== 1) continue;
       const section = book.spine.get(matches[0].href.split("#")[0]);
       if (!section) continue;
@@ -498,6 +501,22 @@ export async function findIllustrationGaps(
         if (!imageOnlyBody(section.document?.body)) continue;
       } catch {
         continue;
+      }
+      // A contents entry can point to a separate title picture while this
+      // chapter's prose lives in following spine sections. Only a later known
+      // chapter boundary proves that overlapping prose belongs elsewhere.
+      if (!illustratedAudioTitle(chapter.title)) {
+        const next = sortedChapters[index + 1];
+        const nextEntries = next ? matchingEntries(next) : [];
+        const nextSection = nextEntries.length === 1
+          ? book.spine.get(nextEntries[0].href.split("#")[0]) : null;
+        const boundary = nextSection && nextSection.index > section.index ? nextSection.index : Infinity;
+        const prose = fragments.find((fragment) => {
+          if (fragment.endSeconds <= chapter.startSeconds || fragment.startSeconds >= endSeconds!) return false;
+          const owner = book.spine.get(fragment.href);
+          return !owner || (owner.index >= section.index && owner.index < boundary);
+        });
+        if (prose) endSeconds = Math.max(chapter.startSeconds, prose.startSeconds);
       }
       const picture = pictureNamedByChapter(section.document?.body, chapter.title);
       gaps = overlayGap(gaps, {

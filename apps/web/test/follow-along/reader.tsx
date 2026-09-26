@@ -12,6 +12,7 @@ const sentence = Array.from({ length: 24 }, (_, i) => `Marker ${i + 1} follows t
 const texts = [sentence, 'The lantern keeper opens the eastern gate and welcomes the travelers into the quiet courtyard.', 'Beyond the northern mountains the observatory records a different constellation every winter night.'];
 const bounds = [[0, 30], [60, 80], [90, 120]];
 const inline = params.has('inline');
+const splitTitle = params.has('splitTitle');
 const lastInlineSentence = 'The final traveler closes the gate before the evening rain begins.';
 if (inline) { texts[0] = 'The first traveler crosses the bridge and enters the valley.'; bounds[0][1] = 10; }
 const fragments: SyncFragment[] = texts.map((text, i) => ({
@@ -34,19 +35,31 @@ const zip = new JSZip();
 zip.file('mimetype', 'application/epub+zip');
 zip.file('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
 const spine = inline ? ['c1', 'c2', 'c3'] : ['c1', 'image1', 'image2', 'c2', 'c3'];
+if (splitTitle) spine.unshift('title1');
+zip.file('title1.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter 1</title></head><body><svg xmlns="http://www.w3.org/2000/svg" width="250" height="350"><rect width="250" height="350" fill="#9dc8da"/></svg></body></html>');
 zip.file('book.opf', `<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">follow-regression</dc:identifier><dc:title>River Observatory</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${spine.map(id => `<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`).join('')}</manifest><spine>${spine.map(id => `<itemref idref="${id}"/>`).join('')}</spine></package>`);
-zip.file('nav.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>${[1, 2, 3].map(n => `<li><a href="c${n}.xhtml">Chapter ${n}</a></li>`).join('')}</ol></nav></body></html>`);
+zip.file('nav.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>${[1, 2, 3].map(n => `<li><a href="${splitTitle && n === 1 ? 'title1' : `c${n}`}.xhtml">Chapter ${n}</a></li>`).join('')}</ol></nav></body></html>`);
 for (let i = 0; i < 3; i++) zip.file(`c${i + 1}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter ${i + 1}</title></head><body><h1>Chapter ${i + 1}</h1><p>${texts[i]}</p></body></html>`);
 for (const [i, label] of ['River map', 'Observatory plan'].entries()) zip.file(`image${i + 1}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>${label}</title></head><body><svg xmlns="http://www.w3.org/2000/svg" aria-label="${label}" width="250" height="350" viewBox="0 0 250 350"><rect width="250" height="350" fill="${i ? '#c9d9a8' : '#9dc8da'}"/><path d="M50 0 Q230 180 50 350" fill="none" stroke="#123" stroke-width="12"/></svg></body></html>`);
 if (inline) zip.file('c1.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter 1</title></head><body><h1>Chapter 1</h1><p>${texts[0]}</p>${['River map', 'Observatory plan'].map((name, i) => `<p>Illustrated journey ${i + 1}.</p><svg xmlns="http://www.w3.org/2000/svg" aria-label="${name}" width="250" height="350"><rect width="250" height="350" fill="${i ? '#c9d9a8' : '#9dc8da'}"/></svg>`).join('')}<p>${lastInlineSentence}</p></body></html>`);
 type PrivateFixture = { epubUrl: string; title: string; map: SyncMap; chapters: Chapter[];
   position: number; stops: { label: string; at: number }[] };
+function privateAsset(path: string, extension: 'json' | 'epub') {
+  const url = new URL(path, location.origin);
+  if (!import.meta.env.DEV || !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
+    || url.origin !== location.origin || url.search || url.hash
+    || !/^\/@fs\/.+\/output\/follow-along\/private\//.test(url.pathname)
+    || !url.pathname.endsWith(`.${extension}`) || /%|\\/.test(url.pathname)) {
+    throw new Error('Private fixtures must be local development files in output/follow-along/private');
+  }
+  return url.href;
+}
 const privatePath = params.get('private');
-const privateFixture: PrivateFixture | null = privatePath ? await fetch(privatePath).then(response => {
+const privateFixture: PrivateFixture | null = privatePath ? await fetch(privateAsset(privatePath, 'json')).then(response => {
   if (!response.ok) throw new Error('Private fixture manifest could not be loaded');
   return response.json();
 }) : null;
-const bytes = privateFixture ? await fetch(privateFixture.epubUrl).then(response => {
+const bytes = privateFixture ? await fetch(privateAsset(privateFixture.epubUrl, 'epub')).then(response => {
   if (!response.ok) throw new Error('Private fixture EPUB could not be loaded');
   return response.arrayBuffer();
 }) : await zip.generateAsync({ type: 'arraybuffer' });

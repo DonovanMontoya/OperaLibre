@@ -132,3 +132,21 @@ test('real media clock continues through recovery with pause and speed changes',
   await matched(page, 'lantern keeper');
   await expect.poll(() => page.evaluate(() => window.followFixture.position)).toBe(64);
 });
+
+test('a separate image-only chapter title page does not mask its following prose', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5187/test/follow-along/reader.html?splitTitle');
+  await matched(page, 'Marker 1');
+  await seek(page, 25); await matched(page, 'Marker 1');
+  await seek(page, 61); await matched(page, 'lantern keeper');
+});
+
+test('private fixtures reject URLs outside the local private test directory', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => requests.push(request.url()));
+  for (const privatePath of ['https://example.invalid/book.json', '/api/books.json', '/@fs/tmp/output/follow-along/private/../secret.json']) {
+    const error = page.waitForEvent('pageerror');
+    await page.goto(`http://127.0.0.1:5187/test/follow-along/reader.html?private=${encodeURIComponent(privatePath)}`);
+    expect((await error).message).toContain('Private fixtures must be local');
+  }
+  expect(requests.some(url => url.startsWith('https://example.invalid/') || url.endsWith('/api/books.json') || url.endsWith('/secret.json'))).toBe(false);
+});
