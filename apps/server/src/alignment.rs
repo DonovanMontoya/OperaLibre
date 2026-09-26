@@ -30,6 +30,17 @@ pub struct SyncMap {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<String>,
     pub fragments: Vec<SyncFragment>,
+    /// Audio whose text could not be established. The reader must hold its
+    /// place here rather than interpret the silence in the map as a picture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_gaps: Vec<RecoveryGap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryGap {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +85,9 @@ pub struct TocEntry {
 pub struct EpubDocument {
     pub sections: Vec<SpineSection>,
     pub toc: Vec<TocEntry>,
+    /// Sections whose first visible content is an image, potentially a
+    /// narrated chapter title that is absent from the extracted text.
+    pub leading_image_sections: Vec<usize>,
     /// Pictures declared in the manifest. Used to tell an illustrated
     /// supplement from a text.
     pub image_count: usize,
@@ -128,6 +142,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     }
 
     let mut sections = Vec::new();
+    let mut leading_image_sections = Vec::new();
     let mut section_paths = HashMap::new();
     for tag in find_tags(&opf, "itemref") {
         let Some(idref) = attr_value(&tag, "idref") else {
@@ -147,14 +162,28 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             continue;
         };
         let text = html_to_text(&document);
+        if starts_with_image(&document) {
+            leading_image_sections.push(sections.len());
+        }
         section_paths.insert(document_path, sections.len());
         sections.push(SpineSection {
             href: item.href.clone(),
             text,
         });
+        // A separately narrated illustration may be the last element of a
+        // prose document rather than a separate spine item. Empty logical
+        // sections let its audio have a boundary without moving any text or
+        // changing the href used by sentence highlights.
+        for _ in 0..trailing_image_count(&document) {
+            sections.push(SpineSection {
+                href: item.href.clone(),
+                text: String::new(),
+            });
+        }
     }
 
-    // Table of contents: prefer the EPUB 3 nav document, fall back to NCX.
+    // Prefer EPUB 3 labels, but recover documents omitted from its TOC
+    // when the older NCX still lists them.
     let mut toc_links = Vec::new();
     let nav_item = manifest
         .values()
@@ -166,7 +195,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             toc_links = parse_nav_links(&nav_document, &nav_dir);
         }
     }
-    if toc_links.is_empty() {
+    {
         let ncx_item = manifest
             .values()
             .find(|item| item.media_type == "application/x-dtbncx+xml");
@@ -174,18 +203,23 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             let ncx_path = resolve_href(&opf_dir, &ncx_item.href);
             if let Some(ncx_document) = read_zip_text(archive, &ncx_path, &mut remaining)? {
                 let ncx_dir = parent_dir(&ncx_path);
-                toc_links = parse_ncx_links(&ncx_document, &ncx_dir);
+                for link in parse_ncx_links(&ncx_document, &ncx_dir) {
+                    if !toc_links.iter().any(|(path, _)| *path == link.0) {
+                        toc_links.push(link);
+                    }
+                }
             }
         }
     }
 
-    let toc = toc_links
+    let mut toc: Vec<_> = toc_links
         .into_iter()
         .filter_map(|(path, title)| {
             let spine_index = *section_paths.get(&path)?;
             Some(TocEntry { title, spine_index })
         })
         .collect();
+    toc.sort_by_key(|entry| entry.spine_index);
     let image_count = manifest
         .values()
         .filter(|item| item.media_type.starts_with("image/"))
@@ -198,9 +232,57 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     Ok(EpubDocument {
         sections,
         toc,
+        leading_image_sections,
         language,
         image_count,
     })
+}
+
+fn starts_with_image(document: &str) -> bool {
+    let lower = document.to_ascii_lowercase();
+    let Some(body) = lower
+        .find("<body")
+        .and_then(|start| lower[start..].find('>').map(|end| start + end + 1))
+    else {
+        return false;
+    };
+    let first_image = ["<img", "<svg"]
+        .iter()
+        .filter_map(|tag| lower[body..].find(tag))
+        .min();
+    first_image.is_some_and(|offset| {
+        html_to_text(&document[body..body + offset])
+            .trim()
+            .is_empty()
+    })
+}
+
+fn trailing_image_count(document: &str) -> usize {
+    let lower = document.to_ascii_lowercase();
+    let Some(body) = lower.find("<body") else {
+        return 0;
+    };
+    let count = ["<img", "<svg"]
+        .iter()
+        .flat_map(|tag| {
+            lower[body..]
+                .match_indices(tag)
+                .map(move |(at, _)| (body + at, tag.len()))
+        })
+        .filter(|(at, length)| {
+            matches!(
+                lower.as_bytes().get(at + length),
+                Some(b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
+            ) && html_to_text(&document[*at..]).trim().is_empty()
+        })
+        .count();
+    // The existing section already represents the first picture on an
+    // image-only page. Additional figures may have their own audio markers.
+    if html_to_text(document).trim().is_empty() {
+        count.saturating_sub(1)
+    } else {
+        count
+    }
 }
 
 /// Text content of the first `<name>...</name>` element, if any.
@@ -693,12 +775,345 @@ pub fn build_transcript(sections: &[SpineSection]) -> Transcript {
 }
 
 impl Transcript {
+    /// Consume narration printed in an image without emitting a highlight
+    /// for text that the EPUB DOM cannot contain.
+    pub fn prepend_unmapped(&mut self, heading: &str) {
+        // EPUB contents often abbreviate an interlude as I-3; the narrator
+        // says "Interlude three". Feed the spoken label to the aligner so
+        // those title words cannot consume the first prose sentence.
+        let expanded;
+        let heading = if let Some((series, number, start, end)) = find_series_number(heading)
+            && series == "i"
+            && heading[..start].trim().is_empty()
+        {
+            expanded = format!("Interlude {number}{}", &heading[end..]);
+            expanded.as_str()
+        } else {
+            heading
+        };
+        let prefix = format!("{}.\n\n", heading.trim().trim_end_matches(['.', '!', '?']));
+        let length = prefix.encode_utf16().count() as u64;
+        for section in &mut self.sections {
+            section.start_utf16 += length;
+            section.end_utf16 += length;
+        }
+        self.sections.insert(
+            0,
+            TranscriptSection {
+                href: String::new(),
+                start_utf16: 0,
+                end_utf16: length,
+            },
+        );
+        self.text.insert_str(0, &prefix);
+    }
+
     pub fn href_for_offset(&self, offset_utf16: u64) -> Option<&str> {
         let index = self
             .sections
             .partition_point(|section| section.end_utf16 <= offset_utf16);
         let section = self.sections.get(index)?;
         (offset_utf16 >= section.start_utf16).then_some(section.href.as_str())
+    }
+
+    /// Keep additional narration (for example an inline diagram description)
+    /// in the aligner's input, without assigning it to visible EPUB prose.
+    /// Unique phrases must bracket a sentence boundary in the text and a
+    /// substantial run of extra recognized speech in the audio.
+    pub fn include_unmapped_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        const CONTEXT: usize = 3;
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        let mut audio_phrases = HashMap::new();
+        for (index, run) in recognized.windows(CONTEXT).enumerate() {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            audio_phrases
+                .entry(key)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(index));
+        }
+        let mut text_counts = HashMap::new();
+        for run in words.windows(CONTEXT) {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            *text_counts.entry(key).or_insert(0usize) += 1;
+        }
+        let scripted_phrases = words
+            .windows(ANCHOR_NGRAM)
+            .map(|run| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut insertions = Vec::new();
+        for run in words.windows(CONTEXT * 2) {
+            if !run[CONTEXT - 1].sentence_final {
+                continue;
+            }
+            let left: Vec<&str> = run[..CONTEXT]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            let right: Vec<&str> = run[CONTEXT..]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            if text_counts.get(&left) != Some(&1) || text_counts.get(&right) != Some(&1) {
+                continue;
+            }
+            let (Some(Some(left)), Some(Some(right))) =
+                (audio_phrases.get(&left), audio_phrases.get(&right))
+            else {
+                continue;
+            };
+            let start = left + CONTEXT;
+            if !(6..=128).contains(&right.saturating_sub(start)) {
+                continue;
+            }
+            let extra = &recognized[start..*right];
+            // A recognizer can repeat a real passage with slightly different
+            // word splitting. Do not mistake that duplicate scripted speech
+            // for a new description merely because the boundary match is unique.
+            if extra.windows(ANCHOR_NGRAM).any(|run| {
+                scripted_phrases.contains(
+                    &run.iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<Vec<_>>(),
+                )
+            }) {
+                continue;
+            }
+            let duration = extra.last().unwrap().end_time - extra[0].start_time;
+            if !duration.is_finite()
+                || duration < 3.0
+                || extra
+                    .windows(2)
+                    .any(|pair| pair[0].start_time > pair[1].start_time)
+            {
+                continue;
+            }
+            let offset = run[CONTEXT].start_utf16;
+            if self
+                .href_for_offset(run[CONTEXT - 1].start_utf16)
+                .filter(|href| !href.is_empty())
+                != self.href_for_offset(offset)
+            {
+                continue;
+            }
+            let text = extra
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            insertions.push((offset, format!("{text}.\n\n")));
+        }
+        let count = insertions.len();
+        for (offset, text) in insertions.into_iter().rev() {
+            let length = text.encode_utf16().count() as u64;
+            self.text
+                .insert_str(utf16_to_byte_index(&self.text, offset), &text);
+            let mut sections = Vec::new();
+            for mut section in self.sections.drain(..) {
+                if section.start_utf16 >= offset {
+                    section.start_utf16 += length;
+                    section.end_utf16 += length;
+                } else if section.end_utf16 > offset {
+                    sections.push(TranscriptSection {
+                        href: section.href.clone(),
+                        start_utf16: section.start_utf16,
+                        end_utf16: offset,
+                    });
+                    section.start_utf16 = offset + length;
+                    section.end_utf16 += length;
+                }
+                sections.push(section);
+            }
+            sections.push(TranscriptSection {
+                href: String::new(),
+                start_utf16: offset,
+                end_utf16: offset + length,
+            });
+            sections.sort_by_key(|section| section.start_utf16);
+            self.sections = sections;
+        }
+        count
+    }
+
+    /// Additional narration after the final sentence needs no following text
+    /// anchor. Only call this for the actual end of an alignment scope, never
+    /// for a window whose recognizer looked beyond its audio cut.
+    fn trailing_narration_start(&self, recognized: &[RecognizedWord]) -> Option<usize> {
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        if words.len() < ANCHOR_NGRAM {
+            return None;
+        }
+        let tail = &words[words.len() - ANCHOR_NGRAM..];
+        if self
+            .href_for_offset(tail[0].start_utf16)
+            .is_none_or(str::is_empty)
+        {
+            return None;
+        }
+        let key = tail
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>();
+        let matching = recognized
+            .windows(ANCHOR_NGRAM)
+            .enumerate()
+            .filter(|(_, run)| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .eq(key.iter().copied())
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matching.len() != 1
+            || words
+                .windows(ANCHOR_NGRAM)
+                .filter(|run| {
+                    run.iter()
+                        .map(|word| word.text.as_str())
+                        .eq(key.iter().copied())
+                })
+                .count()
+                != 1
+        {
+            return None;
+        }
+        let extra = &recognized[matching[0] + ANCHOR_NGRAM..];
+        if !(6..=512).contains(&extra.len()) {
+            return None;
+        }
+        let duration = extra.last().unwrap().end_time - extra[0].start_time;
+        if !duration.is_finite()
+            || duration < 3.0
+            || extra
+                .windows(2)
+                .any(|pair| pair[0].start_time > pair[1].start_time)
+        {
+            return None;
+        }
+        let phrases = words
+            .windows(ANCHOR_NGRAM)
+            .map(|run| {
+                run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        if extra.windows(ANCHOR_NGRAM).any(|run| {
+            phrases.contains(
+                &run.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            return None;
+        }
+        Some(matching[0] + ANCHOR_NGRAM)
+    }
+
+    pub fn narrated_text_end(&self, recognized: &[RecognizedWord]) -> Option<f64> {
+        let start = self.trailing_narration_start(recognized)?;
+        let end = recognized[start - 1].end_time;
+        (end.is_finite() && end > 0.0).then_some(end)
+    }
+
+    pub fn include_unmapped_trailing_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        let Some(start) = self.trailing_narration_start(recognized) else {
+            return 0;
+        };
+        let extra = &recognized[start..];
+        let offset = self.len_utf16();
+        self.text.push_str("\n\n");
+        self.text.push_str(
+            &extra
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        self.text.push('.');
+        self.sections.push(TranscriptSection {
+            href: String::new(),
+            start_utf16: offset,
+            end_utf16: self.len_utf16(),
+        });
+        1
+    }
+
+    /// Leave edition-only sentences unmatched when unique spoken phrases on
+    /// either side are adjacent in the audio. Preserve UTF-16 offsets so the
+    /// remaining text still maps to the original EPUB sections.
+    pub fn mask_unspoken_sentences(&mut self, recognized: &[RecognizedWord]) -> usize {
+        const CONTEXT: usize = 3;
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        let mut text_phrases = HashMap::new();
+        for (index, run) in words.windows(CONTEXT).enumerate() {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            text_phrases
+                .entry(key)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(index));
+        }
+        let mut audio_phrases = HashMap::new();
+        for run in recognized.windows(CONTEXT) {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            *audio_phrases.entry(key).or_insert(0usize) += 1;
+        }
+        let mut ranges = Vec::new();
+        for run in recognized.windows(CONTEXT * 2) {
+            let left: Vec<&str> = run[..CONTEXT]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            let right: Vec<&str> = run[CONTEXT..]
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            if audio_phrases.get(&left) != Some(&1) || audio_phrases.get(&right) != Some(&1) {
+                continue;
+            }
+            let (Some(Some(left)), Some(Some(right))) =
+                (text_phrases.get(&left), text_phrases.get(&right))
+            else {
+                continue;
+            };
+            let after_left = left + CONTEXT;
+            let missing = right.saturating_sub(after_left);
+            // Require whole sentences and too little elapsed audio to contain
+            // their words, even at eight words per second. Recognition failure
+            // across a real spoken passage leaves time between the anchors.
+            let silence = run[CONTEXT].start_time - run[CONTEXT - 1].end_time;
+            if !(6..=128).contains(&missing)
+                || !words[after_left - 1].sentence_final
+                || !words[right - 1].sentence_final
+                || !silence.is_finite()
+                || !(0.0..=1.5).contains(&silence)
+                || missing as f64 <= (silence + 0.25) * 8.0
+            {
+                continue;
+            }
+            let start = words[after_left].start_utf16;
+            let end = words[*right].start_utf16;
+            // Never infer an omission across a document boundary or over an
+            // unmapped heading. Those regions have separate audio semantics.
+            if self.href_for_offset(start).filter(|href| !href.is_empty())
+                != self.href_for_offset(end.saturating_sub(1))
+            {
+                continue;
+            }
+            ranges.push((start, end));
+        }
+        ranges.sort_unstable();
+        ranges.dedup();
+        for &(start, end) in ranges.iter().rev() {
+            let start_byte = utf16_to_byte_index(&self.text, start);
+            let end_byte = utf16_to_byte_index(&self.text, end);
+            self.text
+                .replace_range(start_byte..end_byte, &" ".repeat((end - start) as usize));
+        }
+        ranges.len()
     }
 
     pub fn len_utf16(&self) -> u64 {
@@ -821,6 +1236,102 @@ fn entry_offsets(entry: &TimelineEntry) -> (Option<u64>, Option<u64>) {
     (start, end)
 }
 
+/// Recover a one-word utterance that the forced aligner collapsed to zero
+/// duration, but only when unique surrounding recognition phrases locate it
+/// near the aligner's own position. Missing or ambiguous speech stays unmapped.
+pub fn recover_zero_duration_sentences(
+    entries: &mut [TimelineEntry],
+    transcript: &str,
+    recognized: &[RecognizedWord],
+) {
+    let words = transcript_words(transcript, 0, transcript.encode_utf16().count() as u64);
+    fn visit(
+        entries: &mut [TimelineEntry],
+        words: &[TranscriptWord],
+        recognized: &[RecognizedWord],
+    ) {
+        for entry in entries {
+            if entry.kind != "sentence" {
+                if let Some(children) = &mut entry.timeline {
+                    visit(children, words, recognized);
+                }
+                continue;
+            }
+            if entry.end_time != entry.start_time || entry.text.split_whitespace().count() != 1 {
+                continue;
+            }
+            let Some(offset) = entry_offsets(entry).0 else {
+                continue;
+            };
+            let token = normalize_word(&entry.text);
+            let Some(index) = words.iter().position(|word| {
+                word.start_utf16 <= offset && offset < word.end_utf16 && word.text == token
+            }) else {
+                continue;
+            };
+            let mut candidate = None;
+            let mut ambiguous = false;
+            for start in index.saturating_sub(ANCHOR_NGRAM - 1)..=index {
+                let Some(context) = words.get(start..start + ANCHOR_NGRAM) else {
+                    continue;
+                };
+                let matches = recognized
+                    .windows(ANCHOR_NGRAM)
+                    .enumerate()
+                    .filter(|(_, run)| {
+                        run.iter()
+                            .map(|w| &w.text)
+                            .eq(context.iter().map(|w| &w.text))
+                    })
+                    .map(|(at, _)| at + index - start)
+                    .collect::<Vec<_>>();
+                if matches.len() != 1
+                    || words
+                        .windows(ANCHOR_NGRAM)
+                        .filter(|run| {
+                            run.iter()
+                                .map(|w| &w.text)
+                                .eq(context.iter().map(|w| &w.text))
+                        })
+                        .count()
+                        != 1
+                {
+                    continue;
+                }
+                if candidate.is_some_and(|previous| previous != matches[0]) {
+                    ambiguous = true;
+                    break;
+                }
+                candidate = Some(matches[0]);
+            }
+            let Some(word) = candidate.filter(|_| !ambiguous).map(|at| &recognized[at]) else {
+                continue;
+            };
+            if !word.start_time.is_finite()
+                || !word.end_time.is_finite()
+                || word.start_time < 0.0
+                || word.end_time <= word.start_time
+                || word.end_time - word.start_time > 2.0
+                || (word.start_time - entry.start_time).abs() > 2.0
+            {
+                continue;
+            }
+            entry.start_time = word.start_time;
+            entry.end_time = word.end_time;
+            if let Some(children) = &mut entry.timeline {
+                for child in children
+                    .iter_mut()
+                    .filter(|child| child.kind == "word" && normalize_word(&child.text) == token)
+                {
+                    child.start_time = word.start_time;
+                    child.end_time = word.end_time;
+                }
+            }
+        }
+    }
+    visit(entries, &words, recognized);
+}
+
 /// Converts an alignment timeline into sync fragments, shifting times by
 /// `time_offset_seconds` (the containing track's start position in the book).
 pub fn fragments_from_timeline(
@@ -857,6 +1368,9 @@ pub fn fragments_from_timeline(
         let Some(href) = href else {
             continue;
         };
+        if href.is_empty() {
+            continue;
+        }
         let words = word_timings(sentence, &text, time_offset_seconds);
         fragments.push(SyncFragment {
             start_seconds: time_offset_seconds + sentence.start_time,
@@ -1015,6 +1529,7 @@ fn normalize_word(value: &str) -> String {
 
 struct TranscriptWord {
     text: String,
+    start_utf16: u64,
     end_utf16: u64,
     /// The token closes a sentence: it ends in terminal punctuation (allowing
     /// closing quotes or brackets after it) or is followed by a line break.
@@ -1043,6 +1558,7 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
             if !normalized.is_empty() {
                 out.push(TranscriptWord {
                     text: normalized,
+                    start_utf16: end - current.encode_utf16().count() as u64,
                     end_utf16: end,
                     sentence_final,
                 });
@@ -1077,7 +1593,8 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
 
 /// UTF-16 offset just past the last sentence-final token that ends at or
 /// before `target_utf16`, falling back to the last whole token, then to
-/// `target_utf16` itself. Used when a window has no recognized anchor.
+/// `target_utf16` itself. Used to exercise transcript boundary handling.
+#[cfg(test)]
 pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u64 {
     let words = transcript_words(text, start_utf16, target_utf16.saturating_sub(start_utf16));
     words
@@ -1089,7 +1606,167 @@ pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u
         .unwrap_or(target_utf16)
 }
 
+/// Retry bounded recognition when it repeats itself or skips a large stretch
+/// of otherwise anchored text. A forced aligner cannot repair that evidence.
+pub fn recognition_needs_retry(recognized: &[RecognizedWord], text: &str) -> bool {
+    if recognized.len() < 20 {
+        return text.split_whitespace().take(20).count() == 20;
+    }
+    let mut repetitions = HashMap::new();
+    for run in recognized.windows(4) {
+        let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+        let count = repetitions.entry(key).or_insert(0usize);
+        *count += 1;
+        if *count >= 4 {
+            return true;
+        }
+    }
+    let chain = recognition_anchor_chain(recognized, text);
+    if chain.len() * 4 < recognized.len().saturating_sub(ANCHOR_NGRAM) {
+        return true;
+    }
+    chain.windows(2).any(|pair| {
+        let audio_words = pair[1].0 - pair[0].0;
+        let text_words = pair[1].1 - pair[0].1;
+        text_words >= 16 && text_words > audio_words * 2
+    })
+}
+
+/// Comparable evidence when retrying the same audio with shorter windows.
+pub fn recognition_anchor_count(recognized: &[RecognizedWord], text: &str) -> usize {
+    recognition_anchor_chain(recognized, text).len()
+}
+
+fn recognition_anchor_chain(recognized: &[RecognizedWord], text: &str) -> Vec<(usize, usize)> {
+    let words = transcript_words(text, 0, text.encode_utf16().count() as u64);
+    let mut phrases = HashMap::new();
+    for (index, run) in words.windows(ANCHOR_NGRAM).enumerate() {
+        let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+        phrases
+            .entry(key)
+            .and_modify(|value| *value = None)
+            .or_insert(Some(index));
+    }
+    let matches: Vec<_> = recognized
+        .windows(ANCHOR_NGRAM)
+        .enumerate()
+        .filter_map(|(index, run)| {
+            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            Some((index, (*phrases.get(&key)?)?))
+        })
+        .collect();
+    longest_increasing_chain(&matches)
+}
+
 const ANCHOR_NGRAM: usize = 5;
+
+/// A complete sentence backed by a unique, longer phrase after alignment loss.
+/// These bounds select audio/text for a fresh forced alignment; they are not
+/// used as an interpolated timing map.
+#[derive(Debug, PartialEq)]
+pub struct RecoveryAnchor {
+    pub text_start_utf16: u64,
+    pub text_end_utf16: u64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// Search only forward from the last trusted text position. Repeated phrases,
+/// partial sentences, and invalid recognizer clocks cannot restart following.
+pub fn find_recovery_anchor(
+    recognized: &[RecognizedWord],
+    text: &str,
+    cursor: u64,
+    duration: f64,
+) -> Option<RecoveryAnchor> {
+    const CONTEXT: usize = ANCHOR_NGRAM * 2;
+    // Include consumed text when checking uniqueness, so a repeated earlier
+    // line cannot masquerade as a new occurrence later in the same scope.
+    let words = transcript_words(text, 0, u64::MAX);
+    let mut phrases = HashMap::new();
+    for (index, run) in words.windows(CONTEXT).enumerate() {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        phrases
+            .entry(key)
+            .and_modify(|at| *at = None)
+            .or_insert(Some(index));
+    }
+    let mut occurrences = HashMap::new();
+    for run in recognized.windows(CONTEXT) {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        *occurrences.entry(key).or_insert(0usize) += 1;
+    }
+    for (audio_index, run) in recognized.windows(CONTEXT).enumerate() {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        let Some(Some(index)) = phrases.get(&key).copied() else {
+            continue;
+        };
+        if words[index].start_utf16 < cursor
+            || occurrences.get(&key) != Some(&1)
+            || (index > 0 && !words[index - 1].sentence_final)
+        {
+            continue;
+        }
+        let Some(last) = words[index..]
+            .iter()
+            .take(80)
+            .position(|word| word.sentence_final)
+        else {
+            continue;
+        };
+        let count = CONTEXT.max(last + 1);
+        let (Some(script), Some(speech)) = (
+            words.get(index..index + count),
+            recognized.get(audio_index..audio_index + count),
+        ) else {
+            continue;
+        };
+        if !script
+            .iter()
+            .map(|word| &word.text)
+            .eq(speech.iter().map(|word| &word.text))
+            || speech.iter().any(|word| {
+                !word.start_time.is_finite()
+                    || !word.end_time.is_finite()
+                    || word.start_time < 0.0
+                    || word.end_time <= word.start_time
+                    || word.end_time > duration
+            })
+            || speech.windows(2).any(|pair| {
+                pair[1].start_time < pair[0].start_time || pair[1].end_time < pair[0].end_time
+            })
+        {
+            continue;
+        }
+        let start_seconds = speech[0].start_time;
+        let end_seconds = speech[last].end_time;
+        if !(0.5..=60.0).contains(&(end_seconds - start_seconds)) {
+            continue;
+        }
+        return Some(RecoveryAnchor {
+            text_start_utf16: words[index].start_utf16,
+            text_end_utf16: words[index + last].end_utf16,
+            start_seconds,
+            end_seconds,
+        });
+    }
+    None
+}
+
+/// A later sentence match cannot justify force-aligning a substantial missing
+/// prefix. Small recognition mistakes near the opening retain the normal path.
+pub fn recognition_misses_opening(recognized: &[RecognizedWord], text: &str) -> bool {
+    recognition_anchor_chain(recognized, text)
+        .first()
+        .is_some_and(|(_, word)| *word >= 32)
+}
+
+pub fn recognition_misses_ending(recognized: &[RecognizedWord], text: &str) -> bool {
+    let count = transcript_words(text, 0, u64::MAX).len();
+    recognition_anchor_chain(recognized, text)
+        .last()
+        .is_some_and(|(_, word)| count.saturating_sub(word + ANCHOR_NGRAM) >= 32)
+}
 
 /// Where a recognized window can be tied to the transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -1226,12 +1903,12 @@ pub struct TrackScope {
     pub section_range: std::ops::Range<usize>,
 }
 
-/// A matched embedded-audio chapter and the EPUB spine sections that belong
-/// to it. The audio timing stays in `sync.rs`; this type only describes the
-/// structural match so the matching policy can be tested without media files.
+/// A matched embedded-audio chapter (or consecutive A/B parts) and its EPUB
+/// sections. The exclusive chapter end preserves the full audio interval.
 #[derive(Debug, PartialEq)]
 pub struct ChapterScope {
     pub chapter_index: usize,
+    pub chapter_end_index: usize,
     pub section_range: std::ops::Range<usize>,
 }
 
@@ -1422,16 +2099,96 @@ pub fn align_labels(
 }
 
 /// Maps embedded audiobook chapters to EPUB chapter runs. Unmatched material
-/// at either edge is allowed (opening/closing credits are common), but a gap
+/// at either edge and reordered apparatus are allowed, but a prose gap
 /// between matched chapters is rejected: assigning that EPUB text to either
 /// neighbour would recreate the drift that chapter scoping is meant to stop.
 ///
 /// At least two chapters must match. A single match does not create useful
 /// reset points and is too weak a signal to justify slicing the source audio.
+#[cfg(test)]
 pub fn build_chapter_scopes(
     chapter_titles: &[String],
     toc: &[TocEntry],
     section_count: usize,
+) -> Result<Vec<ChapterScope>, String> {
+    build_grouped_chapter_scopes(chapter_titles, toc, section_count, None)
+}
+
+pub fn build_chapter_scopes_with_sections(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    sections: &[SpineSection],
+) -> Result<Vec<ChapterScope>, String> {
+    build_grouped_chapter_scopes(chapter_titles, toc, sections.len(), Some(sections))
+}
+
+fn build_grouped_chapter_scopes(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    section_count: usize,
+    sections: Option<&[SpineSection]>,
+) -> Result<Vec<ChapterScope>, String> {
+    let labels = chapter_titles
+        .iter()
+        .map(|title| parse_label(title))
+        .collect::<Vec<_>>();
+    let items = toc
+        .iter()
+        .map(|entry| parse_label(&entry.title))
+        .collect::<Vec<_>>();
+    let mut titles = Vec::new();
+    let mut groups = Vec::new();
+    let mut index = 0;
+    while index < labels.len() {
+        let label = &labels[index];
+        let mut end = index + 1;
+        // Only explicit consecutive A/B/... parts of one numbered chapter,
+        // whose EPUB has an unsplit label. Distinct EPUB A/B chapters retain
+        // their own boundaries, as do repeated or missing part labels.
+        if label.number.is_some()
+            && label.series.is_empty()
+            && label.key == "a"
+            && items.iter().any(|item| {
+                item.number == label.number && item.series.is_empty() && item.key.is_empty()
+            })
+            && !items.iter().any(|item| {
+                item.number == label.number
+                    && item.series.is_empty()
+                    && item.key.len() == 1
+                    && item.key.as_bytes()[0].is_ascii_alphabetic()
+            })
+        {
+            while end < labels.len() && end - index < 26 {
+                let next = &labels[end];
+                let suffix = char::from(b'a' + (end - index) as u8).to_string();
+                if next.number != label.number || !next.series.is_empty() || next.key != suffix {
+                    break;
+                }
+                end += 1;
+            }
+        }
+        titles.push(if end > index + 1 {
+            format!("Chapter {}", label.number.unwrap())
+        } else {
+            chapter_titles[index].clone()
+        });
+        groups.push(index..end);
+        index = end;
+    }
+    let mut scopes = build_chapter_scopes_inner(&titles, toc, section_count, sections)?;
+    for scope in &mut scopes {
+        let group = &groups[scope.chapter_index];
+        scope.chapter_index = group.start;
+        scope.chapter_end_index = group.end;
+    }
+    Ok(scopes)
+}
+
+fn build_chapter_scopes_inner(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    section_count: usize,
+    sections: Option<&[SpineSection]>,
 ) -> Result<Vec<ChapterScope>, String> {
     if toc.is_empty() {
         return Err(
@@ -1443,14 +2200,79 @@ pub fn build_chapter_scopes(
         .iter()
         .map(|title| parse_label(title))
         .collect::<Vec<_>>();
-    let items = toc
+    // Some publishers put illustration links after the main chapter list in
+    // the NCX even though their EPUB pages occur between those chapters.
+    let mut ordered_toc = toc.iter().collect::<Vec<_>>();
+    ordered_toc.sort_by_key(|entry| entry.spine_index);
+    let items = ordered_toc
         .iter()
         .map(|entry| parse_label(&entry.title))
         .collect::<Vec<_>>();
-    let matched = match_in_order(&targets, &items)
+    let mut matched = match_in_order(&targets, &items)
         .into_iter()
-        .map(|index| index.map(|index| toc[index].spine_index))
+        .map(|index| index.map(|index| ordered_toc[index].spine_index))
         .collect::<Vec<_>>();
+
+    // A narrated picture without a contents entry can still have one
+    // unambiguous image-only spine section between its matched neighbours.
+    if let Some(sections) = sections {
+        let known = matched
+            .iter()
+            .enumerate()
+            .filter_map(|(index, spine)| spine.map(|spine| (index, spine)))
+            .collect::<Vec<_>>();
+        for pair in known.windows(2) {
+            let (before_chapter, before_spine) = pair[0];
+            let (after_chapter, after_spine) = pair[1];
+            if after_chapter <= before_chapter + 1 || after_spine <= before_spine + 1 {
+                continue;
+            }
+            let missing = (before_chapter + 1..after_chapter).collect::<Vec<_>>();
+            if !missing.iter().all(|index| {
+                parse_label(&chapter_titles[*index])
+                    .key
+                    .split(' ')
+                    .any(|word| {
+                        matches!(
+                            word,
+                            "map" | "sketchbook" | "folio" | "glyphs" | "illustration" | "notebook"
+                        )
+                    })
+            }) {
+                continue;
+            }
+            let image_sections = (before_spine + 1..after_spine)
+                .filter(|index| {
+                    sections
+                        .get(*index)
+                        .is_some_and(|section| section.text.trim().is_empty())
+                })
+                .collect::<Vec<_>>();
+            // A trailing figure can be followed by an unspoken part divider.
+            // Prefer the exact run of figures attached to the preceding text
+            // over treating that divider as another narrated illustration.
+            let trailing = image_sections
+                .iter()
+                .copied()
+                .filter(|index| sections[*index].href == sections[before_spine].href)
+                .collect::<Vec<_>>();
+            let mut pictures = if trailing.len() == missing.len() {
+                trailing
+            } else {
+                image_sections
+            };
+            if pictures.len() != missing.len() {
+                // One narration can cover an entire image-only document,
+                // including its part heading and the following illustration.
+                pictures.dedup_by(|right, left| sections[*right].href == sections[*left].href);
+            }
+            if pictures.len() == missing.len() {
+                for (chapter, spine) in missing.into_iter().zip(pictures) {
+                    matched[chapter] = Some(spine);
+                }
+            }
+        }
+    }
 
     let matched_indices = matched
         .iter()
@@ -1472,11 +2294,22 @@ pub fn build_chapter_scopes(
 
     let first = matched_indices.first().expect("checked above").0;
     let last = matched_indices.last().expect("checked above").0;
-    if let Some((index, _)) = matched
-        .iter()
-        .enumerate()
-        .find(|(index, spine)| *index > first && *index < last && spine.is_none())
-    {
+    if let Some((index, _)) = matched.iter().enumerate().find(|(index, spine)| {
+        *index > first
+            && *index < last
+            && spine.is_none()
+            && !(targets[*index].number.is_none()
+                && matches!(
+                    targets[*index].key.as_str(),
+                    "acknowledgments"
+                        | "acknowledgements"
+                        | "about the author"
+                        | "credits"
+                        | "opening credits"
+                        | "closing credits"
+                        | "end credits"
+                ))
+    }) {
         return Err(format!(
             "Embedded audio chapter `{}` could not be matched between two matched chapters.",
             chapter_titles[index]
@@ -1498,13 +2331,40 @@ pub fn build_chapter_scopes(
     Ok(matched_indices
         .iter()
         .enumerate()
-        .map(|(position, (chapter_index, start))| ChapterScope {
-            chapter_index: *chapter_index,
-            section_range: *start
-                ..matched_indices
-                    .get(position + 1)
-                    .map(|(_, next_start)| *next_start)
-                    .unwrap_or(trailing_end),
+        .map(|(position, (chapter_index, start))| {
+            let next_start = matched_indices
+                .get(position + 1)
+                .map(|(_, next_start)| *next_start)
+                .unwrap_or(trailing_end);
+            // An unspoken acknowledgments page can sit after a dedication
+            // in print but be read at the end of the audiobook. Do not force
+            // that intervening apparatus into the preceding chapter's audio.
+            let end = toc
+                .iter()
+                .filter(|entry| {
+                    let label = parse_label(&entry.title);
+                    entry.spine_index > *start
+                        && entry.spine_index < next_start
+                        && label.number.is_none()
+                        && matches!(
+                            label.key.as_str(),
+                            "acknowledgments"
+                                | "acknowledgements"
+                                | "about the author"
+                                | "copyright"
+                                | "copyright page"
+                                | "table of contents"
+                                | "contents"
+                        )
+                })
+                .map(|entry| entry.spine_index)
+                .min()
+                .unwrap_or(next_start);
+            ChapterScope {
+                chapter_index: *chapter_index,
+                chapter_end_index: *chapter_index + 1,
+                section_range: *start..end,
+            }
         })
         .collect())
 }
@@ -1590,6 +2450,23 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         };
     }
 
+    // Publishers also spell the interlude series out: "Interludes:
+    // Interlude 3: A Visitor" is the same identity as "I-3. A Visitor".
+    if !lower.contains("chapter ")
+        && let Some(at) = lower.rfind("interlude ")
+        && (at == 0 || !lower.as_bytes()[at - 1].is_ascii_alphanumeric())
+        && let Some((parsed, consumed)) = parse_number_token(&value[at + 10..])
+    {
+        let rest = value[at + 10 + consumed..].trim_start();
+        if rest.is_empty() || rest.starts_with(LABEL_SEPARATORS) {
+            return ParsedLabel {
+                number: Some(parsed),
+                series: "i".to_string(),
+                key: normalize_label_text(rest.trim_start_matches(LABEL_SEPARATORS).trim_start()),
+            };
+        }
+    }
+
     let prefix = lower
         .find("chapter ")
         .map(|at| (at, "chapter ".len()))
@@ -1613,6 +2490,32 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         let trimmed = value.trim_start();
         if let Some((parsed, consumed)) = parse_number_token(trimmed) {
             let rest = trimmed[consumed..].trim_start();
+            if rest.is_empty() {
+                number = Some(parsed);
+                remainder.clear();
+            } else if trimmed.as_bytes()[0].is_ascii_digit()
+                && trimmed[consumed..].starts_with(char::is_whitespace)
+            {
+                number = Some(parsed);
+                remainder = rest
+                    .trim_start_matches(LABEL_SEPARATORS)
+                    .trim_start()
+                    .to_string();
+            } else if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
+                number = Some(parsed);
+                remainder = rest.to_string();
+            }
+        }
+    }
+
+    // Embedded chapter titles may carry a part label before the chapter
+    // number: "Part Four: A Knowledge: 74. A Symbol".
+    if number.is_none()
+        && let Some((_, tail)) = value.rsplit_once(':')
+    {
+        let tail = tail.trim_start();
+        if let Some((parsed, consumed)) = parse_number_token(tail) {
+            let rest = tail[consumed..].trim_start();
             if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
                 number = Some(parsed);
                 remainder = rest.to_string();
@@ -1850,6 +2753,10 @@ pub fn label_match_score(target: &ParsedLabel, item: &ParsedLabel) -> u32 {
     if !target.key.is_empty() && !item.key.is_empty() {
         if target.key == item.key {
             score += 80;
+        } else if target.key.ends_with(&format!(" {}", item.key)) && item.key.len() >= 8 {
+            // Embedded audio labels often include a part title before the
+            // EPUB's chapter title: "Part Four: A Knowledge: 74. A Symbol".
+            score += 80;
         } else if target.key.contains(&item.key) || item.key.contains(&target.key) {
             score += 45;
         } else {
@@ -1942,6 +2849,128 @@ pub(crate) fn build_test_epub_with_text(chapter_one: &str, chapter_two: &str) ->
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ncx_fills_missing_nav_documents_without_replacing_nav_labels() {
+        use std::io::{Read, Write};
+        let bytes = super::build_test_epub();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            let mut text = String::new();
+            entry.read_to_string(&mut text).unwrap();
+            if name.ends_with(".opf") {
+                text = text.replace("</manifest>", "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/></manifest>");
+            }
+            if name == "OEBPS/nav.xhtml" {
+                text = "<nav epub:type=\"toc\"><a href=\"text/ch1.xhtml\">Chapter 1: Preferred</a></nav>".into();
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(text.as_bytes()).unwrap();
+        }
+        output
+            .start_file("OEBPS/toc.ncx", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        output.write_all(br#"<ncx><navMap><navPoint><navLabel><text>Old name</text></navLabel><content src="text/ch1.xhtml"/></navPoint><navPoint><navLabel><text>Chapter 2</text></navLabel><content src="text/ch2.xhtml"/></navPoint></navMap></ncx>"#).unwrap();
+        let epub = parse_epub(&output.finish().unwrap().into_inner()).unwrap();
+        assert_eq!(epub.toc.len(), 2);
+        assert_eq!(epub.toc[0].title, "Chapter 1: Preferred");
+        assert_eq!(epub.toc[1].title, "Chapter 2");
+        assert_eq!(epub.toc[1].spine_index, 1);
+    }
+
+    #[test]
+    fn numbered_titles_allow_whitespace_but_not_partial_words() {
+        let label = parse_label("16 The Crossing");
+        assert_eq!(label.number, Some(16));
+        assert_eq!(label.key, "the crossing");
+        assert_eq!(parse_label("16th Crossing").number, None);
+        assert_eq!(parse_label("Seven Swans").number, None);
+    }
+
+    #[test]
+    fn split_audio_parts_share_only_an_unsplit_epub_chapter() {
+        let titles = [
+            "Chapter 1",
+            "Chapter 2A",
+            "Chapter 2B",
+            "Chapter 2C",
+            "Chapter 3",
+        ]
+        .map(str::to_string);
+        let toc = ["Chapter 1", "Chapter 2", "Chapter 3"]
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: title.to_string(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &toc, 3).unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|s| (
+                    s.chapter_index,
+                    s.chapter_end_index,
+                    s.section_range.clone()
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 1, 0..1), (1, 4, 1..2), (4, 5, 2..3)]
+        );
+        let split_toc = titles
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: title.clone(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &split_toc, 5).unwrap();
+        assert_eq!(scopes.len(), 5);
+        assert!(
+            scopes
+                .iter()
+                .all(|s| s.chapter_end_index == s.chapter_index + 1)
+        );
+        let missing_part =
+            ["Chapter 1", "Chapter 2A", "Chapter 2C", "Chapter 3"].map(str::to_string);
+        assert!(build_chapter_scopes(&missing_part, &toc, 3).is_err());
+    }
+
+    #[test]
+    fn reordered_apparatus_does_not_expand_adjacent_audio_scopes() {
+        let titles = [
+            "Dedication",
+            "Chapter 1",
+            "Chapter 2",
+            "Acknowledgments",
+            "About the Author",
+        ]
+        .map(str::to_string);
+        let toc = [
+            "Dedication",
+            "Acknowledgments",
+            "Chapter 1",
+            "Chapter 2",
+            "About the Author",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(spine_index, title)| TocEntry {
+            title: title.to_string(),
+            spine_index,
+        })
+        .collect::<Vec<_>>();
+        let scopes = build_chapter_scopes(&titles, &toc, 5).unwrap();
+        assert_eq!(scopes[0].section_range, 0..1);
+        assert_eq!(scopes.len(), 4);
+        assert!(!scopes.iter().any(|s| s.chapter_index == 3));
+    }
+
+    #[test]
     fn epub_text_budget_counts_repeated_reads() {
         let bytes = super::build_test_epub();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
@@ -2022,6 +3051,73 @@ mod tests {
         assert_eq!(transcript.href_for_offset(11), Some("a.xhtml"));
         assert_eq!(transcript.href_for_offset(14), Some("b.xhtml"));
         assert_eq!(transcript.href_for_offset(100), None);
+    }
+
+    #[test]
+    fn abbreviated_image_interludes_use_the_spoken_label() {
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "interlude.xhtml".into(),
+            text: "The visitor locked the door.".into(),
+        }]);
+        transcript.prepend_unmapped("I-3: A Visitor");
+        assert_eq!(
+            transcript.text,
+            "Interlude 3: A Visitor.\n\nThe visitor locked the door."
+        );
+        let offset = transcript.sections[1].start_utf16;
+        assert_eq!(transcript.href_for_offset(offset - 1), Some(""));
+        assert_eq!(transcript.href_for_offset(offset), Some("interlude.xhtml"));
+    }
+
+    #[test]
+    fn image_headings_consume_audio_without_becoming_text_highlights() {
+        assert!(starts_with_image(
+            "<html><head><title>Book</title></head><body><p><img src='title.jpg'/></p><p>Text</p></body></html>"
+        ));
+        assert!(!starts_with_image(
+            "<body><h1>Chapter one</h1><img src='decoration.jpg'/></body>"
+        ));
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: "I approach this project with inspiration renewed.".into(),
+        }]);
+        transcript.prepend_unmapped("47. A Cage Forged of Spirits");
+        let first_text = transcript.sections[1].start_utf16;
+        let entries = vec![
+            TimelineEntry {
+                kind: "sentence".into(),
+                text: "47. A Cage Forged of Spirits.".into(),
+                start_time: 0.5,
+                end_time: 5.5,
+                start_offset_utf16: Some(0),
+                end_offset_utf16: Some(first_text - 2),
+                timeline: None,
+            },
+            TimelineEntry {
+                kind: "sentence".into(),
+                text: "I approach this project with inspiration renewed.".into(),
+                start_time: 6.0,
+                end_time: 10.0,
+                start_offset_utf16: Some(first_text),
+                end_offset_utf16: Some(transcript.len_utf16()),
+                timeline: None,
+            },
+        ];
+        let fragments = fragments_from_timeline(&entries, &transcript, 100.0);
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].href, "chapter.xhtml");
+        assert_eq!(fragments[0].start_seconds, 106.0);
+        let mut without_offsets = entries;
+        for entry in &mut without_offsets {
+            entry.start_offset_utf16 = None;
+            entry.end_offset_utf16 = None;
+        }
+        let fallback = fragments_from_timeline(&without_offsets, &transcript, 100.0);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].text, fragments[0].text);
+        assert_eq!(fallback[0].start_seconds, 106.0);
+        let window = transcript.window(first_text, transcript.len_utf16());
+        assert_eq!(window.href_for_offset(0), Some("chapter.xhtml"));
     }
 
     #[test]
@@ -2174,10 +3270,12 @@ mod tests {
             vec![
                 ChapterScope {
                     chapter_index: 1,
+                    chapter_end_index: 2,
                     section_range: 1..2,
                 },
                 ChapterScope {
                     chapter_index: 2,
+                    chapter_end_index: 3,
                     section_range: 2..3,
                 },
             ]
@@ -2216,6 +3314,88 @@ mod tests {
     }
 
     #[test]
+    fn spelled_interlude_numbers_match_the_lettered_series() {
+        let audio = parse_label("Interludes: Interlude 3: A Visitor");
+        assert_eq!(
+            label_match_score(&audio, &parse_label("I-3. A Visitor")),
+            180
+        );
+        assert_eq!(label_match_score(&audio, &parse_label("Chapter 3")), 0);
+        assert_eq!(parse_label("Interlude Three: A Visitor").number, Some(3));
+        assert_eq!(parse_label("An Interlude Three Wishes").number, None);
+    }
+
+    #[test]
+    fn trailing_figures_have_audio_boundaries_without_moving_prose() {
+        let epub = parse_epub(&build_test_epub_with_text(
+            "<h1>Chapter 1</h1><p>The meadow was quiet.</p><figure><img src='map.png'/></figure>",
+            "<h1>Chapter 2</h1><p>The river ran fast.</p>",
+        ))
+        .unwrap();
+        assert_eq!(epub.sections.len(), 3);
+        assert_eq!(epub.sections[0].href, epub.sections[1].href);
+        assert!(epub.sections[1].text.is_empty());
+        assert_eq!(epub.toc[1].spine_index, 2);
+        let scopes = build_chapter_scopes_with_sections(
+            &[
+                "Chapter 1".into(),
+                "Illustration: The Meadow".into(),
+                "Chapter 2".into(),
+            ],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|scope| scope.section_range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..1, 1..2, 2..3]
+        );
+        assert_eq!(
+            build_transcript(&epub.sections).text,
+            "Chapter 1\n\nThe meadow was quiet.\n\nChapter 2\n\nThe river ran fast."
+        );
+        for html in [
+            "<body><img src='heading.png'/><p>Spoken prose.</p></body>",
+            "<body><img src='only-picture.png'/></body>",
+            "<body><p>Before.</p><img src='inline.png'/><p>After.</p></body>",
+        ] {
+            assert_eq!(trailing_image_count(html), 0);
+        }
+    }
+
+    #[test]
+    fn image_only_documents_allow_combined_or_separate_narration() {
+        let epub = parse_epub(&build_test_epub_with_text(
+            "<img src='part.png'/><img src='map.png'/>",
+            "<p>The river ran fast.</p>",
+        ))
+        .unwrap();
+        assert_eq!(epub.sections.len(), 3);
+        let separate = build_chapter_scopes_with_sections(
+            &[
+                "Chapter 1".into(),
+                "Illustration: Map".into(),
+                "Chapter 2".into(),
+            ],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(separate[0].section_range, 0..1);
+        assert_eq!(separate[1].section_range, 1..2);
+        let combined = build_chapter_scopes_with_sections(
+            &["Chapter 1".into(), "Chapter 2".into()],
+            &epub.toc,
+            &epub.sections,
+        )
+        .unwrap();
+        assert_eq!(combined[0].section_range, 0..2);
+    }
+
+    #[test]
     fn chapter_scopes_reject_an_unmatched_interior_chapter() {
         let toc = vec![
             TocEntry {
@@ -2241,6 +3421,51 @@ mod tests {
     }
 
     #[test]
+    fn chapter_scopes_keep_narrated_images_between_prefixed_audio_chapters() {
+        let titles = [
+            "Part Three: 46. The Weight of the Tower",
+            "Part Three: Annotated Map of the War in Emul",
+            "Part Three: 47. A Cage Forged of Spirits",
+            "Part Four: A Knowledge",
+            "Part Four: A Knowledge: Alethi Glyphs Page 2",
+            "Part Four: A Knowledge: 73. Which Master to Follow",
+            "Part Four: A Knowledge: 74. A Symbol",
+        ]
+        .map(str::to_string);
+        // The publisher lists the glyph page after the main chapters even
+        // though its spine section belongs between the part title and 73.
+        let toc = [
+            ("46. The Weight of the Tower", 0),
+            ("47. A Cage Forged of Spirits", 2),
+            ("Part Four: A Knowledge", 3),
+            ("73. Which Master to Follow", 5),
+            ("74. A Symbol", 6),
+            ("Alethi Glyphs Page 2", 4),
+        ]
+        .map(|(title, spine_index)| TocEntry {
+            title: title.into(),
+            spine_index,
+        });
+        let sections = (0..7)
+            .map(|index| SpineSection {
+                href: format!("{index}.xhtml"),
+                text: if matches!(index, 1 | 3 | 4) {
+                    String::new()
+                } else {
+                    "Chapter text.".into()
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let scopes = build_chapter_scopes_with_sections(&titles, &toc, &sections).unwrap();
+        assert_eq!(scopes.len(), 7);
+        for (index, scope) in scopes.iter().enumerate() {
+            assert_eq!(scope.chapter_index, index);
+            assert_eq!(scope.section_range, index..index + 1);
+        }
+    }
+
+    #[test]
     fn chapter_scopes_require_multiple_reset_points() {
         let toc = vec![TocEntry {
             title: "Chapter 1".into(),
@@ -2249,6 +3474,35 @@ mod tests {
         let titles = vec!["Chapter 1".to_string()];
 
         assert!(build_chapter_scopes(&titles, &toc, 1).is_err());
+    }
+
+    #[test]
+    fn bare_contents_numbers_match_spoken_chapter_labels() {
+        let toc = ["Prologue", "1", "2", "3", "Epilogue"]
+            .iter()
+            .enumerate()
+            .map(|(spine_index, title)| TocEntry {
+                title: (*title).into(),
+                spine_index,
+            })
+            .collect::<Vec<_>>();
+        let titles = [
+            "Prologue",
+            "Chapter One",
+            "Chapter Two",
+            "Chapter Three",
+            "Epilogue",
+        ]
+        .map(str::to_string);
+        let scopes = build_chapter_scopes(&titles, &toc, 5).unwrap();
+        assert_eq!(scopes.len(), 5);
+        for (index, scope) in scopes.iter().enumerate() {
+            assert_eq!(scope.section_range, index..index + 1);
+        }
+        for label in ["7", "VII", "Seven"] {
+            assert_eq!(parse_label(label).number, Some(7));
+        }
+        assert!(parse_label("Seven Swans").number.is_none());
     }
 
     #[test]
@@ -2295,6 +3549,432 @@ mod tests {
                 end_time: start_time + index as f64 * 0.5 + 0.4,
             })
             .collect()
+    }
+
+    #[test]
+    fn recovery_restarts_at_a_complete_unique_sentence_after_unknown_text() {
+        let prefix = "A café🦉 passage is missing from this edition. ";
+        let sentence = "A lantern flickered beside the empty railway station.";
+        let following = "Several travellers waited quietly for the morning train.";
+        let text = format!("{prefix}{sentence} {following}");
+        let recognized = spoken(
+            &format!("unexpected noises continue {sentence} {following}"),
+            2.0,
+        );
+        let anchor = find_recovery_anchor(&recognized, &text, 0, 30.0).unwrap();
+        assert_eq!(
+            anchor.text_start_utf16,
+            prefix.encode_utf16().count() as u64
+        );
+        assert_eq!(
+            anchor.text_end_utf16,
+            format!("{prefix}{sentence}").encode_utf16().count() as u64
+        );
+        assert_eq!(anchor.start_seconds, 3.5);
+        assert!((anchor.end_seconds - 7.4).abs() < 1e-9);
+        // An already-consumed sentence cannot drag recovery backwards.
+        assert!(find_recovery_anchor(&recognized, &text, anchor.text_end_utf16, 30.0).is_none());
+    }
+
+    #[test]
+    fn recovery_rejects_ambiguous_phrases_and_untrustworthy_clocks() {
+        let text = "A lantern flickered beside the empty railway station. Several travellers waited quietly for the morning train.";
+        let recognized = spoken(text, 1.0);
+        assert!(find_recovery_anchor(&recognized, text, 0, 30.0).is_some());
+        assert!(find_recovery_anchor(&recognized, &format!("{text} {text}"), 0, 30.0).is_none());
+        assert!(
+            find_recovery_anchor(
+                &recognized,
+                &format!("{text} {text}"),
+                text.encode_utf16().count() as u64,
+                30.0
+            )
+            .is_none()
+        );
+        let repeated = [recognized.clone(), spoken(text, 12.0)].concat();
+        assert!(find_recovery_anchor(&repeated, text, 0, 30.0).is_none());
+        for invalid in [f64::NAN, -1.0, 100.0] {
+            let mut bad = recognized.clone();
+            bad[3].end_time = invalid;
+            assert!(find_recovery_anchor(&bad, text, 0, 30.0).is_none());
+        }
+        assert!(find_recovery_anchor(&recognized[..9], text, 0, 30.0).is_none());
+    }
+
+    #[test]
+    fn unreliable_recognition_requests_a_bounded_retry() {
+        let tokens = (0..60)
+            .map(|index| format!("word{index}"))
+            .collect::<Vec<_>>();
+        let text = tokens.join(" ");
+        assert!(!recognition_needs_retry(&spoken(&text, 0.0), &text));
+        let skipped = tokens[..15]
+            .iter()
+            .chain(&tokens[45..])
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(recognition_needs_retry(&spoken(&skipped, 0.0), &text));
+        assert!(recognition_needs_retry(
+            &spoken(&"this phrase keeps repeating ".repeat(6), 0.0),
+            &text
+        ));
+        assert!(recognition_needs_retry(&[], &text));
+        let mut names = tokens;
+        names[10] = "misspelled".into();
+        names[30] = "anothername".into();
+        assert!(!recognition_needs_retry(
+            &spoken(&names.join(" "), 0.0),
+            &text
+        ));
+        assert!(!recognition_needs_retry(
+            &spoken("A short sentence.", 0.0),
+            "A short sentence."
+        ));
+    }
+
+    #[test]
+    fn zero_duration_interjection_requires_unique_nearby_spoken_context() {
+        let text = "Someone reached the open door. But— Another visitor crossed the courtyard.";
+        let offset = text.find("But").unwrap() as u64;
+        let json = format!(
+            r#"[{{"type":"sentence","text":"But—","startTime":2.7,"endTime":2.7,"startOffsetUtf16":{offset}}}]"#
+        );
+        let mut timeline = parse_timeline(&json).unwrap();
+        let recognized = spoken(text, 0.0);
+        recover_zero_duration_sentences(&mut timeline, text, &recognized);
+        assert_eq!((timeline[0].start_time, timeline[0].end_time), (2.5, 2.9));
+        for speech in [
+            spoken(&text.replace("But— ", ""), 0.0),
+            spoken(text, 30.0),
+            spoken(&format!("{text} {text}"), 0.0),
+        ] {
+            let mut timeline = parse_timeline(&json).unwrap();
+            recover_zero_duration_sentences(&mut timeline, text, &speech);
+            assert_eq!(timeline[0].start_time, timeline[0].end_time);
+        }
+    }
+
+    #[test]
+    fn trailing_description_keeps_prose_and_unicode_offsets_unchanged() {
+        let text = "The café🦉 was quiet. Then we returned to the river.";
+        let extra = "an illustration shows a wooden bridge crossing a wide river beside tall trees";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.into(),
+        }]);
+        let recognition = spoken(&format!("{text} {extra}"), 0.0);
+        assert_eq!(
+            transcript.include_unmapped_trailing_narration(&recognition),
+            1
+        );
+        let mapped = &transcript.sections[0];
+        assert_eq!(mapped.start_utf16, 0);
+        assert_eq!(mapped.end_utf16, text.encode_utf16().count() as u64);
+        assert_eq!(&transcript.text[..text.len()], text);
+        assert_eq!(transcript.href_for_offset(mapped.end_utf16 + 2), Some(""));
+        assert_eq!(
+            transcript.include_unmapped_trailing_narration(&recognition),
+            0
+        );
+        let mut without_punctuation = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: "They returned to the café. THE END".into(),
+        }]);
+        assert_eq!(
+            without_punctuation.include_unmapped_trailing_narration(&spoken(
+                &format!("They returned to the café. THE END {extra}"),
+                0.0
+            )),
+            1
+        );
+        for speech in [
+            format!("{text} a brief noise"),
+            format!("{text} {extra} Then we returned to the river."),
+            format!("The café was quiet. Then we returned somewhere else. {extra}"),
+        ] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }]);
+            assert_eq!(
+                transcript.include_unmapped_trailing_narration(&spoken(&speech, 0.0)),
+                0
+            );
+            assert_eq!(transcript.text, text);
+        }
+    }
+
+    #[test]
+    fn additional_narration_is_unmapped_and_preserves_unicode_text_locations() {
+        let before = "The café doors stood open.";
+        let after = "We walked into the quiet courtyard.";
+        let extra = "this picture shows a river winding around the valley";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {after}"),
+        }]);
+        let recognized = spoken(&format!("{before} {extra} {after}"), 0.0);
+        assert_eq!(transcript.include_unmapped_narration(&recognized), 1);
+        let unmapped = &transcript.sections[1];
+        assert_eq!(transcript.href_for_offset(unmapped.start_utf16), Some(""));
+        let after_offset = transcript.text[..transcript.text.find(after).unwrap()]
+            .encode_utf16()
+            .count() as u64;
+        assert_eq!(
+            transcript.href_for_offset(after_offset),
+            Some("chapter.xhtml")
+        );
+        assert_eq!(
+            &transcript.text[utf16_to_byte_index(&transcript.text, after_offset)..],
+            after
+        );
+        assert_eq!(transcript.include_unmapped_narration(&recognized), 0);
+    }
+
+    #[test]
+    fn isolated_recognition_errors_preserve_all_scripted_text() {
+        let text = (0..16).map(|index| format!(
+            "Visitor{index} reached the café🦉 before sunrise. The quiet room held parcel{index} beside the window."
+        )).collect::<Vec<_>>().join("\n\n");
+        let full = spoken(&text, 0.0);
+        for index in 0..full.len() {
+            for substitute in [false, true] {
+                let mut recognized = full.clone();
+                if substitute {
+                    recognized[index].text = "misheard".into();
+                } else {
+                    recognized.remove(index);
+                }
+                let mut transcript = build_transcript(&[SpineSection {
+                    href: "chapter.xhtml".into(),
+                    text: text.clone(),
+                }]);
+                assert_eq!(
+                    transcript.mask_unspoken_sentences(&recognized),
+                    0,
+                    "word {index}, substitute {substitute}"
+                );
+                assert_eq!(
+                    transcript.include_unmapped_narration(&recognized),
+                    0,
+                    "word {index}, substitute {substitute}"
+                );
+                assert_eq!(transcript.text, text);
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_narrated_insertions_preserve_every_mapped_character() {
+        let text = "The café🦉 doors stood open. We walked into the quiet courtyard. The stairway ended beside the tower. A visitor greeted us from the balcony.";
+        let speech = "The café🦉 doors stood open. this diagram shows a river curving around the distant valley We walked into the quiet courtyard. The stairway ended beside the tower. another illustration shows the narrow stairs rising beside a stone wall A visitor greeted us from the balcony.";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.into(),
+        }]);
+        let recognition = spoken(speech, 0.0);
+        assert_eq!(transcript.include_unmapped_narration(&recognition), 2);
+        let mapped = transcript
+            .sections
+            .iter()
+            .filter(|section| !section.href.is_empty())
+            .map(|section| {
+                &transcript.text[utf16_to_byte_index(&transcript.text, section.start_utf16)
+                    ..utf16_to_byte_index(&transcript.text, section.end_utf16)]
+            })
+            .collect::<String>();
+        assert_eq!(mapped, text);
+        assert_eq!(transcript.include_unmapped_narration(&recognition), 0);
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 0);
+    }
+
+    #[test]
+    fn extra_speech_requires_unique_phrases_and_a_sentence_boundary() {
+        for (text, speech) in [
+            (
+                "The first door stood open. We went inside together.",
+                "The first door stood open. briefly then We went inside together.",
+            ),
+            (
+                "The first door stood open and we went inside together.",
+                "The first door stood open this picture shows a river winding around the valley and we went inside together.",
+            ),
+            (
+                "The first door stood open. We went inside together. We went inside together.",
+                "The first door stood open. this picture shows a river winding around the valley We went inside together. We went inside together.",
+            ),
+            (
+                "The tower stood above the mountain. Something’s wrong with my powers she whispered softly.",
+                "The tower stood above the mountain. some things wrong with my powers she whispered softly and could not understand it somethings wrong with my powers she whispered softly.",
+            ),
+        ] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }]);
+            assert_eq!(
+                transcript.include_unmapped_narration(&spoken(speech, 0.0)),
+                0
+            );
+            assert_eq!(transcript.text, text);
+        }
+        let mut transcript = build_transcript(&[
+            SpineSection {
+                href: "before.xhtml".into(),
+                text: "The first door stood open.".into(),
+            },
+            SpineSection {
+                href: "after.xhtml".into(),
+                text: "We went inside together.".into(),
+            },
+        ]);
+        assert_eq!(transcript.include_unmapped_narration(&spoken("The first door stood open. this picture shows a river winding around the valley We went inside together.", 0.0)), 0);
+    }
+
+    /// Check saved probe windows for additional narration without rerunning
+    /// recognition. Fixtures remain private and outside the source tree.
+    #[test]
+    #[ignore = "manual cached-recognition probe"]
+    fn manual_cached_narration_probe() {
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_CACHE").unwrap());
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            if !name.starts_with("alignment-") || !name.ends_with(".json") {
+                continue;
+            }
+            let recognition_path =
+                path.with_file_name(name.replacen("alignment-", "recognition-", 1));
+            if !recognition_path.exists() {
+                continue;
+            }
+            let timeline = parse_timeline(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let mut sentences = Vec::new();
+            collect_sentences(&timeline, &mut sentences);
+            let text = sentences
+                .iter()
+                .map(|sentence| sentence.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "probe.xhtml".into(),
+                text,
+            }]);
+            let recognized = recognized_words(
+                &parse_timeline(&std::fs::read_to_string(recognition_path).unwrap()).unwrap(),
+            );
+            let count = transcript.include_unmapped_narration(&recognized);
+            if count > 0 {
+                println!("{name}: {count} additional narration passage(s)");
+            }
+            if recognition_needs_retry(&recognized, &transcript.text) {
+                println!("{name}: recognition still uncertain");
+            }
+            checked += 1;
+        }
+        assert!(checked > 0);
+        println!("checked {checked} cached windows");
+    }
+
+    #[test]
+    fn unspoken_sentences_keep_offsets_and_following_text() {
+        let before = "The river reached the old bridge.";
+        let absent = "An older edition added this entire explanation. Another unspoken line mentions café🦉.";
+        let after = "Tomorrow we cross into the forest.";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {absent} {after}"),
+        }]);
+        let length = transcript.len_utf16();
+        let after_offset = transcript.text.find(after).unwrap();
+        let after_utf16 = transcript.text[..after_offset].encode_utf16().count() as u64;
+        let recognition = spoken(&format!("{before} {after}"), 0.0);
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 1);
+        assert_eq!(transcript.len_utf16(), length);
+        assert_eq!(
+            transcript.href_for_offset(after_utf16),
+            Some("chapter.xhtml")
+        );
+        assert_eq!(
+            transcript
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            format!("{before} {after}")
+        );
+        assert_eq!(transcript.window(after_utf16, length).text, after);
+    }
+
+    #[test]
+    fn uncertain_recognition_does_not_remove_spoken_text() {
+        let text = "The river reached the old bridge. An older edition added this entire explanation. Tomorrow we cross into the forest.";
+        let original = || {
+            build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.into(),
+            }])
+        };
+        let mut full = original();
+        assert_eq!(full.mask_unspoken_sentences(&spoken(text, 0.0)), 0);
+        let mut missing = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        for word in &mut missing[6..] {
+            word.start_time += 5.0;
+            word.end_time += 5.0;
+        }
+        let mut gap = original();
+        assert_eq!(gap.mask_unspoken_sentences(&missing), 0);
+        assert_eq!(gap.text, text);
+        let mut repeated = original();
+        let repeated_audio = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        assert_eq!(repeated.mask_unspoken_sentences(&repeated_audio), 0);
+        let mut partial = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.replace("bridge.", "bridge,"),
+        }]);
+        assert_eq!(
+            partial.mask_unspoken_sentences(&spoken(
+                "The river reached the old bridge. Tomorrow we cross into the forest.",
+                0.0
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn omissions_do_not_cross_documents_or_unmapped_headings() {
+        let mut transcript = build_transcript(&[
+            SpineSection {
+                href: "a.xhtml".into(),
+                text: "The river reached the old bridge. An older edition added".into(),
+            },
+            SpineSection {
+                href: "b.xhtml".into(),
+                text: "this entire explanation. Tomorrow we cross into the forest.".into(),
+            },
+        ]);
+        let recognition = spoken(
+            "The river reached the old bridge. Tomorrow we cross into the forest.",
+            0.0,
+        );
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 0);
+        let mut heading = build_transcript(&[SpineSection {
+            href: "b.xhtml".into(),
+            text: "Tomorrow we cross into the forest.".into(),
+        }]);
+        heading.prepend_unmapped(
+            "The river reached the old bridge. An older edition added this entire explanation",
+        );
+        assert_eq!(heading.mask_unspoken_sentences(&recognition), 0);
     }
 
     /// UTF-16 offset just past the first occurrence of `needle`.
@@ -2440,6 +4120,10 @@ The dog barked loudly at the cat. Go away said the cat.",
             generator: Some("echogarden".into()),
             generated_at: None,
             precision: Some(PRECISION_SENTENCE.into()),
+            recovery_gaps: vec![RecoveryGap {
+                start_seconds: 3.25,
+                end_seconds: 12.0,
+            }],
             fragments: vec![SyncFragment {
                 start_seconds: 1.5,
                 end_seconds: 3.25,
@@ -2452,6 +4136,7 @@ The dog barked loudly at the cat. Go away said the cat.",
         let parsed: SyncMap = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.fragments[0].href, "text/ch1.xhtml");
         assert_eq!(parsed.fragments[0].words, vec![WordTiming(1.5, 3.25, 0, 5)]);
+        assert_eq!(parsed.recovery_gaps, map.recovery_gaps);
         assert!(json.contains("startSeconds"));
         assert!(json.contains("\"words\":[[1.5,3.25,0,5]]"));
     }
@@ -2529,6 +4214,9 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(parse_label("I Am Legend").number, None);
         assert_eq!(parse_label("Which 12 Days").number, None);
         assert_eq!(parse_label("Chapter IIII").number, None);
+        let prefixed = parse_label("Part Four: A Knowledge: 74. A Symbol");
+        assert_eq!(prefixed.number, Some(74));
+        assert_eq!(prefixed.key, "a symbol");
     }
 
     /// Interludes are numbered in their own series, and the narrator's

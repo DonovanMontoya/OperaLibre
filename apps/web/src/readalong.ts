@@ -4,7 +4,7 @@
  * described to the listener. Pure functions, so they run in the test
  * runner without a browser.
  */
-import type { Book, CompanionFile, SyncFragment, SyncMap } from "./types";
+import type { Book, CompanionFile, SyncFragment, SyncMap, SyncRecoveryGap } from "./types";
 
 // ---------------------------------------------------------------------------
 // Chapter labels
@@ -157,7 +157,10 @@ export function parseReadalongLabel(value: string): ParsedReadalongLabel {
     if (token) {
       const rest = trimmed.slice(token.consumed).replace(/^\s+/, "");
       const separator = rest.match(/^[.:)\-–—]\s*/);
-      if (separator) {
+      if (!rest || (/^\d/.test(trimmed) && /^\s/.test(trimmed.slice(token.consumed)))) {
+        number = token.number;
+        remainder = rest.replace(/^[.:)\-–—]*\s*/, "");
+      } else if (separator) {
         number = token.number;
         remainder = rest.slice(separator[0].length);
       }
@@ -224,6 +227,12 @@ export function hrefsMatch(displayedHref: string, fragmentHref: string) {
   return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
 }
 
+export function inSyncRecoveryGap(gaps: SyncRecoveryGap[] | null | undefined, seconds: number) {
+  return !!gaps?.some(gap => Number.isFinite(gap.startSeconds) && Number.isFinite(gap.endSeconds)
+    && gap.startSeconds >= 0 && gap.endSeconds > gap.startSeconds
+    && seconds >= gap.startSeconds && seconds < gap.endSeconds);
+}
+
 /**
  * The fragment being narrated at `seconds`, or -1 before the first one. A
  * fragment stays active through the silence before the next one so the
@@ -232,8 +241,10 @@ export function hrefsMatch(displayedHref: string, fragmentHref: string) {
 export function findActiveFragmentIndex(
   fragments: SyncFragment[],
   seconds: number,
-  leadSeconds = 0
+  leadSeconds = 0,
+  recoveryGaps?: SyncRecoveryGap[] | null
 ) {
+  if (inSyncRecoveryGap(recoveryGaps, seconds)) return -1;
   const boundedLead = Number.isFinite(leadSeconds) ? Math.max(0, leadSeconds) : 0;
   const selectionSeconds = seconds + boundedLead;
   let low = 0;

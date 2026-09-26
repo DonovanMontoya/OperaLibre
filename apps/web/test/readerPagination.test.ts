@@ -47,6 +47,13 @@ test("sentence-only maps advance during the sentence and clamp outside its times
   assert.equal(narrationTextOffset({ ...estimated, endSeconds: 10 }, 11), 0);
 });
 
+test("the follow lead advances word-driven page turns as well as sentence selection", () => {
+  assert.equal(narrationTextOffset(fragment, 14.6), 4);
+  assert.equal(narrationTextOffset(fragment, 14.6, 0.5), 8);
+  assert.equal(narrationTextOffset(fragment, 14.6, -2), 4);
+  assert.equal(narrationTextOffset(fragment, 14.6, Infinity), 4);
+});
+
 test("invalid word offsets fall back without addressing outside the sentence", () => {
   assert.equal(narrationTextOffset({ ...fragment, words: [[10, 20, 200, 4]] }, 15), 8);
   assert.equal(narrationTextOffset(fragment, NaN), 0);

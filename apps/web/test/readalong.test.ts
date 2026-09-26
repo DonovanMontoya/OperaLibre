@@ -8,6 +8,7 @@ import {
   findTocHrefForChapterTitle,
   groupCompanions,
   hasExtras,
+  inSyncRecoveryGap,
   parseReadalongLabel,
   readAlongMode,
   readalongMatchScore,
@@ -17,6 +18,26 @@ import {
   syncMapPrecision
 } from "../src/readalong.ts";
 import type { Book, CompanionFile, SyncFragment, SyncMap } from "../src/types.ts";
+
+it("holds uncertain narration and resumes at the next trusted sentence without lead jumping early", () => {
+  const fragments: SyncFragment[] = [
+    { startSeconds: 0, endSeconds: 10, href: "one.xhtml", text: "A trusted sentence." },
+    { startSeconds: 11, endSeconds: 29, href: "wrong.xhtml", text: "An unreliable match must not move the reader." },
+    { startSeconds: 30, endSeconds: 35, href: "two.xhtml", text: "A recovered sentence." }
+  ];
+  const gaps = [{ startSeconds: 10, endSeconds: 30 }];
+  for (const lead of [0, .15, .5]) {
+    assert.equal(findActiveFragmentIndex(fragments, 9, lead, gaps), 0);
+    for (const time of [10, 11, 20, 29.9]) assert.equal(findActiveFragmentIndex(fragments, time, lead, gaps), -1);
+    assert.equal(findActiveFragmentIndex(fragments, 30, lead, gaps), 2);
+    // Seeking backwards into an outage has the same protection.
+    assert.equal(findActiveFragmentIndex(fragments, 15, lead, gaps), -1);
+  }
+  assert.equal(findActiveFragmentIndex(fragments, 15, 0), 1);
+  assert.equal(inSyncRecoveryGap(undefined, 15), false);
+  assert.equal(inSyncRecoveryGap([{ startSeconds: 20, endSeconds: 10 }], 15), false);
+  assert.equal(inSyncRecoveryGap([{ startSeconds: 0, endSeconds: Infinity }], 15), false);
+});
 
 describe("chapter labels", () => {
   it("reads numbers written as digits, words, or roman numerals", () => {
@@ -45,6 +66,15 @@ describe("chapter labels", () => {
     assert.ok(readalongMatchScore(spoken, written) >= 70);
     assert.equal(readalongMatchScore(spoken, parseReadalongLabel("3. Momentum")), 0);
     assert.equal(parseReadalongLabel("Track-01").number, null);
+  });
+
+  it("matches numbered contents entries with an omitted separator", () => {
+    const toc = [{ href: "crossing.xhtml", label: "16 The Crossing" }];
+    assert.equal(findTocHrefForChapterTitle(toc, "Chapter 16 - The Crossing"), "crossing.xhtml");
+    assert.equal(parseReadalongLabel("16 The Crossing").key, "the crossing");
+    assert.equal(parseReadalongLabel("16th Crossing").number, null);
+    assert.equal(parseReadalongLabel("Seven Swans").number, null);
+    assert.equal(parseReadalongLabel("16").number, 16);
   });
 
   it("does not mistake words for numbers", () => {

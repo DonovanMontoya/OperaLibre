@@ -245,6 +245,7 @@ export function renderEpubReader({
     narrationFollowActive,
     readerScope,
     selectedSyncFragments,
+    selectedSyncRecoveryGaps,
     showGallery
   } = readalong;
   const {
@@ -279,6 +280,7 @@ export function renderEpubReader({
             : null
         }
         syncFragments={narrationFollowActive && activeCompanionIsBook ? selectedSyncFragments : null}
+        syncRecoveryGaps={narrationFollowActive && activeCompanionIsBook ? selectedSyncRecoveryGaps : undefined}
         audioChapters={selectedBook.chapters}
         positionSeconds={narrationFollowActive && isViewingPlayingBook ? bookPosition : 0}
         followLeadSeconds={FOLLOW_AGGRESSIVENESS_LEAD_SECONDS[followAggressiveness]}
