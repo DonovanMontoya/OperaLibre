@@ -363,7 +363,7 @@ pub(crate) async fn run_sync_generation(
         match chapter_alignment_scopes(
             &tracks[0],
             &epub.toc,
-            epub.sections.len(),
+            &epub.sections,
             runtime.ffmpeg_path.is_some(),
         ) {
             Ok(scopes) => {
@@ -541,7 +541,7 @@ async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<(), A
 fn chapter_alignment_scopes(
     track: &SyncTrackInput,
     toc: &[alignment::TocEntry],
-    section_count: usize,
+    sections: &[alignment::SpineSection],
     ffmpeg_available: bool,
 ) -> Result<Vec<SyncAlignmentScope>, String> {
     if !ffmpeg_available {
@@ -552,7 +552,7 @@ fn chapter_alignment_scopes(
         .iter()
         .map(|chapter| chapter.title.clone())
         .collect::<Vec<_>>();
-    let matched = alignment::build_chapter_scopes(&titles, toc, section_count)?;
+    let matched = alignment::build_chapter_scopes_with_sections(&titles, toc, sections)?;
 
     matched
         .into_iter()
@@ -1154,6 +1154,15 @@ mod tests {
         }
     }
 
+    fn text_sections(count: usize) -> Vec<alignment::SpineSection> {
+        (0..count)
+            .map(|index| alignment::SpineSection {
+                href: format!("{index}.xhtml"),
+                text: "Chapter text.".into(),
+            })
+            .collect()
+    }
+
     #[test]
     fn chapter_alignment_uses_embedded_audio_ranges() {
         let track = SyncTrackInput {
@@ -1177,7 +1186,7 @@ mod tests {
             },
         ];
 
-        let scopes = chapter_alignment_scopes(&track, &toc, 3, true).unwrap();
+        let scopes = chapter_alignment_scopes(&track, &toc, &text_sections(3), true).unwrap();
 
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0].section_range, 1..2);
@@ -1210,7 +1219,7 @@ mod tests {
             },
         ];
 
-        assert!(chapter_alignment_scopes(&track, &toc, 2, false).is_err());
+        assert!(chapter_alignment_scopes(&track, &toc, &text_sections(2), false).is_err());
     }
 
     #[test]
@@ -1235,7 +1244,7 @@ mod tests {
             },
         ];
 
-        assert!(chapter_alignment_scopes(&track, &toc, 2, true).is_err());
+        assert!(chapter_alignment_scopes(&track, &toc, &text_sections(2), true).is_err());
     }
 
     #[test]
@@ -1270,26 +1279,67 @@ mod tests {
     #[test]
     #[ignore = "manual real-book probe"]
     fn manual_real_book_scope_probe() {
-        let audio_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_AUDIO").unwrap());
         let epub_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_EPUB").unwrap());
-        let metadata = read_track_metadata(&audio_path);
         let epub = alignment::parse_epub_file(&epub_path).unwrap();
-        let track = SyncTrackInput {
-            path: audio_path,
-            title: metadata.title.unwrap_or_else(|| "Book".to_string()),
-            duration_seconds: metadata.duration_seconds,
-            chapters: metadata
-                .chapters
-                .into_iter()
-                .map(|chapter| SyncChapterInput {
-                    title: chapter.title,
-                    start_seconds: chapter.start_seconds,
-                    end_seconds: chapter.end_seconds,
+        let track = if let Some(chapters_path) = std::env::var_os("OPERALIBRE_PROBE_CHAPTERS_JSON")
+        {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(chapters_path).unwrap()).unwrap();
+            let chapters = value["chapters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| SyncChapterInput {
+                    title: entry["tags"]["title"].as_str().unwrap().to_string(),
+                    start_seconds: entry["start_time"].as_str().unwrap().parse().unwrap(),
+                    end_seconds: Some(entry["end_time"].as_str().unwrap().parse().unwrap()),
                 })
-                .collect(),
+                .collect::<Vec<_>>();
+            SyncTrackInput {
+                path: PathBuf::from("probe.m4a"),
+                title: "Book".into(),
+                duration_seconds: chapters.last().and_then(|chapter| chapter.end_seconds),
+                chapters,
+            }
+        } else {
+            let audio_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_AUDIO").unwrap());
+            let metadata = read_track_metadata(&audio_path);
+            SyncTrackInput {
+                path: audio_path,
+                title: metadata.title.unwrap_or_else(|| "Book".to_string()),
+                duration_seconds: metadata.duration_seconds,
+                chapters: metadata
+                    .chapters
+                    .into_iter()
+                    .map(|chapter| SyncChapterInput {
+                        title: chapter.title,
+                        start_seconds: chapter.start_seconds,
+                        end_seconds: chapter.end_seconds,
+                    })
+                    .collect(),
+            }
         };
 
-        let result = chapter_alignment_scopes(&track, &epub.toc, epub.sections.len(), true);
+        let result = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true);
+        if result.is_err() {
+            let mut ordered_toc = epub.toc.iter().collect::<Vec<_>>();
+            ordered_toc.sort_by_key(|entry| entry.spine_index);
+            let targets = track
+                .chapters
+                .iter()
+                .map(|chapter| alignment::parse_label(&chapter.title))
+                .collect::<Vec<_>>();
+            let items = ordered_toc
+                .iter()
+                .map(|entry| alignment::parse_label(&entry.title))
+                .collect::<Vec<_>>();
+            let matched = alignment::match_in_order(&targets, &items);
+            for (index, toc_index) in matched.iter().enumerate() {
+                if toc_index.is_none() {
+                    println!("unmatched audio {index}: {}", track.chapters[index].title);
+                }
+            }
+        }
         println!(
             "audio_chapters={} epub_toc={} epub_sections={} result={}",
             track.chapters.len(),
@@ -1301,9 +1351,13 @@ mod tests {
             }
         );
         if let Ok(scopes) = result {
-            for scope in scopes.iter().take(5) {
+            for (index, scope) in scopes
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < 5 || (98..=103).contains(index))
+            {
                 println!(
-                    "{} {:?} {:?}",
+                    "{index} {} {:?} {:?}",
                     scope.label, scope.audio_range, scope.section_range
                 );
             }

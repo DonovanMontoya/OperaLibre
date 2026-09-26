@@ -1428,10 +1428,28 @@ pub fn align_labels(
 ///
 /// At least two chapters must match. A single match does not create useful
 /// reset points and is too weak a signal to justify slicing the source audio.
+#[cfg(test)]
 pub fn build_chapter_scopes(
     chapter_titles: &[String],
     toc: &[TocEntry],
     section_count: usize,
+) -> Result<Vec<ChapterScope>, String> {
+    build_chapter_scopes_inner(chapter_titles, toc, section_count, None)
+}
+
+pub fn build_chapter_scopes_with_sections(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    sections: &[SpineSection],
+) -> Result<Vec<ChapterScope>, String> {
+    build_chapter_scopes_inner(chapter_titles, toc, sections.len(), Some(sections))
+}
+
+fn build_chapter_scopes_inner(
+    chapter_titles: &[String],
+    toc: &[TocEntry],
+    section_count: usize,
+    sections: Option<&[SpineSection]>,
 ) -> Result<Vec<ChapterScope>, String> {
     if toc.is_empty() {
         return Err(
@@ -1443,14 +1461,61 @@ pub fn build_chapter_scopes(
         .iter()
         .map(|title| parse_label(title))
         .collect::<Vec<_>>();
-    let items = toc
+    // Some publishers put illustration links after the main chapter list in
+    // the NCX even though their EPUB pages occur between those chapters.
+    let mut ordered_toc = toc.iter().collect::<Vec<_>>();
+    ordered_toc.sort_by_key(|entry| entry.spine_index);
+    let items = ordered_toc
         .iter()
         .map(|entry| parse_label(&entry.title))
         .collect::<Vec<_>>();
-    let matched = match_in_order(&targets, &items)
+    let mut matched = match_in_order(&targets, &items)
         .into_iter()
-        .map(|index| index.map(|index| toc[index].spine_index))
+        .map(|index| index.map(|index| ordered_toc[index].spine_index))
         .collect::<Vec<_>>();
+
+    // A narrated picture without a contents entry can still have one
+    // unambiguous image-only spine section between its matched neighbours.
+    if let Some(sections) = sections {
+        let known = matched
+            .iter()
+            .enumerate()
+            .filter_map(|(index, spine)| spine.map(|spine| (index, spine)))
+            .collect::<Vec<_>>();
+        for pair in known.windows(2) {
+            let (before_chapter, before_spine) = pair[0];
+            let (after_chapter, after_spine) = pair[1];
+            if after_chapter <= before_chapter + 1 || after_spine <= before_spine + 1 {
+                continue;
+            }
+            let missing = (before_chapter + 1..after_chapter).collect::<Vec<_>>();
+            if !missing.iter().all(|index| {
+                parse_label(&chapter_titles[*index])
+                    .key
+                    .split(' ')
+                    .any(|word| {
+                        matches!(
+                            word,
+                            "map" | "sketchbook" | "folio" | "glyphs" | "illustration" | "notebook"
+                        )
+                    })
+            }) {
+                continue;
+            }
+            let image_sections = (before_spine + 1..after_spine)
+                .filter(|index| {
+                    sections
+                        .get(*index)
+                        .is_some_and(|section| section.text.trim().is_empty())
+                })
+                .collect::<Vec<_>>();
+            if image_sections.len() == missing.len() {
+                for (chapter, spine) in missing.into_iter().zip(image_sections) {
+                    matched[chapter] = Some(spine);
+                }
+            }
+        }
+    }
 
     let matched_indices = matched
         .iter()
@@ -1613,6 +1678,21 @@ pub fn parse_label(value: &str) -> ParsedLabel {
         let trimmed = value.trim_start();
         if let Some((parsed, consumed)) = parse_number_token(trimmed) {
             let rest = trimmed[consumed..].trim_start();
+            if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
+                number = Some(parsed);
+                remainder = rest.to_string();
+            }
+        }
+    }
+
+    // Embedded chapter titles may carry a part label before the chapter
+    // number: "Part Four: A Knowledge: 74. A Symbol".
+    if number.is_none()
+        && let Some((_, tail)) = value.rsplit_once(':')
+    {
+        let tail = tail.trim_start();
+        if let Some((parsed, consumed)) = parse_number_token(tail) {
+            let rest = tail[consumed..].trim_start();
             if let Some(rest) = rest.strip_prefix(LABEL_SEPARATORS).map(str::trim_start) {
                 number = Some(parsed);
                 remainder = rest.to_string();
@@ -1849,6 +1929,10 @@ pub fn label_match_score(target: &ParsedLabel, item: &ParsedLabel) -> u32 {
     }
     if !target.key.is_empty() && !item.key.is_empty() {
         if target.key == item.key {
+            score += 80;
+        } else if target.key.ends_with(&format!(" {}", item.key)) && item.key.len() >= 8 {
+            // Embedded audio labels often include a part title before the
+            // EPUB's chapter title: "Part Four: A Knowledge: 74. A Symbol".
             score += 80;
         } else if target.key.contains(&item.key) || item.key.contains(&target.key) {
             score += 45;
@@ -2241,6 +2325,51 @@ mod tests {
     }
 
     #[test]
+    fn chapter_scopes_keep_narrated_images_between_prefixed_audio_chapters() {
+        let titles = [
+            "Part Three: 46. The Weight of the Tower",
+            "Part Three: Annotated Map of the War in Emul",
+            "Part Three: 47. A Cage Forged of Spirits",
+            "Part Four: A Knowledge",
+            "Part Four: A Knowledge: Alethi Glyphs Page 2",
+            "Part Four: A Knowledge: 73. Which Master to Follow",
+            "Part Four: A Knowledge: 74. A Symbol",
+        ]
+        .map(str::to_string);
+        // The publisher lists the glyph page after the main chapters even
+        // though its spine section belongs between the part title and 73.
+        let toc = [
+            ("46. The Weight of the Tower", 0),
+            ("47. A Cage Forged of Spirits", 2),
+            ("Part Four: A Knowledge", 3),
+            ("73. Which Master to Follow", 5),
+            ("74. A Symbol", 6),
+            ("Alethi Glyphs Page 2", 4),
+        ]
+        .map(|(title, spine_index)| TocEntry {
+            title: title.into(),
+            spine_index,
+        });
+        let sections = (0..7)
+            .map(|index| SpineSection {
+                href: format!("{index}.xhtml"),
+                text: if matches!(index, 1 | 3 | 4) {
+                    String::new()
+                } else {
+                    "Chapter text.".into()
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let scopes = build_chapter_scopes_with_sections(&titles, &toc, &sections).unwrap();
+        assert_eq!(scopes.len(), 7);
+        for (index, scope) in scopes.iter().enumerate() {
+            assert_eq!(scope.chapter_index, index);
+            assert_eq!(scope.section_range, index..index + 1);
+        }
+    }
+
+    #[test]
     fn chapter_scopes_require_multiple_reset_points() {
         let toc = vec![TocEntry {
             title: "Chapter 1".into(),
@@ -2529,6 +2658,9 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(parse_label("I Am Legend").number, None);
         assert_eq!(parse_label("Which 12 Days").number, None);
         assert_eq!(parse_label("Chapter IIII").number, None);
+        let prefixed = parse_label("Part Four: A Knowledge: 74. A Symbol");
+        assert_eq!(prefixed.number, Some(74));
+        assert_eq!(prefixed.key, "a symbol");
     }
 
     /// Interludes are numbered in their own series, and the narrator's
