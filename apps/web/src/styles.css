@@ -7411,6 +7411,31 @@ html.native-app {
 }
 @media (max-height: 700px) { html.native-app { --match-piece-min: 32px; } }
 @media (max-height: 600px) { html.native-app { --match-piece-min: 27px; } }
+/* Landscape and fold layouts place these children directly in their grids. */
+html.native-app .match-play-area { display: contents; }
+
+/* In portrait, the hint travels with the square board. The frame can shrink
+   on short screens, while spare height is shared above and below the pair. */
+@media (orientation: portrait) and (max-width: 599px) {
+  html.native-app:not([data-fold-active]) .match-game {
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+  }
+  html.native-app:not([data-fold-active]) .match-play-area {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+  }
+  html.native-app:not([data-fold-active]) .match-play-area .match-board-frame {
+    flex: 0 1 auto;
+    width: 100%;
+    aspect-ratio: 1;
+    min-height: 0;
+  }
+  html.native-app:not([data-fold-active]) .match-play-area .game-message {
+    flex: none;
+  }
+}
 /* The small floor guards the degenerate case: in a frame-starved layout
    (e.g. a squat multitasking window that misses both landscape gates) chrome
    can eat the whole column, and 100cqh would size the board to nothing. At
