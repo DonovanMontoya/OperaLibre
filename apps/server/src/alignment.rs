@@ -3053,6 +3053,63 @@ mod tests {
     }
 
     #[test]
+    fn isolated_recognition_errors_preserve_all_scripted_text() {
+        let text = (0..16).map(|index| format!(
+            "Visitor{index} reached the café🦉 before sunrise. The quiet room held parcel{index} beside the window."
+        )).collect::<Vec<_>>().join("\n\n");
+        let full = spoken(&text, 0.0);
+        for index in 0..full.len() {
+            for substitute in [false, true] {
+                let mut recognized = full.clone();
+                if substitute {
+                    recognized[index].text = "misheard".into();
+                } else {
+                    recognized.remove(index);
+                }
+                let mut transcript = build_transcript(&[SpineSection {
+                    href: "chapter.xhtml".into(),
+                    text: text.clone(),
+                }]);
+                assert_eq!(
+                    transcript.mask_unspoken_sentences(&recognized),
+                    0,
+                    "word {index}, substitute {substitute}"
+                );
+                assert_eq!(
+                    transcript.include_unmapped_narration(&recognized),
+                    0,
+                    "word {index}, substitute {substitute}"
+                );
+                assert_eq!(transcript.text, text);
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_narrated_insertions_preserve_every_mapped_character() {
+        let text = "The café🦉 doors stood open. We walked into the quiet courtyard. The stairway ended beside the tower. A visitor greeted us from the balcony.";
+        let speech = "The café🦉 doors stood open. this diagram shows a river curving around the distant valley We walked into the quiet courtyard. The stairway ended beside the tower. another illustration shows the narrow stairs rising beside a stone wall A visitor greeted us from the balcony.";
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: text.into(),
+        }]);
+        let recognition = spoken(speech, 0.0);
+        assert_eq!(transcript.include_unmapped_narration(&recognition), 2);
+        let mapped = transcript
+            .sections
+            .iter()
+            .filter(|section| !section.href.is_empty())
+            .map(|section| {
+                &transcript.text[utf16_to_byte_index(&transcript.text, section.start_utf16)
+                    ..utf16_to_byte_index(&transcript.text, section.end_utf16)]
+            })
+            .collect::<String>();
+        assert_eq!(mapped, text);
+        assert_eq!(transcript.include_unmapped_narration(&recognition), 0);
+        assert_eq!(transcript.mask_unspoken_sentences(&recognition), 0);
+    }
+
+    #[test]
     fn extra_speech_requires_unique_phrases_and_a_sentence_boundary() {
         for (text, speech) in [
             (

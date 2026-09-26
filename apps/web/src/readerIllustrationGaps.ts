@@ -1,4 +1,4 @@
-import type { Book as EpubBook } from "epubjs";
+import type { Book as EpubBook, Contents } from "epubjs";
 import { normalizeReadalongText, normalizeSyncNeedle } from "./readalong.ts";
 import type { Chapter, SyncFragment } from "./types";
 
@@ -10,6 +10,27 @@ export type IllustrationGap = {
   heading?: boolean;
   divider?: boolean;
 };
+
+/** Image-only pages can report the preceding text's CFI as both page bounds. */
+export function imageCfiOnPage(contentsList: Contents[], cfi: string, viewport: Pick<DOMRect, "left" | "right" | "top" | "bottom">) {
+  for (const contents of contentsList) {
+    if (!cfi.startsWith(`epubcfi(${contents.cfiBase}!`)) continue;
+    try {
+      const node = contents.range(cfi).startContainer;
+      if (node.nodeType !== 1 || !/^(img|svg|image)$/i.test((node as Element).localName)) continue;
+      const frame = contents.document.defaultView?.frameElement;
+      if (!frame) continue;
+      const image = (node as Element).getBoundingClientRect();
+      const offset = frame.getBoundingClientRect();
+      if (image.width > 0 && image.height > 0
+        && image.left + offset.left < viewport.right && image.right + offset.left > viewport.left
+        && image.top + offset.top < viewport.bottom && image.bottom + offset.top > viewport.top) return true;
+    } catch {
+      // A previous section or a page being replaced cannot acknowledge a turn.
+    }
+  }
+  return false;
+}
 
 /** A long interval may contain narration of text printed only in a picture. */
 export function illustrationGapCandidates(fragments: SyncFragment[]) {

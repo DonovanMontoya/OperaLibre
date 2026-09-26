@@ -1,8 +1,30 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { Book as EpubBook } from "epubjs";
+import type { Book as EpubBook, Contents } from "epubjs";
 import type { Chapter } from "../src/types.ts";
-import { findIllustrationGaps, illustrationGapAt } from "../src/readerIllustrationGaps.ts";
+import { findIllustrationGaps, illustrationGapAt, imageCfiOnPage } from "../src/readerIllustrationGaps.ts";
+
+it("acknowledges a visible image even when the page's text bounds stop before its CFI", () => {
+  const cfi = "epubcfi(/6/20!/4/10/2)";
+  const viewport = { left: 0, right: 320, top: 50, bottom: 550 };
+  let rectangle = { left: 976, right: 1264, top: 0, bottom: 420, width: 288, height: 420 };
+  let frame = { left: -960, top: 50 };
+  const image = { nodeType: 1, localName: "img", getBoundingClientRect: () => rectangle };
+  const contents = {
+    cfiBase: "/6/20", range: () => ({ startContainer: image }),
+    document: { defaultView: { frameElement: { getBoundingClientRect: () => frame } } }
+  } as unknown as Contents;
+  assert.equal(imageCfiOnPage([contents], cfi, viewport), true);
+  assert.equal(imageCfiOnPage([contents], "epubcfi(/6/22!/4/10/2)", viewport), false);
+  // The prior page remains off-screen after the text reflows.
+  frame = { left: -640, top: 50 };
+  assert.equal(imageCfiOnPage([contents], cfi, viewport), false);
+  frame = { left: -960, top: 600 };
+  assert.equal(imageCfiOnPage([contents], cfi, viewport), false);
+  rectangle = { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+  assert.equal(imageCfiOnPage([contents], cfi, viewport), false);
+  assert.equal(imageCfiOnPage([], cfi, viewport), false);
+});
 
 function chapter(startSeconds: number): Chapter {
   return { id: String(startSeconds), title: "Chapter", trackId: "audio", trackIndex: 0, startSeconds, endSeconds: null, source: "embedded" };

@@ -53,7 +53,7 @@ import {
   readStoredFontScale
 } from "./readerFontScale";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
-import { findIllustrationGaps, illustrationGapAt, type IllustrationGap } from "./readerIllustrationGaps";
+import { findIllustrationGaps, illustrationGapAt, imageCfiOnPage, type IllustrationGap } from "./readerIllustrationGaps";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Chapter, SyncFragment } from "./types";
@@ -786,6 +786,12 @@ export function EpubReadalong({
             // A transient, incomplete location cannot acknowledge navigation.
           }
         }
+        if (!arrived && "cfi" in pendingFollow && rendition && viewerRef.current) {
+          arrived = imageCfiOnPage(
+            ([] as Contents[]).concat(rendition.getContents() as unknown as Contents[]),
+            pendingFollow.cfi, viewerRef.current.getBoundingClientRect()
+          );
+        }
         // A restore that was already running can report its old page after
         // Follow takes over. Do not adopt that page as the new reading anchor.
         if (!arrived) {
@@ -971,7 +977,13 @@ export function EpubReadalong({
         // observer has already requested a marker redraw. Once the new view
         // actually exists, rerun the read-along effect so the still-active
         // sentence is painted into that view as well.
-        if (highlightCfiRef.current) {
+        if (pendingFollowTargetRef.current && followRef.current) {
+          // The first turn can run before content hooks apply the current
+          // font size. A newly rendered view permits one fresh attempt.
+          autoNavHrefRef.current = null;
+          pendingFollowTargetRef.current.retried = false;
+        }
+        if (highlightCfiRef.current || pendingFollowTargetRef.current) {
           setRelayoutTick((tick) => tick + 1);
         }
       }
@@ -1498,12 +1510,15 @@ export function EpubReadalong({
       narratedRangeRef.current = null;
       const pictureTarget = illustrationGap?.cfi ?? illustrationGap?.href;
       const EpubCfiClass = epubCfiClassRef.current;
-      const cfiOnPage = !!(illustrationGap?.cfi && EpubCfiClass && location?.start?.cfi && location.end?.cfi
-        && anchorOnPage(
+      const cfiOnPage = !!(illustrationGap?.cfi && rendition && viewerRef.current
+        && (imageCfiOnPage(
+          ([] as Contents[]).concat(rendition.getContents() as unknown as Contents[]),
+          illustrationGap.cfi, viewerRef.current.getBoundingClientRect()
+        ) || (EpubCfiClass && location?.start?.cfi && location.end?.cfi && anchorOnPage(
           illustrationGap.cfi,
           { start: location.start.cfi, end: location.end.cfi },
           (a, b) => new EpubCfiClass().compare(a, b)
-        ));
+        ))));
       if (followRef.current && illustrationGap && pictureTarget && isReady && rendition && location
         && autoNavHrefRef.current !== pictureTarget
         && shouldTurnToIllustration(
