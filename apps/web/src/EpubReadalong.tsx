@@ -28,6 +28,7 @@ import {
   findActiveFragmentIndex,
   findTocHrefForChapterTitle,
   hrefsMatch,
+  inSyncRecoveryGap,
   normalizeSyncNeedle,
   readerStorageKey,
   repeatedNarratedPageTurn,
@@ -56,7 +57,7 @@ import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import { findIllustrationGaps, illustrationGapAt, imageCfiOnPage, type IllustrationGap } from "./readerIllustrationGaps";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Chapter, SyncFragment } from "./types";
+import type { Chapter, SyncFragment, SyncRecoveryGap } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import { useLandscapeOrientation, useWideSpreadWindow } from "./useOrientation";
 
@@ -262,6 +263,7 @@ export function EpubReadalong({
   listeningChapter,
   syncTarget,
   syncFragments,
+  syncRecoveryGaps,
   audioChapters,
   positionSeconds,
   followLeadSeconds = 0,
@@ -286,6 +288,7 @@ export function EpubReadalong({
   listeningChapter: string | null;
   syncTarget: EpubSyncTarget | null;
   syncFragments: SyncFragment[] | null;
+  syncRecoveryGaps?: SyncRecoveryGap[];
   audioChapters?: Chapter[];
   positionSeconds: number;
   /** A small optional lead for switching to the next narrated sentence. */
@@ -1462,18 +1465,19 @@ export function EpubReadalong({
     && illustrationResult.audioChapters === audioChapters
     && illustrationResult.toc === toc;
   const illustrationGaps = illustrationGapsReady ? illustrationResult.gaps : EMPTY_ILLUSTRATION_GAPS;
+  const recoveringSync = inSyncRecoveryGap(syncRecoveryGaps, positionSeconds);
 
   const illustrationGap = useMemo(
-    () => illustrationGapAt(illustrationGaps, positionSeconds),
-    [illustrationGaps, positionSeconds]
+    () => recoveringSync ? null : illustrationGapAt(illustrationGaps, positionSeconds),
+    [illustrationGaps, positionSeconds, recoveringSync]
   );
 
   const fragmentIndex = useMemo(
     () =>
       syncFragments && syncFragments.length > 0 && illustrationGapsReady && !illustrationGap
-        ? findActiveFragmentIndex(syncFragments, positionSeconds, followLeadSeconds)
+        ? findActiveFragmentIndex(syncFragments, positionSeconds, followLeadSeconds, syncRecoveryGaps)
         : -1,
-    [followLeadSeconds, syncFragments, illustrationGap, illustrationGapsReady, positionSeconds]
+    [followLeadSeconds, syncFragments, syncRecoveryGaps, illustrationGap, illustrationGapsReady, positionSeconds]
   );
 
   const removeAnnotation = useCallback((cfi: string | null) => {
@@ -1693,7 +1697,7 @@ export function EpubReadalong({
         ? `${followLabel} · ${locationLabel}`
         : illustrationGap
           ? `${illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"} · ${locationLabel}`
-          : `Waiting for narration · ${locationLabel}`
+          : `${recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"} · ${locationLabel}`
       : `Reading freely · ${locationLabel}`
     : syncTarget
       ? `Chapter sync · ${locationLabel}`
@@ -1944,7 +1948,7 @@ export function EpubReadalong({
                 ? follow
                   ? fragmentIndex >= 0
                     ? followLabel
-                    : "Waiting for narration"
+                    : recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"
                   : "Reading freely"
                 : syncTarget
                   ? follow

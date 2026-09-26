@@ -448,6 +448,7 @@ pub(crate) async fn run_sync_generation(
     let total_weight = scope_weights.iter().sum::<f64>().max(f64::MIN_POSITIVE);
     let mut done_weight = 0.0f64;
     let mut fragments = Vec::new();
+    let mut recovery_gaps = Vec::new();
     for (scope_number, scope) in scopes.iter().enumerate() {
         let track = &tracks[scope.track_index];
         let progress = ScopeProgress {
@@ -492,10 +493,11 @@ pub(crate) async fn run_sync_generation(
         update_job_output(
             state,
             job_id,
-            &format!("  Matched {} sentences.\n", scope_fragments.len()),
+            &format!("  Matched {} sentences.\n", scope_fragments.fragments.len()),
         )
         .await;
-        fragments.extend(scope_fragments);
+        fragments.extend(scope_fragments.fragments);
+        recovery_gaps.extend(scope_fragments.recovery_gaps);
     }
 
     anyhow::ensure!(
@@ -517,6 +519,7 @@ pub(crate) async fn run_sync_generation(
         generated_at: Some(now_unix_string()),
         precision: Some(alignment::PRECISION_SENTENCE.to_string()),
         fragments,
+        recovery_gaps,
     };
     fs::create_dir_all(&state.sync_dir).await?;
     let sync_path = state
@@ -638,6 +641,10 @@ const MAX_SINGLE_PASS_SECONDS: f64 = WINDOW_SECONDS * 1.5;
 /// How much transcript to search when matching a window's recognized words,
 /// as a multiple of what the window would cover at the scope's average pace.
 const WINDOW_TEXT_LOOKAHEAD: f64 = 1.8;
+/// After losing text, scan short overlapping audio intervals without guessing
+/// a new text cursor. Overlap keeps a sentence at a scan boundary recoverable.
+const RECOVERY_SCAN_SECONDS: f64 = 60.0;
+const RECOVERY_OVERLAP_SECONDS: f64 = 15.0;
 
 /// Which recognizer model to anchor windows with. English books get the
 /// English-only model, which is markedly better at the same size.
@@ -687,6 +694,12 @@ struct Aligner<'a> {
     recognition: &'a RecognitionSettings,
 }
 
+#[derive(Default)]
+struct ScopeAlignment {
+    fragments: Vec<alignment::SyncFragment>,
+    recovery_gaps: Vec<alignment::RecoveryGap>,
+}
+
 impl Aligner<'_> {
     async fn align_scope(
         &self,
@@ -695,15 +708,13 @@ impl Aligner<'_> {
         transcript: &alignment::Transcript,
         scope_number: usize,
         progress: &ScopeProgress,
-    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+    ) -> anyhow::Result<ScopeAlignment> {
         let (scope_start, scope_end) = match scope.audio_range {
             Some((start, end)) => (start, Some(end)),
             None => (0.0, track.duration_seconds),
         };
         let windowed = match (self.ffmpeg_path, scope_end) {
-            (Some(ffmpeg), Some(scope_end))
-                if scope_end - scope_start > MAX_SINGLE_PASS_SECONDS =>
-            {
+            (Some(ffmpeg), Some(scope_end)) if scope_end - scope_start > 0.5 => {
                 Some((ffmpeg, scope_end))
             }
             _ => None,
@@ -728,6 +739,10 @@ impl Aligner<'_> {
                 }
                 self.align_single_pass(scope, track, transcript, scope_number)
                     .await
+                    .map(|fragments| ScopeAlignment {
+                        fragments,
+                        recovery_gaps: Vec::new(),
+                    })
             }
         }
     }
@@ -805,7 +820,7 @@ impl Aligner<'_> {
         scope_start: f64,
         scope_end: f64,
         progress: &ScopeProgress,
-    ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+    ) -> anyhow::Result<ScopeAlignment> {
         // Book time of position zero in this file.
         let book_offset = scope.time_offset_seconds - scope_start;
         let text_len = transcript.len_utf16();
@@ -816,10 +831,115 @@ impl Aligner<'_> {
         let mut fragments = Vec::new();
         let mut windows = 0usize;
         let mut unanchored = 0usize;
+        let mut recovering = false;
+        let mut recovery_start = None;
+        let mut recovery_gaps = Vec::new();
 
         while position < scope_end - 0.5 && cursor < text_len {
             windows += 1;
             let remaining = scope_end - position;
+            if recovering {
+                let gap_start = *recovery_start.get_or_insert_with(|| {
+                    fragments.last().map_or(
+                        book_offset + scope_start,
+                        |fragment: &alignment::SyncFragment| fragment.end_seconds,
+                    )
+                });
+                let scan_end = (position + RECOVERY_SCAN_SECONDS).min(scope_end);
+                let audio = self
+                    .slice(
+                        ffmpeg,
+                        &track.path,
+                        position,
+                        scan_end,
+                        scope_number,
+                        windows,
+                        "recovery",
+                    )
+                    .await?;
+                let remaining_text = transcript.window(cursor, text_len);
+                let recognized = self
+                    .transcribe_checked(
+                        &audio,
+                        scope_number,
+                        windows,
+                        &remaining_text.text,
+                        scan_end - position,
+                    )
+                    .await;
+                let _ = fs::remove_file(audio).await;
+                let recognized = recognized?;
+                if let Some(anchor) = alignment::find_recovery_anchor(
+                    &recognized,
+                    &transcript.text,
+                    cursor,
+                    scan_end - position,
+                ) {
+                    let start = position + anchor.start_seconds;
+                    let end = position + anchor.end_seconds;
+                    let audio = self
+                        .slice(
+                            ffmpeg,
+                            &track.path,
+                            start,
+                            end,
+                            scope_number,
+                            windows,
+                            "recovered",
+                        )
+                        .await?;
+                    let chunk = transcript.window(anchor.text_start_utf16, anchor.text_end_utf16);
+                    let shifted = recognized
+                        .iter()
+                        .cloned()
+                        .map(|mut word| {
+                            word.start_time -= anchor.start_seconds;
+                            word.end_time -= anchor.start_seconds;
+                            word
+                        })
+                        .collect::<Vec<_>>();
+                    let result = self
+                        .align(
+                            &audio,
+                            &chunk,
+                            book_offset + start,
+                            scope_number,
+                            windows,
+                            &scope.label,
+                            &shifted,
+                        )
+                        .await;
+                    let _ = fs::remove_file(audio).await;
+                    let recovered = result?;
+                    position = end;
+                    cursor =
+                        alignment::skip_whitespace_utf16(&transcript.text, anchor.text_end_utf16);
+                    // Recognition alone is not enough: keep the gap open if
+                    // forced alignment cannot produce a usable sentence.
+                    if let Some(first) = recovered.first() {
+                        if first.start_seconds > gap_start {
+                            recovery_gaps.push(alignment::RecoveryGap {
+                                start_seconds: gap_start,
+                                end_seconds: first.start_seconds,
+                            });
+                        }
+                        recovery_start = None;
+                        recovering = false;
+                        update_job_output(self.state, self.job_id, &format!("  Recovered at {:.1} s using a unique sentence; uncertain audio was left unmatched.\n", first.start_seconds)).await;
+                        fragments.extend(recovered);
+                    }
+                } else {
+                    position = if scan_end >= scope_end {
+                        scope_end
+                    } else {
+                        scan_end - RECOVERY_OVERLAP_SECONDS
+                    };
+                }
+                let done =
+                    (position - scope_start) / (scope_end - scope_start).max(f64::MIN_POSITIVE);
+                update_job_progress(self.state, self.job_id, progress.at(done)).await;
+                continue;
+            }
             let (segment_end, text_end, lead_in, recognized) =
                 if remaining <= MAX_SINGLE_PASS_SECONDS {
                     let audio = self
@@ -846,10 +966,37 @@ impl Aligner<'_> {
                     let _ = fs::remove_file(audio).await;
                     self.mask_unspoken_sentences(&mut transcript, &recognized, cursor..text_len)
                         .await;
-                    (scope_end, text_len, 0.0, recognized)
+                    let text = transcript.window(cursor, text_len);
+                    let anchor = alignment::find_window_anchor(
+                        &recognized,
+                        &transcript.text,
+                        cursor,
+                        text_len - cursor,
+                        remaining,
+                    );
+                    if text.text.split_whitespace().count() >= 10
+                        && (anchor.end.is_none()
+                            || alignment::recognition_misses_opening(&recognized, &text.text))
+                    {
+                        unanchored += 1;
+                        recovering = true;
+                        continue;
+                    }
+                    if alignment::recognition_misses_ending(&recognized, &text.text)
+                        && let Some(end) = anchor.end
+                    {
+                        (
+                            position + end.seconds,
+                            end.text_end_utf16,
+                            anchor.lead_in_seconds,
+                            recognized,
+                        )
+                    } else {
+                        (scope_end, text_len, 0.0, recognized)
+                    }
                 } else {
                     let mut window = WINDOW_SECONDS;
-                    let (anchor, window_end, recognized) = loop {
+                    let (anchor, recognized) = loop {
                         let window_end = (position + window).min(scope_end);
                         let audio = self
                             .slice(
@@ -892,11 +1039,17 @@ impl Aligner<'_> {
                             window_end - position - WINDOW_MARGIN_SECONDS,
                         );
                         if anchor.end.is_some() || window >= WINDOW_SECONDS * 2.0 {
-                            break (anchor, window_end, recognized);
+                            break (anchor, recognized);
                         }
                         // Nothing usable: look twice as far once before giving up.
                         window *= 2.0;
                     };
+                    let recognition_text = transcript.window(cursor, text_len);
+                    if alignment::recognition_misses_opening(&recognized, &recognition_text.text) {
+                        unanchored += 1;
+                        recovering = true;
+                        continue;
+                    }
                     let (segment_end, text_end, lead_in) = match anchor.end {
                         Some(end) => (
                             position + end.seconds,
@@ -904,19 +1057,12 @@ impl Aligner<'_> {
                             anchor.lead_in_seconds,
                         ),
                         None => {
-                            // Fall back to the scope's average pace for one window.
+                            // Never advance text by an average-rate guess. An
+                            // error here otherwise becomes the next window's
+                            // starting point and can persist for the chapter.
                             unanchored += 1;
-                            let target = cursor + (WINDOW_SECONDS * pace).ceil() as u64;
-                            let text_end = alignment::sentence_end_before(
-                                &transcript.text,
-                                cursor,
-                                target.min(text_len),
-                            );
-                            (
-                                (position + WINDOW_SECONDS).min(window_end),
-                                text_end,
-                                anchor.lead_in_seconds,
-                            )
+                            recovering = true;
+                            continue;
                         }
                     };
                     (segment_end, text_end, lead_in, recognized)
@@ -977,6 +1123,15 @@ impl Aligner<'_> {
             update_job_progress(self.state, self.job_id, progress.at(done)).await;
         }
 
+        if let Some(start_seconds) = recovery_start
+            && book_offset + scope_end > start_seconds
+        {
+            recovery_gaps.push(alignment::RecoveryGap {
+                start_seconds,
+                end_seconds: book_offset + scope_end,
+            });
+        }
+
         let note = if unanchored > 0 {
             format!(" ({unanchored} without a recognized anchor)")
         } else {
@@ -988,7 +1143,10 @@ impl Aligner<'_> {
             &format!("  Aligned in {windows} windows{note}.\n"),
         )
         .await;
-        Ok(fragments)
+        Ok(ScopeAlignment {
+            fragments,
+            recovery_gaps,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1787,8 +1945,8 @@ mod tests {
                 completed: index,
                 total: scopes.len(),
             };
-            let fragments = if transcript.text.trim().is_empty() {
-                Vec::new()
+            let result = if transcript.text.trim().is_empty() {
+                ScopeAlignment::default()
             } else {
                 aligner
                     .align_scope(scope, &track, &transcript, index, &progress)
@@ -1800,7 +1958,8 @@ mod tests {
                 generator: Some("echogarden".into()),
                 generated_at: None,
                 precision: Some(alignment::PRECISION_SENTENCE.into()),
-                fragments,
+                fragments: result.fragments,
+                recovery_gaps: result.recovery_gaps,
             };
             std::fs::write(&path, serde_json::to_vec(&map).unwrap()).unwrap();
             println!(
@@ -1839,7 +1998,7 @@ mod tests {
         /// One `time word` line per spoken word: an unscripted heading, then
         /// every sentence's eight words half a second apart. Sentences in
         /// `garbled` are spoken as noise the recognizer cannot place.
-        fn narration(count: usize, garbled: std::ops::Range<usize>) -> String {
+        fn narration(count: usize, garbled: &[std::ops::Range<usize>]) -> String {
             let mut lines = Vec::new();
             for (index, word) in "this is a narrated heading for the chapter"
                 .split_whitespace()
@@ -1849,7 +2008,7 @@ mod tests {
             }
             for index in 0..count {
                 for (position, word) in sentence(index).split_whitespace().enumerate() {
-                    let word = if garbled.contains(&index) {
+                    let word = if garbled.iter().any(|range| range.contains(&index)) {
                         "blah"
                     } else {
                         word.trim_end_matches('.')
@@ -1912,6 +2071,34 @@ esac
             unspoken_after: Option<usize>,
             additional_after: Option<usize>,
         ) -> (Vec<alignment::SyncFragment>, String) {
+            align_fake_book_with_outages(count, &[garbled], unspoken_after, additional_after).await
+        }
+
+        async fn align_fake_book_with_outages(
+            count: usize,
+            garbled: &[std::ops::Range<usize>],
+            unspoken_after: Option<usize>,
+            additional_after: Option<usize>,
+        ) -> (Vec<alignment::SyncFragment>, String) {
+            align_fake_book_with_settings(
+                count,
+                garbled,
+                unspoken_after,
+                additional_after,
+                0.0,
+                None,
+            )
+            .await
+        }
+
+        async fn align_fake_book_with_settings(
+            count: usize,
+            garbled: &[std::ops::Range<usize>],
+            unspoken_after: Option<usize>,
+            additional_after: Option<usize>,
+            book_offset: f64,
+            empty_sentence: Option<usize>,
+        ) -> (Vec<alignment::SyncFragment>, String) {
             let root = tempfile::tempdir().unwrap();
             let (state, _) = crate::unit_tests::fake_libation_state(root.path());
             let job_id = create_job(&state, "sync-generate").await;
@@ -1953,10 +2140,14 @@ esac
             let ffmpeg = root.path().join("ffmpeg");
             write_script(&ffmpeg, FAKE_FFMPEG);
             let cli = root.path().join("echogarden");
-            write_script(
-                &cli,
-                &FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string()),
-            );
+            let script =
+                FAKE_ECHOGARDEN.replace("NARRATION_PATH", &narration_path.display().to_string());
+            let script = if let Some(index) = empty_sentence {
+                script.replace("  align)\n", &format!("  align)\n    if grep -q '^Sentence {index} ' \"$3\"; then printf '[]' > \"$4\"; exit 0; fi\n"))
+            } else {
+                script
+            };
+            write_script(&cli, &script);
 
             let book_sentence = |index| {
                 let spoken = sentence(index);
@@ -2006,7 +2197,7 @@ esac
                 track_index: 0,
                 section_range: 0..2,
                 audio_range: None,
-                time_offset_seconds: 0.0,
+                time_offset_seconds: book_offset,
                 label: "Book".into(),
             };
             let recognition = RecognitionSettings::for_language(Some("en"));
@@ -2028,10 +2219,32 @@ esac
                 completed: 0,
                 total: 1,
             };
-            let fragments = aligner
+            let result = aligner
                 .align_scope(&scope, &track, &transcript, 0, &progress)
                 .await
                 .unwrap();
+            for gap in &result.recovery_gaps {
+                assert!(gap.start_seconds.is_finite() && gap.end_seconds.is_finite());
+                assert!(gap.start_seconds < gap.end_seconds);
+                assert!(
+                    result
+                        .fragments
+                        .iter()
+                        .all(|fragment| fragment.end_seconds <= gap.start_seconds + 1e-6
+                            || fragment.start_seconds >= gap.end_seconds - 1e-6)
+                );
+            }
+            for outage in garbled.iter().filter(|range| !range.is_empty()) {
+                let during = book_offset + narrated_start((outage.start + outage.end) / 2);
+                assert!(
+                    result
+                        .recovery_gaps
+                        .iter()
+                        .any(|gap| gap.start_seconds <= during && during < gap.end_seconds),
+                    "outage {outage:?} has no recovery metadata: {:?}",
+                    result.recovery_gaps
+                );
+            }
             let job = state.jobs.read().await.get(&job_id).unwrap().clone();
             // Every window reports where it got to, so the bar reaches the end
             // of this scope's share rather than sitting still until the job is
@@ -2046,7 +2259,7 @@ esac
                     "progress ended at {reported}, not near the end of the scope's span"
                 );
             }
-            (fragments, job.output)
+            (result.fragments, job.output)
         }
 
         fn assert_monotonic(fragments: &[alignment::SyncFragment]) {
@@ -2118,20 +2331,19 @@ esac
         }
 
         #[tokio::test]
-        async fn a_stretch_without_anchors_falls_back_and_resynchronizes_afterwards() {
+        async fn a_stretch_without_anchors_stays_unmapped_and_recovers_at_the_first_clear_sentence()
+        {
             let count = 400;
             let (fragments, output) = align_fake_book(count, 60..190, None, None).await;
 
-            assert_eq!(fragments.len(), count);
+            assert_eq!(fragments.len(), count - 130);
             assert_monotonic(&fragments);
             assert!(output.contains("without a recognized anchor"), "{output}");
-            // Before the garbled stretch, and well after it once the
-            // recognizer anchors again, timing is exact.
-            for (index, fragment) in fragments
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index < 60 || *index >= 260)
-            {
+            assert!(output.contains("Recovered at 772.0 s"), "{output}");
+            // The first clear sentence recovers immediately, not many windows
+            // later. No guessed sentence is emitted during the outage.
+            for (index, fragment) in (0..60).chain(190..count).zip(&fragments) {
+                assert_eq!(fragment.text, sentence(index));
                 let expected = narrated_start(index);
                 assert!(
                     (fragment.start_seconds - expected).abs() < 0.75,
@@ -2139,6 +2351,64 @@ esac
                     fragment.start_seconds
                 );
             }
+        }
+
+        #[tokio::test]
+        async fn recovery_handles_bad_openings_and_endings_without_guessing() {
+            for (count, outage) in [(40, 0..15), (40, 0..40), (40, 25..40), (200, 130..200)] {
+                let (fragments, output) = align_fake_book(count, outage.clone(), None, None).await;
+                assert_monotonic(&fragments);
+                let expected = (0..count)
+                    .filter(|index| !outage.contains(index))
+                    .collect::<Vec<_>>();
+                assert_eq!(fragments.len(), expected.len(), "{output}");
+                for (index, fragment) in expected.into_iter().zip(&fragments) {
+                    assert_eq!(fragment.text, sentence(index));
+                    assert!(
+                        (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                        "{index}: {fragment:?}"
+                    );
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn recovery_can_lose_and_regain_alignment_more_than_once() {
+            let outages = [40..165, 225..350];
+            let (fragments, output) = align_fake_book_with_outages(400, &outages, None, None).await;
+            assert_monotonic(&fragments);
+            let expected = (0..400)
+                .filter(|index| !outages.iter().any(|range| range.contains(index)))
+                .collect::<Vec<_>>();
+            assert_eq!(fragments.len(), expected.len(), "{output}");
+            assert!(output.matches("Recovered at").count() >= 2, "{output}");
+            for (index, fragment) in expected.into_iter().zip(&fragments) {
+                assert_eq!(fragment.text, sentence(index));
+                assert!(
+                    (fragment.start_seconds - narrated_start(index)).abs() < 0.75,
+                    "{index}: {fragment:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn recovery_requires_forced_timing_and_keeps_book_offsets() {
+            let outage = 0..15;
+            let (fragments, output) = align_fake_book_with_settings(
+                40,
+                std::slice::from_ref(&outage),
+                None,
+                None,
+                1000.0,
+                Some(15),
+            )
+            .await;
+            assert_eq!(fragments.len(), 24, "{output}");
+            assert_eq!(fragments[0].text, sentence(16));
+            assert!((fragments[0].start_seconds - 1076.0).abs() < 0.01);
+            assert!(output.contains("Recovered at 1076.0 s"), "{output}");
+            assert!(!output.contains("Recovered at 1072.0 s"), "{output}");
+            assert_monotonic(&fragments);
         }
 
         #[tokio::test]
