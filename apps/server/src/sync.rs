@@ -469,7 +469,7 @@ pub(crate) async fn run_sync_generation(
             total: scopes.len(),
         };
         done_weight += scope_weights[scope_number];
-        let transcript = alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
+        let transcript = scope_transcript(&epub, scope);
         if transcript.text.trim().is_empty() {
             continue;
         }
@@ -536,6 +536,39 @@ async fn write_sync_map(path: &FsPath, map: &alignment::SyncMap) -> Result<(), A
     let bytes = serde_json::to_vec(map)
         .map_err(|error| ApiError::internal(format!("Could not encode the sync map: {error}")))?;
     write_bytes_atomic(path, &bytes).await
+}
+
+fn scope_transcript(
+    epub: &alignment::EpubDocument,
+    scope: &SyncAlignmentScope,
+) -> alignment::Transcript {
+    let mut transcript = alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
+    if scope.audio_range.is_none()
+        || transcript.text.is_empty()
+        || !epub
+            .leading_image_sections
+            .contains(&scope.section_range.start)
+    {
+        return transcript;
+    }
+    let target = alignment::parse_label(&scope.label);
+    let heading = epub
+        .toc
+        .iter()
+        .filter(|entry| entry.spine_index == scope.section_range.start)
+        .max_by_key(|entry| {
+            alignment::label_match_score(&target, &alignment::parse_label(&entry.title))
+        });
+    if let Some(heading) = heading {
+        let heading_label = alignment::parse_label(&heading.title);
+        let first_line = alignment::parse_label(transcript.text.lines().next().unwrap_or(""));
+        if !heading.title.trim().is_empty()
+            && alignment::label_match_score(&heading_label, &first_line) < 70
+        {
+            transcript.prepend_unmapped(&heading.title);
+        }
+    }
+    transcript
 }
 
 fn chapter_alignment_scopes(
@@ -1367,8 +1400,7 @@ mod tests {
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(2);
                 let scope = &scopes[selected];
-                let transcript =
-                    alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
+                let transcript = scope_transcript(&epub, scope);
                 std::fs::write(output_path, transcript.text).unwrap();
                 println!(
                     "selected_scope={selected} label={} audio={:?} sections={:?}",
@@ -1376,6 +1408,100 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Opt-in real audio exercise of the production aligner. Writes only to
+    /// the supplied test directory; existing per-scope results allow resume.
+    #[tokio::test]
+    #[ignore = "manual real-book alignment probe"]
+    async fn manual_real_book_alignment_probe() {
+        let epub_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_EPUB").unwrap());
+        let audio_path = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_AUDIO").unwrap());
+        let cli = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_CLI").unwrap());
+        let output = PathBuf::from(std::env::var_os("OPERALIBRE_PROBE_OUTPUT").unwrap());
+        let ffmpeg = PathBuf::from(
+            std::env::var_os("OPERALIBRE_PROBE_FFMPEG").unwrap_or_else(|| "ffmpeg".into()),
+        );
+        let selected = std::env::var("OPERALIBRE_PROBE_SCOPES").ok().map(|value| {
+            value
+                .split(',')
+                .map(|index| index.parse::<usize>().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let epub = alignment::parse_epub_file(&epub_path).unwrap();
+        let metadata = read_track_metadata(&audio_path);
+        let track = SyncTrackInput {
+            path: audio_path,
+            title: metadata.title.unwrap_or_else(|| "Book".into()),
+            duration_seconds: metadata.duration_seconds,
+            chapters: metadata
+                .chapters
+                .into_iter()
+                .map(|chapter| SyncChapterInput {
+                    title: chapter.title,
+                    start_seconds: chapter.start_seconds,
+                    end_seconds: chapter.end_seconds,
+                })
+                .collect(),
+        };
+        let scopes = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (state, _) = crate::unit_tests::fake_libation_state(root.path());
+        let job_id = create_job(&state, "sync-probe").await;
+        let recognition = RecognitionSettings::for_language(epub.language.as_deref());
+        let aligner = Aligner {
+            state: &state,
+            job_id: &job_id,
+            cli_path: &cli,
+            cli_args: &[],
+            ffmpeg_path: Some(&ffmpeg),
+            temp_dir: root.path(),
+            recognition: &recognition,
+        };
+        for (index, scope) in scopes.iter().enumerate() {
+            if selected
+                .as_ref()
+                .is_some_and(|indices| !indices.contains(&index))
+            {
+                continue;
+            }
+            let path = output.join(format!("scope-{index}.json"));
+            if path.exists() {
+                continue;
+            }
+            let transcript = scope_transcript(&epub, scope);
+            let progress = ScopeProgress {
+                base: 0.0,
+                span: 1.0,
+                step: scope.label.clone(),
+                completed: index,
+                total: scopes.len(),
+            };
+            let fragments = if transcript.text.trim().is_empty() {
+                Vec::new()
+            } else {
+                aligner
+                    .align_scope(scope, &track, &transcript, index, &progress)
+                    .await
+                    .unwrap()
+            };
+            let map = alignment::SyncMap {
+                version: alignment::SYNC_MAP_VERSION,
+                generator: Some("echogarden".into()),
+                generated_at: None,
+                precision: Some(alignment::PRECISION_SENTENCE.into()),
+                fragments,
+            };
+            std::fs::write(&path, serde_json::to_vec(&map).unwrap()).unwrap();
+            println!(
+                "scope={index} label={} audio={:?} fragments={}",
+                scope.label,
+                scope.audio_range,
+                map.fragments.len()
+            );
+        }
+        println!("{}", state.jobs.read().await.get(&job_id).unwrap().output);
     }
 
     /// Drives the windowed aligner with shell-script stand-ins for ffmpeg

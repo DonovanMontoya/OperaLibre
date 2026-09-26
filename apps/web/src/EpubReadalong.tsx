@@ -54,7 +54,6 @@ import {
 } from "./readerFontScale";
 import { canCatchUp, resolveListeningCfi } from "./readerCatchUp";
 import { findIllustrationGaps, illustrationGapAt, type IllustrationGap } from "./readerIllustrationGaps";
-import { correctEarlyChapterFragments } from "./readerTimingCorrection";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Chapter, SyncFragment } from "./types";
@@ -395,7 +394,6 @@ export function EpubReadalong({
   const [isReady, setIsReady] = useState(false);
   const [illustrationResult, setIllustrationResult] = useState<{
     url: string;
-    sourceFragments: SyncFragment[];
     fragments: SyncFragment[];
     audioChapters: Chapter[] | undefined;
     toc: Array<NavItem & { depth: number }>;
@@ -1438,22 +1436,20 @@ export function EpubReadalong({
       return;
     }
     let cancelled = false;
-    const fragments = correctEarlyChapterFragments(syncFragments, audioChapters ?? [], toc);
+    const fragments = syncFragments;
     void findIllustrationGaps(book, fragments, audioChapters).then((gaps) => {
-      if (!cancelled) setIllustrationResult({ url, sourceFragments: syncFragments, fragments, audioChapters, toc, gaps });
+      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps });
     }).catch(() => {
-      if (!cancelled) setIllustrationResult({ url, sourceFragments: syncFragments, fragments, audioChapters, toc, gaps: [] });
+      if (!cancelled) setIllustrationResult({ url, fragments, audioChapters, toc, gaps: [] });
     });
     return () => { cancelled = true; };
   }, [audioChapters, isReady, syncFragments, toc, url]);
 
   const illustrationGapsReady = illustrationResult?.url === url
-    && illustrationResult.sourceFragments === syncFragments
+    && illustrationResult.fragments === syncFragments
     && illustrationResult.audioChapters === audioChapters
     && illustrationResult.toc === toc;
   const illustrationGaps = illustrationGapsReady ? illustrationResult.gaps : EMPTY_ILLUSTRATION_GAPS;
-  const followingFragments = illustrationGapsReady ? illustrationResult.fragments : syncFragments;
-  syncFragmentsRef.current = followingFragments;
 
   const illustrationGap = useMemo(
     () => illustrationGapAt(illustrationGaps, positionSeconds),
@@ -1462,10 +1458,10 @@ export function EpubReadalong({
 
   const fragmentIndex = useMemo(
     () =>
-      followingFragments && followingFragments.length > 0 && illustrationGapsReady && !illustrationGap
-        ? findActiveFragmentIndex(followingFragments, positionSeconds, followLeadSeconds)
+      syncFragments && syncFragments.length > 0 && illustrationGapsReady && !illustrationGap
+        ? findActiveFragmentIndex(syncFragments, positionSeconds, followLeadSeconds)
         : -1,
-    [followLeadSeconds, followingFragments, illustrationGap, illustrationGapsReady, positionSeconds]
+    [followLeadSeconds, syncFragments, illustrationGap, illustrationGapsReady, positionSeconds]
   );
 
   const removeAnnotation = useCallback((cfi: string | null) => {
@@ -1492,7 +1488,7 @@ export function EpubReadalong({
     // re-renders with the new follow value. Reading the stale state here
     // would re-highlight and re-page to wherever the narration currently is,
     // which is exactly the jump a hand-turned page must not make.
-    if (!followRef.current || !followingFragments || fragmentIndex < 0) {
+    if (!followRef.current || !syncFragments || fragmentIndex < 0) {
       pendingFollowTargetRef.current = null;
       removeAnnotation(highlightCfiRef.current);
       highlightCfiRef.current = null;
@@ -1530,7 +1526,7 @@ export function EpubReadalong({
       narratedRangeRef.current = null;
       lastKeepRef.current = null;
     }
-    const fragment = followingFragments[fragmentIndex];
+    const fragment = syncFragments[fragmentIndex];
     const currentHref = location.start?.href ?? "";
     if (!hrefsMatch(currentHref, fragment.href)) {
       if (autoNavHrefRef.current !== fragment.href && followRef.current) {
@@ -1548,7 +1544,7 @@ export function EpubReadalong({
     const spokenCfi = () => {
       const target = narratedRangeRef.current;
       if (!target) return highlightCfiRef.current;
-      const rawOffset = narrationTextOffset(fragment, positionSeconds);
+      const rawOffset = narrationTextOffset(fragment, positionSeconds, followLeadSeconds);
       const offset = normalizeSyncNeedle(fragment.text.slice(0, rawOffset) + "x").length - 1;
       const point = target.index.map[target.start + Math.min(offset, target.length - 1)];
       if (!point) return highlightCfiRef.current;
@@ -1647,7 +1643,7 @@ export function EpubReadalong({
     highlightCfiRef.current = cfi;
     highlightThemeRef.current = readerTheme;
     keepOnPage(spokenCfi() ?? cfi);
-  }, [ensureSearchIndex, follow, followRequest, followTakesPage, followingFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, tapFragment]);
+  }, [ensureSearchIndex, follow, followLeadSeconds, followRequest, followTakesPage, syncFragments, fragmentIndex, illustrationGap, isReady, location, positionSeconds, readerTheme, relayoutTick, removeAnnotation, tapFragment]);
 
   const percent = location?.start?.percentage;
   const locationLabel = Number.isFinite(percent ?? NaN)
