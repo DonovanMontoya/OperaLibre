@@ -16,6 +16,11 @@ import subprocess
 
 from corpus import load, save, digest, validate_map
 
+# Reference word clocks are ASR estimates. Keep the exact result, and gate a
+# separately named bounded result; a half-second lag must still fail.
+BOUNDARY_TOLERANCE_SECONDS = .15
+WORD_ONSET_P95_LIMIT_SECONDS = .5
+
 
 def tokens(text):
     return re.findall(r'\w+', text.casefold().replace('’', '').replace("'", ''))
@@ -68,7 +73,14 @@ def reader_selection(value, checks):
     return json.loads(result.stdout)
 
 
-def score(value, checks, sections, selected=None):
+def nearby_reader_selection(value, checks):
+    offsets=(-BOUNDARY_TOLERANCE_SECONDS,0,BOUNDARY_TOLERANCE_SECONDS)
+    expanded=[dict(c,at=c['at']+offset) for c in checks for offset in offsets]
+    indices=reader_selection(value,expanded)
+    return [indices[i:i+3] for i in range(0,len(indices),3)]
+
+
+def score(value, checks, sections, selected=None, nearby=None):
     positions = {}
     for index, fragment in enumerate(value['fragments']):
         needle = tokens(fragment['text']); matches = []
@@ -120,7 +132,14 @@ def score(value, checks, sections, selected=None):
             reader_correct = index >= 0 and len(positions[index]) == 1 and any(
                 si == check['section'] and start <= check['token'] < end for si,start,end in positions[index])
             reader_wrong_chapter = index >= 0 and value['fragments'][index]['href'] != check['href']
+        bounded_correct=None
+        if nearby is not None:
+            uncertain=any(g['startSeconds'] <= check['at'] < g['endSeconds'] for g in value.get('recoveryGaps',[]))
+            bounded_correct=not uncertain and any(index >= 0 and len(positions[index])==1 and any(
+                si==check['section'] and start <= check['token'] < end for si,start,end in positions[index])
+                for index in nearby[check_index])
         results.append(dict(check, sentenceCorrect=sentence, readerCorrect=reader_correct,
+                            boundedReaderCorrect=bounded_correct,
                             readerWrongChapter=reader_wrong_chapter,
                             wrongChapter=any(f['href'] != check['href'] for _, f in active), wordStartError=word_error))
     errors = sorted(r['wordStartError'] for r in results if r['wordStartError'] is not None)
@@ -129,14 +148,21 @@ def score(value, checks, sections, selected=None):
     reader_correct=sum(r['readerCorrect'] is True for r in results) if selected is not None else None
     reader_accuracy=reader_correct/eligible if reader_correct is not None and eligible else None
     agreement=reader_accuracy if selected is not None else accuracy
+    bounded_correct=sum(r['boundedReaderCorrect'] is True for r in results) if nearby is not None else None
+    bounded_accuracy=bounded_correct/eligible if bounded_correct is not None and eligible else None
+    p95=errors[min(len(errors)-1,math.ceil(len(errors)*.95)-1)] if errors else None
+    if nearby is not None: agreement=bounded_accuracy
+    timing_ok=nearby is None or (len(errors) >= eligible*.9 and p95 is not None and p95 <= WORD_ONSET_P95_LIMIT_SECONDS)
     return {'readerCorrect':reader_correct,'readerAgreement':reader_accuracy,
-            'status': 'insufficient-reference' if eligible < 20 else 'passed' if agreement >= .97 and not any(r['wrongChapter'] or r['readerWrongChapter'] for r in results) else 'failed',
+            'boundedReaderCorrect':bounded_correct,'boundedReaderAgreement':bounded_accuracy,
+            'boundaryToleranceSeconds':BOUNDARY_TOLERANCE_SECONDS if nearby is not None else 0,
+            'status': 'insufficient-reference' if eligible < 20 else 'passed' if agreement >= .97 and timing_ok and not any(r['wrongChapter'] or r['readerWrongChapter'] for r in results) else 'failed',
             'eligible': eligible, 'correct': correct, 'sentenceAgreement': accuracy,
             'wrongChapterChecks': sum(r['wrongChapter'] for r in results),
             'readerWrongChapterChecks': sum(r['readerWrongChapter'] for r in results),
             'timedWordChecks':len(errors), 'timedWordCoverage':len(errors)/eligible if eligible else None,
             'wordStartMedianSeconds': errors[len(errors)//2] if errors else None,
-            'wordStartP95Seconds': errors[min(len(errors)-1, math.ceil(len(errors)*.95)-1)] if errors else None,
+            'wordStartP95Seconds':p95,
             'checks': results}
 
 
@@ -169,7 +195,7 @@ def compare(plan_path, reference_path, run, output):
     if output.exists(): raise ValueError('Choose a new report path')
     plan = load(plan_path); ref = load(reference_path/'report.json')
     if ref['planSha256'] != digest(plan_path): raise ValueError('Reference belongs to another plan')
-    result = {'kind':'automated-independent-ASR-agreement', 'auditSha256':digest(__file__), 'planSha256':digest(plan_path), 'limitation':'Shared recognizer family; not human ground truth or a population accuracy guarantee.', 'books':[]}
+    result = {'kind':'automated-independent-ASR-agreement', 'auditSha256':digest(__file__), 'readerSourceSha256':digest(Path(__file__).resolve().parents[2]/'apps/web/src/readalong.ts'), 'boundaryToleranceSeconds':BOUNDARY_TOLERANCE_SECONDS, 'wordOnsetP95LimitSeconds':WORD_ONSET_P95_LIMIT_SECONDS, 'planSha256':digest(plan_path), 'limitation':'Shared recognizer family; not human ground truth or a population accuracy guarantee.', 'books':[]}
     for book in plan['books']:
         row = {'id':book['id'],'title':book['title'],'scopes':[]}; result['books'].append(row)
         try:
@@ -199,7 +225,7 @@ def compare(plan_path, reference_path, run, output):
                 bounds=dict(scoped[index])
                 bounds['audioRange']=book.get('audioSamples',{}).get(str(index),bounds['audioRange'])
                 errors=validate_map(value,bounds)
-                own=score(value,checks,sections,reader_selection(value,checks))
+                own=score(value,checks,sections,reader_selection(value,checks),nearby_reader_selection(value,checks))
                 own['structuralErrors']=errors
                 if errors: own['status']='invalid-map'
                 own.update(index=index,recognizedWords=len(raw),referenceCoverage=len(checks)/max(1,len(raw)-7))
@@ -210,6 +236,8 @@ def compare(plan_path, reference_path, run, output):
             row['correct']=sum(s.get('correct',0) for s in row['scopes'])
             row['readerCorrect']=sum(s.get('readerCorrect',0) for s in row['scopes'])
             row['readerAgreement']=row['readerCorrect']/row['eligible'] if row['eligible'] else None
+            row['boundedReaderCorrect']=sum(s.get('boundedReaderCorrect',0) for s in row['scopes'])
+            row['boundedReaderAgreement']=row['boundedReaderCorrect']/row['eligible'] if row['eligible'] else None
             row['sentenceAgreement']=row['correct']/row['eligible'] if row['eligible'] else None
             row['status']='passed' if row['scopes'] and all(s['status']=='passed' for s in row['scopes']) else 'needs-review'
         except Exception as error:

@@ -13,6 +13,8 @@ def verify(plan, output, cli, ffmpeg='ffmpeg', reference=None, workers=2):
     books = corpus.load(plan)['books']
     if not books or len({b['id'] for b in books}) != len(books):
         raise ValueError('Plan needs nonempty unique book IDs')
+    # Fail before costly recognition if the production selector cannot run.
+    audit.reader_selection({'fragments':[]},[])
     output.mkdir(parents=True, exist_ok=False)
     maps = output/'maps'; maps.mkdir()
     references = reference or output/'reference'

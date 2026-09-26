@@ -158,10 +158,14 @@ minute in each sample before generating that book's production map. The referenc
 never reads production recognition or maps. Unique eight-word phrases locate
 reference words in the EPUB. The audit invokes the production reader selector
 under Node 22+ with no anticipatory lead, including its pause and recovery rules.
-It reports reader agreement and raw sentence overlap separately, along with wrong
-chapter matches and median/p95 word onset disagreement. It requires at least
-20 reference checks, 50% unique-phrase reference coverage, 97% reader agreement,
-and no wrong-chapter checks in each sample. Missing planned scopes, invalid maps,
+It reports exact reader agreement and raw sentence overlap separately from a
+bounded score allowing 150 ms of sentence-boundary disagreement. This budget is
+explicit because reference ASR word clocks are estimates, not human ground truth.
+A sample requires 20 reference checks, 50% unique-phrase reference coverage,
+97% bounded reader agreement, timing evidence for 90% of checks, word-onset p95
+at most 500 ms, and no wrong-chapter checks. Recovery gaps cannot receive timing
+tolerance. The regression suite explicitly rejects a half-second opening delay. Exact scores remain in every report; the bounded score must never be
+presented as exact-timestamp accuracy. Missing planned scopes, invalid maps,
 changed reference data, and interrupted jobs remain failures or need review.
 
 This is automated ASR agreement, not human ground truth: the reference and
