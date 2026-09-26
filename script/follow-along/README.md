@@ -197,8 +197,9 @@ separate narration tracks for two pictures embedded in one prose document. Open
 
 ### Replay a private EPUB through the reader
 
-The test page accepts `?private=/@fs/absolute/path/to/manifest.json` when Vite can
-read that path. Store the manifest under ignored `output/follow-along/private`.
+The test page accepts `?private=/@fs/absolute/path/to/manifest.json` only on a
+loopback Vite development server. Both the manifest and EPUB must be within
+ignored `output/follow-along/private`; external URLs and API paths are rejected.
 It contains `epubUrl` (a local Vite URL), `title`, `map` (generated sync map),
 `chapters` (client Chapter objects), initial `position` in book seconds, and
 `stops` (`[{"label":"Picture","at":123}]`). Controls replay positions through
@@ -214,6 +215,10 @@ and updates `latest-scheduled.json` with the exit status and evidence path.
 Settings are `source` (isolated checkout), `plan`, `cli`, optional `reference`,
 `node`, `ffmpeg`, `cargoTarget`, and `workers` (default 1). No production credentials
 are needed. Update the source path when adopting a newly verified implementation.
+For alternate editions, add `additionalSuites: [{"name":"alternate-edition",
+"plan":"/private/variant/plan.json","reference":"/private/variant/reference"}]`.
+Every suite runs even if an earlier one fails; the overall status preserves any
+failure. Results are retained in separate named directories under the dated run.
 
 The supplied user service/timer templates run Mondays at 03:30 local time with
 up to 15 minutes of jitter, low scheduling priority, and a four-core CPU ceiling.
