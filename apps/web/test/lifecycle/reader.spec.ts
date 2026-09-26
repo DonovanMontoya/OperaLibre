@@ -26,6 +26,9 @@ test.afterAll(async () => {
 });
 
 async function openReader(page: Page, narration = false) {
+  if (narration) {
+    await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
+  }
   await page.goto(`${url}test/reader-catch-up.html${narration ? '?narration' : ''}`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
   await expect(page.locator('.epub-stage iframe')).toHaveCount(1);
@@ -92,6 +95,7 @@ test('Focus preserves the EPUB host and rendition through resizing and returning
 });
 
 test('chapter following opens at the current audiobook chapter before sentence sync is available', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
   await page.goto(`${url}test/reader-catch-up.html?chapter-sync`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() =>
@@ -103,6 +107,24 @@ test('chapter following opens at the current audiobook chapter before sentence s
   expect(await page.evaluate(() =>
     (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start.href
   )).toContain('c2.xhtml');
+});
+
+test('Follow starts off and keeps the reader choice on reopening', async ({ page }) => {
+  await page.goto(`${url}test/reader-catch-up.html?narration`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Follow narration', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => annotations(page)).toHaveLength(0);
+
+  await page.getByRole('button', { name: 'Follow narration', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop following narration', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Close ebook', exact: true }).click();
+  await page.getByRole('button', { name: 'Open ebook', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop following narration', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByRole('button', { name: 'Stop following narration', exact: true }).click();
+  await page.getByRole('button', { name: 'Close ebook', exact: true }).click();
+  await page.getByRole('button', { name: 'Open ebook', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Follow narration', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
 for (const timing of ['before the follow location', 'after the follow location'] as const) {
