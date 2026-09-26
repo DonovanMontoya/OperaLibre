@@ -47,6 +47,15 @@ describe("chapter labels", () => {
     assert.equal(parseReadalongLabel("Track-01").number, null);
   });
 
+  it("matches numbered contents entries with an omitted separator", () => {
+    const toc = [{ href: "crossing.xhtml", label: "16 The Crossing" }];
+    assert.equal(findTocHrefForChapterTitle(toc, "Chapter 16 - The Crossing"), "crossing.xhtml");
+    assert.equal(parseReadalongLabel("16 The Crossing").key, "the crossing");
+    assert.equal(parseReadalongLabel("16th Crossing").number, null);
+    assert.equal(parseReadalongLabel("Seven Swans").number, null);
+    assert.equal(parseReadalongLabel("16").number, 16);
+  });
+
   it("does not mistake words for numbers", () => {
     assert.equal(parseReadalongLabel("Chapter Ivory").number, null);
     assert.equal(parseReadalongLabel("Chapter Mix").number, null);
