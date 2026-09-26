@@ -126,6 +126,30 @@ it("holds a closing illustration through the rest of its audio chapter", async (
   assert.equal(illustrationGapAt(gaps, 20), null);
 });
 
+it("keeps a split chapter's earlier picture during its closing description without reopening the heading", async () => {
+  const text = (textContent: string) => ({ nodeType: 3, textContent });
+  const heading = { nodeType: 1, localName: "img", childNodes: [] };
+  const picture = { nodeType: 1, localName: "img", childNodes: [] };
+  const body = { nodeType: 1, localName: "body", childNodes: [heading, text("First sentence. "), picture, text("Last sentence. Later prose.")] as unknown[] };
+  const section = { href: "chapter.xhtml", index: 0, document: { body }, load: async () => undefined,
+    cfiFromElement: (element: unknown) => element === picture ? "picture-cfi" : "heading-cfi" };
+  const book = { spine: { get: () => section }, load: async () => undefined } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 2, endSeconds: 6, href: section.href, text: "First sentence." },
+    { startSeconds: 10, endSeconds: 15, href: section.href, text: "Last sentence." },
+    { startSeconds: 40.2, endSeconds: 45, href: section.href, text: "Later prose." }
+  ];
+  const chapters = [{ ...chapter(0), title: "Chapter 7A" }, { ...chapter(40), title: "Chapter 7B", endSeconds: 50 }];
+  let gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 25)?.cfi, "picture-cfi");
+  assert.equal(illustrationGapAt(gaps, 40.1)?.cfi, "picture-cfi");
+  assert.ok(!gaps.some(gap => gap.heading && gap.startSeconds === 40));
+  // Two figures inside part A cannot be assigned without stronger evidence.
+  body.childNodes.splice(3, 0, { ...picture });
+  gaps = await findIllustrationGaps(book, fragments, chapters);
+  assert.equal(illustrationGapAt(gaps, 25), null);
+});
+
 it("turns between a named part image and illustration within the same document", async () => {
   const part = { getAttribute: (name: string) => name === "alt" ? "Day Five: The travellers" : null };
   const map = { getAttribute: (name: string) => name === "alt" ? "A mountain map. Description: A winding path." : null };
