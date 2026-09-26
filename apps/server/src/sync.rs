@@ -756,8 +756,9 @@ impl Aligner<'_> {
             .audio_range
             .map(|(start, end)| end - start)
             .or(track.duration_seconds);
+        let mut recognized = Vec::new();
         if duration.is_some_and(|seconds| seconds <= MAX_SINGLE_PASS_SECONDS) {
-            let recognized = self
+            recognized = self
                 .transcribe_checked(
                     audio_path,
                     scope_number,
@@ -779,6 +780,7 @@ impl Aligner<'_> {
                 scope_number,
                 0,
                 &scope.label,
+                &recognized,
             )
             .await;
         if let Some(path) = sliced {
@@ -946,6 +948,15 @@ impl Aligner<'_> {
                     text_end == text_len && (segment_end - scope_end).abs() < 0.001,
                 )
                 .await;
+                let segment_recognition = recognized
+                    .iter()
+                    .cloned()
+                    .map(|mut word| {
+                        word.start_time -= lead_in;
+                        word.end_time -= lead_in;
+                        word
+                    })
+                    .collect::<Vec<_>>();
                 let segment_fragments = self
                     .align(
                         &audio,
@@ -954,6 +965,7 @@ impl Aligner<'_> {
                         scope_number,
                         windows,
                         &scope.label,
+                        &segment_recognition,
                     )
                     .await;
                 let _ = fs::remove_file(audio).await;
@@ -1167,6 +1179,7 @@ impl Aligner<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn align(
         &self,
         audio_path: &FsPath,
@@ -1175,7 +1188,36 @@ impl Aligner<'_> {
         scope_number: usize,
         window: usize,
         label: &str,
+        recognized: &[alignment::RecognizedWord],
     ) -> anyhow::Result<Vec<alignment::SyncFragment>> {
+        // A recognizer may capture only the end of a closing description.
+        // The unique final prose anchor still identifies where printed text
+        // stops. Clip there rather than stretch prose over unrecognized audio.
+        let mapped_end = transcript
+            .sections
+            .iter()
+            .filter(|section| !section.href.is_empty())
+            .map(|section| section.end_utf16)
+            .max()
+            .unwrap_or(0);
+        let prose = transcript.window(0, mapped_end);
+        let clipped_audio = if mapped_end < transcript.len_utf16()
+            && let (Some(ffmpeg), Some(end)) =
+                (self.ffmpeg_path, prose.narrated_text_end(recognized))
+        {
+            Some(
+                self.slice(ffmpeg, audio_path, 0.0, end, scope_number, window, "prose")
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let transcript = if clipped_audio.is_some() {
+            &prose
+        } else {
+            transcript
+        };
+        let audio_path = clipped_audio.as_deref().unwrap_or(audio_path);
         let transcript_path = self
             .temp_dir
             .join(format!("transcript-{scope_number}-{window}.txt"));
@@ -1208,7 +1250,11 @@ impl Aligner<'_> {
         }
         let _ = fs::remove_file(&output_path).await;
         let _ = fs::remove_file(&transcript_path).await;
-        let entries = alignment::parse_timeline(&timeline_json)?;
+        if let Some(path) = clipped_audio {
+            let _ = fs::remove_file(path).await;
+        }
+        let mut entries = alignment::parse_timeline(&timeline_json)?;
+        alignment::recover_zero_duration_sentences(&mut entries, &transcript.text, recognized);
         Ok(alignment::fragments_from_timeline(
             &entries,
             transcript,
