@@ -17724,10 +17724,10 @@ html:not(.native-app) .library-pane.purchase-browsing {
   }
 }
 
-/* A tall phone with no playback dock has room for a full title page. Use that
-   room for the artwork and readable book information, leaving chapters shut. */
+/* Keep the tall-phone title page stable as playback and navigation change.
+   The dock changes scroll clearance, not the cover and title arrangement. */
 @media (max-width: 620px) and (min-height: 800px) {
-  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open:not(.has-mini-player) .book-heading {
+  html.native-app.platform-ios .native-shell.tab-shelf.library-book-open .book-heading {
     grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     row-gap: 8px;
