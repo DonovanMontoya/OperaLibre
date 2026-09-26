@@ -191,8 +191,40 @@ def reference(plan_path, output, cli, ids, ffmpeg):
     return report
 
 
+def markdown_report(result):
+    def percent(value): return f'{value:.1%}' if value is not None else 'unverified'
+    def cell(value): return str(value).replace('|', '\\|').replace('\n', ' ')
+    books=result['books']
+    lines=['# Private library follow-along audit', '',
+           f"{sum(b['status']=='passed' for b in books)}/{len(books)} books pass every sampled scope.", '',
+           'Automated agreement with independent ASR references; not human ground truth, '
+           'whole-book coverage, or a guarantee for unseen books. Unrecognized speech remains unverified.', '',
+           f"Boundary budget: {result['boundaryToleranceSeconds']*1000:.0f} ms. "
+           f"Word-onset p95 limit: {result['wordOnsetP95LimitSeconds']*1000:.0f} ms. "
+           'Wrong-chapter checks fail regardless of aggregate accuracy.', '',
+           '| Book | Result | Checked words | Exact reader agreement | Within boundary budget |',
+           '| --- | --- | ---: | ---: | ---: |']
+    for book in books:
+        lines.append(f"| {cell(book['title'])} | {book['status']} | {book.get('eligible',0)} | "
+                     f"{percent(book.get('readerAgreement'))} | {percent(book.get('boundedReaderAgreement'))} |")
+    lines += ['', '## Sample details', '',
+              'Reference coverage is the proportion of recognized words located by unique EPUB phrases. '
+              'It is not the proportion of the entire book verified. All planned samples are listed, including missing ones.', '',
+              '| Book / scope | Result | Reference coverage | Word clocks checked | Word-onset p95 | Wrong chapters (map / reader) |',
+              '| --- | --- | ---: | ---: | ---: | ---: |']
+    for book in books:
+        if book.get('error'): lines += [f"| {cell(book['title'])} | {cell(book['error'])} | — | — | — | — |"]
+        for scope in book['scopes']:
+            p95=scope.get('wordStartP95Seconds')
+            timing=f'{p95*1000:.0f} ms' if p95 is not None else 'unverified'
+            wrong=f"{scope.get('wrongChapterChecks',0)} / {scope.get('readerWrongChapterChecks',0)}"
+            lines.append(f"| {cell(book['title'])} / {scope['index']} | {scope['status']} | "
+                         f"{percent(scope.get('referenceCoverage'))} | {percent(scope.get('timedWordCoverage'))} | {timing} | {wrong} |")
+    return '\n'.join(lines)+'\n'
+
+
 def compare(plan_path, reference_path, run, output):
-    if output.exists(): raise ValueError('Choose a new report path')
+    if output.exists() or output.with_suffix('.md').exists(): raise ValueError('Choose a new report path')
     plan = load(plan_path); ref = load(reference_path/'report.json')
     if ref['planSha256'] != digest(plan_path): raise ValueError('Reference belongs to another plan')
     result = {'kind':'automated-independent-ASR-agreement', 'auditSha256':digest(__file__), 'readerSourceSha256':digest(Path(__file__).resolve().parents[2]/'apps/web/src/readalong.ts'), 'boundaryToleranceSeconds':BOUNDARY_TOLERANCE_SECONDS, 'wordOnsetP95LimitSeconds':WORD_ONSET_P95_LIMIT_SECONDS, 'planSha256':digest(plan_path), 'limitation':'Shared recognizer family; not human ground truth or a population accuracy guarantee.', 'books':[]}
@@ -242,7 +274,9 @@ def compare(plan_path, reference_path, run, output):
             row['status']='passed' if row['scopes'] and all(s['status']=='passed' for s in row['scopes']) else 'needs-review'
         except Exception as error:
             row.update(status='audit-error',error=str(error))
-    save(output,result); return result
+    save(output,result)
+    output.with_suffix('.md').write_text(markdown_report(result))
+    return result
 
 
 def main():

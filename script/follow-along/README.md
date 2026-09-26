@@ -185,7 +185,8 @@ npm run test:follow:library -- \
 
 `--workers 1` through `4` controls private worker concurrency. Outputs are new
 on every run and include source fingerprints, progress, per-book receipts, maps,
-and `audit.json`. Keep these files private. A weekly local scheduler can invoke
+and `audit.json`, plus a readable `audit.md` with per-book and per-sample results.
+Keep these files private. A weekly local scheduler can invoke
 this command against an isolated checkout; update that checkout and retain the
 same plan when testing a new implementation. Re-plan deliberately when the
 library grows, preserving the previous plan and its failed first attempts.
