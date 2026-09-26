@@ -816,6 +816,14 @@ function MainApp({
   };
   const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
 
+  const continueReadingBookRef = useRef<(book: Book) => void>(() => undefined);
+  continueReadingBookRef.current = (book) => {
+    selectBook(book);
+    void playSelectedBook(book);
+    setLibraryOpen(false);
+  };
+  const continueReadingBook = useCallback((book: Book) => continueReadingBookRef.current(book), []);
+
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
     [books, selectedBookId]
@@ -2108,6 +2116,7 @@ function MainApp({
         readerPreferences={readerPreferences}
         refreshLibrary={refreshLibrary}
         resumeSelectedBook={resumeSelectedBook}
+        continueReadingBook={continueReadingBook}
         selectBook={selectBook}
         selectFromShelf={selectFromShelf}
         selectedBook={selectedBook}
@@ -2267,7 +2276,7 @@ function MainApp({
           completionPendingBookId={completionPendingBookId}
           displayBookRemainingSeconds={displayBookRemainingSeconds}
           markBookUnplayed={markBookUnplayed}
-          openPlaybackView={openPlaybackView}
+          openBookDetails={(bookId) => withWebViewTransition(() => openBookDetails(bookId))}
           playbackBook={playbackBook}
           playbackDescription={playbackDescription}
           setNativePlayerSheet={setNativePlayerSheet}
