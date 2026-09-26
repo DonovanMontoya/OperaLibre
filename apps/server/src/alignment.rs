@@ -693,6 +693,14 @@ pub fn build_transcript(sections: &[SpineSection]) -> Transcript {
 }
 
 impl Transcript {
+    pub fn cursor(&self) -> TranscriptCursor<'_> {
+        TranscriptCursor {
+            transcript: self,
+            byte_position: 0,
+            utf16_position: 0,
+        }
+    }
+
     pub fn href_for_offset(&self, offset_utf16: u64) -> Option<&str> {
         let index = self
             .sections
@@ -707,7 +715,9 @@ impl Transcript {
 
     /// The stretch of text between two UTF-16 offsets as a transcript of its
     /// own, with section ranges rebased so an aligner's offsets into the
-    /// window map straight back to documents.
+    /// window map straight back to documents. Kept as the pre-cursor reference
+    /// for equivalence tests and the opt-in performance comparison.
+    #[cfg(test)]
     pub fn window(&self, start_utf16: u64, end_utf16: u64) -> Transcript {
         let end_utf16 = end_utf16.max(start_utf16);
         let start_byte = utf16_to_byte_index(&self.text, start_utf16);
@@ -729,6 +739,88 @@ impl Transcript {
     }
 }
 
+/// A forward-only view of the remaining transcript. Long books can have
+/// hundreds of audio windows; locating each one from byte zero would scan
+/// the already aligned chapters over and over.
+pub struct TranscriptCursor<'a> {
+    transcript: &'a Transcript,
+    byte_position: usize,
+    utf16_position: u64,
+}
+
+impl TranscriptCursor<'_> {
+    pub fn position(&self) -> u64 {
+        self.utf16_position
+    }
+
+    fn remaining(&self) -> &str {
+        &self.transcript.text[self.byte_position..]
+    }
+
+    pub fn find_anchor(
+        &self,
+        recognized: &[RecognizedWord],
+        lookahead: u64,
+        latest_seconds: f64,
+    ) -> WindowAnchor {
+        let mut anchor =
+            find_window_anchor(recognized, self.remaining(), 0, lookahead, latest_seconds);
+        if let Some(end) = &mut anchor.end {
+            end.text_end_utf16 += self.utf16_position;
+        }
+        anchor
+    }
+
+    pub fn sentence_end_before(&self, target_utf16: u64) -> u64 {
+        self.utf16_position
+            + sentence_end_before(
+                self.remaining(),
+                0,
+                target_utf16.saturating_sub(self.utf16_position),
+            )
+    }
+
+    pub fn window(&self, end_utf16: u64) -> Transcript {
+        let end_utf16 = end_utf16.max(self.utf16_position);
+        let end_byte = utf16_to_byte_index(self.remaining(), end_utf16 - self.utf16_position);
+        let first = self
+            .transcript
+            .sections
+            .partition_point(|section| section.end_utf16 <= self.utf16_position);
+        let sections = self.transcript.sections[first..]
+            .iter()
+            .take_while(|section| section.start_utf16 < end_utf16)
+            .map(|section| TranscriptSection {
+                href: section.href.clone(),
+                start_utf16: section.start_utf16.max(self.utf16_position) - self.utf16_position,
+                end_utf16: section.end_utf16.min(end_utf16) - self.utf16_position,
+            })
+            .collect();
+        Transcript {
+            text: self.remaining()[..end_byte].to_string(),
+            sections,
+        }
+    }
+
+    /// Advance to a sentence end and consume the whitespace before the next
+    /// window. Count actual characters so neither UTF-8 nor surrogate pairs
+    /// can be split, including when the requested offset is past the text.
+    pub fn advance_to(&mut self, end_utf16: u64) {
+        let end_byte = utf16_to_byte_index(
+            self.remaining(),
+            end_utf16.saturating_sub(self.utf16_position),
+        );
+        let whitespace_bytes = self.remaining()[end_byte..]
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>();
+        let consumed = end_byte + whitespace_bytes;
+        self.utf16_position += self.remaining()[..consumed].encode_utf16().count() as u64;
+        self.byte_position += consumed;
+    }
+}
+
 /// Byte index of the character that starts at a UTF-16 offset (or the end of
 /// the text when the offset lies beyond it).
 pub fn utf16_to_byte_index(text: &str, offset_utf16: u64) -> usize {
@@ -743,6 +835,7 @@ pub fn utf16_to_byte_index(text: &str, offset_utf16: u64) -> usize {
 }
 
 /// First non-whitespace UTF-16 offset at or after `offset_utf16`.
+#[cfg(test)]
 pub fn skip_whitespace_utf16(text: &str, offset_utf16: u64) -> u64 {
     let start = utf16_to_byte_index(text, offset_utf16);
     let mut offset = offset_utf16;
@@ -1123,9 +1216,9 @@ pub fn find_window_anchor(
     latest_seconds: f64,
 ) -> WindowAnchor {
     let words = transcript_words(transcript_text, text_start_utf16, text_len_utf16);
-    let mut grams: HashMap<Vec<&str>, Option<usize>> = HashMap::new();
+    let mut grams: HashMap<[&str; ANCHOR_NGRAM], Option<usize>> = HashMap::new();
     for (index, run) in words.windows(ANCHOR_NGRAM).enumerate() {
-        let key = run.iter().map(|word| word.text.as_str()).collect();
+        let key = std::array::from_fn(|index| run[index].text.as_str());
         grams
             .entry(key)
             .and_modify(|seen| *seen = None)
@@ -1135,7 +1228,7 @@ pub fn find_window_anchor(
         .windows(ANCHOR_NGRAM)
         .enumerate()
         .filter_map(|(recognized_index, run)| {
-            let key: Vec<&str> = run.iter().map(|word| word.text.as_str()).collect();
+            let key = std::array::from_fn(|index| run[index].text.as_str());
             let word_index = (*grams.get(&key)?)?;
             Some((recognized_index, word_index))
         })
@@ -2431,6 +2524,125 @@ The dog barked loudly at the cat. Go away said the cat.",
         assert_eq!(window.href_for_offset(15), Some("b.html"));
         assert_eq!(window.href_for_offset(16), None);
         assert_eq!(skip_whitespace_utf16(&transcript.text, 11), 13);
+    }
+
+    #[test]
+    fn transcript_cursor_matches_full_text_lookups_across_unicode_sections() {
+        let transcript = build_transcript(&[
+            SpineSection {
+                href: "first.html".into(),
+                text: "Élodie saw a 𝄞 beside the café.\n\n她说：“你好！” Then she left.".into(),
+            },
+            SpineSection {
+                href: "second.html".into(),
+                text: "Rain fell softly over the old town.\u{2003}The end.".into(),
+            },
+        ]);
+        let mut boundaries = vec![0];
+        for ch in transcript.text.chars() {
+            boundaries.push(boundaries.last().unwrap() + ch.len_utf16() as u64);
+        }
+        let mut cursor = transcript.cursor();
+        for &start in &boundaries {
+            cursor.advance_to(start);
+            let position = skip_whitespace_utf16(&transcript.text, start);
+            assert_eq!(cursor.position(), position);
+            for &end in boundaries.iter().filter(|&&end| end >= position) {
+                let expected = transcript.window(position, end);
+                let actual = cursor.window(end);
+                assert_eq!(actual.text, expected.text);
+                let ranges = |window: &Transcript| {
+                    window
+                        .sections
+                        .iter()
+                        .map(|section| {
+                            (section.href.clone(), section.start_utf16, section.end_utf16)
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(ranges(&actual), ranges(&expected));
+                assert_eq!(
+                    cursor.sentence_end_before(end),
+                    sentence_end_before(&transcript.text, position, end)
+                );
+            }
+            let recognized = spoken(cursor.remaining(), 2.0);
+            for lookahead in [0, 10, 30, 1000] {
+                assert_eq!(
+                    cursor.find_anchor(&recognized, lookahead, 100.0),
+                    find_window_anchor(&recognized, &transcript.text, position, lookahead, 100.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transcript_cursor_keeps_valid_offsets_when_advancing_past_a_surrogate_or_eof() {
+        let transcript = build_transcript(&[SpineSection {
+            href: "text.html".into(),
+            text: "𝄞\u{2003}next".into(),
+        }]);
+        let mut cursor = transcript.cursor();
+        cursor.advance_to(1);
+        assert_eq!(cursor.position(), 3);
+        assert_eq!(cursor.window(u64::MAX).text, "next");
+        cursor.advance_to(u64::MAX);
+        assert_eq!(cursor.position(), transcript.len_utf16());
+        assert!(cursor.window(u64::MAX).text.is_empty());
+    }
+
+    #[test]
+    fn repeated_anchor_phrases_remain_ambiguous() {
+        let phrase = "one two three four five.";
+        let transcript = format!("{phrase} {phrase} {phrase}");
+        let anchor = find_window_anchor(&spoken(phrase, 0.0), &transcript, 0, 1000, 100.0);
+        assert_eq!(anchor.end, None);
+    }
+
+    #[test]
+    #[ignore = "readalong transcript benchmark; run in release mode with --ignored --nocapture"]
+    fn transcript_cursor_performance() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let sections = (0..600)
+            .map(|index| SpineSection {
+                href: format!("chapter-{index}.html"),
+                text: format!("Chapter {index}. ")
+                    + &"Élodie heard the 𝄞 beside the café. ".repeat(200),
+            })
+            .collect::<Vec<_>>();
+        let transcript = build_transcript(&sections);
+        let mut expected = 0;
+        let before = Instant::now();
+        for section in &transcript.sections {
+            let window = transcript.window(section.start_utf16, section.end_utf16);
+            expected += black_box(window.text.len());
+            black_box(sentence_end_before(
+                &transcript.text,
+                section.start_utf16,
+                section.end_utf16,
+            ));
+            black_box(skip_whitespace_utf16(&transcript.text, section.end_utf16));
+        }
+        let full_scan = before.elapsed();
+        let mut actual = 0;
+        let before = Instant::now();
+        let mut cursor = transcript.cursor();
+        for section in &transcript.sections {
+            let window = cursor.window(section.end_utf16);
+            actual += black_box(window.text.len());
+            black_box(cursor.sentence_end_before(section.end_utf16));
+            cursor.advance_to(section.end_utf16);
+        }
+        let incremental = before.elapsed();
+        assert_eq!(actual, expected);
+        println!(
+            "transcript_bytes={} windows={} full_scan_ms={:.3} cursor_ms={:.3}",
+            transcript.text.len(),
+            sections.len(),
+            full_scan.as_secs_f64() * 1000.0,
+            incremental.as_secs_f64() * 1000.0
+        );
     }
 
     #[test]
