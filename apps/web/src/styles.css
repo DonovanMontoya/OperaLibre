@@ -6252,6 +6252,11 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   cursor: pointer;
 }
 
+button.upload-file-picker {
+  width: 100%;
+  font: inherit;
+}
+
 .upload-file-picker span {
   color: var(--ink-faded);
   font-family: "JetBrains Mono", monospace;
