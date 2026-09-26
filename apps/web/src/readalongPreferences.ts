@@ -1,6 +1,7 @@
 type ReadalongPreferenceStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const READER_FOLLOW_STORAGE_KEY = "operalibre.readerFollow";
+const LEGACY_FOLLOW_SYNC_STORAGE_KEY = "operalibre.readalong.followSync";
 const FOLLOW_AGGRESSIVENESS_STORAGE_KEY = "operalibre.readalong.followAggressiveness";
 
 export type FollowAggressiveness = 0 | 1 | 2;
@@ -22,10 +23,14 @@ export const FOLLOW_AGGRESSIVENESS_LEAD_SECONDS: Record<FollowAggressiveness, nu
   2: 0.5
 };
 
-/** Follow starts off until the reader presses Follow; later openings keep that choice. */
+/** New readers start with Follow off; existing choices and legacy opt-ins persist. */
 export function readReaderFollowEnabled(storage?: ReadalongPreferenceStorage): boolean {
   try {
-    return (storage ?? window.localStorage).getItem(READER_FOLLOW_STORAGE_KEY) === "1";
+    const target = storage ?? window.localStorage;
+    const readerFollow = target.getItem(READER_FOLLOW_STORAGE_KEY);
+    return readerFollow === null
+      ? target.getItem(LEGACY_FOLLOW_SYNC_STORAGE_KEY) === "true"
+      : readerFollow === "1";
   } catch {
     return false;
   }
