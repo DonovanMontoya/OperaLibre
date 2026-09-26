@@ -2159,7 +2159,7 @@ mod tests {
         });
         let epub = alignment::parse_epub_file(&epub_path).unwrap();
         let metadata = read_track_metadata(&audio_path);
-        let track = SyncTrackInput {
+        let mut track = SyncTrackInput {
             path: audio_path,
             title: metadata.title.unwrap_or_else(|| "Book".into()),
             duration_seconds: metadata.duration_seconds,
@@ -2173,6 +2173,33 @@ mod tests {
                 })
                 .collect(),
         };
+        // Portable private fixtures retain original chapter metadata while
+        // storing only the preselected audio windows. Production is unchanged.
+        if let Some(path) = std::env::var_os("OPERALIBRE_PROBE_CLIP_METADATA") {
+            let input: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            track.duration_seconds = input["audioDurationSeconds"].as_f64();
+            track.chapters = input["chapters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|chapter| SyncChapterInput {
+                    title: chapter["title"].as_str().unwrap().to_string(),
+                    start_seconds: chapter["start"].as_f64().unwrap(),
+                    end_seconds: chapter["end"].as_f64(),
+                })
+                .collect();
+        }
+        #[derive(serde::Deserialize)]
+        struct ProbeClip {
+            path: PathBuf,
+            start: f64,
+            end: f64,
+        }
+        let clips: std::collections::HashMap<usize, ProbeClip> =
+            std::env::var("OPERALIBRE_PROBE_CLIPS")
+                .map(|value| serde_json::from_str(&value).unwrap())
+                .unwrap_or_default();
         let scopes = chapter_alignment_scopes(&track, &epub.toc, &epub.sections, true).unwrap();
         let samples: std::collections::HashMap<usize, (f64, f64)> =
             std::env::var("OPERALIBRE_PROBE_SAMPLE_RANGES")
@@ -2219,6 +2246,21 @@ mod tests {
                 scope.audio_range = Some((start, end));
                 scope.time_offset_seconds = start;
             }
+            let clip_track;
+            let track = if let Some(clip) = clips.get(&index) {
+                assert_eq!(scope.audio_range, Some((clip.start, clip.end)));
+                scope.audio_range = Some((0.0, clip.end - clip.start));
+                scope.time_offset_seconds = clip.start;
+                clip_track = SyncTrackInput {
+                    path: clip.path.clone(),
+                    title: track.title.clone(),
+                    duration_seconds: Some(clip.end - clip.start),
+                    chapters: Vec::new(),
+                };
+                &clip_track
+            } else {
+                &track
+            };
             let scope = &scope;
             let transcript = scope_transcript(&epub, scope);
             let progress = ScopeProgress {
@@ -2232,7 +2274,7 @@ mod tests {
                 ScopeAlignment::default()
             } else {
                 aligner
-                    .align_scope(scope, &track, &transcript, index, &progress)
+                    .align_scope(scope, track, &transcript, index, &progress)
                     .await
                     .unwrap()
             };

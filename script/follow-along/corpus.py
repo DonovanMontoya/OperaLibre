@@ -41,6 +41,19 @@ def digest(path):
     return h.hexdigest()
 
 
+def audio_fingerprint(book):
+    clips=book.get('audioClips')
+    if not clips: return dict(audioSha256=digest(book['audio']))
+    hashes={}
+    for index in book['scopes']:
+        clip=clips[str(index)]
+        if [clip['start'],clip['end']] != book['audioSamples'][str(index)]:
+            raise ValueError('Clip does not preserve the frozen sample bounds')
+        hashes[str(index)]=digest(clip['path'])
+        if hashes[str(index)] != clip['sha256']: raise ValueError('Audio clip changed after planning')
+    return dict(audioSha256=book['sourceAudioSha256'],clipSha256=hashes)
+
+
 def source_identity():
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / 'apps/server/src').rglob('*.rs'))]
     paths += ['apps/server/Cargo.toml', 'apps/server/Cargo.lock',
@@ -102,6 +115,9 @@ def probe(book, output, *, cli=None, scopes=None, samples=None, ffmpeg='ffmpeg',
                OPERALIBRE_PROBE_SCOPES=','.join(map(str, scopes)))
         if samples:
             env['OPERALIBRE_PROBE_SAMPLE_RANGES'] = json.dumps(samples)
+        if book.get('audioClips'):
+            env['OPERALIBRE_PROBE_CLIPS'] = json.dumps(book['audioClips'])
+            env['OPERALIBRE_PROBE_CLIP_METADATA'] = str(Path(book['scopeManifest']).parent/'input.json')
         test = 'manual_real_book_alignment_probe'
     else:
         env['OPERALIBRE_PROBE_MANIFEST'] = str((output / 'scopes.json').resolve())
@@ -268,7 +284,7 @@ def run_plan(plan_path, output, cli, ffmpeg, ids, labels_path=None):
                 raise ValueError('Book was not successfully planned')
             if digest(book['epub']) != book['epubSha256']:
                 raise ValueError('EPUB changed after planning')
-            row['audioSha256'] = digest(book['audio'])
+            row.update(audio_fingerprint(book))
             # Exclusive first-attempt receipt survives crashes and failed runs.
             try:
                 with (ledger / f"{book['id']}.json").open('x') as receipt:
