@@ -17,7 +17,10 @@ export function illustrationGapCandidates(fragments: SyncFragment[]) {
   for (let index = 0; index + 1 < fragments.length; index += 1) {
     const before = fragments[index];
     const after = fragments[index + 1];
-    if (after.startSeconds - before.endSeconds >= 15) {
+    // Inline pictures are confirmed between the exact mapped snippets below;
+    // their spoken descriptions can be much shorter than a separate page.
+    const minimum = before.href === after.href ? 3 : 15;
+    if (after.startSeconds - before.endSeconds >= minimum) {
       candidates.push({ before, after });
     }
   }

@@ -201,6 +201,15 @@ it("finds a narrated image between mapped snippets inside one EPUB section", asy
   assert.deepEqual(await findIllustrationGaps(book, fragments), [{
     startSeconds: 4, endSeconds: 204, href: "ars.html", cfi: "epubcfi(/6/2!/4/2)"
   }]);
+  // A short diagram description still needs its picture, with no arbitrary
+  // delay after the preceding prose ends.
+  fragments[1].startSeconds = 16;
+  fragments[1].endSeconds = 20;
+  assert.deepEqual(await findIllustrationGaps(book, fragments), [{
+    startSeconds: 4, endSeconds: 16, href: "ars.html", cfi: "epubcfi(/6/2!/4/2)"
+  }]);
+  body.childNodes = body.childNodes.filter((node) => node !== picture);
+  assert.deepEqual(await findIllustrationGaps(book, fragments), []);
 });
 
 it("shows an image chapter heading at the audio marker despite an overlapping old fragment", async () => {

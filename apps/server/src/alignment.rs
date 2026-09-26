@@ -761,6 +761,19 @@ impl Transcript {
     /// Consume narration printed in an image without emitting a highlight
     /// for text that the EPUB DOM cannot contain.
     pub fn prepend_unmapped(&mut self, heading: &str) {
+        // EPUB contents often abbreviate an interlude as I-3; the narrator
+        // says "Interlude three". Feed the spoken label to the aligner so
+        // those title words cannot consume the first prose sentence.
+        let expanded;
+        let heading = if let Some((series, number, start, end)) = find_series_number(heading)
+            && series == "i"
+            && heading[..start].trim().is_empty()
+        {
+            expanded = format!("Interlude {number}{}", &heading[end..]);
+            expanded.as_str()
+        } else {
+            heading
+        };
         let prefix = format!("{}.\n\n", heading.trim().trim_end_matches(['.', '!', '?']));
         let length = prefix.encode_utf16().count() as u64;
         for section in &mut self.sections {
@@ -2482,6 +2495,22 @@ mod tests {
         assert_eq!(transcript.href_for_offset(11), Some("a.xhtml"));
         assert_eq!(transcript.href_for_offset(14), Some("b.xhtml"));
         assert_eq!(transcript.href_for_offset(100), None);
+    }
+
+    #[test]
+    fn abbreviated_image_interludes_use_the_spoken_label() {
+        let mut transcript = build_transcript(&[SpineSection {
+            href: "interlude.xhtml".into(),
+            text: "The visitor locked the door.".into(),
+        }]);
+        transcript.prepend_unmapped("I-3: A Visitor");
+        assert_eq!(
+            transcript.text,
+            "Interlude 3: A Visitor.\n\nThe visitor locked the door."
+        );
+        let offset = transcript.sections[1].start_utf16;
+        assert_eq!(transcript.href_for_offset(offset - 1), Some(""));
+        assert_eq!(transcript.href_for_offset(offset), Some("interlude.xhtml"));
     }
 
     #[test]
