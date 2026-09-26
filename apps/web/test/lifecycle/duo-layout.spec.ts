@@ -659,6 +659,7 @@ test('reader survives folding, rotating, flattening and closing without replacin
 
 test('fully opening the reader redraws the active follow-along highlight', async ({ page }) => {
   await page.setViewportSize({ width: 669, height: 951 });
+  await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
   await page.goto(`${url}test/reader-catch-up.html?immersive&narration`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
   await page.evaluate(async () => {
@@ -692,7 +693,6 @@ test('portrait fold bounds the shelf, settings and administration to independent
     trackId: books[0].tracks[0].id, trackIndex: 0, startSeconds: 0, endSeconds: 120, source: 'embedded' }];
   books[0].readingFile = { id: 'ebook', fileName: 'fixture.epub', extension: 'epub', contentType: 'application/epub+zip', url: '/fixture.epub' };
   await page.addInitScript(() => {
-    localStorage.setItem('operalibre.readalong.enabled', 'true');
     localStorage.setItem('operalibre.games.enabled', 'true');
   });
   const user = { id: 'layout-owner', username: 'Layout owner', isAdmin: true, isOwner: true,
