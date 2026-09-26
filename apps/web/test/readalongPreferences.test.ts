@@ -36,6 +36,24 @@ test("a saved choice to follow remains on after upgrading", () => {
   assert.equal(readReaderFollowEnabled(memoryStorage("0")), false);
 });
 
+test("legacy follow opt-in is used only when the reader has no choice", () => {
+  const values = new Map([["operalibre.readalong.followSync", "true"]]);
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); }
+  };
+
+  assert.equal(readReaderFollowEnabled(storage), true);
+  values.set("operalibre.readalong.followSync", "false");
+  assert.equal(readReaderFollowEnabled(storage), false);
+  values.set("operalibre.readalong.followSync", "true");
+  writeReaderFollowEnabled(false, storage);
+  assert.equal(readReaderFollowEnabled(storage), false);
+  writeReaderFollowEnabled(true, storage);
+  assert.equal(readReaderFollowEnabled(storage), true);
+});
+
 test("follow aggressiveness persists valid non-default levels", () => {
   const storage = memoryStorage();
   writeFollowAggressiveness(2, storage);
