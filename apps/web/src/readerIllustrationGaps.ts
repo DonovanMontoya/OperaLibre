@@ -118,7 +118,7 @@ function continuesChapter(before: Chapter | undefined, after: Chapter | undefine
 }
 
 function gapStart(before: SyncFragment, after: SyncFragment, chapterStarts: number[], fallbackDelay = 5) {
-  const first = chapterStarts.find((start) => start > before.endSeconds && start < after.startSeconds);
+  const first = chapterStarts.find((start) => start >= before.endSeconds && start < after.startSeconds);
   return first !== undefined && first - before.endSeconds <= 10 ? first : before.endSeconds + fallbackDelay;
 }
 
@@ -311,8 +311,10 @@ export async function findIllustrationGaps(
         });
         continue;
       }
-      if (!gaps.some((gap) => gap.href === illustration.href
-        && gap.startSeconds <= chapter.startSeconds && gap.endSeconds >= endSeconds)) {
+      // An established spine-order interval may identify an earlier picture.
+      // The last picture before prose is only a fallback, not evidence that
+      // every consecutive illustration chapter describes that last picture.
+      if (!gaps.some((gap) => gap.startSeconds <= chapter.startSeconds && gap.endSeconds >= endSeconds)) {
         gaps.push({ startSeconds: chapter.startSeconds, endSeconds, href: illustration.href });
       }
     } catch {

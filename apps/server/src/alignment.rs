@@ -3577,6 +3577,30 @@ mod tests {
     }
 
     #[test]
+    fn revised_editions_resume_after_changed_wording_without_forcing_it_to_match() {
+        let revised = "The revised edition describes the harbor after the great storm. ";
+        let shared = "A lantern flickered beside the empty railway station. Several travellers waited quietly for the morning train.";
+        let text = format!("{revised}{shared}");
+        let recognized = spoken(
+            &format!(
+                "The older narrator instead describes a completely different inland town. {shared}"
+            ),
+            0.0,
+        );
+        let anchor = find_recovery_anchor(&recognized, &text, 0, 60.0).unwrap();
+        assert_eq!(
+            anchor.text_start_utf16,
+            revised.encode_utf16().count() as u64
+        );
+        assert!(anchor.start_seconds >= 5.0);
+        // Reordered narration from a consumed section cannot pull us backward.
+        assert!(
+            find_recovery_anchor(&spoken(revised, 0.0), &text, anchor.text_end_utf16, 60.0)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn recovery_rejects_ambiguous_phrases_and_untrustworthy_clocks() {
         let text = "A lantern flickered beside the empty railway station. Several travellers waited quietly for the morning train.";
         let recognized = spoken(text, 1.0);

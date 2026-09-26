@@ -63,7 +63,8 @@ const book = { id: "shared-book", tracks: [{ id: "track", localFilePath: "downlo
 const map: SyncMap = {
   version: 2,
   precision: "sentence",
-  fragments: [{ startSeconds: 0, endSeconds: 2, href: "chapter.xhtml", text: "Café — 読書" }]
+  fragments: [{ startSeconds: 0, endSeconds: 2, href: "chapter.xhtml", text: "Café — 読書" }],
+  recoveryGaps: [{ startSeconds: 2, endSeconds: 8 }]
 };
 
 function deferred() {

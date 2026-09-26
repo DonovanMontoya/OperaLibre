@@ -30,6 +30,29 @@ function chapter(startSeconds: number): Chapter {
   return { id: String(startSeconds), title: "Chapter", trackId: "audio", trackIndex: 0, startSeconds, endSeconds: null, source: "embedded" };
 }
 
+it("keeps consecutive illustration chapters on their established spine pages", async () => {
+  const sections = ["before.xhtml", "first.xhtml", "second.xhtml", "after.xhtml"].map((href, index) => {
+    const image = { nodeType: 1, localName: "svg", childNodes: [], getAttribute: () => "" };
+    const body = { nodeType: 1, localName: "body", textContent: index === 0 || index === 3 ? "Prose." : "",
+      childNodes: index === 0 || index === 3 ? [{ nodeType: 3, textContent: "Prose." }] : [image],
+      querySelector: () => index === 1 || index === 2 ? image : null,
+      querySelectorAll: () => index === 1 || index === 2 ? [image] : [] };
+    return { href, index, document: { body }, load: async () => undefined, cfiFromElement: () => `${href}-cfi` };
+  });
+  const book = { spine: { get: (key: number | string) => typeof key === "number" ? sections[key] : sections.find(s => s.href === key) }, load: async () => undefined } as unknown as EpubBook;
+  const fragments = [
+    { startSeconds: 0, endSeconds: 30, href: "before.xhtml", text: "Prose." },
+    { startSeconds: 60, endSeconds: 80, href: "after.xhtml", text: "Prose." }
+  ];
+  const gaps = await findIllustrationGaps(book, fragments, [chapter(0),
+    { ...chapter(30), title: "Illustration: First drawing" },
+    { ...chapter(45), title: "Illustration: Second drawing" }, chapter(60)]);
+  assert.equal(illustrationGapAt(gaps, 30)?.href, "first.xhtml");
+  assert.equal(illustrationGapAt(gaps, 44.9)?.href, "first.xhtml");
+  assert.equal(illustrationGapAt(gaps, 45)?.href, "second.xhtml");
+  assert.equal(illustrationGapAt(gaps, 59.9)?.href, "second.xhtml");
+});
+
 function headingBody() {
   return {
     nodeType: 1, localName: "body",
