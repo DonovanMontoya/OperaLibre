@@ -30,6 +30,17 @@ pub struct SyncMap {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<String>,
     pub fragments: Vec<SyncFragment>,
+    /// Audio whose text could not be established. The reader must hold its
+    /// place here rather than interpret the silence in the map as a picture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_gaps: Vec<RecoveryGap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryGap {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1582,7 +1593,8 @@ fn transcript_words(text: &str, start_utf16: u64, max_len_utf16: u64) -> Vec<Tra
 
 /// UTF-16 offset just past the last sentence-final token that ends at or
 /// before `target_utf16`, falling back to the last whole token, then to
-/// `target_utf16` itself. Used when a window has no recognized anchor.
+/// `target_utf16` itself. Used to exercise transcript boundary handling.
+#[cfg(test)]
 pub fn sentence_end_before(text: &str, start_utf16: u64, target_utf16: u64) -> u64 {
     let words = transcript_words(text, start_utf16, target_utf16.saturating_sub(start_utf16));
     words
@@ -1647,6 +1659,114 @@ fn recognition_anchor_chain(recognized: &[RecognizedWord], text: &str) -> Vec<(u
 }
 
 const ANCHOR_NGRAM: usize = 5;
+
+/// A complete sentence backed by a unique, longer phrase after alignment loss.
+/// These bounds select audio/text for a fresh forced alignment; they are not
+/// used as an interpolated timing map.
+#[derive(Debug, PartialEq)]
+pub struct RecoveryAnchor {
+    pub text_start_utf16: u64,
+    pub text_end_utf16: u64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// Search only forward from the last trusted text position. Repeated phrases,
+/// partial sentences, and invalid recognizer clocks cannot restart following.
+pub fn find_recovery_anchor(
+    recognized: &[RecognizedWord],
+    text: &str,
+    cursor: u64,
+    duration: f64,
+) -> Option<RecoveryAnchor> {
+    const CONTEXT: usize = ANCHOR_NGRAM * 2;
+    // Include consumed text when checking uniqueness, so a repeated earlier
+    // line cannot masquerade as a new occurrence later in the same scope.
+    let words = transcript_words(text, 0, u64::MAX);
+    let mut phrases = HashMap::new();
+    for (index, run) in words.windows(CONTEXT).enumerate() {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        phrases
+            .entry(key)
+            .and_modify(|at| *at = None)
+            .or_insert(Some(index));
+    }
+    let mut occurrences = HashMap::new();
+    for run in recognized.windows(CONTEXT) {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        *occurrences.entry(key).or_insert(0usize) += 1;
+    }
+    for (audio_index, run) in recognized.windows(CONTEXT).enumerate() {
+        let key: Vec<_> = run.iter().map(|word| word.text.as_str()).collect();
+        let Some(Some(index)) = phrases.get(&key).copied() else {
+            continue;
+        };
+        if words[index].start_utf16 < cursor
+            || occurrences.get(&key) != Some(&1)
+            || (index > 0 && !words[index - 1].sentence_final)
+        {
+            continue;
+        }
+        let Some(last) = words[index..]
+            .iter()
+            .take(80)
+            .position(|word| word.sentence_final)
+        else {
+            continue;
+        };
+        let count = CONTEXT.max(last + 1);
+        let (Some(script), Some(speech)) = (
+            words.get(index..index + count),
+            recognized.get(audio_index..audio_index + count),
+        ) else {
+            continue;
+        };
+        if !script
+            .iter()
+            .map(|word| &word.text)
+            .eq(speech.iter().map(|word| &word.text))
+            || speech.iter().any(|word| {
+                !word.start_time.is_finite()
+                    || !word.end_time.is_finite()
+                    || word.start_time < 0.0
+                    || word.end_time <= word.start_time
+                    || word.end_time > duration
+            })
+            || speech.windows(2).any(|pair| {
+                pair[1].start_time < pair[0].start_time || pair[1].end_time < pair[0].end_time
+            })
+        {
+            continue;
+        }
+        let start_seconds = speech[0].start_time;
+        let end_seconds = speech[last].end_time;
+        if !(0.5..=60.0).contains(&(end_seconds - start_seconds)) {
+            continue;
+        }
+        return Some(RecoveryAnchor {
+            text_start_utf16: words[index].start_utf16,
+            text_end_utf16: words[index + last].end_utf16,
+            start_seconds,
+            end_seconds,
+        });
+    }
+    None
+}
+
+/// A later sentence match cannot justify force-aligning a substantial missing
+/// prefix. Small recognition mistakes near the opening retain the normal path.
+pub fn recognition_misses_opening(recognized: &[RecognizedWord], text: &str) -> bool {
+    recognition_anchor_chain(recognized, text)
+        .first()
+        .is_some_and(|(_, word)| *word >= 32)
+}
+
+pub fn recognition_misses_ending(recognized: &[RecognizedWord], text: &str) -> bool {
+    let count = transcript_words(text, 0, u64::MAX).len();
+    recognition_anchor_chain(recognized, text)
+        .last()
+        .is_some_and(|(_, word)| count.saturating_sub(word + ANCHOR_NGRAM) >= 32)
+}
 
 /// Where a recognized window can be tied to the transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -3432,6 +3552,56 @@ mod tests {
     }
 
     #[test]
+    fn recovery_restarts_at_a_complete_unique_sentence_after_unknown_text() {
+        let prefix = "A café🦉 passage is missing from this edition. ";
+        let sentence = "A lantern flickered beside the empty railway station.";
+        let following = "Several travellers waited quietly for the morning train.";
+        let text = format!("{prefix}{sentence} {following}");
+        let recognized = spoken(
+            &format!("unexpected noises continue {sentence} {following}"),
+            2.0,
+        );
+        let anchor = find_recovery_anchor(&recognized, &text, 0, 30.0).unwrap();
+        assert_eq!(
+            anchor.text_start_utf16,
+            prefix.encode_utf16().count() as u64
+        );
+        assert_eq!(
+            anchor.text_end_utf16,
+            format!("{prefix}{sentence}").encode_utf16().count() as u64
+        );
+        assert_eq!(anchor.start_seconds, 3.5);
+        assert!((anchor.end_seconds - 7.4).abs() < 1e-9);
+        // An already-consumed sentence cannot drag recovery backwards.
+        assert!(find_recovery_anchor(&recognized, &text, anchor.text_end_utf16, 30.0).is_none());
+    }
+
+    #[test]
+    fn recovery_rejects_ambiguous_phrases_and_untrustworthy_clocks() {
+        let text = "A lantern flickered beside the empty railway station. Several travellers waited quietly for the morning train.";
+        let recognized = spoken(text, 1.0);
+        assert!(find_recovery_anchor(&recognized, text, 0, 30.0).is_some());
+        assert!(find_recovery_anchor(&recognized, &format!("{text} {text}"), 0, 30.0).is_none());
+        assert!(
+            find_recovery_anchor(
+                &recognized,
+                &format!("{text} {text}"),
+                text.encode_utf16().count() as u64,
+                30.0
+            )
+            .is_none()
+        );
+        let repeated = [recognized.clone(), spoken(text, 12.0)].concat();
+        assert!(find_recovery_anchor(&repeated, text, 0, 30.0).is_none());
+        for invalid in [f64::NAN, -1.0, 100.0] {
+            let mut bad = recognized.clone();
+            bad[3].end_time = invalid;
+            assert!(find_recovery_anchor(&bad, text, 0, 30.0).is_none());
+        }
+        assert!(find_recovery_anchor(&recognized[..9], text, 0, 30.0).is_none());
+    }
+
+    #[test]
     fn unreliable_recognition_requests_a_bounded_retry() {
         let tokens = (0..60)
             .map(|index| format!("word{index}"))
@@ -3950,6 +4120,10 @@ The dog barked loudly at the cat. Go away said the cat.",
             generator: Some("echogarden".into()),
             generated_at: None,
             precision: Some(PRECISION_SENTENCE.into()),
+            recovery_gaps: vec![RecoveryGap {
+                start_seconds: 3.25,
+                end_seconds: 12.0,
+            }],
             fragments: vec![SyncFragment {
                 start_seconds: 1.5,
                 end_seconds: 3.25,
@@ -3962,6 +4136,7 @@ The dog barked loudly at the cat. Go away said the cat.",
         let parsed: SyncMap = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.fragments[0].href, "text/ch1.xhtml");
         assert_eq!(parsed.fragments[0].words, vec![WordTiming(1.5, 3.25, 0, 5)]);
+        assert_eq!(parsed.recovery_gaps, map.recovery_gaps);
         assert!(json.contains("startSeconds"));
         assert!(json.contains("\"words\":[[1.5,3.25,0,5]]"));
     }

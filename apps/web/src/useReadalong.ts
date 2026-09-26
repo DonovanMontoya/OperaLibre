@@ -143,6 +143,7 @@ export function useReadalong({
     isViewingPlayingBook && selectedSyncMap && syncMapPrecision(selectedSyncMap) === "sentence"
       ? selectedSyncMap.fragments
       : null;
+  const selectedSyncRecoveryGaps = selectedSyncFragments ? selectedSyncMap?.recoveryGaps : undefined;
   const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
   const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
   const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
@@ -430,6 +431,7 @@ export function useReadalong({
     selectedHasExtras,
     selectedReadAlongMode,
     selectedSyncFragments,
+    selectedSyncRecoveryGaps,
     selectedSyncPrecise,
     sentenceFollowAvailable,
     setActiveCompanionId,
