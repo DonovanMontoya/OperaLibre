@@ -19,7 +19,7 @@ Add `| sh -s -- --help` to see its options, including `--server-only` for headle
 - **Update manifest:** `operalibre-manifest-v1.json` is what installations read to update themselves; you do not need to download it.
 - **Read-along sync add-on:** the optional sync add-on is published in its own `readalong-sync-v…` release, only when it changes. Install it from **Administration**; you do not need to download it yourself.
 - **Deployment profiles:** new installs start in `local` mode. Choose `lan` for a trusted LAN/VPN or `proxy` behind same-machine HTTPS; remote first-run setup uses a one-time server token.
-- **Transfer limits:** uploads, generated ZIP downloads, and simultaneous ZIP generation now have configurable server-side limits. Existing configs automatically receive safe defaults.
+- **Transfer limits:** uploads, generated ZIP downloads, and simultaneous ZIP generation have configurable server-side limits. Existing configs automatically receive safe defaults.
 
 Choose `windows-x64` for a 64-bit Windows PC, `linux-x64` for a typical Intel/AMD Linux server, `linux-arm64` for a 64-bit ARM Linux server or Raspberry Pi, `macos-arm64` for an Apple Silicon Mac, or `macos-x64` for an Intel Mac.
 
