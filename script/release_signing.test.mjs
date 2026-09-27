@@ -352,3 +352,18 @@ test("signing refuses a root the updaters would reject", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("nightly manifests sign the stable return contract and refuse missing compatibility", async () => {
+  const options = { version: "1.2.4-nightly.20260927.12", tag: "1.2.4-nightly.20260927.12",
+    repository: "o/r", notes: "Nightly", packages: [], policy: {}, published: "2026-09-27T00:00:00Z",
+    compatibility: { databaseSchema: 3, storageVersion: 1 }, stableVersion: "1.2.3" };
+  assert.throws(() => manifestPayload({ ...options, compatibility: undefined }));
+  assert.throws(() => manifestPayload({ ...options, stableVersion: undefined }));
+  const payload = JSON.stringify(manifestPayload(options));
+  const envelope = { payload, signatures: [signEnvelope(privateKeyFromSeed(TEST_SEED), "manifest", payload)] };
+  const verified = await verifyManifestEnvelope(envelope, [TEST_PUBLIC_KEY]);
+  assert.deepEqual(verified.dataCompatibility, options.compatibility);
+  assert.equal(verified.stableVersion, "1.2.3");
+  await assert.rejects(verifyManifestEnvelope({ ...envelope,
+    payload: payload.replace('"storageVersion":1', '"storageVersion":2') }, [TEST_PUBLIC_KEY]));
+});

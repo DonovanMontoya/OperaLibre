@@ -170,6 +170,10 @@ pub(crate) fn build_router(
         .route("/api/works/link", post(link_work_edition))
         .route("/api/works/reject", post(reject_work_suggestion))
         .route("/api/update", get(update_status))
+        .route(
+            "/api/update/channel",
+            get(update_channel_status).put(set_update_channel),
+        )
         .route("/api/frontend-update", get(frontend_update_status))
         .route(
             "/api/experimental-features/readalong-sync",
@@ -547,14 +551,47 @@ pub(crate) async fn update_status(
         .map_err(|error| ApiError::bad_gateway(format!("Could not check for updates: {error}")))
 }
 
+pub(crate) async fn update_channel_status(
+    State(state): State<AppState>,
+    _: AdminUser,
+) -> Result<Json<updates::ChannelStatus>, ApiError> {
+    let channel = state
+        .update_manager
+        .channel()
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(updates::ChannelStatus {
+        channel,
+        current_version: updates::current_version(),
+    }))
+}
+
+pub(crate) async fn set_update_channel(
+    State(state): State<AppState>,
+    _: OwnerUser,
+    Json(settings): Json<updates::ChannelSettings>,
+) -> Result<Json<updates::ChannelSettings>, ApiError> {
+    state
+        .update_manager
+        .set_channel(settings.channel)
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(settings))
+}
+
 pub(crate) async fn install_update(
     State(state): State<AppState>,
     _: OwnerUser,
+    request: Option<Json<updates::UpdateInstallRequest>>,
 ) -> Result<Json<updates::UpdateInstallStarted>, ApiError> {
     let started = prepare_update_handoff(&state.backup_lock, async {
-        state.update_manager.install().await.map_err(|error| {
-            ApiError::bad_request(format!("Could not install the update: {error}"))
-        })
+        state
+            .update_manager
+            .install(request.map(|Json(request)| request).unwrap_or_default())
+            .await
+            .map_err(|error| {
+                ApiError::bad_request(format!("Could not install the update: {error}"))
+            })
     })
     .await?;
     // The updater waits for this process, so let `main` own the exit. That

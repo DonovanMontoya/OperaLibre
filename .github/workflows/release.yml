@@ -1,11 +1,23 @@
 name: Create Release
 
 on:
+  schedule:
+    # 8 p.m. EST (UTC-5), fixed year-round.
+    - cron: "0 1 * * *"
   push:
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
+      channel:
+        description: Release channel (nightly publishes only web/server packages)
+        type: choice
+        options: [stable, nightly]
+        default: stable
+      source_nightly:
+        description: Optional immutable nightly tag to promote to stable
+        type: string
+        default: ""
       tag:
         description: Version tag to create or rebuild; leave blank to increment the latest release patch
         required: false
@@ -21,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'next-patch') || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -29,65 +41,60 @@ jobs:
     name: Resolve release version
     runs-on: ubuntu-24.04
     outputs:
+      channel: ${{ steps.release-ref.outputs.channel }}
+      publish: ${{ steps.release-ref.outputs.publish }}
+      stable_tag: ${{ steps.release-ref.outputs.stable_tag }}
       tag: ${{ steps.release-ref.outputs.tag }}
       ref: ${{ steps.release-ref.outputs.ref }}
-      tag_exists: ${{ steps.release-ref.outputs.tag_exists }}
       sync_version: ${{ steps.sync-addon.outputs.version }}
       sync_inputs: ${{ steps.sync-addon.outputs.inputs }}
       sync_needed: ${{ steps.sync-addon.outputs.needed }}
       legacy_assets: ${{ steps.policy.outputs.legacy_assets }}
     steps:
+      - name: Checkout release tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: Resolve release tag and source
         id: release-ref
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ inputs.tag }}
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            release_tag="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "${REQUESTED_TAG}")"
-          else
-            release_tag="${GITHUB_REF_NAME}"
-          fi
-
-          if [[ -z "${release_tag}" ]]; then
-            latest_tag="$({
-              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'
-            } | sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -n 1)"
-
-            if [[ -z "${latest_tag}" ]]; then
-              release_tag="0.1.0"
-            else
-              IFS=. read -r major minor patch <<< "${latest_tag}"
-              release_tag="${major}.${minor}.$((patch + 1))"
-            fi
-          fi
-
-          if [[ ! "${release_tag}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must be a semantic version such as 0.2.4 or v0.2.4." >&2
-            exit 1
-          fi
-
-          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" >/dev/null 2>&1; then
-            echo "ref=${release_tag}" >> "${GITHUB_OUTPUT}"
-            echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
-            echo "tag_exists=false" >> "${GITHUB_OUTPUT}"
-          fi
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          SOURCE_NIGHTLY: ${{ inputs.source_nightly }}
+        run: node script/resolve_release.mjs
 
       - name: Checkout release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ steps.release-ref.outputs.ref }}
 
+      - name: Check nightly compatibility baseline
+        if: steps.release-ref.outputs.channel == 'nightly' && steps.release-ref.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_TAG: ${{ steps.release-ref.outputs.stable_tag }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/nightly-baseline"
+          gh release download "${STABLE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern operalibre-manifest-v1.json --dir "${RUNNER_TEMP}/nightly-baseline"
+          node script/release_signing.mjs verify-manifest "${RUNNER_TEMP}/nightly-baseline/operalibre-manifest-v1.json"
+          node --input-type=module <<'JS'
+          import { readFileSync } from "node:fs";
+          const stable = JSON.parse(JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/nightly-baseline/operalibre-manifest-v1.json`, "utf8")).payload);
+          const current = JSON.parse(readFileSync("release/data-compatibility.json", "utf8"));
+          if (stable.dataCompatibility?.databaseSchema !== current.databaseSchema ||
+              stable.dataCompatibility?.storageVersion !== current.storageVersion) {
+            throw new Error("Nightly requires a stable release with matching data compatibility. Publish that stable release first.");
+          }
+          JS
+
       # The read-along sync add-on is several hundred megabytes per platform
       # and rarely changes, so it has its own release per add-on version
       # (readalong-sync-v<version>) instead of riding along in every app
       # release. It is built only when that release is missing or incomplete.
       - name: Check sync add-on release
+        if: steps.release-ref.outputs.channel == 'stable' && steps.release-ref.outputs.publish == 'true'
         id: sync-addon
         shell: bash
         env:
@@ -129,10 +136,15 @@ jobs:
             echo "Add the offline backup key to release/update-trust.json first; see docs/update-manifest.md." >&2
             exit 1
           fi
+          if [[ "${{ steps.release-ref.outputs.channel }}" == "nightly" ]]; then
+            echo "legacy_assets=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           echo "legacy_assets=$(jq -r '.legacyAssets == true' release/update-policy.json)" >> "${GITHUB_OUTPUT}"
 
   verify:
     name: Verify release source
+    if: needs.prepare.outputs.publish == 'true'
     needs: prepare
     runs-on: ubuntu-24.04
     permissions:
@@ -260,6 +272,7 @@ jobs:
 
   android:
     name: Android APK (unsigned)
+    if: needs.prepare.outputs.channel == 'stable'
     needs:
       - prepare
       - frontend
@@ -505,6 +518,27 @@ jobs:
             --baseline "upgrade-baseline/operalibre-${baseline}-combined-${{ matrix.platform }}.${extension}" \
             --candidate "dist/operalibre-${version}-combined-${{ matrix.platform }}.${extension}"
 
+      - name: Verify nightly can return to stable
+        if: needs.prepare.outputs.channel == 'nightly'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_TAG: ${{ needs.prepare.outputs.stable_tag }}
+        run: |
+          extension=tar.gz
+          if [[ "${{ runner.os }}" == "Windows" ]]; then extension=zip; fi
+          stable_version="${STABLE_TAG#v}"
+          mkdir -p channel-baseline
+          gh release download "${STABLE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "operalibre-${stable_version}-combined-${{ matrix.platform }}.${extension}" \
+            --pattern operalibre-manifest-v1.json --dir channel-baseline
+          node upgrade-test-tools/script/release_signing.mjs verify-manifest \
+            channel-baseline/operalibre-manifest-v1.json channel-baseline
+          python upgrade-test-tools/script/test_release_upgrade.py \
+            --baseline "channel-baseline/operalibre-${stable_version}-combined-${{ matrix.platform }}.${extension}" \
+            --candidate "dist/operalibre-${RELEASE_TAG#v}-combined-${{ matrix.platform }}.${extension}" \
+            --round-trip
+
       - name: Upload native release packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -649,11 +683,13 @@ jobs:
       - publish-sync-addon
     # Runs when the sync add-on release was already published and its jobs
     # were skipped, but never after any failure.
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() && needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_DESCRIPTION: ${{ inputs.release_notes }}
+      RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      STABLE_TAG: ${{ needs.prepare.outputs.stable_tag }}
       LEGACY_ASSETS: ${{ needs.prepare.outputs.legacy_assets }}
       SYNC_TAG: readalong-sync-v${{ needs.prepare.outputs.sync_version }}
     permissions:
@@ -678,6 +714,7 @@ jobs:
           sparse-checkout: |
             script/release_signing.mjs
             script/release_manifest.mjs
+            script/publish_release.mjs
             release/update-policy.json
             release/update-trust.json
           sparse-checkout-cone-mode: false
@@ -697,7 +734,12 @@ jobs:
       - name: Build release notes
         shell: bash
         run: |
-          previous_tag="$(git describe --tags --abbrev=0 --match '[0-9v]*' HEAD^ 2>/dev/null || true)"
+          if [[ "${RELEASE_CHANNEL}" == "nightly" ]]; then
+            previous_tag="$(git tag --merged HEAD --sort=-version:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+-nightly\.' | grep -Fxv -- "${RELEASE_TAG}" | head -n 1 || true)"
+            previous_tag="${previous_tag:-${STABLE_TAG}}"
+          else
+            previous_tag="$(git tag --merged HEAD^ --sort=-version:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          fi
           {
             echo "## What's changed"
             echo
@@ -723,14 +765,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OPERALIBRE_RELEASE_SIGNING_KEY: ${{ secrets.OPERALIBRE_RELEASE_SIGNING_KEY }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${SYNC_TAG}" > "${RUNNER_TEMP}/sync-release.json"
+          manifest_options=()
+          if [[ -f release/data-compatibility.json ]]; then
+            manifest_options+=(--compatibility release/data-compatibility.json)
+          fi
+          if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${SYNC_TAG}" > "${RUNNER_TEMP}/sync-release.json"
+            manifest_options+=(--sync-release "${RUNNER_TEMP}/sync-release.json")
+          else
+            latest_stable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            [[ "${latest_stable}" == "${STABLE_TAG}" ]] || { echo "Stable changed during this build; retry nightly." >&2; exit 1; }
+            manifest_options+=(--stable-version "${STABLE_TAG#v}")
+          fi
           node release-signing-tools/script/release_manifest.mjs \
             --assets release-assets \
             --version "${RELEASE_TAG#v}" \
             --tag "${RELEASE_TAG}" \
             --repository "${GITHUB_REPOSITORY}" \
             --notes release/RELEASE_BODY.md \
-            --sync-release "${RUNNER_TEMP}/sync-release.json" \
+            "${manifest_options[@]}" \
             --output "${RUNNER_TEMP}/manifest-payload.json"
           node release-signing-tools/script/release_signing.mjs sign-envelope manifest \
             "${RUNNER_TEMP}/manifest-payload.json" release-assets/operalibre-manifest-v1.json
@@ -800,21 +853,4 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          title="OperaLibre ${RELEASE_TAG}"
-          if [[ "${{ needs.prepare.outputs.tag_exists }}" != "true" ]]; then
-            git tag "${RELEASE_TAG}"
-            git push origin "refs/tags/${RELEASE_TAG}"
-          fi
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" release-assets/* --clobber
-            gh release edit "${RELEASE_TAG}" \
-              --title "${title}" \
-              --notes-file release/RELEASE_BODY.md
-          else
-            gh release create "${RELEASE_TAG}" release-assets/* \
-              --verify-tag \
-              --latest \
-              --title "${title}" \
-              --notes-file release/RELEASE_BODY.md
-          fi
+        run: node release-signing-tools/script/publish_release.mjs
