@@ -22,7 +22,11 @@
     "test:perf:ios": "node script/performance/run.mjs ios",
     "test:perf:all": "node script/performance/run.mjs all",
     "perf:compare": "node script/performance/compare.mjs",
-    "test:lifecycle": "cargo build --locked --manifest-path apps/server/Cargo.toml && npm run build -w @operalibre/web && npm run test:lifecycle -w @operalibre/web"
+    "test:lifecycle": "cargo build --locked --manifest-path apps/server/Cargo.toml && npm run build -w @operalibre/web && npm run test:lifecycle -w @operalibre/web",
+    "test:follow": "python3 -m unittest discover -s script/follow-along -p \"test_*.py\" && cargo test --locked --manifest-path apps/server/Cargo.toml sync::tests::windowed && npm run test:follow -w @operalibre/web",
+    "test:follow:corpus": "python3 script/follow-along/corpus.py",
+    "test:follow:audio": "python3 script/follow-along/audio_faults.py",
+    "test:follow:library": "python3 script/follow-along/verify.py"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

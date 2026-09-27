@@ -133,6 +133,8 @@ export type SyncFragment = {
   words?: SyncWord[];
 };
 
+export type SyncRecoveryGap = { startSeconds: number; endSeconds: number };
+
 export type SyncMap = {
   version: number;
   generator?: string | null;
@@ -140,6 +142,8 @@ export type SyncMap = {
   /** `sentence` for a forced alignment; absent in version 1. Anything else is not followed. */
   precision?: "sentence" | string | null;
   fragments: SyncFragment[];
+  /** Hold the reader here until a later reliable sentence, without stopping audio. */
+  recoveryGaps?: SyncRecoveryGap[];
 };
 
 export type AlignmentStatus = {
