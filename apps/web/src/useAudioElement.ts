@@ -1,6 +1,7 @@
 import { type Dispatch, type RefObject, type SetStateAction, useEffect } from "react";
 import {
   attachNativeAudioPlayer,
+  forgetDetachedNativeClock,
   type NativeAudioQueueTrack,
   releaseNativeAudioSession,
   setNativeAudioGain
@@ -133,7 +134,10 @@ export function useAudioElement({
       // CarPlay is driving the shared player. Attaching would load this app's
       // book over the driver's, and the next detach would stop it outright.
       // The element stays muted so nothing here can be heard over the car.
-      if (audio) audio.muted = true;
+      if (audio) {
+        audio.muted = true;
+        forgetDetachedNativeClock(audio);
+      }
       nativeAudioAttachedRef.current = false;
       return;
     }
