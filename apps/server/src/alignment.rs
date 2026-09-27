@@ -1971,7 +1971,7 @@ pub fn reconcile_word_clocks(
             let left = proposals[i].unwrap_or((aligned[i].start_time, aligned[i].end_time));
             let right =
                 proposals[i + 1].unwrap_or((aligned[i + 1].start_time, aligned[i + 1].end_time));
-            if left.1 > right.0 {
+            if left.0 >= right.0 {
                 if proposals[i].is_some() {
                     rejected.push(i);
                 }
@@ -1987,12 +1987,26 @@ pub fn reconcile_word_clocks(
             proposals[index] = None;
         }
     }
+    let starts = aligned
+        .iter()
+        .zip(&proposals)
+        .map(|(word, proposal)| proposal.map_or(word.start_time, |p| p.0))
+        .collect::<Vec<_>>();
     let mut changed = false;
-    for (word, proposal) in aligned.into_iter().zip(proposals) {
+    for (index, word) in aligned.into_iter().enumerate() {
+        let proposal = proposals[index];
         if let Some((start, end)) = proposal {
             word.start_time = start;
             word.end_time = end;
             changed = true;
+        }
+        // Neighboring clocks can disagree about the end of a word. Preserve
+        // confirmed onsets and cap their duration at the next word's onset.
+        if (proposal.is_some() || proposals.get(index + 1).is_some_and(Option::is_some))
+            && let Some(next) = starts.get(index + 1)
+            && *next > word.start_time
+        {
+            word.end_time = word.end_time.min(*next);
         }
     }
     if changed {
@@ -4294,6 +4308,13 @@ mod tests {
                 .windows(2)
                 .all(|p| p[0].end_time <= p[1].start_time)
         );
+        let mut partial = spoken(text, 1.1);
+        partial.last_mut().unwrap().text = "misheard".into();
+        let mut timeline = parse_timeline(&original).unwrap();
+        reconcile_word_clocks(&mut timeline, text, &partial);
+        let children = timeline[0].timeline.as_ref().unwrap();
+        assert_eq!(children[0].start_time, 1.1);
+        assert_eq!(children[6].end_time, children[7].start_time);
         for rejected in [spoken(text, 20.0), spoken(&format!("{text} {text}"), 0.0)] {
             let mut timeline = parse_timeline(&original).unwrap();
             reconcile_word_clocks(&mut timeline, text, &rejected);
