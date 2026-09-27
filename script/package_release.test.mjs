@@ -193,9 +193,42 @@ for (const [reader, key, alias, value, expected] of [
       // Everything the in-app updater applies ships in the one package.
       assert.equal(await readFile(path.join(output, "operalibre-updater"), "utf8"), "launcher fixture");
       assert.deepEqual(JSON.parse(await readFile(path.join(output, "UPDATE.json"), "utf8")),
-        { schemaVersion: 1, version: "1.2.3", platform: "linux-x64" });
+        { schemaVersion: 1, version: "1.2.3", platform: "linux-x64",
+          dataCompatibility: JSON.parse(await readFile("release/data-compatibility.json", "utf8")) });
       assert.equal(await readFile(path.join(output, "web/index.html"), "utf8"), "web fixture");
       assert.ok((await readFile(path.join(output, "start.sh"), "utf8")).length > 0);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const [installed, target, allowed] of [
+  ["0.5.0", "0.5.1", true],
+  ["0.5.0", "0.5.1-nightly.20260927.1", false],
+  ["0.5.1-nightly.20260927.1", "0.5.0", false],
+  ["0.5.1-nightly.20260927.1", "0.5.1-nightly.20260928.2", false],
+]) {
+  test(`Installer ${installed} -> ${target} ${allowed ? "continues" : "requires the compatible updater"}`, async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "operalibre-installer-channel-"));
+    try {
+      await writeFile(path.join(fixture, "operalibre-server"), "unchanged binary");
+      await writeFile(path.join(fixture, "VERSION.txt"), installed);
+      await writeFile(path.join(fixture, "server.config"), "web_dist_dir =\n");
+      const selection = installer.slice(installer.indexOf("UPGRADE=0"), installer.indexOf('[ -n "$KIND" ] || KIND=combined'));
+      const result = spawnSync("sh", ["-eu", "-c", `
+        say() { :; }
+        fail() { printf '%s\\n' "$*" >&2; exit 1; }
+        confirm() { return 0; }
+        ${selection}
+        printf 'CONTINUED'
+      `], { encoding: "utf8", env: { ...process.env, INSTALL_DIR: fixture, VERSION: target,
+        os: "linux", KIND: "", KIND_REQUESTED: "" } });
+      assert.equal(result.status, allowed ? 0 : 1, result.stderr);
+      assert.equal(result.stdout.includes("CONTINUED"), allowed);
+      if (!allowed) assert.match(result.stderr, /Administration/);
+      assert.equal(await readFile(path.join(fixture, "operalibre-server"), "utf8"), "unchanged binary");
+      assert.equal(await readFile(path.join(fixture, "VERSION.txt"), "utf8"), installed);
     } finally {
       await rm(fixture, { recursive: true, force: true });
     }

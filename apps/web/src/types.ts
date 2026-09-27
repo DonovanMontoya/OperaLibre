@@ -366,7 +366,11 @@ export type JobCreated = {
   jobId: string;
 };
 
+export type UpdateChannel = "stable" | "nightly";
+
 export type UpdateStatus = {
+  channel?: UpdateChannel;
+  currentChannel?: UpdateChannel;
   lastUpdateResult?: string | null;
   currentVersion: string;
   latestVersion: string;

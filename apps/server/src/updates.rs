@@ -16,7 +16,10 @@ use std::{
 };
 use tokio::{fs, process::Command, sync::Mutex};
 
-use crate::update_manifest::{ArchiveFormat, Manifest, Package, fetch_manifest};
+use crate::update_channel::{UpdateChannel, update_available, validate_target};
+use crate::update_manifest::{
+    ArchiveFormat, Manifest, Package, fetch_manifest, fetch_manifest_from,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -93,6 +96,7 @@ struct CachedUpdateStatus {
 }
 
 struct CachedFrontendUpdateStatus {
+    channel: UpdateChannel,
     checked_at: Instant,
     reported_current_version: Option<String>,
     status: FrontendUpdateStatus,
@@ -106,6 +110,8 @@ struct CachedSyncAddonStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
+    pub channel: UpdateChannel,
+    pub current_channel: UpdateChannel,
     pub current_version: String,
     pub latest_version: String,
     pub update_available: bool,
@@ -116,6 +122,26 @@ pub struct UpdateStatus {
     pub notes: Option<String>,
     pub message: Option<String>,
     pub last_update_result: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSettings {
+    pub channel: UpdateChannel,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelStatus {
+    pub channel: UpdateChannel,
+    pub current_version: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstallRequest {
+    pub channel: Option<UpdateChannel>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,11 +262,41 @@ impl UpdateManager {
         })
     }
 
+    pub async fn channel(&self) -> anyhow::Result<UpdateChannel> {
+        match fs::read(self.data_dir.join("update-channel.json")).await {
+            Ok(bytes) => Ok(serde_json::from_slice::<ChannelSettings>(&bytes)
+                .context("Could not read the saved update channel")?
+                .channel),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(
+                UpdateChannel::for_version(&Version::parse(&current_version())?),
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub async fn set_channel(&self, channel: UpdateChannel) -> anyhow::Result<()> {
+        let Some(_guard) = InstallGuard::acquire(&self.installing) else {
+            bail!("Wait for the current update to finish before changing channels.");
+        };
+        fs::create_dir_all(&self.data_dir).await?;
+        crate::write_json_atomic(
+            &self.data_dir.join("update-channel.json"),
+            &ChannelSettings { channel },
+        )
+        .await
+        .map_err(|error| anyhow!("Could not save the update channel: {error:?}"))?;
+        *self.cache.lock().await = None;
+        *self.frontend_cache.lock().await = None;
+        Ok(())
+    }
+
     pub async fn check(&self, force: bool) -> anyhow::Result<UpdateStatus> {
+        let channel = self.channel().await?;
         if !force {
             let cache = self.cache.lock().await;
             if let Some(cached) = cache.as_ref()
                 && cached.checked_at.elapsed() < UPDATE_CACHE_TTL
+                && cached.status.channel == channel
             {
                 let mut status = cached.status.clone();
                 status.last_update_result = self.last_update_result().await;
@@ -248,8 +304,8 @@ impl UpdateManager {
             }
         }
 
-        let manifest = self.server_manifest().await?;
-        let mut status = self.status_for_manifest(&manifest)?;
+        let manifest = self.channel_manifest(channel).await?;
+        let mut status = self.status_for_manifest(&manifest, channel)?;
         status.last_update_result = self.last_update_result().await;
         *self.cache.lock().await = Some(CachedUpdateStatus {
             checked_at: Instant::now(),
@@ -269,11 +325,14 @@ impl UpdateManager {
             .map(|text| text.trim().to_string())
     }
 
-    pub async fn install(&self) -> anyhow::Result<UpdateInstallStarted> {
+    pub async fn install(
+        &self,
+        request: UpdateInstallRequest,
+    ) -> anyhow::Result<UpdateInstallStarted> {
         let Some(guard) = InstallGuard::acquire(&self.installing) else {
             bail!("An OperaLibre update is already being installed.");
         };
-        let result = self.install_inner().await;
+        let result = self.install_inner(request).await;
         if result.is_ok() {
             // A staged backend update restarts the process; hold the flag so
             // nothing installs over it in the meantime.
@@ -287,11 +346,13 @@ impl UpdateManager {
         force: bool,
         reported_current_version: Option<&str>,
     ) -> anyhow::Result<FrontendUpdateStatus> {
+        let channel = self.channel().await?;
         let reported_current_version = reported_current_version.map(normalize_version);
         if !force {
             let cache = self.frontend_cache.lock().await;
             if let Some(cached) = cache.as_ref()
                 && cached.checked_at.elapsed() < UPDATE_CACHE_TTL
+                && cached.channel == channel
                 && cached.reported_current_version == reported_current_version
             {
                 return Ok(cached.status.clone());
@@ -299,11 +360,12 @@ impl UpdateManager {
         }
 
         let manifest = self
-            .frontend_manifest(reported_current_version.as_deref())
+            .frontend_manifest(reported_current_version.as_deref(), channel)
             .await?;
         let status =
             self.frontend_status_for_manifest(&manifest, reported_current_version.as_deref())?;
         *self.frontend_cache.lock().await = Some(CachedFrontendUpdateStatus {
+            channel,
             checked_at: Instant::now(),
             reported_current_version,
             status: status.clone(),
@@ -388,7 +450,7 @@ impl UpdateManager {
             status.message = Some(error.to_string());
         }
 
-        match self.server_manifest().await {
+        match self.stable_manifest().await {
             Ok(manifest) => {
                 status.release_url = Some(manifest.release_url.clone());
                 match sync_addon_package(&manifest, platform) {
@@ -437,7 +499,7 @@ impl UpdateManager {
         let Some(_guard) = InstallGuard::acquire(&self.installing) else {
             bail!("Another OperaLibre package is already being installed.");
         };
-        let manifest = self.server_manifest().await?;
+        let manifest = self.stable_manifest().await?;
         let platform = platform_key()
             .ok_or_else(|| anyhow!("This server platform does not have a sync add-on package."))?;
         let package = sync_addon_package(&manifest, platform)?;
@@ -559,9 +621,22 @@ impl UpdateManager {
             .map_err(|error| anyhow!("Could not save experimental feature settings: {error:?}"))
     }
 
-    async fn install_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
-        let manifest = self.server_manifest().await?;
-        let status = self.status_for_manifest(&manifest)?;
+    async fn install_inner(
+        &self,
+        request: UpdateInstallRequest,
+    ) -> anyhow::Result<UpdateInstallStarted> {
+        let channel = self.channel().await?;
+        if request.channel.is_some_and(|expected| expected != channel) {
+            bail!("The selected channel changed. Check for updates again before installing.");
+        }
+        let manifest = self.channel_manifest(channel).await?;
+        let status = self.status_for_manifest(&manifest, channel)?;
+        if request
+            .version
+            .is_some_and(|expected| expected != status.latest_version)
+        {
+            bail!("The available release changed. Check for updates again before installing.");
+        }
         if !status.update_available {
             bail!("OperaLibre is already up to date.");
         }
@@ -644,7 +719,7 @@ impl UpdateManager {
     }
 
     async fn install_frontend_inner(&self) -> anyhow::Result<UpdateInstallStarted> {
-        let manifest = self.frontend_manifest(None).await?;
+        let manifest = self.frontend_manifest(None, self.channel().await?).await?;
         let status = self.frontend_status_for_manifest(&manifest, None)?;
         if !status.update_available {
             bail!("The web frontend is already up to date.");
@@ -698,15 +773,42 @@ impl UpdateManager {
         })
     }
 
-    /// The manifest for this server build: the latest one, or the bridge
-    /// release it must pass through first. Sync add-on packages ride in the
-    /// same manifest, since which add-on fits depends on the server.
-    async fn server_manifest(&self) -> anyhow::Result<Manifest> {
+    async fn channel_manifest(&self, channel: UpdateChannel) -> anyhow::Result<Manifest> {
+        let current = Version::parse(&current_version()).ok();
+        fetch_manifest_from(
+            &self.client,
+            channel.manifest_url(),
+            "server",
+            current.as_ref(),
+        )
+        .await
+        .map_err(|error| {
+            if channel == UpdateChannel::Nightly
+                && error.downcast_ref::<reqwest::Error>().and_then(reqwest::Error::status) == Some(reqwest::StatusCode::NOT_FOUND)
+            {
+                anyhow!("No nightly release is available yet. Your server has not changed; you can select Stable again.")
+            } else {
+                error
+            }
+        })
+    }
+
+    // Sync add-on releases remain independent of the selected server channel.
+    async fn stable_manifest(&self) -> anyhow::Result<Manifest> {
         let current = Version::parse(&current_version()).ok();
         fetch_manifest(&self.client, "server", current.as_ref()).await
     }
 
-    async fn frontend_manifest(&self, reported: Option<&str>) -> anyhow::Result<Manifest> {
+    async fn frontend_manifest(
+        &self,
+        reported: Option<&str>,
+        channel: UpdateChannel,
+    ) -> anyhow::Result<Manifest> {
+        if release_install(self.web_dist_dir.as_deref())
+            .is_ok_and(|install| install.layout == InstallLayout::Combined)
+        {
+            return self.channel_manifest(channel).await;
+        }
         let installed = reported
             .map(str::to_string)
             .or_else(|| installed_frontend_version(self.web_dist_dir.as_deref()).ok())
@@ -768,7 +870,11 @@ impl UpdateManager {
         Ok(archive_path)
     }
 
-    fn status_for_manifest(&self, manifest: &Manifest) -> anyhow::Result<UpdateStatus> {
+    fn status_for_manifest(
+        &self,
+        manifest: &Manifest,
+        channel: UpdateChannel,
+    ) -> anyhow::Result<UpdateStatus> {
         let current = Version::parse(&current_version()).context("Invalid current version")?;
         let platform = platform_key().map(str::to_string);
         let package = platform
@@ -776,7 +882,8 @@ impl UpdateManager {
             .and_then(|platform| manifest.package("server", Some(platform), None));
         let latest_text = package.map_or(manifest.version.as_str(), |package| &package.version);
         let latest = Version::parse(latest_text).context("Invalid release version")?;
-        let capability = managed_install(self.web_dist_dir.as_deref());
+        let capability = validate_target(&current, &latest, channel, manifest)
+            .and_then(|()| managed_install(self.web_dist_dir.as_deref()));
         let can_auto_update = package.is_some() && capability.is_ok();
         let message = if package.is_none() {
             Some(manifest_notice(manifest).unwrap_or_else(|| {
@@ -786,9 +893,11 @@ impl UpdateManager {
             capability.err().map(|error| error.to_string())
         };
         Ok(UpdateStatus {
+            channel,
+            current_channel: UpdateChannel::for_version(&current),
             current_version: current.to_string(),
             latest_version: latest.to_string(),
-            update_available: latest > current,
+            update_available: update_available(&current, &latest, channel),
             can_auto_update,
             platform,
             release_url: manifest.release_url.clone(),
@@ -818,7 +927,7 @@ impl UpdateManager {
         // A combined release package ships its own web bundle, and the server
         // update replaces it wholesale. Installing the frontend on its own
         // would only let it run ahead of the server it talks to.
-        let combined_install = managed_install(self.web_dist_dir.as_deref())
+        let combined_install = release_install(self.web_dist_dir.as_deref())
             .is_ok_and(|install| install.layout == InstallLayout::Combined);
         let reported = reported_current_version.map(normalize_version);
         let capability = installed_version.and_then(|installed_version| {
@@ -845,7 +954,11 @@ impl UpdateManager {
         Ok(FrontendUpdateStatus {
             current_version: current.to_string(),
             latest_version: latest.to_string(),
-            update_available: latest > current,
+            update_available: if combined_install {
+                update_available(&current, &latest, UpdateChannel::for_version(&latest))
+            } else {
+                latest > current
+            },
             can_auto_update,
             release_url: manifest.release_url.clone(),
             published_at: manifest.published.clone(),
@@ -1046,7 +1159,21 @@ fn installed_frontend_version(web_dist_dir: Option<&Path>) -> anyhow::Result<Str
 }
 
 fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
-    let executable = std::env::current_exe()?;
+    let install = release_install(web_dist_dir)?;
+    // Capability must not determine layout: a read-only combined install
+    // still updates its server and bundled frontend together.
+    ensure_install_root_is_writable_cached(&install.root)?;
+    Ok(install)
+}
+
+fn release_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall> {
+    release_install_at(&std::env::current_exe()?, web_dist_dir)
+}
+
+fn release_install_at(
+    executable: &Path,
+    web_dist_dir: Option<&Path>,
+) -> anyhow::Result<ManagedInstall> {
     let root = executable
         .parent()
         .ok_or_else(|| anyhow!("The server executable has no installation folder."))?
@@ -1060,10 +1187,6 @@ fn managed_install(web_dist_dir: Option<&Path>) -> anyhow::Result<ManagedInstall
         bail!("VERSION.txt does not match the running server version.");
     }
     let layout = install_layout(&root, web_dist_dir)?;
-    // The updater replaces files here after the server exits. Proving the
-    // folder is writable now turns an unrecoverable half-applied update into
-    // an ordinary error message, while the server is still running.
-    ensure_install_root_is_writable_cached(&root)?;
     Ok(ManagedInstall { root, layout })
 }
 
@@ -1677,6 +1800,25 @@ mod tests {
     };
 
     #[test]
+    fn unwritable_combined_installs_keep_their_bundled_frontend() {
+        let root = tempfile::tempdir().unwrap();
+        let web = root.path().join("web");
+        std::fs::create_dir(&web).unwrap();
+        std::fs::write(root.path().join("VERSION.txt"), super::current_version()).unwrap();
+        // A directory at the probe path makes the capability check fail on
+        // every platform, including test runners with elevated permissions.
+        std::fs::create_dir(
+            root.path()
+                .join(format!(".operalibre-update-probe-{}", std::process::id())),
+        )
+        .unwrap();
+        assert!(super::ensure_install_root_is_writable(root.path()).is_err());
+        let install =
+            super::release_install_at(&root.path().join("operalibre-server"), Some(&web)).unwrap();
+        assert_eq!(install.layout, InstallLayout::Combined);
+    }
+
+    #[test]
     fn install_layouts_are_classified_by_the_configured_frontend() {
         let root = tempfile::tempdir().unwrap();
         let bundled_web = root.path().join("web");
@@ -1775,6 +1917,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_changes_cannot_race_an_install_and_stale_requests_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
+        let guard = super::InstallGuard::acquire(&manager.installing).unwrap();
+        assert!(
+            manager
+                .set_channel(super::UpdateChannel::Nightly)
+                .await
+                .is_err()
+        );
+        assert!(!root.path().join("update-channel.json").exists());
+        drop(guard);
+        manager
+            .set_channel(super::UpdateChannel::Nightly)
+            .await
+            .unwrap();
+        let error = manager
+            .install(super::UpdateInstallRequest {
+                channel: Some(super::UpdateChannel::Stable),
+                version: Some("1.0.0".into()),
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("selected channel changed"));
+        manager
+            .set_channel(super::UpdateChannel::Stable)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn completed_update_result_bypasses_the_release_cache() {
         let root = tempfile::tempdir().unwrap();
         let manager = UpdateManager::new(root.path().to_path_buf(), None, 4000).unwrap();
@@ -1782,6 +1955,8 @@ mod tests {
         *manager.cache.lock().await = Some(super::CachedUpdateStatus {
             checked_at: std::time::Instant::now(),
             status: super::UpdateStatus {
+                channel: super::UpdateChannel::Stable,
+                current_channel: super::UpdateChannel::Stable,
                 current_version: "0.3.7".into(),
                 latest_version: "0.3.8".into(),
                 update_available: true,
