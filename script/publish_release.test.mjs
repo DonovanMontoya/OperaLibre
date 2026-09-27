@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -116,4 +117,22 @@ test("stable rebuilds retain the existing release upload path", (t) => {
   publishRelease({ ...options, tag: "0.5.0", channel: "stable" }, run);
   assert.deepEqual(mutations, ["tag", "push", "upload:0.5.0", "edit:0.5.0"]);
   assert.equal(releases.has("nightly"), false);
+});
+
+test("retried nightly notes compare against the preceding nightly or stable baseline", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const selection = workflow.match(/previous_tag="\$\(git tag --merged HEAD .*\n\s+previous_tag=.*\n/)[0];
+  const previous = "0.5.1-nightly.20260926.11";
+  for (const [tags, expected] of [
+    [[tag, previous, "0.5.0"], previous],
+    [[tag, "0.5.0"], "0.5.0"],
+    [[previous, "0.5.0"], previous]
+  ]) {
+    const result = execFileSync("bash", ["-eo", "pipefail", "-c",
+      'git() { printf "%s\\n" "$TEST_TAGS"; }\n' + selection + 'printf "%s" "$previous_tag"'], {
+      encoding: "utf8",
+      env: { ...process.env, TEST_TAGS: tags.join("\n"), RELEASE_TAG: tag, STABLE_TAG: "0.5.0" }
+    });
+    assert.equal(result, expected);
+  }
 });
