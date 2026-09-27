@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { publishRelease } from "./publish_release.mjs";
+import { previousReleaseTag } from "./previous_release.mjs";
 
 const tag = "0.5.1-nightly.20260927.12";
 const manifestName = "operalibre-manifest-v1.json";
@@ -120,19 +120,26 @@ test("stable rebuilds retain the existing release upload path", (t) => {
 });
 
 test("retried nightly notes compare against the preceding nightly or stable baseline", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const selection = workflow.match(/previous_tag="\$\(git tag --merged HEAD .*\n\s+previous_tag=.*\n/)[0];
   const previous = "0.5.1-nightly.20260926.11";
   for (const [tags, expected] of [
     [[tag, previous, "0.5.0"], previous],
     [[tag, "0.5.0"], "0.5.0"],
     [[previous, "0.5.0"], previous]
   ]) {
-    const result = execFileSync("bash", ["-eo", "pipefail", "-c",
-      'git() { printf "%s\\n" "$TEST_TAGS"; }\n' + selection + 'printf "%s" "$previous_tag"'], {
-      encoding: "utf8",
-      env: { ...process.env, TEST_TAGS: tags.join("\n"), RELEASE_TAG: tag, STABLE_TAG: "0.5.0" }
-    });
+    const result = previousReleaseTag(tags, { channel: "nightly", tag, stableTag: "0.5.0" });
     assert.equal(result, expected);
   }
+});
+
+test("stable changelogs compare numeric versions without favoring a v prefix", () => {
+  const tags = ["v0.1.0", "0.4.9", "0.4.10", "0.4.11", "v0.4.11", "0.5.0", "readalong-sync-v1.0.1"];
+  assert.equal(previousReleaseTag(tags, { channel: "stable", tag: "0.4.11" }), "0.4.10");
+  assert.equal(previousReleaseTag([...tags, "v0.4.12"], { channel: "stable", tag: "0.5.0" }), "v0.4.12");
+  assert.equal(previousReleaseTag(tags, { channel: "stable", tag: "v0.1.0" }), "");
+});
+
+test("nightly baselines normalize prefixes and sort run numbers numerically", () => {
+  const tags = ["v0.1.0-nightly.20260926.99", "v0.5.1-nightly.20260927.9",
+    "0.5.1-nightly.20260927.11", tag, `v${tag}`];
+  assert.equal(previousReleaseTag(tags, { channel: "nightly", tag, stableTag: "0.5.0" }), "0.5.1-nightly.20260927.11");
 });

@@ -715,6 +715,7 @@ jobs:
             script/release_signing.mjs
             script/release_manifest.mjs
             script/publish_release.mjs
+            script/previous_release.mjs
             release/update-policy.json
             release/update-trust.json
           sparse-checkout-cone-mode: false
@@ -734,12 +735,7 @@ jobs:
       - name: Build release notes
         shell: bash
         run: |
-          if [[ "${RELEASE_CHANNEL}" == "nightly" ]]; then
-            previous_tag="$(git tag --merged HEAD --sort=-version:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+-nightly\.' | grep -Fxv -- "${RELEASE_TAG}" | head -n 1 || true)"
-            previous_tag="${previous_tag:-${STABLE_TAG}}"
-          else
-            previous_tag="$(git tag --merged HEAD^ --sort=-version:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
-          fi
+          previous_tag="$(node release-signing-tools/script/previous_release.mjs)"
           {
             echo "## What's changed"
             echo
