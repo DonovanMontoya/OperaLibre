@@ -2326,44 +2326,105 @@ async fn run_libation_liberate_job(
 ) {
     let _libation_guard = acquire_libation_job_lock(&state).await;
     update_job_running(&state, &job_id).await;
-    update_job_output(
+    // Discover owners before an attempt changes the shared Libation export.
+    let mut profiles = vec![profile];
+    let mut owner_ids = Vec::new();
+    for source in all_libation_profiles(&state).await {
+        if let Ok(books) = export_libation_books(&source).await {
+            for book in books {
+                if book.asin.eq_ignore_ascii_case(&asin) {
+                    owner_ids.push(book.profile_id);
+                }
+            }
+        }
+    }
+    for (id, ownership) in &state.libation_refreshes.read().await.legacy_ownership {
+        if ownership
+            .asins
+            .iter()
+            .any(|owned| owned.eq_ignore_ascii_case(&asin))
+        {
+            owner_ids.push(id.clone());
+        }
+    }
+    owner_ids.sort();
+    owner_ids.dedup();
+    // Account-scoped requests must actually name an owner before they may
+    // fall back. An arbitrary unrelated account must not acquire this title.
+    let shared_owner = owner_ids.contains(&profiles[0].id);
+    for id in owner_ids.into_iter().filter(|_| shared_owner) {
+        if profiles.iter().any(|candidate| candidate.id == id) {
+            continue;
+        }
+        if let Some(candidate) = find_libation_profile(&state, &id).await {
+            profiles.push(candidate);
+        }
+    }
+    let mut failures = Vec::new();
+    let mut exit_code = None;
+    for profile in profiles {
+        update_job_output(
+            &state,
+            &job_id,
+            &format!(
+                "Trying Libation liberation for {asin} from {}.\n",
+                profile.name
+            ),
+        )
+        .await;
+        match try_libation_liberate(&state, &job_id, &profile, &asin).await {
+            Ok(code) => {
+                update_job_finished(&state, &job_id, "completed", code, None).await;
+                return;
+            }
+            Err((code, message)) => {
+                let failure = format!("{}: {message}", profile.name);
+                update_job_output(&state, &job_id, &format!("{failure}\n")).await;
+                failures.push(failure);
+                exit_code = code;
+            }
+        }
+    }
+    update_job_finished(
         &state,
         &job_id,
-        &format!(
-            "Starting Libation liberation for {asin} from {}.\n",
-            profile.name
-        ),
+        "failed",
+        exit_code,
+        Some(failures.join("\n")),
     )
     .await;
+}
 
+/// A failed account attempt must not finish the shared job before fallback runs.
+async fn try_libation_liberate(
+    state: &AppState,
+    job_id: &str,
+    profile: &LibationProfile,
+    asin: &str,
+) -> Result<Option<i32>, (Option<i32>, String)> {
     if let Some(account_id) = profile.account_id.as_deref().filter(|_| !profile.managed) {
-        if let Err(error) = preserve_unscanned_legacy_ownership(&state, &profile).await {
-            update_job_finished(
-                &state,
-                &job_id,
-                "failed",
+        if let Err(error) = preserve_unscanned_legacy_ownership(state, profile).await {
+            return Err((
                 None,
-                Some(format!(
+                format!(
                     "Could not preserve existing Audible ownership: {}",
                     error.message
-                )),
-            )
-            .await;
-            return;
+                ),
+            ));
         }
         let selected_account_owns_record =
-            export_libation_books(&profile)
+            export_libation_books(profile)
                 .await
                 .ok()
                 .is_some_and(|books| {
                     books.iter().any(|book| {
-                        book.asin.eq_ignore_ascii_case(&asin) && book.profile_id == profile.id
+                        book.asin.eq_ignore_ascii_case(asin) && book.profile_id == profile.id
                     })
                 });
         if !selected_account_owns_record {
             update_job_output(
-                &state,
-                &job_id,
+                state,
+                job_id,
                 &format!("Scanning {} before downloading {asin}.\n", profile.name),
             )
             .await;
@@ -2374,54 +2435,32 @@ async fn run_libation_liberate_job(
             .await
             {
                 Ok(output) if output.status.success() => {
-                    append_job_command_output(&state, &job_id, &output).await;
+                    append_job_command_output(state, job_id, &output).await;
                 }
                 Ok(output) => {
-                    append_job_command_output(&state, &job_id, &output).await;
-                    update_job_finished(
-                        &state,
-                        &job_id,
-                        "failed",
+                    append_job_command_output(state, job_id, &output).await;
+                    return Err((
                         output.status.code(),
-                        Some(format!(
-                            "Could not scan {} before downloading {asin}.",
-                            profile.name
-                        )),
-                    )
-                    .await;
-                    return;
+                        format!("Could not scan {} before downloading {asin}.", profile.name),
+                    ));
                 }
                 Err(error) => {
-                    update_job_finished(
-                        &state,
-                        &job_id,
-                        "failed",
+                    return Err((
                         None,
-                        Some(format!(
+                        format!(
                             "Could not scan {} before downloading {asin}: {error}",
                             profile.name
-                        )),
-                    )
-                    .await;
-                    return;
+                        ),
+                    ));
                 }
             }
         }
-        if let Err(error) =
-            record_selected_legacy_ownership(&state, &profile, account_id, &asin).await
+        if let Err(error) = record_selected_legacy_ownership(state, profile, account_id, asin).await
         {
-            update_job_finished(
-                &state,
-                &job_id,
-                "failed",
+            return Err((
                 None,
-                Some(format!(
-                    "Could not confirm {} owns {asin}: {error}",
-                    profile.name
-                )),
-            )
-            .await;
-            return;
+                format!("Could not confirm {} owns {asin}: {error}", profile.name),
+            ));
         }
     }
 
@@ -2432,7 +2471,7 @@ async fn run_libation_liberate_job(
             "liberate".to_string(),
             "--force".to_string(),
             "--id".to_string(),
-            asin.clone(),
+            asin.to_string(),
             "--override".to_string(),
             books_override,
         ],
@@ -2442,63 +2481,47 @@ async fn run_libation_liberate_job(
 
     match result {
         Ok(output) if output.status.success() => {
-            append_job_command_output(&state, &job_id, &output).await;
-            if let Err(error) = rescan_library(&state).await {
-                update_job_finished(
-                    &state,
-                    &job_id,
-                    "failed",
+            append_job_command_output(state, job_id, &output).await;
+            if let Err(error) = rescan_library(state).await {
+                return Err((
                     output.status.code(),
-                    Some(format!(
-                        "Download completed, but local rescan failed: {error}"
-                    )),
-                )
-                .await;
-                return;
+                    format!("Download completed, but local rescan failed: {error}"),
+                ));
             }
             let downloaded_book_found =
-                find_book_id_by_asin(&state.library.read().await.books, &asin).is_some();
+                find_book_id_by_asin(&state.library.read().await.books, asin).is_some();
             if !downloaded_book_found {
-                update_job_finished(
-                    &state,
-                    &job_id,
-                    "failed",
+                return Err((
                     output.status.code(),
-                    Some(missing_libation_book_error(&output, &asin)),
-                )
-                .await;
-                return;
+                    missing_libation_book_error(&output, asin),
+                ));
             }
             if profile.managed {
-                mark_managed_libation_account_refreshed(&state, &profile.id).await;
+                mark_managed_libation_account_refreshed(state, &profile.id).await;
             }
-            update_job_finished(&state, &job_id, "completed", output.status.code(), None).await;
+            Ok(output.status.code())
         }
         Ok(output) => {
-            append_job_command_output(&state, &job_id, &output).await;
+            append_job_command_output(state, job_id, &output).await;
             if profile.managed {
                 mark_managed_libation_account_scan_error(
-                    &state,
+                    state,
                     &profile.id,
                     &command_output_text(&output),
                 )
                 .await;
             }
-            update_job_finished(
-                &state,
-                &job_id,
-                "failed",
+            Err((
                 output.status.code(),
-                Some("Libation liberation failed.".to_string()),
-            )
-            .await;
+                "Libation liberation failed.".to_string(),
+            ))
         }
         Err(error) => {
             if profile.managed {
-                mark_managed_libation_account_scan_error(&state, &profile.id, &error.to_string())
+                mark_managed_libation_account_scan_error(state, &profile.id, &error.to_string())
                     .await;
             }
-            update_job_finished(&state, &job_id, "failed", None, Some(error.to_string())).await;
+            Err((None, error.to_string()))
         }
     }
 }
@@ -2597,9 +2620,9 @@ pub(crate) async fn profile_owns_asin(
     if let Some(account_id) = profile.account_id.as_deref().filter(|_| !profile.managed) {
         let _libation_guard = acquire_libation_job_lock(state).await;
         preserve_unscanned_legacy_ownership(state, profile).await?;
-        if owns(&export_libation_books(profile).await?) {
-            return Ok(true);
-        }
+        // Ownership snapshots and the shared export can outlive a returned
+        // purchase or an expired Plus loan. Keep them for catalogue recovery,
+        // but scan the selected account before using ownership to grant access.
         let output = run_libation(
             &profile.config,
             vec!["scan".to_string(), account_id.to_string()],

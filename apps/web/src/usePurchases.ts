@@ -1,3 +1,4 @@
+import { groupAudibleBooks } from "./audibleBooks";
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supportsLibroDevice } from "./libroDevice";
 import type {
@@ -108,12 +109,13 @@ export function usePurchases({
     return labels;
   }, [libationBooks, libationStatus?.accounts]);
 
+  const groupedLibationBooks = useMemo(() => groupAudibleBooks(libationBooks), [libationBooks]);
   const visibleLibationBooks = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const selectedAccount = librarySource === "all" ? (purchaseAccountFilter.startsWith("audible:") ? purchaseAccountFilter.slice(8) : "all") : audibleAccountFilter;
     const accountBooks = selectedAccount === "all"
-      ? libationBooks
-      : libationBooks.filter((book) => book.profileId === selectedAccount);
+      ? groupedLibationBooks
+      : groupedLibationBooks.filter((book) => book.accounts.some(account => account.profileId === selectedAccount));
     const filtered = query
       ? accountBooks.filter((book) =>
           [book.title, book.subtitle, book.authors, book.narrators]
@@ -137,7 +139,7 @@ export function usePurchases({
       return a.title.localeCompare(b.title);
     });
     return sortReversed ? sorted.reverse() : sorted;
-  }, [audibleAccountFilter, audibleAccountLabels, libationBooks, searchQuery, sortMode, sortReversed, librarySource, purchaseAccountFilter]);
+  }, [audibleAccountFilter, audibleAccountLabels, groupedLibationBooks, searchQuery, sortMode, sortReversed, librarySource, purchaseAccountFilter]);
   const audibleProfiles = useMemo(() => {
     const profiles = new Map<string, string>();
     for (const book of libationBooks) {
@@ -670,6 +672,7 @@ export function usePurchases({
     startAllLiberation,
     startLibationSync,
     startLiberation,
-    visibleLibationBooks
+    visibleLibationBooks,
+    audibleBookCount: groupedLibationBooks.length
   };
 }
