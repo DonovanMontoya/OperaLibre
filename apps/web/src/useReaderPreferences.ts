@@ -2,25 +2,12 @@ import { useState } from "react";
 import {
   type FollowAggressiveness,
   readFollowAggressiveness,
-  readFollowSyncEnabled,
-  readReadalongEnabled,
-  writeFollowAggressiveness,
-  writeFollowSyncEnabled
+  writeFollowAggressiveness
 } from "./readalongPreferences";
 import { selectionHaptic } from "./native";
 
 export function useReaderPreferences() {
-  // The ebook reader ships off by default; the narration-follow highlight is a
-  // sub-option beneath it, off by default and behind a warning.
-  const [readalongEnabled, setReadalongEnabled] = useState(readReadalongEnabled);
-  const [followSyncEnabled, setFollowSyncEnabled] = useState(readFollowSyncEnabled);
   const [followAggressiveness, setFollowAggressiveness] = useState(readFollowAggressiveness);
-
-  function toggleFollowSyncEnabled() {
-    const enabled = !followSyncEnabled;
-    writeFollowSyncEnabled(enabled);
-    setFollowSyncEnabled(enabled);
-  }
 
   function updateFollowAggressiveness(value: FollowAggressiveness) {
     if (value === followAggressiveness) return;
@@ -31,10 +18,10 @@ export function useReaderPreferences() {
 
   return {
     followAggressiveness,
-    followSyncEnabled,
-    readalongEnabled,
-    setReadalongEnabled,
-    toggleFollowSyncEnabled,
+    // Reader entry points and sync tools are always available when the book
+    // and server support them. The in-reader Follow button owns the choice.
+    followSyncEnabled: true,
+    readalongEnabled: true,
     updateFollowAggressiveness
   };
 }

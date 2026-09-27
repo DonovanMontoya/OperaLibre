@@ -29,7 +29,7 @@ export function BookDetailsSheet({
   completionPendingBookId,
   displayBookRemainingSeconds,
   markBookUnplayed,
-  openPlaybackView,
+  openBookDetails,
   playbackBook,
   playbackDescription,
   setNativePlayerSheet
@@ -41,7 +41,7 @@ export function BookDetailsSheet({
   completionPendingBookId: string | null;
   displayBookRemainingSeconds: number | null;
   markBookUnplayed: (book: Book) => void;
-  openPlaybackView: (view: "now" | "details" | "chapters") => void;
+  openBookDetails: (bookId: string) => void;
   playbackBook: Book;
   playbackDescription: string | null;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
@@ -151,9 +151,8 @@ export function BookDetailsSheet({
             type="button"
             className="details-sheet-full"
             onClick={() => {
-              haptic("light");
               setNativePlayerSheet(null);
-              openPlaybackView("details");
+              openBookDetails(playbackBook.id);
             }}
           >
             Full book page <ChevronRight size={16} />

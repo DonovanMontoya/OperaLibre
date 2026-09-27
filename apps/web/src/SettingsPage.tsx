@@ -135,14 +135,10 @@ export function SettingsPage({
   } = offlineDownloads;
   const {
     followAggressiveness,
-    followSyncEnabled,
-    readalongEnabled,
-    toggleFollowSyncEnabled,
     updateFollowAggressiveness
   } = readerPreferences;
   const {
-    sentenceFollowAvailable,
-    toggleReadalongEnabled
+    sentenceFollowAvailable
   } = readalong;
   const {
     setUploadModalOpen
@@ -229,13 +225,9 @@ export function SettingsPage({
 
         <ExtrasSettings
           followAggressiveness={followAggressiveness}
-          followSyncEnabled={followSyncEnabled}
           gamesEnabled={gamesEnabled}
-          readalongEnabled={readalongEnabled}
           sentenceFollowAvailable={sentenceFollowAvailable}
-          toggleFollowSyncEnabled={toggleFollowSyncEnabled}
           toggleGamesEnabled={toggleGamesEnabled}
-          toggleReadalongEnabled={toggleReadalongEnabled}
           updateFollowAggressiveness={updateFollowAggressiveness}
         />
 
