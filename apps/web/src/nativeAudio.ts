@@ -48,6 +48,8 @@ type NativeAudioRecoveryIdentity = {
   bookOffsetSeconds: number;
   queue: () => NativeAudioQueueTrack[];
   pendingPosition: () => number | undefined;
+  /** Where the previous attachment for this track stopped, used when no seek is pending. */
+  resumePosition?: number;
   /** Whether a Play request is still waiting for this native load. */
   wantsPlayback: () => boolean;
   /**
@@ -242,7 +244,9 @@ export function attachNativeAudioPlayer(
   if (!usesNativeAudioPlayer()) return () => undefined;
 
   const controlClock = new NativeAudioControlClock(
-    audio, recovery.source, nativeStartupPosition(recovery.pendingPosition(), audio.currentTime)
+    audio,
+    recovery.source,
+    nativeStartupPosition(recovery.pendingPosition() ?? recovery.resumePosition, audio.currentTime)
   );
   let disposed = false;
   let endedFromNative = false;
