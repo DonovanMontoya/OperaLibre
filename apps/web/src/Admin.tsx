@@ -34,6 +34,8 @@ import {
   getSyncAddonStatus,
   getJob,
   getUpdateStatus,
+  getUpdateChannel,
+  setUpdateChannel,
   installFrontendUpdate,
   installSyncAddon,
   installServerUpdate,
@@ -58,7 +60,8 @@ import type {
   LibationAccess,
   LibationDownloadRequest,
   SyncAddonStatus,
-  UpdateStatus
+  UpdateStatus,
+  UpdateChannel
 } from "./types";
 import { FRONTEND_VERSION } from "./version";
 import { ExperimentSection } from "./ExperimentSection";
@@ -115,6 +118,9 @@ export function AdminPanel({
   const [newRole, setNewRole] = useState<AccountRole>("reader");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [frontendUpdateStatus, setFrontendUpdateStatus] = useState<FrontendUpdateStatus | null>(null);
+  const [updateChannel, setSelectedUpdateChannel] = useState<UpdateChannel | null>(null);
+  const [runningServerVersion, setRunningServerVersion] = useState<string | null>(null);
+  const [channelSaving, setChannelSaving] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(true);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [frontendUpdateInstalling, setFrontendUpdateInstalling] = useState(false);
@@ -153,7 +159,7 @@ export function AdminPanel({
       setNotice(null);
     }
     try {
-      const [serverResult, frontendResult] = await Promise.allSettled([
+      const [serverResult, frontendResult, channelResult] = await Promise.allSettled([
         getUpdateStatus(30_000, force),
         Capacitor.isNativePlatform()
           ? Promise.resolve(null)
@@ -161,8 +167,13 @@ export function AdminPanel({
               30_000,
               force,
               FRONTEND_VERSION === "dev" ? undefined : FRONTEND_VERSION
-            )
+            ),
+        getUpdateChannel()
       ]);
+      if (channelResult.status === "fulfilled") {
+        setSelectedUpdateChannel(channelResult.value.channel);
+        setRunningServerVersion(channelResult.value.currentVersion);
+      }
       if (serverResult.status === "fulfilled") setUpdateStatus(serverResult.value);
       if (frontendResult.status === "fulfilled" && frontendResult.value) {
         setFrontendUpdateStatus(frontendResult.value);
@@ -554,6 +565,22 @@ export function AdminPanel({
     }
   }
 
+  async function handleChangeChannel(channel: UpdateChannel) {
+    setChannelSaving(true);
+    setError(null);
+    try {
+      await setUpdateChannel(channel);
+      setSelectedUpdateChannel(channel);
+      setUpdateStatus(null);
+      setFrontendUpdateStatus(null);
+      await refreshUpdate(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the update channel.");
+    } finally {
+      setChannelSaving(false);
+    }
+  }
+
   async function handleInstallUpdate() {
     if (!updateStatus?.updateAvailable || !updateStatus.canAutoUpdate || !currentUser.isOwner) return;
     if (!window.confirm(
@@ -565,14 +592,17 @@ export function AdminPanel({
     setError(null);
     setNotice("Downloading the verified update package…");
     try {
-      await installServerUpdate();
+      await installServerUpdate(updateStatus.channel, targetVersion);
       setNotice("The server is restarting. This page will reconnect when the update is ready…");
       const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 2_000));
         try {
-          const status = await getUpdateStatus(3_000);
-          setUpdateStatus(status);
+          const status = updateStatus.channel === undefined
+            ? await getUpdateStatus(3_000)
+            : await getUpdateChannel(3_000);
+          setRunningServerVersion(status.currentVersion);
+          setSelectedUpdateChannel(status.channel ?? null);
           if (status.currentVersion === targetVersion) {
             window.location.reload();
             return;
@@ -802,7 +832,7 @@ export function AdminPanel({
                 <button
                   type="button"
                   className="quiet-button"
-                  disabled={updateChecking || updateInstalling || frontendUpdateInstalling}
+                  disabled={updateChecking || updateInstalling || frontendUpdateInstalling || channelSaving}
                   onClick={() => void refreshUpdate(true)}
                 >
                   {updateChecking ? <LoaderCircle size={14} className="spin-icon" /> : <RefreshCcw size={14} />}
@@ -810,6 +840,25 @@ export function AdminPanel({
                 </button>
               </div>
             </div>
+            {updateChannel !== null ? (
+              <div className="admin-libation-access">
+                <span>
+                  <strong>Server update channel</strong>
+                  <small>{updateChannel === "nightly"
+                    ? "Nightly includes the latest changes and may have bugs. The server and bundled web app update together."
+                    : "Stable is recommended for everyday listening. The server and bundled web app update together."}</small>
+                </span>
+                <select
+                  aria-label="Server update channel"
+                  value={updateChannel}
+                  disabled={!currentUser.isOwner || channelSaving || updateChecking || updateInstalling || frontendUpdateInstalling}
+                  onChange={(event) => void handleChangeChannel(event.currentTarget.value as UpdateChannel)}
+                >
+                  <option value="stable">Stable</option>
+                  <option value="nightly">Nightly</option>
+                </select>
+              </div>
+            ) : null}
             {updateStatus?.lastUpdateResult && !updateInstalling ? (
               <p role="status">Last server update: {updateStatus.lastUpdateResult}</p>
             ) : null}
@@ -817,8 +866,8 @@ export function AdminPanel({
               <article className={updateStatus?.updateAvailable ? "update-available" : ""}>
                 <div className="admin-software-version-head">
                   <div>
-                    <span>Server</span>
-                    <strong>{updateStatus?.currentVersion ?? (updateChecking ? "Checking…" : "Unavailable")}</strong>
+                    <span>Server{runningServerVersion ? ` · ${runningServerVersion.includes("-nightly.") ? "Nightly" : "Stable"}` : ""}</span>
+                    <strong>{updateStatus?.currentVersion ?? runningServerVersion ?? (updateChecking ? "Checking…" : "Unavailable")}</strong>
                   </div>
                   {updateStatus?.updateAvailable ? (
                     <span className="admin-update-badge"><ArrowUpCircle size={12} /> {updateStatus.latestVersion} available</span>
@@ -839,11 +888,11 @@ export function AdminPanel({
                       {currentUser.isOwner && updateStatus.canAutoUpdate ? (
                         <button
                           type="button"
-                          disabled={updateInstalling || frontendUpdateInstalling}
+                          disabled={updateInstalling || frontendUpdateInstalling || channelSaving || updateChecking}
                           onClick={() => void handleInstallUpdate()}
                         >
                           {updateInstalling ? <LoaderCircle size={15} className="spin-icon" /> : <ArrowUpCircle size={15} />}
-                          {updateInstalling ? "Updating…" : "Update server"}
+                          {updateInstalling ? "Updating…" : updateStatus.channel && updateStatus.channel !== updateStatus.currentChannel ? "Switch and restart" : "Update server"}
                         </button>
                       ) : null}
                       <a className="quiet-button" href={updateStatus.releaseUrl} target="_blank" rel="noreferrer">

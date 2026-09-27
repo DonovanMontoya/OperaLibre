@@ -1,4 +1,4 @@
-import { chmod, copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { readFile, chmod, copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -85,7 +85,7 @@ async function stageCombined({ binary, launcher, output, platform, version, web 
   await writeFile(path.join(output, "VERSION.txt"), `${version}\n`);
   await writeFile(
     path.join(output, "UPDATE.json"),
-    `${JSON.stringify({ schemaVersion: 1, version, platform }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 1, version, platform, dataCompatibility: JSON.parse(await readFile("release/data-compatibility.json", "utf8")) }, null, 2)}\n`,
   );
   await mkdir(path.join(output, "audiobooks"), { recursive: true });
   await writeFile(
@@ -139,7 +139,7 @@ async function stageUpdate({ binary, launcher, output, platform, version, web })
   await writeFile(path.join(output, "VERSION.txt"), `${version}\n`);
   await writeFile(
     path.join(output, "UPDATE.json"),
-    `${JSON.stringify({ schemaVersion: 1, version, platform }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 1, version, platform, dataCompatibility: JSON.parse(await readFile("release/data-compatibility.json", "utf8")) }, null, 2)}\n`,
   );
 }
 

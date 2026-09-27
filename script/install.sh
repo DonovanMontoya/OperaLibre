@@ -288,6 +288,9 @@ INSTALL_DIR=$(absolute_path "$(expand_home "$INSTALL_DIR")")
 UPGRADE=0
 if [ -f "${INSTALL_DIR}/operalibre-server" ]; then
   UPGRADE=1
+  case "$VERSION" in
+    *-nightly.*) fail "Choose Nightly in Administration > Software versions so data compatibility is checked before switching." ;;
+  esac
   existing_version=""
   if [ -f "${INSTALL_DIR}/VERSION.txt" ]; then
     existing_version=$(head -n 1 "${INSTALL_DIR}/VERSION.txt" 2>/dev/null || true)
@@ -295,6 +298,9 @@ if [ -f "${INSTALL_DIR}/operalibre-server" ]; then
   say ""
   if [ -n "$existing_version" ]; then
     say "Found OperaLibre ${existing_version} in ${INSTALL_DIR}."
+    case "$existing_version" in
+      *-nightly.*) fail "Use Administration > Software versions to update this nightly installation or return to stable safely." ;;
+    esac
   else
     say "Found an existing OperaLibre installation in ${INSTALL_DIR}."
   fi

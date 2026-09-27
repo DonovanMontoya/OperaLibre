@@ -28,7 +28,8 @@ import type {
   SyncMap,
   UpdateInstallStarted,
   FrontendUpdateStatus,
-  UpdateStatus
+  UpdateStatus,
+  UpdateChannel
 } from "./types";
 import {
   getCachedJellyfinProgress,
@@ -627,8 +628,20 @@ export async function getUpdateStatus(timeoutMs = 30_000, refresh = false) {
   return request<UpdateStatus>(`/api/update${refresh ? "?refresh=true" : ""}`, undefined, timeoutMs);
 }
 
-export async function installServerUpdate() {
-  return request<UpdateInstallStarted>("/api/update/install", { method: "POST" }, 10 * 60_000);
+export async function getUpdateChannel(timeoutMs = 30_000) {
+  return request<{ channel: UpdateChannel; currentVersion: string }>("/api/update/channel", undefined, timeoutMs);
+}
+
+export async function setUpdateChannel(channel: UpdateChannel) {
+  return request<{ channel: UpdateChannel }>("/api/update/channel", {
+    method: "PUT", body: JSON.stringify({ channel })
+  });
+}
+
+export async function installServerUpdate(channel?: UpdateChannel, version?: string) {
+  return request<UpdateInstallStarted>("/api/update/install", {
+    method: "POST", body: JSON.stringify({ channel, version })
+  }, 10 * 60_000);
 }
 
 export async function getFrontendUpdateStatus(

@@ -80,12 +80,21 @@ export function syncAddonPackages(release) {
   });
 }
 
-export function manifestPayload({ version, tag, repository, notes, packages, policy, published }) {
+export function manifestPayload({ version, tag, repository, notes, packages, policy, published, compatibility, stableVersion }) {
+  if (compatibility && (!Number.isSafeInteger(compatibility.databaseSchema) || compatibility.databaseSchema < 1 ||
+      !Number.isSafeInteger(compatibility.storageVersion) || compatibility.storageVersion < 1)) {
+    throw new Error("Invalid data compatibility declaration.");
+  }
+  if (version.includes("-nightly.") && (!compatibility || !/^\d+\.\d+\.\d+$/.test(stableVersion ?? ""))) {
+    throw new Error("A nightly manifest requires data compatibility and its tested stable version.");
+  }
   return {
     type: "manifest",
     schema: 1,
     version,
     published,
+    ...(compatibility ? { dataCompatibility: compatibility } : {}),
+    ...(stableVersion ? { stableVersion } : {}),
     releaseUrl: `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`,
     notes: notes.length > MAX_NOTES_CHARS ? `${notes.slice(0, MAX_NOTES_CHARS)}…` : notes,
     ...(policy.notice ? { notice: policy.notice } : {}),
@@ -125,7 +134,9 @@ async function main() {
     notes: await readFile(options.notes, "utf8"),
     packages,
     policy: JSON.parse(await readFile(POLICY_FILE, "utf8")),
-    published: new Date().toISOString()
+    published: new Date().toISOString(),
+    compatibility: options.compatibility ? JSON.parse(await readFile(options.compatibility, "utf8")) : undefined,
+    stableVersion: options["stable-version"]
   });
   await writeFile(options.output, `${JSON.stringify(payload, null, 2)}\n`);
   console.log(`Wrote a manifest for ${options.version} with ${packages.length} packages.`);
