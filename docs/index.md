@@ -23,8 +23,8 @@ Windows and manual installs are covered in [Install a Release](installing-a-rele
 ## Web, Android, and iPhone apps
 
 <p align="center">
-  <img src="assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
-  <img src="assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
+  <img src="assets/screenshots/operalibre-web-library-and-details.png" alt="OperaLibre web library and book details" height="440">
+  <img src="assets/screenshots/operalibre-mobile-library.png" alt="OperaLibre mobile library with Continue Reading" height="440">
 </p>
 
 ## Features at a glance
