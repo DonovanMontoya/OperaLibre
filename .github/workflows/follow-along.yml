@@ -1,0 +1,69 @@
+name: Follow-along regression
+
+on:
+  pull_request:
+    paths:
+      - 'apps/server/**'
+      - 'apps/web/**'
+      - 'script/follow-along/**'
+      - 'addons/readalong-sync/**'
+      - 'package*.json'
+      - '.github/workflows/follow-along.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Follow-along reader and corpus contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: python3 -m unittest discover -s script/follow-along -p 'test_*.py'
+      - run: npm ci
+      - run: npm ci --prefix addons/readalong-sync
+      - run: npm test --prefix addons/readalong-sync
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:follow -w @operalibre/web
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: follow-along-browser
+          path: output/follow-along
+          retention-days: 14
+
+  audio:
+    name: Follow-along real speech and edition differences
+    # Models are costly; ordinary PRs use deterministic server tests and browsers.
+    # This job contains only original generated content, never private books.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: addons/readalong-sync/package-lock.json
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/server
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
+      - run: npm ci --prefix addons/readalong-sync
+      - run: python3 script/follow-along/audio_faults.py --output output/follow-along/audio --cli addons/readalong-sync/node_modules/.bin/echogarden
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: follow-along-generated-audio
+          path: output/follow-along/audio
+          retention-days: 14

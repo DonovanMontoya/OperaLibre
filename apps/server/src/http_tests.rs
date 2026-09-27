@@ -3554,6 +3554,55 @@ async fn companions_and_sync_maps_are_revalidated_rather_than_refetched() {
     assert_eq!(track.header(header::ETAG), "");
 }
 
+/// A finished regeneration replaces the map atomically. Clients offering
+/// the old validator must receive its new timings without a library rescan.
+#[tokio::test]
+async fn regenerated_sync_map_replaces_cached_timings_without_a_rescan() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let original = build_test_sync_sidecar(8, alignment::PRECISION_SENTENCE);
+    server
+        .add_companions_to_first_book(&token, &[("Book 00.sync.json", original.clone())])
+        .await;
+    let (book_id, _) = server.first_book_and_track(&token).await;
+    let uri = format!("/api/books/{book_id}/sync");
+    let first = server.get(&uri, &token).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let previous_etag = first.header(header::ETAG);
+    let path = server.state.library.read().await.sync_paths[&book_id].clone();
+    let mut replacement: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    replacement["fragments"][0]["startSeconds"] = serde_json::json!(1.0);
+    let bytes = serde_json::to_vec(&replacement).unwrap();
+    // The byte count stays the same: replacing timings must invalidate the
+    // validator even when no sentence is added or removed.
+    assert_eq!(bytes.len(), original.len());
+    write_bytes_atomic(&path, &bytes).await.unwrap();
+    let updated = server
+        .send(
+            Request::builder()
+                .uri(&uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, &previous_etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK);
+    assert_ne!(updated.header(header::ETAG), previous_etag);
+    assert_eq!(updated.json()["fragments"][0]["startSeconds"], 1.0);
+    let cached = server
+        .send(
+            Request::builder()
+                .uri(&uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::IF_NONE_MATCH, updated.header(header::ETAG))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+}
+
 /// A book whose only companion is a picture PDF has nothing to read along
 /// with: no reading file, no sync map, but the supplement is still listed.
 #[tokio::test]

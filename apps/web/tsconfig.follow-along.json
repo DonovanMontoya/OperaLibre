@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["src/vite-env.d.ts", "playwright.follow-along.config.ts", "test/follow-along/**/*.ts", "test/follow-along/**/*.tsx"]
+}
