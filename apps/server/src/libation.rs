@@ -2620,27 +2620,9 @@ pub(crate) async fn profile_owns_asin(
     if let Some(account_id) = profile.account_id.as_deref().filter(|_| !profile.managed) {
         let _libation_guard = acquire_libation_job_lock(state).await;
         preserve_unscanned_legacy_ownership(state, profile).await?;
-        // A successful scan already confirmed ownership. Fallback may have
-        // switched the shared export to another owner, and the original login
-        // may be unavailable; neither should prevent granting the downloaded book.
-        if state
-            .libation_refreshes
-            .read()
-            .await
-            .legacy_ownership
-            .get(&profile.id)
-            .is_some_and(|ownership| {
-                ownership
-                    .asins
-                    .iter()
-                    .any(|owned| owned.eq_ignore_ascii_case(asin))
-            })
-        {
-            return Ok(true);
-        }
-        if owns(&export_libation_books(profile).await?) {
-            return Ok(true);
-        }
+        // Ownership snapshots and the shared export can outlive a returned
+        // purchase or an expired Plus loan. Keep them for catalogue recovery,
+        // but scan the selected account before using ownership to grant access.
         let output = run_libation(
             &profile.config,
             vec!["scan".to_string(), account_id.to_string()],
