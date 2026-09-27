@@ -3,12 +3,54 @@
 import argparse
 from datetime import datetime, timezone
 import fcntl
+import io
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 
 from corpus import load, save
+
+
+def refresh_source(config, root, env):
+    """Archive a trusted merged revision; preserve the bootstrap until it lands."""
+    tracking=config.get('sourceTracking')
+    if not tracking: return config, dict(mode='pinned',source=config['source'])
+    minimum=tracking['minimumRevision']; ref=tracking.get('ref','main')
+    if not re.fullmatch(r'[0-9a-f]{40}',minimum) or ref.startswith('-'):
+        raise ValueError('Tracking requires a full minimum revision and a branch name')
+    cache=root/'source-cache.git'
+    if not cache.exists(): subprocess.run(['git','init','--bare',str(cache)],check=True,env=env)
+    git=['git','--git-dir='+str(cache)]
+    subprocess.run([*git,'fetch','--no-tags','--',tracking['repository'],ref],check=True,env=env)
+    revision=subprocess.check_output([*git,'rev-parse','FETCH_HEAD'],text=True,env=env).strip()
+    known=subprocess.run([*git,'cat-file','-e',minimum+'^{commit}'],capture_output=True,env=env)
+    if known.returncode:
+        if known.returncode != 128: raise RuntimeError('Cannot inspect minimum tracked revision')
+        return config,dict(mode='awaiting-merge',revision=revision,minimumRevision=minimum)
+    ancestry=subprocess.run([*git,'merge-base','--is-ancestor',minimum,revision],env=env)
+    if ancestry.returncode == 1:
+        return config,dict(mode='awaiting-merge',revision=revision,minimumRevision=minimum)
+    if ancestry.returncode: raise RuntimeError('Cannot establish tracked source ancestry')
+    source=root/'sources'/revision
+    if not source.exists():
+        source.parent.mkdir(exist_ok=True)
+        data=subprocess.check_output([*git,'archive',revision],env=env)
+        with tempfile.TemporaryDirectory(dir=source.parent) as directory:
+            staging=Path(directory)/'source';staging.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                archive.extractall(staging,filter='data')
+            staging.rename(source)
+    runtime=source/'addons/readalong-sync'
+    ready=runtime/'.private-runtime-ready'
+    if not ready.exists():
+        subprocess.run(['npm','ci','--prefix',str(runtime)],check=True,env=env)
+        subprocess.run(['npm','test','--prefix',str(runtime)],check=True,env=env)
+        ready.write_text(revision+'\n')
+    return dict(config,source=str(source),cli=str(runtime/'node_modules/.bin/echogarden')),dict(mode='tracked',revision=revision,ref=ref)
 
 
 def main():
@@ -32,6 +74,13 @@ def main():
         if config.get('node'): env['PATH']=str(Path(config['node']).parent)+os.pathsep+env['PATH']
         if config.get('cargoTarget'): env['CARGO_TARGET_DIR']=config['cargoTarget']
         report=dict(status='running',output=str(output),suites=[])
+        save(root/'latest-scheduled.json',report)
+        try:
+            config,report['sourceSelection']=refresh_source(config,root,env)
+        except Exception as error:
+            report.update(status='needs-review',exitCode=1,sourceError=str(error))
+            save(root/'latest-scheduled.json',report)
+            return 1
         save(root/'latest-scheduled.json',report)
         exit_code=0
         for suite in suites:
