@@ -601,7 +601,7 @@ export function PlayerPane({
                       <span>Edit Info</span>
                     </button>
                   ) : null}
-                  {capabilities.uploads && selectedBook.readingFile?.extension !== "epub" && selectedBook.source !== "device" ? (
+                  {(capabilities.uploads || (native && selectedBook.source === "device")) && selectedBook.readingFile?.extension !== "epub" ? (
                     <button
                       className="download-btn"
                       type="button"
@@ -611,7 +611,7 @@ export function PlayerPane({
                         setEbookUploadFile(null);
                         setEbookUploadError(null);
                       }}
-                      aria-label={`Upload matching ebook for ${selectedBook.title}`}
+                      aria-label={`Add matching EPUB for ${selectedBook.title}`}
                     >
                       <BookOpen size={13} />
                       <span>Add EPUB</span>

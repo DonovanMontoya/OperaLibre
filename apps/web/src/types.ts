@@ -106,6 +106,8 @@ export type CompanionFile = {
   url: string;
   kind: CompanionKind;
   sizeBytes: number;
+  /** App-private document copied from the native document picker. */
+  localFilePath?: string;
   pageCount?: number;
   imageCount?: number;
   textCharacters?: number;
