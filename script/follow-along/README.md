@@ -219,7 +219,15 @@ prevents overlapping scheduled runs with a file lock, retains dated outputs,
 and updates `latest-scheduled.json` with the exit status and evidence path.
 Settings are `source` (isolated checkout), `plan`, `cli`, optional `reference`,
 `node`, `ffmpeg`, `cargoTarget`, and `workers` (default 1). No production credentials
-are needed. Update the source path when adopting a newly verified implementation.
+are needed. By default the source stays pinned. To test future merged code,
+set `sourceTracking` to `{"repository":"<trusted Git URL>","ref":"main",
+"minimumRevision":"<full verified commit SHA>"}`. Until that commit reaches
+the tracked branch, the worker records `awaiting-merge` and uses its bootstrap
+source. Afterward it archives each fetched revision into a private immutable
+source directory, installs and tests that revision's locked add-on runtime,
+and records the exact revision tested. Fetch/install failures fail the run;
+they do not silently test an older revision. This does not change a checkout,
+push Git changes, update a production server, or change listening progress.
 For alternate editions, add `additionalSuites: [{"name":"alternate-edition",
 "plan":"/private/variant/plan.json","reference":"/private/variant/reference"}]`.
 Every suite runs even if an earlier one fails; the overall status preserves any
