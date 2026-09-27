@@ -5,8 +5,7 @@ A private, self-hosted audiobook server with web, iPhone, Android, and macOS app
 The backend is a Rust `axum` server that exposes a documented HTTP API; the included React web app is the reference frontend, and other web, mobile, or desktop clients can build against the same server.
 
 <p align="center">
-  <img src="docs/assets/screenshots/operalibre-web-library.png" alt="OperaLibre web library and audiobook player" height="440">
-  <img src="docs/assets/screenshots/operalibre-ios-now-playing.png" alt="OperaLibre iPhone now-playing screen" height="440">
+  <img src="docs/assets/screenshots/operalibre-web-library-and-details.png" alt="OperaLibre web library and book details" height="440">
 </p>
 
 ## Features
