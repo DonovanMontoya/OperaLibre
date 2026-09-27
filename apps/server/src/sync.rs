@@ -920,8 +920,50 @@ impl Aligner<'_> {
                         self.recognition.retry_model(),
                     )
                     .await;
+                let mut recognized = recognized?;
+                if let Some(retry_start) =
+                    alignment::recovery_clock_retry_start(&recognized, &transcript.text)
+                    && retry_start > 0.0
+                    && retry_start < scan_end - position - 0.5
+                {
+                    let shorter = self
+                        .slice(
+                            ffmpeg,
+                            &audio,
+                            retry_start,
+                            scan_end - position,
+                            scope_number,
+                            windows,
+                            "recovery-clock",
+                        )
+                        .await?;
+                    let retry = self
+                        .transcribe(
+                            &shorter,
+                            scope_number,
+                            &format!("{windows}-recovery-clock"),
+                            self.recognition.retry_model(),
+                        )
+                        .await;
+                    let _ = fs::remove_file(shorter).await;
+                    if let Ok(mut retry) = retry {
+                        for word in &mut retry {
+                            word.start_time += retry_start;
+                            word.end_time += retry_start;
+                        }
+                        if alignment::find_recovery_anchor(
+                            &retry,
+                            &transcript.text,
+                            cursor,
+                            scan_end - position,
+                        )
+                        .is_some()
+                        {
+                            recognized = retry;
+                        }
+                    }
+                }
                 let _ = fs::remove_file(audio).await;
-                let recognized = recognized?;
                 if let Some(anchor) = alignment::find_recovery_anchor(
                     &recognized,
                     &transcript.text,
@@ -1403,7 +1445,40 @@ impl Aligner<'_> {
         recognized: &[alignment::RecognizedWord],
         duration: f64,
     ) -> anyhow::Result<ScopeAlignment> {
-        let interruptions = alignment::interrupted_passages(transcript, recognized);
+        let mut interruptions = alignment::interrupted_passages(transcript, recognized);
+        let confirmation;
+        let recognized = if interruptions.is_empty() {
+            recognized
+        } else {
+            update_job_output(
+                self.state,
+                self.job_id,
+                "  Verifying apparently missing narration before splitting alignment.\n",
+            )
+            .await;
+            confirmation = self
+                .transcribe(
+                    audio_path,
+                    scope_number,
+                    &format!("{window}-interruption-check"),
+                    self.recognition.retry_model(),
+                )
+                .await?;
+            let confirmed = alignment::interrupted_passages(transcript, &confirmation);
+            interruptions.retain(|gap| {
+                confirmed.iter().any(|other| {
+                    gap.text_start_utf16 == other.text_start_utf16
+                        && gap.text_end_utf16 == other.text_end_utf16
+                })
+            });
+            if alignment::recognition_anchor_count(&confirmation, &transcript.text)
+                > alignment::recognition_anchor_count(recognized, &transcript.text)
+            {
+                &confirmation
+            } else {
+                recognized
+            }
+        };
         let mut fragments: Vec<alignment::SyncFragment> = Vec::new();
         let mut recovery_gaps = Vec::new();
         let mut text_start = 0;
@@ -1577,6 +1652,7 @@ impl Aligner<'_> {
         let mut entries = alignment::parse_timeline(&timeline_json)?;
         alignment::recover_zero_duration_sentences(&mut entries, &transcript.text, recognized);
         alignment::reconcile_sentence_starts(&mut entries, &transcript.text, recognized);
+        alignment::reconcile_word_clocks(&mut entries, &transcript.text, recognized);
         Ok(alignment::fragments_from_timeline(
             &entries,
             transcript,

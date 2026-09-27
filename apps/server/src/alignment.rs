@@ -1769,6 +1769,22 @@ pub fn interrupted_passages(
         }
         let la = matches[&li];
         let ra = matches[&ri];
+        // Short local phrases cannot establish clocks or locate a chapter,
+        // but can veto deleting speech between already proven anchors. A
+        // missed word or misspelled name must not erase a whole utterance.
+        let missing_words = &words[sentences[first].start..right.start];
+        if ra <= la
+            || missing_words.windows(3).any(|phrase| {
+                recognized[la + 1..ra].windows(3).any(|heard| {
+                    phrase
+                        .iter()
+                        .zip(heard)
+                        .all(|(text, audio)| text.text == audio.text)
+                })
+            })
+        {
+            continue;
+        }
         let mut end = recognized[la].end_time;
         for next in recognized.iter().skip(la + 1).take(left.end - li - 1) {
             if !valid_word_clock(next) || next.start_time - end > 1.0 {
@@ -1874,6 +1890,116 @@ pub fn reconcile_sentence_starts(
     visit(entries, &words, &matches, recognized, &mut 0.0);
 }
 
+/// Repair local forced-alignment drift using uniquely located spoken words.
+/// Proposals must stay nearby and ordered relative to every neighboring word;
+/// ambiguous speech and clocks stretching across silence cannot move a word.
+pub fn reconcile_word_clocks(
+    entries: &mut [TimelineEntry],
+    transcript: &str,
+    recognized: &[RecognizedWord],
+) {
+    fn collect<'a>(entries: &'a mut [TimelineEntry], out: &mut Vec<&'a mut TimelineEntry>) {
+        for entry in entries {
+            if entry.kind == "word" {
+                out.push(entry);
+            } else if let Some(children) = &mut entry.timeline {
+                collect(children, out);
+            }
+        }
+    }
+    fn refresh(entries: &mut [TimelineEntry]) {
+        for entry in entries {
+            if entry.kind == "word" {
+                continue;
+            }
+            if let Some(children) = &mut entry.timeline {
+                refresh(children);
+                if let (Some(first), Some(last)) = (children.first(), children.last()) {
+                    entry.start_time = first.start_time;
+                    entry.end_time = last.end_time;
+                }
+            }
+        }
+    }
+    let words = transcript_words(transcript, 0, u64::MAX);
+    let matches = unique_spoken_words(recognized, transcript, true);
+    let mut aligned = Vec::new();
+    collect(entries, &mut aligned);
+    let mut proposals = aligned
+        .iter()
+        .map(|word| {
+            let offset = entry_offsets(word).0?;
+            let index = words
+                .partition_point(|w| w.start_utf16 <= offset)
+                .checked_sub(1)?;
+            if offset >= words[index].end_utf16 || normalize_word(&word.text) != words[index].text {
+                return None;
+            }
+            let speech = &recognized[*matches.get(&index)?];
+            let change = (word.start_time - speech.start_time)
+                .abs()
+                .max((word.end_time - speech.end_time).abs());
+            (change <= 2.0).then_some((speech.start_time, speech.end_time))
+        })
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < proposals.len() {
+        if proposals[index].is_none() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < proposals.len() && proposals[index].is_some() {
+            index += 1;
+        }
+        let drifting = (start..index).any(|i| {
+            let (a, b) = proposals[i].unwrap();
+            (aligned[i].start_time - a)
+                .abs()
+                .max((aligned[i].end_time - b).abs())
+                >= 0.25
+        });
+        if !drifting {
+            proposals[start..index].fill(None);
+        }
+    }
+    // Reverting a proposal can expose a conflict with its next neighbor.
+    // Repeat until all remaining proposals are safe together and individually.
+    loop {
+        let mut rejected = Vec::new();
+        for i in 0..aligned.len().saturating_sub(1) {
+            let left = proposals[i].unwrap_or((aligned[i].start_time, aligned[i].end_time));
+            let right =
+                proposals[i + 1].unwrap_or((aligned[i + 1].start_time, aligned[i + 1].end_time));
+            if left.1 > right.0 {
+                if proposals[i].is_some() {
+                    rejected.push(i);
+                }
+                if proposals[i + 1].is_some() {
+                    rejected.push(i + 1);
+                }
+            }
+        }
+        if rejected.is_empty() {
+            break;
+        }
+        for index in rejected {
+            proposals[index] = None;
+        }
+    }
+    let mut changed = false;
+    for (word, proposal) in aligned.into_iter().zip(proposals) {
+        if let Some((start, end)) = proposal {
+            word.start_time = start;
+            word.end_time = end;
+            changed = true;
+        }
+    }
+    if changed {
+        refresh(entries);
+    }
+}
+
 /// A complete sentence backed by a unique, longer phrase after alignment loss.
 /// These bounds select audio/text for a fresh forced alignment; they are not
 /// used as an interpolated timing map.
@@ -1939,13 +2065,9 @@ pub fn find_recovery_anchor(
             .iter()
             .map(|word| &word.text)
             .eq(speech.iter().map(|word| &word.text))
-            || speech.iter().any(|word| {
-                !word.start_time.is_finite()
-                    || !word.end_time.is_finite()
-                    || word.start_time < 0.0
-                    || word.end_time <= word.start_time
-                    || word.end_time > duration
-            })
+            || speech
+                .iter()
+                .any(|word| !valid_word_clock(word) || word.end_time > duration)
             || speech.windows(2).any(|pair| {
                 pair[1].start_time < pair[0].start_time || pair[1].end_time < pair[0].end_time
             })
@@ -1965,6 +2087,21 @@ pub fn find_recovery_anchor(
         });
     }
     None
+}
+
+/// A long word clock at the first unique phrase can include preceding noise.
+/// Re-recognize a shorter audio window near its end before trusting recovery.
+/// This only chooses audio for recognition; it never supplies a word timestamp.
+pub fn recovery_clock_retry_start(recognized: &[RecognizedWord], text: &str) -> Option<f64> {
+    let (audio, _) = recognition_anchor_chain(recognized, text)
+        .first()
+        .copied()?;
+    let word = &recognized[audio];
+    (word.start_time.is_finite()
+        && word.end_time.is_finite()
+        && word.start_time >= 0.0
+        && word.end_time - word.start_time > 2.0)
+        .then_some((word.end_time - 2.0).max(0.0))
 }
 
 /// A later sentence match cannot justify force-aligning a substantial missing
@@ -4022,6 +4159,18 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rechecks_a_word_stretched_across_noise() {
+        let text =
+            "A traveler carried the blue lantern across the narrow wooden bridge before dawn.";
+        let mut speech = spoken(text, 16.0);
+        speech[0].start_time = 0.0;
+        assert!(find_recovery_anchor(&speech, text, 0, 30.0).is_none());
+        assert!((recovery_clock_retry_start(&speech, text).unwrap() - 14.4).abs() < 1e-6);
+        assert!(recovery_clock_retry_start(&spoken(text, 16.0), text).is_none());
+        assert!(find_recovery_anchor(&spoken(text, 16.0), text, 0, 30.0).is_some());
+    }
+
+    #[test]
     fn recovery_rejects_ambiguous_phrases_and_untrustworthy_clocks() {
         let text = "A lantern flickered beside the empty railway station. Several travellers waited quietly for the morning train.";
         let recognized = spoken(text, 1.0);
@@ -4114,6 +4263,75 @@ mod tests {
         let gaps = interrupted_passages(&transcript, &recognition);
         assert_eq!(gaps.len(), 1);
         assert!(gaps[0].end_seconds >= 18.0);
+    }
+
+    #[test]
+    fn word_clock_repair_requires_unique_nearby_ordered_speech() {
+        let text = "A traveler carried the lantern across the bridge.";
+        let words = transcript_words(text, 0, u64::MAX);
+        let children = words
+            .iter()
+            .enumerate()
+            .map(|(i, word)| {
+                serde_json::json!({
+                    "type": "word", "text": word.text, "startTime": i as f64 * 0.5 + 0.8,
+                    "endTime": i as f64 * 0.5 + 1.2, "startOffsetUtf16": word.start_utf16,
+                    "endOffsetUtf16": word.end_utf16,
+                })
+            })
+            .collect::<Vec<_>>();
+        let original = serde_json::json!([{"type":"sentence", "text":text,
+            "startTime":0.8,"endTime":4.7,"timeline":children}])
+        .to_string();
+        let speech = spoken(text, 0.0);
+        let mut timeline = parse_timeline(&original).unwrap();
+        reconcile_word_clocks(&mut timeline, text, &speech);
+        assert_eq!(timeline[0].start_time, 0.0);
+        assert_eq!(timeline[0].end_time, 3.9);
+        let children = timeline[0].timeline.as_ref().unwrap();
+        assert!(
+            children
+                .windows(2)
+                .all(|p| p[0].end_time <= p[1].start_time)
+        );
+        for rejected in [spoken(text, 20.0), spoken(&format!("{text} {text}"), 0.0)] {
+            let mut timeline = parse_timeline(&original).unwrap();
+            reconcile_word_clocks(&mut timeline, text, &rejected);
+            assert_eq!(timeline[0].start_time, 0.8);
+            assert_eq!(timeline[0].end_time, 4.7);
+        }
+        let mut timeline = parse_timeline(&original).unwrap();
+        timeline[0].timeline.as_mut().unwrap()[0].start_offset_utf16 = None;
+        // The unlocated first word is a hard neighboring boundary. Repairs
+        // must not put the next word before its unchanged end.
+        reconcile_word_clocks(&mut timeline, text, &speech);
+        let children = timeline[0].timeline.as_ref().unwrap();
+        assert!(
+            children
+                .windows(2)
+                .all(|p| p[0].end_time <= p[1].start_time)
+        );
+    }
+
+    #[test]
+    fn local_short_speech_with_misheard_name_is_not_deleted() {
+        let before = "A silver heron watched the quiet river beside the wooden bridge.";
+        let middle = "I recall, she whispered in Mariana's voice.";
+        let after = "Under the old clock a musician practiced a melody before the morning market.";
+        let transcript = build_transcript(&[SpineSection {
+            href: "chapter.xhtml".into(),
+            text: format!("{before} {middle} {after}"),
+        }]);
+        let mut recognition = spoken(before, 0.0);
+        recognition.extend(spoken("Recall, she whispered in Maryann's voice.", 8.0));
+        recognition.extend(spoken(after, 15.0));
+        assert!(interrupted_passages(&transcript, &recognition).is_empty());
+        // Matching words outside the two enclosing anchors are not evidence
+        // for the candidate passage; the real omission must still be found.
+        let mut absent = spoken("She whispered in the courtyard.", 0.0);
+        absent.extend(spoken(before, 4.0));
+        absent.extend(spoken(after, 22.0));
+        assert_eq!(interrupted_passages(&transcript, &absent).len(), 1);
     }
 
     #[test]
