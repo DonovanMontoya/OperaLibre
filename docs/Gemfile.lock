@@ -70,8 +70,15 @@ GEM
       safe_yaml (~> 1.0)
       terminal-table (>= 1.8, < 4.0)
       webrick (~> 1.7)
+    jekyll-default-layout (0.1.5)
+      jekyll (>= 3.0, < 5.0)
+    jekyll-github-metadata (2.16.1)
+      jekyll (>= 3.4, < 5.0)
+      octokit (>= 4, < 7, != 4.4.0)
     jekyll-include-cache (0.2.2)
       jekyll (>= 3.7, < 5.0)
+    jekyll-optional-front-matter (0.3.3)
+      jekyll (>= 3.0, < 5.0)
     jekyll-relative-links (0.6.1)
       jekyll (>= 3.3, < 5.0)
     jekyll-remote-theme (0.5.2)
@@ -116,6 +123,9 @@ GEM
       racc (~> 1.4)
     nokogiri (1.19.4-x86_64-linux-musl)
       racc (~> 1.4)
+    octokit (6.1.1)
+      faraday (>= 1, < 3)
+      sawyer (~> 0.9)
     openssl (4.0.2)
     pathutil (0.16.2)
       forwardable-extended (~> 2.6)
@@ -145,6 +155,9 @@ GEM
       google-protobuf (~> 4.31)
     sass-embedded (1.105.0-x86_64-linux-musl)
       google-protobuf (~> 4.31)
+    sawyer (0.9.3)
+      addressable (>= 2.3.5)
+      faraday (>= 0.17.3, < 3)
     terminal-table (3.0.2)
       unicode-display_width (>= 1.1.1, < 3)
     unicode-display_width (2.6.0)
@@ -167,7 +180,10 @@ DEPENDENCIES
   csv
   faraday (>= 2.14.3)
   jekyll (~> 4.4)
+  jekyll-default-layout (~> 0.1.5)
+  jekyll-github-metadata (~> 2.16.1)
   jekyll-include-cache (~> 0.2)
+  jekyll-optional-front-matter (~> 0.3.2)
   jekyll-relative-links (~> 0.6.1)
   jekyll-remote-theme (~> 0.5.2)
   jekyll-seo-tag (~> 2.8)
@@ -206,7 +222,10 @@ CHECKSUMS
   http_parser.rb (0.8.1) sha256=9ae8df145b39aa5398b2f90090d651c67bd8e2ebfe4507c966579f641e11097a
   i18n (1.15.2) sha256=00f9eb62412fe593b2a65a97daa75300d37abb8f7202ec748e94b6d46a9dd1b5
   jekyll (4.4.1) sha256=4c1144d857a5b2b80d45b8cf5138289579a9f8136aadfa6dd684b31fe2bc18c1
+  jekyll-default-layout (0.1.5) sha256=c626be4e4a5deafca123539da2cd22ff873be350cafd4da134039efdf24320af
+  jekyll-github-metadata (2.16.1) sha256=4cf29988bdaf24774a7bc07fae71e54424ddfaa2895f742d8fa3036d0db65b4c
   jekyll-include-cache (0.2.2) sha256=fe31c75187c37b035fb3b62b689f1ca284f1871c3bb7f607a8bdf3cc439b0aa1
+  jekyll-optional-front-matter (0.3.3) sha256=fc96976ffaa5515b3ad7d553199011aa98782c13694dfbd1a6278ede88212a6e
   jekyll-relative-links (0.6.1) sha256=d11301f57b39e94b6c04fff2a3b145fe2f6a27be631a403e2542fa2e1548dd6d
   jekyll-remote-theme (0.5.2) sha256=d41ba7358b7baa7c8f8f4ee03112bbae8dba90235e97d88c25b90a032abb6f55
   jekyll-sass-converter (3.1.0) sha256=83925d84f1d134410c11d0c6643b0093e82e3a3cf127e90757a85294a3862443
@@ -228,6 +247,7 @@ CHECKSUMS
   nokogiri (1.19.4-x86_64-darwin) sha256=7fd17057d3e1f00e9954a74b3cd76595d3d4a5ef233b7ed9599047c204f70551
   nokogiri (1.19.4-x86_64-linux-gnu) sha256=379fae440b28915e3f19d752ce2dcf8465ed2b2fbefd2a7ca0dd497bc981a06a
   nokogiri (1.19.4-x86_64-linux-musl) sha256=17dfb7c1fa194ae02fbf7c51a7afc8d278045ab3fdacfd86f91d02d7b274470b
+  octokit (6.1.1) sha256=920e4a9d820205f70738f58de6a7e6ef0e2f25b27db954b5806a63105207b0bf
   openssl (4.0.2) sha256=1037ad2868ae58df9ad917891c0c0f9815a1172f6846d4bcdd508e4c2ee747c2
   pathutil (0.16.2) sha256=e43b74365631cab4f6d5e4228f812927efc9cb2c71e62976edcb252ee948d589
   public_suffix (7.0.5) sha256=1a8bb08f1bbea19228d3bed6e5ed908d1cb4f7c2726d18bd9cadf60bc676f623
@@ -247,6 +267,7 @@ CHECKSUMS
   sass-embedded (1.105.0-x86_64-darwin) sha256=4e2d4238f8e286e0b256b63d3713ad27a06542b3079087e54d2c169072fb77fa
   sass-embedded (1.105.0-x86_64-linux-gnu) sha256=c7cb4884c6d1ddad41d52f5950167d5cf77e242d7900ca0ec13170ba43878977
   sass-embedded (1.105.0-x86_64-linux-musl) sha256=fbbda8c5df1073e177382cccd8c640ed7f49553e040713cd7fffca1af194cf96
+  sawyer (0.9.3) sha256=0d0f19298408047037638639fe62f4794483fb04320269169bd41af2bdcf5e41
   terminal-table (3.0.2) sha256=f951b6af5f3e00203fb290a669e0a85c5dd5b051b3b023392ccfd67ba5abae91
   unicode-display_width (2.6.0) sha256=12279874bba6d5e4d2728cef814b19197dbb10d7a7837a869bab65da943b7f5a
   uri (1.1.1) sha256=379fa58d27ffb1387eaada68c749d1426738bd0f654d812fcc07e7568f5c57c6

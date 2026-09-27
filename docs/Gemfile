@@ -11,7 +11,10 @@ gem "jekyll", "~> 4.4"
 gem "rubyzip", ">= 3.4.0", "< 4.0"
 
 group :jekyll_plugins do
+  gem "jekyll-default-layout", "~> 0.1.5"
+  gem "jekyll-github-metadata", "~> 2.16.1"
   gem "jekyll-include-cache", "~> 0.2"
+  gem "jekyll-optional-front-matter", "~> 0.3.2"
   gem "jekyll-relative-links", "~> 0.6.1"
   gem "jekyll-remote-theme", "~> 0.5.2"
   gem "jekyll-seo-tag", "~> 2.8"
