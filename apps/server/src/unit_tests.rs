@@ -7199,8 +7199,8 @@ async fn shared_audible_download_falls_back_without_finishing_the_job_early() {
                 super::find_book_id_by_asin(&state.library.read().await.books, "B000SHAR00")
                     .is_some()
             );
-            // Confirm the first owner's saved ownership still authorizes a
-            // reader after fallback switches the shared export to Dad.
+            // Download fallback succeeds independently of reader authorization:
+            // a broken original login cannot authorize from a saved snapshot.
             let profile = super::find_libation_profile(&state, &parsed[0].id)
                 .await
                 .unwrap();
@@ -7212,8 +7212,156 @@ async fn shared_audible_download_falls_back_without_finishing_the_job_early() {
             assert!(
                 super::profile_owns_asin(&state, &profile, "B000SHAR00")
                     .await
+                    .is_err()
+            );
+            std::fs::remove_file(root.path().join("libation-broken-account")).unwrap();
+            assert!(
+                super::profile_owns_asin(&state, &profile, "B000SHAR00")
+                    .await
                     .unwrap()
             );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persisted_audible_ownership_requires_revalidation_for_reader_grants() {
+    for approval in [false, true] {
+        for export_owner in ["marge@example.com", "dad@example.com"] {
+            for current_ownership in ["expired", "unavailable", "owned"] {
+                let root = tempfile::tempdir().unwrap();
+                let (state, _) = fake_libation_state(root.path());
+                let asin = "B000SHAR00";
+                let accounts =
+                    "marge@example.com\tMarge\tus\tyes\tyes\ndad@example.com\tDad\tus\tyes\tyes\n";
+                std::fs::write(root.path().join("libation-accounts.tsv"), accounts).unwrap();
+                let profile_id = super::parse_libation_accounts(accounts)[0].id.clone();
+                state
+                    .libation_refreshes
+                    .mutate(|store| {
+                        store.legacy_ownership.insert(
+                            profile_id.clone(),
+                            super::LegacyLibationOwnership {
+                                account_id: "marge@example.com".to_string(),
+                                locale: "us".to_string(),
+                                asins: vec![asin.to_string()],
+                            },
+                        );
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                // The book is already local, and the shared export may still
+                // name the old owner or may have switched to the other owner.
+                std::fs::write(root.path().join("libation-export.json"), format!(
+                    r#"[{{"Account":"{export_owner}","Locale":"us","Audible Product Id":"{asin}","Title":"Shared title"}}]"#
+                )).unwrap();
+                let folder = state.library_root.join(format!("Test [{asin}]"));
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::copy(
+                    root.path().join("template.wav"),
+                    folder.join(format!("Test [{asin}].wav")),
+                )
+                .unwrap();
+                super::rescan_library(&state).await.unwrap();
+                std::fs::write(
+                    root.path().join("libation-shared-asin"),
+                    if current_ownership == "owned" {
+                        asin
+                    } else {
+                        ""
+                    },
+                )
+                .unwrap();
+                if current_ownership == "unavailable" {
+                    std::fs::write(
+                        root.path().join("libation-broken-account"),
+                        "marge@example.com",
+                    )
+                    .unwrap();
+                }
+                let mut auth = approval_reader();
+                auth.allowed_book_ids = Some(Vec::new());
+                if !approval {
+                    auth.libation_access = super::LibationAccess::Direct;
+                }
+                let mut reader = stored_user(&auth.id, false, false);
+                reader.allowed_book_ids = Some(Vec::new());
+                reader.libation_access = auth.libation_access;
+                state
+                    .users
+                    .mutate(|users| {
+                        users.users = vec![reader];
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                let job_id = if approval {
+                    let request = super::create_libation_download_request(
+                        super::State(state.clone()),
+                        super::Extension(auth.clone()),
+                        super::Path(asin.to_string()),
+                        super::Json(super::CreateLibationDownloadRequest {
+                            title: "Shared title".to_string(),
+                            profile_id: Some(profile_id.clone()),
+                        }),
+                    )
+                    .await
+                    .unwrap()
+                    .0;
+                    super::decide_libation_download_request(
+                        super::State(state.clone()),
+                        super::LibationApprover(admin_user()),
+                        super::Path(request.id),
+                        super::Json(super::DecideLibationDownloadRequest { approved: true }),
+                    )
+                    .await
+                    .unwrap()
+                    .0
+                    .job_id
+                    .unwrap()
+                } else {
+                    super::liberate_profile_libation_book(
+                        super::State(state.clone()),
+                        super::Extension(auth.clone()),
+                        super::Path((profile_id, asin.to_string())),
+                    )
+                    .await
+                    .unwrap()
+                    .0
+                    .job_id
+                };
+                let job = wait_for_finished_job(&state, &job_id).await;
+                assert_eq!(
+                    job.status,
+                    if current_ownership == "owned" {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                    "approval={approval}, export={export_owner}, ownership={current_ownership}: {:?}",
+                    job.error
+                );
+                let granted = state.users.read().await.users[0]
+                    .allowed_book_ids
+                    .clone()
+                    .unwrap();
+                if current_ownership == "owned" {
+                    let book_id =
+                        super::find_book_id_by_asin(&state.library.read().await.books, asin)
+                            .unwrap();
+                    assert_eq!(granted, vec![book_id]);
+                } else {
+                    assert!(
+                        granted.is_empty(),
+                        "unverified ownership must not grant access"
+                    );
+                }
+                let scans =
+                    std::fs::read_to_string(root.path().join("libation-scans.log")).unwrap();
+                assert_eq!(scans.trim(), "scan marge@example.com");
+            }
         }
     }
 }
