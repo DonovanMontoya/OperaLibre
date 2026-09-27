@@ -10,10 +10,17 @@ class IndependentReferenceTests(unittest.TestCase):
         sections=[{'href':'one','text':text}]
         recognized=[dict(text=t,start=i,end=i+.5) for i,t in enumerate(audit.tokens(text))]
         checks=audit.reference_checks(recognized,sections,100)
-        self.assertGreater(len(checks),0)
-        self.assertEqual(checks[0]['at'],104.25)
+        self.assertEqual(len(checks),len(recognized))
+        self.assertEqual([c['token'] for c in checks],list(range(len(recognized))))
+        self.assertEqual(checks[0]['at'],100.25)
         self.assertEqual(audit.reference_checks(recognized,sections+sections,100),[])
         self.assertEqual(audit.reference_checks([],sections,100),[])
+
+    def test_overlapping_reference_phrases_reject_conflicting_locations(self):
+        recognized=[dict(text=t,start=i,end=i+.5) for i,t in enumerate('a b c d e f g h i'.split())]
+        sections=[dict(href='one',text='a b c d e f g h'),dict(href='two',text='b c d e f g h i')]
+        checks=audit.reference_checks(recognized,sections,0)
+        self.assertEqual([(c['section'],c['token']) for c in checks],[(0,0),(1,7)])
 
     def test_missing_and_wrong_chapter_highlights_are_failures(self):
         text='A traveler carried the blue lantern across a narrow wooden bridge before dawn.'
@@ -79,6 +86,16 @@ class IndependentReferenceTests(unittest.TestCase):
         value['fragments'][0]['startSeconds']=.1;value['fragments'][0]['endSeconds']=.3
         value['fragments'][1]['words'][0][0]=1.7
         self.assertEqual(result()['status'],'failed')
+
+    def test_late_highlight_clocks_are_measured_even_when_not_active(self):
+        sections=[dict(href='one',text='Several people reached home.')]
+        value=dict(fragments=[dict(startSeconds=5,endSeconds=7,href='one',text=sections[0]['text'],words=[[5,6,0,7]])])
+        checks=[dict(at=1.2,referenceStart=1,referenceEnd=1.4,section=0,href='one',token=0)]*20
+        result=audit.score(value,checks,sections,audit.reader_selection(value,checks),audit.nearby_reader_selection(value,checks))
+        self.assertEqual(result['timedWordCoverage'],1)
+        self.assertEqual(result['wordStartP95Seconds'],4)
+        self.assertEqual(result['boundedReaderAgreement'],0)
+        self.assertEqual(result['status'],'failed')
 
     def test_changed_audio_cannot_reuse_an_old_reference(self):
         with tempfile.TemporaryDirectory() as folder:
