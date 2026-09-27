@@ -85,9 +85,6 @@ pub struct TocEntry {
 pub struct EpubDocument {
     pub sections: Vec<SpineSection>,
     pub toc: Vec<TocEntry>,
-    /// Sections whose first visible content is an image, potentially a
-    /// narrated chapter title that is absent from the extracted text.
-    pub leading_image_sections: Vec<usize>,
     /// Pictures declared in the manifest. Used to tell an illustrated
     /// supplement from a text.
     pub image_count: usize,
@@ -142,7 +139,6 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     }
 
     let mut sections = Vec::new();
-    let mut leading_image_sections = Vec::new();
     let mut section_paths = HashMap::new();
     for tag in find_tags(&opf, "itemref") {
         let Some(idref) = attr_value(&tag, "idref") else {
@@ -162,9 +158,6 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
             continue;
         };
         let text = html_to_text(&document);
-        if starts_with_image(&document) {
-            leading_image_sections.push(sections.len());
-        }
         section_paths.insert(document_path, sections.len());
         sections.push(SpineSection {
             href: item.href.clone(),
@@ -232,28 +225,8 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
     Ok(EpubDocument {
         sections,
         toc,
-        leading_image_sections,
         language,
         image_count,
-    })
-}
-
-fn starts_with_image(document: &str) -> bool {
-    let lower = document.to_ascii_lowercase();
-    let Some(body) = lower
-        .find("<body")
-        .and_then(|start| lower[start..].find('>').map(|end| start + end + 1))
-    else {
-        return false;
-    };
-    let first_image = ["<img", "<svg"]
-        .iter()
-        .filter_map(|tag| lower[body..].find(tag))
-        .min();
-    first_image.is_some_and(|offset| {
-        html_to_text(&document[body..body + offset])
-            .trim()
-            .is_empty()
     })
 }
 
@@ -806,6 +779,60 @@ impl Transcript {
             },
         );
         self.text.insert_str(0, &prefix);
+    }
+
+    /// Keep only recognized opening narration before a unique match to the
+    /// first printed words. TOC labels and image placement are not evidence
+    /// that a title was spoken.
+    pub fn include_unmapped_leading_narration(&mut self, recognized: &[RecognizedWord]) -> usize {
+        let words = transcript_words(&self.text, 0, self.len_utf16());
+        let Some(opening) = words.get(..ANCHOR_NGRAM) else {
+            return 0;
+        };
+        let matches_opening = |run: &[TranscriptWord]| {
+            run.iter()
+                .map(|w| &w.text)
+                .eq(opening.iter().map(|w| &w.text))
+        };
+        if words
+            .windows(ANCHOR_NGRAM)
+            .filter(|run| matches_opening(run))
+            .count()
+            != 1
+        {
+            return 0;
+        }
+        let matches = recognized
+            .windows(ANCHOR_NGRAM)
+            .enumerate()
+            .filter(|(_, run)| {
+                run.iter()
+                    .map(|w| &w.text)
+                    .eq(opening.iter().map(|w| &w.text))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let [start] = matches.as_slice() else {
+            return 0;
+        };
+        if *start == 0 || *start > 128 {
+            return 0;
+        }
+        let evidence = &recognized[..start + ANCHOR_NGRAM];
+        if evidence.iter().any(|word| !valid_word_clock(word))
+            || evidence.windows(2).any(|pair| {
+                pair[1].start_time < pair[0].start_time || pair[1].end_time < pair[0].end_time
+            })
+        {
+            return 0;
+        }
+        let heading = recognized[..*start]
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.prepend_unmapped(&heading);
+        1
     }
 
     pub fn href_for_offset(&self, offset_utf16: u64) -> Option<&str> {
@@ -3509,6 +3536,56 @@ mod tests {
     }
 
     #[test]
+    fn image_openings_require_recognized_narration() {
+        let prose = "The visitor locked the door. A café🦉 stood nearby.";
+        for (speech, expected) in [
+            (prose.to_string(), 0),
+            (format!("Interlude three A Visitor {prose}"), 1),
+            (format!("Chapter forty seven {prose}"), 1),
+            (format!("{prose} Interlude three A Visitor"), 0),
+            (format!("Interlude three {prose} {prose}"), 0),
+            ("Unrelated speech without an opening anchor".to_string(), 0),
+        ] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: prose.into(),
+            }]);
+            assert_eq!(
+                transcript.include_unmapped_leading_narration(&spoken(&speech, 0.0)),
+                expected,
+                "{speech}"
+            );
+            let section = transcript.sections.last().unwrap();
+            let mapped = transcript.window(section.start_utf16, section.end_utf16);
+            assert_eq!(mapped.text, prose);
+            assert_eq!(mapped.href_for_offset(0), Some("chapter.xhtml"));
+            if expected == 0 {
+                assert_eq!(transcript.text, prose);
+            }
+        }
+    }
+
+    #[test]
+    fn image_openings_reject_ambiguous_text_and_invalid_clocks() {
+        let prose = "The visitor locked the door.";
+        for text in [prose.to_string(), format!("{prose} {prose}")] {
+            let mut transcript = build_transcript(&[SpineSection {
+                href: "chapter.xhtml".into(),
+                text: text.clone(),
+            }]);
+            let mut recognition = spoken(&format!("Chapter three {prose}"), 0.0);
+            if text == prose {
+                recognition[0].start_time = f64::NAN;
+            }
+            assert_eq!(
+                transcript.include_unmapped_leading_narration(&recognition),
+                0
+            );
+            assert_eq!(transcript.text, text);
+        }
+    }
+
+    #[test]
     fn abbreviated_image_interludes_use_the_spoken_label() {
         let mut transcript = build_transcript(&[SpineSection {
             href: "interlude.xhtml".into(),
@@ -3526,12 +3603,6 @@ mod tests {
 
     #[test]
     fn image_headings_consume_audio_without_becoming_text_highlights() {
-        assert!(starts_with_image(
-            "<html><head><title>Book</title></head><body><p><img src='title.jpg'/></p><p>Text</p></body></html>"
-        ));
-        assert!(!starts_with_image(
-            "<body><h1>Chapter one</h1><img src='decoration.jpg'/></body>"
-        ));
         let mut transcript = build_transcript(&[SpineSection {
             href: "chapter.xhtml".into(),
             text: "I approach this project with inspiration renewed.".into(),

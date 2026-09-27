@@ -550,33 +550,7 @@ fn scope_transcript(
     epub: &alignment::EpubDocument,
     scope: &SyncAlignmentScope,
 ) -> alignment::Transcript {
-    let mut transcript = alignment::build_transcript(&epub.sections[scope.section_range.clone()]);
-    if scope.audio_range.is_none()
-        || transcript.text.is_empty()
-        || !epub
-            .leading_image_sections
-            .contains(&scope.section_range.start)
-    {
-        return transcript;
-    }
-    let target = alignment::parse_label(&scope.label);
-    let heading = epub
-        .toc
-        .iter()
-        .filter(|entry| entry.spine_index == scope.section_range.start)
-        .max_by_key(|entry| {
-            alignment::label_match_score(&target, &alignment::parse_label(&entry.title))
-        });
-    if let Some(heading) = heading {
-        let heading_label = alignment::parse_label(&heading.title);
-        let first_line = alignment::parse_label(transcript.text.lines().next().unwrap_or(""));
-        if !heading.title.trim().is_empty()
-            && alignment::label_match_score(&heading_label, &first_line) < 70
-        {
-            transcript.prepend_unmapped(&heading.title);
-        }
-    }
-    transcript
+    alignment::build_transcript(&epub.sections[scope.section_range.clone()])
 }
 
 fn chapter_alignment_scopes(
@@ -835,6 +809,7 @@ impl Aligner<'_> {
                 .await?;
             self.mask_unspoken_sentences(&mut prepared, &recognized, 0..transcript.len_utf16())
                 .await;
+            prepared.include_unmapped_leading_narration(&recognized);
             self.include_unmapped_narration(&mut prepared, &recognized, true)
                 .await;
         }
@@ -1185,6 +1160,9 @@ impl Aligner<'_> {
                     )
                     .await?;
                 let mut window_transcript = transcript.window(cursor, text_end);
+                if cursor == 0 && lead_in == 0.0 {
+                    window_transcript.include_unmapped_leading_narration(&recognized);
+                }
                 self.include_unmapped_narration(
                     &mut window_transcript,
                     &recognized,
