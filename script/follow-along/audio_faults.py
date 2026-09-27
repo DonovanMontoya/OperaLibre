@@ -77,7 +77,7 @@ def generate(output, tts, ffmpeg):
             assert wav.getframerate() == rate
             chunks.append(wav.readframes(wav.getnframes()))
     labels = {}
-    for variant in ['clean', 'silence-opening', 'noise-opening', 'different-editions', 'repeated-noise']:
+    for variant in ['clean', 'silence-opening', 'noise-opening', 'different-editions', 'repeated-noise', 'silence-ending']:
         folder = output / 'library' / variant; folder.mkdir(parents=True)
         printed = [list(SENTENCES[:12]), list(SENTENCES[12:])]
         if variant == 'different-editions':
@@ -93,9 +93,10 @@ def generate(output, tts, ffmpeg):
             own = expected[str(i // 12)]
             chunk = chunks[i]; duration = len(chunk) / (2 * rate)
             damaged = (i < 8 and variant in ('silence-opening', 'noise-opening')
+                       or variant == 'silence-ending' and 4 <= i < 12
                        or variant == 'repeated-noise' and i in (2, 3, 8, 9, 16, 17))
             if damaged:
-                chunk = (bytes(len(chunk)) if variant == 'silence-opening' else
+                chunk = (bytes(len(chunk)) if variant in ('silence-opening', 'silence-ending') else
                          array.array('h', (rng.randint(-5000, 5000) for _ in range(len(chunk) // 2))).tobytes())
                 own.append({'kind': 'unmatched' if variant == 'repeated-noise' else 'hold',
                             'at': elapsed + duration / 2,

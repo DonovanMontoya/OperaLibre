@@ -57,7 +57,8 @@ def audio_fingerprint(book):
 def source_identity():
     paths = [str(p.relative_to(REPO)) for p in sorted((REPO / 'apps/server/src').rglob('*.rs'))]
     paths += ['apps/server/Cargo.toml', 'apps/server/Cargo.lock',
-              'addons/readalong-sync/package-lock.json', 'apps/web/src/readalong.ts',
+              'addons/readalong-sync/package-lock.json', 'addons/readalong-sync/package.json',
+              'addons/readalong-sync/patch-runtime.mjs', 'apps/web/src/readalong.ts',
               'script/follow-along/reader-selection.mjs']
     paths += [str(p.relative_to(REPO)) for p in sorted((REPO / 'script/follow-along').glob('*.py'))]
     return {path: digest(REPO / path) for path in paths}
