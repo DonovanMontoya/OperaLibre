@@ -70,6 +70,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var navigationVisible = false
     private var configuring = false
     private var requestedSelection: String?
+    private var selectionThisTurn: String?
     private var cover: UIView?
     // Last top-bar clearance handed to the page; -1 until it has one.
     private var sentTopClearance: CGFloat = -1
@@ -527,27 +528,32 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         }
     }
 
-    private func selectContent(_ viewController: UIViewController) {
-        if viewController is NativeTabContentHost {
-            content.view.isHidden = false
-            layoutContent(in: viewController)
-        } else {
-            showSelectedContent()
-        }
-        guard !configuring, let id = hosts.first(where: { $0.value === viewController })?.key else { return }
+    private func selectContent(id: String) {
+        guard !configuring, let host = hosts[id] else { return }
+        content.view.isHidden = false
+        layoutContent(in: host)
+        // UIKit can deliver both delegate callbacks for one interaction.
+        // Coalesce them without suppressing a later re-tap of the active tab
+        // (Shelf uses that gesture to leave the bookstore catalogue).
+        guard selectionThisTurn != id else { return }
+        selectionThisTurn = id
         requestedSelection = id
         onSelect?(id)
+        DispatchQueue.main.async { [weak self] in
+            self?.selectionThisTurn = nil
+        }
     }
 
     @available(iOS 18.0, *)
     func tabBarController(_ tabBarController: UITabBarController, didSelectTab selectedTab: UITab, previousTab: UITab?) {
-        if let host = selectedTab.viewController { selectContent(host) }
+        // The tab identifier is the route; controller loading and identity
+        // must not determine whether the web screen receives navigation.
+        selectContent(id: selectedTab.identifier)
     }
 
     func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
-        // Modern tabs deliver their own selection callback.
-        if #available(iOS 18.0, *) { return }
-        selectContent(viewController)
+        guard let id = hosts.first(where: { $0.value === viewController })?.key else { return }
+        selectContent(id: id)
     }
 }
 
