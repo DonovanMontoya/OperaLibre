@@ -49,10 +49,14 @@ The web app obtains a session token and a separate scoped media token via `POST 
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/update` | Compare the running version with the latest GitHub release. Admin only. Add `?refresh=true` to bypass the 15-minute metadata cache. |
+| `GET` | `/api/update` | Compare the running version with the selected stable or nightly release. Admin only. Add `?refresh=true` to bypass the 15-minute metadata cache. |
+| `GET` | `/api/update/channel` | Read the saved `channel` (`"stable"` or `"nightly"`) and running `currentVersion`. Admin only; does not contact GitHub. |
+| `PUT` | `/api/update/channel` | Save `{ "channel": "stable" }` or `{ "channel": "nightly" }` and clear update caches. Owner only. Refused during installation; does not install or restart. |
 | `POST` | `/api/update/install` | Download, verify, and stage the platform update, then restart a release-package installation (combined or server-only). Owner only. |
 
-The status response reports `currentVersion`, `latestVersion`, `updateAvailable`, `canAutoUpdate`, `platform`, release details, and a message when manual installation is required. `lastUpdateResult` is a nullable human-readable result of the last completed managed update, refreshed from disk even when release metadata is cached; failures include rollback details. Automatic installation preserves user data, the audiobook library, and `server.config`; the external updater performs replacement and rollback after the server exits. Combined installations also receive the bundled web app and refreshed launchers; server-only installations (including those pointing `web_dist_dir` at a custom frontend) leave the frontend untouched and refresh their server and platform launch helpers.
+The status response reports `channel`, `currentChannel`, `currentVersion`, `latestVersion`, `updateAvailable`, `canAutoUpdate`, `platform`, release details, and a message when manual installation is required. `lastUpdateResult` is a nullable human-readable result of the last completed managed update, refreshed from disk even when release metadata is cached; failures include rollback details. Automatic installation preserves user data, the audiobook library, and `server.config`; the external updater performs replacement and rollback after the server exits. Combined installations also receive the bundled web app and refreshed launchers; server-only installations (including those pointing `web_dist_dir` at a custom frontend) leave the frontend untouched and refresh their server and platform launch helpers.
+
+Install requests may include `{ "channel": "nightly", "version": "0.5.1-nightly.20260927.123" }` to pin the selection the owner reviewed. A changed channel or target version refuses the request before staging. Requests without a body remain compatible with older clients. Switching channels can offer an older version; the server checks the signed data-compatibility declaration before installation. Incompatible targets have `canAutoUpdate: false` and an explanatory `message`.
 
 #### Web frontend updates
 

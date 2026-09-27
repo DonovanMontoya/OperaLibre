@@ -1713,6 +1713,7 @@ async fn progress_is_private_to_each_user() {
 /// Owner-only routes, as `(method, path)`.
 const OWNER_ONLY_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/update/install"),
+    ("PUT", "/api/update/channel"),
     ("POST", "/api/frontend-update/install"),
     ("POST", "/api/experimental-features/readalong-sync/install"),
     ("PUT", "/api/experimental-features/readalong-sync/enabled"),
@@ -1726,6 +1727,7 @@ const OWNER_ONLY_ROUTES: &[(&str, &str)] = &[
 /// A wrong path here cannot silently pass: an unmatched route answers 404 from
 /// the API catch-all, which fails the 403 assertion.
 const ADMIN_ONLY_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/update/channel"),
     ("GET", "/api/sync-schedules"),
     ("GET", "/api/sync-sweep"),
     ("PUT", "/api/sync-sweep"),
@@ -4898,4 +4900,55 @@ async fn successful_login_keeps_the_address_throttle() {
     );
     assert!(!attempts.contains_key(&mallory.account));
     assert!(!attempts.contains_key(&mallory.username));
+}
+
+#[tokio::test]
+async fn update_channel_is_persistent_and_invalid_channels_are_rejected() {
+    let server = TestServer::start(0).await;
+    let owner = server.setup_owner().await;
+    assert_eq!(
+        server.get("/api/update/channel", &owner).await.json()["channel"],
+        "stable"
+    );
+    let changed = server
+        .send_json(
+            "PUT",
+            "/api/update/channel",
+            &owner,
+            serde_json::json!({"channel": "nightly"}),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text());
+    let reloaded = updates::UpdateManager::new(
+        server.state.database_path.parent().unwrap().to_path_buf(),
+        None,
+        4000,
+    )
+    .unwrap();
+    assert_eq!(
+        reloaded.channel().await.unwrap(),
+        update_channel::UpdateChannel::Nightly
+    );
+    let invalid = server
+        .send_json(
+            "PUT",
+            "/api/update/channel",
+            &owner,
+            serde_json::json!({"channel": "preview"}),
+        )
+        .await;
+    assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        server.get("/api/update/channel", &owner).await.json()["channel"],
+        "nightly"
+    );
+    let reverted = server
+        .send_json(
+            "PUT",
+            "/api/update/channel",
+            &owner,
+            serde_json::json!({"channel": "stable"}),
+        )
+        .await;
+    assert_eq!(reverted.status, StatusCode::OK);
 }

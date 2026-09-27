@@ -79,6 +79,10 @@ pub struct Manifest {
     schema: u64,
     pub version: String,
     #[serde(default)]
+    pub data_compatibility: Option<crate::update_channel::DataCompatibility>,
+    #[serde(default)]
+    pub stable_version: Option<String>,
+    #[serde(default)]
     pub published: Option<String>,
     pub release_url: String,
     #[serde(default)]
@@ -342,8 +346,17 @@ pub async fn fetch_manifest(
     component: &str,
     installed: Option<&Version>,
 ) -> anyhow::Result<Manifest> {
+    fetch_manifest_from(client, MANIFEST_URL, component, installed).await
+}
+
+pub async fn fetch_manifest_from(
+    client: &Client,
+    initial_url: &str,
+    component: &str,
+    installed: Option<&Version>,
+) -> anyhow::Result<Manifest> {
     let root = TrustedRoot::built_in()?;
-    let mut url = MANIFEST_URL.to_string();
+    let mut url = initial_url.to_string();
     for _ in 0..MAX_MANIFEST_HOPS {
         let bytes = download_manifest(client, &url).await?;
         let manifest = verify_manifest(&bytes, &root)?;

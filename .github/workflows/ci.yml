@@ -84,6 +84,8 @@ jobs:
         run: |
           node --test script/package_release.test.mjs
           node --test script/release_signing.test.mjs
+          node --test script/resolve_release.test.mjs
+          node --test script/publish_release.test.mjs
           python3 script/test_installer_login.py
 
       - name: Install dependencies
