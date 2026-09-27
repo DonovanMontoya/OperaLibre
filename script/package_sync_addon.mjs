@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
+import { patchEmptyTimeline } from "../addons/readalong-sync/patch-runtime.mjs";
 
 function argumentsFrom(argv) {
   const options = {};
@@ -63,6 +64,7 @@ async function main() {
   await cp(path.join(runtimeRoot, "node_modules"), path.join(output, "node_modules"), {
     recursive: true
   });
+  await patchEmptyTimeline(path.join(output, "node_modules/echogarden/dist/utilities/Timeline.js"));
   await copyFile(process.execPath, path.join(output, "runtime", nodeName));
   await copyFile("LICENSE.md", path.join(output, "LICENSE.md"));
   await copyFile(await findNodeLicense(), path.join(output, "NODE-LICENSE.txt"));
