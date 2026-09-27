@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyNativePlaybackSettings, hasPlaybackSource, nativeLoadShouldAutoplay, nativeReattachPosition, nativeStartupPosition, startAfterListeners } from "../src/nativeAudioStartup.ts";
+import { applyNativePlaybackSettings, hasPlaybackSource, nativeLoadShouldAutoplay, nativeStartupPosition, startAfterListeners } from "../src/nativeAudioStartup.ts";
 
 test("a restored seek wins over the uninitialized web clock", () => {
   assert.equal(nativeStartupPosition(3600, 0), 3600);
@@ -9,20 +9,6 @@ test("a restored seek wins over the uninitialized web clock", () => {
   assert.equal(nativeStartupPosition(undefined, NaN), 0);
 });
 
-test("a queue rebuild after restore reloads where the previous attachment stopped", () => {
-  // The restore's seek was consumed by the first load; the bare element reads 0.
-  const detached = { bookId: "book", trackId: "track-1", positionSeconds: 9_812.4 };
-  const startup = (pending: number | undefined) =>
-    nativeStartupPosition(pending ?? nativeReattachPosition(detached, "book", "track-1"), 0);
-  assert.equal(startup(undefined), 9_812.4);
-  // A seek queued meanwhile still wins.
-  assert.equal(startup(1_200), 1_200);
-  // Another track or book starts from its own pending seek, not this clock.
-  assert.equal(nativeReattachPosition(detached, "book", "track-2"), undefined);
-  assert.equal(nativeReattachPosition(detached, "other", "track-1"), undefined);
-  assert.equal(nativeReattachPosition(null, "book", "track-1"), undefined);
-  assert.equal(nativeReattachPosition({ ...detached, positionSeconds: NaN }, "book", "track-1"), undefined);
-});
 
 test("native play and pause remain available with a source-free web clock", () => {
   const audio = { getAttribute: (_name: string) => null };

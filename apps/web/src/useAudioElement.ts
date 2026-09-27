@@ -1,11 +1,11 @@
-import { type Dispatch, type RefObject, type SetStateAction, useEffect, useRef } from "react";
+import { type Dispatch, type RefObject, type SetStateAction, useEffect } from "react";
 import {
   attachNativeAudioPlayer,
+  forgetDetachedNativeClock,
   type NativeAudioQueueTrack,
   releaseNativeAudioSession,
   setNativeAudioGain
 } from "./nativeAudio";
-import { type DetachedNativeClock, nativeReattachPosition } from "./nativeAudioStartup";
 import { playbackEventOwnsPendingPlay, playbackIntentBelongsToBook } from "./playbackPending";
 import { nativeAudioRecoveryScope } from "./appStorage";
 import { trackOffsetSeconds } from "./formatting";
@@ -127,23 +127,21 @@ export function useAudioElement({
     audioRef.current.playbackRate = speed;
   }, [audioRef, speed, currentTrackKey, nativeAudio]);
 
-  const detachedNativeClockRef = useRef<DetachedNativeClock | null>(null);
-
   useEffect(() => {
     const audio = audioRef.current;
     if (!nativeAudio) return;
     if (carPlaybackBookId) {
-      // The car keeps playing past this clock; taking over resumes from its checkpoint.
-      detachedNativeClockRef.current = null;
       // CarPlay is driving the shared player. Attaching would load this app's
       // book over the driver's, and the next detach would stop it outright.
       // The element stays muted so nothing here can be heard over the car.
-      if (audio) audio.muted = true;
+      if (audio) {
+        audio.muted = true;
+        forgetDetachedNativeClock(audio);
+      }
       nativeAudioAttachedRef.current = false;
       return;
     }
     if (!audio || !playbackBook || !currentTrack) {
-      detachedNativeClockRef.current = null;
       // The player closed. The attach cleanup keeps the audio session so a
       // track change does not hand audio to other apps between chapters;
       // nothing follows this time, so give the session up. Skipped on the
@@ -160,13 +158,7 @@ export function useAudioElement({
     // when slower filesystem checks for later chapters completed.
     if (!nativeAudioQueueReady) return;
     nativeAudioAttachedRef.current = true;
-    const resumePosition = nativeReattachPosition(
-      detachedNativeClockRef.current,
-      playbackBook.id,
-      currentTrack.id
-    );
-    detachedNativeClockRef.current = null;
-    const detach = attachNativeAudioPlayer(
+    return attachNativeAudioPlayer(
       audio,
       (message) => {
         setPlaybackError(message);
@@ -195,7 +187,6 @@ export function useAudioElement({
         queue: () => nativeAudioQueueRef.current,
         pendingPosition: () => pendingSeekRef.current?.trackId === currentTrack.id
           ? pendingSeekRef.current.positionSeconds : undefined,
-        resumePosition,
         wantsPlayback: () => playbackIntentBelongsToBook(
           playPendingRef.current,
           playPendingBookIdRef.current,
@@ -254,15 +245,6 @@ export function useAudioElement({
         foregroundProgressSyncRef.current?.nativeStateSynchronized();
       }
     );
-    return () => {
-      // Read before detaching, while currentTime is still AVPlayer's clock.
-      detachedNativeClockRef.current = {
-        bookId: playbackBook.id,
-        trackId: currentTrack.id,
-        positionSeconds: audio.currentTime
-      };
-      detach();
-    };
     // Attaching rebuilds the AVPlayer queue, so this is keyed on identity:
     // playbackBook, currentTrack and activeTrackIndex through their ids, and
     // functions with render state go through refs above. setPlayPending

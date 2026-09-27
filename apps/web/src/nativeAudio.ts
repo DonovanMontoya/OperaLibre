@@ -48,8 +48,6 @@ type NativeAudioRecoveryIdentity = {
   bookOffsetSeconds: number;
   queue: () => NativeAudioQueueTrack[];
   pendingPosition: () => number | undefined;
-  /** Where the previous attachment for this track stopped, used when no seek is pending. */
-  resumePosition?: number;
   /** Whether a Play request is still waiting for this native load. */
   wantsPlayback: () => boolean;
   /**
@@ -129,6 +127,22 @@ interface NativeAudioPlugin {
 }
 
 const NativeAudio = registerPlugin<NativeAudioPlugin>("NativeAudio");
+
+/**
+ * Where each control element's last attachment left AVPlayer. The clock dies
+ * on detach and the bare element it leaves behind reads 0:00, so a queue
+ * rebuild for the same track after restore (the download scan or the media
+ * credential landing late) would otherwise reload at the opening credits.
+ */
+const detachedClocks = new WeakMap<
+  HTMLAudioElement,
+  { scopeKey: string; trackId: string; positionSeconds: number }
+>();
+
+/** CarPlay kept playing past this element's clock; its checkpoint owns the resume. */
+export function forgetDetachedNativeClock(audio: HTMLAudioElement) {
+  detachedClocks.delete(audio);
+}
 
 /**
  * Tearing the player down is the app's to do only while the app is the one
@@ -243,10 +257,19 @@ export function attachNativeAudioPlayer(
 ) {
   if (!usesNativeAudioPlayer()) return () => undefined;
 
+  const detached = detachedClocks.get(audio);
+  detachedClocks.delete(audio);
+  // A pending seek still wins; the carried clock only replaces the bare 0:00.
+  const resumePosition = detached
+    && detached.scopeKey === recovery.scopeKey
+    && detached.trackId === recovery.trackId
+    && Number.isFinite(detached.positionSeconds)
+    ? detached.positionSeconds
+    : undefined;
   const controlClock = new NativeAudioControlClock(
     audio,
     recovery.source,
-    nativeStartupPosition(recovery.pendingPosition() ?? recovery.resumePosition, audio.currentTime)
+    nativeStartupPosition(recovery.pendingPosition() ?? resumePosition, audio.currentTime)
   );
   let disposed = false;
   let endedFromNative = false;
@@ -465,6 +488,12 @@ export function attachNativeAudioPlayer(
   });
 
   return () => {
+    // Read before the clock is destroyed, while currentTime is still AVPlayer's.
+    detachedClocks.set(audio, {
+      scopeKey: recovery.scopeKey,
+      trackId: recovery.trackId,
+      positionSeconds: audio.currentTime
+    });
     disposed = true;
     audio.removeEventListener("ratechange", rateChange);
     audio.removeEventListener("volumechange", volumeChange);
