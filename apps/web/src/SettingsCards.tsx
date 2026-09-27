@@ -184,23 +184,15 @@ export function BookStoreSettings({
 
 export function ExtrasSettings({
   followAggressiveness,
-  followSyncEnabled,
   gamesEnabled,
-  readalongEnabled,
   sentenceFollowAvailable,
-  toggleFollowSyncEnabled,
   toggleGamesEnabled,
-  toggleReadalongEnabled,
   updateFollowAggressiveness
 }: {
   followAggressiveness: FollowAggressiveness;
-  followSyncEnabled: boolean;
   gamesEnabled: boolean;
-  readalongEnabled: boolean;
   sentenceFollowAvailable: boolean;
-  toggleFollowSyncEnabled: () => void;
   toggleGamesEnabled: () => void;
-  toggleReadalongEnabled: () => void;
   updateFollowAggressiveness: (value: FollowAggressiveness) => void;
 }) {
   return (
@@ -222,69 +214,37 @@ export function ExtrasSettings({
           <span aria-hidden="true" />
         </button>
       </div>
-      <div className="settings-toggle-row">
-        <span>
-          <strong>Ebook reader (beta)</strong>
-          <small>Read the included ebook and extras while you listen. Still in development, so it is off by default.</small>
-        </span>
-        <button
-          type="button"
-          className="settings-switch"
-          role="switch"
-          aria-checked={readalongEnabled}
-          aria-label="Ebook reader"
-          onClick={toggleReadalongEnabled}
-        >
-          <span aria-hidden="true" />
-        </button>
-      </div>
-      {readalongEnabled && sentenceFollowAvailable ? (
-        <div className="settings-subrow settings-follow-group">
+      {sentenceFollowAvailable ? (
+        <div className="settings-follow-group">
           <div className="settings-toggle-row">
             <span>
-              <strong>Follow the narration</strong>
-              <small>Highlights the sentence being read and turns the page with the audio.</small>
-              <small className="settings-warning">
-                Experimental: the highlight can drift, and turning it on may move the page to match
-                the audio while you read.
-              </small>
+              <strong>Follow timing</strong>
+              <small>Press Follow in the ebook to follow the narration. The reader remembers your choice.</small>
             </span>
-            <button
-              type="button"
-              className="settings-switch"
-              role="switch"
-              aria-checked={followSyncEnabled}
-              aria-label="Follow the narration"
-              onClick={toggleFollowSyncEnabled}
-            >
-              <span aria-hidden="true" />
-            </button>
           </div>
-          {followSyncEnabled ? (
-            <div className="follow-aggressiveness">
-              <div className="follow-aggressiveness-heading">
-                <label htmlFor="follow-aggressiveness">Aggressiveness</label>
-                <output htmlFor="follow-aggressiveness" aria-live="polite">
-                  {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                </output>
-              </div>
-              <input
-                id="follow-aggressiveness"
-                type="range"
-                min="0"
-                max="2"
-                step="1"
-                value={followAggressiveness}
-                style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-                aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-                onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-              />
-              <div className="follow-aggressiveness-labels" aria-hidden="true">
-                <span>Current timing</span>
-                <span>A little ahead</span>
-              </div>
+          <div className="follow-aggressiveness">
+            <div className="follow-aggressiveness-heading">
+              <label htmlFor="follow-aggressiveness">Aggressiveness</label>
+              <output htmlFor="follow-aggressiveness" aria-live="polite">
+                {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+              </output>
             </div>
-          ) : null}
+            <input
+              id="follow-aggressiveness"
+              type="range"
+              min="0"
+              max="2"
+              step="1"
+              value={followAggressiveness}
+              style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+              aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+              onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+            />
+            <div className="follow-aggressiveness-labels" aria-hidden="true">
+              <span>Current timing</span>
+              <span>A little ahead</span>
+            </div>
+          </div>
         </div>
       ) : null}
     </section>

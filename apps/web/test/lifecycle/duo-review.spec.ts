@@ -11,11 +11,16 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
-async function openShell(page: Page, native: boolean, admin = false) {
+async function openShell(page: Page, native: boolean, admin = false, inProgress = false, books = library(6)) {
   const user = { id: 'review-reader', username: 'Reader', isAdmin: admin, isOwner: admin,
     canApproveLibationRequests: admin, allowedBookIds: null, libationAccess: 'direct',
     shareProgress: false, announceFinishes: false, notifyFinishes: false, createdAt: '1700000000' };
-  const books = library(6);
+  if (inProgress) {
+    books[0].progress = {
+      status: 'inProgress', bookPositionSeconds: 60, durationSeconds: 240,
+      remainingSeconds: 180, percentComplete: 25, updatedAt: '2026-09-26T12:00:00Z'
+    };
+  }
   const writes: string[] = [];
   let connected = false;
   await page.addInitScript(() => {
@@ -42,6 +47,21 @@ async function openShell(page: Page, native: boolean, admin = false) {
   await expect(page.locator('.book-row')).toHaveCount(6);
   return { books, writes };
 }
+
+test('native phone shelf shows in-progress books and resumes playback', async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  const { books } = await openShell(page, true, false, true);
+  const shelf = page.getByRole('region', { name: 'Continue Reading' });
+  await expect(shelf).toBeVisible();
+  const resume = shelf.getByRole('button', { name: `Continue reading ${books[0].title}` });
+  await expect(resume).toBeVisible();
+  await expect(resume).toHaveCSS('border-radius', '14px');
+  await expect(shelf.locator('.continue-reading-meter')).toHaveCSS('border-radius', '999px');
+  await expect(shelf.getByRole('button')).toHaveCount(1);
+  await resume.click();
+  await expect(page.locator('.native-shell')).toHaveClass(/tab-reading/);
+  await expect(page.getByRole('region', { name: 'Now playing' })).toBeVisible();
+});
 
 test('web readers can connect Libro.fm without native Settings', async ({ page }) => {
   const { writes } = await openShell(page, false);
@@ -101,6 +121,32 @@ test('web book details offer one primary playback action', async ({ page }) => {
   await expect(play).toBeVisible();
 });
 
+for (const native of [false, true]) {
+  test(`${native ? 'native' : 'web'} full book page from Now Playing uses the library details view`, async ({ page }) => {
+    const { books } = await openShell(page, native);
+    await page.locator('.book-row').first().click();
+    await page.getByRole('button', { name: `Play ${books[0].title}`, exact: true }).click();
+    await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+    await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+
+    await expect(page.locator('.details-sheet')).toHaveCount(0);
+    await expect(page.locator('.book-heading h2')).toHaveText(books[0].title);
+    for (const selector of ['.track-line', '.transport', '.timeline', '.controls-grid']) {
+      await expect(page.locator(`.player-pane > ${selector}`)).toBeHidden();
+    }
+    if (native) {
+      await expect(page.locator('.native-shell')).toHaveClass(/tab-shelf.*library-book-open/);
+      await expect(page.getByRole('button', { name: 'Back to Library', exact: true })).toBeVisible();
+    } else {
+      await expect(page.locator('.book-colophon')).toBeVisible();
+      const returnToPlayer = page.getByRole('button', { name: 'Return to Now Playing', exact: true });
+      await expect(returnToPlayer).toBeVisible();
+      await returnToPlayer.click();
+      await expect(page.getByRole('region', { name: 'Now playing', exact: true })).toBeVisible();
+    }
+  });
+}
+
 test('web Back to Now Playing carries the page through a view transition', async ({ page }) => {
   await page.addInitScript(() => {
     const transitions = (window as unknown as { transitionCount: number });
@@ -151,4 +197,166 @@ test('native Libro.fm settings show failed background refreshes', async ({ page 
   await page.getByText('Manage connected accounts (1)', { exact: true }).click();
   await page.getByRole('button', { name: 'Refresh all accounts', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Libro.fm connection expired. Reconnect your account.' })).toBeVisible();
+});
+
+const longCast = Array.from({ length: 24 }, (_, i) => `Narrator ${i + 1} Example`).join(', ');
+
+async function foldDetails(page: Page, posture: 'closed' | 'half-open' | 'flat') {
+  await page.setViewportSize(posture === 'closed' ? { width: 466, height: 678 } : { width: 951, height: 669 });
+  // WKWebView puts the overlay scroll indicator at the safe-area edge, not
+  // necessarily at the viewport edge. Include the native trailing rail.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { right: posture === 'closed' ? 0 : 84 } });
+  await cdp.detach();
+  await page.evaluate(async posture => {
+    const root = document.documentElement;
+    root.classList.toggle('side-rail', posture !== 'closed');
+    for (const [name, value] of Object.entries({ '--rail-x': '867px', '--rail-width': '84px',
+      '--rail-top': '120px', '--rail-bottom': '380px' })) root.style.setProperty(name, value);
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, { posture, angle: posture === 'closed' ? 0 : posture === 'flat' ? 180 : 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: posture !== 'closed' } });
+  }, posture);
+  await expect(page.locator('html')).toHaveAttribute('data-fold-posture', posture);
+}
+
+async function expectCompactDetails(page: Page) {
+  const heading = page.locator('.book-heading');
+  await expect(async () => {
+    const cover = await heading.locator('.large-cover').boundingBox();
+    const title = await heading.locator('h2').boundingBox();
+    const credits = await heading.locator('.book-credits').boundingBox();
+    const runtime = await heading.locator('.book-runtime').boundingBox();
+    const play = await heading.locator('.book-quick-start').boundingBox();
+    const actions = await heading.locator('.heading-actions').boundingBox();
+    expect(cover && title && credits && runtime && play && actions).toBeTruthy();
+    expect(title!.x).toBeGreaterThan(cover!.x + cover!.width);
+    expect(credits!.x).toBeCloseTo(title!.x, 0);
+    expect(title!.y).toBeLessThan(cover!.y + cover!.height);
+    expect(play!.y).toBeGreaterThanOrEqual(Math.max(cover!.y + cover!.height, runtime!.y + runtime!.height) - 1);
+    expect(actions!.y).toBeGreaterThanOrEqual(play!.y + play!.height - 1);
+    expect(actions!.x).toBeCloseTo(cover!.x, 0);
+    expect(actions!.width).toBeGreaterThan(cover!.width * 2);
+    if (await page.locator('html.side-rail').count()) {
+      const pane = page.locator('.native-shell > .player-pane');
+      const bounds = (await pane.boundingBox())!;
+      // Measure actual content clearance; scrollbar-gutter alone does not
+      // reserve space for WebKit's overlay indicator inside the safe area.
+      const indicatorEdge = bounds.x + bounds.width - 84;
+      expect(indicatorEdge - (play!.x + play!.width)).toBeGreaterThanOrEqual(12);
+      expect(indicatorEdge - (actions!.x + actions!.width)).toBeGreaterThanOrEqual(12);
+      await expect(pane).toHaveCSS('overflow-y', 'auto');
+    }
+  }).toPass({ timeout: 5000 });
+  await expect(heading.locator('.heading-actions')).toHaveCSS('display', 'grid');
+}
+
+for (const playing of [false, true]) {
+  test(`Duo credits and compact grid survive fold transitions with playback ${playing ? 'present' : 'absent'}`, async ({ page }, testInfo) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 466, height: 678 });
+    const books = library(6);
+    books[0].narrator = longCast;
+    await openShell(page, true, false, false, books);
+    await foldDetails(page, 'closed');
+    await page.locator('.book-row').nth(playing ? 1 : 0).click();
+    if (playing) {
+      await page.getByRole('button', { name: `Play ${books[1].title}`, exact: true }).click();
+      await page.locator('.native-now-utility').getByRole('button', { name: 'Details', exact: true }).click();
+      await page.getByRole('button', { name: 'Full book page', exact: true }).click();
+      await page.getByRole('button', { name: 'Back to Library', exact: true }).click();
+      await page.locator('.book-row').first().click();
+    }
+    for (const posture of ['closed', 'half-open', 'flat', 'closed'] as const) {
+      await foldDetails(page, posture);
+      await expectCompactDetails(page);
+      const toggle = page.getByRole('button', { name: /^Show all narrators/ });
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      const narrator = page.locator('.book-narrator:not(.book-narrator-measure)');
+      await expect(narrator).toHaveAttribute('id', (await toggle.getAttribute('aria-controls'))!);
+      const collapsed = (await narrator.boundingBox())!.height;
+      const lineHeight = await narrator.evaluate(el => parseFloat(getComputedStyle(el).lineHeight));
+      expect(collapsed).toBeCloseTo(lineHeight * 2, 0);
+      if (!playing) await page.screenshot({ path: testInfo.outputPath(`${posture}-collapsed.png`) });
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      const less = page.getByRole('button', { name: /^Show less/ });
+      await expect(less).toHaveAttribute('aria-expanded', 'true');
+      expect((await narrator.boundingBox())!.height).toBeGreaterThan(collapsed);
+      await expect(page.locator('.book-author')).toHaveText(books[0].author!);
+      await expectCompactDetails(page);
+      if (posture !== 'closed') {
+        const pane = page.locator('.native-shell > .player-pane');
+        await pane.evaluate(el => { el.scrollTop = el.scrollHeight; });
+        expect(await pane.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+        await expectCompactDetails(page);
+        await pane.evaluate(el => { el.scrollTop = 0; });
+      }
+      if (!playing) await page.screenshot({ path: testInfo.outputPath(`${posture}-expanded.png`) });
+      await less.click();
+      await expect(toggle).toBeVisible();
+    }
+  });
+}
+
+for (const native of [true, false]) {
+  test(`${native ? 'tall phone' : 'desktop'} credits disclose only overflow and reset between books`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize(native ? { width: 393, height: 852 } : { width: 1440, height: 900 });
+    const books = library(6);
+    books[0].narrator = longCast;
+    books[2].author = null; books[2].narrator = null;
+    books[3].author = null;
+    books[4].narrator = null;
+    await openShell(page, native, false, false, books);
+    let selected = false;
+    async function select(index: number) {
+      if (native && selected) {
+        await page.getByRole('button', { name: 'Back to Library', exact: true }).click();
+      }
+      await page.locator('.book-row').nth(index).click();
+      await expect(page.locator('.book-heading h2')).toHaveText(books[index].title);
+      selected = true;
+    }
+    await select(0);
+    await page.getByRole('button', { name: /^Show all narrators/ }).click();
+    await expect(page.getByRole('button', { name: /^Show less/ })).toBeVisible();
+    const cover = (await page.locator('.book-heading .large-cover').boundingBox())!;
+    const title = (await page.locator('.book-heading h2').boundingBox())!;
+    if (native) expect(title.y).toBeGreaterThanOrEqual(cover.y + cover.height);
+    else expect(title.x).toBeGreaterThan(cover.x + cover.width);
+    await select(1);
+    await expect(page.locator('.book-credits-toggle')).toHaveCount(0);
+    await expect(page.locator('.book-author')).toHaveText(books[1].author!);
+    await expect(page.locator('.book-narrator:not(.book-narrator-measure)')).toHaveText(`Narrated by ${books[1].narrator}`);
+    await select(0);
+    await expect(page.getByRole('button', { name: /^Show all narrators/ })).toHaveAttribute('aria-expanded', 'false');
+    for (const index of [2, 3, 4]) {
+      await select(index);
+      await expect(page.locator('.book-credits-toggle')).toHaveCount(0);
+      if (index === 2) await expect(page.locator('.book-credits')).toHaveText('2 tracks');
+      if (index === 3) await expect(page.locator('.book-author')).toHaveCount(0);
+      if (index === 4) await expect(page.locator('.book-narrator')).toHaveCount(0);
+    }
+  });
+}
+
+test('credits remeasure width and font changes even while expanded or hidden', async ({ page }) => {
+  await page.setViewportSize({ width: 466, height: 678 });
+  const books = library(6);
+  books[0].narrator = 'Alice Example, Bob Example, Carol Example, David Example';
+  await openShell(page, true, false, false, books);
+  await page.locator('.book-row').first().click();
+  const credits = page.locator('.book-credits');
+  await credits.evaluate(el => { el.style.width = '110px'; });
+  await page.getByRole('button', { name: /^Show all narrators/ }).click();
+  await credits.evaluate(el => { el.style.display = 'none'; });
+  await page.setViewportSize({ width: 480, height: 678 });
+  await credits.evaluate(el => { el.style.display = ''; el.style.width = '600px'; });
+  await expect(page.locator('.book-credits-toggle')).toHaveCount(0);
+  await credits.evaluate(el => { el.style.fontSize = '60px'; });
+  await expect(page.getByRole('button', { name: /^Show all narrators/ })).toBeVisible();
+  await credits.evaluate(el => { el.style.fontSize = '10px'; document.fonts.dispatchEvent(new Event('loadingdone')); });
+  await expect(page.locator('.book-credits-toggle')).toHaveCount(0);
 });

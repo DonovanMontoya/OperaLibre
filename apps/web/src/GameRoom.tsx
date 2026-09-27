@@ -443,6 +443,7 @@ function ChapterMatch() {
     </div>
     <div className="match-record"><span>Best cascade</span><strong>{bestCascade}</strong></div>
     <div className="match-score"><span>{busy ? "Resolving" : "Score"}</span><strong className={scorePulse ? "score-bump" : ""} key={scorePulse}>{score.toLocaleString()}</strong></div>
+    <div className="match-play-area">
     <div className="match-board-frame"><div className={`match-board ${busy ? "busy" : ""} ${arriving ? "arriving" : ""}`} role="grid" aria-label="Matching board" aria-busy={busy}>
       {board.map((row, rowIndex) => row.map((kind, colIndex) => {
         const cell = { row: rowIndex, col: colIndex };
@@ -540,6 +541,7 @@ function ChapterMatch() {
     {/* The live region stays mounted so screen readers announce updates; only
         the inner span remounts, to restart its entrance animation. */}
     <p className="game-message" aria-live="polite"><span className="match-message" key={statusTick}>{message}</span></p>
+    </div>
   </section>;
 }
 

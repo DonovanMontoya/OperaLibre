@@ -1,7 +1,7 @@
 import type { usePurchases } from "./usePurchases";
 import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
-import { AlertCircle, BookOpen, LocateFixed, LogOut, ScrollText, UserCog } from "lucide-react";
+import { AlertCircle, LogOut, ScrollText, UserCog } from "lucide-react";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
 import type { AuthUser } from "./types";
@@ -53,14 +53,10 @@ export function renderUserMenu({
   } = purchases;
   const {
     followAggressiveness,
-    followSyncEnabled,
-    readalongEnabled,
-    toggleFollowSyncEnabled,
     updateFollowAggressiveness
   } = readerPreferences;
   const {
-    sentenceFollowAvailable,
-    toggleReadalongEnabled
+    sentenceFollowAvailable
   } = readalong;
 
   return (
@@ -119,28 +115,7 @@ export function renderUserMenu({
           <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
-      {capabilities.readingFiles ? (
-        <button
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={readalongEnabled}
-          onClick={toggleReadalongEnabled}
-        >
-          <BookOpen size={14} /> Ebook reader: {readalongEnabled ? "On" : "Off"} (beta)
-        </button>
-      ) : null}
-      {readalongEnabled && sentenceFollowAvailable ? (
-        <button
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={followSyncEnabled}
-          onClick={toggleFollowSyncEnabled}
-          title="Experimental: the highlight can drift and may move the page to match the audio."
-        >
-          <LocateFixed size={14} /> Follow narration: {followSyncEnabled ? "On" : "Off"} (experimental)
-        </button>
-      ) : null}
-      {!native && readalongEnabled && sentenceFollowAvailable && followSyncEnabled ? (
+      {!native && sentenceFollowAvailable ? (
         <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
           <div>
             <label id="menu-follow-aggressiveness-label" htmlFor="menu-follow-aggressiveness">
