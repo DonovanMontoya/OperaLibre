@@ -50,19 +50,30 @@ def reference_checks(recognized, sections, offset):
         for at in range(len(own)-n+1):
             phrase = tuple(own[at:at+n])
             if phrase in phrases:
-                locations[phrase].append((section_index, at + n // 2))
-    checks = []
+                locations[phrase].append((section_index, at))
+    supported = defaultdict(set)
+    evidence = {}
     for i in range(len(recognized)-n+1):
         phrase = tuple(w['text'] for w in recognized[i:i+n])
         found = locations.get(phrase, [])
         if len(found) != 1:
             continue
         section, token = found[0]
-        w = recognized[i+n//2]
+        for step in range(n):
+            supported[i+step].add((section, token+step))
+            evidence.setdefault(i+step, ' '.join(phrase))
+    checks = []
+    for i, found in sorted(supported.items()):
+        # Overlapping phrases can prove the same word, but never count it
+        # twice or resolve conflicting locations using the production map.
+        if len(found) != 1:
+            continue
+        section, token = next(iter(found))
+        w = recognized[i]
         checks.append({'at': offset + (w['start'] + w['end']) / 2,
                        'referenceStart': offset + w['start'], 'referenceEnd': offset + w['end'],
                        'section': section, 'href': sections[section]['href'], 'token': token,
-                       'phrase': ' '.join(phrase)})
+                       'phrase': evidence[i]})
     return checks
 
 
@@ -116,8 +127,14 @@ def score(value, checks, sections, selected=None, nearby=None):
                    if si == check['section'] and start <= check['token'] < end]
         sentence = len(active) == 1 and len(correct) == 1 and len(positions[active[0][0]]) == 1
         word_error = None
-        if sentence:
-            _, fragment, start = correct[0]
+        timed_candidates = [(f, start) for i, f in enumerate(value['fragments'])
+                            if len(positions[i]) == 1 for si, start, end in positions[i]
+                            if si == check['section'] and start <= check['token'] < end]
+        if len(timed_candidates) == 1:
+            # Measure the expected word's clock even when the sentence is
+            # currently wrong. Otherwise the largest delays disappear from
+            # the timing distribution and masquerade as missing evidence.
+            fragment, start = timed_candidates[0]
             # UTF-16 offsets are the reader's actual indexing contract.
             encoded = fragment['text'].encode('utf-16-le')
             for a, b, off, size in fragment.get('words', []):
@@ -268,7 +285,7 @@ def compare(plan_path, reference_path, run, output):
                 own=score(value,checks,sections,reader_selection(value,checks),nearby_reader_selection(value,checks))
                 own['structuralErrors']=errors
                 if errors: own['status']='invalid-map'
-                own.update(index=index,recognizedWords=len(raw),referenceCoverage=len(checks)/max(1,len(raw)-7))
+                own.update(index=index,recognizedWords=len(raw),referenceCoverage=len(checks)/max(1,len(raw)))
                 if own['status']=='passed' and own['referenceCoverage'] < .5:
                     own['status']='insufficient-reference'
                 row['scopes'].append(own)

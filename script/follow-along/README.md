@@ -156,7 +156,11 @@ npm run test:follow:library -- \
 The library runner generates an independent `small.en` transcription of a frozen
 minute in each sample before generating that book's production map. The reference
 never reads production recognition or maps. Unique eight-word phrases locate
-reference words in the EPUB. The audit invokes the production reader selector
+reference words in the EPUB. Every word proved by a unique phrase is checked
+once; overlapping phrases with conflicting locations remain unverified. Timing
+errors are measured even when the expected sentence is not currently active,
+so late highlights cannot hide their worst clocks by losing timing coverage.
+The audit invokes the production reader selector
 under Node 22+ with no anticipatory lead, including its pause and recovery rules.
 It reports exact reader agreement and raw sentence overlap separately from a
 bounded score allowing 150 ms of sentence-boundary disagreement. This budget is
