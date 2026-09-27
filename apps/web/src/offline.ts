@@ -579,6 +579,7 @@ export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
 /** A local preview URL; callers release web blob URLs when no longer used. */
 export async function getOfflineCompanionUrl(book: Book, companion: CompanionFile): Promise<string | null> {
   if (Capacitor.isNativePlatform()) {
+    if (companion.localFilePath) return nativeFileUrl(companion.localFilePath);
     await migrateLegacyBookDirectory(book);
     return nativeFileUrl(companionFilePath(book, companion));
   }
@@ -641,6 +642,13 @@ export async function loadCompanionBytes(
   signal?: AbortSignal
 ): Promise<ArrayBuffer> {
   if (Capacitor.isNativePlatform()) {
+    if (companion.localFilePath) {
+      const local = await nativeFileUrl(companion.localFilePath);
+      if (!local) throw new Error("The EPUB is missing from this device.");
+      const response = await fetch(local, { signal });
+      if (!response.ok) throw new Error("The EPUB could not be read from this device.");
+      return response.arrayBuffer();
+    }
     await migrateLegacyBookDirectory(book);
     const path = companionFilePath(book, companion);
     return revalidatedCompanion(url, async () => {

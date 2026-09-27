@@ -116,6 +116,7 @@ export function AudiobookUploadDialog({
 }
 
 export function EbookUploadDialog({
+  chooseDeviceEbookUpload,
   chooseEbookUpload,
   ebookUploadBook,
   ebookUploadBusy,
@@ -125,15 +126,17 @@ export function EbookUploadDialog({
   setEbookUploadBook,
   submitEbookUpload
 }: {
+  chooseDeviceEbookUpload: () => Promise<void>;
   chooseEbookUpload: (event: ChangeEvent<HTMLInputElement>) => void;
   ebookUploadBook: Book;
   ebookUploadBusy: boolean;
   ebookUploadError: string | null;
-  ebookUploadFile: File | null;
+  ebookUploadFile: { name: string } | null;
   native: boolean;
   setEbookUploadBook: Dispatch<SetStateAction<Book | null>>;
   submitEbookUpload: (event: FormEvent) => Promise<void>;
 }) {
+  const onDevice = ebookUploadBook.source === "device";
   return (
     <div className="modal-scrim" role="presentation">
       <form
@@ -159,9 +162,13 @@ export function EbookUploadDialog({
           </button>
         </div>
         <p className="upload-audiobook-hint">
-          Upload the EPUB for <strong>{ebookUploadBook.title}</strong>. It stays beside this audiobook and becomes its reading copy.
+          {onDevice ? "Choose an EPUB for " : "Upload the EPUB for "}<strong>{ebookUploadBook.title}</strong>. It stays beside this audiobook and becomes its reading copy.
         </p>
-        <label className="upload-file-picker">
+        {onDevice ? <button type="button" className="upload-file-picker" disabled={ebookUploadBusy} onClick={() => void chooseDeviceEbookUpload()}>
+          <BookOpen size={22} />
+          <strong>{ebookUploadFile ? ebookUploadFile.name : "Choose EPUB file"}</strong>
+          <span>Unencrypted EPUB · up to 64 MiB</span>
+        </button> : <label className="upload-file-picker">
           <BookOpen size={22} />
           <strong>{ebookUploadFile ? ebookUploadFile.name : "Choose EPUB file"}</strong>
           <span>Unencrypted EPUB · up to 64 MiB</span>
@@ -172,13 +179,13 @@ export function EbookUploadDialog({
             disabled={ebookUploadBusy}
             onChange={chooseEbookUpload}
           />
-        </label>
+        </label>}
         {ebookUploadError ? <p className="metadata-edit-error">{ebookUploadError}</p> : null}
         <div className="metadata-edit-actions">
           <button type="button" disabled={ebookUploadBusy} onClick={() => setEbookUploadBook(null)}>Cancel</button>
           <button type="submit" disabled={ebookUploadBusy || !ebookUploadFile}>
             {ebookUploadBusy ? <LoaderCircle size={15} className="spin-icon" /> : <Upload size={15} />}
-            {ebookUploadBusy ? "Uploading…" : "Add EPUB"}
+            {ebookUploadBusy ? (onDevice ? "Adding…" : "Uploading…") : "Add EPUB"}
           </button>
         </div>
       </form>
