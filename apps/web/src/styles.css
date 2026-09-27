@@ -10084,7 +10084,7 @@ html.native-app .native-shell.tab-shelf.library-book-open .book-credits {
   line-height: 1.22;
 }
 
-html.native-app .native-shell.tab-shelf.library-book-open .book-credits span {
+html.native-app .native-shell.tab-shelf.library-book-open .book-credits > :is(.book-author, .book-narrator):not(.clamped) {
   display: block;
 }
 
@@ -15560,35 +15560,6 @@ html.native-app[data-fold-active][data-fold-axis="vertical"]:not([data-fold-post
   right: max(12px, env(safe-area-inset-right));
 }
 
-/* Each page of the spread is phone-width, too narrow for the tablet's hero
-   of cover beside title. The book's page stacks it instead: cover, then the
-   title and credits across the page's full measure, then its actions. */
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  justify-items: start;
-  gap: 18px;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
-  width: min(180px, 52%);
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading h2 {
-  max-width: none;
-  margin: 6px 0 8px;
-  font-size: clamp(1.7rem, 3vw, 2.3rem);
-  line-height: 1.06;
-}
-
-html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
-  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
-  flex-wrap: wrap;
-}
-
 /* The bar hangs down the side here, not across the bottom, so the fold runs
    the full height of the page rather than stopping short of it. */
 html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .native-shell:is(.tab-shelf, .tab-reading)::after {
@@ -15837,6 +15808,14 @@ html.native-app[data-fold-active][data-fold-posture="half-open"][data-fold-axis=
    the content move into the slot, handing the height back to the page. */
 html.native-app.side-rail .native-shell {
   --mini-player-height: 0px !important;
+}
+
+/* WebKit's overlay scroll indicator sits at the safe-area edge. Give the
+   unfolded book's scrolling content clearance inside that edge as well;
+   scrollbar-gutter alone does not reserve space for overlay scrollbars. */
+html.native-app.side-rail[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open > .player-pane {
+  padding-right: calc(max(var(--fore-edge, 20px), env(safe-area-inset-right)) + 12px);
 }
 
 /* Browsing, the mini player stands in the rail: the book to return to, and
@@ -17777,3 +17756,116 @@ html:not(.native-app) .library-pane.purchase-browsing {
     & .heading-actions { grid-column: 1; grid-row: 7; }
   }
 }
+
+/* Credits own their wrapping: neither desktop ellipsis nor native span rules
+   should clip the author, expanded cast, or the two-line measuring copy. */
+html:not(.native-app) .book-heading .book-credits,
+html.native-app .book-heading .book-credits {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+html .book-heading .book-credits .book-narrator.expandable {
+  display: block;
+}
+
+html .book-heading .book-credits .book-narrator.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+html .book-heading .book-credits .book-narrator-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.book-credits .book-narrator.expandable::before,
+.book-credits .book-narrator-measure::before {
+  content: none;
+}
+
+.book-credits-toggle { display: block; }
+
+/* Unfolded leaves are phone-width, regardless of the full viewport. Keep
+   metadata beside column-sized artwork and give actions the full leaf. */
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading {
+  grid-template-columns: minmax(100px, 35%) minmax(0, 1fr);
+  align-items: start;
+  justify-items: stretch;
+  gap: 8px 16px;
+}
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading :is(.meta, .heading-top) { display: contents; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .large-cover {
+    grid-column: 1;
+    grid-row: 1 / 5;
+    width: 100%;
+    align-self: start;
+  }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .eyebrow { grid-column: 2; grid-row: 1; font-size: 0.58rem; letter-spacing: 0.14em; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading h2 {
+    grid-column: 2;
+    grid-row: 2;
+    max-width: none;
+    margin: 0;
+    font-size: 1.7rem;
+    line-height: 1.08;
+    text-align: left;
+  }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .book-credits {
+    grid-column: 2;
+    grid-row: 3;
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.3;
+    text-align: left;
+  }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .book-runtime { grid-column: 2; grid-row: 4; margin: 0; border: 0; padding: 0; gap: 8px; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .book-runtime-label { font-size: 0.54rem; letter-spacing: 0.12em; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .book-runtime-value { font-size: 1.25rem; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .book-quick-start { grid-column: 1 / -1; grid-row: 5; width: 100%; margin-top: 6px; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions {
+    grid-column: 1 / -1;
+    grid-row: 6;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions .download-btn { min-height: 44px; font-size: 0.62rem; white-space: nowrap; }
+
+html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions > :last-child:nth-child(odd),
+  html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"])
+  .native-shell.tab-shelf.library-book-open .book-heading .heading-actions .download-status { grid-column: 1 / -1; }

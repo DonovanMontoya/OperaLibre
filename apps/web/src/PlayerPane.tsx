@@ -1,3 +1,4 @@
+import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useMetadataEditor } from "./useMetadataEditor";
 import type { useOfflineDownloads } from "./useOfflineDownloads";
@@ -822,11 +823,12 @@ export function PlayerPane({
                   ) : null}
                 </div>
               ) : null}
-              <p className="book-credits" title={[selectedBook.author, selectedBook.narrator ? `Narrated by ${selectedBook.narrator}` : null].filter(Boolean).join(" • ") || undefined}>
-                {selectedBook.author ? <span>{selectedBook.author}</span> : null}
-                {selectedBook.narrator ? <span>Narrated by {selectedBook.narrator}</span> : null}
-                {!selectedBook.author && !selectedBook.narrator ? <span>{selectedBook.trackCount} tracks</span> : null}
-              </p>
+              <BookCredits
+                key={selectedBook.id}
+                author={selectedBook.author}
+                narrator={selectedBook.narrator}
+                trackCount={selectedBook.trackCount}
+              />
               {native && formatDurationLabel(selectedBook.durationSeconds ?? durationFromTracks(selectedBook)) ? (
                 <div className="book-runtime" aria-label="Total runtime">
                   <span className="book-runtime-label">Runtime</span>
