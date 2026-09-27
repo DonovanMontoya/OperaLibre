@@ -1086,6 +1086,13 @@ html:not(.native-app) .web-shell > .player-pane {
   text-decoration: none;
 }
 
+.audible-account-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
 .audible-account-badge {
   width: fit-content;
   display: inline-flex;
@@ -14901,7 +14908,7 @@ html.native-app.platform-ios.dark-mode .admin-sync-monitor {
   -webkit-line-clamp: 1;
   font-size: 0.9rem;
 }
-.purchase-book-list--compact :is(.libro-purchase-account, .audible-account-badge) { display: none; }
+.purchase-book-list--compact :is(.libro-purchase-account, .audible-account-tags) { display: none; }
 .purchase-book-list--compact .purchase-book-row > :is(button, .audible-download-status) { width: 100px; }
 
 .purchase-book-list--grid {
