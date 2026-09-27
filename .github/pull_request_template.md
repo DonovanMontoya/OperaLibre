@@ -6,6 +6,17 @@ Before opening:
 - For new features or large changes, open an issue first so we can agree on the
   approach. Large PRs that arrive without prior discussion may be closed.
 - One concern per PR. If the description needs "also", split it.
+
+Confirm before opening:
+
+- Checks for the areas you changed pass locally (see CONTRIBUTING.md).
+- Visible changes have before/after screenshots; motion or playback has a
+  recording.
+- Docs are updated for changed behavior, configuration, or setup.
+- New `server.config` options have safe defaults for existing installs.
+- Playback, progress, or sync changes: opening and closing a book doesn't reset
+  another device's position.
+- AI-assisted commits carry a `Co-Authored-By:` trailer naming the model.
 -->
 
 ## What changed
@@ -42,13 +53,3 @@ phones, CarPlay, Jellyfin, third-party clients). -->
 if no AI tools were used. AI-assisted commits must also carry a
 Co-Authored-By trailer naming the model. -->
 
-## Checklist
-
-- [ ] This PR is small and focused on one concern
-- [ ] I explained what changed and why
-- [ ] Checks for the areas I changed pass locally (see CONTRIBUTING.md)
-- [ ] Before/after screenshots for visible changes; a recording for motion or playback
-- [ ] Docs updated for changed behavior, configuration, or setup
-- [ ] New `server.config` options have safe defaults for existing installs
-- [ ] Playback/progress/sync changes: opening and closing a book doesn't reset another device's position
-- [ ] AI-assisted commits carry a `Co-Authored-By:` trailer naming the model
