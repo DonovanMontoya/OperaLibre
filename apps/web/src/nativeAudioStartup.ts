@@ -1,3 +1,25 @@
+export type DetachedNativeClock = { bookId: string; trackId: string; positionSeconds: number };
+
+/**
+ * Where a re-attachment for the same track resumes when no seek is pending.
+ * The control clock dies with its attachment and the bare element it leaves
+ * behind reads 0:00, so a queue rebuild after restore (the download scan or
+ * the media credential landing late) would otherwise reload AVPlayer at the
+ * opening credits.
+ */
+export function nativeReattachPosition(
+  detached: DetachedNativeClock | null,
+  bookId: string,
+  trackId: string
+): number | undefined {
+  return detached
+    && detached.bookId === bookId
+    && detached.trackId === trackId
+    && Number.isFinite(detached.positionSeconds)
+    ? Math.max(0, detached.positionSeconds)
+    : undefined;
+}
+
 export function nativeStartupPosition(pending: number | undefined, current: number): number {
   const position = pending ?? current;
   return Number.isFinite(position) ? Math.max(0, position) : 0;
