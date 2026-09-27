@@ -2,8 +2,8 @@ name: Create Release
 
 on:
   schedule:
-    - cron: "0 20 * * *"
-      timezone: "America/New_York"
+    # 8 p.m. EST (UTC-5), fixed year-round.
+    - cron: "0 1 * * *"
   push:
     tags:
       - "v*"
