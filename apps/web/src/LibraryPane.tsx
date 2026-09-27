@@ -214,7 +214,8 @@ export function LibraryPane({
     setPurchaseAccountFilter,
     showAudiblePurchases,
     startLiberation,
-    visibleLibationBooks
+    visibleLibationBooks,
+    audibleBookCount
   } = purchases;
   const {
     carPlaybackBook,
@@ -669,7 +670,7 @@ export function LibraryPane({
           <span>
             {librarySource === "local"
               ? isLoading ? "Loading books…" : `${visibleBooks.length} of ${books.length} books`
-              : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${libationBooks.length} books`}
+              : libationLoading ? "Loading books…" : `${visibleLibationBooks.length} of ${audibleBookCount} books`}
           </span>
           <span>{sortOrderLabel}</span>
         </div> : null}
@@ -896,25 +897,26 @@ export function LibraryPane({
           <div className={`audible-list purchase-book-list purchase-book-list--${purchaseViewMode} audible-list--${purchaseViewMode}`}>
             {visibleLibationBooks.map((book) => {
               const isLocal = !!book.localBookId;
+              const catalogIds = new Set(book.accounts.map(account => account.catalogId));
               const downloadRequest = libationDownloadRequests.find(
-                (request) => (request.catalogId ? request.catalogId === book.catalogId : request.profileId ? `${request.profileId}:${request.asin}` === book.catalogId : request.asin === book.asin) && request.status !== "rejected"
+                (request) => (request.catalogId ? catalogIds.has(request.catalogId) : request.profileId ? catalogIds.has(`${request.profileId}:${request.asin}`) : request.asin === book.asin) && request.status !== "rejected"
               );
               const isAwaitingApproval = downloadRequest?.status === "pending";
               const isApprovedRequest = downloadRequest?.status === "approved" && !!downloadRequest.jobId;
               const pendingDownloadJob =
                 pendingLibationJobs.find(
-                  (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
+                  (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
                 ) ?? downloadAllLibationJob;
               const latestBookJob = libationJobs.find(
-                (job) => job.kind === "libation-liberate" && job.targetId === book.catalogId
+                (job) => job.kind === "libation-liberate" && !!job.targetId && catalogIds.has(job.targetId)
               );
-              const isStarting = libationAllPending || libationRequests.has(book.catalogId);
+              const isStarting = libationAllPending || book.accounts.some(account => libationRequests.has(account.catalogId));
               const isQueued = pendingDownloadJob?.status === "queued";
               const isDownloading = pendingDownloadJob?.status === "running";
-              const finalizationFailed = libationFinalizationFailures.has(book.catalogId);
+              const finalizationFailed = book.accounts.some(account => libationFinalizationFailures.has(account.catalogId));
               const isFinalizing = isLibationAdding({
                 isLocal,
-                confirmationPending: libationFinalizingAsins.has(book.catalogId),
+                confirmationPending: book.accounts.some(account => libationFinalizingAsins.has(account.catalogId)),
                 confirmationFailed: finalizationFailed
               });
               const didFail = latestBookJob?.status === "failed" || finalizationFailed;
@@ -929,7 +931,9 @@ export function LibraryPane({
                   <div className="audible-copy">
                     <strong>{book.title}</strong>
                     <span>{metaParts.join(" · ")}</span>
-                    <small className="audible-account-badge"><span className="purchase-provider-tag">Audible</span><KeyRound size={10} /> {audibleAccountLabels.get(book.profileId) ?? book.profileName}</small>
+                    <div className="audible-account-tags"><span className="purchase-provider-tag">Audible</span>{book.accounts.map(account => (
+                      <small className="audible-account-badge" key={account.profileId}><KeyRound size={10} /> {audibleAccountLabels.get(account.profileId) ?? account.profileName}</small>
+                    ))}</div>
                   </div>
                   {isLocal ? (
                     <button
