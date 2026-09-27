@@ -186,7 +186,7 @@ def reference(plan_path, output, cli, ids, ffmpeg):
             clip=book.get('audioClips',{}).get(str(index))
             audio=clip['path'] if clip else book['audio']
             local_start=start-clip['start'] if clip else start
-            subprocess.run([ffmpeg,'-nostdin','-v','error','-ss',str(local_start),'-i',audio,'-t',str(duration),'-ac','1','-ar','16000',str(wav)],check=True)
+            subprocess.run([ffmpeg,'-nostdin','-v','error','-ss',str(local_start),'-i',audio,'-t',str(duration),'-map','0:a:0','-vn','-ac','1','-ar','16000',str(wav)],check=True)
             with (folder/f'{index}.log').open('w') as log:
                 subprocess.run([cli,'transcribe',str(wav),str(target),'--engine=whisper','--whisper.model=small.en','--language=en','--overwrite'],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=1800)
             row['scopes'].append({'index':index,'start':start,'duration':duration,'wavSha256':digest(wav),'referenceSha256':digest(target)})

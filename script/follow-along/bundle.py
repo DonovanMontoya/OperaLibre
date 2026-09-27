@@ -28,7 +28,7 @@ def export(plan_path, output, ffmpeg='ffmpeg', ffprobe='ffprobe'):
         for index in book['scopes']:
             start,end=book['audioSamples'][str(index)]; path=folder/f'{index}.flac'
             subprocess.run([ffmpeg,'-nostdin','-v','error','-ss',str(start),'-i',book['audio'],
-                            '-t',str(end-start),'-ac','1','-ar','16000','-sample_fmt','s16','-c:a','flac',str(path)],check=True)
+                            '-t',str(end-start),'-map','0:a:0','-vn','-ac','1','-ar','16000','-sample_fmt','s16','-c:a','flac',str(path)],check=True,timeout=600)
             clips[str(index)]=dict(path=str(path),start=start,end=end,sha256=digest(path))
         book['audioClips']=clips; book['audio']=next(iter(clips.values()))['path']; book['audioCandidates']=[book['audio']]
         print(book['title']+': bundled unchanged frozen windows',flush=True)
