@@ -35,8 +35,11 @@ fn main() {
 def until(check):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        if check():
-            return
+        try:
+            if check():
+                return
+        except (OSError, ValueError):
+            pass
         time.sleep(0.05)
     raise AssertionError("Timed out waiting for handoff")
 
@@ -53,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
     source.write_text(SERVER)
     binary = scratch / "fake-server"
     subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], check=True)
-    for scenario in ("success", "startup-failure", "staging-failure"):
+    for scenario in ("success", "startup-failure", "staging-failure", "stop-handoff"):
         fails = scenario == "startup-failure"
         root = scratch / scenario
         package = root / "package"
@@ -82,6 +85,16 @@ with tempfile.TemporaryDirectory(prefix="operalibre-handoff-") as scratch:
             updater = subprocess.Popen([str(package / "operalibre-updater"), "--apply-update", str(package),
                 "--install-root", str(root), "--server-pid", str(old.pid), "--port", str(port), "--layout", "combined"], env=env)
             until(lambda: (root / "data/update.lock").exists())
+            if scenario == "stop-handoff":
+                subprocess.run([str(root / "operalibre-service"), "--stop"], env=env, check=True)
+                old.wait(timeout=5)
+                assert updater.wait(timeout=20) == 0
+                pid = int((root / "data/operalibre-server.pid").read_text())
+                assert pid != old.pid
+                assert os.readlink(f"/proc/{pid}/exe") == str(root / "operalibre-server")
+                until(lambda: healthy(port))
+                print("PASS: stopping the old server preserves the restarted server PID", flush=True)
+                continue
             old.terminate()
             old.wait(timeout=5)
             if scenario == "staging-failure":
