@@ -183,6 +183,33 @@ When changing playback, progress, or sync, preserve:
 Opening and closing a book must never reset another device's position or write an
 uninitialized 0:00. Exercise the affected failure path, not only the happy path.
 
+### Read-along mapping revisions and recovery
+
+When changing alignment or preparing a release, decide whether existing maps
+would benefit enough from regeneration to recommend remapping. The decision is
+explicit; a release or dependency version bump alone is not a reason to remap.
+
+- `MAPPING_REVISION` in `apps/server/src/alignment.rs` is the remapping threshold.
+  Increment it only for an intentional remapping recommendation, and explain
+  the improvement in the release notes. Do not reset it or derive it from an
+  application or add-on version. Ordinary releases leave it unchanged.
+- New maps carry that value as `mappingRevision`. Older generated maps (missing
+  revision means 0) show **Outdated map** and become eligible for an enabled
+  nightly sweep. Existing maps remain usable; current maps and external maps
+  without OperaLibre's generator provenance are not expired.
+- `SYNC_MAP_VERSION` describes the JSON format, not mapping quality. The version
+  in `addons/readalong-sync/package.json` controls publishing the separate
+  runtime package. Neither replaces `MAPPING_REVISION`; a server-side alignment
+  improvement can warrant remapping without changing the add-on package.
+- Preserve the durable `sync-jobs.json`, `sync-schedules.json`, and
+  `sync-sweep.json` stores across upgrades. Queue recovery retains job IDs and
+  restarts interrupted books from the beginning after the library and runtime
+  are ready; it does not resume at a saved chapter or recognition window.
+- For a revision change, verify that older generated maps become outdated,
+  current maps stay current, remapping clears the badge, and nightly batches
+  include outdated maps while respecting the saved limit. Keep
+  `docs/using-operalibre.md` and `docs/api.md` accurate when these contracts change.
+
 ### Configuration compatibility
 
 New `server.config` keys need safe defaults so existing installs keep working.
@@ -264,6 +291,9 @@ These apply only to maintainers with write access.
   check the PR state before retrying.
 - After `jj git fetch` following a force-push, inspect `jj st` and `jj diff`
   before recovering with `jj new main`; abandon only revisions confirmed obsolete.
+- Before version bumps or releases, apply [Read-along mapping revisions and
+  recovery](#read-along-mapping-revisions-and-recovery); state any remapping
+  recommendation in the release notes.
 - Releases: dispatch `.github/workflows/release.yml` from `main` with a blank
   `tag` (the workflow picks the next patch) and notes written from the actual
   diff since the previous release, passed as a file or structured input. Use an

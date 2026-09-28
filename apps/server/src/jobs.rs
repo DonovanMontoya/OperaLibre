@@ -1,11 +1,14 @@
 //! The in-memory background job table: creation, deduplication, progress and
-//! completion updates, and the admin endpoints that watch it.
+//! completion updates, and the admin endpoints that watch it. Sync jobs also
+//! persist their queue and results for restart recovery.
 
 use crate::*;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JobStatus {
+    #[serde(skip)]
+    pub(crate) resume_pending: bool,
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) target_id: Option<String>,
@@ -29,7 +32,7 @@ pub(crate) struct JobStatus {
 /// whoever started the job. `fraction` is 0.0-1.0 where the job can estimate
 /// it, and `completed`/`total` count whole units of work (chapters, tracks)
 /// where it can.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JobProgress {
     pub(crate) step: String,
@@ -160,6 +163,7 @@ pub(crate) async fn create_job_with_state(
     let started_at = next_job_timestamp(&jobs).to_string();
     let running_at = (status == "running").then(|| started_at.clone());
     let job = JobStatus {
+        resume_pending: false,
         id: id.clone(),
         kind: kind.to_string(),
         target_id,
@@ -302,10 +306,24 @@ async fn fail_if_still_active(state: &AppState, job_id: &str, error: &str) {
     if let Some(job) = jobs.get_mut(job_id)
         && is_active_job(job)
     {
-        job.status = "failed".to_string();
-        job.finished_at = Some(unix_now_millis().to_string());
-        job.error = Some(error.to_string());
-        job.progress = None;
+        if job.kind == crate::sync::SYNC_GENERATE_JOB_KIND {
+            job.status = "queued".into();
+            job.resume_pending = true;
+            job.running_at = None;
+            job.progress = Some(JobProgress::new("Interrupted; waiting to restart"));
+        } else {
+            job.status = "failed".to_string();
+            job.finished_at = Some(unix_now_millis().to_string());
+            job.error = Some(error.to_string());
+            job.progress = None;
+        }
+    }
+    if jobs
+        .get(job_id)
+        .is_some_and(|job| job.kind == crate::sync::SYNC_GENERATE_JOB_KIND)
+        && let Err(error) = crate::sync::save_queue(state, &jobs).await
+    {
+        tracing::error!(?error, "could not persist sync completion");
     }
     prune_finished_jobs(&mut jobs);
 }
@@ -410,10 +428,18 @@ pub(crate) async fn update_job_finished(
     let mut jobs = state.jobs.write().await;
     if let Some(job) = jobs.get_mut(job_id) {
         job.status = status.to_string();
+        job.resume_pending = false;
         job.finished_at = Some(unix_now_millis().to_string());
         job.exit_code = exit_code;
         job.error = error;
         job.progress = None;
+    }
+    if jobs
+        .get(job_id)
+        .is_some_and(|job| job.kind == crate::sync::SYNC_GENERATE_JOB_KIND)
+        && let Err(error) = crate::sync::save_queue(state, &jobs).await
+    {
+        tracing::error!(?error, "could not persist sync completion");
     }
     prune_finished_jobs(&mut jobs);
 }

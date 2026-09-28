@@ -1279,6 +1279,7 @@ export function cancelBookSyncSchedule(bookId: string) {
 
 /** The nightly library sweep, plus what it would queue if it ran now. */
 export type SyncSweep = {
+  booksPerNight: number;
   enabled: boolean;
   /** The recurring wall-clock rule and its server-calculated next instant. */
   localTime: string;
@@ -1297,9 +1298,9 @@ export function getSyncSweep() {
   return request<SyncSweep>("/api/sync-sweep");
 }
 
-export function setSyncSweep(enabled: boolean, localTime: string, timeZone: string) {
+export function setSyncSweep(enabled: boolean, localTime: string, timeZone: string, booksPerNight = 2) {
   return request<SyncSweep>("/api/sync-sweep", {
-    method: "PUT", body: JSON.stringify({ enabled, localTime, timeZone }),
+    method: "PUT", body: JSON.stringify({ enabled, localTime, timeZone, booksPerNight }),
   });
 }
 
