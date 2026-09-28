@@ -5084,12 +5084,76 @@ async fn nightly_sync_limits_batches_and_includes_outdated_maps() {
     })).await.unwrap();
     sync_schedule::tick(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await.len(), 2);
+    let persisted: Vec<JobStatus> = serde_json::from_slice(
+        &fs::read(server.state.database_path.with_file_name("sync-jobs.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted.len(), 2);
     let status = server.get("/api/sync-sweep", &owner).await.json();
     assert_eq!(status["pendingCount"], 4);
     assert_eq!(status["lastQueued"], 2);
     assert_eq!(status["booksPerNight"], 2);
     sync_schedule::tick(&server.state).await.unwrap();
     assert_eq!(server.state.jobs.read().await.len(), 2);
+}
+
+#[tokio::test]
+async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
+    let mut server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    {
+        let mut library = server.state.library.write().await;
+        for book in &mut library.books {
+            book.reading_file = Some(ReadingFile {
+                id: "epub".into(),
+                file_name: "book.epub".into(),
+                extension: "epub".into(),
+                content_type: "application/epub+zip".into(),
+                url: "/readalong".into(),
+            });
+        }
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("book.epub"));
+    }
+    let _slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    let path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::create_dir(&path).await.unwrap();
+    let failed = server
+        .send_json("POST", "/api/sync-sweep/run", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(failed.status, StatusCode::OK);
+    assert_eq!(failed.json()["queued"], 0);
+    assert!(failed.json()["error"].is_string());
+    assert!(server.state.jobs.read().await.is_empty());
+    fs::remove_dir(&path).await.unwrap();
+
+    let accepted = server
+        .send_json("POST", "/api/sync-sweep/run", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert_eq!(accepted.json()["queued"], 4);
+    let persisted: Vec<JobStatus> =
+        serde_json::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(persisted.len(), 4);
+    assert_eq!(jobs.len(), 4);
+    for job in persisted {
+        assert_eq!(job.status, "queued");
+        assert_eq!(jobs[&job.id].target_id, job.target_id);
+    }
 }
 
 #[tokio::test]
