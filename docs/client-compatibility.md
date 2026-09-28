@@ -67,3 +67,7 @@ Universal drop-in compatibility is therefore not supported. The next substantial
 For an OPDS-capable reader, use `https://your-server/api/opds?token=MEDIA_TOKEN`. Both feed navigation and track acquisition links carry the read-only media credential. Normal bearer authentication is also accepted; HTTP Basic is not implemented.
 
 The current feed provides a separate acquisition per track. Client handling of multiple audio acquisitions varies, so a successful XML parse alone does not establish complete-book import. There is no aggregate audiobook acquisition or playback-progress protocol in this feed. BookPlayer cannot consume it through its existing connectors; use `/abs` for BookPlayer.
+
+## OperaLibre read-along clients
+
+Read-along map metadata includes an optional `mappingRevision`, and book sync summaries include `outdated`. Older clients may ignore both; existing map URLs and timings remain usable. Queue recovery and nightly remapping run on the OperaLibre server and do not require native-client changes.

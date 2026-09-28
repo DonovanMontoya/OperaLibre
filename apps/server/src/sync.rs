@@ -6,6 +6,83 @@ use crate::*;
 
 pub(crate) const SYNC_GENERATE_JOB_KIND: &str = "sync-generate";
 
+/// Queue snapshots are serialized while holding the job table's write lock,
+/// so a completion cannot be overwritten by an older enqueue snapshot.
+pub(crate) async fn save_queue(
+    state: &AppState,
+    jobs: &HashMap<String, JobStatus>,
+) -> Result<(), ApiError> {
+    let entries: Vec<_> = jobs
+        .values()
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND)
+        .collect();
+    write_json_atomic(
+        &state.database_path.with_file_name("sync-jobs.json"),
+        &entries,
+    )
+    .await
+}
+
+pub(crate) async fn restore_queue(state: &AppState) -> Result<(), ApiError> {
+    let bytes = match fs::read(state.database_path.with_file_name("sync-jobs.json")).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let entries: Vec<JobStatus> = serde_json::from_slice(&bytes)?;
+    let mut jobs = state.jobs.write().await;
+    for mut job in entries {
+        if job.kind != SYNC_GENERATE_JOB_KIND {
+            continue;
+        }
+        if is_active_job(&job) {
+            job.status = "queued".into();
+            job.running_at = None;
+            job.resume_pending = true;
+            job.progress = Some(JobProgress::new(
+                "Recovered after restart; waiting to resume",
+            ));
+        }
+        jobs.insert(job.id.clone(), job);
+    }
+    Ok(())
+}
+
+pub(crate) async fn resume_queue(state: &AppState) {
+    if !state.library.read().await.catalogue_ready
+        || state
+            .update_manager
+            .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+            .await
+            .is_none()
+    {
+        return;
+    }
+    let mut pending: Vec<_> = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.resume_pending)
+        .cloned()
+        .collect();
+    pending.sort_by_key(job_started_timestamp);
+    for job in pending {
+        let Some(book_id) = job.target_id else {
+            continue;
+        };
+        if let Err(error) =
+            enqueue_sync_map_inner(state.clone(), book_id, Some(job.id.clone())).await
+        {
+            if error.status == StatusCode::CONFLICT || error.status.is_server_error() {
+                tracing::warn!(?error, "sync recovery will retry");
+                continue;
+            }
+            update_job_finished(state, &job.id, "failed", None, Some(error.message)).await;
+        }
+    }
+}
+
 /// The longest one aligner run may take before the job is failed and the
 /// process killed. Alignment is slow on a long chapter, so this is a ceiling
 /// against a hung CLI, not a budget.
@@ -75,6 +152,14 @@ pub(crate) async fn generate_sync_map(
 pub(crate) async fn enqueue_sync_map(
     state: AppState,
     book_id: String,
+) -> Result<Json<JobCreated>, ApiError> {
+    enqueue_sync_map_inner(state, book_id, None).await
+}
+
+async fn enqueue_sync_map_inner(
+    state: AppState,
+    book_id: String,
+    resume_id: Option<String>,
 ) -> Result<Json<JobCreated>, ApiError> {
     let lifecycle = state
         .update_manager
@@ -146,17 +231,31 @@ pub(crate) async fn enqueue_sync_map(
         return Err(ApiError::bad_request("This book has no audio tracks."));
     }
 
-    let (job_id, created) =
-        create_queued_job(&state, SYNC_GENERATE_JOB_KIND, Some(book_id.clone())).await;
-    if !created {
-        return Ok(Json(JobCreated { job_id }));
+    let resuming = resume_id.is_some();
+    let (job_id, created) = if let Some(id) = resume_id {
+        (id, true)
+    } else {
+        create_queued_job(&state, SYNC_GENERATE_JOB_KIND, Some(book_id.clone())).await
+    };
+    {
+        let mut jobs = state.jobs.write().await;
+        if created && let Some(job) = jobs.get_mut(&job_id) {
+            job.resume_pending = true;
+            job.progress = Some(JobProgress::new("Waiting for the sync queue"));
+        }
+        if let Err(error) = save_queue(&state, &jobs).await {
+            if created && !resuming {
+                jobs.remove(&job_id);
+            }
+            return Err(error);
+        }
+        if !created {
+            return Ok(Json(JobCreated { job_id }));
+        }
+        if let Some(job) = jobs.get_mut(&job_id) {
+            job.resume_pending = false;
+        }
     }
-    update_job_progress(
-        &state,
-        &job_id,
-        JobProgress::new("Waiting for the sync queue"),
-    )
-    .await;
     let state_for_job = state.clone();
     let job_id_for_task = job_id.clone();
     tokio::spawn(run_job(state.clone(), job_id.clone(), async move {
@@ -520,6 +619,7 @@ pub(crate) async fn run_sync_generation(
 
     let sync_map = alignment::SyncMap {
         version: alignment::SYNC_MAP_VERSION,
+        mapping_revision: alignment::MAPPING_REVISION,
         generator: Some("echogarden".to_string()),
         generated_at: Some(now_unix_string()),
         precision: Some(alignment::PRECISION_SENTENCE.to_string()),
@@ -2334,6 +2434,7 @@ mod tests {
             };
             let map = alignment::SyncMap {
                 version: alignment::SYNC_MAP_VERSION,
+                mapping_revision: alignment::MAPPING_REVISION,
                 generator: Some("echogarden".into()),
                 generated_at: None,
                 precision: Some(alignment::PRECISION_SENTENCE.into()),

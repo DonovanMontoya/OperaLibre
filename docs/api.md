@@ -99,10 +99,8 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/readalong` | The book's text companion (the `book`-kind entry of `companions`), if there is one. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. |
-| `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves a sidecar or generated map when one exists; otherwise, for a book with an EPUB companion, estimates one from the chapter list on first request and caches it. |
-| `POST` | `/api/books/{book_id}/sync/anchors` | Add a listener-placed sync anchor to an estimated map: `{ "href": ..., "text": ..., "seconds": ... }` says the sentence `text` in spine document `href` is being narrated at book position `seconds`. Kept with the book under `data_dir/sync`; the estimate is rebuilt through every anchor on the next request. Returns `{ "anchorCount": n }`. Rejected for books that already have an aligned map. |
-| `DELETE` | `/api/books/{book_id}/sync/anchors` | Drop every listener-placed anchor on the book. Admin only. |
-| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are queued and deduplicated by book. Returns `{ "jobId": "..." }`. |
+| `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves an aligned sidecar or generated map when one exists; otherwise returns 404. Outdated maps remain available until replaced. |
+| `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books restart generation from the beginning. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
 | `POST` | `/api/experimental-features/readalong-sync/install` | Download, verify, and install or update the official platform package. Owner only; managed release installations only. |
@@ -165,11 +163,25 @@ The EPUB reader requests package metadata, stylesheets, and the current chapter 
 
 #### Sync maps
 
-Books that can be followed expose a `syncFile` object (`fileName`, `source`, and `url`). `source` is `sidecar` for a `.sync.json` beside the book, `generated` for one produced by the alignment job, or `estimated` for a book with an EPUB companion and neither of those — the sync route interpolates a map from the chapter list on first request. The sync map itself is JSON:
+Sync administration endpoints (administrator only):
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/sync-schedules` | List persisted individual schedules and their outcomes. |
+| `PUT` | `/api/sync-schedules/{book_id}` | Schedule with `{ "runAt": <Unix milliseconds> }`. |
+| `DELETE` | `/api/sync-schedules/{book_id}` | Cancel a schedule before it joins the queue. |
+| `GET` | `/api/sync-sweep` | Nightly rule, `pendingCount` (missing or outdated maps), and `eligibleCount`. |
+| `PUT` | `/api/sync-sweep` | Save `{ "enabled": true, "localTime": "01:00", "timeZone": "America/New_York", "booksPerNight": 2 }`. Limit: 1–100, default 2 when omitted. |
+| `POST` | `/api/sync-sweep/run` | Queue all missing and outdated maps immediately; skips active jobs and individual schedules. Returns `queued`, `skipped`, and `error`. |
+
+Nightly sweeps queue at most `booksPerNight` missing or outdated maps per run; the immediate run endpoint is not limited by that setting. Changing the rule to `enabled: false` stops future batches without cancelling queued work. Scheduled starts more than 15 minutes late are skipped; nightly rules advance to their next local occurrence. Accepted jobs and recent outcomes survive restarts, and interrupted books restart from the beginning after the library and generator become available.
+
+Books that can be followed expose a `syncFile` object (`fileName`, `source`, `url`, and `outdated`). `source` is `sidecar` for an aligned `.sync.json` beside the book or `generated` for one produced by the alignment job. Books without an aligned map have `syncFile: null`. `outdated` recommends remapping an older OperaLibre-generated map but does not prevent playback. Generated maps include `mappingRevision`, advanced only for improvements that warrant remapping, independently of the map schema or application release. A missing `mappingRevision` is treated as 0; a lower revision marks a generated map outdated, while equal or higher revisions remain current. Third-party maps without this provenance are not marked outdated. The sync map itself is JSON:
 
 ```json
 {
   "version": 2,
+  "mappingRevision": 1,
   "generator": "echogarden",
   "precision": "sentence",
   "fragments": [
@@ -184,7 +196,7 @@ Books that can be followed expose a `syncFile` object (`fileName`, `source`, and
 }
 ```
 
-`startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document. `words` (optional) times each word as `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside `text`. `precision` is `sentence` for a forced alignment and `estimated` for an interpolation; an estimate also carries `anchorCount`, the number of audio chapters that were pinned to a table-of-contents entry (zero means one whole-book guess, which drifts more), and `manualAnchorCount`, the number of listener-placed anchors it was timed through. Version 1 maps, which carried sentences only, are still accepted.
+`startSeconds`/`endSeconds` are book-absolute positions (across all tracks), `href` is the EPUB spine document as written in the OPF manifest, and `text` is the sentence to locate and highlight inside that document. `words` (optional) times each word as `[startSeconds, endSeconds, offsetUtf16, lengthUtf16]` inside `text`. `precision` is `sentence` for a forced alignment. Legacy estimated maps are not served as sentence alignments. Version 1 maps, which carried sentences only, are still accepted.
 
 Progress updates use JSON with the current track and timing fields:
 

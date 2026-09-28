@@ -116,6 +116,7 @@ export type CompanionFile = {
 };
 
 export type SyncFile = {
+  outdated?: boolean;
   fileName: string;
   /** `sidecar` and `generated` are both forced alignments. */
   source: "sidecar" | "generated" | string;

@@ -385,6 +385,7 @@ pub(crate) struct ReadingFile {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncFile {
+    pub(crate) outdated: bool,
     pub(crate) file_name: String,
     /// `sidecar` when found beside the audiobook, `generated` when produced
     /// by the alignment job into the server's data directory.
@@ -2467,30 +2468,32 @@ pub(crate) fn is_plain_file_token(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
-/// Whether a `.sync.json` holds a forced alignment. Only `precision` is read:
-/// the fragments are tokenized and discarded, so probing a map that runs to
-/// megabytes costs no allocation. A file that cannot be read or parsed is not
-/// an alignment, so a book is never advertised as followable on the strength
-/// of its file name alone.
-fn is_aligned_sync_map(path: &FsPath) -> bool {
+/// Probe metadata without allocating the potentially large fragment array.
+fn sync_map_outdated(path: &FsPath, generated: bool) -> Option<bool> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Probe {
         #[serde(default)]
         precision: Option<String>,
+        #[serde(default)]
+        generator: Option<String>,
+        #[serde(default)]
+        mapping_revision: u32,
     }
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let Ok(probe) = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)) else {
-        return false;
-    };
-    // Version 1 files carry no precision and were always aligned.
-    probe
+    let file = std::fs::File::open(path).ok()?;
+    let probe = serde_json::from_reader::<_, Probe>(std::io::BufReader::new(file)).ok()?;
+    if probe
         .precision
         .as_deref()
         .unwrap_or(alignment::PRECISION_SENTENCE)
-        == alignment::PRECISION_SENTENCE
+        != alignment::PRECISION_SENTENCE
+    {
+        return None;
+    }
+    Some(
+        (generated || probe.generator.as_deref() == Some("echogarden"))
+            && probe.mapping_revision < alignment::MAPPING_REVISION,
+    )
 }
 
 /// Finds a readalong sync map for a book: a user-provided `.sync.json`
@@ -2526,37 +2529,32 @@ pub(crate) fn find_sync_file(
                 .map(|name| name[..name.len() - SYNC_SIDECAR_SUFFIX.len()].to_string())
         },
     );
-    if let Some(selected) = sidecar.filter(|path| is_aligned_sync_map(path)) {
+    let sidecar =
+        sidecar.and_then(|path| sync_map_outdated(&path, false).map(|outdated| (path, outdated)));
+    let generated = is_plain_file_token(book_id)
+        .then(|| sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}")))
+        .and_then(|path| sync_map_outdated(&path, true).map(|outdated| (path, outdated)));
+    // A replacement must actually become the served map, even when the old
+    // generated map was copied beside the audio as a sidecar.
+    let selected = match (sidecar, generated) {
+        (Some((_, true)), Some((path, false))) => Some((path, false, "generated")),
+        (Some((path, outdated)), _) => Some((path, outdated, "sidecar")),
+        (None, Some((path, outdated))) => Some((path, outdated, "generated")),
+        (None, None) => None,
+    };
+    if let Some((path, outdated, source)) = selected {
         return Some(DiscoveredSyncFile {
             file: SyncFile {
-                file_name: selected
+                outdated,
+                file_name: path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("sync.json")
                     .to_string(),
-                source: "sidecar".to_string(),
+                source: source.into(),
                 url,
             },
-            path: selected,
-        });
-    }
-
-    if !is_plain_file_token(book_id) {
-        return None;
-    }
-    let generated = sync_dir.join(format!("{book_id}{SYNC_SIDECAR_SUFFIX}"));
-    if generated.is_file() && is_aligned_sync_map(&generated) {
-        return Some(DiscoveredSyncFile {
-            file: SyncFile {
-                file_name: generated
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("sync.json")
-                    .to_string(),
-                source: "generated".to_string(),
-                url,
-            },
-            path: generated,
+            path,
         });
     }
 
@@ -3460,5 +3458,70 @@ fn write_covers<T: CoverSource + Send>(
 pub(crate) fn remove_stale_covers(stale: &[PathBuf]) {
     for path in stale {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod mapping_revision_tests {
+    use super::*;
+
+    #[test]
+    fn revisions_flag_legacy_generated_maps_without_expiring_external_maps() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("book.sync.json");
+        for (generator, revision, generated, expected) in [
+            (None, 0, true, true),
+            (Some("echogarden"), 0, false, true),
+            (Some("other"), 0, false, false),
+            (None, 0, false, false),
+            (Some("echogarden"), alignment::MAPPING_REVISION, true, false),
+            (
+                Some("echogarden"),
+                alignment::MAPPING_REVISION + 1,
+                true,
+                false,
+            ),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 2, "generator": generator, "mappingRevision": revision,
+                    "precision": "sentence", "fragments": [],
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(sync_map_outdated(&path, generated), Some(expected));
+        }
+        std::fs::write(&path, r#"{"precision":"estimated"}"#).unwrap();
+        assert_eq!(sync_map_outdated(&path, true), None);
+        std::fs::write(&path, "invalid").unwrap();
+        assert_eq!(sync_map_outdated(&path, true), None);
+    }
+
+    #[test]
+    fn remapping_an_outdated_sidecar_serves_the_current_generated_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("book.mp3");
+        let sidecar = root.path().join("book.sync.json");
+        let generated_dir = root.path().join("sync");
+        std::fs::create_dir(&generated_dir).unwrap();
+        std::fs::write(&audio, []).unwrap();
+        std::fs::write(&sidecar, r#"{"generator":"echogarden","fragments":[]}"#).unwrap();
+        let generated = generated_dir.join("abc.sync.json");
+        std::fs::write(&generated, serde_json::to_vec(&serde_json::json!({
+            "generator": "echogarden", "mappingRevision": alignment::MAPPING_REVISION, "fragments": [],
+        })).unwrap()).unwrap();
+        let found = find_sync_file(
+            "abc",
+            &audio,
+            std::slice::from_ref(&audio),
+            "book",
+            &generated_dir,
+            &mut DirectoryFiles::default(),
+        )
+        .unwrap();
+        assert_eq!(found.path, generated);
+        assert!(!found.file.outdated);
     }
 }

@@ -3,6 +3,10 @@ use crate::*;
 use chrono::{DateTime, Days, LocalResult, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 
+fn default_books_per_night() -> usize {
+    2
+}
+
 const MAX_LATENESS_MS: u64 = 15 * 60 * 1000;
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 const YEAR_MS: u64 = 366 * DAY_MS;
@@ -28,6 +32,8 @@ pub(crate) struct ScheduleRequest {
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SyncSweep {
     enabled: bool,
+    #[serde(default = "default_books_per_night")]
+    books_per_night: usize,
     /// Administrator-selected wall-clock time and IANA zone. Keeping the rule
     /// rather than just its next instant preserves that time through DST.
     local_time: String,
@@ -55,6 +61,8 @@ pub(crate) struct SweepStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SweepRequest {
     enabled: bool,
+    #[serde(default = "default_books_per_night")]
+    books_per_night: usize,
     local_time: String,
     time_zone: String,
 }
@@ -87,7 +95,10 @@ async fn save(state: &AppState, entries: &[SyncSchedule]) -> Result<(), ApiError
 async fn load_sweep(state: &AppState) -> Result<SyncSweep, ApiError> {
     match fs::read(state.database_path.with_file_name("sync-sweep.json")).await {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SyncSweep::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SyncSweep {
+            books_per_night: default_books_per_night(),
+            ..SyncSweep::default()
+        }),
         Err(error) => Err(error.into()),
     }
 }
@@ -273,8 +284,14 @@ pub(crate) async fn cancel(
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.sync_schedule_lock.lock().await;
     let mut entries = load(&state).await?;
+    let active = state.jobs.read().await.values().any(|job| {
+        job.kind == "sync-generate"
+            && job.target_id.as_ref() == Some(&book_id)
+            && is_active_job(job)
+    });
     if entries.iter().any(|entry| {
-        entry.book_id == book_id && matches!(entry.status.as_str(), "dispatching" | "submitted")
+        entry.book_id == book_id
+            && (entry.status == "submitted" || (entry.status == "dispatching" && active))
     }) {
         return Err(ApiError::conflict(
             "This sync has already joined the queue and cannot be cancelled here.",
@@ -304,9 +321,9 @@ async fn sweep_targets(state: &AppState) -> (Vec<String>, usize) {
     let pending = eligible
         .into_iter()
         .filter(|book| {
-            book.sync_file
-                .as_ref()
-                .is_none_or(|file| !matches!(file.source.as_str(), "generated" | "sidecar"))
+            book.sync_file.as_ref().is_none_or(|file| {
+                file.outdated || !matches!(file.source.as_str(), "generated" | "sidecar")
+            })
         })
         .map(|book| book.id.clone())
         .collect();
@@ -316,12 +333,58 @@ async fn sweep_targets(state: &AppState) -> (Vec<String>, usize) {
 /// Queue every pending book, skipping any the queue already holds. Errors on a
 /// single book must not abandon the rest of the library, so the first message
 /// is reported and the sweep carries on.
-async fn run_sweep(state: &AppState) -> SweepRun {
-    let (targets, _) = sweep_targets(state).await;
+async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
+    let (mut targets, _) = sweep_targets(state).await;
+    // A persistently failing book must not consume every night's small batch.
+    // Titles never attempted go first, then the least recently attempted.
+    {
+        let jobs = state.jobs.read().await;
+        let mut attempts = HashMap::<&str, u64>::new();
+        for job in jobs.values().filter(|job| job.kind == "sync-generate") {
+            if let Some(book_id) = job.target_id.as_deref() {
+                let latest = attempts.entry(book_id).or_default();
+                *latest = (*latest).max(job_started_timestamp(job));
+            }
+        }
+        targets.sort_by(|a, b| {
+            attempts
+                .get(a.as_str())
+                .copied()
+                .unwrap_or(0)
+                .cmp(&attempts.get(b.as_str()).copied().unwrap_or(0))
+                .then_with(|| a.cmp(b))
+        });
+    }
     let mut queued = 0;
     let mut skipped = 0;
     let mut error = None;
+    let scheduled: HashSet<String> = match load(state).await {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|entry| {
+                matches!(
+                    entry.status.as_str(),
+                    "scheduled" | "dispatching" | "submitted"
+                )
+            })
+            .map(|entry| entry.book_id)
+            .collect(),
+        Err(error) => {
+            return SweepRun {
+                queued: 0,
+                skipped: 0,
+                error: Some(error.message),
+            };
+        }
+    };
     for book_id in targets {
+        if queued >= limit {
+            break;
+        }
+        if scheduled.contains(&book_id) {
+            skipped += 1;
+            continue;
+        }
         let busy = state.jobs.read().await.values().any(|job| {
             job.kind == "sync-generate"
                 && job.target_id.as_ref() == Some(&book_id)
@@ -367,6 +430,11 @@ pub(crate) async fn set_sweep(
     Json(request): Json<SweepRequest>,
 ) -> Result<Json<SweepStatus>, ApiError> {
     let _guard = state.sync_schedule_lock.lock().await;
+    if !(1..=100).contains(&request.books_per_night) {
+        return Err(ApiError::bad_request(
+            "Choose between 1 and 100 books per night.",
+        ));
+    }
     let now = unix_now_millis();
     let next_run_at = request
         .enabled
@@ -374,6 +442,7 @@ pub(crate) async fn set_sweep(
         .transpose()?;
     let mut sweep = load_sweep(&state).await?;
     sweep.enabled = request.enabled;
+    sweep.books_per_night = request.books_per_night;
     if let Some(next_run_at) = next_run_at {
         if next_run_at > now.saturating_add(YEAR_MS) {
             return Err(ApiError::bad_request(
@@ -415,7 +484,7 @@ pub(crate) async fn run_sweep_now(
         ));
     }
     let _guard = state.sync_schedule_lock.lock().await;
-    let result = run_sweep(&state).await;
+    let result = run_sweep(&state, usize::MAX).await;
     let mut sweep = load_sweep(&state).await?;
     sweep.last_run_at = Some(unix_now_millis());
     sweep.last_queued = Some(result.queued);
@@ -453,7 +522,7 @@ async fn tick_sweep(state: &AppState) -> Result<(), ApiError> {
     // on restart. Clearing the prior outcome also prevents a claimed-but-
     // interrupted run from displaying the preceding night's result as its own.
     save_sweep(state, &sweep).await?;
-    let result = run_sweep(state).await;
+    let result = run_sweep(state, sweep.books_per_night).await;
     sweep.last_queued = Some(result.queued);
     sweep.last_error = result.error;
     save_sweep(state, &sweep).await
@@ -472,6 +541,7 @@ fn due_status(entry: &SyncSchedule, now: u64) -> Option<&'static str> {
 
 pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
     let _guard = state.sync_schedule_lock.lock().await;
+    crate::sync::resume_queue(state).await;
     let mut entries = load(state).await?;
     let now = unix_now_millis();
     let ready = state.library.read().await.catalogue_ready;
@@ -490,7 +560,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
                 }
                 None => {
                     entries[index].status = "failed".into();
-                    entries[index].error = Some("Server restarted after this sync was queued. Check the book’s sync status before retrying.".into());
+                    entries[index].error = Some("The saved job result is no longer available. Check the book’s sync status before retrying.".into());
                 }
                 _ => continue,
             }
@@ -498,12 +568,44 @@ pub(crate) async fn tick(state: &AppState) -> Result<(), ApiError> {
             save(state, &entries).await?;
             continue;
         }
-        // A crash between the durable claim and queue creation must not silently
-        // run a book twice. Keep an explicit result for the administrator.
+        // Replay an interrupted handoff through the same deduplicating queue.
         if entries[index].status == "dispatching" {
-            entries[index].status = "failed".into();
-            entries[index].error =
-                Some("Server stopped while submitting this sync. Schedule it again.".into());
+            if !ready
+                || state
+                    .update_manager
+                    .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+                    .await
+                    .is_none()
+            {
+                continue;
+            }
+            let existing = state
+                .jobs
+                .read()
+                .await
+                .values()
+                .filter(|job| {
+                    job.kind == "sync-generate"
+                        && job.target_id.as_ref() == Some(&entries[index].book_id)
+                        && job_started_timestamp(job) >= entries[index].run_at
+                })
+                .max_by_key(|job| job_started_timestamp(job))
+                .map(|job| job.id.clone());
+            let result = if let Some(job_id) = existing {
+                Ok(Json(JobCreated { job_id }))
+            } else {
+                crate::sync::enqueue_sync_map(state.clone(), entries[index].book_id.clone()).await
+            };
+            match result {
+                Ok(Json(job)) => {
+                    entries[index].status = "submitted".into();
+                    entries[index].job_id = Some(job.job_id);
+                }
+                Err(error) => {
+                    entries[index].status = "failed".into();
+                    entries[index].error = Some(error.message);
+                }
+            }
             save(state, &entries).await?;
             continue;
         }

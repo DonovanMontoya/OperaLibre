@@ -37,6 +37,8 @@ function book(index: number, synced: boolean): Book {
 
 const books = [...TITLES.map((_, i) => book(i, i % 3 === 0))];
 
+books[0].syncFile!.outdated = true;
+
 const now = Date.now();
 const jobs: JobStatus[] = [
   { id: "j1", kind: "sync-generate", targetId: "book-1", status: "running", startedAt: String(now - 22 * 60_000),
@@ -60,13 +62,14 @@ let jobsEnabled = true;
 
 const sweep = {
   enabled: true,
+  booksPerNight: 2,
   localTime: "01:00",
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   nextRunAt: (() => { const d = new Date(); d.setHours(1, 0, 0, 0); if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1); return d.getTime(); })(),
   lastRunAt: now - 26 * 3_600_000,
   lastQueued: 3,
   lastError: null as string | null,
-  pendingCount: 8,
+  pendingCount: 9,
   eligibleCount: 12,
 };
 
