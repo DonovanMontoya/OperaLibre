@@ -39,6 +39,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
   onQueued: () => void;
 }) {
   const [sweep, setSweep] = useState<SyncSweep | null>(null);
+  const [booksPerNight, setBooksPerNight] = useState(2);
   const [time, setTime] = useState("01:00");
   const [busy, setBusy] = useState<"run" | "rule" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +58,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
         const next = await getSyncSweep();
         if (cancelled) return;
         setSweep(next);
-        if (!adopted && next.localTime) { setTime(next.localTime); adopted = true; }
+        if (!adopted) { if (next.localTime) setTime(next.localTime); setBooksPerNight(next.booksPerNight ?? 2); adopted = true; }
         setError(null);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Could not load the nightly sync.");
@@ -69,7 +70,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [revision]);
 
-  async function saveRule(enabled: boolean, atTime: string) {
+  async function saveRule(enabled: boolean, atTime: string, limit = booksPerNight) {
     setBusy("rule");
     setError(null);
     try {
@@ -77,6 +78,7 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
         enabled,
         atTime,
         sweep?.timeZone || localTimeZone,
+        limit,
       ));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the nightly sync.");
@@ -142,17 +144,28 @@ function SyncSweepPanel({ syncEnabled, revision, onQueued }: {
               if (sweep?.enabled) void saveRule(true, event.target.value);
             }}
           />
+          <label>Books per night
+            <select aria-label="Books per night" value={booksPerNight} disabled={!syncEnabled || busy !== null || !sweep}
+              onChange={(event) => {
+                const limit = Number(event.target.value);
+                setBooksPerNight(limit);
+                void saveRule(sweep?.enabled ?? false, time, limit);
+              }}>
+              {[...new Set([1, 2, 5, 10, 20, 50, 100, booksPerNight])].sort((a, b) => a - b).map((limit) => <option key={limit} value={limit}>{limit}</option>)}
+            </select>
+          </label>
           <span className="admin-sync-time-zone">{sweep?.timeZone || localTimeZone}</span>
         </div>
       </div>
       <p className="admin-experiment-detail">
         {sweep?.enabled && sweep.nextRunAt
           ? `Next sweep ${new Date(sweep.nextRunAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })} · ${relativeTime(sweep.nextRunAt, Date.now())}. `
-          : "A nightly sweep queues every book that still needs a sync, newly added ones included. "}
+          : "Nightly batches map new books and remap outdated ones. "}
         {sweep?.lastRunAt
           ? `Last sweep ${new Date(sweep.lastRunAt).toLocaleDateString([], { dateStyle: "medium" })} queued ${sweep.lastQueued ?? 0}.`
-          : "Books already synced are left alone."}
+          : "Current maps are left alone."}
       </p>
+      <p className="admin-experiment-detail">{pending > 0 ? `At ${booksPerNight} books per night, allow at least ${Math.ceil(pending / booksPerNight)} nights. ` : ""}Jobs run one at a time and may continue into the day. Disable the nightly rule to stop future batches.</p>
       {outcome ? <p className="admin-sync-sweep-outcome" role="status">{outcome}</p> : null}
       {error ? <p className="admin-sync-notice admin-sync-notice-warn" role="alert"><AlertTriangle size={14} aria-hidden="true" />{error}</p> : null}
       {sweep?.lastError && !error ? <p className="admin-sync-notice admin-sync-notice-warn" role="alert"><AlertTriangle size={14} aria-hidden="true" />{sweep.lastError}</p> : null}
@@ -299,7 +312,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
   const queued = jobs?.filter((job) => job.status === "queued").length ?? 0;
   const booksById = useMemo(() => new Map(libraryBooks.map((book) => [book.id, book])), [libraryBooks]);
 
-  const isSynced = (book: Book) => book.syncFile?.source === "generated" || book.syncFile?.source === "sidecar";
+  const isSynced = (book: Book) => !book.syncFile?.outdated && (book.syncFile?.source === "generated" || book.syncFile?.source === "sidecar");
   const eligibleBooks = useMemo(() => libraryBooks.filter((book) => book.source !== "device"
     && book.readingFile?.extension === "epub" && book.tracks.length > 0)
     .sort((a, b) => a.title.localeCompare(b.title)), [libraryBooks]);
@@ -392,7 +405,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                       <div className="sync-progress-note">{elapsed < 1 ? "Less than a minute" : `${elapsed} min`} elapsed</div>
                     ) : null}
                   </div>
-                ) : job.status === "queued" ? <p className="admin-sync-job-step">Waiting for another sync to finish.</p> : null}
+                ) : job.status === "queued" ? <p className="admin-sync-job-step">{job.progress?.step ?? "Waiting for another sync to finish."}</p> : null}
                 {job.status === "failed" ? (
                   <div className="admin-sync-job-failure">
                     <p className="admin-sync-job-error">{job.error ?? "Sync generation failed."}</p>
@@ -438,6 +451,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                 <div className="admin-sync-book-row">
                   <div className="admin-sync-book-info">
                     {onOpenBook ? <button type="button" className="admin-sync-book-link" onClick={() => onOpenBook(book.id)}>{book.title}<ArrowUpRight size={13} aria-hidden="true" /></button> : <strong>{book.title}</strong>}
+                    {book.syncFile?.outdated ? <span className="admin-sync-job-state admin-sync-job-state-queued" title="A mapping update is available. The existing map remains usable until you remap it.">Outdated map</span> : null}
                     {book.author ? <span className="admin-sync-author">{book.author}</span> : null}
                   </div>
                   <div className="admin-sync-book-actions">
@@ -446,7 +460,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                         ? <><LoaderCircle size={11} className="spin-icon" aria-hidden="true" />{percent !== null ? `Syncing ${percent}%` : "Syncing"}</>
                         : "Queued"}
                     </span> : <>
-                      <button type="button" className="quiet-button" disabled={!syncEnabled || busyBook !== null || pending} onClick={() => void act(book.id, "sync")} aria-label={`Sync ${book.title} now`}>{busyBook === book.id ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}{isSynced(book) ? "Re-sync" : "Sync"}</button>
+                      <button type="button" className="quiet-button" disabled={!syncEnabled || busyBook !== null || pending} onClick={() => void act(book.id, "sync")} aria-label={`Sync ${book.title} now`}>{busyBook === book.id ? <LoaderCircle size={12} className="spin-icon" /> : <RefreshCw size={12} />}{book.syncFile ? "Re-sync" : "Sync"}</button>
                       {!pending ? <button type="button" className="quiet-button admin-sync-schedule-button" disabled={!syncEnabled || busyBook !== null || schedules === null || !!scheduleError} onClick={() => openSchedule(book.id)} aria-label={`Schedule sync for ${book.title}`} title="Schedule sync"><Clock size={14} /></button> : null}
                     </>}
                   </div>
@@ -459,7 +473,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
                       <em>{relativeTime(schedule.runAt, Date.now())}</em>
                     </>}
                   </span>
-                  <button type="button" className="admin-sync-book-link" disabled={busyBook !== null || schedule.status === "dispatching"} onClick={() => void act(book.id, "cancel")} aria-label={`Cancel scheduled sync for ${book.title}`}>Cancel</button>
+                  <button type="button" className="admin-sync-book-link" disabled={busyBook !== null} onClick={() => void act(book.id, "cancel")} aria-label={`Cancel scheduled sync for ${book.title}`}>Cancel</button>
                 </div> : null}
                 {actionError?.bookId === book.id ? <p role="alert" className="admin-sync-schedule-error">{actionError.message}</p> : null}
                 {schedule?.error ? <p className="admin-sync-schedule-error">{schedule.error}</p> : null}
@@ -477,7 +491,7 @@ export function SyncJobMonitor({ books, onOpenBook, syncEnabled }: {
         </div>
       </section>
 
-      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. Activity history clears on server restart; saved sync maps remain.</p>
+      <p className="admin-experiment-detail">Jobs run one at a time and continue when you close this view. The queue and recent results survive server restarts. Interrupted books restart automatically when Follow along is enabled; existing maps remain available.</p>
     </div>
   );
 }

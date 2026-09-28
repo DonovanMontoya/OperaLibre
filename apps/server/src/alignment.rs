@@ -10,6 +10,10 @@ use std::io::Read;
 /// optional word timings inside each sentence; a version 1 file still reads.
 pub const SYNC_MAP_VERSION: u32 = 2;
 
+/// Bump only when alignment changes make remapping worthwhile, independently
+/// of release numbers and the sidecar schema version. Legacy maps are revision 0.
+pub const MAPPING_REVISION: u32 = 1;
+
 /// How the map's timings were produced. Only a forced alignment is ever
 /// served, so this is always `sentence`.
 pub const PRECISION_SENTENCE: &str = "sentence";
@@ -21,6 +25,8 @@ pub const PRECISION_SENTENCE: &str = "sentence";
 #[serde(rename_all = "camelCase")]
 pub struct SyncMap {
     pub version: u32,
+    #[serde(default)]
+    pub mapping_revision: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4963,6 +4969,7 @@ The dog barked loudly at the cat. Go away said the cat.",
     fn sync_map_round_trips() {
         let map = SyncMap {
             version: SYNC_MAP_VERSION,
+            mapping_revision: MAPPING_REVISION,
             generator: Some("echogarden".into()),
             generated_at: None,
             precision: Some(PRECISION_SENTENCE.into()),
