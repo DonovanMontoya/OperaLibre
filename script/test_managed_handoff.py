@@ -35,8 +35,11 @@ fn main() {
 def until(check):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        if check():
-            return
+        try:
+            if check():
+                return
+        except (OSError, ValueError):
+            pass
         time.sleep(0.05)
     raise AssertionError("Timed out waiting for handoff")
 
