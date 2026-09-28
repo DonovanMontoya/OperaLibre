@@ -4565,7 +4565,7 @@ async fn sync_schedules_skip_missed_starts_and_recover_interrupted_dispatch() {
     let listed = server.get("/api/sync-schedules", &owner).await.json();
     assert_eq!(listed[0]["status"], "scheduled");
     assert_eq!(listed[1]["status"], "missed");
-    assert_eq!(listed[2]["status"], "failed");
+    assert_eq!(listed[2]["status"], "dispatching");
     assert_eq!(listed[3]["status"], "failed");
     assert_eq!(listed[4]["status"], "failed");
     assert!(server.state.jobs.read().await.is_empty());
@@ -4658,6 +4658,7 @@ async fn the_nightly_sweep_counts_only_books_that_still_need_alignment() {
     // An interpolated map is not alignment, so the book still needs a sync.
     for (source, pending) in [("estimated", 1), ("sidecar", 0), ("generated", 0)] {
         server.state.library.write().await.books[0].sync_file = Some(SyncFile {
+            outdated: false,
             file_name: "book.json".into(),
             source: source.into(),
             url: "/sync".into(),
@@ -4951,4 +4952,263 @@ async fn update_channel_is_persistent_and_invalid_channels_are_rejected() {
         )
         .await;
     assert_eq!(reverted.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sync_queue_restores_ids_order_and_results_and_retries_interrupted_books() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let (first, _) = create_queued_job(&server.state, "sync-generate", Some(book_id.clone())).await;
+    let (second, _) =
+        create_queued_job(&server.state, "sync-generate", Some("removed-book".into())).await;
+    let (finished, _) =
+        create_queued_job(&server.state, "sync-generate", Some("finished-book".into())).await;
+    update_job_running(&server.state, &first).await;
+    update_job_finished(&server.state, &finished, "completed", Some(0), None).await;
+    let original_time = server.state.jobs.read().await[&first].started_at.clone();
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    {
+        let jobs = server.state.jobs.read().await;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[&first].started_at, original_time);
+        assert!(job_started_timestamp(&jobs[&first]) < job_started_timestamp(&jobs[&second]));
+        assert_eq!(jobs[&first].status, "queued");
+        assert!(jobs[&first].running_at.is_none());
+        assert!(jobs[&first].resume_pending);
+        assert!(jobs[&second].resume_pending);
+        assert_eq!(jobs[&finished].status, "completed");
+        assert!(!jobs[&finished].resume_pending);
+    }
+    // A disabled runtime keeps the recovered queue visible until enabled.
+    crate::sync::resume_queue(&server.state).await;
+    assert!(server.state.jobs.read().await[&first].resume_pending);
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    // Recovery revalidates inputs: neither a removed book nor a missing EPUB
+    // disappears silently, and failures retain their original job IDs.
+    crate::sync::resume_queue(&server.state).await;
+    assert_eq!(server.state.jobs.read().await[&first].status, "failed");
+    assert_eq!(server.state.jobs.read().await[&second].status, "failed");
+    assert_eq!(server.state.jobs.read().await.len(), 3);
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await[&first].status, "failed");
+    assert!(!server.state.jobs.read().await[&first].resume_pending);
+}
+
+#[tokio::test]
+async fn accepted_sync_queue_is_durable_and_deduplicated_before_work_starts() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let epub = alignment::build_test_epub_with_text(&long_chapter_text(), "<p>Second chapter.</p>");
+    server
+        .add_companions_to_first_book(&owner, &[("Book 00.epub", epub)])
+        .await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    let _slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    let queue_path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::create_dir(&queue_path).await.unwrap();
+    assert!(
+        crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
+            .await
+            .is_err()
+    );
+    assert!(server.state.jobs.read().await.is_empty());
+    fs::remove_dir(&queue_path).await.unwrap();
+    let Json(first) = crate::sync::enqueue_sync_map(server.state.clone(), book_id.clone())
+        .await
+        .unwrap();
+    let Json(second) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
+        .await
+        .unwrap();
+    assert_eq!(first.job_id, second.job_id);
+    let bytes = fs::read(server.state.database_path.with_file_name("sync-jobs.json"))
+        .await
+        .unwrap();
+    let entries: Vec<JobStatus> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, first.job_id);
+    assert_eq!(entries[0].status, "queued");
+}
+
+#[tokio::test]
+async fn nightly_sync_limits_batches_and_includes_outdated_maps() {
+    let mut server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    {
+        let mut library = server.state.library.write().await;
+        for book in &mut library.books {
+            book.reading_file = Some(ReadingFile {
+                id: "epub".into(),
+                file_name: "book.epub".into(),
+                extension: "epub".into(),
+                content_type: "application/epub+zip".into(),
+                url: "/readalong".into(),
+            });
+            book.sync_file = Some(SyncFile {
+                outdated: true,
+                file_name: "map.json".into(),
+                source: "generated".into(),
+                url: "/sync".into(),
+            });
+        }
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("book.epub"));
+    }
+    let _slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    let path = server.state.database_path.with_file_name("sync-sweep.json");
+    write_json_atomic(&path, &serde_json::json!({
+        "enabled": true, "booksPerNight": 2, "localTime": "01:00", "timeZone": "UTC", "nextRunAt": unix_now_millis(),
+    })).await.unwrap();
+    sync_schedule::tick(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await.len(), 2);
+    let persisted: Vec<JobStatus> = serde_json::from_slice(
+        &fs::read(server.state.database_path.with_file_name("sync-jobs.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted.len(), 2);
+    let status = server.get("/api/sync-sweep", &owner).await.json();
+    assert_eq!(status["pendingCount"], 4);
+    assert_eq!(status["lastQueued"], 2);
+    assert_eq!(status["booksPerNight"], 2);
+    sync_schedule::tick(&server.state).await.unwrap();
+    assert_eq!(server.state.jobs.read().await.len(), 2);
+}
+
+#[tokio::test]
+async fn full_sync_accepts_a_durable_batch_or_none_when_storage_fails() {
+    let mut server = TestServer::start(4).await;
+    let owner = server.setup_owner().await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    {
+        let mut library = server.state.library.write().await;
+        for book in &mut library.books {
+            book.reading_file = Some(ReadingFile {
+                id: "epub".into(),
+                file_name: "book.epub".into(),
+                extension: "epub".into(),
+                content_type: "application/epub+zip".into(),
+                url: "/readalong".into(),
+            });
+        }
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("book.epub"));
+    }
+    let _slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    let path = server.state.database_path.with_file_name("sync-jobs.json");
+    fs::create_dir(&path).await.unwrap();
+    let failed = server
+        .send_json("POST", "/api/sync-sweep/run", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(failed.status, StatusCode::OK);
+    assert_eq!(failed.json()["queued"], 0);
+    assert!(failed.json()["error"].is_string());
+    assert!(server.state.jobs.read().await.is_empty());
+    fs::remove_dir(&path).await.unwrap();
+
+    let accepted = server
+        .send_json("POST", "/api/sync-sweep/run", &owner, serde_json::json!({}))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert_eq!(accepted.json()["queued"], 4);
+    let persisted: Vec<JobStatus> =
+        serde_json::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(persisted.len(), 4);
+    assert_eq!(jobs.len(), 4);
+    for job in persisted {
+        assert_eq!(job.status, "queued");
+        assert_eq!(jobs[&job.id].target_id, job.target_id);
+    }
+}
+
+#[tokio::test]
+async fn recovered_sync_starts_work_once_under_its_original_id() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (book_id, _) = server.first_book_and_track(&owner).await;
+    let cli = server._root.path().join("sync-cli");
+    std::fs::write(&cli, "fixture").unwrap();
+    server.state.alignment_config.cli_path = Some(cli);
+    {
+        let mut library = server.state.library.write().await;
+        library.books[0].reading_file = Some(ReadingFile {
+            id: "epub".into(),
+            file_name: "book.epub".into(),
+            extension: "epub".into(),
+            content_type: "application/epub+zip".into(),
+            url: "/readalong".into(),
+        });
+        // An unreadable EPUB makes the resumed worker finish deterministically
+        // without executing an external aligner or downloading models.
+        library
+            .reading_paths
+            .insert("epub".into(), server._root.path().join("missing.epub"));
+    }
+    let (id, _) = create_queued_job(&server.state, "sync-generate", Some(book_id.clone())).await;
+    update_job_running(&server.state, &id).await;
+    crate::sync::save_queue(&server.state, &*server.state.jobs.read().await)
+        .await
+        .unwrap();
+    server.state.jobs = Arc::new(RwLock::new(HashMap::new()));
+    crate::sync::restore_queue(&server.state).await.unwrap();
+    let slot = server
+        .state
+        .update_manager
+        .sync_slots
+        .acquire()
+        .await
+        .unwrap();
+    crate::sync::resume_queue(&server.state).await;
+    crate::sync::resume_queue(&server.state).await;
+    let Json(duplicate) = crate::sync::enqueue_sync_map(server.state.clone(), book_id)
+        .await
+        .unwrap();
+    assert_eq!(duplicate.job_id, id);
+    assert_eq!(server.state.jobs.read().await.len(), 1);
+    assert!(!server.state.jobs.read().await[&id].resume_pending);
+    drop(slot);
+    assert!(!await_job_outcome_within(&server.state, &id, Duration::from_secs(5)).await);
+    let jobs = server.state.jobs.read().await;
+    assert_eq!(jobs[&id].status, "failed");
+    assert!(jobs[&id].running_at.is_some());
+    assert!(
+        jobs[&id]
+            .output
+            .contains("Starting readalong sync generation")
+    );
 }

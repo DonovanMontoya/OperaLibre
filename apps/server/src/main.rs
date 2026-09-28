@@ -190,6 +190,9 @@ async fn main() -> anyhow::Result<()> {
     // Auto-update eligibility checks compare this marker against the running
     // process, so record it even when the release launcher did not start us
     // (server-only packages start via start.sh / start.cmd).
+    sync::restore_queue(&state)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     record_server_pid(&config.data_dir)?;
     sweep_leftover_transfers(&config);
 

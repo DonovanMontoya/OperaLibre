@@ -14483,7 +14483,8 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
 .admin-sync-sweep-nightly input[type="checkbox"] { accent-color: var(--oxblood); width: 15px; height: 15px; }
 .admin-sync-sweep-nightly input[type="checkbox"]:disabled { cursor: not-allowed; }
 
-.admin-sync-sweep-nightly input[type="time"] {
+.admin-sync-sweep-nightly input[type="time"],
+.admin-sync-sweep-nightly select {
   min-height: 32px;
   padding: 4px 8px;
   border: 1px solid rgba(var(--ink-rgb), 0.2);
@@ -14495,7 +14496,8 @@ html.native-app .native-shell.shelf-landscape .book-list.is-grid .book-progress.
   font-variant-numeric: tabular-nums;
 }
 
-.admin-sync-sweep-nightly input[type="time"]:disabled { opacity: 0.5; }
+.admin-sync-sweep-nightly input[type="time"]:disabled,
+.admin-sync-sweep-nightly select:disabled { opacity: 0.5; }
 .admin-sync-monitor .admin-sync-sweep-outcome { color: var(--sync-done); font-size: 0.76rem; margin: 0; }
 
 @media (max-width: 700px) {
