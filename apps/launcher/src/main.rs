@@ -816,9 +816,16 @@ fn stop_server(root: &Path) -> Result<(), String> {
         ));
     }
 
+    // The updater may restart the server as soon as the old process and port
+    // disappear. Retire the old PID before signalling, so this stop cannot erase
+    // the new server's PID file after the updater writes it.
+    fs::remove_file(&pid_path)
+        .map_err(|error| format!("Could not retire {}: {error}", pid_path.display()))?;
     if let Err(error) = signal_server(pid_number, false)
         && process_is_running(pid_number)
     {
+        let _ = fs::write(&pid_path, &pid);
+        let _ = secure_file(&pid_path);
         return Err(format!("Could not stop server process {pid}: {error}"));
     }
 
@@ -834,13 +841,16 @@ fn stop_server(root: &Path) -> Result<(), String> {
         );
         let _ = signal_server(pid_number, true);
         if !wait_for_process_exit(pid_number, Duration::from_secs(5)) {
+            if !pid_path.exists() {
+                let _ = fs::write(&pid_path, &pid);
+                let _ = secure_file(&pid_path);
+            }
             return Err(format!(
                 "Could not stop server process {pid}; it is still running after being killed."
             ));
         }
     }
 
-    let _ = fs::remove_file(pid_path);
     Ok(())
 }
 
