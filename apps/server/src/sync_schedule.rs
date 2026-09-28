@@ -355,9 +355,8 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
                 .then_with(|| a.cmp(b))
         });
     }
-    let mut queued = 0;
+    let mut selected = Vec::new();
     let mut skipped = 0;
-    let mut error = None;
     let scheduled: HashSet<String> = match load(state).await {
         Ok(entries) => entries
             .into_iter()
@@ -378,7 +377,7 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
         }
     };
     for book_id in targets {
-        if queued >= limit {
+        if selected.len() >= limit {
             break;
         }
         if scheduled.contains(&book_id) {
@@ -394,19 +393,19 @@ async fn run_sweep(state: &AppState, limit: usize) -> SweepRun {
             skipped += 1;
             continue;
         }
-        match crate::sync::enqueue_sync_map(state.clone(), book_id).await {
-            Ok(_) => queued += 1,
-            Err(failure) => {
-                if error.is_none() {
-                    error = Some(failure.message);
-                }
-            }
-        }
+        selected.push(book_id);
     }
-    SweepRun {
-        queued,
-        skipped,
-        error,
+    match crate::sync::enqueue_sync_batch(state.clone(), selected).await {
+        Ok((queued, raced)) => SweepRun {
+            queued,
+            skipped: skipped + raced,
+            error: None,
+        },
+        Err(error) => SweepRun {
+            queued: 0,
+            skipped,
+            error: Some(error.message),
+        },
     }
 }
 

@@ -72,7 +72,7 @@ pub(crate) async fn resume_queue(state: &AppState) {
             continue;
         };
         if let Err(error) =
-            enqueue_sync_map_inner(state.clone(), book_id, Some(job.id.clone())).await
+            enqueue_sync_map_inner(state.clone(), book_id, Some(job.id.clone()), false).await
         {
             if error.status == StatusCode::CONFLICT || error.status.is_server_error() {
                 tracing::warn!(?error, "sync recovery will retry");
@@ -153,13 +153,111 @@ pub(crate) async fn enqueue_sync_map(
     state: AppState,
     book_id: String,
 ) -> Result<Json<JobCreated>, ApiError> {
-    enqueue_sync_map_inner(state, book_id, None).await
+    enqueue_sync_map_inner(state, book_id, None, false).await
+}
+
+/// Accept a sweep as one durable queue update. Start the workers only after
+/// the snapshot is published; a restart between publication and dispatch will
+/// recover every accepted book from that snapshot.
+pub(crate) async fn enqueue_sync_batch(
+    state: AppState,
+    book_ids: Vec<String>,
+) -> Result<(usize, usize), ApiError> {
+    if book_ids.is_empty() {
+        return Ok((0, 0));
+    }
+    let lifecycle = state
+        .update_manager
+        .sync_lifecycle
+        .clone()
+        .try_read_owned()
+        .map_err(|_| {
+            ApiError::conflict("The sync add-on is being changed. Try again when it finishes.")
+        })?;
+    if state
+        .update_manager
+        .sync_addon_runtime(state.alignment_config.cli_path.as_deref())
+        .await
+        .is_none()
+    {
+        return Err(ApiError::bad_request(
+            "Follow-along sync generation is not enabled.",
+        ));
+    }
+    let mut jobs = state.jobs.write().await;
+    let requested = book_ids.len();
+    let mut created = Vec::with_capacity(book_ids.len());
+    let mut active_books: HashSet<String> = jobs
+        .values()
+        .filter(|job| job.kind == SYNC_GENERATE_JOB_KIND && is_active_job(job))
+        .filter_map(|job| job.target_id.clone())
+        .collect();
+    let mut timestamp = next_job_timestamp(&jobs);
+    for book_id in book_ids {
+        if !active_books.insert(book_id.clone()) {
+            continue;
+        }
+        let job_id = loop {
+            let mut bytes = [0u8; 8];
+            rand::rng().fill(&mut bytes);
+            let id = format!("{:016x}", u64::from_le_bytes(bytes));
+            if !jobs.contains_key(&id) {
+                break id;
+            }
+        };
+        jobs.insert(
+            job_id.clone(),
+            JobStatus {
+                resume_pending: true,
+                id: job_id.clone(),
+                kind: SYNC_GENERATE_JOB_KIND.into(),
+                target_id: Some(book_id.clone()),
+                status: "queued".into(),
+                started_at: timestamp.to_string(),
+                running_at: None,
+                finished_at: None,
+                exit_code: None,
+                output: String::new(),
+                error: None,
+                progress: Some(JobProgress::new("Waiting for the sync queue")),
+            },
+        );
+        timestamp = timestamp.saturating_add(1);
+        created.push((book_id, job_id));
+    }
+    prune_finished_jobs(&mut jobs);
+    if let Err(error) = save_queue(&state, &jobs).await {
+        for (_, id) in &created {
+            jobs.remove(id);
+        }
+        return Err(error);
+    }
+    for (_, id) in &created {
+        if let Some(job) = jobs.get_mut(id) {
+            job.resume_pending = false;
+        }
+    }
+    drop(jobs);
+
+    let count = created.len();
+    tokio::spawn(async move {
+        let _lifecycle = lifecycle;
+        for (book_id, job_id) in created {
+            if let Err(error) =
+                enqueue_sync_map_inner(state.clone(), book_id, Some(job_id.clone()), true).await
+            {
+                update_job_finished(&state, &job_id, "failed", None, Some(error.message)).await;
+            }
+        }
+    });
+    Ok((count, requested - count))
 }
 
 async fn enqueue_sync_map_inner(
     state: AppState,
     book_id: String,
     resume_id: Option<String>,
+    already_persisted: bool,
 ) -> Result<Json<JobCreated>, ApiError> {
     let lifecycle = state
         .update_manager
@@ -243,7 +341,7 @@ async fn enqueue_sync_map_inner(
             job.resume_pending = true;
             job.progress = Some(JobProgress::new("Waiting for the sync queue"));
         }
-        if let Err(error) = save_queue(&state, &jobs).await {
+        if !already_persisted && let Err(error) = save_queue(&state, &jobs).await {
             if created && !resuming {
                 jobs.remove(&job_id);
             }
