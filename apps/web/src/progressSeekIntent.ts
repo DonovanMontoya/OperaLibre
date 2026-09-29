@@ -17,16 +17,17 @@ function key(server: string, user: string, book: string) {
 
 /** Keep a deliberate seek until its server response, including across a restart. */
 export function recordProgressSeekIntent(
-  storage: SeekStorage | null, server: string, user: string, book: string, target?: number
+  storage: SeekStorage | null, server: string, user: string, book: string, target?: number, recordedAt = Date.now()
 ) {
   if (!storage) return;
   try {
     const intent: ProgressSeekIntent = {
       id: crypto.getRandomValues(new Uint32Array(4)).join("-"),
-      recordedAt: Date.now(),
+      recordedAt,
       targetBookPosition: target !== undefined && Number.isFinite(target) ? Math.max(0, target) : null
     };
     storage.setItem(key(server, user, book), JSON.stringify(intent));
+    return intent;
   } catch {
     // In-memory seek generations still protect saves when storage is unavailable.
   }

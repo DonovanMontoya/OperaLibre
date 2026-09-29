@@ -63,6 +63,55 @@ test('native phone shelf shows in-progress books and resumes playback', async ({
   await expect(page.getByRole('region', { name: 'Now playing' })).toBeVisible();
 });
 
+test('an offline CarPlay restart survives native acknowledgement and reload', async ({ page }) => {
+  await page.addInitScript(() => {
+    const bridge = window as unknown as {
+      carSessions: unknown[];
+      carAcknowledgements: number;
+      Capacitor: unknown;
+    };
+    bridge.carSessions = [];
+    bridge.carAcknowledgements = 0;
+    bridge.Capacitor = {
+      PluginHeaders: [{ name: 'CarPlayBridge', methods: ['getState', 'acknowledgeSessions', 'setLibrary', 'addListener', 'removeListener']
+        .map(name => ({ name, rtype: 'promise' })) }],
+      nativePromise: async (_plugin: string, method: string) => {
+        if (method === 'getState') return { connected: false, sessions: JSON.stringify(bridge.carSessions) };
+        if (method === 'acknowledgeSessions') {
+          bridge.carSessions = [];
+          bridge.carAcknowledgements += 1;
+        }
+        return {};
+      }
+    };
+  });
+  const { books } = await openShell(page, true, false, true);
+  const book = books[0];
+  let disconnected = true;
+  const writes: Record<string, unknown>[] = [];
+  await page.route(`**/api/books/${book.id}/progress`, async route => {
+    const initial = { bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 60,
+      bookPositionSeconds: 60, durationSeconds: 240, updatedAt: book.progress!.updatedAt };
+    if (route.request().method() === 'GET') return route.fulfill({ json: initial });
+    if (disconnected) return route.abort('internetdisconnected');
+    const saved = route.request().postDataJSON() as Record<string, unknown>;
+    writes.push(saved);
+    await route.fulfill({ json: { ...initial, ...saved, updatedAt: new Date().toISOString() } });
+  });
+  await page.evaluate(session => {
+    (window as unknown as { carSessions: unknown[] }).carSessions = [session];
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, { bookId: book.id, trackId: book.tracks[0].id, positionSeconds: 0, bookPositionSeconds: 0,
+    durationSeconds: 240, updatedAt: Date.now() - 1_000, intentionalRegression: true });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { carAcknowledgements: number }).carAcknowledgements)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1.')).length)).toBe(1);
+  disconnected = false;
+  await page.reload();
+  await expect.poll(() => writes.length).toBeGreaterThan(0);
+  expect(writes[0]).toMatchObject({ bookPositionSeconds: 0, intentionalSeek: true, intentionalRegression: true });
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1.')).length)).toBe(0);
+});
+
 test('web readers can connect Libro.fm without native Settings', async ({ page }) => {
   const { writes } = await openShell(page, false);
   await page.getByRole('button', { name: 'Get books', exact: true }).click();
