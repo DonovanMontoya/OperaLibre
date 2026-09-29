@@ -6,6 +6,7 @@ export type QueuedProgressSave = {
   progress: Progress;
   isPaused: boolean;
   intentionalSeekGeneration: number;
+  seekIntentId?: string;
   // Whether the seek behind that generation also went backwards far enough to
   // need the server's near-zero reset guard lifted (see
   // shouldFlagIntentionalRegression). Decided when the save is queued, from

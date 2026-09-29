@@ -15,6 +15,7 @@ import { getCachedProgress } from "./offline";
 import { getDeviceBooks, getDeviceProgress } from "./localLibrary";
 import { getProgress, getServerStorageKey, saveProgress } from "./api";
 import type { PendingSeek } from "./playbackTypes";
+import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 // The restore effect's own /progress reads; local copies cover the wait.
 const RESTORE_PROGRESS_TIMEOUT_MS = 8_000;
@@ -191,13 +192,15 @@ export function usePlaybackRestore({
       // fresh install that hits one failed request opens the book at zero and
       // the next save wipes the real position on the server too.
       const listed = progressFromBookSummary(playbackBook.id, playbackBook.progress);
+      const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id);
+      const optimisticSeekOptions = freshestLocal ? progressSeekOptions(seekIntent, freshestLocal, listed?.bookPositionSeconds) : null;
       // Resume from the best copy already on the device before asking the
       // server. Waiting on that request left the player at 0:00 for the whole
       // network timeout whenever the server was unreachable. A near-zero
       // local copy that outranks substantial listed progress by timestamp
       // alone is distrusted the same way the reconciliation below distrusts
       // it — showing 0:00 here is what tempts a listener to "fix" it.
-      const optimistic = isSuspectProgressReset(freshestLocal, listed)
+      const optimistic = !optimisticSeekOptions?.intentionalRegression && isSuspectProgressReset(freshestLocal, listed)
         ? listed
         : freshestProgress(freshestLocal, listed);
       applyProgress(optimistic);
@@ -238,23 +241,30 @@ export function usePlaybackRestore({
           lastKnownServer.bookPositionSeconds
         );
       }
-      const suspectLocalReset = isSuspectProgressReset(freshestLocal, lastKnownServer);
+      const seekOptions = freshestLocal ? progressSeekOptions(seekIntent, freshestLocal, lastKnownServer?.bookPositionSeconds) : null;
+      const suspectLocalReset = !seekOptions?.intentionalRegression && isSuspectProgressReset(freshestLocal, lastKnownServer);
       const localIsNewer =
         !!freshestLocal &&
         !suspectLocalReset &&
         (!lastKnownServer || progressTimestamp(freshestLocal.updatedAt) > progressTimestamp(lastKnownServer.updatedAt));
       let target = localIsNewer ? freshestLocal : lastKnownServer ?? freshestLocal;
       let serverCorrectedLocal = false;
+      if (!localIsNewer && serverReachable && lastKnownServer) {
+        acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id, seekIntent?.id);
+      }
       if (localIsNewer) {
         updateBookProgress(playbackBook.id, freshestLocal);
         if (serverReachable) {
           const saved = await saveProgress(
             playbackBook.id,
             freshestLocal,
-            { isPaused: true }
+            { isPaused: true, ...seekOptions }
           ).catch(() => null);
           if (cancelled || playbackActionVersionRef.current !== restoreActionVersion) return;
           if (saved) {
+            if (seekOptions?.intentionalSeek) {
+              acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id, seekIntent?.id);
+            }
             const currentCheckpoint = readProgressCheckpoint(
               window.localStorage,
               getServerStorageKey(),

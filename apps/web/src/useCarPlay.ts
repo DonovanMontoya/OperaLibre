@@ -17,6 +17,7 @@ import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
 import { writeProgressCheckpoint } from "./reliability";
 import type { QueuedProgressSave } from "./playbackTypes";
+import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
 export function useCarPlay({
   acknowledgedSeekGenerationRef,
@@ -224,6 +225,10 @@ export function useCarPlay({
         updatedAt: new Date(session.updatedAt).toISOString(),
         finishedOverride: book.progress?.finishedOverride ?? null
       };
+      const seekIntent = session.intentionalRegression && book.source !== "device"
+        ? recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id,
+          progress.bookPositionSeconds, session.updatedAt)
+        : undefined;
       progressMutationVersion.current += 1;
       writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, progress);
       void cacheProgress(currentUser.id, progress).catch(warnCacheFailure("cache listening progress"));
@@ -233,6 +238,7 @@ export function useCarPlay({
         bookId: book.id,
         progress,
         isPaused: true,
+        seekIntentId: seekIntent?.id,
         // A chapter jump or a restart in the car lands here as a backwards
         // move the server would otherwise refuse. The generation has to clear
         // the last acknowledged one for the flag to survive the queue.
