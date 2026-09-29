@@ -3,7 +3,9 @@ import type { Book } from "./types";
 import { isSupportedAudioFileName, SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import { uploadAudiobook, uploadEbook } from "./api";
 import { FilePicker, type PickedFile } from "@capawesome/capacitor-file-picker";
-import { addDeviceEpub } from "./localLibrary";
+import { addDeviceEpub, getDeviceBooks } from "./localLibrary";
+import { libraryAfterUpload } from "./libraryMerge";
+import { Capacitor } from "@capacitor/core";
 import { errorMessage } from "./formatting";
 import type { LibrarySource } from "./shelfSort";
 
@@ -62,7 +64,8 @@ export function useUploads({
     try {
       const nextBooks = await uploadAudiobook(uploadBookName.trim(), uploadFiles);
       const uploadedBook = nextBooks.find((book) => !existingIds.has(book.id));
-      setBooks(nextBooks);
+      const deviceBooks = Capacitor.isNativePlatform() ? getDeviceBooks() : [];
+      setBooks((existing) => libraryAfterUpload(existing, nextBooks, deviceBooks));
       reconcileServerBookGains(nextBooks);
       setIsOffline(false);
       setError(null);
