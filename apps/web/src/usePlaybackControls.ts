@@ -14,7 +14,8 @@ import {
   shouldResumeSavedPosition,
   summarizeBookProgress
 } from "./reliability";
-import { getFreshProgress } from "./api";
+import { getFreshProgress, getServerStorageKey } from "./api";
+import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 import { normalizePlaybackSpeed } from "./playbackSpeed";
 import { writeStoredBookGains, writeStoredSpeed } from "./appStorage";
 import type { PendingSeek } from "./playbackTypes";
@@ -252,6 +253,7 @@ export function usePlaybackControls({
       setRestoredPlaybackBookId(resolvedBookId);
     }
     if (deliberateSeek && bookId) {
+      recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, bookId, seekTargetBookPosition);
       intentionalSeekGenerationRef.current.set(
         bookId,
         (intentionalSeekGenerationRef.current.get(bookId) ?? 0) + 1

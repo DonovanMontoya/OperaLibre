@@ -21,6 +21,7 @@ import { startupDestinationAfterLoad } from "./startup";
 import { getBooks, getLibationBooks, getServerStorageKey, isServerNotReadyError, saveProgress } from "./api";
 import { cacheLibrary, getCachedLibrary, getCachedProgress } from "./offline";
 import type { NativeTab } from "./nativeTabs";
+import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 /**
  * Loads the library from the server, the offline cache or the device, and
@@ -205,10 +206,14 @@ export function useLibrary({
         if (!isCurrentRequest()) return;
         const local = freshestProgress(mappedDevice, checkpoint, cached);
         const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
+        const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
         if (
           !local ||
           (serverBook?.progress && progressTimestamp(local.updatedAt) <= progressTimestamp(serverBook.progress.updatedAt))
         ) {
+          if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
+            acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+          }
           return;
         }
         const location = resolveProgressLocation(book.tracks, local);
@@ -219,12 +224,16 @@ export function useLibrary({
           trackId: location.trackId,
           positionSeconds: location.positionSeconds
         };
+        const seekOptions = progressSeekOptions(seekIntent, attempted, serverBook?.progress?.bookPositionSeconds);
         const saved = await saveProgress(
           book.id,
           attempted,
-          { isPaused: true }
+          { isPaused: true, ...seekOptions }
         ).catch(() => null);
         if (!saved || !isCurrentRequest()) return;
+        if (seekOptions.intentionalSeek) {
+          acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
+        }
         const currentCheckpoint = readProgressCheckpoint(
           window.localStorage,
           getServerStorageKey(),

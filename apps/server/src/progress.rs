@@ -527,8 +527,8 @@ pub(crate) fn decide_completion_write(
             update.book_position_seconds,
         );
         saved.duration_seconds = update.duration_seconds.or(track.duration_seconds);
-        saved.updated_at = next_progress_timestamp(previous, now_millis);
     }
+    saved.updated_at = next_progress_timestamp(previous, now_millis);
     saved.finished_override = Some(update.finished);
     let backup_previous = previous.is_some_and(|previous| {
         previous.book_position_seconds - saved.book_position_seconds

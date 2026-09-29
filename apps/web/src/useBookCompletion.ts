@@ -8,6 +8,7 @@ import { haptic } from "./native";
 import type { DeviceNotice } from "./ConfirmDialogs";
 import type { QueuedProgressSave } from "./playbackTypes";
 import type { Dispatch, RefObject, SetStateAction } from "react";
+import { acknowledgeProgressSeekIntent, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 
 export function useBookCompletion({
   audioRef,
@@ -59,6 +60,7 @@ export function useBookCompletion({
     if (completionPendingBookId === book.id) return false;
     setCompletionPendingBookId(book.id);
     setCompletionError(null);
+    const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
     try {
       const closingActiveBook = playbackBookId === book.id && (finished || resetToUnplayed);
       const reporting = closingActiveBook ? playbackReportRef.current : null;
@@ -129,6 +131,7 @@ export function useBookCompletion({
         );
         void cacheProgress(currentUser.id, completedProgress).catch(warnCacheFailure("cache listening progress"));
       }
+      acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
 
       setBooks((existing) => {
         const next = existing.map((candidate) =>
