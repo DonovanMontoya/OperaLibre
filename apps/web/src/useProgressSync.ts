@@ -19,6 +19,7 @@ import type { PendingSeek, QueuedProgressSave } from "./playbackTypes";
 import type { NativeForegroundSyncGate } from "./nativeAudioState";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { NativeTab } from "./nativeTabs";
+import { acknowledgeProgressSeekIntent, progressSeekStorage, progressSeekOptions, readProgressSeekIntent } from "./progressSeekIntent";
 
 
 export function useProgressSync({
@@ -184,6 +185,8 @@ export function useProgressSync({
     }
 
     const existingQueued = queuedProgressSaves.current.get(playbackBook.id);
+    const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, playbackBook.id);
+    const persistedIntent = progressSeekOptions(seekIntent, localProgress, acknowledgedServerPositionRef.current.get(playbackBook.id));
     const intentionalSeekGeneration = Math.max(
       existingQueued?.intentionalSeekGeneration ?? 0,
       intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0
@@ -193,6 +196,7 @@ export function useProgressSync({
     // near-zero clock persisted after it into the authoritative copy.
     const intentionalRegression =
       (existingQueued?.intentionalRegression ?? false) ||
+      persistedIntent.intentionalRegression ||
       shouldFlagIntentionalRegression(
         intentionalSeekTargetRef.current.get(playbackBook.id),
         acknowledgedServerPositionRef.current.get(playbackBook.id)
@@ -202,6 +206,7 @@ export function useProgressSync({
       progress: localProgress,
       isPaused: nativeAudio ? !nativePlaybackPlayingRef.current : audioRef.current.paused,
       intentionalSeekGeneration,
+      seekIntentId: persistedIntent.intentionalSeek ? seekIntent?.id : undefined,
       intentionalRegression
     });
     return flushProgressSaveQueue();
@@ -221,6 +226,8 @@ export function useProgressSync({
         queuedProgressSaves.current.delete(entry.bookId);
         const abortController = new AbortController();
         progressSaveAbortController.current = abortController;
+        const persistedSeekPending = !!entry.seekIntentId
+          && readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId)?.id === entry.seekIntentId;
         try {
           const saved = await saveProgress(
             entry.bookId,
@@ -235,14 +242,15 @@ export function useProgressSync({
               isPaused: entry.isPaused,
               intentionalRegression:
                 entry.intentionalRegression
-                && entry.intentionalSeekGeneration
-                  > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
+                && (persistedSeekPending || entry.intentionalSeekGeneration
+                  > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0)),
               intentionalSeek:
-                entry.intentionalSeekGeneration
+                persistedSeekPending || entry.intentionalSeekGeneration
                 > (acknowledgedSeekGenerationRef.current.get(entry.bookId) ?? 0),
               signal: abortController.signal
             }
           );
+          acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, entry.bookId, entry.seekIntentId);
           // Whatever the server answered is now its position — the copy a
           // later rewind is measured against.
           acknowledgedServerPositionRef.current.set(entry.bookId, saved.bookPositionSeconds);

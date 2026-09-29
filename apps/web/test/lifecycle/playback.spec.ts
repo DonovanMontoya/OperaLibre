@@ -185,6 +185,46 @@ test('offline pause survives tab closure and synchronizes after reconnect', asyn
   await expect.poll(async () => (await server.progress(book.id))?.positionSeconds ?? 0).toBeGreaterThanOrEqual(saved);
 });
 
+for (const scenario of [
+  { name: 'rewind', target: 90, remote: null },
+  { name: 'restart', target: 0, remote: null },
+  { name: 'rewind superseded by another device', target: 90, remote: 160 }
+]) {
+  test(`an offline ${scenario.name} survives tab closure and reconnect`, async ({ page, context, server }) => {
+    const book = await setup(page, server);
+    await play(page);
+    const seek = page.getByRole('slider', { name: /^Playback position/ }).first();
+    await seek.fill('120');
+    await seek.press('Tab');
+    await expect.poll(() => position(page)).toBeGreaterThanOrEqual(119);
+    await expect.poll(async () => (await server.progress(book.id))?.bookPositionSeconds ?? 0).toBeGreaterThanOrEqual(119);
+    await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) =>
+      audio.buffered.length ? audio.buffered.end(audio.buffered.length - 1) : 0)).toBeGreaterThan(150);
+    await context.setOffline(true);
+    const target = scenario.target;
+    await seek.fill(String(target));
+    await seek.press('Tab');
+    await expect.poll(async () => Math.abs(await position(page) - target)).toBeLessThan(3);
+    await page.getByRole('button', { name: 'Pause', exact: true }).first().click();
+    await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1.')).length)).toBe(1);
+    const saved = await position(page);
+    await page.close();
+    if (scenario.remote !== null) {
+      await server.json(`/api/books/${book.id}/progress`, 'PUT', {
+        trackId: book.tracks[0].id, positionSeconds: scenario.remote, bookPositionSeconds: scenario.remote, intentionalSeek: true
+      });
+    }
+    await context.setOffline(false);
+    const reopened = await context.newPage();
+    await reopened.goto(server.url);
+    const expected = scenario.remote ?? saved;
+    await expectResume(reopened, expected);
+    await expect.poll(async () => Math.abs((await server.progress(book.id))!.bookPositionSeconds - expected)).toBeLessThan(1);
+    await expect.poll(() => reopened.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('operalibre.progressSeekIntent.v1.')).length)).toBe(0);
+  });
+}
+
 test('signing out stops audio and keeps listening progress scoped to the account', async ({ page, server }) => {
   const book = await setup(page, server);
   await server.json('/api/users', 'POST', { username: 'reader', password: 'fixture-password-456', isAdmin: false });
