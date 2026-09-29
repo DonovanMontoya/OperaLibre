@@ -3,11 +3,9 @@ import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { readAudioFileTags, rangeSource, type AudioFileTags, type EmbeddedCover } from "./audioTags";
 import { isSupportedAudioFileName, storedMediaExtension } from "./mediaFiles";
-import { mergeDeviceReadingFiles } from "./deviceEpub";
+import { mergeLibraryBooks } from "./libraryMerge";
 import type { AuthUser, Book, Chapter, MetadataSummary, Progress, Track } from "./types";
 import {
-  deviceBookMatchesServer,
-  progressTimestamp,
   summarizeBookProgress
 } from "./reliability.ts";
 
@@ -591,34 +589,5 @@ export async function addDeviceEpub(bookId: string, file: Pick<PickedFile, "name
 
 /** Attach a picked-file copy to an equivalent server book and hide the duplicate device row. */
 export function mergeDeviceAndServerBooks(serverBooks: Book[], deviceBooks = getDeviceBooks()): Book[] {
-  const unmatched = new Set(deviceBooks.map((book) => book.id));
-  const merged = serverBooks.map((serverBook) => {
-    const candidates = deviceBooks.filter((candidate) =>
-      unmatched.has(candidate.id) &&
-      deviceBookMatchesServer(candidate, serverBook)
-    );
-    if (candidates.length !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
-    const deviceBook = candidates[0];
-    const matchingServerCount = serverBooks.filter((candidate) =>
-      deviceBookMatchesServer(deviceBook, candidate)
-    ).length;
-    if (matchingServerCount !== 1) return { ...serverBook, tags: serverBook.tags ?? [], source: "server" as const };
-    unmatched.delete(deviceBook.id);
-    const deviceProgressIsNewer = !!deviceBook.progress && (
-      !serverBook.progress || progressTimestamp(deviceBook.progress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt)
-    );
-    return {
-      ...serverBook,
-      ...mergeDeviceReadingFiles(serverBook, deviceBook),
-      tags: serverBook.tags ?? [],
-      source: "server" as const,
-      deviceBookId: deviceBook.id,
-      progress: deviceProgressIsNewer ? deviceBook.progress : serverBook.progress,
-      tracks: serverBook.tracks.map((track, index) => ({
-        ...track,
-        localFilePath: deviceBook.tracks[index]?.localFilePath
-      }))
-    };
-  });
-  return [...merged, ...deviceBooks.filter((book) => unmatched.has(book.id))];
+  return mergeLibraryBooks(serverBooks, deviceBooks);
 }
