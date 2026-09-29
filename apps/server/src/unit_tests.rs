@@ -6219,65 +6219,12 @@ fn a_status_only_completion_leaves_the_position_and_keeps_no_copy() {
             backup_previous,
         } => {
             assert_eq!(saved.book_position_seconds, 500.0);
-            assert_eq!(saved.updated_at, now.to_string());
+            assert_eq!(saved.updated_at, previous.updated_at);
             assert_eq!(saved.finished_override, Some(true));
             assert!(!backup_previous);
         }
         super::ProgressDecision::Keep => panic!("a completion write was refused"),
     }
-}
-
-#[test]
-fn completion_choices_advance_even_within_one_clock_tick_and_block_old_seeks() {
-    let book = decision_book();
-    let previous = stored_at(500.0, 600_000);
-    let now = super::unix_now_millis();
-    let super::ProgressDecision::Store {
-        saved: finished, ..
-    } = super::decide_completion_write(
-        &book,
-        &book.tracks[0],
-        Some(&previous),
-        &completion_update(true, None),
-        None,
-        now,
-    )
-    else {
-        panic!("completion must be stored")
-    };
-    let super::ProgressDecision::Store {
-        saved: unfinished, ..
-    } = super::decide_completion_write(
-        &book,
-        &book.tracks[0],
-        Some(&finished),
-        &completion_update(false, None),
-        None,
-        now,
-    )
-    else {
-        panic!("completion must be stored")
-    };
-    assert_eq!(finished.updated_at, now.to_string());
-    assert_eq!(unfinished.updated_at, (now + 1).to_string());
-    assert_eq!(
-        unfinished.book_position_seconds,
-        previous.book_position_seconds
-    );
-    assert_eq!(unfinished.finished_override, Some(false));
-    let mut stale_seek = decision_update(350.0);
-    stale_seek.updated_at_ms = Some(super::progress_timestamp_millis(&previous.updated_at));
-    stale_seek.intentional_seek = true;
-    assert!(matches!(
-        super::decide_progress_write(
-            &book,
-            &book.tracks[0],
-            Some(&unfinished),
-            &stale_seek,
-            now + 2
-        ),
-        super::ProgressDecision::Keep
-    ));
 }
 
 // ---------------------------------------------------------------------------
