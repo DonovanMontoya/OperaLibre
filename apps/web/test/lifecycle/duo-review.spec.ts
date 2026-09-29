@@ -11,7 +11,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
-async function openShell(page: Page, native: boolean, admin = false, inProgress = false, books = library(6)) {
+async function openShell(page: Page, native: boolean, admin = false, inProgress = false, books = library(6), extraDeviceRows = 0) {
   const user = { id: 'review-reader', username: 'Reader', isAdmin: admin, isOwner: admin,
     canApproveLibationRequests: admin, allowedBookIds: null, libationAccess: 'direct',
     shareProgress: false, announceFinishes: false, notifyFinishes: false, createdAt: '1700000000' };
@@ -44,9 +44,33 @@ async function openShell(page: Page, native: boolean, admin = false, inProgress 
     await route.fulfill({ json: body });
   });
   await page.goto(native ? `${url}test/duo-shell.html` : url);
-  await expect(page.locator('.book-row')).toHaveCount(6);
+  await expect(page.locator('.book-row')).toHaveCount(books.length + extraDeviceRows);
   return { books, writes };
 }
+
+test('native audiobook upload preserves device books and paired local copies', async ({ page }) => {
+  const serverBooks = library(6);
+  const paired = { ...serverBooks[0], id: 'device-paired', source: 'device', deviceBookId: 'device-paired',
+    tracks: serverBooks[0].tracks.map(track => ({ ...track, id: `device-${track.id}`, localFilePath: `device-library/paired/${track.fileName}` })) };
+  const deviceOnly = { ...library(1)[0], id: 'device-only', title: 'My imported book', source: 'device', deviceBookId: 'device-only',
+    tracks: library(1)[0].tracks.map(track => ({ ...track, id: `import-${track.id}`, localFilePath: `device-library/import/${track.fileName}` })) };
+  await page.addInitScript(books => localStorage.setItem('operalibre.deviceLibrary.v1', JSON.stringify(books)), [paired, deviceOnly]);
+  await openShell(page, true, true, false, serverBooks, 1);
+  const uploaded = { ...library(7)[6], title: 'Uploaded audiobook' };
+  await page.route('**/api/library/upload', route => route.fulfill({ json: [...serverBooks, uploaded] }));
+  await page.getByRole('button', { name: 'Upload audiobook', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Upload audiobook' });
+  await dialog.getByLabel('Book name', { exact: true }).fill(uploaded.title);
+  await dialog.locator('input[type=file]').setInputFiles({ name: 'chapter.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
+  await dialog.getByRole('button', { name: 'Upload to library', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  // Return from the uploaded book to the shelf; every native copy is still visible.
+  await page.getByRole('button', { name: 'Shelf', exact: true }).click();
+  await expect(page.locator('.book-row')).toHaveCount(8);
+  await expect(page.locator('.book-row').filter({ hasText: deviceOnly.title })).toBeVisible();
+  await page.locator('.book-row').filter({ hasText: paired.title }).click();
+  await expect(page.getByLabel('Imported from this device')).toBeVisible();
+});
 
 test('native phone shelf shows in-progress books and resumes playback', async ({ page }) => {
   await page.setViewportSize({ width: 393, height: 852 });
