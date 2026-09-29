@@ -53,6 +53,18 @@ test("pending seeks are scoped by book, account and server", () => {
   assert.equal(readProgressSeekIntent(disk, "server", "reader", "other"), null);
 });
 
+test("an adopted offline CarPlay seek uses its original checkpoint time after restarting", () => {
+  const disk = storage();
+  const updatedAt = Date.now() - 60_000;
+  const intent = recordProgressSeekIntent(disk, "server", "reader", "book", 0, updatedAt)!;
+  assert.equal(intent.recordedAt, updatedAt);
+  const pending = readProgressSeekIntent(disk, "server", "reader", "book");
+  assert.deepEqual(progressSeekOptions(pending, { ...checkpoint(0), updatedAt: new Date(updatedAt).toISOString() }, 400),
+    { intentionalSeek: true, intentionalRegression: true });
+  acknowledgeProgressSeekIntent(disk, "server", "reader", "book", intent.id);
+  assert.equal(readProgressSeekIntent(disk, "server", "reader", "book"), null);
+});
+
 test("blocked storage does not interrupt playback", () => {
   const blocked = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() { throw new Error("blocked"); } };
   recordProgressSeekIntent(blocked, "server", "reader", "book", 350);
