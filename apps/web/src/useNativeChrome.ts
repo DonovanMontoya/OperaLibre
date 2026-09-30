@@ -7,6 +7,7 @@ import type { ShelfLayout } from "./shelfSort";
 import type { AppearanceMode } from "./appearance";
 
 export function useNativeChrome({
+  startupViewReady,
   appearanceMode,
   brokenLibationAccounts,
   capabilities,
@@ -25,6 +26,7 @@ export function useNativeChrome({
   shelfLayout,
   shellRef
 }: {
+  startupViewReady: boolean;
   appearanceMode: AppearanceMode;
   brokenLibationAccounts: LibationAccount[];
   capabilities: ServerCapabilities;
@@ -64,7 +66,9 @@ export function useNativeChrome({
   const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
     tabs: iosTabs,
     selected: nativeTabSelection(nativeTab, iosTabs),
-    visible: !readalongOpen || readerClosing,
+    // UIKit sits above the web launch cover. Keep its first selection hidden
+    // until the same restoration boundary that reveals the page.
+    visible: startupViewReady && (!readalongOpen || readerClosing),
     appearance: appearanceMode,
     chrome,
     bar: barTint

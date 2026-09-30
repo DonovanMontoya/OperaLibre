@@ -66,7 +66,7 @@ import {
   isBookDownloaded
 } from "./offline";
 import { haptic } from "./native";
-import { type NativeTab } from "./nativeTabs";
+import { useStartupNavigation } from "./useStartupNavigation";
 import {
   isIPadNavigator,
   isRotationLockAvailable
@@ -471,7 +471,7 @@ function MainApp({
   // data, and demo/local libraries have no other listeners to compare against.
   const sharedProgressAvailable = capabilities.sharedActivity;
   const rotationLockAvailable = isRotationLockAvailable();
-  const [nativeTab, setNativeTab] = useState<NativeTab>("shelf");
+  const { nativeTab, setNativeTab, setStartupTab, startupNavigationOverridden } = useStartupNavigation();
   const playbackFold = useDeviceFold();
   const [gamesEnabled, setGamesEnabled] = useState(readGamesEnabled);
   const readerPreferences = useReaderPreferences();
@@ -1376,7 +1376,8 @@ function MainApp({
     setIsOffline,
     setLibationBooks,
     setLibationBooksLoaded,
-    setNativeTab,
+    setNativeTab: setStartupTab,
+    startupNavigationOverridden,
     setPlaybackBookId,
     setSelectedBookId,
     setStartupViewReady,
@@ -1860,6 +1861,7 @@ function MainApp({
   });
 
   const nativeChrome = useNativeChrome({
+    startupViewReady,
     appearanceMode,
     brokenLibationAccounts,
     capabilities,
@@ -2477,7 +2479,7 @@ function MainApp({
         />
       ) : null}
 
-      {native && !nativeTabsReady ? (
+      {native && startupViewReady && !nativeTabsReady ? (
         <nav className="spine-tabs" aria-label="Primary">
           <button
             type="button"
