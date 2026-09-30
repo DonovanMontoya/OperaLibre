@@ -15,7 +15,7 @@ import { buildCarLibrarySnapshot, type CarPlaybackSession, carSessionIsWorthSavi
 import { cacheProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
-import { writeProgressCheckpoint } from "./reliability";
+import { pendingProgress, progressTimestamp, readProgressCheckpoint, writeProgressCheckpoint } from "./reliability";
 import type { QueuedProgressSave } from "./playbackTypes";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
@@ -216,7 +216,10 @@ export function useCarPlay({
       if (!book) continue;
       handled.push(session);
       if (!carSessionIsWorthSaving(session, book)) continue;
-      const progress: Progress = {
+      const checkpoint = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
+      const newIntentionalSeek = session.intentionalRegression
+        && (!checkpoint?.localUpdatedAt || session.updatedAt > progressTimestamp(checkpoint.localUpdatedAt));
+      const progress: Progress = pendingProgress({
         bookId: book.id,
         trackId: session.trackId,
         positionSeconds: Math.max(0, session.positionSeconds),
@@ -224,8 +227,8 @@ export function useCarPlay({
         durationSeconds: session.durationSeconds ?? book.durationSeconds ?? null,
         updatedAt: new Date(session.updatedAt).toISOString(),
         finishedOverride: book.progress?.finishedOverride ?? null
-      };
-      const seekIntent = session.intentionalRegression && book.source !== "device"
+      }, checkpoint, book.progress?.updatedAt, newIntentionalSeek);
+      const seekIntent = newIntentionalSeek && book.source !== "device"
         ? recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id,
           progress.bookPositionSeconds, session.updatedAt)
         : undefined;
@@ -242,10 +245,10 @@ export function useCarPlay({
         // A chapter jump or a restart in the car lands here as a backwards
         // move the server would otherwise refuse. The generation has to clear
         // the last acknowledged one for the flag to survive the queue.
-        intentionalSeekGeneration: session.intentionalRegression
+        intentionalSeekGeneration: newIntentionalSeek
           ? (acknowledgedSeekGenerationRef.current.get(book.id) ?? 0) + 1
           : 0,
-        intentionalRegression: session.intentionalRegression
+        intentionalRegression: newIntentionalSeek
       });
     }
     if (queuedProgressSaves.current.size > 0) await flushProgressSaveQueue();

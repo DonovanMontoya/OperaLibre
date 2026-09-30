@@ -9,8 +9,7 @@ import {
 import type { AuthUser, Book, LibationBook, Progress } from "./types";
 import {
   freshestProgress,
-  progressAfterSave,
-  progressTimestamp,
+  progressNeedsSync,
   readProgressCheckpoint,
   resolveActivePlaybackBookId,
   resolveBookId,
@@ -78,7 +77,7 @@ export function useLibrary({
   setStartupViewReady: Dispatch<SetStateAction<boolean>>;
   startupNavigationResolved: RefObject<boolean>;
   startupViewReadyRef: RefObject<boolean>;
-  storeCanonicalServerProgress: (book: Book, saved: Progress) => void;
+  storeCanonicalServerProgress: (book: Book, saved: Progress, attempted?: Progress | null) => void;
 }) {
   const loadBooks = useCallback(async () => {
     const requestGeneration = ++libraryRequestGenerationRef.current;
@@ -208,8 +207,7 @@ export function useLibrary({
         const serverBook = serverBooks.find((candidate) => candidate.id === book.id);
         const seekIntent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
         if (
-          !local ||
-          (serverBook?.progress && progressTimestamp(local.updatedAt) <= progressTimestamp(serverBook.progress.updatedAt))
+          !local || !progressNeedsSync(local, serverBook?.progress)
         ) {
           if (local && serverBook?.progress && progressSeekOptions(seekIntent, local, serverBook.progress.bookPositionSeconds).intentionalSeek) {
             acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
@@ -234,15 +232,7 @@ export function useLibrary({
         if (seekOptions.intentionalSeek) {
           acknowledgeProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id, seekIntent?.id);
         }
-        const currentCheckpoint = readProgressCheckpoint(
-          window.localStorage,
-          getServerStorageKey(),
-          currentUser.id,
-          book.id
-        );
-        if (progressAfterSave(currentCheckpoint, attempted, saved) === saved) {
-          storeCanonicalServerProgress(book, saved);
-        }
+        storeCanonicalServerProgress(book, saved, attempted);
       })).catch(() => undefined);
       if (!isCurrentRequest()) return;
       applyLoadedBooks(nextBooks, true);

@@ -7,6 +7,11 @@ import {
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
+  pendingProgress,
+  progressNeedsSync,
+  rebasePendingProgress,
+  resolveBookPosition,
+  syncedProgress,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -651,4 +656,56 @@ test("resuming an unmeasurable track preserves the saved track position", () => 
     { trackId: "t2", positionSeconds: 1200 },
     "a measured duration still bounds the resume point"
   );
+});
+
+test("whole-book seeks keep the last track's start offset at the exact endpoint", () => {
+  assert.deepEqual(resolveBookPosition([{ id: "one", durationSeconds: 3600 }], 3600),
+    { trackId: "one", positionSeconds: 3600 });
+  const tracks = [{ id: "one", durationSeconds: 1800 }, { id: "two", durationSeconds: 1800 }];
+  assert.deepEqual(resolveBookPosition(tracks, 3600), { trackId: "two", positionSeconds: 1800 });
+  assert.deepEqual(resolveBookPosition(tracks, 1800), { trackId: "two", positionSeconds: 0 });
+  assert.deepEqual(resolveBookPosition(tracks, 4000), { trackId: "two", positionSeconds: 1800 });
+  assert.deepEqual(resolveBookPosition(tracks, -1), { trackId: "one", positionSeconds: 0 });
+});
+
+test("dirty offline progress outranks server clocks until acknowledged", () => {
+  const server = progress({ bookPositionSeconds: 1000, updatedAt: "2026-09-30T12:00:00Z" });
+  const recorded = progress({ bookPositionSeconds: 1060, updatedAt: "2026-09-30T11:56:00Z" });
+  const local = pendingProgress(recorded, syncedProgress(server, "2026-09-30T11:55:00Z"));
+  const disk = memoryStorage();
+  writeProgressCheckpoint(disk, "server", "reader", local);
+  const reopened = readProgressCheckpoint(disk, "server", "reader", local.bookId)!;
+  assert.equal(freshestProgress(server, reopened), reopened);
+  assert.equal(progressNeedsSync(reopened, server), true);
+  assert.equal(reopened.baseUpdatedAt, server.updatedAt);
+  assert.equal(adoptableServerProgress(reopened, server), null);
+  const saved = syncedProgress({ ...server, bookPositionSeconds: 1060, updatedAt: "2026-09-30T12:01:01Z" }, recorded.updatedAt);
+  assert.equal(freshestProgress(reopened, saved), saved);
+  assert.equal(progressNeedsSync(saved, server), false);
+});
+
+test("acknowledging an in-flight save only rebases newer pending edits", () => {
+  const canonical = syncedProgress(progress(), "2025-07-11T00:50:00Z");
+  const attempted = pendingProgress(progress({ bookPositionSeconds: 40, updatedAt: "2025-07-11T00:51:00Z" }), canonical);
+  const newer = pendingProgress(progress({ bookPositionSeconds: 50, updatedAt: "2025-07-11T00:51:02Z" }), attempted);
+  const saved = progress({ bookPositionSeconds: 40, updatedAt: "2025-07-11T01:01:01Z", accepted: true });
+  const rebased = rebasePendingProgress(newer, attempted, saved);
+  assert.equal(rebased.bookPositionSeconds, 50);
+  assert.equal(rebased.updatedAt, newer.updatedAt);
+  assert.equal(rebased.baseUpdatedAt, saved.updatedAt);
+  assert.equal(rebased.syncStatus, "pending");
+  assert.equal(progressNeedsSync(rebased, saved), true);
+  const refused = { ...saved, bookPositionSeconds: 1800 };
+  assert.equal(rebasePendingProgress(newer, attempted, refused), newer);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: false }), newer);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: undefined }), newer);
+});
+
+test("local mutations in the same millisecond stay distinct from their acknowledgement", () => {
+  const recordedAt = "2026-09-30T12:00:00.000Z";
+  const acknowledged = syncedProgress(progress({ updatedAt: "1790769600000" }), recordedAt);
+  const edit = pendingProgress(progress({ updatedAt: recordedAt, bookPositionSeconds: 40 }), acknowledged);
+  assert.equal(freshestProgress(acknowledged, edit), edit);
+  const saved = syncedProgress({ ...edit, updatedAt: "1790769600001" }, edit.localUpdatedAt);
+  assert.equal(freshestProgress(edit, saved), saved);
 });

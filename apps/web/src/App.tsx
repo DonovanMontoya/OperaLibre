@@ -1,4 +1,5 @@
 import { useDeviceFold } from "./deviceFold";
+import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
@@ -875,7 +876,9 @@ function MainApp({
       book.id
     );
     const listed = progressFromBookSummary(book.id, book.progress);
-    return isSuspectProgressReset(checkpoint, listed)
+    const intent = readProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id);
+    const intentionalRegression = checkpoint && progressSeekOptions(intent, checkpoint, listed?.bookPositionSeconds).intentionalRegression;
+    return !intentionalRegression && isSuspectProgressReset(checkpoint, listed)
       ? listed
       : freshestProgress(checkpoint, listed);
   }
@@ -1752,6 +1755,7 @@ function MainApp({
   }, [foregroundProgressActionsRef]);
 
   const offlineDownloads = useOfflineDownloads({
+    downloadStatus,
     audioRef,
     booksRef,
     capabilities,

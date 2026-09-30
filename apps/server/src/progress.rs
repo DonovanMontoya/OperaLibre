@@ -124,10 +124,9 @@ pub(crate) struct ProgressUpdate {
 }
 
 /// A progress checkpoint as it arrives on the wire: the update itself plus
-/// the client's clock reading at send time, which brings `updatedAtMs` into
-/// the server's clock domain before the staleness rule compares it with a
-/// server-issued revision. Kept apart from [`ProgressUpdate`] so the decision
-/// rules only ever see one kind of timestamp.
+/// the server revision it was based on and the client's clock at send time.
+/// Kept apart from [`ProgressUpdate`] so the decision rules only ever see
+/// timestamps in the server's clock domain.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProgressCheckpoint {
@@ -137,6 +136,20 @@ pub(crate) struct ProgressCheckpoint {
     /// distinct from when the position was recorded. Optional: without it the
     /// recorded timestamp is compared as it is, as before.
     pub(crate) sent_at_ms: Option<u64>,
+    /// Last server-issued `updatedAt` observed before recording this position.
+    /// An empty string means no server checkpoint was observed. Absent keeps
+    /// legacy clients on the timestamp and position guards alone.
+    pub(crate) base_updated_at: Option<String>,
+}
+
+/// PUT returns the resulting position plus whether this checkpoint advanced
+/// its revision. Matching positions alone cannot distinguish an accepted save
+/// from a stale write rejected against an identical position on another device.
+#[derive(Debug, Serialize)]
+pub(crate) struct ProgressCheckpointResponse {
+    #[serde(flatten)]
+    pub(crate) progress: Progress,
+    pub(crate) accepted: bool,
 }
 
 /// Bring a client-recorded timestamp into the server's clock domain.
@@ -218,6 +231,27 @@ pub(crate) enum ProgressDecision {
         saved: Progress,
         backup_previous: bool,
     },
+}
+
+/// Normalize a wire checkpoint and reject changes based on a replaced revision.
+/// Clock correction cannot establish causality: network delay can make an old
+/// position look newer than an intentional rewind that arrived first.
+pub(crate) fn decide_progress_checkpoint(
+    book: &Book,
+    track: &Track,
+    previous: Option<&Progress>,
+    checkpoint: &ProgressCheckpoint,
+    now_millis: u64,
+) -> ProgressDecision {
+    if let (Some(previous), Some(base)) = (previous, &checkpoint.base_updated_at)
+        && base != &previous.updated_at
+    {
+        return ProgressDecision::Keep;
+    }
+    let mut update = checkpoint.update.clone();
+    update.updated_at_ms =
+        server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis);
+    decide_progress_write(book, track, previous, &update, now_millis)
 }
 
 /// Decide what to do with one incoming progress write.
@@ -318,12 +352,10 @@ pub(crate) async fn update_progress(
     Extension(auth): Extension<AuthUser>,
     Path(book_id): Path<String>,
     Json(checkpoint): Json<ProgressCheckpoint>,
-) -> Result<Json<Progress>, ApiError> {
+) -> Result<Json<ProgressCheckpointResponse>, ApiError> {
     require_book_access(&auth, &book_id)?;
     let now_millis = unix_now_millis();
-    let mut update = checkpoint.update;
-    update.updated_at_ms =
-        server_domain_timestamp_ms(update.updated_at_ms, checkpoint.sent_at_ms, now_millis);
+    let update = &checkpoint.update;
     // Copied out of the library once, so the library lock is not held across
     // the write; the decision on the database's blocking task shares it.
     let (book, track) = {
@@ -338,17 +370,17 @@ pub(crate) async fn update_progress(
         (Arc::new(book.clone()), track)
     };
 
-    let decision_update = update.clone();
+    let decision_checkpoint = checkpoint.clone();
     let decided_book_id = book.id.clone();
     let decision_book = Arc::clone(&book);
     let (saved, previous) = state
         .progress
         .update_book(&auth.id, &decided_book_id, move |previous| {
-            decide_progress_write(
+            decide_progress_checkpoint(
                 &decision_book,
                 &track,
                 previous,
-                &decision_update,
+                &decision_checkpoint,
                 now_millis,
             )
         })
@@ -370,7 +402,13 @@ pub(crate) async fn update_progress(
     )
     .await;
 
-    Ok(Json(saved))
+    let accepted = previous
+        .as_ref()
+        .is_none_or(|previous| previous.updated_at != saved.updated_at);
+    Ok(Json(ProgressCheckpointResponse {
+        progress: saved,
+        accepted,
+    }))
 }
 
 /// Apply the durable history derived from an accepted playback checkpoint.
