@@ -236,3 +236,28 @@ for (const failure of ['missing sentence', 'CFI conversion'] as const) {
     await expect.poll(() => annotations(page)).toHaveLength(0);
   });
 }
+
+
+test('immersive reading keeps place controls in the sheet and returns to the saved page quietly', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive`);
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  await expect.poll(() => place(page)).toBeTruthy();
+  const saved = await place(page);
+  await expect(page.locator('.epub-reader > .epub-catch-up')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Go to listening chapter/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Appearance and sync', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Appearance and sync' });
+  await sheet.getByRole('button', { name: /Go to listening chapter/ }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as ReaderWindow).__operalibreReader.rendition.currentLocation().start?.href)).toContain('c2.xhtml');
+  await sheet.getByRole('button', { name: 'Return to previous reading place', exact: true }).click();
+  await expect.poll(() => place(page)).toBe(saved);
+  await expect(sheet.getByRole('status')).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  await expect(page.locator('.epub-reader > .epub-catch-up')).toHaveCount(0);
+  await expect(page.getByText('Returned to your previous reading place.')).toHaveCount(0);
+});
