@@ -185,6 +185,8 @@ export type BookProgress = {
   remainingSeconds: number | null;
   percentComplete: number | null;
   updatedAt: string;
+  /** Client-only provenance for a locally summarized checkpoint; null means no known server revision. */
+  serverUpdatedAt?: string | null;
 };
 
 export type Chapter = {

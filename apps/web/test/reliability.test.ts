@@ -19,6 +19,7 @@ import {
   resolveBookId,
   resolveProgressLocation,
   saveWasOverruled,
+  serverRevisionFromSummary,
   serverStorageKey,
   shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
@@ -708,4 +709,30 @@ test("local mutations in the same millisecond stay distinct from their acknowled
   assert.equal(freshestProgress(acknowledged, edit), edit);
   const saved = syncedProgress({ ...edit, updatedAt: "1790769600001" }, edit.localUpdatedAt);
   assert.equal(freshestProgress(edit, saved), saved);
+});
+
+test("only a fresh seek adopts the newest known server revision regardless of which copy knows it", () => {
+  const older = "1790769600000";
+  const newer = "1790769720000";
+  for (const [acknowledged, listed] of [[older, newer], [newer, older]]) {
+    const previous = syncedProgress(progress({ updatedAt: acknowledged }));
+    previous.baseUpdatedAt = "1790769540000";
+    const automatic = pendingProgress(progress(), previous, listed);
+    const intentional = pendingProgress(progress(), previous, listed, true);
+    assert.equal(automatic.baseUpdatedAt, previous.baseUpdatedAt);
+    assert.equal(intentional.baseUpdatedAt, newer);
+    assert.equal(intentional.acknowledgedUpdatedAt, newer);
+  }
+});
+
+test("locally synthesized summaries expose only a known server revision", () => {
+  const book = { durationSeconds: 7200, tracks: [{ durationSeconds: 7200 }] };
+  const unknown = summarizeBookProgress(book, progress({ updatedAt: "2026-09-30T15:00:00Z" }));
+  assert.equal(serverRevisionFromSummary(unknown), undefined);
+  const acknowledged = syncedProgress(progress({ updatedAt: "1790769600000" }));
+  const local = pendingProgress(progress({ updatedAt: "2026-09-30T15:00:00Z" }), acknowledged);
+  const summary = summarizeBookProgress(book, local);
+  assert.equal(summary?.updatedAt, local.updatedAt);
+  assert.equal(serverRevisionFromSummary(summary), acknowledged.updatedAt);
+  assert.equal(serverRevisionFromSummary({ updatedAt: "1790769720000" }), "1790769720000");
 });

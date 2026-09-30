@@ -15,7 +15,7 @@ import { buildCarLibrarySnapshot, type CarPlaybackSession, carSessionIsWorthSavi
 import { cacheProgress, getOfflineCoverUrl, getOfflineTrackUrl, warnCacheFailure } from "./offline";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { AuthUser, Book, Progress } from "./types";
-import { pendingProgress, progressTimestamp, readProgressCheckpoint, writeProgressCheckpoint } from "./reliability";
+import { pendingProgress, progressTimestamp, readProgressCheckpoint, serverRevisionFromSummary, writeProgressCheckpoint } from "./reliability";
 import type { QueuedProgressSave } from "./playbackTypes";
 import { progressSeekStorage, recordProgressSeekIntent } from "./progressSeekIntent";
 
@@ -227,7 +227,7 @@ export function useCarPlay({
         durationSeconds: session.durationSeconds ?? book.durationSeconds ?? null,
         updatedAt: new Date(session.updatedAt).toISOString(),
         finishedOverride: book.progress?.finishedOverride ?? null
-      }, checkpoint, book.progress?.updatedAt, newIntentionalSeek);
+      }, checkpoint, serverRevisionFromSummary(book.progress), newIntentionalSeek);
       const seekIntent = newIntentionalSeek && book.source !== "device"
         ? recordProgressSeekIntent(progressSeekStorage(), getServerStorageKey(), currentUser.id, book.id,
           progress.bookPositionSeconds, session.updatedAt)

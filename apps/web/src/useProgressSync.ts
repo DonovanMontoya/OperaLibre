@@ -11,6 +11,7 @@ import {
   readProgressCheckpoint,
   resolveProgressLocation,
   saveWasOverruled,
+  serverRevisionFromSummary,
   shouldFlagIntentionalRegression,
   summarizeBookProgress,
   writeProgressCheckpoint
@@ -114,6 +115,7 @@ export function useProgressSync({
   showMediaClock: () => boolean;
   wantsAutoplayRef: RefObject<boolean>;
 }) {
+  const journaledSeekGenerationRef = useRef(new Map<string, number>());
   const foregroundProgressActionsRef = useRef({
     nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: showMediaClock
   });
@@ -163,7 +165,8 @@ export function useProgressSync({
         ? Math.max(0, audioRef.current.currentTime)
         : Math.max(0, position);
     const newIntentionalSeek = (intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0)
-      > (acknowledgedSeekGenerationRef.current.get(playbackBook.id) ?? 0);
+      > Math.max(acknowledgedSeekGenerationRef.current.get(playbackBook.id) ?? 0,
+        journaledSeekGenerationRef.current.get(playbackBook.id) ?? 0);
     const localProgress = pendingProgress({
       bookId: playbackBook.id,
       trackId: currentTrack.id,
@@ -175,9 +178,14 @@ export function useProgressSync({
       updatedAt: new Date().toISOString(),
       finishedOverride: playbackBook.progress?.finishedOverride ?? null
     }, readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id),
-    playbackBook.progress?.updatedAt, newIntentionalSeek);
+    serverRevisionFromSummary(playbackBook.progress), newIntentionalSeek);
     if (!reconciling) progressMutationVersion.current += 1;
-    if (newIntentionalSeek) overruledSaveRef.current.delete(playbackBook.id);
+    if (newIntentionalSeek) {
+      // Retries still carry seek authorization, but observing a later shelf
+      // revision must not rebase an already journaled, unacknowledged seek.
+      journaledSeekGenerationRef.current.set(playbackBook.id, intentionalSeekGenerationRef.current.get(playbackBook.id)!);
+      overruledSaveRef.current.delete(playbackBook.id);
+    }
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
     void cacheProgress(currentUser.id, localProgress).catch(warnCacheFailure("cache listening progress"));
     if (playbackBook.deviceBookId) {

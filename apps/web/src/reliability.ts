@@ -206,8 +206,13 @@ export function freshestProgress(
 export function pendingProgress(
   progress: Progress, previous: Progress | null, serverUpdatedAt?: string, intentionalSeek = false
 ): Progress {
-  const acknowledgedUpdatedAt = previous?.acknowledgedUpdatedAt
-    ?? (previous?.syncStatus === "synced" ? previous.updatedAt : serverUpdatedAt);
+  // Both candidates are server revisions. Device recording times must never
+  // supply a causal base, even when the shelf displays a local checkpoint.
+  const previousAcknowledged = previous?.acknowledgedUpdatedAt
+    ?? (previous?.syncStatus === "synced" ? previous.updatedAt : undefined);
+  const acknowledgedUpdatedAt = previousAcknowledged === undefined
+    || (serverUpdatedAt !== undefined && progressTimestamp(serverUpdatedAt) > progressTimestamp(previousAcknowledged))
+    ? serverUpdatedAt : previousAcknowledged;
   const inheritedBase = previous?.syncStatus
     ? previous.baseUpdatedAt ?? (previous.syncStatus === "synced" ? previous.updatedAt : undefined)
     : serverUpdatedAt ?? (previous ? undefined : "");
@@ -222,6 +227,10 @@ export function pendingProgress(
     localUpdatedAt: new Date(Math.max(progressTimestamp(progress.updatedAt),
       progressTimestamp(previous?.localUpdatedAt ?? "0") + 1)).toISOString()
   };
+}
+
+export function serverRevisionFromSummary(summary: Pick<BookProgress, "updatedAt" | "serverUpdatedAt"> | null | undefined): string | undefined {
+  return summary?.serverUpdatedAt === undefined ? summary?.updatedAt : summary.serverUpdatedAt ?? undefined;
 }
 
 export function syncedProgress(progress: Progress, localUpdatedAt = new Date().toISOString()): Progress {
@@ -430,7 +439,8 @@ export function resolveBookPosition(
   for (const [index, track] of tracks.entries()) {
     const duration = Math.max(0, track.durationSeconds ?? 0);
     const isLast = index === tracks.length - 1;
-    if (isLast || (duration > 0 && bookPosition < offset + duration)) {
+    // A missing duration does not erase a track's known start boundary.
+    if (isLast || bookPosition === offset || (duration > 0 && bookPosition < offset + duration)) {
       return {
         trackId: track.id,
         positionSeconds: Math.max(0, Math.min(bookPosition - offset, duration || bookPosition))
@@ -488,7 +498,9 @@ export function summarizeBookProgress(
     durationSeconds: duration,
     remainingSeconds: remaining,
     percentComplete: percent,
-    updatedAt: progress.updatedAt
+    updatedAt: progress.updatedAt,
+    serverUpdatedAt: progress.acknowledgedUpdatedAt
+      ?? (progress.syncStatus === "synced" ? progress.updatedAt : null)
   };
 }
 

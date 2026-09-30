@@ -9,7 +9,8 @@ import {
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
-  resolveProgressLocation
+  resolveProgressLocation,
+  serverRevisionFromSummary
 } from "./reliability";
 import { getNativeAudioRecovery } from "./nativeAudio";
 import { nativeAudioRecoveryScope } from "./appStorage";
@@ -179,30 +180,33 @@ export function usePlaybackRestore({
         currentUser.id,
         playbackBook.id
       );
+      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
+      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
+      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
+      const mappedDevice = playbackBook.source === "device" ? device : device && mappedServerTrack
+        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
+        : null;
+      const localCopies = [mappedDevice, checkpoint, cached];
+      const previousLocal = freshestProgress(...localCopies);
       if (nativeProgress) {
-        // Native recovery uses the device clock, as does the recording-time
-        // retained by an acknowledgement. A recovered old mirror is not a
-        // new mutation just because the server uses a different clock.
-        const acknowledgedAt = checkpoint?.localUpdatedAt;
-        nativeProgress = acknowledgedAt && progressTimestamp(nativeProgress.updatedAt) <= progressTimestamp(acknowledgedAt)
+        // Compare with the surviving local copy, not superseded legacy mirrors
+        // that may still carry server time. Unmarked recovery retains its old
+        // timestamp ordering; acknowledgements contribute only recording time.
+        const recordedAt = previousLocal?.localUpdatedAt
+          ?? (previousLocal?.syncStatus !== "synced" ? previousLocal?.updatedAt : undefined);
+        nativeProgress = recordedAt && progressTimestamp(nativeProgress.updatedAt) <= progressTimestamp(recordedAt)
           ? null
-          : pendingProgress(nativeProgress, checkpoint, playbackBook.progress?.updatedAt);
+          : pendingProgress(nativeProgress, previousLocal, serverRevisionFromSummary(playbackBook.progress));
       }
       if (playbackBook.source === "device") {
-        const local = freshestProgress(device, checkpoint, cached, nativeProgress);
+        const local = freshestProgress(...localCopies, nativeProgress);
         if (local) updateBookProgress(playbackBook.id, local);
         applyProgress(local);
         return;
       }
-      const deviceBook = deviceBookId ? getDeviceBooks().find((book) => book.id === deviceBookId) : null;
-      const deviceTrackIndex = deviceBook?.tracks.findIndex((track) => track.id === device?.trackId) ?? -1;
-      const mappedServerTrack = deviceTrackIndex >= 0 ? playbackBook.tracks[deviceTrackIndex] : null;
-      const mappedDevice = device && mappedServerTrack
-        ? { ...device, bookId: playbackBook.id, trackId: mappedServerTrack.id }
-        : null;
       // Progress saved on the device or while disconnected can be newer than
       // the server. Resume from the freshest copy and converge the server.
-      const freshestLocal = freshestProgress(mappedDevice, checkpoint, cached, nativeProgress);
+      const freshestLocal = freshestProgress(...localCopies, nativeProgress);
       // The summary embedded in the library listing is also the server's
       // copy. It backstops a failed or empty progress fetch — without it, a
       // fresh install that hits one failed request opens the book at zero and
