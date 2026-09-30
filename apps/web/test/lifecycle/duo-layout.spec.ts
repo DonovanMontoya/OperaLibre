@@ -477,13 +477,9 @@ test('the reader remembers a different text size for the closed screen than the 
   await expect(size).toHaveText(/120%/);
 });
 
-// The reader fixture reads chapter 1 while the narration is in chapter 2, so
-// the catch-up row appears just after the first page and shrinks the stage.
-// epub.js then discards that page and lays the chapter out again; a tap in
-// between reaches no page. Settled means the row is in place and the page on
-// screen was laid out for the stage as it is now.
+// Wait for the EPUB to finish laying out before sending taps to the page.
 async function readerSettled(page: Page) {
-  await expect(page.getByRole('button', { name: /Go to listening chapter/ })).toBeVisible();
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => {
     const stage = document.querySelector<HTMLElement>('.epub-stage')!;
     const frame = stage.querySelector('iframe');
