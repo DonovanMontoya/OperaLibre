@@ -245,11 +245,16 @@ export function progressNeedsSync(local: Progress | null, server: { updatedAt: s
     || progressTimestamp(local.updatedAt) > progressTimestamp(server.updatedAt);
 }
 
-/** A successful earlier save advances the baseline of edits queued behind it, not their position. */
+/**
+ * A successful earlier save advances the baseline of edits queued behind it,
+ * not their position. The server's explicit `accepted` flag is the signal: it
+ * may have normalized the position it stored (a media clock past the track's
+ * tagged end is clamped), and the new revision is still the one queued edits
+ * descend from.
+ */
 export function rebasePendingProgress(local: Progress, attempted: Progress, saved: Progress): Progress {
   if (saved.accepted !== true || local.syncStatus !== "pending" || local.baseUpdatedAt !== attempted.baseUpdatedAt
-    || saved.trackId !== attempted.trackId
-    || Math.abs(saved.bookPositionSeconds - attempted.bookPositionSeconds) > 0.01) return local;
+    || saved.trackId !== attempted.trackId) return local;
   return { ...local, baseUpdatedAt: saved.updatedAt, acknowledgedUpdatedAt: saved.updatedAt };
 }
 
