@@ -18,6 +18,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 
 @CapacitorPlugin(name = "BackgroundDownloads")
 public class BackgroundDownloadPlugin extends Plugin {
@@ -34,35 +35,38 @@ public class BackgroundDownloadPlugin extends Plugin {
         }
 
         try {
-            JSONObject existing = BackgroundDownloadStore.load(getContext(), jobId);
-            if (existing != null) {
-                String state = existing.optString("state", "");
-                if ("queued".equals(state) || "running".equals(state)) {
-                    // The queue worker may have been killed with the process, so
-                    // make sure one is scheduled before reporting the job live.
-                    ensureQueueWorker();
-                    call.resolve();
-                    return;
+            synchronized (BackgroundDownloadStore.class) {
+                JSONObject existing = BackgroundDownloadStore.load(getContext(), jobId);
+                if (existing != null) {
+                    String state = existing.optString("state", "");
+                    if ("queued".equals(state) || "running".equals(state)) {
+                        // The queue worker may have been killed with the process, so
+                        // make sure one is scheduled before reporting the job live.
+                        ensureQueueWorker();
+                        call.resolve();
+                        return;
+                    }
                 }
+                int requiredTotal = 0;
+                for (int index = 0; index < files.length(); index++) {
+                    if (files.getJSONObject(index).optBoolean("required", true)) requiredTotal++;
+                }
+                JSONObject job = new JSONObject()
+                    .put("attemptId", UUID.randomUUID().toString())
+                    .put("provider", "libro".equals(call.getString("provider")) ? "libro" : "server")
+                    .put("title", title)
+                    .put("state", "queued")
+                    .put("files", files)
+                    .put("completedFiles", 0)
+                    .put("completedRequired", 0)
+                    .put("requiredTotal", requiredTotal)
+                    .put("attempts", 0)
+                    .put("queuedAt", System.currentTimeMillis())
+                    .put("fraction", 0.0);
+                BackgroundDownloadStore.save(getContext(), jobId, job);
+                ensureQueueWorker();
+                call.resolve();
             }
-            int requiredTotal = 0;
-            for (int index = 0; index < files.length(); index++) {
-                if (files.getJSONObject(index).optBoolean("required", true)) requiredTotal++;
-            }
-            JSONObject job = new JSONObject()
-                .put("provider", "libro".equals(call.getString("provider")) ? "libro" : "server")
-                .put("title", title)
-                .put("state", "queued")
-                .put("files", files)
-                .put("completedFiles", 0)
-                .put("completedRequired", 0)
-                .put("requiredTotal", requiredTotal)
-                .put("attempts", 0)
-                .put("queuedAt", System.currentTimeMillis())
-                .put("fraction", 0.0);
-            BackgroundDownloadStore.save(getContext(), jobId, job);
-            ensureQueueWorker();
-            call.resolve();
         } catch (JSONException error) {
             call.reject("The background download could not be prepared.", error);
         }
@@ -98,21 +102,22 @@ public class BackgroundDownloadPlugin extends Plugin {
             call.reject("A job ID is required.");
             return;
         }
-        JSONObject job = null;
-        try {
-            job = BackgroundDownloadStore.load(getContext(), jobId);
-        } catch (Exception ignored) {
-            // Removing the entry below still stops the transfer.
-        }
-        // Removing the record is the cancel signal: the queue worker checks for
-        // it as it writes progress and abandons the book within a tick. Work is
-        // never cancelled by tag because every book shares one queue worker.
-        BackgroundDownloadStore.remove(getContext(), jobId);
-        if (job != null) {
+        synchronized (BackgroundDownloadStore.class) {
+            JSONObject job = null;
             try {
-                OfflineDownloadWorker.deleteDownloadFiles(getContext(), job);
+                job = BackgroundDownloadStore.load(getContext(), jobId);
             } catch (Exception ignored) {
-                // The worker deletes whatever it was mid-way through writing.
+                // Removing an unreadable record still invalidates its worker.
+            }
+            // Invalidate before deleting. Enqueue and final-file promotion use
+            // this same lock, so cancellation cannot delete a replacement.
+            BackgroundDownloadStore.remove(getContext(), jobId);
+            if (job != null) {
+                try {
+                    OfflineDownloadWorker.deleteDownloadFiles(getContext(), job);
+                } catch (Exception ignored) {
+                    // The old worker cleans up its attempt-specific partial.
+                }
             }
         }
         call.resolve();

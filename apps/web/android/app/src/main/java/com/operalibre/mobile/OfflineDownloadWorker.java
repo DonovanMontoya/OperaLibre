@@ -96,13 +96,26 @@ public class OfflineDownloadWorker extends Worker {
                 foregroundInfo(job.optString("title", "Audiobook"), job.optDouble("fraction", 0.0))
             ).get();
 
-            int completedFiles = job.optInt("completedFiles", 0);
-            int completedRequired = job.optInt("completedRequired", 0);
+            // A count alone does not prove that files survived cancellation,
+            // storage cleanup, or a process interruption. Resume at the first
+            // missing required file and recompute the required-file count.
+            int completedFiles = Math.min(Math.max(0, job.optInt("completedFiles", 0)), files.length());
+            int completedRequired = 0;
+            for (int index = 0; index < completedFiles; index++) {
+                JSONObject item = files.getJSONObject(index);
+                if (!item.optBoolean("required", true)) continue;
+                if (!DownloadAttemptPolicy.usableFile(validatedDestination(item.getString("path")), item.optLong("downloadedBytes", -1))) {
+                    completedFiles = index;
+                    job.remove("preparedFileIndex");
+                    break;
+                }
+                completedRequired++;
+            }
             int requiredTotal = Math.max(1, job.optInt("requiredTotal", files.length()));
 
             for (int index = completedFiles; index < files.length(); index++) {
                 if (isStopped()) return requeueForLater(jobId, job);
-                if (!BackgroundDownloadStore.contains(getApplicationContext(), jobId)) {
+                if (!BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job)) {
                     throw new DownloadCancelledException();
                 }
                 JSONObject item = files.getJSONObject(index);
@@ -112,26 +125,35 @@ public class OfflineDownloadWorker extends Worker {
                 if (parent == null || (!parent.exists() && !parent.mkdirs())) {
                     throw new IllegalStateException("Could not create the download folder.");
                 }
-                partial = new File(destination.getPath() + ".part");
+                partial = DownloadAttemptPolicy.partialFile(destination, job.optString("attemptId", ""));
                 try {
                     // Only reuse a file after this job removed anything left by
                     // an earlier enqueue. A stopped worker can then recognize a
                     // file it renamed before its progress update was saved.
                     boolean prepared = job.optInt("preparedFileIndex", -1) == index;
-                    if (!prepared || !destination.isFile() || destination.length() == 0) {
+                    if (!prepared || !DownloadAttemptPolicy.usableFile(destination, item.optLong("downloadedBytes", -1))) {
                         if (!prepared) {
-                            if (destination.exists() && !destination.delete()) {
-                                throw new IllegalStateException("Could not replace an earlier download.");
-                            }
-                            job.put("preparedFileIndex", index);
-                            if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
-                                throw new DownloadCancelledException();
+                            synchronized (BackgroundDownloadStore.class) {
+                                if (!BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job)) {
+                                    throw new DownloadCancelledException();
+                                }
+                                if (destination.exists() && !destination.delete()) {
+                                    throw new IllegalStateException("Could not replace an earlier download.");
+                                }
+                                job.put("preparedFileIndex", index);
+                                BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job);
                             }
                         }
                         download(jobId, job, item.getString("url"), partial, completedRequired, requiredTotal);
-                        if (!partial.renameTo(destination)) {
-                            throw new IllegalStateException("Could not finish writing the downloaded file.");
+                        synchronized (BackgroundDownloadStore.class) {
+                            if (!BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job)) {
+                                throw new DownloadCancelledException();
+                            }
+                            if (!partial.renameTo(destination)) {
+                                throw new IllegalStateException("Could not finish writing the downloaded file.");
+                            }
                         }
+                        item.put("downloadedBytes", destination.length());
                     }
                     partial = null;
                 } catch (DownloadCancelledException cancelled) {
@@ -156,21 +178,26 @@ public class OfflineDownloadWorker extends Worker {
                 updateNotification(job.optString("title", "Audiobook"), fraction);
             }
 
-            job.remove("files");
-            job.put("state", "completed").put("fraction", 1.0);
-            if (!BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job)) {
-                throw new DownloadCancelledException();
+            synchronized (BackgroundDownloadStore.class) {
+                if (!BackgroundDownloadStore.isCurrent(getApplicationContext(), jobId, job)) {
+                    throw new DownloadCancelledException();
+                }
+                for (int index = 0; index < files.length(); index++) {
+                    JSONObject item = files.getJSONObject(index);
+                    if (item.optBoolean("required", true) && !DownloadAttemptPolicy.usableFile(
+                        validatedDestination(item.getString("path")), item.optLong("downloadedBytes", -1)
+                    )) throw new IllegalStateException("The download was incomplete. Retry it.");
+                }
+                job.remove("files");
+                job.put("state", "completed").put("fraction", 1.0);
+                BackgroundDownloadStore.saveIfPresent(getApplicationContext(), jobId, job);
             }
             return null;
         } catch (DownloadCancelledException cancelled) {
-            // The entry is already gone; clear whatever reached the disk before
-            // the worker noticed, including a file it just finished renaming.
+            // Final files were removed by cancelBook under the store lock.
+            // Only this attempt's partial is ours now; a replacement may have
+            // already started writing to the same final destinations.
             if (partial != null && partial.exists()) partial.delete();
-            try {
-                deleteDownloadFiles(getApplicationContext(), files);
-            } catch (Exception ignored) {
-                // Best effort: a leftover file is reported as not downloaded.
-            }
             return null;
         } catch (Exception error) {
             if (partial != null && partial.exists()) partial.delete();
@@ -211,7 +238,7 @@ public class OfflineDownloadWorker extends Worker {
         } catch (Exception unwritable) {
             // The failure could not be recorded, so drop the job outright: a
             // book left in a pending state would be retried forever.
-            BackgroundDownloadStore.remove(getApplicationContext(), jobId);
+            BackgroundDownloadStore.removeIfCurrent(getApplicationContext(), jobId, job);
         }
         return null;
     }
@@ -264,8 +291,8 @@ public class OfflineDownloadWorker extends Worker {
             if (expected >= 0 && expected != received) {
                 throw new IllegalStateException("The download was incomplete. Retry it.");
             }
-            if (libro && received == 0) {
-                throw new IllegalStateException("The Libro.fm download was incomplete. Retry it.");
+            if (received == 0) {
+                throw new IllegalStateException("The download was incomplete. Retry it.");
             }
         } finally {
             connection.disconnect();
@@ -331,15 +358,15 @@ public class OfflineDownloadWorker extends Worker {
     }
 
     static void deleteDownloadFiles(Context context, JSONObject job) throws Exception {
-        deleteDownloadFiles(context, job.optJSONArray("files"));
+        deleteDownloadFiles(context, job.optJSONArray("files"), job.optString("attemptId", ""));
     }
 
-    private static void deleteDownloadFiles(Context context, @Nullable JSONArray files) throws Exception {
+    private static void deleteDownloadFiles(Context context, @Nullable JSONArray files, String attemptId) throws Exception {
         if (files == null) return;
         for (int index = 0; index < files.length(); index++) {
             File destination = validatedDestination(context, files.getJSONObject(index).getString("path"));
             if (destination.exists()) destination.delete();
-            File partial = new File(destination.getPath() + ".part");
+            File partial = DownloadAttemptPolicy.partialFile(destination, attemptId);
             if (partial.exists()) partial.delete();
         }
     }

@@ -207,16 +207,22 @@ Progress updates use JSON with the current track and timing fields:
   "bookPositionSeconds": 456.7,
   "durationSeconds": 36000.0,
   "updatedAtMs": 1753200000000,
+  "sentAtMs": 1753200000500,
+  "baseUpdatedAt": "1753199999000",
   "intentionalRegression": false,
   "intentionalSeek": false
 }
 ```
 
-`updatedAtMs` is the optional client-side epoch-millisecond timestamp of when the position was recorded. When provided, the server rejects writes meaningfully older than the stored copy (returning the stored progress unchanged) so a replayed offline checkpoint or a freshly reinstalled client cannot roll back progress saved more recently from another device.
+`updatedAtMs` is the optional client-side epoch-millisecond timestamp of when the position was recorded. `sentAtMs` is the optional client clock reading when the request was sent; together they let the server correct clock skew while retaining the age of an offline checkpoint. When a recorded timestamp is provided, writes meaningfully older than the stored copy are refused and return the stored progress unchanged. Accepted writes receive a server-issued, monotonically increasing `updatedAt` revision.
 
-`intentionalRegression` (optional, default `false`) marks a deliberate backwards jump — the listener restarting a book, scrubbing, or picking an earlier chapter. Without it, a write within the first 60 seconds of a book that would erase more than 5 minutes of stored progress is refused (the stored copy is returned unchanged): a near-zero write with a fresh timestamp is the signature of a client that failed to restore its position, which the timestamp check cannot catch. Other backwards jumps are accepted, but when large, the replaced copy is preserved in `progress.backups.json` next to the progress store.
+`baseUpdatedAt` is the optional exact `updatedAt` string last observed from the server before recording this checkpoint. When a stored checkpoint exists and its revision differs, the write is refused and the current server progress is returned unchanged, even for an intentional seek. This prevents a delayed automatic save from undoing a rewind received first from another device. Send an empty string when no server checkpoint has been observed. A missing server record can be initialized regardless of the base; omitting the field retains legacy timestamp and position guards. Keep the original base with offline checkpoints: if another device changes the server revision meanwhile, the server copy wins. Adopt the returned server position and revision before recording subsequent checkpoints rather than retrying the same old position with a new base.
 
-`intentionalSeek` (optional, default `false`) marks any user-initiated jump, forward or backward. The checkpoint is still saved, but the position difference is excluded from listening-time and streak statistics.
+The native progress PUT response includes an `accepted` boolean alongside the resulting progress fields. `true` means this write was saved with a new revision; `false` means a guard rejected it and the existing server checkpoint is being returned. Matching positions do not imply acceptance: an obsolete base revision is rejected even when it reports the same position. Clients should use this explicit outcome when advancing the base revision of their queued changes. GET progress responses remain unchanged and do not include `accepted`.
+
+`intentionalRegression` (optional, default `false`) marks a deliberate backwards jump — the listener restarting a book, scrubbing, or picking an earlier chapter. Without it, a write within the first 60 seconds of a book that would erase more than 5 minutes of stored progress is refused: a near-zero write with a fresh timestamp is the signature of a client that failed to restore its position, which the timestamp check cannot catch. Automatic checkpoints cannot move backwards by more than 2 seconds. An intentional seek or regression can move backwards, subject to the revision, staleness, and near-zero guards; large accepted drops preserve the previous checkpoint for recovery.
+
+`intentionalSeek` (optional, default `false`) marks any user-initiated jump, forward or backward. An accepted checkpoint's position difference is excluded from listening-time and streak statistics.
 
 Progress responses may include `finishedOverride`. `true` or `false` records the reader's explicit completion choice; when absent, completion continues to be inferred from playback position. The choice is carried onto later checkpoints, with one exception: an `intentionalSeek` write that lands within the first 60 seconds of a book marked finished clears the override, because that is a listener starting the book over. Automatic position reports never clear it.
 
@@ -332,6 +338,8 @@ Compatibility is client-specific. BookPlayer response decoding and its browse/do
 | `GET`/`POST` | `/abs/api/items/{item_id}/play` | Open a playback session with the resume position. |
 | `GET`/`PATCH` | `/abs/api/me/progress/{item_id}` | Read or write media progress; synced with native OperaLibre progress. |
 | `GET` | `/abs/api/items/{item_id}/download` | Download the item archive. |
+
+Audiobookshelf clients do not send OperaLibre's seek flags. Fresh backwards progress updates of less than 30 minutes are treated as rewinds, including small jumps into the first minute. Stale updates and near-zero writes that erase more than 5 minutes of progress are still refused.
 
 Cover and stream URLs are also mirrored at `/abs/api/books/{book_id}/cover` and `/abs/api/books/{book_id}/tracks/{track_id}/stream` (media token accepted), because some clients resolve content URLs against the `/abs` base while others resolve against the origin. Book-access restrictions apply exactly as on the native API.
 
