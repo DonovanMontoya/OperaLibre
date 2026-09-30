@@ -1346,7 +1346,7 @@ export function EpubReadalong({
       await rendition.display(target);
       if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
       writeStoredValue(locationStorageKey, target);
-      setCatchUpNotice(returning ? "Returned to your previous reading place." : `Moved to ${listeningChapter}.`);
+      setCatchUpNotice(returning ? "" : `Moved to ${listeningChapter}.`);
       setOfferOpeningPreference(!returning && !openAtListening);
     } catch {
       if (renditionRef.current !== rendition || readerNavigationVersionRef.current !== navigationVersion) return;
@@ -1806,6 +1806,34 @@ export function EpubReadalong({
     </div>
   );
 
+  const catchUpControls = (
+    <div className="epub-catch-up" aria-label="Reading and listening place">
+      {isReady && canCatchUp(anchorCfiRef.current, catchUpCfi, (a, b) => {
+        const Cfi = epubCfiClassRef.current;
+        return Cfi ? new Cfi().compare(a, b) : 0;
+      }) ? (
+        <button type="button" disabled={catchUpBusy} onClick={() => void moveReaderTo(catchUpCfi!, false)}>
+          Go to listening chapter{listeningChapter ? ` · ${listeningChapter}` : ""}
+        </button>
+      ) : null}
+      {returnLocation ? (
+        <button type="button" disabled={!isReady || catchUpBusy} onClick={() => void moveReaderTo(returnLocation, true)}>
+          Return to previous reading place
+        </button>
+      ) : null}
+      {catchUpNotice ? <span role="status">{catchUpNotice}</span> : null}
+      {offerOpeningPreference ? (
+        <span>Open at your listening chapter next time? <button type="button" onClick={() => changeOpeningPreference(true)}>Yes</button> <button type="button" onClick={() => setOfferOpeningPreference(false)}>Not now</button></span>
+      ) : null}
+      {!fullscreen ? (
+        <label>When opening <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
+          <option value="reading">Resume reading</option>
+          <option value="listening">Open at listening chapter</option>
+        </select></label>
+      ) : null}
+    </div>
+  );
+
   const reader = (
     <div
       className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""}`}
@@ -1897,31 +1925,7 @@ export function EpubReadalong({
           </div>
         </div>
       )}
-      <div className="epub-catch-up" aria-label="Reading and listening place">
-        {isReady && canCatchUp(anchorCfiRef.current, catchUpCfi, (a, b) => {
-          const Cfi = epubCfiClassRef.current;
-          return Cfi ? new Cfi().compare(a, b) : 0;
-        }) ? (
-          <button type="button" disabled={catchUpBusy} onClick={() => void moveReaderTo(catchUpCfi!, false)}>
-            Go to listening chapter{listeningChapter ? ` · ${listeningChapter}` : ""}
-          </button>
-        ) : null}
-        {returnLocation ? (
-          <button type="button" disabled={!isReady || catchUpBusy} onClick={() => void moveReaderTo(returnLocation, true)}>
-            Return to previous reading place
-          </button>
-        ) : null}
-        {catchUpNotice ? <span role="status">{catchUpNotice}</span> : null}
-        {offerOpeningPreference ? (
-          <span>Open at your listening chapter next time? <button type="button" onClick={() => changeOpeningPreference(true)}>Yes</button> <button type="button" onClick={() => setOfferOpeningPreference(false)}>Not now</button></span>
-        ) : null}
-        {!fullscreen ? (
-          <label>When opening <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
-            <option value="reading">Resume reading</option>
-            <option value="listening">Open at listening chapter</option>
-          </select></label>
-        ) : null}
-      </div>
+      {!fullscreen ? catchUpControls : null}
       <div className="epub-stage-wrap">
         {stage}
         {fullscreen ? (
@@ -2074,6 +2078,8 @@ export function EpubReadalong({
                 <h3>Appearance</h3>
                 <div className="epub-sheet-row">{themeOptions}</div>
                 <div className="epub-sheet-row">{fontControls}</div>
+                <h3>Reading place</h3>
+                {catchUpControls}
                 <h3>When opening</h3>
                 <label className="epub-sheet-row">Starting place
                   <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
