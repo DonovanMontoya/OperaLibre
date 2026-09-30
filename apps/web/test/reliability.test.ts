@@ -696,7 +696,13 @@ test("acknowledging an in-flight save only rebases newer pending edits", () => {
   assert.equal(rebased.baseUpdatedAt, saved.updatedAt);
   assert.equal(rebased.syncStatus, "pending");
   assert.equal(progressNeedsSync(rebased, saved), true);
-  const refused = { ...saved, bookPositionSeconds: 1800 };
+  // The server clamped the stored position (a clock past the track's end); the
+  // save was still accepted, so queued edits must build on its revision.
+  const normalized = rebasePendingProgress(newer, attempted, { ...saved, bookPositionSeconds: 39.25 });
+  assert.equal(normalized.baseUpdatedAt, saved.updatedAt);
+  assert.equal(normalized.bookPositionSeconds, 50);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, trackId: "track-2" }), newer);
+  const refused = { ...saved, bookPositionSeconds: 1800, accepted: false };
   assert.equal(rebasePendingProgress(newer, attempted, refused), newer);
   assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: false }), newer);
   assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: undefined }), newer);
