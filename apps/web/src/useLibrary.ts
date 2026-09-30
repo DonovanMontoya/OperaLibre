@@ -51,6 +51,7 @@ export function useLibrary({
   setSelectedBookId,
   setStartupViewReady,
   startupNavigationResolved,
+  startupNavigationOverridden,
   startupViewReadyRef,
   storeCanonicalServerProgress
 }: {
@@ -77,6 +78,7 @@ export function useLibrary({
   setSelectedBookId: Dispatch<SetStateAction<string | null>>;
   setStartupViewReady: Dispatch<SetStateAction<boolean>>;
   startupNavigationResolved: RefObject<boolean>;
+  startupNavigationOverridden: RefObject<boolean>;
   startupViewReadyRef: RefObject<boolean>;
   storeCanonicalServerProgress: (book: Book, saved: Progress) => void;
 }) {
@@ -124,9 +126,13 @@ export function useLibrary({
           : null;
         if (destination) {
           startupNavigationResolved.current = true;
-          setNativeTab(destination.tab);
-          // The stored selection may be a book last browsed on the shelf.
-          if (next) setSelectedBookId(next);
+          // A tap or external navigation owns the route, even while playback
+          // is still restoring. Library refreshes may finish the launch only.
+          if (!startupNavigationOverridden.current) {
+            setNativeTab(destination.tab);
+            // The stored selection may be a book last browsed on the shelf.
+            if (next) setSelectedBookId(next);
+          }
           if (destination.reveal) {
             startupViewReadyRef.current = true;
             setStartupViewReady(true);

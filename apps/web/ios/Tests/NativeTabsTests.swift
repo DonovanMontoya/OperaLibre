@@ -22,6 +22,33 @@ final class NativeTabsTests: XCTestCase {
         }
     }
 
+    func testStartupSelectionIsConfiguredBeforeBarIsAttached() async throws {
+        let controller = NativeTabsController(content: ViewController())
+        let startupItems: [JSObject] = [
+            ["id": "shelf", "title": "Shelf"],
+            ["id": "reading", "title": "Reading"]
+        ]
+        var selections: [String] = []
+        controller.onSelect = { selections.append($0) }
+        for selected in ["shelf", "reading", "shelf", "reading"] {
+            controller.configure(items: startupItems, selected: selected, visible: false,
+                                 blocked: false, appearance: "system", chrome: nil, bar: nil)
+            XCTAssertFalse(controller.children.contains { $0 is UITabBarController })
+        }
+        controller.configure(items: startupItems, selected: "reading", visible: true,
+                             blocked: false, appearance: "system", chrome: nil, bar: nil)
+        let navigation = try XCTUnwrap(controller.children.compactMap { $0 as? UITabBarController }.first)
+        // iPad intentionally represents Reading with its unified Shelf tab.
+        let unifiedShelf = controller.traitCollection.userInterfaceIdiom == .pad
+        if #available(iOS 18.0, *) {
+            XCTAssertEqual(navigation.selectedTab?.identifier, unifiedShelf ? "shelf" : "reading")
+        } else {
+            XCTAssertEqual(navigation.selectedIndex, unifiedShelf ? 0 : 1)
+        }
+        await flushSelection()
+        XCTAssertTrue(selections.isEmpty)
+    }
+
     func testLegacyCallbackOnModernIOSStillNavigates() async throws {
         let controller = NativeTabsController(content: ViewController())
         configure(controller)
