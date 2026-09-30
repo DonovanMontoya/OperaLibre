@@ -88,6 +88,174 @@ function fixture() {
   return { server, local, book, writes, seeks, canonical, dependencies, options, restore, write, checkpoint, storage };
 }
 
+function controlsFor(f: ReturnType<typeof fixture>) {
+  f.options.setPendingSeek = (seek: any) => { f.seeks.push(seek); f.options.pendingSeekRef.current = seek; };
+  return loadHook("usePlaybackControls", {
+    ...f.dependencies,
+    "./offlinePlayback": { playbackRestoreBookAfterAction: (_previous: unknown, id: string) => id },
+    "./formatting": { durationFromTracks: () => 7200 },
+    "./playbackGain": {}, "./bookVolume": {}, "./carPlay": {}, "./playbackPending": {},
+    "./native": {}, "./nativeAudioStartup": {}, "./playbackSpeed": {}
+  })({ ...f.options, playbackBook: null, persistProgress: () => {} });
+}
+
+for (const store of ["journal", "cache", "device"] as const) {
+  for (const online of [false, true]) {
+    for (const newerNative of [false, true]) {
+      test(`native restore preserves ${store} legacy ordering ${online ? "online" : "offline"} with ${newerNative ? "newer" : "older"} native recovery`, async () => {
+        const f = fixture();
+        const legacy = { ...f.server, positionSeconds: 3600, bookPositionSeconds: 3600,
+          updatedAt: "2026-09-30T12:30:00Z" };
+        if (store === "journal") f.write(legacy);
+        if (store === "cache") f.dependencies["./offline"].getCachedProgress = async () => legacy;
+        if (store === "device") {
+          Object.assign(f.book, { deviceBookId: "device-book" });
+          f.dependencies["./localLibrary"].getDeviceProgress = () => ({ ...legacy, bookId: "device-book", trackId: "device-track" });
+          f.dependencies["./localLibrary"].getDeviceBooks = () => [{ id: "device-book", tracks: [{ id: "device-track" }] }];
+        }
+        f.options.nativeAudio = true;
+        f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+          trackId: "track", positionSeconds: newerNative ? 5400 : 1800, bookPositionSeconds: newerNative ? 5400 : 1800,
+          durationSeconds: 7200, updatedAt: Date.parse(newerNative ? "2026-09-30T12:45:00Z" : "2026-09-30T12:00:00Z")
+        });
+        if (!online) f.dependencies["./api"].getProgress = async () => { throw new Error("offline"); };
+        await f.restore();
+        const expected = newerNative ? 5400 : 3600;
+        assert.equal(f.seeks[0].positionSeconds, expected);
+        if (online) {
+          assert.equal(f.writes.length, 1);
+          assert.equal(f.writes[0].progress.bookPositionSeconds, expected);
+        } else {
+          assert.deepEqual(f.writes, []);
+        }
+      });
+    }
+  }
+}
+
+for (const store of ["journal", "cache", "device"] as const) {
+  test(`native recovery compares ${store} acknowledgement recording time, not the faster server clock`, async () => {
+    const f = fixture();
+    const acknowledged = reliability.syncedProgress({ ...f.server, updatedAt: "2026-09-30T13:00:00Z" }, "2026-09-30T11:55:00Z");
+    if (store === "journal") f.write(acknowledged);
+    if (store === "cache") f.dependencies["./offline"].getCachedProgress = async () => acknowledged;
+    if (store === "device") {
+      Object.assign(f.book, { deviceBookId: "device-book" });
+      f.dependencies["./localLibrary"].getDeviceProgress = () => ({ ...acknowledged, bookId: "device-book", trackId: "device-track" });
+      f.dependencies["./localLibrary"].getDeviceBooks = () => [{ id: "device-book", tracks: [{ id: "device-track" }] }];
+    }
+    f.options.nativeAudio = true;
+    f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+      trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+      updatedAt: Date.parse("2026-09-30T12:00:00Z")
+    });
+    await f.restore();
+    assert.equal(f.seeks[0].positionSeconds, 1800);
+    assert.equal(f.writes[0].progress.baseUpdatedAt, acknowledged.updatedAt);
+    assert.equal(f.writes[0].progress.bookPositionSeconds, 1800);
+  });
+}
+
+for (const store of ["cache", "device"] as const) {
+  for (const pending of [false, true]) {
+    for (const newerNative of [false, true]) {
+      test(`superseded legacy ${store} cannot hide ${newerNative ? "newer" : "older"} native recovery behind a ${pending ? "pending" : "synced"} journal`, async () => {
+        const f = fixture();
+        const synced = reliability.syncedProgress({ ...f.server, updatedAt: "2026-09-30T13:01:00Z" }, "2026-09-30T11:56:00Z");
+        const journal = pending
+          ? reliability.pendingProgress({ ...f.server, positionSeconds: 1200, bookPositionSeconds: 1200,
+              updatedAt: "2026-09-30T11:58:00Z" }, synced)
+          : synced;
+        f.write(journal);
+        const stale = { ...f.server, updatedAt: "2026-09-30T13:00:00Z" };
+        if (store === "cache") f.dependencies["./offline"].getCachedProgress = async () => stale;
+        if (store === "device") {
+          Object.assign(f.book, { deviceBookId: "device-book" });
+          f.dependencies["./localLibrary"].getDeviceProgress = () => ({ ...stale, bookId: "device-book", trackId: "device-track" });
+          f.dependencies["./localLibrary"].getDeviceBooks = () => [{ id: "device-book", tracks: [{ id: "device-track" }] }];
+        }
+        f.dependencies["./api"].getProgress = async () => { throw new Error("offline"); };
+        f.options.nativeAudio = true;
+        f.dependencies["./nativeAudio"].getNativeAudioRecovery = async () => ({
+          trackId: "track", positionSeconds: 1800, bookPositionSeconds: 1800, durationSeconds: 7200,
+          updatedAt: Date.parse(newerNative ? "2026-09-30T12:00:00Z" : "2026-09-30T11:55:00Z")
+        });
+        await f.restore();
+        assert.equal(f.seeks[0].positionSeconds, newerNative ? 1800 : journal.positionSeconds);
+        assert.deepEqual(f.writes, []);
+      });
+    }
+  }
+}
+
+test("a fresh chapter selection uses a newer shelf revision without requiring restore", async () => {
+  const f = fixture();
+  const prior = reliability.syncedProgress(f.server, "2026-09-30T12:00:00Z");
+  f.write(prior);
+  const refreshed = { ...f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769720000" };
+  Object.assign(f.book.progress, refreshed);
+  await loadHook("useLibrary", f.dependencies)(f.options).loadBooks();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.checkpoint().updatedAt, prior.updatedAt);
+  controlsFor(f).seekBookPositionInBook(f.book, 1800);
+  assert.equal(f.options.explicitSessionStartBookIdRef.current, "book");
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    f.writes.push({ progress, options });
+    return progress.baseUpdatedAt === refreshed.updatedAt
+      ? { ...refreshed, ...progress, updatedAt: "1790769840000", accepted: true }
+      : { ...refreshed, accepted: false };
+  };
+  const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+  await sync.persistProgress();
+  assert.equal(f.writes[0].progress.baseUpdatedAt, refreshed.updatedAt);
+  assert.equal(f.writes[0].options.intentionalSeek, true);
+  assert.equal(f.checkpoint().positionSeconds, 1800);
+  assert.equal(f.checkpoint().accepted, true);
+});
+
+for (const updatedAt of ["2026-09-30T11:00:00Z", "2026-09-30T15:00:00Z"]) {
+  test(`a new seek never uses a locally summarized ${updatedAt} device timestamp as its server base`, async () => {
+    const f = fixture();
+    const local = reliability.pendingProgress({ ...f.local, updatedAt }, reliability.syncedProgress(f.server));
+    f.write(local);
+    Object.assign(f.book.progress, reliability.summarizeBookProgress(f.book, local));
+    controlsFor(f).seekBookPositionInBook(f.book, 1800);
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    await sync.persistProgress();
+    assert.equal(f.writes[0].progress.baseUpdatedAt, f.server.updatedAt);
+    assert.equal(f.writes[0].options.intentionalSeek, true);
+  });
+}
+
+test("an already journaled seek cannot borrow a later shelf revision on retry", async () => {
+  const f = fixture();
+  f.write(reliability.syncedProgress(f.server));
+  controlsFor(f).seekBookPositionInBook(f.book, 1800);
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    f.writes.push({ progress, options });
+    throw new Error("offline");
+  };
+  const refs: Array<{ current: unknown }> = [];
+  let refIndex = 0;
+  f.dependencies.react.useRef = (value: unknown) => refs[refIndex++] ?? (refs[refIndex - 1] = { current: value });
+  const render = () => {
+    refIndex = 0;
+    return loadHook("useProgressSync", f.dependencies)(f.options);
+  };
+  let sync = render();
+  await sync.persistProgress();
+  const refreshed = { ...f.server, positionSeconds: 2500, bookPositionSeconds: 2500, updatedAt: "1790769720000" };
+  Object.assign(f.book.progress, refreshed);
+  sync = render();
+  await sync.persistProgress();
+  assert.equal(f.writes[1].progress.baseUpdatedAt, f.server.updatedAt);
+  assert.equal(f.writes[1].options.intentionalSeek, true, "the original seek still has retry authorization");
+  controlsFor(f).seekBookPositionInBook(f.book, 2000);
+  await sync.persistProgress();
+  assert.equal(f.writes[2].progress.baseUpdatedAt, refreshed.updatedAt);
+  assert.equal(f.writes[2].progress.positionSeconds, 2000);
+});
+
 test("restore uploads a newer offline checkpoint even when the device clock is slow", async () => {
   const f = fixture();
   f.write(f.local);

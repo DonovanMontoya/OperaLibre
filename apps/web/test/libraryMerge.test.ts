@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { libraryAfterUpload, mergeLibraryBooks } from "../src/libraryMerge.ts";
 import { library } from "./performance/fixtures.ts";
+import { pendingProgress, serverRevisionFromSummary, summarizeBookProgress, syncedProgress } from "../src/reliability.ts";
 import type { Book } from "../src/types.ts";
 
 function deviceBooks() {
@@ -48,4 +49,23 @@ test("ambiguous copies remain separate instead of assigning the wrong audio", ()
   const result = libraryAfterUpload([], server, device);
   assert.equal(result.length, 3);
   assert.equal(result[0].deviceBookId, undefined);
+});
+
+test("a paired device summary retains the newest known server revision for a new seek", () => {
+  const server = library(1);
+  const device = deviceBooks().slice(0, 1);
+  const prior = { bookId: server[0].id, trackId: server[0].tracks[0].id,
+    positionSeconds: 100, bookPositionSeconds: 100, durationSeconds: 7200, updatedAt: "1790769600000" };
+  const local = pendingProgress({ ...prior, positionSeconds: 200, bookPositionSeconds: 200,
+    updatedAt: "2026-09-30T15:00:00Z" }, syncedProgress(prior));
+  device[0].progress = summarizeBookProgress(device[0], local);
+  server[0].progress = { ...device[0].progress!, bookPositionSeconds: 250, updatedAt: "1790769720000", serverUpdatedAt: undefined };
+  const merged = mergeLibraryBooks(server, device)[0];
+  assert.equal(merged.progress?.bookPositionSeconds, 200);
+  assert.equal(merged.progress?.updatedAt, local.updatedAt);
+  assert.equal(serverRevisionFromSummary(merged.progress), server[0].progress.updatedAt);
+  assert.equal(pendingProgress({ ...local, bookPositionSeconds: 150 }, local,
+    serverRevisionFromSummary(merged.progress), true).baseUpdatedAt, server[0].progress.updatedAt);
+  assert.equal(pendingProgress({ ...local, bookPositionSeconds: 210 }, local,
+    serverRevisionFromSummary(merged.progress)).baseUpdatedAt, prior.updatedAt);
 });
