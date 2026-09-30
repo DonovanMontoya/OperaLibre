@@ -2801,7 +2801,7 @@ img.large-cover {
 .epub-catch-up button { font: inherit; cursor: pointer; }
 .epub-catch-up label { display: flex; gap: 8px; align-items: center; }
 .epub-catch-up select, .epub-sheet-row select { max-width: 100%; }
-.epub-reader.fullscreen.chrome-hidden .epub-catch-up { visibility: hidden; }
+.epub-sheet .epub-catch-up { padding: 0; }
 
 .epub-reader {
   --reader-surface: #fffdf7;
@@ -2838,7 +2838,7 @@ img.large-cover {
      reader opens over itself, and above the shell's bars. */
   z-index: 100;
   height: calc(100dvh - 36px);
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border-color: var(--reader-line);
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.35);
 }
@@ -16037,12 +16037,12 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .ep
    player the lower one, the fold between them. The rows above the fold add
    up to its top, because the two below it are sized exactly. */
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .epub-reader.immersive {
-  grid-template-rows: auto auto minmax(0, 1fr) var(--fold-height)
+  grid-template-rows: auto minmax(0, 1fr) var(--fold-height)
     calc(100dvh - var(--fold-y) - var(--fold-height));
 }
 
 html.native-app[data-fold-active][data-fold-axis="horizontal"] .epub-reader.immersive .epub-bottombar {
-  grid-row: 5;
+  grid-row: 4;
   align-content: center;
   gap: 14px;
   padding-inline: max(28px, env(safe-area-inset-left)) max(28px, env(safe-area-inset-right));
