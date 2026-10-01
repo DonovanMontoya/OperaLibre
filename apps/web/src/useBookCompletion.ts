@@ -1,6 +1,6 @@
 import type { AuthUser, Book, Progress } from "./types";
 import { getDeviceBooks, setDeviceBookCompletion } from "./localLibrary";
-import { writeProgressCheckpoint } from "./reliability";
+import { syncedProgress, writeProgressCheckpoint } from "./reliability";
 import { getServerStorageKey, setBookCompletion } from "./api";
 import { cacheLibrary, cacheProgress, warnCacheFailure } from "./offline";
 import { Capacitor } from "@capacitor/core";
@@ -122,6 +122,9 @@ export function useBookCompletion({
         }
       }
       if (completedProgress) {
+        if (book.source !== "device") {
+          Object.assign(completedProgress, syncedProgress({ ...completedProgress, updatedAt: summary.updatedAt }));
+        }
         progressMutationVersion.current += 1;
         writeProgressCheckpoint(
           window.localStorage,

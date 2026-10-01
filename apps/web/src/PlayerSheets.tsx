@@ -11,6 +11,7 @@ import {
   X
 } from "lucide-react";
 import type { Dispatch, FormEvent, SetStateAction } from "react";
+import { useModalFocus } from "./useModalFocus";
 import type { ChapterSegment } from "./chapters";
 import { CoverArt } from "./CoverArt";
 import { bookSubtitle, durationFromTracks, formatDurationLabel, formatTime } from "./formatting";
@@ -46,6 +47,7 @@ export function BookDetailsSheet({
   playbackDescription: string | null;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button
@@ -54,7 +56,7 @@ export function BookDetailsSheet({
         aria-label="Close book details"
         onClick={() => setNativePlayerSheet(null)}
       />
-      <section className="details-sheet" role="dialog" aria-modal="true" aria-labelledby="details-sheet-title">
+      <section ref={dialogRef} tabIndex={-1} className="details-sheet" role="dialog" aria-modal="true" aria-labelledby="details-sheet-title">
         <div className="details-sheet-grabber" aria-hidden="true" />
         <header className="details-sheet-header">
           <span className="eyebrow"><Bookmark size={13} /> Listening edition</span>
@@ -182,6 +184,7 @@ export function SpeedSheet({
   updateBookGain: (book: Book, db: number) => void;
   updateSpeed: (value: number) => void;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button
@@ -190,7 +193,7 @@ export function SpeedSheet({
         aria-label="Close playback settings"
         onClick={() => setNativePlayerSheet(null)}
       />
-      <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
+      <section ref={dialogRef} tabIndex={-1} className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-sheet-title">
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>
@@ -254,6 +257,7 @@ export function ChapterSheet({
   playbackBook: Book;
   setNativePlayerSheet: Dispatch<SetStateAction<NativePlayerSheet>>;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button
@@ -262,7 +266,7 @@ export function ChapterSheet({
         aria-label="Close chapters"
         onClick={() => setNativePlayerSheet(null)}
       />
-      <section className="sleep-sheet chapter-sheet" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
+      <section ref={dialogRef} tabIndex={-1} className="sleep-sheet chapter-sheet" role="dialog" aria-modal="true" aria-labelledby="chapter-sheet-title">
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>
@@ -322,6 +326,7 @@ export function SleepTimerSheet({
   sleepRemaining: number;
   startCustomSleepTimer: (event: FormEvent) => void;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(closeNativePlayerSheet);
   return (
     <div className="sleep-sheet-layer" role="presentation">
       <button
@@ -330,7 +335,7 @@ export function SleepTimerSheet({
         aria-label="Close sleep timer"
         onClick={() => setNativePlayerSheet(null)}
       />
-      <section className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="sleep-sheet-title">
+      <section ref={dialogRef} tabIndex={-1} className="sleep-sheet" role="dialog" aria-modal="true" aria-labelledby="sleep-sheet-title">
         <div className="sleep-sheet-grabber" aria-hidden="true" />
         <header>
           <div>

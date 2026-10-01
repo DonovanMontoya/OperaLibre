@@ -1,7 +1,7 @@
 import type { AuthUser, Book, BookProgress, LoginResponse, Progress } from "./types";
 
 export type ProgressWrite = Pick<Progress, "trackId" | "positionSeconds" | "bookPositionSeconds" | "durationSeconds">
-  & Partial<Pick<Progress, "updatedAt">>;
+  & Partial<Pick<Progress, "updatedAt" | "baseUpdatedAt">>;
 export type ProgressWriteOptions = {
   isPaused?: boolean;
   intentionalRegression?: boolean;

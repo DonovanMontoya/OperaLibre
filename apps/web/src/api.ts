@@ -992,12 +992,13 @@ async function saveOperaLibreProgress(bookId: string, progress: ProgressWrite, o
   // progress another device saved more recently. intentionalRegression marks
   // a deliberate backwards jump (restart, rewind) — without it the server
   // refuses near-zero writes that would erase substantial progress.
-  const { updatedAt, ...fields } = progress;
+  const { updatedAt, trackId, positionSeconds, bookPositionSeconds, durationSeconds, baseUpdatedAt } = progress;
   return request<Progress>(`/api/books/${encodeURIComponent(bookId)}/progress`, {
     method: "PUT",
     signal: options?.signal,
     body: JSON.stringify({
-      ...fields,
+      trackId, positionSeconds, bookPositionSeconds, durationSeconds,
+      ...(baseUpdatedAt !== undefined ? { baseUpdatedAt } : {}),
       ...(updatedAt ? { updatedAtMs: progressTimestamp(updatedAt) } : {}),
       // When this device's clock is off, updatedAtMs is off by the same
       // amount; the server compares sentAtMs with its own arrival time to
