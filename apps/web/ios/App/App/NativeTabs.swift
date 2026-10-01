@@ -1,5 +1,6 @@
 import Capacitor
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 private final class NativeTabContentHost: UIViewController {
     var onLayout: (() -> Void)?
@@ -38,6 +39,51 @@ private final class TabsOverlayView: UIView {
     }
 }
 
+/// Watches a touch on the bar without claiming it. The glass bar selects the
+/// tab in line with the finger wherever it lifts, so a swipe up from the bottom
+/// edge that starts a little high — closing the app — would otherwise leave
+/// the page on Games or Ledger.
+private final class BarTouchTracker: UIGestureRecognizer {
+    private var start = CGPoint.zero
+    /// Whether the touch that just finished left the bar or was taken by the
+    /// system. UIKit asks about the selection before the turn is over; after
+    /// that the answer is stale for VoiceOver and keyboard selections.
+    private(set) var strayed = false
+    // Room for a finger to roll off the bar's edge as it lifts.
+    private static let slop: CGFloat = 24
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesEnded = false
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch = touches.first { start = touch.location(in: view) }
+        strayed = false
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let overlay = view, let end = touches.first?.location(in: overlay) else { return finish(strayed: false) }
+        // The overlay answers a hit test only where the bar is.
+        finish(strayed: overlay.hitTest(end, with: nil) == nil
+            && hypot(end.x - start.x, end.y - start.y) > Self.slop)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        finish(strayed: true)
+    }
+
+    private func finish(strayed: Bool) {
+        self.strayed = strayed
+        state = .failed
+        DispatchQueue.main.async { [weak self] in self?.strayed = false }
+    }
+}
+
 /// The web shell sends its screen colors as `#rrggbb`, the one spelling the
 /// stylesheet uses for them.
 private func chromeColor(_ hex: String) -> UIColor? {
@@ -63,6 +109,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     let content: ViewController
     private let navigation = UITabBarController()
     private let tabsOverlay = TabsOverlayView()
+    private let barTouch = BarTouchTracker(target: nil, action: nil)
     private var hosts: [String: UIViewController] = [:]
     private var identifiers: [String] = []
     private var contentConstraints: [NSLayoutConstraint] = []
@@ -136,6 +183,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         tabsOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         tabsOverlay.backgroundColor = .clear
         tabsOverlay.hostViews = { [weak self] in self?.hosts.values.compactMap(\.viewIfLoaded) ?? [] }
+        tabsOverlay.addGestureRecognizer(barTouch)
         view.addSubview(tabsOverlay)
         layoutContent(in: self)
     }
@@ -542,6 +590,11 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.selectionThisTurn = nil
         }
+    }
+
+    @available(iOS 18.0, *)
+    func tabBarController(_ tabBarController: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
+        !barTouch.strayed
     }
 
     @available(iOS 18.0, *)
