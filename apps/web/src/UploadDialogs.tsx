@@ -1,5 +1,6 @@
 import { BookOpen, LoaderCircle, Upload, X } from "lucide-react";
 import type { ChangeEvent, Dispatch, FormEvent, SetStateAction } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { SUPPORTED_AUDIO_EXTENSIONS } from "./mediaFiles";
 import type { Book } from "./types";
 
@@ -41,9 +42,12 @@ export function AudiobookUploadDialog({
   uploadError: string | null;
   uploadFiles: File[];
 }) {
+  const dialogRef = useModalFocus<HTMLFormElement>(() => { if (!uploadBusy) setUploadModalOpen(false); });
   return (
     <div className="modal-scrim" role="presentation">
       <form
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card upload-audiobook-card"
         role="dialog"
         aria-modal="true"
@@ -136,10 +140,13 @@ export function EbookUploadDialog({
   setEbookUploadBook: Dispatch<SetStateAction<Book | null>>;
   submitEbookUpload: (event: FormEvent) => Promise<void>;
 }) {
+  const dialogRef = useModalFocus<HTMLFormElement>(() => { if (!ebookUploadBusy) setEbookUploadBook(null); });
   const onDevice = ebookUploadBook.source === "device";
   return (
     <div className="modal-scrim" role="presentation">
       <form
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card upload-audiobook-card"
         role="dialog"
         aria-modal="true"

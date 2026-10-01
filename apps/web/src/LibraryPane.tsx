@@ -41,6 +41,7 @@ import { isSortModeSupported, type LibrarySource, SORT_OPTIONS, type SortMode } 
 import { SHELF_VIEW_MODE_OPTIONS } from "./shelfView";
 import { SHELF_STATUS_OPTIONS, toggleShelfFacet } from "./shelfFilters";
 import { ShelfBookList, ShelfFacetGroup } from "./ShelfBookList";
+import { DeviceImportNotice } from "./DeviceImportNotice";
 import { ContinueReading } from "./ContinueReading";
 import { isPendingJob, jobDetailLines, jobStateLabel, jobSummary, jobTitle } from "./jobLabels";
 import { formatElapsed, formatMinutes } from "./formatting";
@@ -229,7 +230,8 @@ export function LibraryPane({
     toggleFinishFeed
   } = finishFeedState;
   const {
-    importFromDevice
+    importFromDevice,
+    downloadStatus
   } = offlineDownloads;
   const {
     readalongEnabled
@@ -777,6 +779,7 @@ export function LibraryPane({
 
       </div>
       <div className="purchase-books-pane">
+      <DeviceImportNotice notice={downloadStatus} busy={deviceImport !== null} onRetry={importFromDevice} />
 
       {librarySource === "libro" || librarySource === "all" ? (
         <LibroCatalog key={`${currentUser.id}:${libroOnDevice ? "device" : "server"}`} mode={native ? "catalog" : "full"} polling={!native || nativeTab === "shelf"} onOpenSettings={native ? () => openNativeTab("settings") : undefined} onAccountsChanged={setLibroAccounts} filterEmail={librarySource === "all" ? (purchaseAccountFilter.startsWith("libro:") ? purchaseAccountFilter.slice(6) : null) : undefined} hidden={librarySource === "all" && purchaseAccountFilter.startsWith("audible:")} device={libroOnDevice} refreshKey={libroRefreshKey} searchQuery={searchQuery} sortMode={sortMode} reversed={sortReversed} viewMode={purchaseViewMode} onBooksChanged={libroOnDevice ? () => setBooks(current => mergeDeviceAndServerBooks(current.filter(book => book.source !== "device"), getDeviceBooks())) : applyAdminLibraryChange} onOpenBook={(id) => { showYourLibrary(); openBookDetails(id); }} />
@@ -858,9 +861,9 @@ export function LibraryPane({
             </div>
           ) : null}
 
-          {!isLoading && !error ? (
+          {!isLoading ? (
             <ContinueReading
-              books={visibleBooks}
+              books={isOffline ? visibleBooks.filter(book => book.source === "device" || !!book.deviceBookId || downloadedBookIds.has(book.id)) : visibleBooks}
               onContinue={continueReadingBook}
             />
           ) : null}

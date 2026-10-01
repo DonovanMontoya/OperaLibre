@@ -4,10 +4,14 @@ import { trackOffsetSeconds } from "./formatting";
 import {
   adoptableServerProgress,
   freshestProgress,
+  pendingProgress,
+  rebasePendingProgress,
+  syncedProgress,
   progressAfterSave,
   readProgressCheckpoint,
   resolveProgressLocation,
   saveWasOverruled,
+  serverRevisionFromSummary,
   shouldFlagIntentionalRegression,
   summarizeBookProgress,
   writeProgressCheckpoint
@@ -111,6 +115,7 @@ export function useProgressSync({
   showMediaClock: () => boolean;
   wantsAutoplayRef: RefObject<boolean>;
 }) {
+  const journaledSeekGenerationRef = useRef(new Map<string, number>());
   const foregroundProgressActionsRef = useRef({
     nativeAudio, persistProgress, adoptNewerServerProgress, refreshClock: showMediaClock
   });
@@ -159,7 +164,10 @@ export function useProgressSync({
       : Number.isFinite(audioRef.current.currentTime)
         ? Math.max(0, audioRef.current.currentTime)
         : Math.max(0, position);
-    const localProgress: Progress = {
+    const newIntentionalSeek = (intentionalSeekGenerationRef.current.get(playbackBook.id) ?? 0)
+      > Math.max(acknowledgedSeekGenerationRef.current.get(playbackBook.id) ?? 0,
+        journaledSeekGenerationRef.current.get(playbackBook.id) ?? 0);
+    const localProgress = pendingProgress({
       bookId: playbackBook.id,
       trackId: currentTrack.id,
       positionSeconds: trackPosition,
@@ -169,9 +177,15 @@ export function useProgressSync({
         : Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTrack.durationSeconds,
       updatedAt: new Date().toISOString(),
       finishedOverride: playbackBook.progress?.finishedOverride ?? null
-    };
+    }, readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, playbackBook.id),
+    serverRevisionFromSummary(playbackBook.progress), newIntentionalSeek);
     if (!reconciling) progressMutationVersion.current += 1;
-    overruledSaveRef.current.delete(playbackBook.id);
+    if (newIntentionalSeek) {
+      // Retries still carry seek authorization, but observing a later shelf
+      // revision must not rebase an already journaled, unacknowledged seek.
+      journaledSeekGenerationRef.current.set(playbackBook.id, intentionalSeekGenerationRef.current.get(playbackBook.id)!);
+      overruledSaveRef.current.delete(playbackBook.id);
+    }
     writeProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, localProgress);
     void cacheProgress(currentUser.id, localProgress).catch(warnCacheFailure("cache listening progress"));
     if (playbackBook.deviceBookId) {
@@ -236,7 +250,8 @@ export function useProgressSync({
               positionSeconds: entry.progress.positionSeconds,
               bookPositionSeconds: entry.progress.bookPositionSeconds,
               durationSeconds: entry.progress.durationSeconds,
-              updatedAt: entry.progress.updatedAt
+              updatedAt: entry.progress.updatedAt,
+              baseUpdatedAt: entry.progress.baseUpdatedAt
             },
             {
               isPaused: entry.isPaused,
@@ -268,6 +283,15 @@ export function useProgressSync({
             entry.bookId
           );
           const reconciled = progressAfterSave(local, entry.progress, saved);
+          if (reconciled !== saved) {
+            const rebased = rebasePendingProgress(reconciled, entry.progress, saved);
+            if (rebased !== reconciled) {
+              const book = books.find((candidate) => candidate.id === entry.bookId);
+              if (book) storeProgressCopies(book, rebased);
+              const queued = queuedProgressSaves.current.get(entry.bookId);
+              if (queued) queued.progress = rebasePendingProgress(queued.progress, entry.progress, saved);
+            }
+          }
           if (reconciled === saved) {
             // Heal future-skewed and rejected local checkpoints with the
             // server's canonical response. Without this, the same stale copy
@@ -316,8 +340,33 @@ export function useProgressSync({
     );
   }
 
-  function storeCanonicalServerProgress(book: Book, saved: Progress) {
+  function storeCanonicalServerProgress(book: Book, saved: Progress, attempted?: Progress | null) {
+    const local = readProgressCheckpoint(window.localStorage, getServerStorageKey(), currentUser.id, book.id);
+    if (attempted !== undefined) {
+      const current = progressAfterSave(local, attempted, saved);
+      if (current !== saved) {
+        const rebased = attempted ? rebasePendingProgress(current, attempted, saved) : current;
+        if (rebased !== current) {
+          storeProgressCopies(book, rebased);
+          const queued = queuedProgressSaves.current.get(book.id);
+          if (queued && attempted) queued.progress = rebasePendingProgress(queued.progress, attempted, saved);
+        }
+        return;
+      }
+    }
     acknowledgedServerPositionRef.current.set(book.id, saved.bookPositionSeconds);
+    const canonical = syncedProgress(saved, local?.localUpdatedAt);
+    if (saved.accepted === false && local) {
+      // Healing the durable position does not move an active/native engine.
+      // Keep its rejected base across autosaves, background recovery and
+      // CarPlay replay until the canonical position is actually adopted.
+      canonical.baseUpdatedAt = local.baseUpdatedAt;
+      overruledSaveRef.current.set(book.id, local);
+    }
+    storeProgressCopies(book, canonical);
+  }
+
+  function storeProgressCopies(book: Book, saved: Progress) {
     writeProgressCheckpoint(
       window.localStorage,
       getServerStorageKey(),
@@ -411,9 +460,8 @@ export function useProgressSync({
       // unchanged position — so it is measured by distance alone: the server
       // already vetted its own copy when it refused ours.
       const overruled = overruledSaveRef.current.get(book.id);
-      overruledSaveRef.current.delete(book.id);
       const adopted = overruled
-        ? saveWasOverruled(overruled, server) ? server : null
+        ? server
         : adoptableServerProgress(freshestProgress(checkpoint, cached), server);
       if (!adopted) return;
       const location = resolveProgressLocation(book.tracks, adopted);
@@ -421,6 +469,7 @@ export function useProgressSync({
       storeCanonicalServerProgress(book, adopted);
       setCurrentTrackId(location.trackId);
       setPendingSeek(location);
+      overruledSaveRef.current.delete(book.id);
       setPosition(location.positionSeconds);
       setDuration(
         book.tracks.find((track) => track.id === location.trackId)?.durationSeconds ?? 0

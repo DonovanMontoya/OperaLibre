@@ -2925,13 +2925,13 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
     assert!((session["startTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
     assert_eq!(session["playMethod"], 0);
 
-    // A delayed automatic checkpoint cannot roll the listener back.
+    // A stale automatic checkpoint cannot roll the listener back.
     let rejected_regression = server
         .send_json(
             "PATCH",
             &format!("/abs/api/me/progress/{book}"),
             &token,
-            serde_json::json!({ "currentTime": 4.0 }),
+            serde_json::json!({ "currentTime": 4.0, "lastUpdate": 1 }),
         )
         .await;
     assert_eq!(rejected_regression.status, StatusCode::OK);
@@ -2947,6 +2947,34 @@ async fn a_position_synced_by_an_audiobookshelf_client_is_the_same_position() {
         .await;
     assert_eq!(rejected_stale.status, StatusCode::OK);
     assert!((rejected_stale.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
+
+    // A fresh small rewind into the first minute is accepted and shared with
+    // the native API, even though Audiobookshelf clients send no seek flag.
+    let rewound = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 4.0, "lastUpdate": super::unix_now_millis() }),
+        )
+        .await;
+    assert_eq!(rewound.status, StatusCode::OK);
+    assert!((rewound.json()["currentTime"].as_f64().unwrap() - 4.0).abs() < 0.01);
+    let native_rewind = server
+        .get(&format!("/api/books/{book}/progress"), &token)
+        .await
+        .json();
+    assert!((native_rewind["bookPositionSeconds"].as_f64().unwrap() - 4.0).abs() < 0.01);
+    let resumed = server
+        .send_json(
+            "PATCH",
+            &format!("/abs/api/me/progress/{book}"),
+            &token,
+            serde_json::json!({ "currentTime": 14.0 }),
+        )
+        .await;
+    assert_eq!(resumed.status, StatusCode::OK);
+    assert!((resumed.json()["currentTime"].as_f64().unwrap() - 14.0).abs() < 0.01);
 
     // Completion-only PATCHes preserve the position, and false is an explicit
     // state rather than being ignored after true.

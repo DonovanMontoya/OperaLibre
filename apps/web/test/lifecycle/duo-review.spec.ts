@@ -433,3 +433,48 @@ test('credits remeasure width and font changes even while expanded or hidden', a
   await credits.evaluate(el => { el.style.fontSize = '10px'; document.fonts.dispatchEvent(new Event('loadingdone')); });
   await expect(page.locator('.book-credits-toggle')).toHaveCount(0);
 });
+
+test('a cached in-progress shelf stays resumable when its server disappears', async ({ page }) => {
+  const books = library(2);
+  const deviceCopy = { ...books[0], id: 'device-saved', source: 'device', deviceBookId: 'device-saved',
+    tracks: books[0].tracks.map(track => ({ ...track, id: `device-${track.id}`, localFilePath: `device-library/saved/${track.fileName}` })) };
+  await page.addInitScript(book => localStorage.setItem('operalibre.deviceLibrary.v1', JSON.stringify([book])), deviceCopy);
+  await openShell(page, true, false, true, books);
+  await expect.poll(async () => page.evaluate(async () => {
+    // @ts-expect-error Browser-only Vite import, resolved by the fixture server.
+    const offline = await import('/src/offline.ts');
+    return (await offline.getCachedLibrary('review-reader')).length;
+  })).toBe(books.length);
+  await page.route('**/api/books', route => route.abort('failed'));
+  await page.reload();
+  await expect(page.getByText('Offline mode — showing downloaded books and cached library.')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Continue Reading' })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Continue reading ${books[0].title}` })).toBeVisible();
+});
+
+test('a device import failure is announced on the shelf with a retry', async ({ page }) => {
+  await openShell(page, true);
+  const notice = page.locator('.library-pane').getByRole('alert');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const chosen = page.waitForEvent('filechooser');
+    const action = attempt === 0
+      ? page.getByRole('button', { name: 'Add audiobook from device', exact: true })
+      : notice.getByRole('button', { name: 'Try importing again' });
+    await action.click();
+    // A browser-picked file has no native path, reproducing the platform's
+    // missing-access failure through the real picker and import hook.
+    await (await chosen).setFiles({ name: 'sample.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('fixture') });
+    await expect(notice).toContainText('The file picker did not provide access');
+    await expect(notice.getByRole('button', { name: 'Try importing again' })).toBeEnabled();
+  }
+});
+
+test('cancelling the device picker stays silent and leaves the shelf usable', async ({ page }) => {
+  await openShell(page, true);
+  const chosen = page.waitForEvent('filechooser');
+  const action = page.getByRole('button', { name: 'Add audiobook from device', exact: true });
+  await action.click();
+  await (await chosen).element().evaluate(input => input.dispatchEvent(new Event('cancel')));
+  await expect(action).toBeEnabled();
+  await expect(page.locator('.library-pane').getByRole('alert')).toHaveCount(0);
+});

@@ -18,6 +18,7 @@ export function useOfflineDownloads({
   clearPlaybackSession,
   currentTrack,
   currentUser,
+  downloadStatus,
   loadBooks,
   nativeAudio,
   nativePlaybackPlayingRef,
@@ -44,6 +45,7 @@ export function useOfflineDownloads({
   clearPlaybackSession: () => void;
   currentTrack: Track | null;
   currentUser: AuthUser;
+  downloadStatus: DeviceNotice | null;
   loadBooks: () => Promise<void>;
   nativeAudio: boolean;
   nativePlaybackPlayingRef: RefObject<boolean>;
@@ -157,7 +159,7 @@ export function useOfflineDownloads({
       setNativeTab("shelf");
     } catch (error) {
       const message = errorMessage(error, "The audiobook could not be imported.");
-      if (!/cancel/i.test(message)) setDownloadStatus({ message });
+      if (!/cancel/i.test(message)) setDownloadStatus({ message, source: "deviceImport" });
     } finally {
       setDeviceImport(null);
     }
@@ -214,6 +216,7 @@ export function useOfflineDownloads({
   }
 
   return {
+    downloadStatus,
     cancelOfflineDownload,
     deleteDeviceBook,
     downloadForOffline,
