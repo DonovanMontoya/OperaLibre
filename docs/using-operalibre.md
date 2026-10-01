@@ -13,6 +13,8 @@ This is the everyday guide for listeners and the person who looks after the libr
 2. Sign in with your own reader name and password.
 3. Select a book, then use **Play**, the speed control, 15-second rewind, 30-second skip, and the sleep timer as needed.
 
+Tapping a book in **Continue Reading** loads your saved position in the player without starting playback. Its play button resumes immediately. To start playback from either tap, enable **Play when opening Continue Reading** in the native app’s **Settings → Behavior**, or under **Behavior** in the browser’s reader menu. This choice is remembered on the device.
+
 OperaLibre remembers a reader’s position automatically. Each reader has separate progress, so two people can listen to the same book independently.
 
 ### Fix a book that is too quiet

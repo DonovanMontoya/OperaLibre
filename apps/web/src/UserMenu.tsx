@@ -1,3 +1,5 @@
+import { BehaviorSection } from "./BehaviorSection";
+import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import type { usePurchases } from "./usePurchases";
 import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
@@ -10,6 +12,8 @@ import type { LibrarySource } from "./shelfSort";
 import type { ServerCapabilities } from "./serverCapabilities";
 
 export function renderUserMenu({
+  continueReadingAutoplay,
+  toggleContinueReadingAutoplay,
   audioRef,
   capabilities,
   currentUser,
@@ -29,6 +33,8 @@ export function renderUserMenu({
   setUserMenuOpen,
   setUsersModalOpen
 }: {
+  continueReadingAutoplay: boolean;
+  toggleContinueReadingAutoplay: () => void;
   audioRef: RefObject<HTMLAudioElement | null>;
   capabilities: ServerCapabilities;
   currentUser: AuthUser;
@@ -115,30 +121,33 @@ export function renderUserMenu({
           <AlertCircle size={14} /> Audible accounts ({brokenLibationAccounts.length})
         </button>
       ) : null}
-      {!native && sentenceFollowAvailable ? (
-        <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
-          <div>
-            <label id="menu-follow-aggressiveness-label" htmlFor="menu-follow-aggressiveness">
-              Aggressiveness
-            </label>
-            <output htmlFor="menu-follow-aggressiveness">
-              {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-            </output>
+      {!native ? <BehaviorSection>
+        <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        {sentenceFollowAvailable ? (
+          <div className="user-menu-follow-aggressiveness" role="group" aria-labelledby="menu-follow-aggressiveness-label">
+            <div>
+              <label id="menu-follow-aggressiveness-label" htmlFor="menu-follow-aggressiveness">
+                Aggressiveness
+              </label>
+              <output htmlFor="menu-follow-aggressiveness">
+                {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+              </output>
+            </div>
+            <input
+              id="menu-follow-aggressiveness"
+              type="range"
+              min="0"
+              max="2"
+              step="1"
+              value={followAggressiveness}
+              style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+              aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+              onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+            />
+            <small>Current timing <span>A little ahead</span></small>
           </div>
-          <input
-            id="menu-follow-aggressiveness"
-            type="range"
-            min="0"
-            max="2"
-            step="1"
-            value={followAggressiveness}
-            style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-            aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-            onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-          />
-          <small>Current timing <span>A little ahead</span></small>
-        </div>
-      ) : null}
+        ) : null}
+      </BehaviorSection> : null}
       <button
         type="button"
         role="menuitem"
