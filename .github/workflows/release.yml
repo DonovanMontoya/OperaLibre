@@ -2,8 +2,9 @@ name: Create Release
 
 on:
   schedule:
-    # 8 p.m. EST (UTC-5), fixed year-round.
-    - cron: "0 1 * * *"
+    # 8:17 p.m. Eastern, following daylight saving time.
+    - cron: "17 20 * * *"
+      timezone: "America/New_York"
   push:
     tags:
       - "v*"
