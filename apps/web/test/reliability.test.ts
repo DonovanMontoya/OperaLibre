@@ -7,6 +7,11 @@ import {
   freshestProgress,
   isSuspectProgressReset,
   progressAfterSave,
+  pendingProgress,
+  progressNeedsSync,
+  rebasePendingProgress,
+  resolveBookPosition,
+  syncedProgress,
   progressFromBookSummary,
   progressTimestamp,
   readProgressCheckpoint,
@@ -14,6 +19,7 @@ import {
   resolveBookId,
   resolveProgressLocation,
   saveWasOverruled,
+  serverRevisionFromSummary,
   serverStorageKey,
   shouldFlagIntentionalRegression,
   shouldResumeSavedPosition,
@@ -651,4 +657,88 @@ test("resuming an unmeasurable track preserves the saved track position", () => 
     { trackId: "t2", positionSeconds: 1200 },
     "a measured duration still bounds the resume point"
   );
+});
+
+test("whole-book seeks keep the last track's start offset at the exact endpoint", () => {
+  assert.deepEqual(resolveBookPosition([{ id: "one", durationSeconds: 3600 }], 3600),
+    { trackId: "one", positionSeconds: 3600 });
+  const tracks = [{ id: "one", durationSeconds: 1800 }, { id: "two", durationSeconds: 1800 }];
+  assert.deepEqual(resolveBookPosition(tracks, 3600), { trackId: "two", positionSeconds: 1800 });
+  assert.deepEqual(resolveBookPosition(tracks, 1800), { trackId: "two", positionSeconds: 0 });
+  assert.deepEqual(resolveBookPosition(tracks, 4000), { trackId: "two", positionSeconds: 1800 });
+  assert.deepEqual(resolveBookPosition(tracks, -1), { trackId: "one", positionSeconds: 0 });
+});
+
+test("dirty offline progress outranks server clocks until acknowledged", () => {
+  const server = progress({ bookPositionSeconds: 1000, updatedAt: "2026-09-30T12:00:00Z" });
+  const recorded = progress({ bookPositionSeconds: 1060, updatedAt: "2026-09-30T11:56:00Z" });
+  const local = pendingProgress(recorded, syncedProgress(server, "2026-09-30T11:55:00Z"));
+  const disk = memoryStorage();
+  writeProgressCheckpoint(disk, "server", "reader", local);
+  const reopened = readProgressCheckpoint(disk, "server", "reader", local.bookId)!;
+  assert.equal(freshestProgress(server, reopened), reopened);
+  assert.equal(progressNeedsSync(reopened, server), true);
+  assert.equal(reopened.baseUpdatedAt, server.updatedAt);
+  assert.equal(adoptableServerProgress(reopened, server), null);
+  const saved = syncedProgress({ ...server, bookPositionSeconds: 1060, updatedAt: "2026-09-30T12:01:01Z" }, recorded.updatedAt);
+  assert.equal(freshestProgress(reopened, saved), saved);
+  assert.equal(progressNeedsSync(saved, server), false);
+});
+
+test("acknowledging an in-flight save only rebases newer pending edits", () => {
+  const canonical = syncedProgress(progress(), "2025-07-11T00:50:00Z");
+  const attempted = pendingProgress(progress({ bookPositionSeconds: 40, updatedAt: "2025-07-11T00:51:00Z" }), canonical);
+  const newer = pendingProgress(progress({ bookPositionSeconds: 50, updatedAt: "2025-07-11T00:51:02Z" }), attempted);
+  const saved = progress({ bookPositionSeconds: 40, updatedAt: "2025-07-11T01:01:01Z", accepted: true });
+  const rebased = rebasePendingProgress(newer, attempted, saved);
+  assert.equal(rebased.bookPositionSeconds, 50);
+  assert.equal(rebased.updatedAt, newer.updatedAt);
+  assert.equal(rebased.baseUpdatedAt, saved.updatedAt);
+  assert.equal(rebased.syncStatus, "pending");
+  assert.equal(progressNeedsSync(rebased, saved), true);
+  // The server clamped the stored position (a clock past the track's end); the
+  // save was still accepted, so queued edits must build on its revision.
+  const normalized = rebasePendingProgress(newer, attempted, { ...saved, bookPositionSeconds: 39.25 });
+  assert.equal(normalized.baseUpdatedAt, saved.updatedAt);
+  assert.equal(normalized.bookPositionSeconds, 50);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, trackId: "track-2" }), newer);
+  const refused = { ...saved, bookPositionSeconds: 1800, accepted: false };
+  assert.equal(rebasePendingProgress(newer, attempted, refused), newer);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: false }), newer);
+  assert.equal(rebasePendingProgress(newer, attempted, { ...saved, accepted: undefined }), newer);
+});
+
+test("local mutations in the same millisecond stay distinct from their acknowledgement", () => {
+  const recordedAt = "2026-09-30T12:00:00.000Z";
+  const acknowledged = syncedProgress(progress({ updatedAt: "1790769600000" }), recordedAt);
+  const edit = pendingProgress(progress({ updatedAt: recordedAt, bookPositionSeconds: 40 }), acknowledged);
+  assert.equal(freshestProgress(acknowledged, edit), edit);
+  const saved = syncedProgress({ ...edit, updatedAt: "1790769600001" }, edit.localUpdatedAt);
+  assert.equal(freshestProgress(edit, saved), saved);
+});
+
+test("only a fresh seek adopts the newest known server revision regardless of which copy knows it", () => {
+  const older = "1790769600000";
+  const newer = "1790769720000";
+  for (const [acknowledged, listed] of [[older, newer], [newer, older]]) {
+    const previous = syncedProgress(progress({ updatedAt: acknowledged }));
+    previous.baseUpdatedAt = "1790769540000";
+    const automatic = pendingProgress(progress(), previous, listed);
+    const intentional = pendingProgress(progress(), previous, listed, true);
+    assert.equal(automatic.baseUpdatedAt, previous.baseUpdatedAt);
+    assert.equal(intentional.baseUpdatedAt, newer);
+    assert.equal(intentional.acknowledgedUpdatedAt, newer);
+  }
+});
+
+test("locally synthesized summaries expose only a known server revision", () => {
+  const book = { durationSeconds: 7200, tracks: [{ durationSeconds: 7200 }] };
+  const unknown = summarizeBookProgress(book, progress({ updatedAt: "2026-09-30T15:00:00Z" }));
+  assert.equal(serverRevisionFromSummary(unknown), undefined);
+  const acknowledged = syncedProgress(progress({ updatedAt: "1790769600000" }));
+  const local = pendingProgress(progress({ updatedAt: "2026-09-30T15:00:00Z" }), acknowledged);
+  const summary = summarizeBookProgress(book, local);
+  assert.equal(summary?.updatedAt, local.updatedAt);
+  assert.equal(serverRevisionFromSummary(summary), acknowledged.updatedAt);
+  assert.equal(serverRevisionFromSummary({ updatedAt: "1790769720000" }), "1790769720000");
 });

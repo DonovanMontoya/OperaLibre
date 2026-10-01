@@ -11,6 +11,7 @@ import { hasPlaybackSource } from "./nativeAudioStartup";
 import {
   endedShortOfTrack,
   PROGRESS_RESET_GUARD_SECONDS,
+  resolveBookPosition,
   shouldResumeSavedPosition,
   summarizeBookProgress
 } from "./reliability";
@@ -501,26 +502,12 @@ export function usePlaybackControls({
   function seekBookPositionInBook(book: Book, value: number, autoPlay = false) {
     const targetBookDuration = book.durationSeconds ?? durationFromTracks(book);
     const clampedValue = Math.max(0, Math.min(value, targetBookDuration || value));
+    const location = resolveBookPosition(book.tracks, clampedValue);
+    if (!location) return;
+    const targetTrack = book.tracks.find((track) => track.id === location.trackId)!;
+    const trackPosition = location.positionSeconds;
     markPlaybackTouched(true, book.id, true, clampedValue);
     if (playbackBook?.id !== book.id) explicitSessionStartBookIdRef.current = book.id;
-    let offset = 0;
-    let targetTrack: Track | undefined = book.tracks[0];
-
-    for (const track of book.tracks) {
-      const trackDuration = track.durationSeconds ?? 0;
-      const nextOffset = offset + Math.max(1, trackDuration);
-      targetTrack = track;
-      if (clampedValue < nextOffset) {
-        break;
-      }
-      offset += trackDuration;
-    }
-
-    if (!targetTrack) {
-      return;
-    }
-
-    const trackPosition = Math.max(0, clampedValue - offset);
     setPlaybackBookId(book.id);
 
     if (playbackBook?.id === book.id && targetTrack.id === currentTrack?.id && audioRef.current) {

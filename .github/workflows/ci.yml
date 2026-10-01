@@ -100,6 +100,11 @@ jobs:
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
+      - name: Test offline shelf and modal interactions
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts
+
       - name: Build
         run: npm run build -w @operalibre/web
 

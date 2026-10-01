@@ -6106,12 +6106,13 @@ fn clock_correction_never_goes_below_zero() {
 }
 
 #[test]
-fn a_progress_checkpoint_parses_its_send_time_alongside_the_update() {
+fn a_progress_checkpoint_parses_its_send_time_and_base_revision_alongside_the_update() {
     let checkpoint: super::ProgressCheckpoint = serde_json::from_value(serde_json::json!({
         "trackId": "t1",
         "positionSeconds": 12,
         "updatedAtMs": 1_750_000_000_000u64,
         "sentAtMs": 1_750_000_000_500u64,
+        "baseUpdatedAt": "1749999999000",
         "intentionalSeek": true
     }))
     .unwrap();
@@ -6119,6 +6120,7 @@ fn a_progress_checkpoint_parses_its_send_time_alongside_the_update() {
     assert_eq!(checkpoint.update.position_seconds, 12.0);
     assert_eq!(checkpoint.update.updated_at_ms, Some(1_750_000_000_000));
     assert_eq!(checkpoint.sent_at_ms, Some(1_750_000_000_500));
+    assert_eq!(checkpoint.base_updated_at.as_deref(), Some("1749999999000"));
     assert!(checkpoint.update.intentional_seek);
     assert!(!checkpoint.update.intentional_regression);
 
@@ -6128,7 +6130,277 @@ fn a_progress_checkpoint_parses_its_send_time_alongside_the_update() {
     }))
     .unwrap();
     assert_eq!(legacy.sent_at_ms, None);
+    assert_eq!(legacy.base_updated_at, None);
     assert_eq!(legacy.update.updated_at_ms, None);
+}
+
+fn checkpoint_at(
+    position: f64,
+    recorded_at: u64,
+    sent_at: u64,
+    base_updated_at: Option<&str>,
+) -> super::ProgressCheckpoint {
+    let mut update = decision_update(position);
+    update.updated_at_ms = Some(recorded_at);
+    super::ProgressCheckpoint {
+        update,
+        sent_at_ms: Some(sent_at),
+        base_updated_at: base_updated_at.map(str::to_string),
+    }
+}
+
+#[test]
+fn a_delayed_automatic_checkpoint_cannot_undo_another_devices_rewind() {
+    let book = abs_decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(3_500.0, 0);
+    previous.updated_at = (now - 60_000).to_string();
+    let automatic = checkpoint_at(
+        3_600.0,
+        now - 1_000,
+        now - 1_000,
+        Some(&previous.updated_at),
+    );
+    let mut rewind = checkpoint_at(1_800.0, now, now, Some(&previous.updated_at));
+    rewind.update.intentional_seek = true;
+    let rewound = match super::decide_progress_checkpoint(
+        &book,
+        &book.tracks[0],
+        Some(&previous),
+        &rewind,
+        now,
+    ) {
+        super::ProgressDecision::Store { saved, .. } => saved,
+        super::ProgressDecision::Keep => {
+            panic!("a rewind based on the current revision was refused")
+        }
+    };
+    assert_eq!(rewound.book_position_seconds, 1_800.0);
+    assert_eq!(
+        super::server_domain_timestamp_ms(
+            automatic.update.updated_at_ms,
+            automatic.sent_at_ms,
+            now + 5_000,
+        ),
+        Some(now + 5_000),
+        "network delay makes the old automatic position look newer by timestamp alone"
+    );
+    assert!(matches!(
+        super::decide_progress_checkpoint(
+            &book,
+            &book.tracks[0],
+            Some(&rewound),
+            &automatic,
+            now + 5_000,
+        ),
+        super::ProgressDecision::Keep
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_progress_route_persists_a_rewind_over_a_delayed_automatic_save() {
+    use tower::ServiceExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let (state, _) = fake_libation_state(root.path());
+    let book = abs_decision_book();
+    state.library.write().await.books.push(book.clone());
+    let auth = admin_user();
+    let app = super::Router::new()
+        .route(
+            "/books/{book_id}/progress",
+            super::put(super::update_progress).get(super::get_progress),
+        )
+        .layer(super::Extension(auth.clone()))
+        .with_state(state.clone());
+    let now = super::unix_now_millis();
+    let mut base = "removed-server-revision".to_string();
+    let mut rewind_revision = String::new();
+    for (position, intentional_seek, accepted) in [
+        (3_500.0, false, true),
+        (1_800.0, true, true),
+        (3_600.0, false, false),
+        // Equal positions still reject an obsolete base revision.
+        (1_800.0, false, false),
+    ] {
+        let payload = serde_json::json!({
+            "trackId": book.tracks[0].id,
+            "positionSeconds": position,
+            "updatedAtMs": now - 600_000,
+            "sentAtMs": now - 600_000,
+            "baseUpdatedAt": base,
+            "intentionalSeek": intentional_seek
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                super::Request::builder()
+                    .method(super::Method::PUT)
+                    .uri(format!("/books/{}/progress", book.id))
+                    .header(super::CONTENT_TYPE, "application/json")
+                    .body(super::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), super::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["accepted"], accepted);
+        let saved: super::Progress = serde_json::from_value(value).unwrap();
+        if position == 3_500.0 {
+            // A retained client revision can initialize a missing server row.
+            assert_eq!(saved.book_position_seconds, position);
+            base = saved.updated_at;
+        } else if intentional_seek {
+            assert_eq!(saved.book_position_seconds, 1_800.0);
+            rewind_revision = saved.updated_at;
+        } else {
+            assert_eq!(saved.book_position_seconds, 1_800.0);
+            assert_eq!(saved.updated_at, rewind_revision);
+        }
+    }
+    let persisted = state
+        .progress
+        .get(&auth.id, &book.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.book_position_seconds, 1_800.0);
+    assert_eq!(persisted.updated_at, rewind_revision);
+    let fetched = app
+        .oneshot(
+            super::Request::builder()
+                .uri(format!("/books/{}/progress", book.id))
+                .body(super::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), super::StatusCode::OK);
+    let body = axum::body::to_bytes(fetched.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["bookPositionSeconds"], 1_800.0);
+    assert!(value.get("accepted").is_none(), "GET has no write outcome");
+}
+
+#[test]
+fn a_same_revision_checkpoint_accepts_clock_skew_and_offline_progress() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(100.0, 0);
+    previous.updated_at = (now - 7_200_000).to_string();
+    // Both devices were offline for an hour after recording the checkpoint.
+    // Their clocks differ from the server in opposite directions.
+    for sent_at in [now - 600_000, now + 600_000] {
+        let checkpoint = checkpoint_at(
+            160.0,
+            sent_at - 3_600_000,
+            sent_at,
+            Some(&previous.updated_at),
+        );
+        match super::decide_progress_checkpoint(
+            &book,
+            &book.tracks[0],
+            Some(&previous),
+            &checkpoint,
+            now,
+        ) {
+            super::ProgressDecision::Store { saved, .. } => {
+                assert_eq!(saved.book_position_seconds, 160.0);
+                assert_eq!(saved.updated_at, now.to_string());
+            }
+            super::ProgressDecision::Keep => {
+                panic!("unchanged server progress blocked an offline save")
+            }
+        }
+    }
+}
+
+#[test]
+fn a_checkpoint_based_on_an_older_revision_cannot_replace_remote_progress() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(300.0, 0);
+    previous.updated_at = (now - 1_000).to_string();
+    for position in [160.0, 360.0] {
+        let mut checkpoint = checkpoint_at(position, now, now, Some("1749999900000"));
+        checkpoint.update.intentional_seek = true;
+        assert!(matches!(
+            super::decide_progress_checkpoint(
+                &book,
+                &book.tracks[0],
+                Some(&previous),
+                &checkpoint,
+                now,
+            ),
+            super::ProgressDecision::Keep
+        ));
+    }
+}
+
+#[test]
+fn a_checkpoint_without_a_base_revision_keeps_legacy_timestamp_behavior() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let mut previous = stored_at(100.0, 0);
+    previous.updated_at = (now - 1_000).to_string();
+    let checkpoint = checkpoint_at(160.0, now - 600_000, now - 600_000, None);
+    assert!(matches!(
+        super::decide_progress_checkpoint(
+            &book,
+            &book.tracks[0],
+            Some(&previous),
+            &checkpoint,
+            now,
+        ),
+        super::ProgressDecision::Store { .. }
+    ));
+    let stale = checkpoint_at(160.0, now - 3_600_000, now, None);
+    assert!(matches!(
+        super::decide_progress_checkpoint(&book, &book.tracks[0], Some(&previous), &stale, now,),
+        super::ProgressDecision::Keep
+    ));
+}
+
+#[test]
+fn an_unobserved_server_revision_only_initializes_an_empty_progress_record() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let checkpoint = checkpoint_at(160.0, now, now, Some(""));
+    assert!(matches!(
+        super::decide_progress_checkpoint(&book, &book.tracks[0], None, &checkpoint, now),
+        super::ProgressDecision::Store { .. }
+    ));
+    let previous = stored_at(100.0, 0);
+    assert!(matches!(
+        super::decide_progress_checkpoint(
+            &book,
+            &book.tracks[0],
+            Some(&previous),
+            &checkpoint,
+            now,
+        ),
+        super::ProgressDecision::Keep
+    ));
+}
+
+#[test]
+fn a_retained_base_revision_can_restore_a_missing_server_record() {
+    let book = decision_book();
+    let now = 1_750_000_000_000;
+    let checkpoint = checkpoint_at(160.0, now, now, Some("1749999900000"));
+    match super::decide_progress_checkpoint(&book, &book.tracks[0], None, &checkpoint, now) {
+        super::ProgressDecision::Store { saved, .. } => {
+            assert_eq!(saved.book_position_seconds, 160.0);
+        }
+        super::ProgressDecision::Keep => panic!("there is no stored position to retain"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6288,9 +6560,31 @@ fn an_abs_client_may_rewind_ten_minutes_without_a_seek_flag() {
 }
 
 #[test]
+fn an_abs_client_may_rewind_thirty_seconds_into_the_first_minute() {
+    let previous = stored_at(80.0, 5_000);
+    for last_update in [None, Some(super::unix_now_millis())] {
+        assert_eq!(
+            abs_decided_position(Some(&previous), 50.0, last_update),
+            Some(50.0)
+        );
+    }
+}
+
+#[test]
+fn a_stale_abs_rewind_into_the_first_minute_is_still_refused() {
+    let previous = stored_at(80.0, 1_000);
+    let an_hour_ago = super::unix_now_millis().saturating_sub(3_600_000);
+    assert_eq!(
+        abs_decided_position(Some(&previous), 50.0, Some(an_hour_ago)),
+        None
+    );
+}
+
+#[test]
 fn an_abs_rewind_past_the_ceiling_is_still_refused() {
     let previous = stored_at(5_000.0, 5_000);
     assert_eq!(abs_decided_position(Some(&previous), 3_000.0, None), None);
+    assert_eq!(abs_decided_position(Some(&previous), 3_200.0, None), None);
     // Just inside the ceiling is accepted.
     assert_eq!(
         abs_decided_position(Some(&previous), 3_300.0, None),

@@ -185,6 +185,8 @@ export type BookProgress = {
   remainingSeconds: number | null;
   percentComplete: number | null;
   updatedAt: string;
+  /** Client-only provenance for a locally summarized checkpoint; null means no known server revision. */
+  serverUpdatedAt?: string | null;
 };
 
 export type Chapter = {
@@ -223,6 +225,13 @@ export type Progress = {
   bookPositionSeconds: number;
   durationSeconds: number | null;
   updatedAt: string;
+  /** Present only on a checkpoint PUT response; false means the server retained its copy. */
+  accepted?: boolean;
+  /** Device-only journal metadata; never compare a pending device clock to a server revision. */
+  syncStatus?: "pending" | "synced";
+  baseUpdatedAt?: string;
+  acknowledgedUpdatedAt?: string;
+  localUpdatedAt?: string;
   /** Explicit reader choice; null/undefined means infer completion from position. */
   finishedOverride?: boolean | null;
 };

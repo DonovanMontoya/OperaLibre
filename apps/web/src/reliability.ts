@@ -186,9 +186,76 @@ export function shouldResumeSavedPosition(
 export function freshestProgress(
   ...candidates: Array<Progress | null | undefined>
 ): Progress | null {
-  return candidates
-    .filter((value): value is Progress => !!value)
+  const available = candidates.filter((value): value is Progress => !!value);
+  // Acknowledgements retain the device recording time so an older pending
+  // cache/native mirror cannot outrank its own accepted server revision.
+  const acknowledgedAt = Math.max(0, ...available
+    .filter((value) => value.syncStatus === "synced" && value.localUpdatedAt)
+    .map((value) => progressTimestamp(value.localUpdatedAt!)));
+  const pending = available.filter((value) => value.syncStatus === "pending"
+    && progressTimestamp(value.localUpdatedAt ?? value.updatedAt) > acknowledgedAt);
+  if (pending.length) {
+    return pending.sort((a, b) => progressTimestamp(b.localUpdatedAt ?? b.updatedAt)
+      - progressTimestamp(a.localUpdatedAt ?? a.updatedAt))[0];
+  }
+  return available.filter((value) => value.syncStatus !== "pending")
     .sort((a, b) => progressTimestamp(b.updatedAt) - progressTimestamp(a.updatedAt))[0] ?? null;
+}
+
+/** Preserve the causal baseline until this device's mutation is acknowledged. */
+export function pendingProgress(
+  progress: Progress, previous: Progress | null, serverUpdatedAt?: string, intentionalSeek = false
+): Progress {
+  // Both candidates are server revisions. Device recording times must never
+  // supply a causal base, even when the shelf displays a local checkpoint.
+  const previousAcknowledged = previous?.acknowledgedUpdatedAt
+    ?? (previous?.syncStatus === "synced" ? previous.updatedAt : undefined);
+  const acknowledgedUpdatedAt = previousAcknowledged === undefined
+    || (serverUpdatedAt !== undefined && progressTimestamp(serverUpdatedAt) > progressTimestamp(previousAcknowledged))
+    ? serverUpdatedAt : previousAcknowledged;
+  const inheritedBase = previous?.syncStatus
+    ? previous.baseUpdatedAt ?? (previous.syncStatus === "synced" ? previous.updatedAt : undefined)
+    : serverUpdatedAt ?? (previous ? undefined : "");
+  return {
+    ...progress,
+    syncStatus: "pending",
+    // A rejected checkpoint may know the new revision without its engine
+    // having adopted that position. Automatic/native updates retain the old
+    // base; only a new listener seek may deliberately build on the reply.
+    baseUpdatedAt: intentionalSeek ? acknowledgedUpdatedAt ?? inheritedBase : inheritedBase,
+    acknowledgedUpdatedAt,
+    localUpdatedAt: new Date(Math.max(progressTimestamp(progress.updatedAt),
+      progressTimestamp(previous?.localUpdatedAt ?? "0") + 1)).toISOString()
+  };
+}
+
+export function serverRevisionFromSummary(summary: Pick<BookProgress, "updatedAt" | "serverUpdatedAt"> | null | undefined): string | undefined {
+  return summary?.serverUpdatedAt === undefined ? summary?.updatedAt : summary.serverUpdatedAt ?? undefined;
+}
+
+export function syncedProgress(progress: Progress, localUpdatedAt = new Date().toISOString()): Progress {
+  return { ...progress, syncStatus: "synced", baseUpdatedAt: progress.updatedAt,
+    acknowledgedUpdatedAt: progress.updatedAt, localUpdatedAt };
+}
+
+/** Old unmarked journals keep their timestamp fallback; acknowledged copies never need a replay. */
+export function progressNeedsSync(local: Progress | null, server: { updatedAt: string } | null | undefined): boolean {
+  if (!local || local.syncStatus === "synced") return false;
+  return local.syncStatus === "pending" || !server
+    || progressTimestamp(local.updatedAt) > progressTimestamp(server.updatedAt);
+}
+
+/**
+ * A successful earlier save advances the baseline of edits queued behind it,
+ * not their position. The server's explicit `accepted` flag is the signal: it
+ * may have normalized the position it stored (a media clock past the track's
+ * tagged end is clamped), and the new revision is still the one queued edits
+ * descend from.
+ */
+export function rebasePendingProgress(local: Progress, attempted: Progress, saved: Progress): Progress {
+  if (saved.accepted !== true || local.syncStatus !== "pending" || local.baseUpdatedAt !== attempted.baseUpdatedAt
+    || saved.trackId !== attempted.trackId) return local;
+  return { ...local, baseUpdatedAt: saved.updatedAt, acknowledgedUpdatedAt: saved.updatedAt };
 }
 
 /** Mirrors the server's PROGRESS_NEAR_ZERO_SECONDS. */
@@ -198,6 +265,7 @@ export const PROGRESS_RESET_GUARD_SECONDS = 300;
 
 function isSameProgressRevision(left: Progress, right: Progress): boolean {
   return left.updatedAt === right.updatedAt
+    && left.localUpdatedAt === right.localUpdatedAt
     && left.trackId === right.trackId
     && left.positionSeconds === right.positionSeconds
     && left.bookPositionSeconds === right.bookPositionSeconds;
@@ -212,10 +280,10 @@ function isSameProgressRevision(left: Progress, right: Progress): boolean {
  */
 export function progressAfterSave(
   local: Progress | null,
-  attempted: Progress,
+  attempted: Progress | null,
   saved: Progress
 ): Progress {
-  if (!local || isSameProgressRevision(local, attempted)) return saved;
+  if (!local || (attempted && isSameProgressRevision(local, attempted))) return saved;
   // A different synchronous checkpoint was created after this request was
   // queued. Request completion time is not mutation order, so even a newer
   // server-issued revision must not replace that later local position.
@@ -240,6 +308,7 @@ export function adoptableServerProgress(
 ): Progress | null {
   if (!server) return null;
   if (!local) return server;
+  if (local.syncStatus === "pending") return null;
   if (progressTimestamp(server.updatedAt) <= progressTimestamp(local.updatedAt)) {
     return null;
   }
@@ -361,12 +430,22 @@ export function resolveProgressLocation(
     };
   }
 
-  const bookPosition = Math.max(0, progress.bookPositionSeconds);
+  return resolveBookPosition(tracks, progress.bookPositionSeconds);
+}
+
+/** Whole-book seeks and restoration share the same final-track boundary rule. */
+export function resolveBookPosition(
+  tracks: Array<{ id: string; durationSeconds: number | null }>,
+  value: number
+): { trackId: string; positionSeconds: number } | null {
+  if (!tracks.length) return null;
+  const bookPosition = Math.max(0, value);
   let offset = 0;
   for (const [index, track] of tracks.entries()) {
     const duration = Math.max(0, track.durationSeconds ?? 0);
     const isLast = index === tracks.length - 1;
-    if (isLast || (duration > 0 && bookPosition < offset + duration)) {
+    // A missing duration does not erase a track's known start boundary.
+    if (isLast || bookPosition === offset || (duration > 0 && bookPosition < offset + duration)) {
       return {
         trackId: track.id,
         positionSeconds: Math.max(0, Math.min(bookPosition - offset, duration || bookPosition))
@@ -424,7 +503,9 @@ export function summarizeBookProgress(
     durationSeconds: duration,
     remainingSeconds: remaining,
     percentComplete: percent,
-    updatedAt: progress.updatedAt
+    updatedAt: progress.updatedAt,
+    serverUpdatedAt: progress.acknowledgedUpdatedAt
+      ?? (progress.syncStatus === "synced" ? progress.updatedAt : null)
   };
 }
 

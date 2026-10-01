@@ -1,5 +1,5 @@
 import type { Book } from "./types";
-import { deviceBookMatchesServer, progressTimestamp } from "./reliability.ts";
+import { deviceBookMatchesServer, progressTimestamp, serverRevisionFromSummary } from "./reliability.ts";
 import { mergeDeviceReadingFiles } from "./deviceEpub.ts";
 
 /** Attach an equivalent device copy without hiding ambiguous editions. */
@@ -18,13 +18,21 @@ export function mergeLibraryBooks(serverBooks: Book[], deviceBooks: Book[]): Boo
     const deviceProgressIsNewer = !!deviceBook.progress && (
       !serverBook.progress || progressTimestamp(deviceBook.progress.updatedAt) > progressTimestamp(serverBook.progress.updatedAt)
     );
+    const serverRevision = serverRevisionFromSummary(serverBook.progress);
+    const deviceRevision = deviceBook.progress?.serverUpdatedAt;
+    const latestServerRevision = deviceRevision && (!serverRevision || progressTimestamp(deviceRevision) > progressTimestamp(serverRevision))
+      ? deviceRevision : serverRevision;
     return {
       ...serverBook,
       ...mergeDeviceReadingFiles(serverBook, deviceBook),
       tags: serverBook.tags ?? [],
       source: "server" as const,
       deviceBookId: deviceBook.id,
-      progress: deviceProgressIsNewer ? deviceBook.progress : serverBook.progress,
+      // Displaying the device position must not discard the server revision
+      // just observed by the shelf, or turn its local clock into that revision.
+      progress: deviceProgressIsNewer
+        ? { ...deviceBook.progress!, serverUpdatedAt: latestServerRevision ?? null }
+        : serverBook.progress,
       tracks: serverBook.tracks.map((track, index) => ({ ...track, localFilePath: deviceBook.tracks[index]?.localFilePath }))
     };
   });

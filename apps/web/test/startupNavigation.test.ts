@@ -19,7 +19,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function fixture(saved: string | null = "playing", selected = "browsed") {
+function fixture(saved: string | null = "playing", selected = "browsed") {
   const cache = deferred<any[]>();
   const live = deferred<any[]>();
   const cachedApplied = deferred<void>();
@@ -29,12 +29,12 @@ async function fixture(saved: string | null = "playing", selected = "browsed") {
   let bridgeReady = false;
   let ready = false;
   const visible: string[] = [];
-  const navigation = (await loadHook("useStartupNavigation", { react: {
+  const navigation = loadHook("useStartupNavigation", { react: {
     ...react, useState: (initial: string) => [initial, (next: any) => {
       tab = typeof next === "function" ? next(tab) : next;
     }]
-  } }))({});
-  const chrome = await loadHook("useNativeChrome", {
+  } })({});
+  const chrome = loadHook("useNativeChrome", {
     react, "./nativeTabs": nativeTabs,
     "./useNativeTabs": { useNativeTabs: (state: any) => {
       if (bridgeReady && state.visible) visible.push(state.selected);
@@ -57,7 +57,7 @@ async function fixture(saved: string | null = "playing", selected = "browsed") {
     setStartupViewReady: (value: boolean) => { ready = value; },
     startupNavigationResolved: ref(false), startupViewReadyRef: ref(false), storeCanonicalServerProgress: noop
   };
-  const load = (await loadHook("useLibrary", {
+  const load = loadHook("useLibrary", {
     react, "./startup": startup, "./reliability": reliability, "./progressSeekIntent": {},
     "./appStorage": { readStoredBookId: (_user: string, field: string) => field === "playbackBookId" ? saved : selected,
       withoutCachedBookGains: (books: unknown) => books },
@@ -65,7 +65,7 @@ async function fixture(saved: string | null = "playing", selected = "browsed") {
       getDeviceBooks: () => [], mergeDeviceAndServerBooks: (books: unknown) => books },
     "./offline": { getCachedLibrary: () => cache.promise, cacheLibrary: async () => {} },
     "./api": { getBooks: () => live.promise, isServerNotReadyError: () => false }
-  }))(options).loadBooks;
+  })(options).loadBooks;
   return { options, load, cache, live, cachedApplied, paint, visible,
     connect: () => { bridgeReady = true; paint(); },
     restore: () => { ready = true; options.startupViewReadyRef.current = true; paint(); },
@@ -78,7 +78,7 @@ const browsed = { id: "browsed", tracks: [] };
 for (const connectAt of ["before-cache", "during-restore", "after-restore"]) {
   for (const saved of ["playing", null]) {
     test(`first visible tab is final: bridge ${connectAt}, saved playback ${saved}`, async () => {
-      const f = await fixture(saved);
+      const f = fixture(saved);
       if (connectAt === "before-cache") f.connect();
       const loading = f.load();
       f.cache.resolve([playing, browsed]);
@@ -101,7 +101,7 @@ for (const connectAt of ["before-cache", "during-restore", "after-restore"]) {
 }
 
 test("cached Reading removed before restore never becomes a visible tab", async () => {
-  const f = await fixture();
+  const f = fixture();
   f.connect();
   const loading = f.load();
   f.cache.resolve([playing, browsed]);
@@ -117,7 +117,7 @@ test("cached Reading removed before restore never becomes a visible tab", async 
 for (const tapAt of ["before-cache", "during-restore"]) {
   for (const tab of ["shelf", "settings", "reading"]) {
     test(`${tab} navigation ${tapAt} survives restoration and book disappearance`, async () => {
-      const f = await fixture();
+      const f = fixture();
       const loading = f.load();
       if (tapAt === "before-cache") f.tap(tab);
       f.cache.resolve([playing, browsed]);
@@ -135,7 +135,7 @@ for (const tapAt of ["before-cache", "during-restore"]) {
 }
 
 test("empty definitive launch opens Shelf without waiting for playback", async () => {
-  const f = await fixture("missing");
+  const f = fixture("missing");
   f.connect();
   const loading = f.load();
   f.cache.resolve([]);
@@ -146,7 +146,7 @@ test("empty definitive launch opens Shelf without waiting for playback", async (
 });
 
 test("active native playback survives a finished library summary and resume", async () => {
-  const f = await fixture();
+  const f = fixture();
   f.options.nativePlaybackPlayingRef.current = true;
   const loading = f.load();
   f.cache.resolve([playing]);

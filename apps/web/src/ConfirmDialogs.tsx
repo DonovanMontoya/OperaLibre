@@ -1,9 +1,10 @@
 import { LoaderCircle, RotateCcw, Sparkles, X } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { haptic } from "./native";
 import type { Book } from "./types";
 
-export type DeviceNotice = { message: string; bookId?: string };
+export type DeviceNotice = { message: string; bookId?: string; source?: "deviceImport" };
 
 export function SyncConfirmationDialog({
   setSyncConfirmationBook,
@@ -14,17 +15,17 @@ export function SyncConfirmationDialog({
   startSyncGeneration: (book: Book) => Promise<void>;
   syncConfirmationBook: Book;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(() => setSyncConfirmationBook(null));
   return (
     <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card unplayed-confirm-card"
         role="dialog"
         aria-modal="true"
         aria-labelledby="sync-confirm-title"
         aria-describedby="sync-confirm-description"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setSyncConfirmationBook(null);
-        }}
       >
         <div className="modal-head">
           <div>
@@ -49,7 +50,7 @@ export function SyncConfirmationDialog({
           <button
             type="button"
             className="unplayed-confirm-cancel"
-            autoFocus
+            data-modal-initial-focus
             onClick={() => setSyncConfirmationBook(null)}
           >
             Not now
@@ -86,21 +87,23 @@ export function UnplayedConfirmationDialog({
   setUnplayedConfirmationBookId: Dispatch<SetStateAction<string | null>>;
   unplayedConfirmationBook: Book;
 }) {
+  const dialogRef = useModalFocus<HTMLElement>(() => {
+    if (completionPendingBookId !== unplayedConfirmationBook.id) {
+      setUnplayedConfirmationBookId(null);
+      setCompletionError(null);
+    }
+  });
   return (
     <div className="modal-scrim unplayed-confirm-scrim" role="presentation">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card unplayed-confirm-card"
         role="dialog"
         aria-modal="true"
         aria-labelledby="unplayed-confirm-title"
         aria-describedby="unplayed-confirm-description"
         aria-busy={completionPendingBookId === unplayedConfirmationBook.id}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && completionPendingBookId !== unplayedConfirmationBook.id) {
-            setUnplayedConfirmationBookId(null);
-            setCompletionError(null);
-          }
-        }}
       >
         <div className="modal-head">
           <div>
@@ -137,7 +140,7 @@ export function UnplayedConfirmationDialog({
           <button
             type="button"
             className="unplayed-confirm-cancel"
-            autoFocus
+            data-modal-initial-focus
             disabled={completionPendingBookId === unplayedConfirmationBook.id}
             onClick={() => {
               haptic("light");

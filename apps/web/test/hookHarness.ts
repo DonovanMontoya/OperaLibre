@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
+const require = createRequire(import.meta.url);
 const registry = new Map<string, (id: string) => unknown>();
 let loads = 0;
 (globalThis as any).__hookDependencies = registry;
@@ -10,8 +11,9 @@ let loads = 0;
 // Execute the actual hooks with deterministic React, storage, media and API
 // boundaries. No browser clock or network timing is needed to reproduce races.
 // Imports are rewritten to read the supplied mocks and the result is loaded by
-// Node's own type stripping (22.6+), so the harness has no newer-Node API needs.
-export async function loadHook(name: string, dependencies: Record<string, unknown>) {
+// Node's own type stripping, which the minimum supported Node 22.12 already has;
+// `stripTypeScriptTypes` from `node:module` only exists from 22.13.
+export function loadHook(name: string, dependencies: Record<string, unknown>) {
   const key = `${name}:${loads++}`;
   registry.set(key, (id: string) => {
     if (!(id in dependencies)) throw new Error(`Unmocked dependency: ${id}`);
@@ -29,8 +31,7 @@ export async function loadHook(name: string, dependencies: Record<string, unknow
   try {
     const file = join(directory, `${name}.mts`);
     writeFileSync(file, source);
-    const loaded = await import(pathToFileURL(file).href);
-    return loaded[name] as (options: any) => any;
+    return require(file)[name] as (options: any) => any;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

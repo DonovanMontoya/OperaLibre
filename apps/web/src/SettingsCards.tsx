@@ -1,3 +1,4 @@
+import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
   ChevronDown,
   CloudDownload,
@@ -281,7 +282,8 @@ export function DeviceLibrarySettings({
           ))}
         </div>
       ) : <p className="settings-hint">Files you pick are copied into OperaLibre so playback remains available offline.</p>}
-      {downloadStatus ? <p className="settings-hint">{downloadStatus.message}</p> : null}
+      <DeviceImportNotice notice={downloadStatus} busy={deviceImport !== null} onRetry={importFromDevice} />
+      {downloadStatus && downloadStatus.source !== "deviceImport" ? <p className="settings-hint">{downloadStatus.message}</p> : null}
     </section>
   );
 }
