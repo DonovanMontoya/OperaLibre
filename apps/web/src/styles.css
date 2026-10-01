@@ -16975,6 +16975,43 @@ html.native-app .native-shell > .player-pane.has-native-player.native-player-vie
   }
 }
 
+/* Size iPad controls from the player's page, so narrow or short multitasking
+   windows retain the compact layout even on a large tablet. */
+html.native-app .native-shell.device-ipad
+  > .player-pane.has-native-player.native-player-view-now.fit-playback:not(.has-reader) {
+  @container playback (min-width: 460px) and (min-height: 500px) {
+    & .native-now-controls { gap: 16px; }
+    & .native-now-transport {
+      gap: clamp(12px, 2.5cqw, 24px);
+      padding-block: 6px;
+    }
+    & .native-now-play {
+      width: clamp(104px, 14cqw, 120px);
+      height: clamp(104px, 14cqw, 120px);
+    }
+    & .native-now-play svg { width: 48px; height: 48px; }
+    & .native-now-transport > button:not(.native-now-play) { min-height: 80px; }
+    & .native-now-transport .native-now-seek {
+      flex-basis: clamp(64px, 10cqw, 80px);
+      width: clamp(64px, 10cqw, 80px);
+      height: 80px;
+    }
+    & .native-now-transport .native-now-chapter { max-width: 88px; }
+    & .native-now-transport :is(.native-now-seek, .native-now-chapter) svg {
+      width: 34px;
+      height: 34px;
+    }
+    & .native-now-transport > button:not(.native-now-play) span { font-size: 0.72rem; }
+    & .native-now-utility { gap: 10px; }
+    & .native-now-utility button {
+      min-height: 72px;
+      gap: 6px;
+      font-size: 0.7rem;
+    }
+    & .native-now-utility button svg { width: 24px; height: 24px; }
+  }
+}
+
 /* The unfolded player's page has the height for proper touch targets. This
    comes after fit-playback because that compact fallback owns the final base
    sizes and would otherwise shrink the fold-specific controls back down. */
