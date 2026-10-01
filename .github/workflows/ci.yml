@@ -103,7 +103,16 @@ jobs:
       - name: Test Duo layouts, offline shelf, and modal interactions
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts cover-editor.spec.ts
+
+      - name: Upload cover editor screenshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: operalibre-cover-editor
+          path: output/lifecycle/**/mobile-cover-editor.png
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Build
         run: npm run build -w @operalibre/web

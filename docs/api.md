@@ -95,7 +95,9 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books` | List books the current user is allowed to access, cursor-paged (the next cursor is returned in the `x-next-cursor` response header, with an `ETag` for caching). Administrators always receive the full library. |
 | `GET` | `/api/books/{book_id}` | Detailed metadata, tracks, and chapters for one book. |
 | `PUT` | `/api/books/{book_id}/metadata` | Save metadata overrides for a book, including repeatable custom tags with optional positions. Admin only. Overrides win over embedded audio tags and Libation sidecar metadata. |
-| `GET` | `/api/books/{book_id}/cover` | Cover art image, extracted from the audio files' embedded tags. |
+| `POST` | `/api/books/{book_id}/cover` | Replace cover art with one multipart `file` (JPEG, PNG, or WebP). Admin only. Maximum 8 MiB, 16 million pixels, and 8192 pixels per side; decoded and re-encoded as PNG up to 1600 pixels per side. Returns the updated book. |
+| `DELETE` | `/api/books/{book_id}/cover` | Remove the uploaded override and restore embedded art, or no cover when none exists. Admin only. Returns the updated book. |
+| `GET` | `/api/books/{book_id}/cover` | Uploaded cover override when present, otherwise artwork extracted from the audio files' embedded tags. |
 | `GET` | `/api/books/{book_id}/readalong` | The book's text companion (the `book`-kind entry of `companions`), if there is one. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. |
@@ -116,6 +118,8 @@ Frontend installation is available when the server directly serves a versioned w
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
 | `GET` | `/api/library/faststart` | Report which MP4/M4B files still keep their `moov` index behind the audio. Admin only. |
 | `POST` | `/api/library/faststart` | Start a faststart conversion job. Admin only; body `{ "bookId": string \| null, "includeActive": bool }`. Returns `{ "jobId": ... }` to poll on `/api/jobs/{job_id}`. |
+
+Book responses include `hasCoverOverride`, `coverArtContentType`, and a versioned `coverArtUrl`; use the returned URL after changes. Cover reads retain book-access restrictions and ETag validation. Uploads never rewrite audio: a managed hidden image sidecar lives in the writable book folder and the metadata store records its selection. Both are needed to preserve an override in a backup or move. Invalid uploads leave the current cover unchanged.
 
 #### Faststart conversion
 

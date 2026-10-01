@@ -9,6 +9,7 @@ import {
   type BackgroundDownloadStatus
 } from "./backgroundDownloads";
 import { fileExtension, storedMediaExtension } from "./mediaFiles";
+import { coverMediaKind, coverRevision } from "./bookCover.ts";
 import { revalidatedCompanion } from "./companionCache";
 import { downloadWebBook } from "./offlineDownload";
 import type { AuthUser, Book, CompanionFile, Progress, SyncMap, Track } from "./types";
@@ -146,7 +147,11 @@ function coverExtension(book: Book) {
   }
 }
 
-const coverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
+const unversionedCoverFilePath = (book: Book) => `${bookDirectory(book.id)}/cover.${coverExtension(book)}`;
+const coverFilePath = (book: Book) => {
+  const revision = coverRevision(book);
+  return revision ? `${bookDirectory(book.id)}/cover-${revision}.${coverExtension(book)}` : unversionedCoverFilePath(book);
+};
 
 // The ebook, its picture supplements, and any loose images, kept beside the
 // audio so a downloaded book can be read as well as heard.
@@ -212,8 +217,9 @@ async function moveLegacyBookDirectory(book: Book) {
     directory: MEDIA_DIRECTORY,
     toDirectory: MEDIA_DIRECTORY
   });
-  const expectedCover = coverFilePath(book);
   const oldCover = `${destination}/cover.jpg`;
+  // A new server revision may use another format than this legacy download.
+  const expectedCover = coverRevision(book) ? oldCover : unversionedCoverFilePath(book);
   if (expectedCover !== oldCover && await fileExists(oldCover) && !(await fileExists(expectedCover))) {
     await Filesystem.rename({
       from: oldCover,
@@ -564,15 +570,38 @@ export async function getOfflineTrackUrl(book: Book, track: Track): Promise<stri
   return record ? URL.createObjectURL(record.blob) : null;
 }
 
-export async function getOfflineCoverUrl(book: Book): Promise<string | null> {
+export async function getOfflineCoverUrl(book: Book, allowLegacy = navigator.onLine === false): Promise<string | null> {
+  // Restoring a book that has no embedded art must not resurrect a cached override.
+  if (!book.coverArtUrl && book.hasCoverOverride !== undefined && book.source !== "device") return null;
   if (Capacitor.isNativePlatform()) {
-    // A book imported from the device picker keeps the cover its own tags
-    // carried; there is no server copy to fall back to.
-    if (book.localCoverPath) return nativeFileUrl(book.localCoverPath);
+    // A server's versioned cover supersedes the tags of a matched device copy.
+    if (book.localCoverPath && !coverRevision(book)) return nativeFileUrl(book.localCoverPath);
     await migrateLegacyBookDirectory(book);
-    return nativeFileUrl(coverFilePath(book));
+    const current = await nativeFileUrl(coverFilePath(book));
+    if (current || !allowLegacy || !coverRevision(book)) return current;
+    // Replacing server artwork must not strand an earlier downloaded revision
+    // when the listener goes offline before downloading again.
+    const files = await Filesystem.readdir({ path: bookDirectory(book.id), directory: MEDIA_DIRECTORY }).catch(() => null);
+    const covers = (files?.files ?? [])
+      .filter((file) => /^cover(?:-[A-Za-z0-9_-]{1,128})?\.(jpg|png|webp|gif)$/.test(file.name))
+      .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+    for (const file of covers) {
+      const fallback = await nativeFileUrl(`${bookDirectory(book.id)}/${file.name}`);
+      if (fallback) return fallback;
+    }
+    if (book.localCoverPath) {
+      const local = await nativeFileUrl(book.localCoverPath);
+      if (local) return local;
+    }
+    // Older downloads predate URL revisions; retain their art as an offline fallback.
+    for (const extension of ["jpg", "png", "webp", "gif"]) {
+      const legacy = await nativeFileUrl(`${bookDirectory(book.id)}/cover.${extension}`);
+      if (legacy) return legacy;
+    }
+    return null;
   }
-  const record = await readMedia(book.id, "cover");
+  const record = await readMedia(book.id, coverMediaKind(book))
+    ?? (allowLegacy && coverRevision(book) ? await readMedia(book.id, "cover") : null);
   return record ? URL.createObjectURL(record.blob) : null;
 }
 

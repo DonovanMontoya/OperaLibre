@@ -1,7 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import { Headphones } from "lucide-react";
 import { useEffect, useState } from "react";
-import { mediaUrl } from "./api";
+import { getServerStorageKey, mediaUrl } from "./api";
 import { getOfflineCoverUrl, releaseOfflineMediaUrl } from "./offline";
 import type { Book, LibationBook } from "./types";
 
@@ -33,32 +33,31 @@ export function DownloadRing({ fraction }: { fraction: number | null }) {
 
 export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }) {
   const className = size === "small" ? "cover-mark" : "large-cover";
-  const [offlineCoverUrl, setOfflineCoverUrl] = useState<string | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const key = `${getServerStorageKey()}:${book.id}:${book.coverArtUrl}:${book.coverArtContentType}:${book.localCoverPath}`;
+  const [offline, setOffline] = useState<{ key: string; current: string | null; fallback: string | null } | null>(null);
+  const [failed, setFailed] = useState<string[]>([]);
   useEffect(() => {
     let active = true;
-    let resolvedUrl: string | null = null;
-    setLoadFailed(false);
+    const resolvedUrls: (string | null)[] = [];
+    setFailed([]);
     if (Capacitor.isNativePlatform()) {
-      void getOfflineCoverUrl(book).then((url) => {
-        resolvedUrl = url;
-        if (active) {
-          setOfflineCoverUrl(url);
-          // A downloaded cover can arrive after the network fetch failed.
-          if (url) setLoadFailed(false);
-        } else {
-          releaseOfflineMediaUrl(url);
-        }
-      });
+      void Promise.all([getOfflineCoverUrl(book, false), getOfflineCoverUrl(book, true)]).then(([current, fallback]) => {
+        resolvedUrls.push(current, fallback);
+        if (active) setOffline({ key, current, fallback });
+        else resolvedUrls.forEach(releaseOfflineMediaUrl);
+      }).catch(() => undefined);
     }
     return () => {
       active = false;
-      releaseOfflineMediaUrl(resolvedUrl);
+      resolvedUrls.forEach(releaseOfflineMediaUrl);
     };
-  }, [book]);
-  // A device import has no server URL at all: its only cover is the local one.
-  const coverSrc = offlineCoverUrl ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
-  if (coverSrc && !loadFailed) {
+  }, [book, key]);
+  const local = offline?.key === key ? offline : null;
+  const primary = local?.current ?? (book.coverArtUrl ? mediaUrl(book.coverArtUrl) : null);
+  const fallback = local?.fallback;
+  const coverSrc = primary && !failed.includes(primary) ? primary
+    : fallback && !failed.includes(fallback) ? fallback : null;
+  if (coverSrc) {
     return (
       <img
         className={className}
@@ -67,7 +66,7 @@ export function CoverArt({ book, size }: { book: Book; size: "small" | "large" }
         loading={size === "small" ? "lazy" : "eager"}
         decoding="async"
         fetchPriority={size === "large" ? "high" : "auto"}
-        onError={() => setLoadFailed(true)}
+        onError={() => setFailed(previous => [...previous, coverSrc])}
       />
     );
   }

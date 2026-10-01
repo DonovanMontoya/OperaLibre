@@ -5583,3 +5583,371 @@ async fn recovered_sync_starts_work_once_under_its_original_id() {
             .contains("Starting readalong sync generation")
     );
 }
+
+fn cover_fixture(color: [u8; 3]) -> Vec<u8> {
+    let mut bytes = io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(30, 40, image::Rgb(color)))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    bytes.into_inner()
+}
+
+fn cover_multipart(name: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut body = format!("--cover-test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(b"\r\n--cover-test--\r\n");
+    body
+}
+
+impl TestServer {
+    async fn upload_cover(&self, id: &str, token: &str, name: &str, bytes: &[u8]) -> TestResponse {
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/books/{id}/cover"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(
+                    header::CONTENT_TYPE,
+                    "multipart/form-data; boundary=cover-test",
+                )
+                .body(Body::from(cover_multipart(name, bytes)))
+                .unwrap(),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn cover_upload_persists_rescans_restarts_metadata_edits_and_restores_original() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, track) = server.first_book_and_track(&owner).await;
+    let audio_path = server.state.library.read().await.track_paths[&track].clone();
+    let audio_before = std::fs::read(&audio_path).unwrap();
+    let upload = server
+        .upload_cover(
+            &id,
+            &owner,
+            "../../outside.html",
+            &cover_fixture([100, 20, 30]),
+        )
+        .await;
+    assert_eq!(upload.status, StatusCode::OK, "{}", upload.text());
+    assert_eq!(upload.json()["hasCoverOverride"], true);
+    assert_eq!(upload.json()["coverArtContentType"], "image/png");
+    let url = upload.json()["coverArtUrl"].as_str().unwrap().to_string();
+    assert!(url.contains("?v="));
+    let cover = server.get(&url, &owner).await;
+    assert_eq!(cover.status, StatusCode::OK);
+    assert_eq!(cover.headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(cover.headers["x-content-type-options"], "nosniff");
+    let etag = cover.headers[header::ETAG].clone();
+    assert!(image::load_from_memory(&cover.body).is_ok());
+    let conditional = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(conditional.status, StatusCode::NOT_MODIFIED);
+    let saved = server
+        .send_json(
+            "PUT",
+            &format!("/api/books/{id}/metadata"),
+            &owner,
+            serde_json::json!({"title":"Edited title","genres":[]}),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    rescan_library(&server.state).await.unwrap();
+    assert_eq!(
+        server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"],
+        url
+    );
+    assert_eq!(
+        server.get(&format!("/api/books/{id}"), &owner).await.json()["companions"],
+        serde_json::json!([])
+    );
+    // Reopen the durable metadata store and rebuild the catalogue as startup does.
+    let connection = db::open(&server.state.database_path).unwrap();
+    let metadata = read_document_store(&connection, METADATA_OVERRIDES_DOCUMENT).unwrap();
+    server.state.metadata_overrides = Arc::new(MetadataOverrides::new(
+        server.state.database.clone(),
+        StoreShape::Document(METADATA_OVERRIDES_DOCUMENT),
+        metadata,
+    ));
+    *server.state.library.write().await = LibraryState::default();
+    rescan_library(&server.state).await.unwrap();
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"],
+        url
+    );
+    let replacement = server
+        .upload_cover(&id, &owner, "next.png", &cover_fixture([0, 200, 30]))
+        .await;
+    assert_eq!(replacement.status, StatusCode::OK);
+    assert_ne!(replacement.json()["coverArtUrl"], url);
+    let stale = server
+        .send(
+            Request::builder()
+                .uri(&url)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .header(header::IF_NONE_MATCH, etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_ne!(stale.body, cover.body);
+    assert_eq!(std::fs::read(&audio_path).unwrap(), audio_before);
+    let folder = audio_path.parent().unwrap();
+    let managed_count = || {
+        std::fs::read_dir(folder)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".operalibre-cover-")
+            })
+            .count()
+    };
+    assert_eq!(managed_count(), 1);
+    let removed = server
+        .send_json(
+            "DELETE",
+            &format!("/api/books/{id}/cover"),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text());
+    assert_eq!(removed.json()["hasCoverOverride"], false);
+    assert!(removed.json()["coverArtUrl"].is_null());
+    assert_eq!(managed_count(), 0);
+    assert_eq!(server.get(&url, &owner).await.status, StatusCode::NOT_FOUND);
+    rescan_library(&server.state).await.unwrap();
+    assert!(server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"].is_null());
+}
+
+#[tokio::test]
+async fn cover_upload_enforces_auth_csrf_access_and_size_limits() {
+    let mut server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let reader = server.add_reader(&owner, "cover-reader").await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    for (token, status) in [
+        ("", StatusCode::UNAUTHORIZED),
+        (&reader, StatusCode::FORBIDDEN),
+    ] {
+        assert_eq!(
+            server
+                .upload_cover(&id, token, "cover.png", &cover_fixture([1, 2, 3]))
+                .await
+                .status,
+            status
+        );
+        assert_eq!(
+            server
+                .send_json(
+                    "DELETE",
+                    &format!("/api/books/{id}/cover"),
+                    token,
+                    serde_json::json!({})
+                )
+                .await
+                .status,
+            status
+        );
+    }
+    assert_eq!(
+        server
+            .upload_cover("missing", &owner, "cover.png", &cover_fixture([1, 2, 3]))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let cross_site = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/books/{id}/cover"))
+                .header(header::COOKIE, format!("operalibre_session={owner}"))
+                .header(header::ORIGIN, "https://attacker.example")
+                .header(
+                    header::CONTENT_TYPE,
+                    "multipart/form-data; boundary=cover-test",
+                )
+                .body(Body::from(cover_multipart(
+                    "cover.png",
+                    &cover_fixture([1, 2, 3]),
+                )))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(cross_site.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        server
+            .upload_cover(
+                &id,
+                &owner,
+                "huge.png",
+                &vec![0; MAX_COVER_UPLOAD_BYTES + 1]
+            )
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    server.state.max_upload_bytes = Some(10);
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server
+            .upload_cover(&id, &owner, "cover.png", &cover_fixture([1, 2, 3]))
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    server.state.max_upload_bytes = None;
+    server.router = build_router(server.state.clone(), None, &[]).unwrap();
+    assert_eq!(
+        server
+            .upload_cover(&id, &owner, "cover.png", &cover_fixture([1, 2, 3]))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let user_id = server.get("/api/auth/me", &reader).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let restricted = server
+        .send_json(
+            "PUT",
+            &format!("/api/users/{user_id}/book-access"),
+            &owner,
+            serde_json::json!({"allowedBookIds":[]}),
+        )
+        .await;
+    assert_eq!(restricted.status, StatusCode::OK, "{}", restricted.text());
+    assert_eq!(
+        server
+            .get(&format!("/api/books/{id}/cover"), &reader)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server
+            .get(&format!("/abs/api/items/{id}/cover"), &reader)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn invalid_cover_uploads_never_change_saved_art() {
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let initial = server
+        .upload_cover(&id, &owner, "cover.png", &cover_fixture([1, 2, 3]))
+        .await
+        .json();
+    for invalid in [
+        b"<svg><script>alert(1)</script></svg>".as_slice(),
+        b"<html>bad</html>",
+        b"",
+        b"\x89PNG\r\n\x1a\n",
+    ] {
+        let response = server.upload_cover(&id, &owner, "cover.png", invalid).await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            response.text()
+        );
+    }
+    let body = cover_multipart("cover.png", &cover_fixture([2, 3, 4]));
+    for invalid in [
+        body[..body.len() - 20].to_vec(),
+        [body[..body.len() - 16].to_vec(), body.clone()].concat(),
+    ] {
+        let response = server
+            .send(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/books/{id}/cover"))
+                    .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                    .header(
+                        header::CONTENT_TYPE,
+                        "multipart/form-data; boundary=cover-test",
+                    )
+                    .body(Body::from(invalid))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            response.text()
+        );
+    }
+    assert_eq!(
+        server.get(&format!("/api/books/{id}"), &owner).await.json()["coverArtUrl"],
+        initial["coverArtUrl"]
+    );
+}
+
+#[tokio::test]
+async fn uploaded_cover_restores_real_embedded_art_and_leaves_audio_intact() {
+    use id3::TagLike;
+    let server = TestServer::start(1).await;
+    let owner = server.setup_owner().await;
+    let (_, track) = server.first_book_and_track(&owner).await;
+    let audio = server.state.library.read().await.track_paths[&track].clone();
+    let embedded = cover_fixture([180, 60, 10]);
+    let mut tag = id3::Tag::new();
+    tag.add_frame(id3::frame::Picture {
+        mime_type: "image/png".into(),
+        picture_type: id3::frame::PictureType::CoverFront,
+        description: String::new(),
+        data: embedded.clone(),
+    });
+    tag.write_to_path(&audio, id3::Version::Id3v24).unwrap();
+    rescan_library(&server.state).await.unwrap();
+    let (id, _) = server.first_book_and_track(&owner).await;
+    let before = server.get(&format!("/api/books/{id}"), &owner).await.json();
+    assert!(before["coverArtUrl"].is_string(), "{before}");
+    let bytes = std::fs::read(&audio).unwrap();
+    let upload = server
+        .upload_cover(&id, &owner, "new.webp", &cover_fixture([2, 200, 4]))
+        .await;
+    assert_eq!(upload.status, StatusCode::OK);
+    rescan_library(&server.state).await.unwrap();
+    let restored = server
+        .send_json(
+            "DELETE",
+            &format!("/api/books/{id}/cover"),
+            &owner,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::OK);
+    assert_eq!(restored.json()["coverArtUrl"], before["coverArtUrl"]);
+    assert_eq!(
+        server
+            .get(before["coverArtUrl"].as_str().unwrap(), &owner)
+            .await
+            .body,
+        embedded
+    );
+    assert_eq!(std::fs::read(audio).unwrap(), bytes);
+}

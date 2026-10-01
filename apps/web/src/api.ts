@@ -955,6 +955,16 @@ export async function uploadAudiobook(bookName: string, files: File[]) {
   );
 }
 
+export async function uploadBookCover(bookId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return request<Book>(`/api/books/${encodeURIComponent(bookId)}/cover`, { method: "POST", body });
+}
+
+export async function removeBookCover(bookId: string) {
+  return request<Book>(`/api/books/${encodeURIComponent(bookId)}/cover`, { method: "DELETE" });
+}
+
 export async function uploadEbook(bookId: string, file: File) {
   const body = new FormData();
   body.append("file", file, file.name);
