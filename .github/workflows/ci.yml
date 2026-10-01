@@ -219,6 +219,11 @@ jobs:
           swiftc apps/web/ios/App/App/LibroDeviceResponse.swift apps/web/ios/Tests/LibroDeviceResponseTests.swift -o "$RUNNER_TEMP/libro-response-tests"
           "$RUNNER_TEMP/libro-response-tests"
 
+      - name: Test iOS CarPlay resume position
+        run: |
+          swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
+          "$RUNNER_TEMP/car-library-tests"
+
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
