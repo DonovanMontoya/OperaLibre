@@ -5513,10 +5513,14 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   padding: 2rem 1rem;
 }
 
-/* Match the native iOS launch screen while IndexedDB restores the saved book,
-   first tab, track, and position. This prevents incomplete startup state from
-   appearing for a frame before a Reading session is reopened. */
-.native-launch-placeholder {
+/* Continues the native iOS launch screen while IndexedDB restores the saved
+   book, first tab, track, and position, so incomplete startup state never
+   appears on the way to a reopened Reading session. The launch screen shows
+   the wordmark unread; a playhead then crosses it once, inking the letters
+   behind it the way follow-along marks a sentence. Every animation runs once
+   and is offset by --launch-elapsed, so a remounted cover resumes the intro
+   instead of replaying it. Timings match LAUNCH_INTRO_MS and LAUNCH_LIFT_MS. */
+.native-launch-cover {
   position: fixed;
   z-index: 10000;
   inset: 0;
@@ -5526,11 +5530,88 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   color: var(--ink);
 }
 
-.native-launch-placeholder span {
+.native-launch-cover.lifting {
+  pointer-events: none;
+  animation: launch-lift 260ms ease-in both;
+}
+
+.native-launch-word {
+  position: relative;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 29px;
   font-weight: 600;
   line-height: 35px;
+  white-space: nowrap;
+  color: rgba(var(--ink-rgb), 0.3);
+}
+
+.native-launch-cover.lifting .native-launch-word {
+  animation: launch-word-lift 260ms ease-in both;
+}
+
+.native-launch-ink {
+  position: absolute;
+  inset: 0;
+  color: var(--ink);
+  animation: launch-ink 700ms cubic-bezier(0.5, 0, 0.2, 1) calc(120ms + var(--launch-elapsed, 0ms)) both;
+}
+
+.native-launch-playhead {
+  position: absolute;
+  inset: -6px 0;
+  animation: launch-playhead 700ms cubic-bezier(0.5, 0, 0.2, 1) calc(120ms + var(--launch-elapsed, 0ms)) both;
+}
+
+.native-launch-playhead i {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--oxblood);
+  animation: launch-voice 980ms ease-in-out var(--launch-elapsed, 0ms) both;
+}
+
+@keyframes launch-ink {
+  from { clip-path: inset(-6px 100% -6px 0); }
+  to { clip-path: inset(-6px 0 -6px 0); }
+}
+
+@keyframes launch-playhead {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+/* The playhead rises, swells once per syllable as it crosses, and drops. */
+@keyframes launch-voice {
+  0% { transform: scaleY(0); }
+  12% { transform: scaleY(1); }
+  26% { transform: scaleY(0.62); }
+  40% { transform: scaleY(1.18); }
+  54% { transform: scaleY(0.7); }
+  68% { transform: scaleY(1.12); }
+  84% { transform: scaleY(0.85); }
+  100% { transform: scaleY(0); }
+}
+
+@keyframes launch-lift {
+  to { opacity: 0; }
+}
+
+@keyframes launch-word-lift {
+  to { transform: scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .native-launch-ink,
+  .native-launch-playhead,
+  .native-launch-playhead i,
+  .native-launch-cover.lifting .native-launch-word {
+    animation: none;
+  }
+
+  .native-launch-playhead { display: none; }
 }
 
 /* Startup interstitial: three volumes settle onto a shelf while a glint
@@ -11620,7 +11701,7 @@ html.native-app.platform-ios.dark-mode .profile-shell,
 html.native-app.platform-ios.dark-mode .profile-page,
 html.native-app.platform-ios.dark-mode .admin-shell:not(.admin-overlay),
 html.native-app.platform-ios.dark-mode .admin-overlay,
-html.native-app.platform-ios.dark-mode .native-launch-placeholder {
+html.native-app.platform-ios.dark-mode .native-launch-cover {
   background-color: #17120f;
   background-image: none;
 }
