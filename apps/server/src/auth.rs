@@ -40,6 +40,8 @@ pub(crate) const MAX_SESSIONS_TOTAL: usize = 1_000;
 pub(crate) const OFFICIAL_APP_ORIGINS: &[&str] = &[
     "capacitor://localhost",
     "http://localhost",
+    // Capacitor's default Android WebView origin.
+    "https://localhost",
     "http://127.0.0.1:49201",
 ];
 
