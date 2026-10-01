@@ -65,6 +65,15 @@ async function expectResume(page: Page, saved: number) {
   await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
 }
 
+async function expectBufferedSeek(page: Page, target: number) {
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement, target) => {
+    for (let index = 0; index < audio.buffered.length; index++) {
+      if (audio.buffered.start(index) <= target && audio.buffered.end(index) >= target + 3) return true;
+    }
+    return false;
+  }, target)).toBe(true);
+}
+
 test('pause, reload and server crash preserve accounts, library identity and progress', async ({ page, server }) => {
   const book = await setup(page, server);
   const original = await server.books();
@@ -194,14 +203,20 @@ for (const scenario of [
     const book = await setup(page, server);
     await play(page);
     const seek = page.getByRole('slider', { name: /^Playback position/ }).first();
+    const target = scenario.target;
+    // Visit the offline destination while connected. Chromium may buffer only
+    // a window around the playhead, so an end beyond 150 says nothing about
+    // whether a rewind to 90 (or the start) is available without the server.
+    await seek.fill(String(target));
+    await seek.press('Tab');
+    await expect.poll(async () => Math.abs(await position(page) - target)).toBeLessThan(3);
+    await expectBufferedSeek(page, target);
     await seek.fill('120');
     await seek.press('Tab');
     await expect.poll(() => position(page)).toBeGreaterThanOrEqual(119);
     await expect.poll(async () => (await server.progress(book.id))?.bookPositionSeconds ?? 0).toBeGreaterThanOrEqual(119);
-    await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) =>
-      audio.buffered.length ? audio.buffered.end(audio.buffered.length - 1) : 0)).toBeGreaterThan(150);
+    await expectBufferedSeek(page, target);
     await context.setOffline(true);
-    const target = scenario.target;
     await seek.fill(String(target));
     await seek.press('Tab');
     await expect.poll(async () => Math.abs(await position(page) - target)).toBeLessThan(3);
