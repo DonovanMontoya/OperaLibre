@@ -109,8 +109,6 @@ export function usePlaybackRestore({
     const restoreVersion = progressMutationVersion.current;
     const restoreActionVersion = playbackActionVersionRef.current;
     const restoreCancelGeneration = playCancelGenerationRef.current;
-    // Restoring places the player afresh; an earlier refused position is moot.
-    overruledSaveRef.current.delete(playbackBook.id);
     if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null, canonical = false) => {
       if (
@@ -123,10 +121,13 @@ export function usePlaybackRestore({
       const location = resolveProgressLocation(playbackBook.tracks, progress);
       setCurrentTrackId(location?.trackId ?? null);
       setPendingSeek(location);
-      if (progress && canonical && playbackBook.source !== "device") {
+      if (progress && canonical && location && playbackBook.source !== "device") {
         // The canonical target now owns the pending seek, so new playback
         // may safely use its revision, including after a rejected save.
         storeCanonicalServerProgress(playbackBook, { ...progress, accepted: undefined });
+        // The rejected playhead has been replaced. Keeping its marker would
+        // let a later foreground return discard new offline listening.
+        overruledSaveRef.current.delete(playbackBook.id);
       }
       // Show the restored time immediately; the media element seeks to it
       // once metadata loads.
@@ -297,10 +298,28 @@ export function usePlaybackRestore({
             // journal without having written it. An unchanged original
             // journal is not a competing edit made during this request.
             const originalJournalUnchanged = progressAfterSave(currentCheckpoint, checkpoint, saved) === saved;
+            // The library's reconnect replay can answer the same checkpoint
+            // first and heal the journal to this very response. A synced
+            // copy at the revision just returned is agreement, not a
+            // competing edit: edits made during a request are always pending.
+            const journalHealed = !originalJournalUnchanged
+              && currentCheckpoint?.syncStatus === "synced"
+              && currentCheckpoint.updatedAt === saved.updatedAt
+              && currentCheckpoint.trackId === saved.trackId
+              && Math.abs(currentCheckpoint.bookPositionSeconds - saved.bookPositionSeconds) <= 0.01;
             if (originalJournalUnchanged || progressAfterSave(currentCheckpoint, freshestLocal, saved) === saved) {
               serverCorrectedLocal = saved.accepted === false || saved.trackId !== freshestLocal.trackId
                 || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
               storeCanonicalServerProgress(playbackBook, saved, originalJournalUnchanged ? checkpoint : freshestLocal);
+              target = saved;
+              targetIsCanonical = true;
+            } else if (journalHealed) {
+              // The journal already holds this response, so nothing is
+              // stored: recording a refusal again would mark an overruled
+              // save that never happened. Applying the target below stores
+              // the canonical copy without that marker.
+              serverCorrectedLocal = saved.accepted === false || saved.trackId !== freshestLocal.trackId
+                || Math.abs(saved.bookPositionSeconds - freshestLocal.bookPositionSeconds) > 0.01;
               target = saved;
               targetIsCanonical = true;
             } else {
