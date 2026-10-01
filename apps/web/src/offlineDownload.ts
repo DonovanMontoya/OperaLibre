@@ -1,3 +1,4 @@
+import { coverMediaKind } from "./bookCover.ts";
 import { optionalCompanionDownload } from "./companionCache.ts";
 import type { Book } from "./types";
 
@@ -15,6 +16,7 @@ export async function downloadWebBook(
   // no half-downloaded book behind that `isBookDownloaded` would then have to
   // explain.
   const written: string[] = [];
+  let downloadedCover: Blob | null = null;
   async function download(kind: string, url: string, label: string) {
     signal?.throwIfAborted();
     const response = await fetch(resolveUrl(url), { signal });
@@ -23,6 +25,7 @@ export async function downloadWebBook(
     signal?.throwIfAborted();
     await save(kind, blob);
     written.push(kind);
+    if (kind === coverMediaKind(book)) downloadedCover = blob;
     signal?.throwIfAborted();
   }
 
@@ -36,7 +39,7 @@ export async function downloadWebBook(
     // Covers, ebooks and sync maps are optional; cancellation is not.
     if (book.coverArtUrl) {
       await optionalCompanionDownload(
-        () => download("cover", book.coverArtUrl!, "cover art"), signal
+        () => download(coverMediaKind(book), book.coverArtUrl!, "cover art"), signal
       );
     }
     for (const companion of book.companions ?? []) {
@@ -53,5 +56,10 @@ export async function downloadWebBook(
   } catch (error) {
     await Promise.all(written.map((key) => remove(key).catch(() => undefined)));
     throw error;
+  }
+  // Keep the last complete download available if newer server artwork has not
+  // been downloaded yet. This optional alias must never fail or roll back audio.
+  if (downloadedCover && coverMediaKind(book) !== "cover") {
+    await save("cover", downloadedCover).catch(() => undefined);
   }
 }

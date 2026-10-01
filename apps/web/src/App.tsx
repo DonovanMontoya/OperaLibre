@@ -836,20 +836,9 @@ function MainApp({
     [books, selectedBookId]
   );
   const metadataEditor = useMetadataEditor({
-    reconcileServerBookGains,
     selectedBook,
     setBooks
   });
-  const {
-    metadataEditOpen,
-    metadataError,
-    metadataForm,
-    metadataSaving,
-    saveMetadata,
-    setMetadataEditOpen,
-    setMetadataError,
-    setMetadataForm
-  } = metadataEditor;
   const selectedDescription = selectedBook ? displayBookDescription(selectedBook) : null;
   const selectedSharedReaders = (selectedBook?.sharedProgress ?? []).filter(
     (reader) => reader.status !== "notStarted"
@@ -2340,18 +2329,8 @@ function MainApp({
         />
       ) : null}
 
-      {metadataEditOpen && metadataForm ? (
-        <MetadataEditorDialog
-          books={books}
-          metadataError={metadataError}
-          metadataForm={metadataForm}
-          metadataSaving={metadataSaving}
-          saveMetadata={saveMetadata}
-          selectedBook={selectedBook}
-          setMetadataEditOpen={setMetadataEditOpen}
-          setMetadataError={setMetadataError}
-          setMetadataForm={setMetadataForm}
-        />
+      {metadataEditor.metadataEditOpen && metadataEditor.metadataForm && metadataEditor.metadataBook ? (
+        <MetadataEditorDialog books={books} editor={metadataEditor} />
       ) : null}
 
       {capabilities.statistics && profileOpen ? (

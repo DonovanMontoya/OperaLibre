@@ -8,7 +8,7 @@ use crate::*;
 // which matters more as playback speed increases.
 pub(crate) const MEDIA_STREAM_BUFFER_CAPACITY: usize = 256 * 1024;
 
-pub(crate) const COVER_CACHE_CONTROL: &str = "private, max-age=86400";
+pub(crate) const COVER_CACHE_CONTROL: &str = "private, no-cache";
 
 /// Track streams and downloads carry the listener's media token in the URL,
 /// so a shared cache must never hold one.
@@ -67,10 +67,10 @@ pub(crate) async fn get_cover_art(
     // Streamed from the extracted file rather than copied out of a map that
     // held every cover in the library resident.
     let cover = cover.clone();
-    drop(library);
     let file = fs::File::open(&cover.path)
         .await
         .map_err(|_| ApiError::not_found("Cover art not found"))?;
+    drop(library);
 
     Ok(Response::builder()
         .status(StatusCode::OK)

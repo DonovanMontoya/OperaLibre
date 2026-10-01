@@ -6302,6 +6302,61 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   width: min(720px, 100%);
 }
 
+.metadata-edit-fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.metadata-cover-field {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.metadata-cover-preview {
+  flex: 0 0 90px;
+}
+
+.metadata-cover-preview > :is(img, span) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 90px;
+  height: 90px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: rgba(var(--ink-rgb), 0.08);
+}
+
+.metadata-cover-controls {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.metadata-cover-controls p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ink-faded);
+  overflow-wrap: anywhere;
+}
+
+.metadata-cover-controls button {
+  justify-self: start;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  background: rgba(var(--lift-rgb), 0.9);
+}
+
+.metadata-cover-controls input[type="file"] {
+  font-size: 0.85rem;
+}
+
 .metadata-edit-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -10550,6 +10605,12 @@ html.native-app .metadata-editor-card .modal-head {
   padding: 12px 18px;
   background: rgba(var(--sheet-rgb), 0.98);
   box-shadow: 0 8px 14px rgba(26, 20, 16, 0.05);
+}
+
+html.native-app .metadata-edit-fields {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 html.native-app .metadata-edit-form {
