@@ -1,3 +1,4 @@
+import { readContinueReadingAutoplay, writeContinueReadingAutoplay } from "./playbackPreferences";
 import { useDeviceFold } from "./deviceFold";
 import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from "./progressSeekIntent";
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
@@ -480,6 +481,13 @@ function MainApp({
     followSyncEnabled,
     readalongEnabled
   } = readerPreferences;
+  const [continueReadingAutoplay, setContinueReadingAutoplay] = useState(readContinueReadingAutoplay);
+  function toggleContinueReadingAutoplay() {
+    const enabled = !continueReadingAutoplay;
+    setContinueReadingAutoplay(enabled);
+    writeContinueReadingAutoplay(enabled);
+  }
+
   const displaySettings = useDisplaySettings({
     ios
   });
@@ -817,13 +825,14 @@ function MainApp({
   };
   const selectFromShelf = useCallback((book: Book) => selectFromShelfRef.current(book), []);
 
-  const continueReadingBookRef = useRef<(book: Book) => void>(() => undefined);
-  continueReadingBookRef.current = (book) => {
+  const continueReadingBookRef = useRef<(book: Book, play?: boolean) => void>(() => undefined);
+  continueReadingBookRef.current = (book, play = continueReadingAutoplay) => {
     selectBook(book);
-    void playSelectedBook(book);
+    if (play) void playSelectedBook(book);
+    else resumeSelectedBook(book, false);
     setLibraryOpen(false);
   };
-  const continueReadingBook = useCallback((book: Book) => continueReadingBookRef.current(book), []);
+  const continueReadingBook = useCallback((book: Book, play?: boolean) => continueReadingBookRef.current(book, play), []);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? books[0] ?? null,
@@ -1892,6 +1901,8 @@ function MainApp({
   const shelfPull = usePullToRefresh(native, refreshShelf);
 
   const userMenu = renderUserMenu({
+    continueReadingAutoplay,
+    toggleContinueReadingAutoplay,
     audioRef,
     capabilities,
     currentUser,
@@ -2428,6 +2439,8 @@ function MainApp({
 
       {native && nativeTab === "settings" ? (
         <SettingsPage
+          continueReadingAutoplay={continueReadingAutoplay}
+          toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
           applyAdminLibraryChange={applyAdminLibraryChange}
           audibleManagement={audibleManagement}
           audioRef={audioRef}

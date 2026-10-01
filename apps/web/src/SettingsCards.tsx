@@ -1,10 +1,11 @@
+import { BehaviorSection } from "./BehaviorSection";
+import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
 import {
   ChevronDown,
   CloudDownload,
   Download,
   FolderOpen,
-  Gamepad2,
   LoaderCircle,
   LogOut,
   Moon,
@@ -183,13 +184,17 @@ export function BookStoreSettings({
   );
 }
 
-export function ExtrasSettings({
+export function BehaviorSettings({
+  continueReadingAutoplay,
+  toggleContinueReadingAutoplay,
   followAggressiveness,
   gamesEnabled,
   sentenceFollowAvailable,
   toggleGamesEnabled,
   updateFollowAggressiveness
 }: {
+  continueReadingAutoplay: boolean;
+  toggleContinueReadingAutoplay: () => void;
   followAggressiveness: FollowAggressiveness;
   gamesEnabled: boolean;
   sentenceFollowAvailable: boolean;
@@ -198,56 +203,58 @@ export function ExtrasSettings({
 }) {
   return (
     <section className="settings-card">
-      <span className="section-label"><Gamepad2 size={13} /> Extras</span>
-      <div className="settings-toggle-row">
-        <span>
-          <strong>Games tab</strong>
-          <small>Shows optional, on-device games in the bottom navigation.</small>
-        </span>
-        <button
-          type="button"
-          className="settings-switch"
-          role="switch"
-          aria-checked={gamesEnabled}
-          aria-label="Games tab"
-          onClick={toggleGamesEnabled}
-        >
-          <span aria-hidden="true" />
-        </button>
-      </div>
-      {sentenceFollowAvailable ? (
-        <div className="settings-follow-group">
-          <div className="settings-toggle-row">
-            <span>
-              <strong>Follow timing</strong>
-              <small>Press Follow in the ebook to follow the narration. The reader remembers your choice.</small>
-            </span>
-          </div>
-          <div className="follow-aggressiveness">
-            <div className="follow-aggressiveness-heading">
-              <label htmlFor="follow-aggressiveness">Aggressiveness</label>
-              <output htmlFor="follow-aggressiveness" aria-live="polite">
-                {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-              </output>
-            </div>
-            <input
-              id="follow-aggressiveness"
-              type="range"
-              min="0"
-              max="2"
-              step="1"
-              value={followAggressiveness}
-              style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
-              aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
-              onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
-            />
-            <div className="follow-aggressiveness-labels" aria-hidden="true">
-              <span>Current timing</span>
-              <span>A little ahead</span>
-            </div>
-          </div>
+      <BehaviorSection>
+        <ContinueReadingSetting enabled={continueReadingAutoplay} onToggle={toggleContinueReadingAutoplay} />
+        <div className="settings-toggle-row">
+          <span>
+            <strong>Games tab</strong>
+            <small>Shows optional, on-device games in the bottom navigation.</small>
+          </span>
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={gamesEnabled}
+            aria-label="Games tab"
+            onClick={toggleGamesEnabled}
+          >
+            <span aria-hidden="true" />
+          </button>
         </div>
-      ) : null}
+        {sentenceFollowAvailable ? (
+          <div className="settings-follow-group">
+            <div className="settings-toggle-row">
+              <span>
+                <strong>Follow timing</strong>
+                <small>Press Follow in the ebook to follow the narration. The reader remembers your choice.</small>
+              </span>
+            </div>
+            <div className="follow-aggressiveness">
+              <div className="follow-aggressiveness-heading">
+                <label htmlFor="follow-aggressiveness">Aggressiveness</label>
+                <output htmlFor="follow-aggressiveness" aria-live="polite">
+                  {FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                </output>
+              </div>
+              <input
+                id="follow-aggressiveness"
+                type="range"
+                min="0"
+                max="2"
+                step="1"
+                value={followAggressiveness}
+                style={{ "--scrub-progress": `${followAggressiveness * 50}%` } as CSSProperties}
+                aria-valuetext={FOLLOW_AGGRESSIVENESS_LABELS[followAggressiveness]}
+                onChange={(event) => updateFollowAggressiveness(Number(event.currentTarget.value) as FollowAggressiveness)}
+              />
+              <div className="follow-aggressiveness-labels" aria-hidden="true">
+                <span>Current timing</span>
+                <span>A little ahead</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </BehaviorSection>
     </section>
   );
 }

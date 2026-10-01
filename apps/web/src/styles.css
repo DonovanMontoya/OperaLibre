@@ -1504,13 +1504,17 @@ html:not(.native-app) .web-shell > .player-pane {
   list-style: none;
 }
 
+.continue-reading-row {
+  position: relative;
+}
+
 .continue-reading-book {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 30px;
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 12px;
+  padding: 12px 54px 12px 12px;
   border: 1px solid rgba(217, 181, 116, 0.24);
   border-radius: 3px;
   background: rgba(217, 181, 116, 0.06);
@@ -1584,6 +1588,12 @@ html:not(.native-app) .web-shell > .player-pane {
 }
 
 .continue-reading-play {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  padding: 0;
   display: grid;
   place-items: center;
   width: 30px;
@@ -1591,6 +1601,11 @@ html:not(.native-app) .web-shell > .player-pane {
   border-radius: 50%;
   background: var(--gold-soft);
   color: var(--spine);
+}
+
+.continue-reading-play:focus-visible {
+  outline: 2px solid var(--gold-soft);
+  outline-offset: 3px;
 }
 
 .continue-reading-library-heading {
@@ -5973,7 +5988,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   color: var(--ink-faded);
 }
 
-.user-menu button {
+.user-menu button:not(.settings-switch) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -5987,9 +6002,50 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   text-align: left;
 }
 
-.user-menu button:hover,
-.user-menu button:focus-visible {
+.user-menu button:not(.settings-switch):hover,
+.user-menu button:not(.settings-switch):focus-visible {
   background: rgba(184, 137, 58, 0.18);
+}
+
+.user-menu .behavior-settings {
+  width: min(300px, calc(100vw - 48px));
+  padding: 0.45rem 0.6rem;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.behavior-settings {
+  width: 100%;
+}
+
+.behavior-settings > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.behavior-settings > summary::-webkit-details-marker { display: none; }
+.behavior-settings > summary > span { display: grid; gap: 4px; }
+.behavior-settings > summary strong { color: var(--ink); font: 500 1.1rem/1.2 "Fraunces", serif; }
+.behavior-settings > summary small { color: var(--ink-faded); font: italic 0.85rem/1.35 "Fraunces", serif; }
+.behavior-settings > summary > svg { flex: none; color: var(--ink-faded); }
+.behavior-settings[open] > summary > svg { transform: rotate(180deg); }
+.behavior-settings > summary:focus-visible { outline: 2px solid var(--oxblood); outline-offset: 4px; border-radius: 6px; }
+
+.behavior-settings-body {
+  display: grid;
+  gap: 18px;
+  padding-top: 18px;
+  margin-top: 14px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.behavior-settings-body > .settings-toggle-row + .settings-toggle-row {
+  padding-top: 18px;
+  border-top: 1px solid rgba(var(--ink-rgb), 0.1);
 }
 
 .user-menu-follow-aggressiveness {
