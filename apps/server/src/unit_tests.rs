@@ -734,6 +734,94 @@ fn library_scan_ignores_faststart_work_files() {
     assert_eq!(files, vec![book.join("book.m4b")]);
 }
 
+#[test]
+fn library_scan_ignores_hidden_and_recycle_bin_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let book = write_book(root.path(), "Real Book", "01 Track.mp3", b"audio");
+    // macOS writes an AppleDouble sidecar beside every file on SMB and FAT.
+    write_book(
+        root.path(),
+        "Real Book",
+        "._01 Track.mp3",
+        b"\x00\x05\x16\x07",
+    );
+    write_book(root.path(), "Real Book", ".hidden.mp3", b"hidden");
+    write_book(root.path(), ".Trash-1000", "Deleted.mp3", b"trash");
+    write_book(root.path(), ".Trashes/501", "Deleted.mp3", b"trash");
+    write_book(root.path(), "Real Book/.stversions", "01 Track.mp3", b"old");
+    write_book(root.path(), ".AppleDouble", "Real.mp3", b"sidecar");
+    for name in [
+        "#recycle",
+        "@Recycle",
+        "@eaDir",
+        "$RECYCLE.BIN",
+        "System Volume Information",
+        "lost+found",
+        // Compared without regard to case.
+        "#RECYCLE",
+        "$Recycle.Bin",
+        "SYSTEM VOLUME INFORMATION",
+    ] {
+        write_book(root.path(), &format!("{name}/Gone Book"), "01.mp3", b"gone");
+    }
+    // A name merely containing one of the ignored names is an ordinary book.
+    let lookalike = write_book(root.path(), "My lost+found Book", "01.mp3", b"kept");
+
+    let files = walk_audio_files_checked(root.path()).files;
+    assert_eq!(files, vec![lookalike, book]);
+}
+
+/// Real titles begin with an ellipsis, so two leading dots are not "hidden".
+#[test]
+fn library_scan_keeps_titles_that_begin_with_an_ellipsis() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = write_book(
+        root.path(),
+        "...And Then There Were None",
+        "01.mp3",
+        b"audio",
+    );
+    let flat = write_book(root.path(), "", "...Baby.mp3", b"audio");
+
+    let files = walk_audio_files_checked(root.path()).files;
+    assert_eq!(files, vec![folder, flat]);
+}
+
+#[test]
+fn library_scan_walks_a_root_whose_own_name_is_hidden() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(".audiobooks");
+    let book = write_book(&root, "Book", "01.mp3", b"audio");
+
+    let files = walk_audio_files_checked(&root).files;
+    assert_eq!(files, vec![book]);
+}
+
+#[test]
+fn directory_listings_leave_out_hidden_files() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("Real Book");
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in [
+        "Real Book.epub",
+        "._Real Book.epub",
+        "cover.jpg",
+        "._cover.jpg",
+        "...Baby.epub",
+    ] {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    let mut listings = super::DirectoryFiles::default();
+    let mut names = listings
+        .files(&dir)
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["...Baby.epub", "Real Book.epub", "cover.jpg"]);
+}
+
 /// An M4B keeps its artwork in the `covr` atom, which has no `ItemKey` of
 /// its own. lofty 0.25.0 dropped every unmapped atom while flattening the
 /// iTunes tag, so covers silently disappeared from the whole library on a
@@ -4835,6 +4923,266 @@ fn the_path_tier_closes_once_an_identity_goes_stale() {
 
     let (before, after) = run(super::PATH_TIER_STALE_AFTER_SCANS + 1);
     assert_ne!(before, after, "a stale identity no longer claims by path");
+}
+
+/// Before hidden files were skipped, AppleDouble sidecars were catalogued as
+/// tracks, so the book's digest covered them. Once they are ignored the digest
+/// changes and the track count drops, which closes every other tier; the book
+/// must still keep its id and its real tracks must keep theirs.
+#[test]
+fn a_book_keeps_its_identity_when_ignored_sidecar_tracks_disappear() {
+    let root = tempfile::tempdir().unwrap();
+    let one = write_book(root.path(), "Book", "01.mp3", b"chapter one audio");
+    let two = write_book(root.path(), "Book", "02.mp3", b"chapter two audio");
+    let junk_one = write_book(root.path(), "Book", "._01.mp3", b"appledouble one");
+    let junk_two = write_book(root.path(), "Book", "._02.mp3", b"appledouble two");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            &[junk_one, junk_two, one.clone(), two.clone()],
+        )],
+    );
+    let (book_id, old_track_ids) = before[0].clone();
+    let (junk_ids, real_ids) = old_track_ids.split_at(2);
+
+    let real = [one, two];
+    let after = resolve_scan(&mut identities, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(after[0].0, book_id, "the book keeps its id");
+    assert_eq!(after[0].1, real_ids, "the real tracks keep their ids");
+
+    let identity = &identities.books[0];
+    assert_eq!(identities.books.len(), 1, "no second identity is minted");
+    assert_eq!(identity.track_count, 2);
+    let stored_ids = identity
+        .tracks
+        .iter()
+        .map(|track| track.track_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(stored_ids, real_ids, "the sidecar tracks are retired");
+    assert!(junk_ids.iter().all(|id| !stored_ids.contains(&id.as_str())));
+
+    // Later scans match on the new digest alone. Aging the identity past the
+    // path tier proves nothing weaker than a plain match is carrying it.
+    identities.scan_counter += super::PATH_TIER_STALE_AFTER_SCANS + 5;
+    let third = resolve_scan(&mut identities, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(third[0], after[0]);
+    assert_eq!(identities.books.len(), 1);
+}
+
+/// A book catalogued with one sidecar track beside its two real ones, and the
+/// real files the next scan will see.
+fn catalogue_book_with_sidecars(
+    root: &std::path::Path,
+) -> (super::LibraryIdentityStore, String, [std::path::PathBuf; 2]) {
+    let one = write_book(root, "Book", "01.mp3", b"chapter one audio");
+    let two = write_book(root, "Book", "02.mp3", b"chapter two audio");
+    let junk = write_book(root, "Book", "._01.mp3", b"appledouble one");
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            &[junk, one.clone(), two.clone()],
+        )],
+    );
+    (identities, before[0].0.clone(), [one, two])
+}
+
+fn migrate_sidecar_fixture(
+    identities: &super::LibraryIdentityStore,
+    present_in_last_scan: bool,
+) -> super::LibraryIdentityStore {
+    let books = identities
+        .books
+        .iter()
+        .map(|book| {
+            serde_json::json!({
+                "fingerprint": book.fingerprint,
+                "bookId": book.book_id,
+                "paths": book.paths.iter().map(|path| &path.relative_path).collect::<Vec<_>>(),
+                "tracks": book.tracks.iter().map(|track| serde_json::json!({
+                    "fingerprint": track.fingerprint,
+                    "trackId": track.track_id,
+                    "paths": track.paths.iter().map(|path| &path.relative_path).collect::<Vec<_>>()
+                })).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut cache = serde_json::Map::new();
+    if present_in_last_scan {
+        for book in &identities.books {
+            for track in &book.tracks {
+                for path in &track.paths {
+                    cache.insert(
+                        path.relative_path.clone(),
+                        serde_json::json!({
+                            "fingerprint": track.fingerprint, "size": 42, "modifiedMs": 7
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    let legacy = serde_json::json!({ "books": books, "fingerprintCache": cache });
+    let loaded = super::parse_library_identities(&legacy.to_string()).unwrap();
+    assert!(loaded.migrated);
+    loaded.store
+}
+
+#[test]
+fn sidecar_cleanup_preserves_legacy_book_and_track_ids_on_the_first_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let (identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    let real_ids = identities.books[0].tracks[1..]
+        .iter()
+        .map(|track| track.track_id.clone())
+        .collect::<Vec<_>>();
+    let mut migrated = migrate_sidecar_fixture(&identities, true);
+    assert_eq!(migrated.books[0].last_seen_scan, 0);
+
+    let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(after[0], (book_id, real_ids));
+    assert_eq!(migrated.books.len(), 1);
+    assert_eq!(migrated.books[0].tracks.len(), 2);
+    let again = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(again, after);
+}
+
+#[test]
+fn sidecar_cleanup_rejects_a_missing_real_track_in_both_identity_formats() {
+    for legacy in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+        if legacy {
+            identities = migrate_sidecar_fixture(&identities, true);
+        }
+        let old_tracks = identities.books[0].tracks.len();
+        let after = resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("Book", &real[..1])],
+        );
+        assert_ne!(
+            after[0].0, book_id,
+            "legacy={legacy}: a real chapter is missing"
+        );
+        assert_eq!(identities.books[0].tracks.len(), old_tracks);
+    }
+}
+
+#[test]
+fn sidecar_cleanup_does_not_revive_unconfirmed_legacy_identities() {
+    for (present, already_scanned) in [(false, false), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let (identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+        let mut migrated = migrate_sidecar_fixture(&identities, present);
+        if already_scanned {
+            // The book was absent from the first scan after migration.
+            resolve_scan(&mut migrated, &[]);
+        }
+        let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+        assert_ne!(after[0].0, book_id, "a legacy path alone is not enough");
+    }
+}
+
+#[test]
+fn sidecar_cleanup_leaves_ambiguous_legacy_candidates_unclaimed() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    let mut duplicate = identities.books[0].clone();
+    duplicate.book_id = "another-identity".to_string();
+    identities.books.push(duplicate);
+    let mut migrated = migrate_sidecar_fixture(&identities, true);
+    let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_ne!(after[0].0, book_id);
+    assert_ne!(after[0].0, "another-identity");
+}
+
+/// Without a sidecar track to explain it, a folder that lost a track is a
+/// different book, exactly as before.
+#[test]
+fn a_book_that_lost_a_real_track_still_gets_a_new_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let one = write_book(root.path(), "Book", "01.mp3", b"chapter one audio");
+    let two = write_book(root.path(), "Book", "02.mp3", b"chapter two audio");
+    let three = write_book(root.path(), "Book", "03.mp3", b"chapter three audio");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read(
+            "Book",
+            &[one.clone(), two.clone(), three],
+        )],
+    );
+    let after = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", &[one, two])],
+    );
+    assert_ne!(after[0].0, before[0].0);
+}
+
+/// Every scanned track must already belong to the identity. A track with a
+/// fingerprint it has never seen means the content changed, not just the junk.
+#[test]
+fn sidecar_carry_over_closes_when_a_scanned_track_is_unknown() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    std::fs::write(&real[1], b"chapter two, replaced by another recording").unwrap();
+
+    let after = resolve_scan(&mut identities, &[IdentityFixture::read("Book", &real)]);
+    assert_ne!(after[0].0, book_id);
+}
+
+/// A scanned track that is known by fingerprint but sits at another path is
+/// not the file the listener was playing.
+#[test]
+fn sidecar_carry_over_closes_when_a_known_track_sits_at_another_path() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    let mut fixture = IdentityFixture::read("Book", &real);
+    fixture.track_aliases[1] = "Book/elsewhere.mp3".into();
+
+    let after = resolve_scan(&mut identities, &[fixture]);
+    assert_ne!(after[0].0, book_id);
+}
+
+#[test]
+fn sidecar_carry_over_closes_once_the_identity_is_stale() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    identities.scan_counter += super::PATH_TIER_STALE_AFTER_SCANS + 1;
+
+    let after = resolve_scan(&mut identities, &[IdentityFixture::read("Book", &real)]);
+    assert_ne!(after[0].0, book_id);
+}
+
+/// The carry-over is for a book whose sidecars vanished, not for one that
+/// still exists elsewhere. Here the old digest is present twice at other
+/// locations, so no pass can pick one of them, but the identity is plainly
+/// alive and a bare folder at its old path must not take it.
+#[test]
+fn sidecar_carry_over_closes_when_the_identity_is_alive_elsewhere() {
+    let root = tempfile::tempdir().unwrap();
+    let one = write_book(root.path(), "Book", "01.mp3", b"chapter one audio");
+    let junk = write_book(root.path(), "Book", "._01.mp3", b"appledouble one");
+
+    let mut identities = super::LibraryIdentityStore::default();
+    let before = resolve_scan(
+        &mut identities,
+        &[IdentityFixture::read("Book", &[junk.clone(), one.clone()])],
+    );
+    let copy = |folder: &str| {
+        let one = write_book(root.path(), folder, "01.mp3", b"chapter one audio");
+        let junk = write_book(root.path(), folder, "._01.mp3", b"appledouble one");
+        IdentityFixture::read(folder, &[junk, one])
+    };
+    let bare = IdentityFixture::read("Book", &[one]);
+
+    let after = resolve_scan(&mut identities, &[bare, copy("Copy A"), copy("Copy B")]);
+    assert_ne!(after[0].0, before[0].0, "the bare folder does not claim it");
 }
 
 /// A faststart remux preserves duration exactly; a different book at the same
