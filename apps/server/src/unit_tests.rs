@@ -4991,6 +4991,115 @@ fn catalogue_book_with_sidecars(
     (identities, before[0].0.clone(), [one, two])
 }
 
+fn migrate_sidecar_fixture(
+    identities: &super::LibraryIdentityStore,
+    present_in_last_scan: bool,
+) -> super::LibraryIdentityStore {
+    let books = identities
+        .books
+        .iter()
+        .map(|book| {
+            serde_json::json!({
+                "fingerprint": book.fingerprint,
+                "bookId": book.book_id,
+                "paths": book.paths.iter().map(|path| &path.relative_path).collect::<Vec<_>>(),
+                "tracks": book.tracks.iter().map(|track| serde_json::json!({
+                    "fingerprint": track.fingerprint,
+                    "trackId": track.track_id,
+                    "paths": track.paths.iter().map(|path| &path.relative_path).collect::<Vec<_>>()
+                })).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut cache = serde_json::Map::new();
+    if present_in_last_scan {
+        for book in &identities.books {
+            for track in &book.tracks {
+                for path in &track.paths {
+                    cache.insert(
+                        path.relative_path.clone(),
+                        serde_json::json!({
+                            "fingerprint": track.fingerprint, "size": 42, "modifiedMs": 7
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    let legacy = serde_json::json!({ "books": books, "fingerprintCache": cache });
+    let loaded = super::parse_library_identities(&legacy.to_string()).unwrap();
+    assert!(loaded.migrated);
+    loaded.store
+}
+
+#[test]
+fn sidecar_cleanup_preserves_legacy_book_and_track_ids_on_the_first_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let (identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    let real_ids = identities.books[0].tracks[1..]
+        .iter()
+        .map(|track| track.track_id.clone())
+        .collect::<Vec<_>>();
+    let mut migrated = migrate_sidecar_fixture(&identities, true);
+    assert_eq!(migrated.books[0].last_seen_scan, 0);
+
+    let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(after[0], (book_id, real_ids));
+    assert_eq!(migrated.books.len(), 1);
+    assert_eq!(migrated.books[0].tracks.len(), 2);
+    let again = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_eq!(again, after);
+}
+
+#[test]
+fn sidecar_cleanup_rejects_a_missing_real_track_in_both_identity_formats() {
+    for legacy in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+        if legacy {
+            identities = migrate_sidecar_fixture(&identities, true);
+        }
+        let old_tracks = identities.books[0].tracks.len();
+        let after = resolve_scan(
+            &mut identities,
+            &[IdentityFixture::read("Book", &real[..1])],
+        );
+        assert_ne!(
+            after[0].0, book_id,
+            "legacy={legacy}: a real chapter is missing"
+        );
+        assert_eq!(identities.books[0].tracks.len(), old_tracks);
+    }
+}
+
+#[test]
+fn sidecar_cleanup_does_not_revive_unconfirmed_legacy_identities() {
+    for (present, already_scanned) in [(false, false), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let (identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+        let mut migrated = migrate_sidecar_fixture(&identities, present);
+        if already_scanned {
+            // The book was absent from the first scan after migration.
+            resolve_scan(&mut migrated, &[]);
+        }
+        let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+        assert_ne!(after[0].0, book_id, "a legacy path alone is not enough");
+    }
+}
+
+#[test]
+fn sidecar_cleanup_leaves_ambiguous_legacy_candidates_unclaimed() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut identities, book_id, real) = catalogue_book_with_sidecars(root.path());
+    let mut duplicate = identities.books[0].clone();
+    duplicate.book_id = "another-identity".to_string();
+    identities.books.push(duplicate);
+    let mut migrated = migrate_sidecar_fixture(&identities, true);
+    let after = resolve_scan(&mut migrated, &[IdentityFixture::read("Book", &real)]);
+    assert_ne!(after[0].0, book_id);
+    assert_ne!(after[0].0, "another-identity");
+}
+
 /// Without a sidecar track to explain it, a folder that lost a track is a
 /// different book, exactly as before.
 #[test]
