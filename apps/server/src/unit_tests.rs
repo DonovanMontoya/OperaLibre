@@ -1445,6 +1445,8 @@ fn csrf_origins_always_include_official_apps() {
     let origins = super::build_csrf_allowed_origins(&["HTTPS://Reader.Example.NET/".to_string()]);
     assert!(origins.contains("capacitor://localhost"));
     assert!(origins.contains("http://localhost"));
+    assert!(origins.contains("https://localhost"));
+    assert!(origins.contains("http://127.0.0.1:49201"));
     assert!(origins.contains("https://reader.example.net"));
 }
 
