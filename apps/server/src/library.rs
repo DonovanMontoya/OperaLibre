@@ -1347,17 +1347,15 @@ pub(crate) fn resolve_library_identities(
 
     // The guards the weakest tiers share. The identity's current digest must
     // be nowhere among the groups still unplaced, none of its remembered
-    // digests may appear anywhere in this scan, and it must have been seen
-    // recently enough that its path is still evidence rather than history.
-    let path_tier_is_open = |identity: &BookIdentity, unclaimed: &HashSet<&str>| {
-        if current_is_present(identity, unclaimed)
-            || identity
+    // digests may appear anywhere in this scan.
+    let absent_from_scan = |identity: &BookIdentity, unclaimed: &HashSet<&str>| {
+        !current_is_present(identity, unclaimed)
+            && !identity
                 .fingerprint_history
                 .iter()
                 .any(|candidate| scanned_fingerprints.contains(candidate.as_str()))
-        {
-            return false;
-        }
+    };
+    let recently_seen = |identity: &BookIdentity| {
         identity.last_seen_scan != 0
             && scan.saturating_sub(identity.last_seen_scan) <= PATH_TIER_STALE_AFTER_SCANS
     };
@@ -1366,8 +1364,8 @@ pub(crate) fn resolve_library_identities(
     // ignores and no scanned file accounts for — or `None` when the group does
     // not qualify. A group qualifies only when it has tracks, each of them is
     // matched to a distinct stored track by fingerprint and remembered path,
-    // and at least one stored track remains whose latest path is an ignored
-    // name.
+    // and every unmatched stored track has an ignored name. At least one
+    // such track must remain to explain the changed layout.
     let ignored_track_indexes = |identity: &BookIdentity, group: &ScannedGroup<'_>| {
         if group.track_aliases.is_empty()
             || group.track_aliases.len() != group.track_fingerprints.len()
@@ -1386,19 +1384,18 @@ pub(crate) fn resolve_library_identities(
             })?;
             matched.insert(index);
         }
-        let ignored: Vec<usize> = identity
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(index, track)| {
-                !matched.contains(index)
-                    && track.paths.last().is_some_and(|path| {
-                        let name = path.relative_path.rsplit('/').next().unwrap_or_default();
-                        is_ignored_library_entry(name, false)
-                    })
-            })
-            .map(|(index, _)| index)
-            .collect();
+        let mut ignored = Vec::new();
+        for (index, track) in identity.tracks.iter().enumerate() {
+            if matched.contains(&index) {
+                continue;
+            }
+            let path = track.paths.last()?;
+            let name = path.relative_path.rsplit('/').next().unwrap_or_default();
+            if !is_ignored_library_entry(name, false) {
+                return None;
+            }
+            ignored.push(index);
+        }
         (!ignored.is_empty()).then_some(ignored)
     };
 
@@ -1473,7 +1470,8 @@ pub(crate) fn resolve_library_identities(
     let unclaimed_p5 = unclaimed_fingerprints(groups, &claimed_by);
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
         path_matches(identity, group)
-            && path_tier_is_open(identity, &unclaimed_p5)
+            && absent_from_scan(identity, &unclaimed_p5)
+            && recently_seen(identity)
             && layout_matches(identity, group)
     });
 
@@ -1485,18 +1483,28 @@ pub(crate) fn resolve_library_identities(
     // would strand the listener's position on the old id.
     //
     // This is deliberately not a loosening of pass 5. It applies the same path
-    // and liveness guards, and only to an identity that remembers a track whose
-    // latest path is an ignored name that no scanned file accounts for. It also
-    // demands that every scanned track is already one of the identity's own,
-    // with the same fingerprint at the same remembered path, so the real files
-    // are provably the ones the listener already had. A book that gained or
+    // and liveness guards, and only to an identity whose unmatched tracks all
+    // have ignored names. Every scanned track must already belong to the
+    // identity, with the same fingerprint at the same remembered path, so the
+    // real files are provably the ones the listener already had. A book that gained or
     // lost a track for any other reason, or whose content changed, stays
-    // closed.
+    // closed. On the first scan after a legacy upgrade, the inherited manifest
+    // can confirm prior presence before last_seen_scan has been stamped. This
+    // exception belongs only here, where the surviving content also matches;
+    // it never opens the path-only tier or revives an absent legacy identity
+    // after a successful scan.
     let unclaimed_p6 = unclaimed_fingerprints(groups, &claimed_by);
     let before_pass_6 = claimed_by.clone();
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
         path_matches(identity, group)
-            && path_tier_is_open(identity, &unclaimed_p6)
+            && absent_from_scan(identity, &unclaimed_p6)
+            && (recently_seen(identity)
+                || (identity.last_seen_scan == 0
+                    && store.scan_counter == 0
+                    && store.manifests.get(group.root_id).is_some_and(|manifest| {
+                        manifest.scan == 0
+                            && manifest.book_fingerprints.contains(&identity.fingerprint)
+                    })))
             && ignored_track_indexes(identity, group).is_some()
     });
     // Retire the ignored tracks now, so the stored track list matches the
