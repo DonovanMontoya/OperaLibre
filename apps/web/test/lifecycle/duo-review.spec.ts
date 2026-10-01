@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
 import { library, wav } from '../performance/fixtures';
+import type { DeviceFoldState } from '../../src/deviceFold';
 
 let server: ViteDevServer;
 let url: string;
@@ -59,6 +60,79 @@ async function serveFixtureAudio(page: Page) {
       headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${audio.length}` } });
   });
 }
+
+test('Duo paused playback survives folding, rotation, and window resizing without saving progress', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 951, height: 669 });
+  const fixtureBooks = library(2);
+  const book = fixtureBooks[0];
+  book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  await openShell(page, true, false, true, fixtureBooks);
+  await serveFixtureAudio(page);
+  const progressWrites: string[] = [];
+  page.on('request', request => {
+    if (/\/progress(?:\?|$)/.test(request.url()) && ['PUT', 'POST', 'PATCH'].includes(request.method())) {
+      progressWrites.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    }
+  });
+  await page.route(`**/api/books/${book.id}/progress`, route => route.fulfill({ json: {
+    bookId: book.id, trackId: book.tracks[1].id, positionSeconds: 30,
+    bookPositionSeconds: 150, durationSeconds: 240, updatedAt: '2026-09-30T12:00:00Z'
+  } }));
+  await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+  const audio = page.locator('audio');
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(30);
+  const states: { name: string; width: number; height: number; state: DeviceFoldState }[] = [
+    { name: 'open', width: 951, height: 669, state: { posture: 'flat', angle: 180,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'book', width: 951, height: 669, state: { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'tabletop', width: 669, height: 951, state: { posture: 'half-open', angle: 110,
+      fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
+    { name: 'open-rotated', width: 669, height: 951, state: { posture: 'flat', angle: 180,
+      fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
+    { name: 'closed', width: 466, height: 678, state: { posture: 'closed', angle: 0 } },
+    { name: 'closed-landscape', width: 678, height: 466, state: { posture: 'closed', angle: 0 } },
+    { name: 'narrow-window', width: 320, height: 600, state: { posture: 'flat', angle: 180 } },
+    { name: 'short-window', width: 720, height: 360, state: { posture: 'flat', angle: 180 } },
+    { name: 'reopened', width: 951, height: 669, state: { posture: 'flat', angle: 180,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } }
+  ];
+  for (const { name, width, height, state } of states) {
+    await test.step(name, async () => {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(async state => {
+        const path = '/src/deviceFold.ts';
+        const { applyDeviceFold } = await import(path);
+        applyDeviceFold(document.documentElement, state);
+      }, state);
+      await expect(page.locator('.native-now-copy > p')).toHaveText(book.title);
+      await expect(page.locator('.native-now-play')).toHaveAccessibleName('Play');
+      await expect(async () => {
+        for (const selector of ['.native-now-timeline', '.native-now-transport', '.native-now-utility']) {
+          const bounds = await page.locator(selector).boundingBox();
+          expect(bounds, `${name}: ${selector} exists`).not.toBeNull();
+          expect(bounds!.x, `${name}: ${selector} left`).toBeGreaterThanOrEqual(0);
+          expect(bounds!.y, `${name}: ${selector} top`).toBeGreaterThanOrEqual(0);
+          expect(bounds!.x + bounds!.width, `${name}: ${selector} right`).toBeLessThanOrEqual(width + 1);
+          expect(bounds!.y + bounds!.height, `${name}: ${selector} bottom`).toBeLessThanOrEqual(height + 1);
+          if (state.fold?.active) {
+            if (state.fold.axis === 'vertical') {
+              expect(bounds!.x, `${name}: ${selector} clears hinge`).toBeGreaterThanOrEqual(state.fold.x + state.fold.width);
+            } else {
+              expect(bounds!.y, `${name}: ${selector} clears hinge`).toBeGreaterThanOrEqual(state.fold.y + state.fold.height);
+            }
+          }
+        }
+      }).toPass({ timeout: 5000 });
+      expect(await audio.evaluate((element: HTMLAudioElement) => ({
+        paused: element.paused, time: element.currentTime, source: new URL(element.currentSrc).pathname
+      }))).toEqual({ paused: true, time: 30, source: '/fixture-1.wav' });
+      expect(progressWrites).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+    });
+  }
+});
 
 test('native audiobook upload preserves device books and paired local copies', async ({ page }) => {
   const serverBooks = library(6);

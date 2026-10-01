@@ -16078,6 +16078,7 @@ html.native-app.side-rail .epub-reader.fullscreen .epub-bottombar {
 }
 
 html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
+  left: env(safe-area-inset-left);
   right: env(safe-area-inset-right);
 }
 
@@ -16085,7 +16086,7 @@ html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
    the page progress as a slim footer, but stand the listening transport on
    the trailing edge so it no longer takes a full line away from the book. */
 @media (orientation: landscape) {
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive {
     /* The landscape safe area describes the camera corner as a full-height
        strip, even though the transport ends above it. Let the controls use
        that empty strip so their optical centerline meets the camera cutout. */
@@ -16093,19 +16094,19 @@ html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
     --reader-landscape-transport-space: calc(var(--reader-landscape-edge-inset) + 72px);
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-stage-wrap {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-stage-wrap {
     padding-right: var(--reader-landscape-transport-space);
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-tapzones {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-tapzones {
     right: var(--reader-landscape-transport-space);
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-bottombar {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-bottombar {
     padding-right: var(--reader-landscape-transport-space);
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar {
     position: fixed;
     z-index: 6;
     top: max(58px, calc(env(safe-area-inset-top) + 50px));
@@ -16125,18 +16126,18 @@ html.native-app.side-rail .epub-reader.immersive .epub-tapzones {
     background: var(--reader-surface);
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-status {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-status {
     order: -1;
     justify-content: center;
     min-height: 24px;
     padding-left: 0;
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-time {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-time {
     font-size: 0.64rem;
   }
 
-  html.native-app[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-extras {
+  html.native-app:not(.side-rail)[data-fold-posture="closed"] .epub-reader.immersive .epub-audiobar-extras {
     flex-direction: column;
     align-items: center;
     gap: 2px;

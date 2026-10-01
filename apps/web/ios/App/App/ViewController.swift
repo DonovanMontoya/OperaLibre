@@ -1,6 +1,11 @@
 import Capacitor
 
 class ViewController: CAPBridgeViewController {
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        (parent as? NativeTabsController)?.contentDidLayout()
+    }
+
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(BackgroundDownloadsPlugin())
         bridge?.registerPluginInstance(LibroDevicePlugin())
