@@ -113,7 +113,7 @@ export function LibraryPane({
   capabilities: ServerCapabilities;
   carPlay: ReturnType<typeof useCarPlay>;
   connectPromptDismissed: boolean;
-  continueReadingBook: (book: Book) => void;
+  continueReadingBook: (book: Book, play?: boolean) => void;
   currentUser: AuthUser;
   demoMode: boolean;
   deviceImport: { completed: number; total: number; } | null;
