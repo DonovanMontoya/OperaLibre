@@ -2264,8 +2264,175 @@ async fn a_new_book_invalidates_a_full_page_that_gained_a_cursor() {
 }
 
 // ---------------------------------------------------------------------------
-// Cookie CSRF enforcement
+// Native CORS and cookie CSRF enforcement
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn android_origin_can_connect_sign_in_and_make_authenticated_changes() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    // Capacitor's Android default, deliberately independent of the allowlist.
+    let origin = "https://localhost";
+
+    let status = server
+        .send(
+            Request::builder()
+                .uri("/api/auth/status")
+                .header(header::ORIGIN, origin)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status.status, StatusCode::OK);
+    assert_eq!(status.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+    assert_eq!(
+        status.header(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+        "true"
+    );
+
+    for uri in ["/api/auth/login", "/api/auth/logout"] {
+        let preflight = server
+            .send(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri(uri)
+                    .header(header::ORIGIN, origin)
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "authorization,content-type",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert!(preflight.status.is_success());
+        assert_eq!(
+            preflight.header(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            origin
+        );
+        assert_eq!(
+            preflight.header(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            "true"
+        );
+        assert_eq!(
+            preflight.header(header::ACCESS_CONTROL_ALLOW_METHODS),
+            "POST"
+        );
+        assert_eq!(
+            preflight.header(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            "authorization,content-type"
+        );
+    }
+
+    let login = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": "owner",
+                        "password": "owner-password-1234"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.text());
+    assert_eq!(login.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+    let token = login.json()["token"].as_str().unwrap().to_string();
+
+    // A trusted origin does not supply authentication on its own.
+    for authorization in [None, Some("Bearer invalid-session")] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/logout")
+            .header(header::ORIGIN, origin);
+        if let Some(authorization) = authorization {
+            request = request.header(header::AUTHORIZATION, authorization);
+        }
+        let response = server.send(request.body(Body::empty()).unwrap()).await;
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+    }
+
+    let logout = server
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header(header::ORIGIN, origin)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(logout.status, StatusCode::OK, "{}", logout.text());
+    assert_eq!(logout.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+    assert_eq!(
+        server.get("/api/auth/me", &token).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn untrusted_origins_cannot_use_cors_or_make_cookie_authenticated_changes() {
+    let server = TestServer::start(1).await;
+    server.setup_owner().await;
+    let cookie = server.setup_owner_cookie().await;
+
+    for origin in [
+        "https://evil.example",
+        "https://localhost.evil.example",
+        "https://localhost:4444",
+        "https://127.0.0.1",
+        "null",
+    ] {
+        for method in ["GET", "OPTIONS"] {
+            let response = server
+                .send(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/auth/status")
+                        .header(header::ORIGIN, origin)
+                        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+            assert!(
+                response
+                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_empty(),
+                "{origin}"
+            );
+        }
+        let response = cookie_logout_with(&server, &cookie, &[("origin", origin)]).await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{origin}: {}",
+            response.text()
+        );
+        assert!(
+            response
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_empty()
+        );
+    }
+
+    let response = cookie_logout_with(&server, &cookie, &[("origin", "https://localhost")]).await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "denied writes must not revoke the session"
+    );
+}
 
 impl TestServer {
     /// Sign in as the owner through the real route and return the session
@@ -2358,16 +2525,23 @@ async fn a_null_origin_is_refused() {
 async fn a_cookie_change_from_an_official_app_origin_is_allowed() {
     let server = TestServer::start(1).await;
     server.setup_owner().await;
-    let cookie = server.setup_owner_cookie().await;
 
-    let response = cookie_logout_with(
-        &server,
-        &cookie,
-        &[("origin", super::OFFICIAL_APP_ORIGINS[0])],
-    )
-    .await;
-
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    for origin in [
+        "capacitor://localhost",
+        "http://localhost",
+        "https://localhost",
+        "http://127.0.0.1:49201",
+    ] {
+        let cookie = server.setup_owner_cookie().await;
+        let response = cookie_logout_with(&server, &cookie, &[("origin", origin)]).await;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{origin}: {}",
+            response.text()
+        );
+        assert_eq!(response.header(header::ACCESS_CONTROL_ALLOW_ORIGIN), origin);
+    }
 }
 
 /// A same-origin browser request may carry an Origin that names this very
