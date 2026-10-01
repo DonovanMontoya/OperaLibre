@@ -318,7 +318,7 @@ export function usePlaybackControls({
 
   function startPlayback(
     audio: HTMLAudioElement | null | undefined,
-    interruptRestore = true
+    interruptRestore = resumeReconciliationBookIdRef.current !== playbackBookIdRef.current
   ) {
     if (!audio) return;
     if (carPlaybackOwnsEngine()) {

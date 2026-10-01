@@ -109,7 +109,9 @@ export function usePlaybackRestore({
     const restoreVersion = progressMutationVersion.current;
     const restoreActionVersion = playbackActionVersionRef.current;
     const restoreCancelGeneration = playCancelGenerationRef.current;
-    if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
+    // Starting a paused book must still accept the server position while the
+    // initial restore is pending. Deliberate seeks release this gate.
+    resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null, canonical = false) => {
       if (
         cancelled ||
