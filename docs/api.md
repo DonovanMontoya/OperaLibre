@@ -19,10 +19,11 @@ The web app obtains a session token and a separate scoped media token via `POST 
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. |
+| `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. `serverId` is a random value that stays the same for the life of the installation, so a client can confirm that two addresses reach the same server before reusing a sign-in. |
 | `GET` | `/api/auth/status` | Reports whether first-run setup is needed, whether the server requires a bootstrap token (`proxy` mode only, same for every client), and whether this client must set up locally. |
 | `POST` | `/api/auth/setup` | One-time owner creation. Every `proxy` client must send the current `setupToken`; `lan` setup is open to the trusted network, and `local` mode rejects remote setup. |
 | `POST` | `/api/auth/login` | Exchange username + password for session and scoped media tokens. |
+| `POST` | `/api/auth/server-proof` | Lets a signed-in client confirm that an address reaches the server holding its session without sending the token there. Takes `{ "session", "nonce" }` and returns `serverId` and a `proof` only that server can compute; the official apps use it before switching to a saved alternate address. |
 
 ### Authenticated endpoints
 

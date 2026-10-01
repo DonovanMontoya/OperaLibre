@@ -37,8 +37,8 @@ export function ServerSetup({
     setError(null);
     setBusy(true);
     try {
-      await pingServer(serverType, url);
-      setServerConnection(serverType, url);
+      const serverId = await pingServer(serverType, url);
+      setServerConnection(serverType, url, serverId);
       onConnected();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not reach that server.";

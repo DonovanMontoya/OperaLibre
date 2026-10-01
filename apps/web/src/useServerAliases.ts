@@ -3,8 +3,6 @@ import {
   activateServerAlias,
   addServerAlias,
   getServerAliases,
-  getServerType,
-  pingServer,
   type ServerAlias
 } from "./api";
 
@@ -32,8 +30,7 @@ export function useServerAliases() {
     setAliasError(null);
     setSwitchingAliasId(alias.id);
     try {
-      await pingServer(getServerType(), alias.url);
-      activateServerAlias(alias);
+      await activateServerAlias(alias);
       window.location.reload();
     } catch (error) {
       setAliasError(error instanceof Error ? error.message : "Could not reach that address.");

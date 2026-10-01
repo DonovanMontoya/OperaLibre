@@ -269,6 +269,13 @@ pub(crate) struct LoginRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ServerProofRequest {
+    pub(crate) session: String,
+    pub(crate) nonce: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SetupRequest {
     pub(crate) username: String,
     pub(crate) password: String,
@@ -440,6 +447,29 @@ pub(crate) fn session_id_for_token(session_token: &str) -> String {
     digest.update(b"operalibre-session-id-v1\0");
     digest.update(session_token.as_bytes());
     general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+/// How a client names its session when asking for a [`server_proof`]. A
+/// digest of the stored session key, so the request carries nothing that
+/// authenticates and nothing the proof could be computed from.
+pub(crate) fn server_proof_handle(session_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-server-proof-handle-v1\0");
+    digest.update(session_id.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+/// Evidence that this server holds a session, keyed by the stored session key
+/// both sides can derive from the token. An app checks it before moving a
+/// sign-in to another address: whoever answers there cannot produce it for a
+/// fresh nonce without already having the session.
+pub(crate) fn server_proof(session_id: &str, nonce: &str) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = Hmac::<Sha256>::new_from_slice(session_id.as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(b"operalibre-server-proof-v1\0");
+    mac.update(nonce.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
 /// What the media-token index stores in place of the media token itself.
@@ -841,6 +871,31 @@ pub(crate) async fn setup_admin(
 
     let token = create_session(&state, &new_user.id).await?;
     session_login_response(&state, token, &new_user)
+}
+
+/// Unauthenticated on purpose: the caller is deciding whether this address may
+/// be sent its token at all.
+pub(crate) async fn prove_server(
+    State(state): State<AppState>,
+    Json(payload): Json<ServerProofRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !(16..=128).contains(&payload.nonce.len()) {
+        return Err(ApiError::bad_request("Nonce must be 16 to 128 characters."));
+    }
+    let now = unix_now_seconds();
+    let sessions = state.sessions.read().await;
+    let session_id = sessions
+        .iter()
+        .find(|(session_id, session)| {
+            !session.is_expired(now) && server_proof_handle(session_id) == payload.session
+        })
+        .map(|(session_id, _)| session_id.clone());
+    drop(sessions);
+    let session_id = session_id.ok_or_else(|| ApiError::unauthorized("Unknown session."))?;
+    Ok(Json(serde_json::json!({
+        "serverId": &*state.server_id,
+        "proof": server_proof(&session_id, &payload.nonce),
+    })))
 }
 
 pub(crate) async fn login(
