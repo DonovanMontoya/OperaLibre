@@ -460,6 +460,67 @@ for (const nativeAudio of [false, true]) {
   });
 }
 
+// The library's reconnect replay and the restore both send the offline
+// checkpoint. Whichever answer lands first heals the journal; the second
+// response must still move the player to the server's position.
+for (const competingEdit of [false, true]) {
+  test(`restore ${competingEdit ? "keeps a pending edit made" : "adopts the server after the journal was healed"} while its replay was rejected`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
+      updatedAt: "1790769660000", accepted: false };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (competingEdit) {
+        f.write(reliability.pendingProgress({ ...f.server, positionSeconds: 1090, bookPositionSeconds: 1090,
+          updatedAt: "2026-09-30T11:58:00Z" }, f.checkpoint()));
+      } else {
+        f.write(reliability.syncedProgress({ ...rejected, accepted: undefined }, f.local.localUpdatedAt));
+      }
+      return rejected;
+    };
+    await f.restore();
+    assert.equal(f.writes.length, 1);
+    if (competingEdit) {
+      assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1060);
+      assert.equal(f.checkpoint().syncStatus, "pending");
+      assert.equal(f.checkpoint().bookPositionSeconds, 1090);
+    } else {
+      assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1800);
+      assert.equal(f.checkpoint().syncStatus, "synced");
+      assert.equal(f.checkpoint().bookPositionSeconds, 1800);
+      // The journal was healed by whoever answered first; the restore only
+      // adopts it and never records a refusal of its own.
+      assert.equal(f.options.overruledSaveRef.current.has("book"), false);
+    }
+  });
+}
+
+// The usual reconnect: the library replay is accepted and heals the journal
+// to the new revision at the same position, then the restore's duplicate
+// replay is refused for its stale base. Nothing was overruled, so no marker
+// may be left behind to make a later foreground return adopt the server.
+test("a duplicate replay refused after an accepted one leaves no overruled marker", async () => {
+  const f = fixture();
+  f.write(f.local);
+  const accepted = { ...f.server, positionSeconds: 1060, bookPositionSeconds: 1060, updatedAt: "1790769660000" };
+  const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+  f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    f.writes.push({ progress, options });
+    f.write(reliability.syncedProgress(accepted, f.local.localUpdatedAt));
+    return { ...accepted, accepted: false };
+  };
+  await f.restore();
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.checkpoint().syncStatus, "synced");
+  assert.equal(f.checkpoint().bookPositionSeconds, 1060);
+  assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1060);
+  assert.equal(f.options.overruledSaveRef.current.has("book"), false);
+});
+
 test("newer native recovery retains the rejected base until canonical restore is staged", async () => {
   const f = fixture();
   const rejected = reliability.syncedProgress({ ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
