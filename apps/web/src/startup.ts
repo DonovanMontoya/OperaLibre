@@ -1,4 +1,20 @@
 export const NATIVE_STARTUP_SETTLE_MS = 350;
+// The launch intro's run time and the cover's fade; styles.css times its
+// keyframes against the same values.
+export const LAUNCH_INTRO_MS = 980;
+export const LAUNCH_LIFT_MS = 260;
+
+/**
+ * How much longer the launch cover stays once the restored view is ready. The
+ * intro plays once per page load: a later cover (signing in, switching
+ * accounts) or a slow restore finds it already over and lifts at once.
+ */
+// How long a ready page waits for the native bar to finish moving it.
+export const LAUNCH_SETTLE_LIMIT_MS = 600;
+export function launchIntroRemainingMs(elapsedMs: number, reducedMotion: boolean, settled = true) {
+  const intro = reducedMotion ? 0 : Math.max(0, LAUNCH_INTRO_MS - elapsedMs);
+  return settled ? intro : Math.max(intro, LAUNCH_SETTLE_LIMIT_MS);
+}
 
 /** Downloaded media needs the persisted account session, not a media URL token. */
 export function canRestoreCachedNativeSession(

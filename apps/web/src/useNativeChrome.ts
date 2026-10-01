@@ -8,6 +8,7 @@ import type { AppearanceMode } from "./appearance";
 
 export function useNativeChrome({
   startupViewReady,
+  launchCoverLifted,
   appearanceMode,
   brokenLibationAccounts,
   capabilities,
@@ -27,6 +28,7 @@ export function useNativeChrome({
   shellRef
 }: {
   startupViewReady: boolean;
+  launchCoverLifted: boolean;
   appearanceMode: AppearanceMode;
   brokenLibationAccounts: LibationAccount[];
   capabilities: ServerCapabilities;
@@ -63,16 +65,18 @@ export function useNativeChrome({
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
   }, [native, nativeTab, shelfLayout, shellRef]);
-  const { ready: nativeTabsReady, shown: nativeTabsShown } = useNativeTabs({
+  const { ready: nativeTabsReady, shown: nativeTabsShown, settled: nativeTabsSettled } = useNativeTabs({
     tabs: iosTabs,
     selected: nativeTabSelection(nativeTab, iosTabs),
-    // UIKit sits above the web launch cover. Keep its first selection hidden
-    // until the same restoration boundary that reveals the page.
+    // Showing the bar moves the page's safe area. Lay it out at the same
+    // restoration boundary that readies the page, while the launch cover is
+    // still up, so the page is in place before anyone sees it.
     visible: startupViewReady && (!readalongOpen || readerClosing),
     appearance: appearanceMode,
     chrome,
     bar: barTint
-  }, openNativeTab);
+    // UIKit sits above the web launch cover; draw the bar only once it lifts.
+  }, openNativeTab, !launchCoverLifted);
   useEffect(() => {
     if (!readerClosing || (nativeTabsReady && !nativeTabsShown)) return;
     setReaderClosing(false);
@@ -106,6 +110,7 @@ export function useNativeChrome({
   return {
     hasMiniPlayer,
     nativeTabsReady,
+    nativeTabsSettled,
     nativeTabsShown,
     showLedgerTab
   };

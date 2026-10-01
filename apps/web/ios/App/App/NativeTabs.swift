@@ -274,7 +274,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         // Web sheets rise from the bottom of the page, which now runs under
         // the bar. Taking the bar away leaves the sheet whole instead of
         // ghosting a dimmed copy of it across the sheet's own footer.
-        tabsOverlay.alpha = blocked ? 0 : 1
+        // The bar returns with the page it was hidden for: the launch cover
+        // and closing sheets both fade, so it should not snap in over them.
+        if blocked {
+            tabsOverlay.alpha = 0
+        } else if tabsOverlay.alpha != 1 {
+            UIView.animate(withDuration: 0.22, delay: 0, options: .curveEaseOut) { self.tabsOverlay.alpha = 1 }
+        }
         navigation.view.isUserInteractionEnabled = !blocked
         navigation.view.accessibilityElementsHidden = blocked
         if visible {
