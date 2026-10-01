@@ -449,27 +449,65 @@ pub(crate) fn session_id_for_token(session_token: &str) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
 }
 
-/// How a client names its session when asking for a [`server_proof`]. A
-/// digest of the stored session key, so the request carries nothing that
-/// authenticates and nothing the proof could be computed from.
-pub(crate) fn server_proof_handle(session_id: &str) -> String {
+/// The key a session's [`server_proof`] is made with. Derived from the token
+/// in its own domain, so it is neither the token nor anything the sessions
+/// table or a backup contains.
+pub(crate) fn server_proof_key(session_token: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"operalibre-server-proof-handle-v1\0");
-    digest.update(session_id.as_bytes());
+    digest.update(b"operalibre-server-proof-key-v1\0");
+    digest.update(session_token.as_bytes());
     general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
 }
 
-/// Evidence that this server holds a session, keyed by the stored session key
-/// both sides can derive from the token. An app checks it before moving a
-/// sign-in to another address: whoever answers there cannot produce it for a
-/// fresh nonce without already having the session.
-pub(crate) fn server_proof(session_id: &str, nonce: &str) -> String {
+/// How a client names its session when asking for a [`server_proof`]. A
+/// digest of the proof key, so the request carries nothing that authenticates
+/// and nothing the proof could be computed from.
+pub(crate) fn server_proof_handle(proof_key: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"operalibre-server-proof-handle-v1\0");
+    digest.update(proof_key.as_bytes());
+    general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+/// Evidence that this server has been presented a session's token. An app
+/// checks it before moving a sign-in to another address: whoever answers
+/// there cannot produce it for a fresh nonce without having seen the token.
+pub(crate) fn server_proof(proof_key: &str, nonce: &str) -> String {
     use hmac::{Hmac, KeyInit, Mac};
-    let mut mac = Hmac::<Sha256>::new_from_slice(session_id.as_bytes())
+    let mut mac = Hmac::<Sha256>::new_from_slice(proof_key.as_bytes())
         .expect("HMAC accepts a key of any length");
     mac.update(b"operalibre-server-proof-v1\0");
     mac.update(nonce.as_bytes());
     general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+/// Proof keys of the sessions whose token this process has been shown, by
+/// session id. Held in memory only: the stored session id is exported in
+/// backups, so a proof keyed by it could be forged from a backup file. A
+/// session becomes provable again the first time its device authenticates
+/// after a restart.
+#[derive(Default)]
+pub(crate) struct ServerProofKeys(RwLock<HashMap<String, String>>);
+
+impl ServerProofKeys {
+    async fn remember(&self, state: &AppState, session_id: &str, session_token: &str) {
+        if self.0.read().await.contains_key(session_id) {
+            return;
+        }
+        let sessions = state.sessions.read().await;
+        let mut keys = self.0.write().await;
+        keys.retain(|known, _| sessions.contains_key(known));
+        if sessions.contains_key(session_id) {
+            keys.insert(session_id.to_string(), server_proof_key(session_token));
+        }
+    }
+
+    async fn key_for_handle(&self, handle: &str) -> Option<(String, String)> {
+        let keys = self.0.read().await;
+        keys.iter()
+            .find(|(_, key)| server_proof_handle(key) == handle)
+            .map(|(session_id, key)| (session_id.clone(), key.clone()))
+    }
 }
 
 /// What the media-token index stores in place of the media token itself.
@@ -634,7 +672,13 @@ pub(crate) fn extract_request_credential(req: &Request) -> Option<RequestCredent
 }
 
 pub(crate) async fn resolve_session(state: &AppState, token: &str) -> Option<AuthUser> {
-    resolve_session_id(state, &session_id_for_token(token)).await
+    let session_id = session_id_for_token(token);
+    let user = resolve_session_id(state, &session_id).await?;
+    state
+        .server_proof_keys
+        .remember(state, &session_id, token)
+        .await;
+    Some(user)
 }
 
 async fn resolve_session_id(state: &AppState, session_id: &str) -> Option<AuthUser> {
@@ -882,19 +926,23 @@ pub(crate) async fn prove_server(
     if !(16..=128).contains(&payload.nonce.len()) {
         return Err(ApiError::bad_request("Nonce must be 16 to 128 characters."));
     }
-    let now = unix_now_seconds();
+    let unknown = || ApiError::unauthorized("Unknown session.");
+    let (session_id, proof_key) = state
+        .server_proof_keys
+        .key_for_handle(&payload.session)
+        .await
+        .ok_or_else(unknown)?;
     let sessions = state.sessions.read().await;
-    let session_id = sessions
-        .iter()
-        .find(|(session_id, session)| {
-            !session.is_expired(now) && server_proof_handle(session_id) == payload.session
-        })
-        .map(|(session_id, _)| session_id.clone());
+    let live = sessions
+        .get(&session_id)
+        .is_some_and(|session| !session.is_expired(unix_now_seconds()));
     drop(sessions);
-    let session_id = session_id.ok_or_else(|| ApiError::unauthorized("Unknown session."))?;
+    if !live {
+        return Err(unknown());
+    }
     Ok(Json(serde_json::json!({
         "serverId": &*state.server_id,
-        "proof": server_proof(&session_id, &payload.nonce),
+        "proof": server_proof(&proof_key, &payload.nonce),
     })))
 }
 
@@ -1115,10 +1163,14 @@ pub(crate) async fn create_session(state: &AppState, user_id: &str) -> Result<St
         .sessions
         .mutate(|sessions| {
             prune_sessions_for_new_session(sessions, user_id, session.created_at);
-            sessions.insert(session_id, session);
+            sessions.insert(session_id.clone(), session);
             Ok(())
         })
         .await?;
+    state
+        .server_proof_keys
+        .remember(state, &session_id, &token)
+        .await;
     Ok(token)
 }
 

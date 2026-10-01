@@ -410,6 +410,7 @@ impl TestServer {
             download_temp_dir: data_dir.join("download-temp"),
             min_download_free_bytes: DEFAULT_MIN_DOWNLOAD_FREE_GIB * GIBIBYTE_BYTES,
             server_id: Arc::from(load_or_create_server_id(&data_dir).await.unwrap()),
+            server_proof_keys: Arc::new(ServerProofKeys::default()),
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
             progress: Arc::new(ProgressStore::new(database.clone())),
@@ -3995,55 +3996,72 @@ async fn health_reports_a_stable_identity_unique_to_the_installation() {
 /// must not send it to find out. The proof answers that without one.
 #[tokio::test]
 async fn a_server_proves_it_holds_a_session_without_being_sent_the_token() {
-    async fn request_proof(server: &TestServer, session: &str) -> TestResponse {
+    async fn request_proof(server: &TestServer, session: &str, nonce: &str) -> TestResponse {
         let request = Request::builder()
             .method("POST")
             .uri("/api/auth/server-proof")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                serde_json::json!({ "session": session, "nonce": "test-nonce-0123456789" })
-                    .to_string(),
+                serde_json::json!({ "session": session, "nonce": nonce }).to_string(),
             ))
             .unwrap();
         server.send(request).await
     }
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
-    let session_id = session_id_for_token(&token);
-    let handle = server_proof_handle(&session_id);
+    let proof_key = server_proof_key(&token);
+    let handle = server_proof_handle(&proof_key);
+    let nonce = generate_session_token();
 
-    let proven = request_proof(&server, &handle).await;
+    let proven = request_proof(&server, &handle, &nonce).await;
     assert_eq!(proven.status, StatusCode::OK, "{}", proven.text());
-    assert_eq!(
-        proven.json()["proof"],
-        server_proof(&session_id, "test-nonce-0123456789")
-    );
+    assert_eq!(proven.json()["proof"], server_proof(&proof_key, &nonce));
     assert_eq!(proven.json()["serverId"], &*server.state.server_id);
 
-    // Another server never issued this session, so it has nothing to prove
-    // with; neither the token nor its stored key works as the handle.
+    // Another server never saw this token, so it has nothing to prove with.
     let other = TestServer::start(1).await;
     other.setup_owner().await;
-    for presented in [handle.as_str(), token.as_str(), session_id.as_str()] {
-        let refused = request_proof(&other, presented).await;
-        assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
-        assert!(refused.json().get("proof").is_none());
-    }
+    let refused = request_proof(&other, &handle, &nonce).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert!(refused.json().get("proof").is_none());
+
+    // Signing out ends what the session can prove.
+    let logout = server
+        .send_json("POST", "/api/auth/logout", &token, serde_json::json!({}))
+        .await;
+    assert_eq!(logout.status, StatusCode::OK, "{}", logout.text());
+    let ended = request_proof(&server, &handle, &nonce).await;
+    assert_eq!(ended.status, StatusCode::UNAUTHORIZED);
 }
 
-/// The apps derive the same values in `serverIdentity.ts`; this vector is
-/// asserted there too, so the two implementations cannot drift apart.
+/// Backups export the sessions table, and a backup file leaves the server's
+/// control. Nothing in it may be enough to answer a proof challenge.
+#[tokio::test]
+async fn a_backup_holds_nothing_that_answers_a_proof_challenge() {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let proof_key = server_proof_key(&token);
+    let handle = server_proof_handle(&proof_key);
+
+    let backup = server.get("/api/admin/backup", &token).await;
+    assert_eq!(backup.status, StatusCode::OK, "{}", backup.text());
+    let exported = backup.text();
+    // The session is in the file, under the id the proof used to be keyed by.
+    assert!(exported.contains(&session_id_for_token(&token)));
+    assert!(!exported.contains(&proof_key));
+    assert!(!exported.contains(&handle));
+}
+
+/// The apps derive the same values in `serverIdentity.ts`, whose test reads
+/// this fixture too, so the two implementations cannot drift apart.
 #[test]
 fn server_proof_matches_the_vector_the_apps_verify() {
-    let session_id = session_id_for_token("test-session-token");
-    assert_eq!(
-        server_proof_handle(&session_id),
-        "aKpRfYL6Knt8li3184WZQ4lYuam6Hp8DxvM0wNKY594"
-    );
-    assert_eq!(
-        server_proof(&session_id, "test-nonce-0123456789"),
-        "iD88xCkhCz-jVCJISrIAXi9U9TVIjzd3x9fM-Woi-pk"
-    );
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../../script/fixtures/server-proof.json")).unwrap();
+    let field = |name: &str| vector[name].as_str().unwrap().to_string();
+    let proof_key = server_proof_key(&field("token"));
+    assert_eq!(server_proof_handle(&proof_key), field("session"));
+    assert_eq!(server_proof(&proof_key, &field("nonce")), field("proof"));
 }
 
 /// A range the server does not serve is ignored, as RFC 9110 allows, rather

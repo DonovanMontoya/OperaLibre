@@ -15,6 +15,7 @@ pub(crate) struct AppState {
     /// Random identity of this installation, reported by the health route so
     /// apps can tell one server's addresses from another server's.
     pub(crate) server_id: Arc<str>,
+    pub(crate) server_proof_keys: Arc<ServerProofKeys>,
     pub(crate) library_root: PathBuf,
     pub(crate) library_identities_file: PathBuf,
     /// Saved playback positions. The only way to reach a listener's place.

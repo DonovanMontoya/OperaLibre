@@ -40,26 +40,28 @@ async function sha256(domain: string, value: string): Promise<string> {
 /**
  * What to ask an address so it can prove it holds this sign-in without being
  * sent the token: `session` names the session, and `expected` is the proof
- * only a server that issued the token can return for `nonce`. Mirrors
- * `server_proof_handle` and `server_proof` in the server's auth.rs.
+ * only a server that has been shown the token can return for `nonce`. Mirrors
+ * `server_proof_key`, `server_proof_handle` and `server_proof` in the server's
+ * auth.rs.
  */
 export async function serverProofChallenge(
   token: string,
   nonce = base64Url(crypto.getRandomValues(new Uint8Array(32)))
 ): Promise<{ session: string; nonce: string; expected: string }> {
-  // The server keeps this digest of the token, never the token itself.
-  const sessionId = await sha256("operalibre-session-id-v1", token);
+  // Its own derivation of the token: unlike the session id the server stores,
+  // this key appears in no database row or backup.
+  const proofKey = await sha256("operalibre-server-proof-key-v1", token);
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(sessionId),
+    encoder.encode(proofKey),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
   );
   const proof = await crypto.subtle.sign("HMAC", key, encoder.encode(`operalibre-server-proof-v1\0${nonce}`));
   return {
-    session: await sha256("operalibre-server-proof-handle-v1", sessionId),
+    session: await sha256("operalibre-server-proof-handle-v1", proofKey),
     nonce,
     expected: base64Url(proof)
   };
