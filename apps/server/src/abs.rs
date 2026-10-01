@@ -498,7 +498,7 @@ fn library_item(book: &Book, media_token: &str, include_audio_files: bool) -> Ab
                     .author
                     .iter()
                     .map(|name| AbsNamedEntity {
-                        id: name.clone(),
+                        id: author_id(name),
                         name: name.clone(),
                     })
                     .collect(),
@@ -676,7 +676,10 @@ pub(crate) async fn abs_library_items(
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .ok_or_else(|| ApiError::bad_request("Invalid Audiobookshelf filter."))?;
         visible.retain(|book| match group {
-            "authors" => book.author.as_deref() == Some(value.as_str()),
+            "authors" => book
+                .author
+                .as_deref()
+                .is_some_and(|name| author_matches(name, &value)),
             "series" => book.metadata.series.as_deref() == Some(value.as_str()),
             "narrators" => book.narrator.as_deref() == Some(value.as_str()),
             "genres" => book.genres.iter().any(|genre| genre == &value),
@@ -731,7 +734,13 @@ pub(crate) async fn abs_filter_data(
         tags.extend(book.tags.into_iter().map(|tag| tag.name));
     }
     Ok(Json(AbsFilterData {
-        authors: named_entities(authors),
+        authors: authors
+            .into_iter()
+            .map(|name| AbsNamedEntity {
+                id: author_id(&name),
+                name,
+            })
+            .collect(),
         genres: genres.into_iter().collect(),
         tags: tags.into_iter().collect(),
         series: named_entities(series),
@@ -740,8 +749,25 @@ pub(crate) async fn abs_filter_data(
     }))
 }
 
-/// Audiobookshelf models authors and series as entities with their own ids;
-/// OperaLibre only has names, so the name doubles as the id.
+// Foundation appendingPathComponent preserves slashes. Reserve a prefix so
+// encoded names cannot collide with literal names that resemble their IDs.
+fn author_id(name: &str) -> String {
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.starts_with('~')
+        || name.chars().any(|c| c.is_control() || "/%?#\\".contains(c))
+    {
+        format!("~{}", general_purpose::URL_SAFE_NO_PAD.encode(name))
+    } else {
+        name.to_owned()
+    }
+}
+
+fn author_matches(name: &str, id: &str) -> bool {
+    author_id(name) == id || (!id.starts_with('~') && name == id)
+}
+
+/// Series retain their existing name-based identifiers.
 fn named_entities(names: BTreeSet<String>) -> Vec<AbsNamedEntity> {
     names
         .into_iter()
@@ -824,14 +850,18 @@ pub(crate) async fn abs_author(
     let books = books_with_progress(&state, &auth).await?;
     let books: Vec<_> = books
         .into_iter()
-        .filter(|book| book.author.as_deref() == Some(author_id.as_str()))
+        .filter(|book| {
+            book.author
+                .as_deref()
+                .is_some_and(|name| author_matches(name, &author_id))
+        })
         .collect();
     if books.is_empty() {
         return Err(ApiError::not_found("Author not found."));
     }
     Ok(Json(AbsAuthorResponse {
-        id: author_id.clone(),
-        name: author_id,
+        id: self::author_id(books[0].author.as_deref().unwrap()),
+        name: books[0].author.clone().unwrap(),
         library_items: books
             .iter()
             .map(|book| library_item(book, &media_token, false))

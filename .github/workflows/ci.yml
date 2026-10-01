@@ -223,3 +223,24 @@ jobs:
         run: |
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
+
+      - name: Install Rust for BookPlayer contract test
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache BookPlayer contract build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/server
+
+      - name: Check out pinned BookPlayer response models
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: TortugaPower/BookPlayer
+          ref: 154895b90b5b3612b77972923bd1d22fde49fffa
+          path: .bookplayer-contract
+          persist-credentials: false
+
+      - name: Test BookPlayer Foundation URLs and response decoding over HTTP
+        env:
+          BOOKPLAYER_CHECKOUT: ${{ github.workspace }}/.bookplayer-contract
+        run: cargo test --locked --manifest-path apps/server/Cargo.toml bookplayer_live_contract -- --ignored --nocapture
