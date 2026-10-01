@@ -185,6 +185,39 @@ test('browser Continue Reading keeps listed progress when the server fails and e
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
 });
 
+for (const native of [false, true]) {
+  test(`${native ? 'native' : 'web'} Play after paused Continue Reading accepts delayed server progress`, async ({ page }) => {
+    const fixtureBooks = library(2);
+    const book = fixtureBooks[1];
+    book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+    book.progress = { status: 'inProgress', bookPositionSeconds: 150, durationSeconds: 240,
+      remainingSeconds: 90, percentComplete: 62.5, updatedAt: '2026-09-26T12:00:00Z' };
+    await openShell(page, native, false, false, fixtureBooks);
+    await serveFixtureAudio(page);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const writes: Record<string, unknown>[] = [];
+    await page.route(`**/api/books/${book.id}/progress`, async route => {
+      if (route.request().method() === 'GET') await held;
+      else writes.push(route.request().postDataJSON());
+      await route.fulfill({ json: { bookId: book.id, trackId: book.tracks[1].id,
+        positionSeconds: 90, bookPositionSeconds: 210, durationSeconds: 240,
+        updatedAt: '2026-09-30T12:00:00Z' } });
+    });
+    await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+    const audio = page.locator('audio');
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(30);
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused && element.currentTime > 31)).toBe(true);
+    expect(writes).toEqual([]);
+    release();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(90);
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    expect(writes.every(write => Number(write.bookPositionSeconds) >= 210)).toBe(true);
+  });
+}
+
 test('an offline CarPlay restart survives native acknowledgement and reload', async ({ page }) => {
   await page.addInitScript(() => {
     const bridge = window as unknown as {
