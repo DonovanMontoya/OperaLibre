@@ -565,6 +565,7 @@ test('a fold that turns on the spread and shortens the stage lays the page out a
 });
 
 test('a spread change preserves a pending followed chapter', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('operalibre.readerFollow', '1'));
   await page.setViewportSize({ width: 951, height: 669 });
   await page.goto(`${url}test/reader-catch-up.html?immersive&chapter-sync&listening=1`);
   await expect(page.locator('.epub-loading')).toHaveCount(0);
@@ -742,8 +743,12 @@ test('portrait fold bounds the shelf, settings and administration to independent
   const quickPlay = (await page.locator('.book-quick-play').boundingBox())!;
   const detailPane = (await page.locator('.player-pane').boundingBox())!;
   expect(quickPlay.y + quickPlay.height).toBeLessThanOrEqual(detailPane.y + detailPane.height);
-  await expect(page.locator('.readalong-invite')).toBeVisible();
-  expect(await page.locator('.readalong-invite').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  const readAlong = page.getByRole('button', { name: `Open read along for ${books[0].title}`, exact: true });
+  await expect(readAlong).toBeVisible();
+  const readAlongBounds = (await readAlong.boundingBox())!;
+  const bookPaneBounds = (await page.locator('.player-pane').boundingBox())!;
+  expect(readAlongBounds.x).toBeGreaterThanOrEqual(bookPaneBounds.x);
+  expect(readAlongBounds.x + readAlongBounds.width).toBeLessThanOrEqual(bookPaneBounds.x + bookPaneBounds.width);
   await page.screenshot({ path: '../../output/duo-shelf-portrait.png' });
   await page.getByRole('button', { name: `Play ${books[0].title}`, exact: true }).click();
   await expect(page.locator('.native-now-playing')).toBeVisible();
@@ -856,8 +861,11 @@ test('portrait fold bounds the shelf, settings and administration to independent
   await page.screenshot({ path: '../../output/duo-admin-landscape.png' });
   await page.getByRole('button', { name: 'Shelf', exact: true }).click();
   await page.locator('.book-row').first().click();
-  await expect(page.locator('.readalong-invite')).toBeVisible();
-  expect(await page.locator('.readalong-invite').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await expect(readAlong).toBeVisible();
+  const landscapeReadAlong = (await readAlong.boundingBox())!;
+  const landscapeBookPane = (await page.locator('.player-pane').boundingBox())!;
+  expect(landscapeReadAlong.x).toBeGreaterThanOrEqual(landscapeBookPane.x);
+  expect(landscapeReadAlong.x + landscapeReadAlong.width).toBeLessThanOrEqual(landscapeBookPane.x + landscapeBookPane.width);
   await expect(page.getByRole('button', { name: 'Back to Library', exact: true })).toBeVisible();
   await page.screenshot({ path: '../../output/duo-shelf-landscape.png' });
   await page.getByRole('button', { name: 'Back to Library', exact: true }).click();

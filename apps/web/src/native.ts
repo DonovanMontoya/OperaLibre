@@ -14,7 +14,7 @@ let nativeViewportSyncInstalled = false;
 function installNativeViewportSync(root: HTMLElement): void {
   const viewport = window.visualViewport;
   let animationFrame: number | null = null;
-  let orientationTimer: number | null = null;
+  let settleTimer: number | null = null;
 
   const sync = () => {
     animationFrame = null;
@@ -23,7 +23,7 @@ function installNativeViewportSync(root: HTMLElement): void {
     // open. Keep the layout viewport separately so long, scrollable sheets
     // can remain anchored to the screen instead of being resized into the
     // small area above the keyboard.
-    const layoutHeight = Math.max(1, Math.round(window.innerHeight));
+    const layoutHeight = Math.max(1, Math.round(root.clientHeight || window.innerHeight));
     root.style.setProperty("--native-viewport-height", `${visibleHeight}px`);
     root.style.setProperty("--native-viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
     root.style.setProperty("--native-layout-height", `${layoutHeight}px`);
@@ -37,14 +37,26 @@ function installNativeViewportSync(root: HTMLElement): void {
     animationFrame = window.requestAnimationFrame(sync);
   };
 
-  const handleOrientationChange = () => {
+  const handleViewportChange = () => {
     scheduleSync();
-    if (orientationTimer !== null) {
-      window.clearTimeout(orientationTimer);
+    if (settleTimer !== null) {
+      window.clearTimeout(settleTimer);
     }
-    // WKWebView can report the old visual viewport for the first resize event
-    // during rotation. Recheck after the transition has settled.
-    orientationTimer = window.setTimeout(scheduleSync, 300);
+    // WKWebView can dispatch resize before updating its visual viewport,
+    // including window resizing and switching Duo displays without rotation.
+    // That final viewport update does not always emit another resize event.
+    settleTimer = window.setTimeout(() => {
+      settleTimer = null;
+      scheduleSync();
+    }, 300);
+  };
+
+  const handleNativeLayoutChange = () => {
+    // The native view can finish resizing without WebKit delivering resize.
+    // Read now as well as after its visual viewport settles; animation frames
+    // may still be suspended during the handoff between device displays.
+    sync();
+    handleViewportChange();
   };
 
   sync();
@@ -52,10 +64,16 @@ function installNativeViewportSync(root: HTMLElement): void {
     return;
   }
   nativeViewportSyncInstalled = true;
-  window.addEventListener("resize", scheduleSync, { passive: true });
-  window.addEventListener("orientationchange", handleOrientationChange, { passive: true });
-  viewport?.addEventListener("resize", scheduleSync, { passive: true });
+  window.addEventListener("resize", handleViewportChange, { passive: true });
+  window.addEventListener("orientationchange", handleViewportChange, { passive: true });
+  window.addEventListener("pageshow", handleViewportChange, { passive: true });
+  window.addEventListener("operalibre:viewportchange", handleNativeLayoutChange);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) handleNativeLayoutChange();
+  });
+  viewport?.addEventListener("resize", handleViewportChange, { passive: true });
   viewport?.addEventListener("scroll", scheduleSync, { passive: true });
+  new ResizeObserver(handleViewportChange).observe(root);
 }
 
 /**

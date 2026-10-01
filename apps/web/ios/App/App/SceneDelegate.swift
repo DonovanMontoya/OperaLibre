@@ -31,6 +31,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        // Display changes may finish while the scene is backgrounded.
+        (window?.rootViewController as? NativeTabsController)?.contentDidLayout(force: true)
+    }
+
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         for context in URLContexts {
             openURL(context)

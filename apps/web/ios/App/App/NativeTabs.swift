@@ -12,7 +12,7 @@ private final class NativeTabContentHost: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        onLayout?()
+        view.setNeedsLayout()
     }
 }
 
@@ -114,6 +114,7 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     private var identifiers: [String] = []
     private var contentConstraints: [NSLayoutConstraint] = []
     private weak var layoutHost: UIViewController?
+    private var lastViewportSize: CGSize?
     private var navigationVisible = false
     private var configuring = false
     private var requestedSelection: String?
@@ -168,6 +169,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                     bar: UserDefaults.standard.string(forKey: Self.barKey))
         navigation.delegate = self
         if #available(iOS 18.0, *) { navigation.mode = .tabBar }
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) {
+                (self: NativeTabsController, _) in self.view.setNeedsLayout()
+            }
+        }
+        #endif
         addChild(content)
         content.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(content.view)
@@ -175,8 +183,8 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         contentConstraints = [
             content.view.topAnchor.constraint(equalTo: view.topAnchor),
             content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            content.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            content.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            content.view.leftAnchor.constraint(equalTo: view.leftAnchor),
+            content.view.rightAnchor.constraint(equalTo: view.rightAnchor)
         ]
         NSLayoutConstraint.activate(contentConstraints)
         tabsOverlay.frame = view.bounds
@@ -393,6 +401,34 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateContentInsets()
+        contentDidLayout()
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            // The final WebKit viewport can settle after UIKit lays out the
+            // same bounds. Wake its page again when the scene transition ends.
+            self?.contentDidLayout(force: true)
+        }
+    }
+
+    func contentDidLayout(force: Bool = false) {
+        guard let webView = content.webView else { return }
+        let size = webView.bounds.size
+        guard size.width > 0, size.height > 0, force || size != lastViewportSize else { return }
+        lastViewportSize = size
+        // WebKit can settle a scene resize without another DOM resize event.
+        webView.evaluateJavaScript("""
+            window.dispatchEvent(new CustomEvent('operalibre:viewportchange', {
+                detail: { width: \(size.width), height: \(size.height) }
+            }))
+            """)
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        view.setNeedsLayout()
     }
 
     private func layoutContent(in host: UIViewController) {
@@ -496,19 +532,21 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                     frame.size.width = view.bounds.width
                 }
             }
-        } else if !navigationVisible || navigation.view.isHidden,
-                  view.bounds.height > view.bounds.width, view.safeAreaInsets.right >= 60 {
-            // With the bar hidden (the reader, for one), the column is free
-            // from below the clock to the bottom of the screen. Only a
-            // portrait screen with a column this wide beside it has one; a
-            // phone's notch margin in landscape is not a column.
-            let column = CGRect(x: view.bounds.maxX - view.safeAreaInsets.right, y: 0,
-                                width: view.safeAreaInsets.right, height: view.bounds.height)
-            let bottom = view.bounds.maxY - view.safeAreaInsets.bottom
-            let top = railTop(in: column, above: bottom)
-            if bottom - top >= 200 {
-                rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
+        } else if !navigationVisible || navigation.view.isHidden {
+            #if compiler(>=6.4)
+            if #available(iOS 27.1, *),
+               let column = Self.hiddenRailColumn(in: view.bounds, insets: view.safeAreaInsets,
+                                                  edge: traitCollection.verticalBarEdge,
+                                                  direction: view.effectiveUserInterfaceLayoutDirection) {
+                let bottom = view.bounds.maxY - view.safeAreaInsets.bottom
+                let top = railTop(in: column, above: bottom)
+                // Reader transport and its secondary actions need 248pt,
+                // plus the web rail's 8pt padding at each end.
+                if bottom - top >= 264 {
+                    rail = CGRect(x: column.minX - frame.minX, y: top, width: column.width, height: bottom - top)
+                }
             }
+            #endif
         }
         if rail != sentRail, let webView = content.webView {
             sentRail = .some(rail)
@@ -542,6 +580,21 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             constraint.constant = inset
         }
     }
+
+    #if compiler(>=6.4)
+    @available(iOS 27.1, *)
+    static func hiddenRailColumn(in bounds: CGRect, insets: UIEdgeInsets,
+                                 edge: UIVerticalBarEdge, direction: UIUserInterfaceLayoutDirection) -> CGRect? {
+        // A notch can have a large inset too. Only the system's bar edge
+        // identifies a column available to the reader when its tabs are hidden.
+        guard edge == .leading || edge == .trailing else { return nil }
+        let left = (edge == .leading) == (direction == .leftToRight)
+        let width = left ? insets.left : insets.right
+        guard width >= 60 else { return nil }
+        return CGRect(x: left ? bounds.minX : bounds.maxX - width, y: bounds.minY,
+                      width: width, height: bounds.height)
+    }
+    #endif
 
     /// Where the free part of a side column starts: below the clock and
     /// anything else the system sets at the top of it.

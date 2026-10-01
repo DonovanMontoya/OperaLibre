@@ -1,6 +1,14 @@
 import Capacitor
 import UIKit
+import WebKit
 import XCTest
+
+@MainActor
+private final class ViewportPageLoad: NSObject, WKNavigationDelegate {
+    let loaded: XCTestExpectation
+    init(_ loaded: XCTestExpectation) { self.loaded = loaded }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded.fulfill() }
+}
 
 /// Compile alongside NativeTabs.swift. The isolated test bundle supplies a
 /// plain ViewController with an optional webView; no app plugins are needed here.
@@ -21,6 +29,94 @@ final class NativeTabsTests: XCTestCase {
             DispatchQueue.main.async { continuation.resume() }
         }
     }
+
+    func testNativeResizeReachesLoadedWebDocumentWithoutDuplicateLayoutEvents() async throws {
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 669, height: 951))
+        let loaded = expectation(description: "Viewport document loaded")
+        let observer = ViewportPageLoad(loaded)
+        webView.navigationDelegate = observer
+        webView.loadHTMLString("""
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <script>
+            window.sizes = [];
+            window.addEventListener('operalibre:viewportchange', event => {
+                window.sizes.push([event.detail.width, event.detail.height]);
+                document.documentElement.style.setProperty('--layout-height', event.detail.height + 'px');
+            });
+            </script>
+            """, baseURL: nil)
+        await fulfillment(of: [loaded], timeout: 10)
+        let content = ViewController()
+        content.view = webView
+        content.webView = webView
+        let controller = NativeTabsController(content: content)
+        controller.loadViewIfNeeded()
+        for size in [CGSize(width: 669, height: 951), CGSize(width: 466, height: 678),
+                     CGSize(width: 466, height: 678), CGSize(width: 669, height: 951)] {
+            controller.view.frame.size = size
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
+        }
+        let sizes = try await webView.evaluateJavaScript("JSON.stringify(window.sizes)") as? String
+        XCTAssertEqual(sizes, "[[669,951],[466,678],[669,951]]")
+        let height = try await webView.evaluateJavaScript(
+            "document.documentElement.style.getPropertyValue('--layout-height')") as? String
+        XCTAssertEqual(height, "951px")
+        controller.contentDidLayout(force: true)
+        let settledSizes = try await webView.evaluateJavaScript("JSON.stringify(window.sizes)") as? String
+        XCTAssertEqual(settledSizes, "[[669,951],[466,678],[669,951],[669,951]]")
+        _ = observer
+    }
+
+    func testWebViewFollowsRepeatedResizesWithoutRotationOrReplacement() throws {
+        let content = ViewController()
+        let webView = WKWebView()
+        content.view = webView
+        let controller = NativeTabsController(content: content)
+        controller.loadViewIfNeeded()
+        configure(controller)
+        for size in [CGSize(width: 740, height: 960), CGSize(width: 320, height: 500),
+                     CGSize(width: 740, height: 960), CGSize(width: 1000, height: 600)] {
+            controller.view.frame = CGRect(origin: .zero, size: size)
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
+            XCTAssertTrue(content.view === webView)
+            XCTAssertEqual(webView.frame.height, size.height, accuracy: 0.5)
+            XCTAssertEqual(webView.frame.width, size.width, accuracy: 0.5)
+            controller.hide()
+            controller.view.layoutIfNeeded()
+            XCTAssertEqual(webView.frame, controller.view.bounds)
+            configure(controller)
+        }
+    }
+
+    #if compiler(>=6.4)
+    @available(iOS 27.1, *)
+    func testHiddenReaderRailFollowsPhysicalEdgeAndLayoutDirection() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        let insets = UIEdgeInsets(top: 24, left: 90, bottom: 20, right: 110)
+        for direction in [UIUserInterfaceLayoutDirection.leftToRight, .rightToLeft] {
+            let leftEdge: UIVerticalBarEdge = direction == .leftToRight ? .leading : .trailing
+            let rightEdge: UIVerticalBarEdge = direction == .leftToRight ? .trailing : .leading
+            XCTAssertEqual(NativeTabsController.hiddenRailColumn(in: bounds, insets: insets,
+                                                                 edge: leftEdge, direction: direction),
+                           CGRect(x: 0, y: 0, width: 90, height: 600))
+            XCTAssertEqual(NativeTabsController.hiddenRailColumn(in: bounds, insets: insets,
+                                                                 edge: rightEdge, direction: direction),
+                           CGRect(x: 890, y: 0, width: 110, height: 600))
+        }
+    }
+
+    @available(iOS 27.1, *)
+    func testHiddenReaderRailDoesNotMistakeNotchOrUnresolvedGeometryForBar() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        XCTAssertNil(NativeTabsController.hiddenRailColumn(in: bounds,
+            insets: UIEdgeInsets(top: 0, left: 80, bottom: 20, right: 80),
+            edge: .unspecified, direction: .leftToRight))
+        XCTAssertNil(NativeTabsController.hiddenRailColumn(in: bounds, insets: .zero,
+            edge: .trailing, direction: .leftToRight))
+    }
+    #endif
 
     func testStartupSelectionIsConfiguredBeforeBarIsAttached() async throws {
         let controller = NativeTabsController(content: ViewController())
