@@ -1345,6 +1345,63 @@ pub(crate) fn resolve_library_identities(
         }
     };
 
+    // The guards the weakest tiers share. The identity's current digest must
+    // be nowhere among the groups still unplaced, none of its remembered
+    // digests may appear anywhere in this scan, and it must have been seen
+    // recently enough that its path is still evidence rather than history.
+    let path_tier_is_open = |identity: &BookIdentity, unclaimed: &HashSet<&str>| {
+        if current_is_present(identity, unclaimed)
+            || identity
+                .fingerprint_history
+                .iter()
+                .any(|candidate| scanned_fingerprints.contains(candidate.as_str()))
+        {
+            return false;
+        }
+        identity.last_seen_scan != 0
+            && scan.saturating_sub(identity.last_seen_scan) <= PATH_TIER_STALE_AFTER_SCANS
+    };
+
+    // For pass 6: the positions in `identity.tracks` of tracks the scanner
+    // ignores and no scanned file accounts for — or `None` when the group does
+    // not qualify. A group qualifies only when it has tracks, each of them is
+    // matched to a distinct stored track by fingerprint and remembered path,
+    // and at least one stored track remains whose latest path is an ignored
+    // name.
+    let ignored_track_indexes = |identity: &BookIdentity, group: &ScannedGroup<'_>| {
+        if group.track_aliases.is_empty()
+            || group.track_aliases.len() != group.track_fingerprints.len()
+        {
+            return None;
+        }
+        let mut matched: HashSet<usize> = HashSet::new();
+        for (alias, fingerprint) in group.track_aliases.iter().zip(group.track_fingerprints) {
+            let (index, _) = identity.tracks.iter().enumerate().find(|(index, track)| {
+                !matched.contains(index)
+                    && track.fingerprint == *fingerprint
+                    && track
+                        .paths
+                        .iter()
+                        .any(|path| path.root_id == group.root_id && path.relative_path == *alias)
+            })?;
+            matched.insert(index);
+        }
+        let ignored: Vec<usize> = identity
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(index, track)| {
+                !matched.contains(index)
+                    && track.paths.last().is_some_and(|path| {
+                        let name = path.relative_path.rsplit('/').next().unwrap_or_default();
+                        is_ignored_library_entry(name, false)
+                    })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        (!ignored.is_empty()).then_some(ignored)
+    };
+
     // One tier: collect each unclaimed group's candidate identities under this
     // tier's eligibility rule, then let the shared bidirectional claim decide.
     let claim_pass =
@@ -1415,24 +1472,52 @@ pub(crate) fn resolve_library_identities(
     // must still match, which is what separates a remux from a replacement.
     let unclaimed_p5 = unclaimed_fingerprints(groups, &claimed_by);
     claim_pass(&mut claimed_by, &mut used, &|identity, group| {
-        if !path_matches(identity, group) {
-            return false;
-        }
-        if current_is_present(identity, &unclaimed_p5)
-            || identity
-                .fingerprint_history
-                .iter()
-                .any(|candidate| scanned_fingerprints.contains(candidate.as_str()))
-        {
-            return false;
-        }
-        if identity.last_seen_scan == 0
-            || scan.saturating_sub(identity.last_seen_scan) > PATH_TIER_STALE_AFTER_SCANS
-        {
-            return false;
-        }
-        layout_matches(identity, group)
+        path_matches(identity, group)
+            && path_tier_is_open(identity, &unclaimed_p5)
+            && layout_matches(identity, group)
     });
+
+    // Pass 6 — the remembered path, for a book that used to be catalogued with
+    // tracks the scanner now ignores. Before hidden files were skipped, an
+    // AppleDouble sidecar such as `._01.mp3` was catalogued as a track, so the
+    // book's digest covered it; with the sidecars gone every digest changes and
+    // the track count no longer agrees, which closes every pass above and
+    // would strand the listener's position on the old id.
+    //
+    // This is deliberately not a loosening of pass 5. It applies the same path
+    // and liveness guards, and only to an identity that remembers a track whose
+    // latest path is an ignored name that no scanned file accounts for. It also
+    // demands that every scanned track is already one of the identity's own,
+    // with the same fingerprint at the same remembered path, so the real files
+    // are provably the ones the listener already had. A book that gained or
+    // lost a track for any other reason, or whose content changed, stays
+    // closed.
+    let unclaimed_p6 = unclaimed_fingerprints(groups, &claimed_by);
+    let before_pass_6 = claimed_by.clone();
+    claim_pass(&mut claimed_by, &mut used, &|identity, group| {
+        path_matches(identity, group)
+            && path_tier_is_open(identity, &unclaimed_p6)
+            && ignored_track_indexes(identity, group).is_some()
+    });
+    // Retire the ignored tracks now, so the stored track list matches the
+    // book and this pass cannot fire for the identity again. The surviving
+    // tracks keep their entries, and with them their original track ids.
+    let retirements: Vec<(usize, Vec<usize>)> = claimed_by
+        .iter()
+        .zip(&before_pass_6)
+        .zip(groups)
+        .filter(|((now, before), _)| now.is_some() && before.is_none())
+        .filter_map(|((now, _), group)| {
+            let index = (*now)?;
+            Some((index, ignored_track_indexes(&store.books[index], group)?))
+        })
+        .collect();
+    for (index, mut ignored) in retirements {
+        ignored.sort_unstable_by(|a, b| b.cmp(a));
+        for track in ignored {
+            store.books[index].tracks.remove(track);
+        }
+    }
 
     // Anything still unclaimed is a book this library has not seen before, and
     // gets a fresh opaque ID. It must never be derived from the path: a
@@ -2578,6 +2663,9 @@ impl DirectoryFiles {
                 .into_iter()
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_type().is_file())
+                .filter(|entry| {
+                    !is_ignored_library_entry(&entry.file_name().to_string_lossy(), false)
+                })
                 .map(walkdir::DirEntry::into_path)
                 .collect()
         })
@@ -2612,17 +2700,48 @@ pub(crate) struct AudioWalk {
     pub(crate) errors: Vec<String>,
 }
 
+/// Folders that file managers and NAS firmware create inside a share to keep
+/// their own bookkeeping. Compared ASCII-case-insensitively.
+const IGNORED_DIRECTORY_NAMES: &[&str] = &[
+    "#recycle",
+    "@Recycle",
+    "@eaDir",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "lost+found",
+];
+
+/// Whether a file or folder name inside the library is invisible to scans.
+///
+/// Hidden names are skipped, for files and folders alike: a name starting with
+/// one dot. That covers the AppleDouble `._Track.mp3` sidecars macOS writes
+/// beside every file on SMB and FAT volumes (which carry an audio extension
+/// but no audio), trash and snapshot folders such as `.Trash-1000` and
+/// `.stversions`, and this server's own `.operalibre-upload-*` staging folders.
+/// A name starting with two dots is deliberately not hidden: real titles begin
+/// with an ellipsis ("...And Then There Were None").
+///
+/// Folders named for a recycle bin or NAS metadata store are skipped too: what
+/// they hold is deleted or generated copies, not books. The library root is
+/// never judged by its own name; callers only pass names found inside it.
+pub(crate) fn is_ignored_library_entry(name: &str, is_dir: bool) -> bool {
+    (name.starts_with('.') && !name.starts_with(".."))
+        || (is_dir
+            && IGNORED_DIRECTORY_NAMES
+                .iter()
+                .any(|ignored| ignored.eq_ignore_ascii_case(name)))
+}
+
 pub(crate) fn walk_audio_files_checked(root: &FsPath) -> AudioWalk {
     let mut errors = Vec::new();
     let mut files = WalkDir::new(root)
         .into_iter()
         .filter_entry(|entry| {
             entry.depth() == 0
-                || !entry.file_type().is_dir()
-                || !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(UPLOAD_STAGING_PREFIX)
+                || !is_ignored_library_entry(
+                    &entry.file_name().to_string_lossy(),
+                    entry.file_type().is_dir(),
+                )
         })
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
