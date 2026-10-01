@@ -1768,6 +1768,7 @@ exit 0
         download_temp_dir: data_dir.join("download-temp"),
         min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
         server_id: super::Arc::from("test-server-identity"),
+        server_proof_keys: super::Arc::new(super::ServerProofKeys::default()),
         library_root: library_root.clone(),
         library_identities_file: data_dir.join("library-identities.json"),
         progress: super::Arc::new(super::ProgressStore::new(database.clone())),

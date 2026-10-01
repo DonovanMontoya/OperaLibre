@@ -23,7 +23,7 @@ The web app obtains a session token and a separate scoped media token via `POST 
 | `GET` | `/api/auth/status` | Reports whether first-run setup is needed, whether the server requires a bootstrap token (`proxy` mode only, same for every client), and whether this client must set up locally. |
 | `POST` | `/api/auth/setup` | One-time owner creation. Every `proxy` client must send the current `setupToken`; `lan` setup is open to the trusted network, and `local` mode rejects remote setup. |
 | `POST` | `/api/auth/login` | Exchange username + password for session and scoped media tokens. |
-| `POST` | `/api/auth/server-proof` | Lets a signed-in client confirm that an address reaches the server holding its session without sending the token there. Takes `{ "session", "nonce" }` and returns `serverId` and a `proof` only that server can compute; the official apps use it before switching to a saved alternate address. |
+| `POST` | `/api/auth/server-proof` | Lets a signed-in client confirm that an address reaches the server holding its session without sending the token there. Takes `{ "session", "nonce" }` and returns `serverId` and a `proof` only that server can compute, for sessions that have authenticated since the server last started; the official apps use it before switching to a saved alternate address. |
 
 ### Authenticated endpoints
 

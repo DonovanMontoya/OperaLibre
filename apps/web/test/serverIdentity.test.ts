@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { readServerId, requireSameServer, serverProofChallenge } from "../src/serverIdentity.ts";
 
@@ -33,11 +34,12 @@ test("responses without a usable identity report none", () => {
 });
 
 test("the session proof matches the vector the server computes", async () => {
-  // Asserted against the same values in the server's http_tests.rs.
-  assert.deepEqual(await serverProofChallenge("test-session-token", "test-nonce-0123456789"), {
-    session: "aKpRfYL6Knt8li3184WZQ4lYuam6Hp8DxvM0wNKY594",
-    nonce: "test-nonce-0123456789",
-    expected: "iD88xCkhCz-jVCJISrIAXi9U9TVIjzd3x9fM-Woi-pk"
+  // The server's http_tests.rs asserts the same fixture.
+  const vector = JSON.parse(readFileSync(new URL("../../../script/fixtures/server-proof.json", import.meta.url), "utf8"));
+  assert.deepEqual(await serverProofChallenge(vector.token, vector.nonce), {
+    session: vector.session,
+    nonce: vector.nonce,
+    expected: vector.proof
   });
 });
 
