@@ -109,8 +109,6 @@ export function usePlaybackRestore({
     const restoreVersion = progressMutationVersion.current;
     const restoreActionVersion = playbackActionVersionRef.current;
     const restoreCancelGeneration = playCancelGenerationRef.current;
-    // Restoring places the player afresh; an earlier refused position is moot.
-    overruledSaveRef.current.delete(playbackBook.id);
     if (armResumeAutoplay) resumeReconciliationBookIdRef.current = playbackBook.id;
     const applyProgress = (progress: Progress | null, canonical = false) => {
       if (
@@ -123,10 +121,13 @@ export function usePlaybackRestore({
       const location = resolveProgressLocation(playbackBook.tracks, progress);
       setCurrentTrackId(location?.trackId ?? null);
       setPendingSeek(location);
-      if (progress && canonical && playbackBook.source !== "device") {
+      if (progress && canonical && location && playbackBook.source !== "device") {
         // The canonical target now owns the pending seek, so new playback
         // may safely use its revision, including after a rejected save.
         storeCanonicalServerProgress(playbackBook, { ...progress, accepted: undefined });
+        // The rejected playhead has been replaced. Keeping its marker would
+        // let a later foreground return discard new offline listening.
+        overruledSaveRef.current.delete(playbackBook.id);
       }
       // Show the restored time immediately; the media element seeks to it
       // once metadata loads.
