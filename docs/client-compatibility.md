@@ -46,6 +46,8 @@ The test passed against the revision above. The server suite also passed: 369 te
 
 Remaining display limitations include missing original library timestamps (so recent sorting cannot reflect actual addition dates), ignored server-side sort parameters, absent total sizes, and zero placeholder file sizes. Existing clients may show unknown sizes or an unexpected ordering.
 
+Author IDs advertised by item metadata and filter data are safe to append as one URL path component, including for names such as `AC/DC`. Use the advertised ID for author details and author filters; the display name remains unchanged. Ordinary names retain their existing IDs. Properly URL-escaped legacy names remain accepted unless they begin with the reserved `~` prefix; refresh those cached IDs from filter data.
+
 ## Other Audiobookshelf clients
 
 The [official mobile client revision 7292e36](https://github.com/advplyr/audiobookshelf-app/tree/7292e367d21deb4bfb364d72081e2a5bbb86b709) uses routes beyond the current connector:

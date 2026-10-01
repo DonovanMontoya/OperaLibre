@@ -19,8 +19,8 @@ func checkContract() async throws {
   let base = URL(string: CommandLine.arguments[1])!
   var token: String?
   func request(_ path: String, method: String = "GET", body: [String: Any]? = nil,
-               range: String? = nil) async throws -> (Data, HTTPURLResponse) {
-    let url = URL(string: base.absoluteString + "/" + path)!
+               range: String? = nil, url: URL? = nil) async throws -> (Data, HTTPURLResponse) {
+    let url = url ?? URL(string: base.absoluteString + "/" + path)!
     var request = URLRequest(url: url)
     request.httpMethod = method
     if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -64,6 +64,23 @@ func checkContract() async throws {
   try require(details.media.tags == ["Favorite"], "detail tags")
   let filters = try await get("api/libraries/\(id)/filterdata", as: AudiobookShelfLibraryFilterData.self)
   try require(filters.series.first?.id == item.media.metadata.series?.first?.id, "stable series ID")
+  try require(Set(filters.authors.map(\.name)) == Set(["AC/DC", "~QUMvREM"]), "author fixtures")
+  try require(Set(filters.authors.map(\.id)).count == 2, "distinct author IDs")
+  for author in filters.authors {
+    // Match BookPlayer's actual Foundation URL construction, including query.
+    var components = URLComponents(url: base.appendingPathComponent("api")
+      .appendingPathComponent("authors").appendingPathComponent(author.id), resolvingAgainstBaseURL: false)!
+    components.queryItems = [URLQueryItem(name: "include", value: "items")]
+    let (data, response) = try await request("", url: components.url!)
+    try require(response.statusCode == 200, "author URL \(components.url!) returned \(response.statusCode)")
+    let detail = try JSONDecoder().decode(AudiobookShelfAuthorWithItemsResponse.self, from: data)
+    try require(detail.id == author.id && detail.name == author.name, "author identity")
+    try require(detail.libraryItems?.count == 1, "author books stay separate")
+    try require(detail.libraryItems?.first?.media.metadata.authors?.first?.id == author.id, "nested author ID")
+    let value = Data(author.id.utf8).base64EncodedString().addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+    let selected = try await get("api/libraries/\(id)/items?filter=authors.\(value)", as: AudiobookShelfItemsResponse.self)
+    try require(selected.total == 1 && selected.results.first?.id == detail.libraryItems?.first?.id, "author filter")
+  }
   let encoded = Data(filters.series[0].id.utf8).base64EncodedString().addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
   let filtered = try await get("api/libraries/\(id)/items?filter=series.\(encoded)", as: AudiobookShelfItemsResponse.self)
   try require(filtered.total == 2, "series filter")
@@ -120,7 +137,7 @@ func checkContract() async throws {
   try require(logout.statusCode == 200, "logout")
   let (_, revoked) = try await request("api/libraries")
   try require(revoked.statusCode == 401, "token revocation")
-  print("PASS: upstream BookPlayer decoders; discovery, login, libraries, pagination, metadata, filters, search, collections, progress, ZIP download, logout; OPDS XML, token navigation and ranged audio download")
+  print("PASS: upstream BookPlayer decoders; discovery, login, libraries, pagination, metadata, filters, Foundation author URLs and identity collisions, search, collections, progress, ZIP download, logout; OPDS XML, token navigation and ranged audio download")
 }
 
 Task {

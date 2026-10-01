@@ -339,6 +339,8 @@ Compatibility is client-specific. BookPlayer response decoding and its browse/do
 | `GET`/`PATCH` | `/abs/api/me/progress/{item_id}` | Read or write media progress; synced with native OperaLibre progress. |
 | `GET` | `/abs/api/items/{item_id}/download` | Download the item archive. |
 
+Author IDs advertised by item metadata and filter data are safe to append as one URL path component, including for names such as `AC/DC`. Use the advertised ID for author details and author filters; the display name remains unchanged. Ordinary names retain their existing IDs. Properly URL-escaped legacy names remain accepted unless they begin with the reserved `~` prefix; refresh those cached IDs from filter data.
+
 Audiobookshelf clients do not send OperaLibre's seek flags. Fresh backwards progress updates of less than 30 minutes are treated as rewinds, including small jumps into the first minute. Stale updates and near-zero writes that erase more than 5 minutes of progress are still refused.
 
 Cover and stream URLs are also mirrored at `/abs/api/books/{book_id}/cover` and `/abs/api/books/{book_id}/tracks/{track_id}/stream` (media token accepted), because some clients resolve content URLs against the `/abs` base while others resolve against the origin. Book-access restrictions apply exactly as on the native API.
