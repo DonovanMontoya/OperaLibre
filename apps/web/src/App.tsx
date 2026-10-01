@@ -156,6 +156,7 @@ import { useOfflineDownloads } from "./useOfflineDownloads";
 import { useBookCompletion } from "./useBookCompletion";
 import { useMediaSession } from "./useMediaSession";
 import { useStartupReveal } from "./useStartupReveal";
+import { NativeLaunchCover } from "./LaunchCover";
 import { useNativeChrome } from "./useNativeChrome";
 import { renderUserMenu } from "./UserMenu";
 import { describeSyncJob } from "./syncJobProgress";
@@ -220,14 +221,6 @@ function initialAuthState(): AuthState {
   return cachedUser
     ? { phase: "ready", user: cachedUser }
     : { phase: "loading" };
-}
-
-function NativeLaunchPlaceholder() {
-  return (
-    <div className="native-launch-placeholder" role="status" aria-label="Opening OperaLibre">
-      <span>OperaLibre</span>
-    </div>
-  );
 }
 
 export default function App() {
@@ -347,7 +340,7 @@ export default function App() {
   }, []);
 
   if (authState.phase === "loading") {
-    if (Capacitor.isNativePlatform()) return <NativeLaunchPlaceholder />;
+    if (Capacitor.isNativePlatform()) return <NativeLaunchCover ready={false} />;
     return (
       <main className="auth-shell startup-shell">
         <div className="startup-loader" role="status" aria-live="polite" aria-label="Opening OperaLibre">
@@ -599,6 +592,10 @@ function MainApp({
   } = useStartupReveal({
     native
   });
+  // The cover can outlast the restore by the rest of its intro. UIKit's tab
+  // bar sits above the page, so it waits for the cover rather than the restore.
+  const [launchCoverLifted, setLaunchCoverLifted] = useState(!native);
+  const liftLaunchCover = useCallback(() => setLaunchCoverLifted(true), []);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(() =>
@@ -1875,6 +1872,7 @@ function MainApp({
 
   const nativeChrome = useNativeChrome({
     startupViewReady,
+    launchCoverLifted,
     appearanceMode,
     brokenLibationAccounts,
     capabilities,
@@ -1896,6 +1894,7 @@ function MainApp({
   const {
     hasMiniPlayer,
     nativeTabsReady,
+    nativeTabsSettled,
     showLedgerTab
   } = nativeChrome;
   const shelfPull = usePullToRefresh(native, refreshShelf);
@@ -2003,7 +2002,7 @@ function MainApp({
           : `shell web-shell player-view-${nativePlayerView}`
       }
     >
-      {!startupViewReady ? <NativeLaunchPlaceholder /> : null}
+      {native ? <NativeLaunchCover ready={startupViewReady} settled={nativeTabsSettled} onLift={liftLaunchCover} /> : null}
       {native ? <div className="ios-status-veil" aria-hidden="true" /> : null}
       {native && ipad && (nativeTab === "shelf" || nativeTab === "reading") && shelfLayout === "player" ? (
         <button
@@ -2496,7 +2495,7 @@ function MainApp({
         />
       ) : null}
 
-      {native && startupViewReady && !nativeTabsReady ? (
+      {native && startupViewReady && launchCoverLifted && !nativeTabsReady ? (
         <nav className="spine-tabs" aria-label="Primary">
           <button
             type="button"

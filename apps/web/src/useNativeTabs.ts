@@ -31,22 +31,27 @@ function afterViewportSettles(): Promise<void> {
 /**
  * `shown` follows the bar once UIKit has applied it and the web view has its
  * new size, so a full-screen layer can mount or leave at its final size.
+ * `concealed` lays the bar out without drawing it, and `settled` reports that
+ * the page has the size the requested bar leaves it, so the launch cover can
+ * lift over a page that is already in place.
  */
 export function useNativeTabs(
   state: NativeTabsState,
-  onSelect: (tab: NativeTab) => void
-): { ready: boolean; shown: boolean } {
+  onSelect: (tab: NativeTab) => void,
+  concealed = false
+): { ready: boolean; shown: boolean; settled: boolean } {
   const available = Capacitor.getPlatform() === "ios" && Capacitor.isPluginAvailable("NativeTabs");
   const [ready, setReady] = useState(false);
   const [shown, setShown] = useState(false);
   const shownRef = useRef(false);
   const [listening, setListening] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const callback = useRef(onSelect);
   callback.current = onSelect;
   // Sheets animate inside a stable viewport. Resizing it by removing the
   // native bar mid-animation makes the reader and sheet jump between layouts.
-  const serialized = JSON.stringify({ ...state, blocked: modalOpen });
+  const serialized = JSON.stringify({ ...state, blocked: modalOpen || concealed });
 
   useEffect(() => {
     if (!available) return;
@@ -55,7 +60,10 @@ export function useNativeTabs(
       if (!disposed) callback.current(id);
     });
     void listener.then(() => { if (!disposed) setListening(true); }).catch(() => {
-      if (!disposed) setListening(false);
+      if (!disposed) {
+        setListening(false);
+        setFailed(true);
+      }
     });
     return () => {
       disposed = true;
@@ -87,6 +95,7 @@ export function useNativeTabs(
         if (!disposed) {
           document.documentElement.classList.add("uikit-tabs");
           setReady(true);
+          setFailed(false);
         }
         if (toggled) {
           // Native covers the page while the bar comes or goes. Lift the
@@ -106,10 +115,11 @@ export function useNativeTabs(
         if (!disposed) {
           document.documentElement.classList.remove("uikit-tabs");
           setReady(false);
+          setFailed(true);
         }
       }
     });
     return () => { disposed = true; };
   }, [available, listening, serialized]);
-  return { ready, shown };
+  return { ready, shown, settled: !available || failed || (ready && shown === state.visible) };
 }

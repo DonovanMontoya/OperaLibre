@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  LAUNCH_INTRO_MS,
   canResolveStartupNavigation,
   canRestoreCachedNativeSession,
+  LAUNCH_SETTLE_LIMIT_MS,
+  launchIntroRemainingMs,
   shouldAcceptNativeTrackChange,
   shouldRefreshMediaCredential,
   startupDestinationAfterLoad
@@ -74,4 +77,16 @@ test("later loads leave a resolved or revealed launch alone", () => {
   assert.equal(startupDestinationAfterLoad(true, false, "saved-book", "saved-book", true, true), null);
   assert.equal(startupDestinationAfterLoad(true, true, null, "finished-book", true, true), null);
   assert.equal(startupDestinationAfterLoad(false, true, "saved-book", "saved-book", true, true), null);
+});
+
+test("the launch cover waits out its intro once and never holds a later reveal", () => {
+  assert.equal(launchIntroRemainingMs(0, false), LAUNCH_INTRO_MS);
+  assert.equal(launchIntroRemainingMs(LAUNCH_INTRO_MS - 200, false), 200);
+  // A slow restore, or a cover shown again after signing in.
+  assert.equal(launchIntroRemainingMs(LAUNCH_INTRO_MS + 5000, false), 0);
+  assert.equal(launchIntroRemainingMs(0, true), 0);
+  // The native bar is still moving the page: hold, but never indefinitely.
+  assert.equal(launchIntroRemainingMs(LAUNCH_INTRO_MS + 5000, false, false), LAUNCH_SETTLE_LIMIT_MS);
+  assert.equal(launchIntroRemainingMs(0, false, false), LAUNCH_INTRO_MS);
+  assert.equal(launchIntroRemainingMs(0, true, false), LAUNCH_SETTLE_LIMIT_MS);
 });
