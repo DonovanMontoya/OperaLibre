@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
-import { library } from '../performance/fixtures';
+import { library, wav } from '../performance/fixtures';
 
 let server: ViteDevServer;
 let url: string;
@@ -48,6 +48,18 @@ async function openShell(page: Page, native: boolean, admin = false, inProgress 
   return { books, writes };
 }
 
+async function serveFixtureAudio(page: Page) {
+  const audio = wav();
+  await page.route('**/fixture-*.wav*', route => {
+    const range = route.request().headers().range?.match(/bytes=(\d+)-(\d*)/);
+    if (!range) return route.fulfill({ contentType: 'audio/wav', body: audio, headers: { 'Accept-Ranges': 'bytes' } });
+    const start = Number(range[1]);
+    const end = range[2] ? Number(range[2]) : audio.length - 1;
+    return route.fulfill({ status: 206, contentType: 'audio/wav', body: audio.subarray(start, end + 1),
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${audio.length}` } });
+  });
+}
+
 test('native audiobook upload preserves device books and paired local copies', async ({ page }) => {
   const serverBooks = library(6);
   const paired = { ...serverBooks[0], id: 'device-paired', source: 'device', deviceBookId: 'device-paired',
@@ -72,20 +84,139 @@ test('native audiobook upload preserves device books and paired local copies', a
   await expect(page.getByLabel('Imported from this device')).toBeVisible();
 });
 
-test('native phone shelf shows in-progress books and resumes playback', async ({ page }) => {
+test('native phone Continue Reading opens paused, plays explicitly, and remembers autoplay', async ({ page }) => {
   await page.setViewportSize({ width: 393, height: 852 });
-  const { books } = await openShell(page, true, false, true);
+  const fixtureBooks = library(6);
+  fixtureBooks[0].tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  const { books } = await openShell(page, true, false, true, fixtureBooks);
+  const book = books[0];
+  const progressWrites: unknown[] = [];
+  await serveFixtureAudio(page);
+  await page.route(`**/api/books/${book.id}/progress`, route => {
+    if (route.request().method() !== 'GET') progressWrites.push(route.request().postDataJSON());
+    return route.fulfill({ json: { bookId: book.id, trackId: book.tracks[1].id,
+      positionSeconds: 30, bookPositionSeconds: 150, durationSeconds: 240,
+      updatedAt: '2026-09-30T12:00:00Z' } });
+  });
+  await page.reload();
   const shelf = page.getByRole('region', { name: 'Continue Reading' });
-  await expect(shelf).toBeVisible();
-  const resume = shelf.getByRole('button', { name: `Continue reading ${books[0].title}` });
+  const resume = shelf.getByRole('button', { name: `Continue reading ${book.title}` });
+  const play = shelf.getByRole('button', { name: `Play ${book.title}`, exact: true });
   await expect(resume).toBeVisible();
   await expect(resume).toHaveCSS('border-radius', '14px');
   await expect(shelf.locator('.continue-reading-meter')).toHaveCSS('border-radius', '999px');
-  await expect(shelf.getByRole('button')).toHaveCount(1);
+  await expect(shelf.getByRole('button')).toHaveCount(2);
   await resume.click();
   await expect(page.locator('.native-shell')).toHaveClass(/tab-reading/);
   await expect(page.getByRole('region', { name: 'Now playing' })).toBeVisible();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(30);
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  expect(progressWrites).toEqual([]);
+  await page.getByRole('button', { name: 'Shelf', exact: true }).click();
+  await play.click();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+  await page.getByRole('button', { name: 'Shelf', exact: true }).click();
+  await resume.click();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.settings-shell').getByText('Cadence', { exact: true })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Games tab', exact: true })).toBeHidden();
+  await page.locator('.behavior-settings > summary').scrollIntoViewIfNeeded();
+  await page.locator('.behavior-settings > summary').click();
+  const toggle = page.getByRole('switch', { name: 'Play when opening Continue Reading' });
+  await expect(toggle).toBeVisible();
+  await page.locator('.behavior-settings > summary').click();
+  await expect(toggle).toBeHidden();
+  await page.locator('.behavior-settings > summary').focus();
+  await page.locator('.behavior-settings > summary').press('Enter');
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await page.reload();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('.behavior-settings > summary').click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Shelf', exact: true }).click();
+  await resume.click();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('.behavior-settings > summary').click();
+  await toggle.click();
+  await page.reload();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('.behavior-settings > summary').click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+
 });
+
+test('browser Continue Reading keeps listed progress when the server fails and exposes autoplay', async ({ page }) => {
+  const fixtureBooks = library(2);
+  const book = fixtureBooks[1];
+  book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+  book.progress = { status: 'inProgress', bookPositionSeconds: 150, durationSeconds: 240,
+    remainingSeconds: 90, percentComplete: 62.5, updatedAt: '2026-09-30T12:00:00Z' };
+  await openShell(page, false, false, false, fixtureBooks);
+  await serveFixtureAudio(page);
+  const progressWrites: unknown[] = [];
+  await page.route(`**/api/books/${book.id}/progress`, route => {
+    if (route.request().method() !== 'GET') progressWrites.push(route.request().postDataJSON());
+    return route.fulfill({ status: 503, json: { error: 'Server unavailable' } });
+  });
+  await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(30);
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  expect(progressWrites).toEqual([]);
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.locator('.behavior-settings > summary').click();
+  const toggle = page.getByRole('switch', { name: 'Play when opening Continue Reading' });
+  await expect(toggle).toBeVisible();
+  await page.locator('.behavior-settings > summary').click();
+  await expect(toggle).toBeHidden();
+  await page.locator('.behavior-settings > summary').focus();
+  await page.locator('.behavior-settings > summary').press('Enter');
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await page.reload();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.locator('.behavior-settings > summary').click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+});
+
+for (const native of [false, true]) {
+  test(`${native ? 'native' : 'web'} Play after paused Continue Reading accepts delayed server progress`, async ({ page }) => {
+    const fixtureBooks = library(2);
+    const book = fixtureBooks[1];
+    book.tracks.forEach(track => { track.streamUrl = `/fixture-${track.index}.wav`; });
+    book.progress = { status: 'inProgress', bookPositionSeconds: 150, durationSeconds: 240,
+      remainingSeconds: 90, percentComplete: 62.5, updatedAt: '2026-09-26T12:00:00Z' };
+    await openShell(page, native, false, false, fixtureBooks);
+    await serveFixtureAudio(page);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const writes: Record<string, unknown>[] = [];
+    await page.route(`**/api/books/${book.id}/progress`, async route => {
+      if (route.request().method() === 'GET') await held;
+      else writes.push(route.request().postDataJSON());
+      await route.fulfill({ json: { bookId: book.id, trackId: book.tracks[1].id,
+        positionSeconds: 90, bookPositionSeconds: 210, durationSeconds: 240,
+        updatedAt: '2026-09-30T12:00:00Z' } });
+    });
+    await page.getByRole('button', { name: `Continue reading ${book.title}` }).click();
+    const audio = page.locator('audio');
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(30);
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused && element.currentTime > 31)).toBe(true);
+    expect(writes).toEqual([]);
+    release();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(90);
+    await page.locator('.native-now-play').click();
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    expect(writes.every(write => Number(write.bookPositionSeconds) >= 210)).toBe(true);
+  });
+}
 
 test('an offline CarPlay restart survives native acknowledgement and reload', async ({ page }) => {
   await page.addInitScript(() => {

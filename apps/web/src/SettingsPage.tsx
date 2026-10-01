@@ -13,7 +13,7 @@ import {
   type DeviceDownloadActivity,
   DeviceLibrarySettings,
   DisplaySettings,
-  ExtrasSettings,
+  BehaviorSettings,
   ServerDownloadSettings
 } from "./SettingsCards";
 import { ProgressSharingCard } from "./ProgressSharing";
@@ -26,6 +26,8 @@ import type { ServerCapabilities } from "./serverCapabilities";
 export function SettingsPage({
   applyAdminLibraryChange,
   audibleManagement,
+  continueReadingAutoplay,
+  toggleContinueReadingAutoplay,
   audioRef,
   books,
   capabilities,
@@ -62,6 +64,8 @@ export function SettingsPage({
 }: {
   applyAdminLibraryChange: (nextBooks: Book[]) => void;
   audibleManagement: ReactNode;
+  continueReadingAutoplay: boolean;
+  toggleContinueReadingAutoplay: () => void;
   audioRef: RefObject<HTMLAudioElement | null>;
   books: Book[];
   capabilities: ServerCapabilities;
@@ -193,6 +197,16 @@ export function SettingsPage({
           updateAppearanceMode={updateAppearanceMode}
         /> : null}
 
+        <BehaviorSettings
+          continueReadingAutoplay={continueReadingAutoplay}
+          toggleContinueReadingAutoplay={toggleContinueReadingAutoplay}
+          followAggressiveness={followAggressiveness}
+          gamesEnabled={gamesEnabled}
+          sentenceFollowAvailable={sentenceFollowAvailable}
+          toggleGamesEnabled={toggleGamesEnabled}
+          updateFollowAggressiveness={updateFollowAggressiveness}
+        />
+
         {(libroAvailable || canBrowseLibation) ? <BookStoreSettings
           allAudibleAccounts={allAudibleAccounts}
           applyAdminLibraryChange={applyAdminLibraryChange}
@@ -222,14 +236,6 @@ export function SettingsPage({
           <strong>Device &amp; account</strong>
           <span><ArrowDown size={12} /> Scroll this half</span>
         </div>
-
-        <ExtrasSettings
-          followAggressiveness={followAggressiveness}
-          gamesEnabled={gamesEnabled}
-          sentenceFollowAvailable={sentenceFollowAvailable}
-          toggleGamesEnabled={toggleGamesEnabled}
-          updateFollowAggressiveness={updateFollowAggressiveness}
-        />
 
         {sharedProgressAvailable ? (
           <ProgressSharingCard
