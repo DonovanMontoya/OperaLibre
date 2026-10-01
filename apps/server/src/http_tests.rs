@@ -4436,6 +4436,174 @@ async fn audiobookshelf_metadata_uses_the_clients_nested_fields() {
     );
 }
 
+#[tokio::test]
+async fn audiobookshelf_author_ids_round_trip_without_path_or_identity_collisions() {
+    let names = [
+        "AC/DC",
+        "AC%2FDC",
+        "Test Author",
+        "Björk 東京",
+        "A?#% &+B",
+        "~QUMvREM",
+        "AC_DC",
+        ".",
+        "..",
+        "A/B/C",
+        "~",
+        "",
+    ];
+    let server = TestServer::start(names.len()).await;
+    let owner = server.setup_owner().await;
+    {
+        let mut library = server.state.library.write().await;
+        for (book, name) in library.books.iter_mut().zip(names) {
+            book.author = Some(name.into());
+        }
+    }
+    let facets = server
+        .get("/abs/api/libraries/operalibre/filterdata", &owner)
+        .await
+        .json();
+    let authors = facets["authors"].as_array().unwrap();
+    assert_eq!(authors.len(), names.len());
+    let slash_id = authors
+        .iter()
+        .find(|author| author["name"] == "AC/DC")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = server.router.clone();
+    let serving = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let response = reqwest::Client::new()
+        .get(format!(
+            "http://{address}/abs/api/authors/{slash_id}?include=items"
+        ))
+        .bearer_auth(&owner)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let detail: serde_json::Value = response.json().await.unwrap();
+    serving.abort();
+    assert_eq!(
+        status.as_u16(),
+        200,
+        "BookPlayer appends the advertised ID as a path component"
+    );
+    assert_eq!(detail["name"], "AC/DC");
+    let mut ids = std::collections::HashSet::new();
+    for author in authors {
+        let id = author["id"].as_str().unwrap();
+        let name = author["name"].as_str().unwrap();
+        assert!(ids.insert(id), "duplicate author ID: {id}");
+        assert!(
+            !id.contains('/'),
+            "author ID must be one path component: {id}"
+        );
+        assert!(!matches!(id, "" | "." | ".."));
+        let path_id: String = id
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect();
+        let uri = format!("/abs/api/authors/{path_id}?include=items");
+        let response = server.get(&uri, &owner).await;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{name}: {}",
+            response.text()
+        );
+        let detail = response.json();
+        assert_eq!(detail["id"], id);
+        assert_eq!(detail["name"], name);
+        assert_eq!(detail["libraryItems"].as_array().unwrap().len(), 1);
+        let item = &detail["libraryItems"][0];
+        assert_eq!(item["media"]["metadata"]["authors"][0], *author);
+        let encoded = general_purpose::STANDARD.encode(id);
+        let encoded: String = encoded
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect();
+        let filtered = server
+            .get(
+                &format!("/abs/api/libraries/operalibre/items?filter=authors.{encoded}"),
+                &owner,
+            )
+            .await
+            .json();
+        assert_eq!(filtered["total"], 1, "{name}");
+        assert_eq!(filtered["results"][0]["id"], item["id"]);
+        assert_eq!(
+            server.get(&uri, "invalid-token").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Old properly escaped names still work, with exactly one URL decode.
+    for (path, name) in [
+        ("AC%2FDC", "AC/DC"),
+        ("AC%252FDC", "AC%2FDC"),
+        ("Test%20Author", "Test Author"),
+    ] {
+        let result = server
+            .get(&format!("/abs/api/authors/{path}"), &owner)
+            .await;
+        assert_eq!(result.status, StatusCode::OK);
+        assert_eq!(result.json()["name"], name);
+    }
+    let reader = server.add_reader(&owner, "restricted-author-reader").await;
+    let me = server.get("/api/auth/me", &reader).await.json();
+    assert_eq!(
+        server
+            .send_json(
+                "PUT",
+                &format!("/api/users/{}/book-access", me["id"].as_str().unwrap()),
+                &owner,
+                serde_json::json!({"allowedBookIds": []})
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .get("/abs/api/authors/~QUMvREM", &reader)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server.get("/abs/api/authors/AC%2FDC", &reader).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        server
+            .get("/abs/api/libraries/operalibre/filterdata", &reader)
+            .await
+            .json()["authors"],
+        serde_json::json!([])
+    );
+    for path in ["AC/DC", "~invalid!", "~QUMvREM/image", "unknown"] {
+        assert_eq!(
+            server
+                .get(&format!("/abs/api/authors/{path}"), &owner)
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
 /// Run on macOS with a checkout of BookPlayer. The external harness compiles
 /// its upstream decoders, then talks to this real, isolated HTTP listener.
 #[tokio::test]
@@ -4446,7 +4614,8 @@ async fn bookplayer_live_contract() {
     server.setup_owner().await;
     {
         let mut library = server.state.library.write().await;
-        for book in &mut library.books {
+        for (book, author) in library.books.iter_mut().zip(["AC/DC", "~QUMvREM"]) {
+            book.author = Some(author.into());
             book.metadata.series = Some("Test Series".into());
             book.metadata.series_position = Some("2.5".into());
             book.tags = vec![BookTag {
