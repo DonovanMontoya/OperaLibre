@@ -26,6 +26,7 @@ function fixture() {
   const seeks: Array<{ trackId: string; positionSeconds: number }> = [];
   const canonical: Progress[] = [];
   const effects: Array<() => unknown> = [];
+  const cleanups: Array<() => void> = [];
   let complete!: () => void;
   const completed = new Promise<void>(resolve => { complete = resolve; });
   const window = { localStorage: storage, setTimeout(callback: () => void, delay: number) {
@@ -82,10 +83,14 @@ function fixture() {
   function checkpoint() { return reliability.readProgressCheckpoint(storage, "server", "reader", "book")!; }
   async function restore() {
     loadHook("usePlaybackRestore", dependencies)(options);
-    effects.forEach(effect => effect());
+    effects.forEach(effect => {
+      const cleanup = effect();
+      if (typeof cleanup === "function") cleanups.push(cleanup as () => void);
+    });
     await completed;
   }
-  return { server, local, book, writes, seeks, canonical, dependencies, options, restore, write, checkpoint, storage };
+  const cancelRestore = () => cleanups.forEach(cleanup => cleanup());
+  return { server, local, book, writes, seeks, canonical, dependencies, options, restore, cancelRestore, write, checkpoint, storage };
 }
 
 function controlsFor(f: ReturnType<typeof fixture>) {
@@ -459,6 +464,142 @@ for (const nativeAudio of [false, true]) {
     assert.equal(f.writes[2].options.intentionalSeek, true);
   });
 }
+
+// The library's reconnect replay and the restore both send the offline
+// checkpoint. Whichever answer lands first heals the journal; the second
+// response must still move the player to the server's position.
+for (const competingEdit of [false, true]) {
+  test(`restore ${competingEdit ? "keeps a pending edit made" : "adopts the server after the journal was healed"} while its replay was rejected`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
+      updatedAt: "1790769660000", accepted: false };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+      f.writes.push({ progress, options });
+      if (competingEdit) {
+        f.write(reliability.pendingProgress({ ...f.server, positionSeconds: 1090, bookPositionSeconds: 1090,
+          updatedAt: "2026-09-30T11:58:00Z" }, f.checkpoint()));
+      } else {
+        sync.storeCanonicalServerProgress(f.book, rejected, f.local);
+      }
+      return rejected;
+    };
+    await f.restore();
+    assert.equal(f.writes.length, 1);
+    if (competingEdit) {
+      assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1060);
+      assert.equal(f.checkpoint().syncStatus, "pending");
+      assert.equal(f.checkpoint().bookPositionSeconds, 1090);
+    } else {
+      assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1800);
+      assert.equal(f.checkpoint().syncStatus, "synced");
+      assert.equal(f.checkpoint().bookPositionSeconds, 1800);
+      // The first replay records the refusal; adopting its position consumes it.
+      assert.equal(f.options.overruledSaveRef.current.has("book"), false);
+    }
+  });
+}
+
+// The usual reconnect: the library replay is accepted and heals the journal
+// to the new revision at the same position, then the restore's duplicate
+// replay is refused for its stale base. Nothing was overruled, so no marker
+// may be left behind to make a later foreground return adopt the server.
+test("a duplicate replay refused after an accepted one leaves no overruled marker", async () => {
+  const f = fixture();
+  f.write(f.local);
+  const accepted = { ...f.server, positionSeconds: 1060, bookPositionSeconds: 1060, updatedAt: "1790769660000" };
+  const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+  f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+  f.dependencies["./api"].saveProgress = async (_book: string, progress: Progress, options: unknown) => {
+    f.writes.push({ progress, options });
+    f.write(reliability.syncedProgress(accepted, f.local.localUpdatedAt));
+    return { ...accepted, accepted: false };
+  };
+  await f.restore();
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.checkpoint().syncStatus, "synced");
+  assert.equal(f.checkpoint().bookPositionSeconds, 1060);
+  assert.equal(f.seeks[f.seeks.length - 1].positionSeconds, 1060);
+  assert.equal(f.options.overruledSaveRef.current.has("book"), false);
+});
+
+for (const nativeAudio of [false, true]) {
+  test(`a healed ${nativeAudio ? "native" : "web"} restore preserves subsequent offline listening on foreground return`, async () => {
+    const f = fixture();
+    f.options.nativeAudio = nativeAudio;
+    f.options.nativeForegroundSyncGateRef.current.shouldDeferServerAdoption = () => false;
+    f.write(f.local);
+    const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
+      updatedAt: "1790769660000", accepted: false };
+    let offline = false;
+    f.dependencies["./api"].saveProgress = async () => {
+      if (offline) throw new Error("offline");
+      sync.storeCanonicalServerProgress(f.book, rejected, f.local);
+      return rejected;
+    };
+    Object.assign(f.dependencies["./api"], { getFreshProgress: async () => ({ ...rejected, accepted: undefined }) });
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    f.options.setPendingSeek = (seek: any) => { f.seeks.push(seek); f.options.pendingSeekRef.current = seek; };
+    await f.restore();
+    assert.equal(f.options.pendingSeekRef.current.positionSeconds, 1800);
+
+    // The engine applies the restore, then listens further without a new seek.
+    f.options.pendingSeekRef.current = null;
+    f.options.playbackTouchedRef.current = true;
+    f.options.audioRef.current.currentTime = 2000;
+    offline = true;
+    await sync.persistProgress();
+    assert.equal(f.checkpoint().bookPositionSeconds, 2000);
+    assert.equal(f.checkpoint().syncStatus, "pending");
+    assert.equal(f.options.queuedProgressSaves.current.size, 0);
+    const seeksBeforeForeground = f.seeks.length;
+    offline = false;
+    Object.assign(globalThis, { document: { visibilityState: "visible" } });
+    await sync.foregroundProgressActionsRef.current.adoptNewerServerProgress();
+    assert.equal(f.seeks.length, seeksBeforeForeground);
+    assert.equal(f.checkpoint().bookPositionSeconds, 2000);
+    assert.equal(f.checkpoint().syncStatus, "pending");
+  });
+}
+
+for (const interruption of ["cancel", "action", "listening"] as const) {
+  test(`a healed restore interrupted by ${interruption} retains conflict protection`, async () => {
+    const f = fixture();
+    f.write(f.local);
+    const rejected = { ...f.server, positionSeconds: 1800, bookPositionSeconds: 1800,
+      updatedAt: "1790769660000", accepted: false };
+    const sync = loadHook("useProgressSync", f.dependencies)(f.options);
+    f.options.storeCanonicalServerProgress = sync.storeCanonicalServerProgress;
+    f.dependencies["./api"].saveProgress = async () => {
+      sync.storeCanonicalServerProgress(f.book, rejected, f.local);
+      if (interruption === "cancel") f.cancelRestore();
+      if (interruption === "action") f.options.playbackActionVersionRef.current += 1;
+      if (interruption === "listening") f.options.progressMutationVersion.current += 1;
+      return rejected;
+    };
+    await f.restore();
+    assert.equal(f.seeks.at(-1)?.positionSeconds, 1060);
+    assert.equal(f.checkpoint().baseUpdatedAt, f.server.updatedAt);
+    assert.equal(f.options.overruledSaveRef.current.has("book"), true);
+  });
+}
+
+test("cancelling restore before a position is staged preserves an earlier refusal", async () => {
+  const f = fixture();
+  f.write(f.local);
+  f.options.overruledSaveRef.current.set("book", f.local);
+  f.dependencies["./offline"].getCachedProgress = async () => {
+    await Promise.resolve();
+    f.cancelRestore();
+    return null;
+  };
+  await f.restore();
+  assert.equal(f.seeks.length, 0);
+  assert.equal(f.options.overruledSaveRef.current.get("book"), f.local);
+});
 
 test("newer native recovery retains the rejected base until canonical restore is staged", async () => {
   const f = fixture();
