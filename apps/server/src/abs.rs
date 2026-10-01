@@ -980,9 +980,9 @@ pub(crate) const ABS_INTENTIONAL_REWIND_MAX_SECONDS: f64 = 1800.0;
 
 /// Whether a backward Audiobookshelf write reads as a listener rewinding
 /// rather than a client that lost its place. Only a fresh write qualifies —
-/// a stale one is a replay whatever distance it covers — and only one that
-/// lands past the near-zero band, so a client that failed to restore and
-/// reports the start of the book still meets the suspect-reset rule.
+/// a stale one is a replay whatever distance it covers. A small rewind into
+/// the first minute is allowed; erasing substantial progress near the start
+/// still meets the suspect-reset rule.
 ///
 /// A client that sends no `lastUpdate` cannot be told fresh from stale and
 /// is taken at its word: the half-hour ceiling bounds what a replayed
@@ -999,7 +999,7 @@ pub(crate) fn abs_write_is_intentional_rewind(
     let regression = previous.book_position_seconds - book_position;
     if regression <= 0.0
         || regression >= ABS_INTENTIONAL_REWIND_MAX_SECONDS
-        || book_position < PROGRESS_NEAR_ZERO_SECONDS
+        || progress_write_is_suspect_reset(previous.book_position_seconds, book_position, false)
     {
         return false;
     }

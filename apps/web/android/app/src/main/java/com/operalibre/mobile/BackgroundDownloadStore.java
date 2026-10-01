@@ -35,22 +35,26 @@ final class BackgroundDownloadStore {
         preferences(context).edit().putString(PREFIX + jobId, job.toString()).apply();
     }
 
-    /**
-     * Writes only while the job still exists. Cancellation deletes the entry, so
-     * an unconditional write from a worker that has not noticed yet would
-     * resurrect the job and let a later relaunch restart it.
-     *
-     * @return false when the job was cancelled and nothing was written.
-     */
+    /** An old worker must never write into a replacement with the same book ID. */
     static synchronized boolean saveIfPresent(Context context, String jobId, JSONObject job) {
-        SharedPreferences preferences = preferences(context);
-        if (!preferences.contains(PREFIX + jobId)) return false;
-        preferences.edit().putString(PREFIX + jobId, job.toString()).apply();
+        if (!isCurrent(context, jobId, job)) return false;
+        preferences(context).edit().putString(PREFIX + jobId, job.toString()).apply();
         return true;
     }
 
-    static synchronized boolean contains(Context context, String jobId) {
-        return preferences(context).contains(PREFIX + jobId);
+    static synchronized boolean isCurrent(Context context, String jobId, JSONObject job) {
+        try {
+            JSONObject current = load(context, jobId);
+            return current != null && DownloadAttemptPolicy.sameAttempt(
+                current.optString("attemptId", ""), job.optString("attemptId", "")
+            );
+        } catch (JSONException malformed) {
+            return false;
+        }
+    }
+
+    static synchronized void removeIfCurrent(Context context, String jobId, JSONObject job) {
+        if (isCurrent(context, jobId, job)) remove(context, jobId);
     }
 
     static synchronized void remove(Context context, String jobId) {
