@@ -38,6 +38,10 @@ A standalone audio file directly inside `library_root` is its own book. This is 
 
 Extensions are matched case-insensitively. Everything else is ignored by the scanner.
 
+### Hidden files and system folders
+
+Files and folders whose names begin with a single dot are skipped, along with common recycle-bin and NAS metadata folders (`#recycle`, `@Recycle`, `@eaDir`, `$RECYCLE.BIN`, `System Volume Information`, and `lost+found`). This keeps the `._` copies macOS leaves beside files on network and exFAT drives, and anything sitting in a trash or snapshot folder, from showing up as tracks or books. Names that start with an ellipsis, like `...And Then There Were None`, are ordinary titles and are scanned as usual.
+
 ## Chapter detection
 
 Chapters are discovered in this order:
