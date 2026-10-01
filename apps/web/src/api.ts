@@ -52,6 +52,7 @@ import {
   requireSecurePublicServerAddress,
   upgradeStoredNativeServerAddress
 } from "./serverAddress";
+import { readServerId, requireSameServer, serverProofChallenge } from "./serverIdentity";
 import {
   DEMO_USER,
   demoMediaUrl,
@@ -70,6 +71,7 @@ const MEDIA_TOKEN_STORAGE_KEY = "operalibre.mediaToken";
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
 const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
+const SERVER_ID_STORAGE_KEY = "operalibre.serverId";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
 
@@ -209,16 +211,108 @@ export function removeServerAlias(id: string) {
   storeServerAliases(getServerAliases().filter((alias) => alias.id !== id));
 }
 
-export function activateServerAlias(alias: ServerAlias) {
+function getPinnedServerId(): string | null {
+  return typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_ID_STORAGE_KEY);
+}
+
+function storePinnedServerId(serverId: string | null) {
+  if (typeof window === "undefined") return;
+  if (serverId) {
+    window.localStorage.setItem(SERVER_ID_STORAGE_KEY, serverId);
+  } else {
+    window.localStorage.removeItem(SERVER_ID_STORAGE_KEY);
+  }
+}
+
+// Set once the active address has answered without an identity: the server
+// predates it, and no saved address can be verified until it is updated.
+let activeServerLacksId = false;
+
+/**
+ * Whether saved addresses are unusable because the connected server is too
+ * old to identify itself. Only known after the server has been reached.
+ */
+export function serverTooOldForAliases(): boolean {
+  return activeServerLacksId && getServerType() === "operalibre" && !getPinnedServerId();
+}
+
+/**
+ * Remember which server the active address reaches, so other saved addresses
+ * can later be checked against it. Installs that predate the pin get one the
+ * first time they reach their server; `replace` re-pins after an explicit
+ * sign-in, when the server at this address may have been reinstalled.
+ */
+export async function pinActiveServerId(replace = false): Promise<string | null> {
+  const pinned = getPinnedServerId();
+  if (isDemoMode() || isLocalMode() || (pinned && !replace)) {
+    return pinned;
+  }
+  const url = getServerUrl();
+  const reported = await pingServer(getServerType(), url);
+  // The active address can change while the check is in flight.
+  if (getServerUrl() !== url) {
+    return pinned;
+  }
+  activeServerLacksId = !reported;
+  if (!reported) {
+    return pinned;
+  }
+  storePinnedServerId(reported);
+  return reported;
+}
+
+/**
+ * Ask an address to prove it holds the saved sign-in. The token stays on the
+ * device; only a server that issued it can answer the challenge.
+ */
+async function addressProvesSession(rawValue: string): Promise<boolean> {
+  const token = getStoredToken();
+  if (!token || getServerType() !== "operalibre") {
+    return false;
+  }
+  try {
+    const { expected, ...challenge } = await serverProofChallenge(token);
+    return await fetchWithTimeout(`${serverRequestBase("operalibre", rawValue)}/api/auth/server-proof`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(challenge),
+      cache: "no-store",
+      credentials: "omit"
+    }, async (response) => response.ok && (await response.json())?.proof === expected);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make a saved address the active one. The sign-in is kept, so the address
+ * must first prove it is the pinned server; a mismatch leaves the active
+ * address and the token where they were. `activeReachable` is false when the
+ * caller already knows the active address cannot be asked for its identity.
+ */
+export async function activateServerAlias(alias: ServerAlias, activeReachable = true) {
+  const reported = await pingServer(getServerType(), alias.url);
+  let pinned = getPinnedServerId();
+  if (!pinned && reported && await addressProvesSession(alias.url)) {
+    // An install from before the pin may first meet its server here, away
+    // from the address it signed in at. Holding the session is stronger
+    // evidence than the identity, so the identity is pinned from it.
+    storePinnedServerId(reported);
+    pinned = reported;
+  }
+  if (!pinned && activeReachable) {
+    pinned = await pinActiveServerId().catch(() => null);
+  }
+  requireSameServer(pinned, reported);
   setServerUrl(alias.url);
 }
 
 /**
  * On iOS, a server can be reachable through different private-network
  * addresses depending on the network in use. When the active address is
- * unavailable, promote the first saved alias that answers its health check.
- * The server identity and authentication token are deliberately retained:
- * aliases represent the same server.
+ * unavailable, promote the first saved alias that answers its health check
+ * as the pinned server. The authentication token is retained only because
+ * that identity matched.
  */
 export async function reconnectUsingServerAliases(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) {
@@ -241,12 +335,11 @@ export async function reconnectUsingServerAliases(): Promise<boolean> {
       continue;
     }
     try {
-      await pingServer(getServerType(), alias.url);
-      activateServerAlias(alias);
+      await activateServerAlias(alias, false);
       return true;
     } catch {
-      // Try the next saved address. A later successful health check is the
-      // only condition under which the active address is changed.
+      // Try the next saved address. A later health check from the pinned
+      // server is the only condition under which the active address changes.
     }
   }
   return false;
@@ -341,14 +434,26 @@ export function setServerUrl(rawValue: string) {
   }
 }
 
-export function setServerConnection(serverType: ServerType, rawValue: string) {
-  const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerAddress(rawValue);
+/**
+ * `serverId` is what the address reported when it was pinged. A familiar
+ * address that now reports a different server is a new connection: its
+ * sign-in and aliases belonged to the server that used to be there.
+ */
+export function setServerConnection(serverType: ServerType, rawValue: string, serverId: string | null) {
+  const pinned = getPinnedServerId();
+  const changed = getServerType() !== serverType
+    || getServerUrl() !== normalizeServerAddress(rawValue)
+    || (pinned !== null && serverId !== null && pinned !== serverId);
   setServerType(serverType);
   setServerUrl(rawValue);
   if (typeof window !== "undefined") {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerAddress(rawValue));
     if (changed) storeServerAliases([]);
   }
+  if (changed || serverId) {
+    storePinnedServerId(serverId);
+  }
+  activeServerLacksId = !serverId;
   if (changed) {
     setStoredToken(null);
   }
@@ -370,7 +475,9 @@ function currentApiBase(): string {
   return serverUrl;
 }
 
-export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
+// Where unauthenticated requests to a candidate address are sent, after the
+// same checks a saved address must pass.
+function serverRequestBase(serverType: ServerType, rawValue: string): string {
   const base = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
@@ -383,13 +490,20 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
       `localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:${port}.`
     );
   }
-  if (serverType === "jellyfin") {
-    await pingJellyfin(base);
-    return true;
-  }
-  const requestBase = serverType === "operalibre" && typeof window !== "undefined"
+  return serverType === "operalibre" && typeof window !== "undefined"
     ? browserApiBase(base, window.location.origin)
     : base;
+}
+
+/**
+ * Check that a server answers at an address. Resolves to the identity it
+ * reports, or null from a server too old to report one.
+ */
+export async function pingServer(serverType: ServerType, rawValue: string): Promise<string | null> {
+  const requestBase = serverRequestBase(serverType, rawValue);
+  if (serverType === "jellyfin") {
+    return pingJellyfin(requestBase);
+  }
   return fetchWithTimeout(`${requestBase}/api/health`, {
     method: "GET",
     credentials: "include"
@@ -397,7 +511,7 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
     if (!response.ok) {
       throw new Error(`Server responded ${response.status}.`);
     }
-    return true;
+    return readServerId(await response.json().catch(() => null));
   });
 }
 

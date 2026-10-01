@@ -26,6 +26,7 @@ import {
   getServerIdentityUrl,
   getServerUrl,
   removeServerAlias,
+  serverTooOldForAliases,
   type ServerAlias
 } from "./api";
 import type { AppearanceMode } from "./appearance";
@@ -493,6 +494,14 @@ export function ConnectionSettings({
           />
           <button type="submit" className="download-btn"><Plus size={13} /> Add</button>
         </form>
+        {serverAliases.length > 0 && serverTooOldForAliases() ? (
+          <p className="auth-error">
+            This server needs an update before the app can switch to these addresses.{" "}
+            {currentUser.isAdmin || currentUser.isOwner
+              ? "Install it from Administration, under OperaLibre software."
+              : "Ask whoever runs the server to update it."}
+          </p>
+        ) : null}
         {aliasError ? <p className="auth-error">{aliasError}</p> : null}
       </div> : null}
       <div className="settings-actions">
