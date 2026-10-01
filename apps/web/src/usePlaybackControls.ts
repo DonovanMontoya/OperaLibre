@@ -318,7 +318,7 @@ export function usePlaybackControls({
 
   function startPlayback(
     audio: HTMLAudioElement | null | undefined,
-    interruptRestore = true
+    interruptRestore = resumeReconciliationBookIdRef.current !== playbackBookIdRef.current
   ) {
     if (!audio) return;
     if (carPlaybackOwnsEngine()) {
@@ -695,23 +695,28 @@ export function usePlaybackControls({
     }
   }
 
-  function resumeSelectedBook(book: Book) {
+  function resumeSelectedBook(book: Book, autoPlay = true) {
+    if (!autoPlay) {
+      void persistProgress();
+      cancelPendingPlayback(audioRef.current);
+      pausePlayback(audioRef.current);
+    }
     setNativePlayerView("now");
     if (native) {
       setNativeTab("reading");
     }
     if (playbackBook?.id === book.id) {
       // Already restored in this session — its live position is authoritative.
-      playWhenReady();
+      if (autoPlay) playWhenReady();
       return;
     }
-    void persistProgress();
+    if (autoPlay) void persistProgress();
     // Deliberately no explicit session start, no pending seek, and no autoplay
     // flag yet: the restore effect owns all three. Arming autoplay here would
     // start the first track — `currentTrack` falls back to track one while the
     // restored id is still resolving — which is the very thing being fixed.
-    resumeAutoplayBookIdRef.current = book.id;
-    setPlayPending(true, book.id);
+    resumeAutoplayBookIdRef.current = autoPlay ? book.id : null;
+    setPlayPending(autoPlay, book.id);
     setPlaybackBookId(book.id);
   }
 
