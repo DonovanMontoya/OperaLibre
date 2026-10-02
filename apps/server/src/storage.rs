@@ -52,10 +52,11 @@ pub(crate) async fn secure_existing_state_files(config: &ServerConfig) -> io::Re
 }
 
 /// The identity this installation reports on the health route, created on
-/// first start. Apps pin it when they connect and require every other saved
-/// address to report the same value before they reuse a sign-in there. It is
-/// a file rather than a database row so that restoring a backup does not
-/// change which server this is.
+/// first start. Apps pin it when they connect and refuse a saved address
+/// that reports a different one, so two servers are never treated as one
+/// library. It is not a credential and proves nothing about who is
+/// answering. It is a file rather than a database row so that restoring a
+/// backup does not change which server this is.
 pub(crate) async fn load_or_create_server_id(data_dir: &FsPath) -> anyhow::Result<String> {
     let path = data_dir.join("server-id");
     match fs::read_to_string(&path).await {

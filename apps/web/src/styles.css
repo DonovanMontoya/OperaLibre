@@ -11921,6 +11921,10 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
   width: 100%;
 }
 
+.server-alias-form.server-alias-sign-in {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .server-alias-form input {
   min-width: 0;
   padding: 9px 10px;
@@ -11931,7 +11935,8 @@ html.native-app.platform-ios.dark-mode .timeline input[type="range"]::-webkit-sl
 }
 
 @media (max-width: 520px) {
-  .server-alias-form { grid-template-columns: 1fr; }
+  .server-alias-form,
+  .server-alias-form.server-alias-sign-in { grid-template-columns: 1fr; }
   .server-alias-form .download-btn { justify-self: start; }
 }
 

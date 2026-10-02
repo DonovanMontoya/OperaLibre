@@ -50,6 +50,7 @@ import {
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
+  forgetAllSignIns,
   logout as apiLogout,
   mediaUrl,
   pinActiveServerId,
@@ -402,7 +403,7 @@ export default function App() {
         }}
         onChangeServer={async () => {
           await clearCarLibrary();
-          setStoredToken(null);
+          forgetAllSignIns();
           clearServerUrl();
           setAuthState({ phase: "server" });
         }}
@@ -432,7 +433,7 @@ export default function App() {
         } catch {
           // ignore
         }
-        setStoredToken(null);
+        forgetAllSignIns();
         // Otherwise checkAuth's offline fallback signs the account straight
         // back in the next time the server cannot be reached.
         forgetOfflineUser();

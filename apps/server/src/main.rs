@@ -554,7 +554,6 @@ fn build_app_state(
         download_temp_dir: config.download_temp_dir.clone(),
         min_download_free_bytes: config.min_download_free_bytes,
         server_id: Arc::from(server_id),
-        server_proof_keys: Arc::new(ServerProofKeys::default()),
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
         progress: Arc::new(ProgressStore::new(database.clone())),
