@@ -16160,7 +16160,7 @@ html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.immers
 }
 
 html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar {
-  grid-template-columns: 40px minmax(0, calc(var(--fold-x) - max(8px, env(safe-area-inset-left)) - 72px)) minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, calc(var(--fold-x) - max(8px, env(safe-area-inset-left)) - 88px)) minmax(0, 1fr);
 }
 
 html.native-app[data-fold-active][data-fold-axis="vertical"] .epub-reader.fullscreen .epub-topbar-title {

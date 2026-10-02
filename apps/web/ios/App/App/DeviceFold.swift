@@ -76,7 +76,8 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
         if let angle { next["angle"] = angle.rounded() }
         #if compiler(>=6.4)
         if #available(iOS 27.1, *), let probe,
-           let fold = probe.reservedRegions(kind: .division, options: .includeInactive).first {
+           let fold = probe.reservedRegions(kind: .division, options: .includeInactive)
+            .first(where: { Self.dividesViewport($0.frame, bounds: probe.bounds) }) {
             let frame = fold.frame
             next["fold"] = [
                 "x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height,
@@ -88,6 +89,21 @@ public class DeviceFoldPlugin: CAPPlugin, CAPBridgedPlugin {
         guard !NSDictionary(dictionary: next).isEqual(to: state) else { return }
         state = next
         if notify { notifyListeners("change", data: next, retainUntilConsumed: true) }
+    }
+
+    static func dividesViewport(_ frame: CGRect, bounds: CGRect) -> Bool {
+        guard !frame.isNull, !frame.isInfinite, !bounds.isEmpty,
+              frame.width > 0 || frame.height > 0,
+              frame.minX.isFinite, frame.minY.isFinite,
+              frame.maxX.isFinite, frame.maxY.isFinite else { return false }
+        // A multitasking window can occupy just one side of the display.
+        // Only split the page when the region leaves room on both sides.
+        if frame.height >= frame.width {
+            return frame.minX > bounds.minX && frame.maxX < bounds.maxX
+                && frame.maxY > bounds.minY && frame.minY < bounds.maxY
+        }
+        return frame.minY > bounds.minY && frame.maxY < bounds.maxY
+            && frame.maxX > bounds.minX && frame.minX < bounds.maxX
     }
 
     #if compiler(>=6.4)
