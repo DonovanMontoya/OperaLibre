@@ -290,6 +290,12 @@ mod windows_tests {
             .unwrap();
         let group = ProcessGroup::new(&child).unwrap();
         assert!(child.try_wait().unwrap().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), child.wait())
+                .await
+                .is_err(),
+            "The fixture exited before closing its job"
+        );
 
         // Production holds the job across awaits inside a spawned job future.
         tokio::spawn(async move {
@@ -299,11 +305,10 @@ mod windows_tests {
         .await
         .unwrap();
 
-        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        tokio::time::timeout(Duration::from_secs(10), child.wait())
             .await
             .expect("Closing the job did not stop its child")
             .unwrap();
-        assert!(!status.success());
     }
 }
 
