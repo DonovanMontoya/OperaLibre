@@ -78,7 +78,7 @@ test("rotation and closing clear the book spread and fold displacement", () => {
   applyDeviceFold(root, state);
   assert.equal(attributes.has("data-fold-active"), true);
   assert.equal(isBookPosture(state), false);
-  const closed = { ...state, posture: "closed" as const };
+  const closed = { ...state, posture: "closed" as const, fold: { ...state.fold!, active: false } };
   applyDeviceFold(root, closed);
   assert.equal(attributes.has("data-fold-active"), false);
   assert.equal(isBookPosture(closed), false);
@@ -101,11 +101,42 @@ test("only structural posture changes animate", () => {
   }), true);
 });
 
-test("closing angle anticipates the closed layout before the hinge reports closed", () => {
+test("an active division keeps its layout at acute hinge angles", () => {
+  const { root, attributes, dataset } = fakeRoot();
+  for (const angle of [70, 12, 76]) {
+    applyDeviceFold(root, { posture: "closed", angle: 0 });
+    const state: DeviceFoldState = {
+      posture: "half-open", angle,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: "vertical", active: true }
+    };
+    applyDeviceFold(root, state);
+    assert.equal(dataset.foldPosture, "half-open");
+    assert.equal(attributes.has("data-fold-active"), true);
+    assert.equal(isBookPosture(resolveFoldLayoutState(state, { posture: "closed" })), true);
+  }
+  applyDeviceFold(root, { posture: "unknown" });
+});
+
+test("an active division takes priority over delayed hinge status", () => {
+  const { root, attributes, dataset } = fakeRoot();
+  for (const posture of ["closed", "flat", "unknown"] as const) {
+    const state: DeviceFoldState = {
+      posture, angle: 0,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: "vertical", active: true }
+    };
+    applyDeviceFold(root, state);
+    assert.equal(dataset.foldPosture, "half-open");
+    assert.equal(attributes.has("data-fold-active"), true);
+    assert.equal(isBookPosture(state), true);
+  }
+  applyDeviceFold(root, { posture: "unknown" });
+});
+
+test("closing angle anticipates the closed layout after the division becomes inactive", () => {
   const halfOpen: DeviceFoldState = {
     posture: "half-open",
     angle: 90,
-    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: false }
   };
   assert.equal(resolveFoldLayoutState(halfOpen, { posture: "half-open" }).posture, "half-open");
   assert.equal(resolveFoldLayoutState({ ...halfOpen, angle: 71 }, { posture: "half-open" }).posture, "half-open");
@@ -118,7 +149,7 @@ test("compact transition uses hysteresis while the hinge hovers near its cutoff"
   const halfOpen: DeviceFoldState = {
     posture: "half-open",
     angle: 76,
-    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: true }
+    fold: { x: 0, y: 460, width: 669, height: 31, axis: "horizontal", active: false }
   };
   assert.equal(resolveFoldLayoutState(halfOpen, { posture: "half-open" }).posture, "half-open");
   assert.equal(resolveFoldLayoutState(halfOpen, { posture: "closed" }).posture, "closed");
