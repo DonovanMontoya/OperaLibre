@@ -1767,6 +1767,7 @@ exit 0
         max_book_download_bytes: Some(super::DEFAULT_MAX_BOOK_DOWNLOAD_GIB * super::GIBIBYTE_BYTES),
         download_temp_dir: data_dir.join("download-temp"),
         min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
+        server_id: super::Arc::from("test-server-identity"),
         library_root: library_root.clone(),
         library_identities_file: data_dir.join("library-identities.json"),
         progress: super::Arc::new(super::ProgressStore::new(database.clone())),

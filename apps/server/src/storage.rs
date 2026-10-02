@@ -51,6 +51,38 @@ pub(crate) async fn secure_existing_state_files(config: &ServerConfig) -> io::Re
     Ok(())
 }
 
+/// The identity this installation reports on the health route, created on
+/// first start. Apps pin it when they connect and refuse a saved address
+/// that reports a different one, so two servers are never treated as one
+/// library. It is not a credential and proves nothing about who is
+/// answering. It is a file rather than a database row so that restoring a
+/// backup does not change which server this is.
+pub(crate) async fn load_or_create_server_id(data_dir: &FsPath) -> anyhow::Result<String> {
+    let path = data_dir.join("server-id");
+    match fs::read_to_string(&path).await {
+        Ok(stored) => {
+            let stored = stored.trim();
+            let well_formed = (16..=64).contains(&stored.len())
+                && stored
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+            if well_formed {
+                return Ok(stored.to_string());
+            }
+            tracing::warn!("replacing unreadable server identity at {}", path.display());
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut bytes = [0u8; 16];
+    rand::rng().fill(&mut bytes);
+    let server_id = general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    write_bytes_atomic(&path, server_id.as_bytes())
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    Ok(server_id)
+}
+
 /// Serialize to a temporary file in the destination directory and rename it
 /// into place, so a crash mid-write never leaves a truncated store behind.
 pub(crate) async fn write_json_atomic<T: Serialize>(

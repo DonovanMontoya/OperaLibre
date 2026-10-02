@@ -52,6 +52,8 @@ import {
   requireSecurePublicServerAddress,
   upgradeStoredNativeServerAddress
 } from "./serverAddress";
+import { readServerId, refuseDifferentServer } from "./serverIdentity";
+import { addressKey, CredentialVault, reconnectCandidates } from "./addressCredentials";
 import {
   DEMO_USER,
   demoMediaUrl,
@@ -65,11 +67,10 @@ import {
 } from "./demo";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE?.trim();
-const TOKEN_STORAGE_KEY = "operalibre.authToken";
-const MEDIA_TOKEN_STORAGE_KEY = "operalibre.mediaToken";
 const SERVER_URL_STORAGE_KEY = "operalibre.serverUrl";
 const SERVER_TYPE_STORAGE_KEY = "operalibre.serverType";
 const SERVER_IDENTITY_URL_STORAGE_KEY = "operalibre.serverIdentityUrl";
+const SERVER_ID_STORAGE_KEY = "operalibre.serverId";
 const SERVER_ALIASES_STORAGE_KEY = "operalibre.serverAliases";
 const STARTUP_TIMEOUT_MS = 8_000;
 
@@ -206,47 +207,112 @@ export function addServerAlias(name: string, rawUrl: string): ServerAlias {
 }
 
 export function removeServerAlias(id: string) {
+  const removed = getServerAliases().find((alias) => alias.id === id);
+  // The active address keeps its sign-in: it is still the one in use.
+  if (removed && addressKey(removed.url) !== addressKey(getServerUrl())) {
+    credentialVault().forget(removed.url);
+  }
   storeServerAliases(getServerAliases().filter((alias) => alias.id !== id));
 }
 
-export function activateServerAlias(alias: ServerAlias) {
+function getPinnedServerId(): string | null {
+  return typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_ID_STORAGE_KEY);
+}
+
+function storePinnedServerId(serverId: string | null) {
+  if (typeof window === "undefined") return;
+  if (serverId) {
+    window.localStorage.setItem(SERVER_ID_STORAGE_KEY, serverId);
+  } else {
+    window.localStorage.removeItem(SERVER_ID_STORAGE_KEY);
+  }
+}
+
+/**
+ * Remember which server the active address reaches, so a saved address that
+ * turns out to be some other server is not treated as the same library.
+ * Installs that predate the pin get one the first time they reach their
+ * server; `replace` re-pins after an explicit sign-in, when the server at
+ * this address may have been reinstalled. The identity is public: it guards
+ * against mixing two libraries, never against an impostor.
+ */
+export async function pinActiveServerId(replace = false): Promise<string | null> {
+  const pinned = getPinnedServerId();
+  if (isDemoMode() || isLocalMode() || (pinned && !replace)) {
+    return pinned;
+  }
+  const url = getServerUrl();
+  const reported = await pingServer(getServerType(), url);
+  // The active address can change while the check is in flight.
+  if (getServerUrl() !== url) {
+    return pinned;
+  }
+  if (!reported) {
+    return pinned;
+  }
+  storePinnedServerId(reported);
+  return reported;
+}
+
+/**
+ * Make a saved address the active one. Nothing is carried over: requests to
+ * it use the sign-in made at that address, so it must already have one.
+ */
+export async function activateServerAlias(alias: ServerAlias) {
+  if (!hasSignInAt(alias.url)) {
+    throw new Error("Sign in at that address before using it.");
+  }
+  refuseDifferentServer(getPinnedServerId(), await pingServer(getServerType(), alias.url));
   setServerUrl(alias.url);
+}
+
+/**
+ * Sign in at a saved address without leaving the active one. The password
+ * goes only to that address and the sign-in it returns is kept for that
+ * address alone; the active address and its sign-in are untouched.
+ */
+export async function signInAtAddress(rawUrl: string, username: string, password: string) {
+  const serverType = getServerType();
+  refuseDifferentServer(getPinnedServerId(), await pingServer(serverType, rawUrl));
+  const base = serverRequestBase(serverType, rawUrl);
+  const response = serverType === "jellyfin"
+    ? await loginToJellyfin(base, username, password)
+    : await requestAt<LoginResponse>(base, null, "/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+      ignoreUnauthorized: true
+    });
+  credentialVault().update(rawUrl, {
+    token: response.token,
+    // Servers released before the narrower media credential return no
+    // mediaToken and still expect the session token on media URLs.
+    mediaToken: response.mediaToken ?? response.token
+  });
 }
 
 /**
  * On iOS, a server can be reachable through different private-network
  * addresses depending on the network in use. When the active address is
- * unavailable, promote the first saved alias that answers its health check.
- * The server identity and authentication token are deliberately retained:
- * aliases represent the same server.
+ * unavailable, move to the first saved address that answers and that the
+ * user has already signed in at.
  */
 export async function reconnectUsingServerAliases(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) {
     return false;
   }
 
-  const activeUrl = normalizeServerAddress(getServerUrl()).toLowerCase();
-  const candidates = [
-    { id: "primary", name: "Original address", url: getServerIdentityUrl() },
-    ...getServerAliases()
-  ];
-  const attemptedUrls = new Set<string>();
-  for (const alias of candidates) {
-    const aliasUrl = normalizeServerAddress(alias.url).toLowerCase();
-    if (!aliasUrl || attemptedUrls.has(aliasUrl)) {
-      continue;
-    }
-    attemptedUrls.add(aliasUrl);
-    if (aliasUrl === activeUrl) {
-      continue;
-    }
+  const candidates = reconnectCandidates(
+    getServerUrl(),
+    getServerIdentityUrl(),
+    getServerAliases().map((alias) => alias.url),
+    hasSignInAt
+  );
+  for (const url of candidates) {
     try {
-      await pingServer(getServerType(), alias.url);
-      activateServerAlias(alias);
+      await activateServerAlias({ id: url, name: url, url });
       return true;
     } catch {
-      // Try the next saved address. A later successful health check is the
-      // only condition under which the active address is changed.
+      // Try the next saved address.
     }
   }
   return false;
@@ -268,14 +334,22 @@ function readStoredServerUrl(): string | null {
   if (storedServerUrl && storedServerUrl !== stored) {
     window.localStorage.setItem(SERVER_URL_STORAGE_KEY, storedServerUrl);
   }
+  // Opening the vault can move the active address (see credentialVault), so
+  // it happens before the address is first handed out.
+  credentialVault();
   return storedServerUrl || null;
+}
+
+// The server address, ignoring the on-device and demo modes layered over it.
+function configuredServerUrl(): string {
+  const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
+  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
 }
 
 export function getServerUrl(): string {
   if (isLocalMode()) return "This device";
   if (isDemoMode()) return "On-device demo";
-  const url = readStoredServerUrl() ?? configuredApiBase ?? defaultServerUrl(getServerType());
-  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+  return configuredServerUrl();
 }
 
 export function getServerType(): ServerType {
@@ -341,16 +415,27 @@ export function setServerUrl(rawValue: string) {
   }
 }
 
-export function setServerConnection(serverType: ServerType, rawValue: string) {
-  const changed = getServerType() !== serverType || getServerUrl() !== normalizeServerAddress(rawValue);
+/**
+ * `serverId` is what the address reported when it was pinged. A familiar
+ * address that now reports a different server is a new connection: its
+ * sign-ins and aliases belonged to the server that used to be there.
+ */
+export function setServerConnection(serverType: ServerType, rawValue: string, serverId: string | null) {
+  const pinned = getPinnedServerId();
+  const changed = getServerType() !== serverType
+    || getServerUrl() !== normalizeServerAddress(rawValue)
+    || (pinned !== null && serverId !== null && pinned !== serverId);
   setServerType(serverType);
   setServerUrl(rawValue);
   if (typeof window !== "undefined") {
     window.localStorage.setItem(SERVER_IDENTITY_URL_STORAGE_KEY, normalizeServerAddress(rawValue));
     if (changed) storeServerAliases([]);
   }
+  if (changed || serverId) {
+    storePinnedServerId(serverId);
+  }
   if (changed) {
-    setStoredToken(null);
+    forgetAllSignIns();
   }
 }
 
@@ -370,7 +455,9 @@ function currentApiBase(): string {
   return serverUrl;
 }
 
-export async function pingServer(serverType: ServerType, rawValue: string): Promise<boolean> {
+// Where unauthenticated requests to a candidate address are sent, after the
+// same checks a saved address must pass.
+function serverRequestBase(serverType: ServerType, rawValue: string): string {
   const base = Capacitor.isNativePlatform()
     ? requireSecurePublicServerAddress(rawValue)
     : normalizeServerAddress(rawValue);
@@ -383,48 +470,76 @@ export async function pingServer(serverType: ServerType, rawValue: string): Prom
       `localhost points to this iPhone. Use the server computer's LAN address, for example http://My-Mac.local:${port}.`
     );
   }
-  if (serverType === "jellyfin") {
-    await pingJellyfin(base);
-    return true;
-  }
-  const requestBase = serverType === "operalibre" && typeof window !== "undefined"
+  return serverType === "operalibre" && typeof window !== "undefined"
     ? browserApiBase(base, window.location.origin)
     : base;
+}
+
+/**
+ * Check that a server answers at an address. Resolves to the identity it
+ * reports, or null from a server too old to report one.
+ */
+export async function pingServer(serverType: ServerType, rawValue: string): Promise<string | null> {
+  const requestBase = serverRequestBase(serverType, rawValue);
+  if (serverType === "jellyfin") {
+    return pingJellyfin(requestBase);
+  }
   return fetchWithTimeout(`${requestBase}/api/health`, {
     method: "GET",
-    credentials: "include"
+    // Cookies go along only to an address the user has signed in at, or to
+    // the page's own origin, where a proxy in front of the server may need
+    // its own. An address still being checked is sent none.
+    credentials: hasSignInAt(rawValue) ? "include" : "same-origin"
   }, async (response) => {
     if (!response.ok) {
       throw new Error(`Server responded ${response.status}.`);
     }
-    return true;
+    return readServerId(await response.json().catch(() => null));
   });
 }
 
-let cachedToken: string | null = null;
-let cachedMediaToken: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
 }
 
+let vault: CredentialVault | null = null;
+
+// The address the user first connected and signed in at.
+function originalServerUrl(): string {
+  const url = (typeof window === "undefined" ? null : window.localStorage.getItem(SERVER_IDENTITY_URL_STORAGE_KEY))
+    ?? configuredServerUrl();
+  return Capacitor.isNativePlatform() ? upgradeStoredNativeServerAddress(url) : url;
+}
+
+/**
+ * Every address's sign-in, readable only for that address. The token getters
+ * below always answer for the active address, so changing the address changes
+ * which sign-in a request can see; there is no step that could be skipped.
+ */
+function credentialVault(): CredentialVault {
+  if (vault) return vault;
+  // The first load of the address opens the vault itself, with the address
+  // already in hand for the vault to read.
+  readStoredServerUrl();
+  if (vault) return vault;
+  vault = new CredentialVault(
+    typeof window === "undefined" ? null : window.localStorage,
+    persistsAuthToken,
+    originalServerUrl
+  );
+  // Builds from before sign-ins were kept per address had one, and could be
+  // using it at an alias. It is filed under the original address, so the app
+  // goes back there too: the alias needs its own sign-in before it is used.
+  if (vault.migratedLegacySignIn && addressKey(configuredServerUrl()) !== addressKey(originalServerUrl())) {
+    setServerUrl(originalServerUrl());
+  }
+  return vault;
+}
+
 export function getStoredToken(): string | null {
-  if (cachedToken !== null) {
-    return cachedToken;
-  }
-  if (typeof window === "undefined") {
-    return null;
-  }
-  if (!persistsAuthToken()) {
-    // Browser sessions are restored from the Secure, HttpOnly cookie. Remove
-    // tokens left by older builds so a later XSS cannot recover a persistent
-    // full-API credential from localStorage.
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-    return null;
-  }
-  cachedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-  return cachedToken;
+  return credentialVault().get(getServerUrl()).token ?? null;
 }
 
 // Whether the auth token lives in localStorage. Native shells have no cookie
@@ -438,42 +553,31 @@ function persistsAuthToken(): boolean {
   return usesNativeCredentialStorage() || getServerType() === "jellyfin";
 }
 
+/** Save the active address's sign-in; null ends it, media credential included. */
 export function setStoredToken(token: string | null) {
-  cachedToken = token;
-  if (!token) {
-    setStoredMediaToken(null);
-  }
-  if (typeof window === "undefined") {
-    return;
-  }
-  if (token && persistsAuthToken()) {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  if (token) {
+    credentialVault().update(getServerUrl(), { token });
   } else {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    credentialVault().forget(getServerUrl());
   }
 }
 
 export function getStoredMediaToken(): string | null {
-  if (cachedMediaToken !== null) {
-    return cachedMediaToken;
-  }
-  if (typeof window === "undefined") {
-    return null;
-  }
-  cachedMediaToken = window.localStorage.getItem(MEDIA_TOKEN_STORAGE_KEY);
-  return cachedMediaToken;
+  return credentialVault().get(getServerUrl()).mediaToken ?? null;
 }
 
 export function setStoredMediaToken(token: string | null) {
-  cachedMediaToken = token;
-  if (typeof window === "undefined") {
-    return;
-  }
-  if (token) {
-    window.localStorage.setItem(MEDIA_TOKEN_STORAGE_KEY, token);
-  } else {
-    window.localStorage.removeItem(MEDIA_TOKEN_STORAGE_KEY);
-  }
+  credentialVault().update(getServerUrl(), { mediaToken: token });
+}
+
+/** Whether the user has signed in at this address. */
+export function hasSignInAt(url: string): boolean {
+  return credentialVault().has(url);
+}
+
+/** Signing out, or leaving this server, ends the sign-in at every address. */
+export function forgetAllSignIns() {
+  credentialVault().forgetAll();
 }
 
 export { ApiError };
@@ -524,17 +628,27 @@ function requireOperaLibreServer() {
 
 async function request<T>(path: string, options?: RequestOptions, timeoutMs = 30_000): Promise<T> {
   requireOperaLibreServer();
+  // Read together: the token is the one issued by the address it is sent to.
+  return requestAt<T>(currentApiBase(), getStoredToken(), path, options, timeoutMs);
+}
+
+async function requestAt<T>(
+  base: string,
+  token: string | null,
+  path: string,
+  options?: RequestOptions,
+  timeoutMs = 30_000
+): Promise<T> {
   const { ignoreUnauthorized = false, ...init } = options ?? {};
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  const token = getStoredToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  return fetchWithTimeout(`${currentApiBase()}${path}`, {
+  return fetchWithTimeout(`${base}${path}`, {
     ...init,
     headers,
     // API JSON represents live playback, job, and library state. WebKit may
