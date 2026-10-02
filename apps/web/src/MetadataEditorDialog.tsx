@@ -288,7 +288,6 @@ export function MetadataEditorDialog({ books, editor }: {
           >
             Reset
           </button>
-          <button type="button" disabled={metadataSaving} onClick={closeMetadataEditor}>Cancel</button>
           <button type="submit" disabled={metadataSaving}>
             {metadataSaving ? "Saving..." : "Save Info"}
           </button>
