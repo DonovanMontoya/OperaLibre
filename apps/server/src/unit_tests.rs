@@ -1851,6 +1851,7 @@ exit 0
         download_task_slots: super::Arc::new(super::Semaphore::new(
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
+        epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
         upload_lock: super::Arc::new(super::Mutex::new(())),
         libro: super::Arc::new(super::LibroImports::default()),
         backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),
