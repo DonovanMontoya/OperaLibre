@@ -46,18 +46,21 @@ export function isBookPosture(state: DeviceFoldState): boolean {
 }
 
 export function usesFoldLayout(state: DeviceFoldState): boolean {
-  return !!state.fold && state.posture !== "closed" && (state.posture === "half-open" || state.fold.active);
+  return !!state.fold && (state.posture === "half-open" || state.fold.active);
 }
 
 /**
- * Move into the cover layout while the two halves are still physically
- * closing. Waiting for UIHinge.Status.closed makes the screen visibly reflow
- * after the hardware has stopped moving.
+ * Once the division is inactive, move into the cover layout while the two
+ * halves are still closing. An active division always keeps controls off the
+ * crease, regardless of the angle or a delayed hinge status.
  */
 export function resolveFoldLayoutState(
   state: DeviceFoldState,
   previous: DeviceFoldState = current
 ): DeviceFoldState {
+  if (state.fold?.active) {
+    return state.posture === "half-open" ? state : { ...state, posture: "half-open" };
+  }
   if (state.posture === "half-open" && state.angle !== undefined) {
     const cutoff = previous.posture === "closed" ? closedLayoutExitAngle : closedLayoutEnterAngle;
     if (state.angle <= cutoff) return { ...state, posture: "closed" };
