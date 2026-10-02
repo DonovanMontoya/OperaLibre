@@ -78,6 +78,7 @@ mod faststart_jobs;
 mod http_tests;
 mod jobs;
 mod libation;
+mod libation_download;
 mod library;
 mod libro;
 mod libro_account;
