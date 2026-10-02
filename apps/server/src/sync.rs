@@ -2393,6 +2393,7 @@ mod tests {
 
     /// Opt-in real audio exercise of the production aligner. Writes only to
     /// the supplied test directory; existing per-scope results allow resume.
+    #[cfg(unix)]
     #[tokio::test]
     #[ignore = "manual real-book alignment probe"]
     async fn manual_real_book_alignment_probe() {
