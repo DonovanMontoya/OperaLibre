@@ -14,7 +14,7 @@ This integration is entirely optional. If you don't configure it, the relevant U
 - Libation must be **installed** on the same machine as the server (or somewhere the server process can execute).
 - On Linux, the system ICU runtime is required (a versioned `libicu` package on Ubuntu/Debian, `libicu` on Fedora/RHEL, or `icu-libs` on Alpine). If it is missing, the one-line installer offers to install the correct package with administrator access and verifies it before completing Libation setup.
 - A recent Libation CLI with `login-external` and `list-accounts` support is required for adding accounts through OperaLibre. Existing authenticated Libation profiles remain supported.
-- Libation's download directory must point at (or feed into) your `library_root`.
+- OperaLibre stages server-requested downloads inside `library_root`; the server needs write access there.
 
 ## Set it up
 
@@ -27,7 +27,7 @@ The [one-line installer](installing-a-release.md#setting-up-the-audible-import-d
 
 Libation's shared database stores only one ownership row per book. When OperaLibre refreshes a shared Libation installation, it first remembers the owners already in Libation's database, then scans each account separately and remembers which titles each account reported. A title owned by multiple accounts then appears under each account, including when another account later needs to sign in again. A newly connected account needs a successful refresh before its ownership can be remembered.
 
-**Download all purchases** scans and downloads one account at a time. If one account needs to sign in again, the job reports that failure while continuing with the other accounts. Libation has no account selector for downloads, so OperaLibre supplies only the ASINs confirmed for the account it just scanned.
+**Download all purchases** scans one account at a time and downloads its titles individually. If one account needs to sign in again, the job reports that failure while continuing with the other accounts. Libation has no account selector for downloads, so OperaLibre supplies only the ASINs confirmed for the account it just scanned.
 
 ## Configuration
 
@@ -42,6 +42,10 @@ libation_files_dir = /path/to/LibationFiles
 - `libation_files_dir` — the Libation files directory containing `AccountsSettings.json` and `Settings.json`, where the accounts you add in Libation live. Accounts created by older OperaLibre builds keep using their isolated directories under `data_dir/libation-accounts`.
 
 If both are blank, the integration stays disabled.
+
+Server-requested downloads use `max_upload_gib` as a per-title ceiling, including temporary download and decryption files. `min_download_free_gib` protects the library volume; OperaLibre checks before each title, while it runs, and before publishing the finished files. These limits apply to direct readers, approved requests, and administrators, including **Download all purchases**. A title already present is reused rather than downloaded again.
+
+Downloads are staged out of view of library scans, then published together when successful. Failed or over-budget attempts are removed. Libation does not supply a reliable size in advance: the free-space watchdog leaves an additional 64 MiB of headroom and checks every 100 ms, but is not a filesystem quota. Use a filesystem quota when a strict disk-consumption boundary is required. Downloads that stop for storage limits appear as failed background jobs; free space or adjust the limits before retrying.
 
 ## What the web UI exposes
 
@@ -80,7 +84,7 @@ Under the hood these map to API endpoints:
 - **"Libation not configured"** — `libation_cli_path` is blank and no Libation CLI is on `PATH`. Set the path explicitly.
 - **Account shows as not authenticated** — sign the account in again in Libation. OperaLibre reports the status but no longer signs accounts in itself. A warning badge appears on Audible and, in installed apps, on the Shelf tab.
 - **An account created by an older OperaLibre build reports missing Libation settings** — restart the updated OperaLibre server once. The server repairs the managed account profile before starting Libation.
-- **Downloads land somewhere the server can't see** — point Libation's output directory at `library_root` (or a subdirectory of it), or move the files there after the download. The server only knows about files inside `library_root`.
+- **Downloads made outside OperaLibre do not appear** — move those files into `library_root` and rescan. Server-requested downloads are staged and published there automatically.
 - **Libation reports that no region is associated with the Invariant Culture** — install the ICU runtime listed under Prerequisites, restart OperaLibre, and retry the download. Do not set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`; Libation needs full culture and region data when preparing a download.
 
 ## Rich local metadata
