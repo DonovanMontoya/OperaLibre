@@ -82,7 +82,11 @@ channel, date, and archived source commit are pending confirmation.
   [#252](https://github.com/DonovanMontoya/OperaLibre/pull/252))
 - Follow Along recovers more reliably across chapter boundaries and
   illustrated pages. These alignment improvements require matching server
-  support and a generated sync map; downloaded maps remain usable offline.
+  support and a generated sync map. Regenerate maps made before those
+  server alignment improvements to receive the corrected timings. Older
+  OperaLibre-generated maps show **Outdated map** and remain usable; current
+  maps and external maps do not need regeneration. Downloaded maps remain
+  usable offline.
   ([#208](https://github.com/DonovanMontoya/OperaLibre/pull/208),
   [#212](https://github.com/DonovanMontoya/OperaLibre/pull/212))
 
