@@ -488,6 +488,7 @@ impl TestServer {
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
             epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
+            epub_entry_account_slots: Arc::new(Mutex::new(std::collections::HashMap::new())),
             upload_lock: Arc::new(Mutex::new(())),
             libro: Arc::new(LibroImports::default()),
             backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
@@ -5383,6 +5384,67 @@ async fn epub_entries_wait_for_a_slot_and_return_it_when_the_reader_leaves() {
     assert_eq!(slots.available_permits(), EPUB_ENTRY_CONCURRENCY - 1);
     drop(unread);
     all_returned().await;
+}
+
+/// A reader may keep a slot for as long as they go on taking a chapter, so
+/// one account is only ever given some of them: its further requests wait on
+/// its own, and another reader's chapter is not kept behind them.
+#[tokio::test]
+async fn one_account_cannot_hold_every_epub_entry_slot() {
+    let chapter = "<p>The meadow was quiet in the early morning light.</p>".repeat(20_000);
+    let epub = alignment::build_test_epub_with_text(&chapter, "<p>Later chapter</p>");
+    let (server, token, book_id, companion) = server_with_epub(epub).await;
+    server.add_reader(&token, "second-reader").await;
+    let (owner, reader) = {
+        let users = server.state.users.read().await;
+        let account = |name: &str| {
+            AuthUser::from(
+                users
+                    .users
+                    .iter()
+                    .find(|user| user.username == name)
+                    .unwrap(),
+            )
+        };
+        (account("owner"), account("second-reader"))
+    };
+    let request = |account: &AuthUser| {
+        get_epub_entry(
+            State(server.state.clone()),
+            Extension(account.clone()),
+            Path((
+                book_id.clone(),
+                companion.clone(),
+                LARGE_EPUB_CHAPTER.to_string(),
+            )),
+            HeaderMap::new(),
+        )
+    };
+    let slots = server.state.epub_entry_slots.clone();
+    let left_for_others = EPUB_ENTRY_CONCURRENCY - EPUB_ENTRY_ACCOUNT_CONCURRENCY;
+
+    let mut unread = Vec::new();
+    for _ in 0..EPUB_ENTRY_ACCOUNT_CONCURRENCY {
+        unread.push(request(&owner).await.unwrap());
+    }
+    assert_eq!(slots.available_permits(), left_for_others);
+
+    let mut waiting = std::pin::pin!(request(&owner));
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("an account was given more than its share of the slots"),
+        () = std::future::ready(()) => {}
+    }
+    assert_eq!(slots.available_permits(), left_for_others);
+
+    let response = request(&reader).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    unread.pop();
+    assert_eq!(waiting.await.unwrap().status(), StatusCode::OK);
 }
 
 /// A member that no longer matches its checksum must fail the transfer; a
