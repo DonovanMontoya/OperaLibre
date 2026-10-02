@@ -3,6 +3,8 @@ import Foundation
 
 /// Redirects and bridges followed before giving up, which also ends a loop.
 private let maxManifestHops = 8
+/// How long a manifest request may go without receiving data before it is abandoned.
+private let manifestTimeout: TimeInterval = 30
 private let maxFrontendPackageBytes = 50 * 1024 * 1024
 private let stagingPrefix = ".staging-"
 /// Records the fingerprint of the bundle the managed root was last reset from.
@@ -241,12 +243,18 @@ final class FrontendUpdater {
         for _ in 0..<maxManifestHops {
             let data: Data
             do {
-                let (body, response) = try await URLSession.shared.data(from: url)
+                var request = URLRequest(url: url)
+                request.timeoutInterval = manifestTimeout
+                // Streamed rather than fetched whole: the body is unsigned until it is
+                // verified, so its size has to be bounded while it arrives.
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 // Without this a rate limit or an outage page reaches the decoder and is
                 // reported as a malformed manifest, which tells nobody anything.
                 try checkStatus(response, context: "The update manifest")
-                data = body
+                data = try await readUpdateManifestBody(bytes, declaredLength: response.expectedContentLength)
             } catch let error as FrontendUpdateError {
+                throw error
+            } catch let error as UpdateManifestError {
                 throw error
             } catch {
                 throw FrontendUpdateError.network(error)
