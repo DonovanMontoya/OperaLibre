@@ -487,6 +487,7 @@ impl TestServer {
             login_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
             download_task_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS)),
+            epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
             upload_lock: Arc::new(Mutex::new(())),
             libro: Arc::new(LibroImports::default()),
             backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),
@@ -5266,6 +5267,134 @@ async fn epub_entries_load_independently_with_media_auth_and_revalidation() {
     assert_eq!(
         server.get(&path, &reader).await.status,
         StatusCode::NOT_FOUND
+    );
+}
+
+/// A server holding an EPUB whose first chapter is far larger than what is
+/// decompressed ahead of the client. Returns the book and companion ids and
+/// the archive as it was written.
+async fn server_with_large_epub_chapter() -> (TestServer, String, String, Vec<u8>) {
+    let server = TestServer::start(1).await;
+    let token = server.setup_owner().await;
+    let chapter = "<p>The meadow was quiet in the early morning light.</p>".repeat(20_000);
+    let epub = alignment::build_test_epub_with_text(&chapter, "<p>Later chapter</p>");
+    server
+        .add_companions_to_first_book(&token, &[("Book 00.epub", epub.clone())])
+        .await;
+    let books = server.get("/api/books", &token).await.json();
+    let book = &books[0];
+    let companion = book["companions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["extension"] == "epub")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (
+        server,
+        book["id"].as_str().unwrap().to_string(),
+        companion,
+        epub,
+    )
+}
+
+const LARGE_EPUB_CHAPTER: &str = "OEBPS/text/ch1.xhtml";
+
+/// Any number of readers may ask for chapters and pictures at once, but only
+/// a fixed few are ever open, and a reader who stops listening gives the slot
+/// back whether they were still queued or already receiving.
+#[tokio::test]
+async fn epub_entries_wait_for_a_slot_and_return_it_when_the_reader_leaves() {
+    let (server, book_id, companion, epub) = server_with_large_epub_chapter().await;
+    let owner = AuthUser::from(&server.state.users.read().await.users[0]);
+    let request = || {
+        get_epub_entry(
+            State(server.state.clone()),
+            Extension(owner.clone()),
+            Path((
+                book_id.clone(),
+                companion.clone(),
+                LARGE_EPUB_CHAPTER.to_string(),
+            )),
+            HeaderMap::new(),
+        )
+    };
+    let slots = server.state.epub_entry_slots.clone();
+    let every_slot = EPUB_ENTRY_CONCURRENCY as u32;
+    let all_returned = || async {
+        drop(
+            tokio::time::timeout(Duration::from_secs(10), slots.acquire_many(every_slot))
+                .await
+                .expect("every slot is returned")
+                .unwrap(),
+        );
+    };
+
+    let busy = slots.clone().acquire_many_owned(every_slot).await.unwrap();
+    let mut queued = std::pin::pin!(request());
+    let mut abandoned = Box::pin(request());
+    tokio::select! {
+        biased;
+        _ = &mut queued => panic!("an entry was read without a slot"),
+        _ = &mut abandoned => panic!("an entry was read without a slot"),
+        () = std::future::ready(()) => {}
+    }
+    drop(abandoned);
+    drop(busy);
+
+    let response = queued.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // The chapter cannot be decompressed ahead of its reader, so the slot
+    // stays taken for as long as the body is outstanding.
+    assert_eq!(slots.available_permits(), EPUB_ENTRY_CONCURRENCY - 1);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(epub)).unwrap();
+    let mut expected = Vec::new();
+    std::io::Read::read_to_end(
+        &mut archive.by_name(LARGE_EPUB_CHAPTER).unwrap(),
+        &mut expected,
+    )
+    .unwrap();
+    assert!(body == expected, "the chapter arrives whole and in order");
+    all_returned().await;
+
+    let unread = request().await.unwrap();
+    assert_eq!(slots.available_permits(), EPUB_ENTRY_CONCURRENCY - 1);
+    drop(unread);
+    all_returned().await;
+}
+
+/// A member that no longer matches its checksum must fail the transfer; a
+/// response that simply ended would be shown to the reader as the chapter.
+#[tokio::test]
+async fn a_damaged_epub_entry_fails_rather_than_ending_short() {
+    let (server, book_id, companion, mut epub) = server_with_large_epub_chapter().await;
+    let damaged_at = {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&epub)).unwrap();
+        let entry = archive.by_name(LARGE_EPUB_CHAPTER).unwrap();
+        entry.data_start().unwrap() + entry.compressed_size() / 2
+    };
+    epub[damaged_at as usize] ^= 0xff;
+    std::fs::write(server.library_root.join("Book 00/Book 00.epub"), epub).unwrap();
+
+    let owner = AuthUser::from(&server.state.users.read().await.users[0]);
+    let response = get_epub_entry(
+        State(server.state.clone()),
+        Extension(owner),
+        Path((book_id, companion, LARGE_EPUB_CHAPTER.to_string())),
+        HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .is_err()
     );
 }
 
