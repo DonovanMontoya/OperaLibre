@@ -391,6 +391,7 @@ function RecentRow({
     let active = true;
     let resolvedUrl: string | null = null;
     setCoverFailed(false);
+    setOfflineCoverUrl(null);
     if (cachedBook) {
       void getOfflineCoverUrl(cachedBook).then((url) => {
         resolvedUrl = url;

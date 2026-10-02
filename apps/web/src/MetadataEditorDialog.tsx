@@ -1,31 +1,27 @@
 import { Pencil, Plus, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MetadataSuggestionInput } from "./MetadataSuggestionInput";
-import { metadataEditorFromBook, type MetadataEditorState } from "./metadataEditor";
 import { existingMetadataNames } from "./metadataSuggestions";
+import { CoverArt } from "./CoverArt";
+import { COVER_FILE_ACCEPT } from "./bookCover";
+import { useModalFocus } from "./useModalFocus";
+import type { useMetadataEditor } from "./useMetadataEditor";
 import type { Book } from "./types";
 
-export function MetadataEditorDialog({
-  books,
-  metadataError,
-  metadataForm,
-  metadataSaving,
-  saveMetadata,
-  selectedBook,
-  setMetadataEditOpen,
-  setMetadataError,
-  setMetadataForm
-}: {
+export function MetadataEditorDialog({ books, editor }: {
   books: readonly Book[];
-  metadataError: string | null;
-  metadataForm: MetadataEditorState;
-  metadataSaving: boolean;
-  saveMetadata: (event: FormEvent) => Promise<void>;
-  selectedBook: Book;
-  setMetadataEditOpen: Dispatch<SetStateAction<boolean>>;
-  setMetadataError: Dispatch<SetStateAction<string | null>>;
-  setMetadataForm: Dispatch<SetStateAction<MetadataEditorState | null>>;
+  editor: ReturnType<typeof useMetadataEditor>;
 }) {
+  const { metadataBook, metadataForm, metadataError, metadataSaving, coverFile, coverRemoval,
+    chooseCover, removeCover, closeMetadataEditor, resetMetadataEditor, saveMetadata, setMetadataForm } = editor;
+  const dialogRef = useModalFocus<HTMLFormElement>(() => { if (!metadataSaving) closeMetadataEditor(); });
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!coverFile) { setPreviewUrl(null); return; }
+    const url = URL.createObjectURL(coverFile);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [coverFile]);
   const seriesNames = useMemo(() => existingMetadataNames(books, "series"), [books]);
   const tagNames = useMemo(() => existingMetadataNames(books, "tag"), [books]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -59,26 +55,26 @@ export function MetadataEditorDialog({
     };
   }, [scheduleReveal]);
 
+  if (!metadataBook || !metadataForm) return null;
+
   return (
     <div className="modal-scrim metadata-editor-scrim" role="presentation">
-      <form className="modal-card metadata-editor-card" onSubmit={saveMetadata}>
+      <form ref={dialogRef} className="modal-card metadata-editor-card" onSubmit={saveMetadata}
+        role="dialog" aria-modal="true" aria-labelledby="metadata-editor-title" aria-busy={metadataSaving} tabIndex={-1}>
         <div className="modal-head">
-          <h2><Pencil size={18} /> Edit Book Info</h2>
+          <h2 id="metadata-editor-title"><Pencil size={18} /> Edit Book Info</h2>
           <button
             type="button"
             className="icon-button"
             aria-label="Close metadata editor"
-            onClick={() => {
-              setMetadataEditOpen(false);
-              setMetadataForm(null);
-              setMetadataError(null);
-            }}
+            onClick={closeMetadataEditor}
             disabled={metadataSaving}
           >
             <X size={16} />
           </button>
         </div>
 
+        <fieldset disabled={metadataSaving} className="metadata-edit-fields">
         <div
           className="metadata-edit-form"
           ref={scrollRef}
@@ -90,6 +86,27 @@ export function MetadataEditorDialog({
             }
           }}
         >
+          <div className="metadata-cover-field wide" aria-labelledby="metadata-cover-title">
+            <div className="metadata-cover-preview">
+              {previewUrl ? <img src={previewUrl} alt="Selected cover preview" /> : <CoverArt book={metadataBook} size="small" />}
+            </div>
+            <div className="metadata-cover-controls">
+              <span id="metadata-cover-title">Cover art</span>
+              <label>
+                <span>{metadataBook.hasCoverOverride ? "Replace cover" : "Choose cover"}</span>
+                <input type="file" accept={COVER_FILE_ACCEPT} disabled={metadataSaving}
+                  aria-describedby="metadata-cover-help" onChange={(event) => {
+                    chooseCover(event.currentTarget.files?.[0] ?? null);
+                    event.currentTarget.value = "";
+                  }} />
+              </label>
+              <p id="metadata-cover-help">JPEG, PNG, or WebP, up to 8 MiB and 16 million pixels (8192 pixels per side).</p>
+              {metadataBook.hasCoverOverride && !coverRemoval ? (
+                <button type="button" onClick={removeCover} disabled={metadataSaving}>Restore original cover</button>
+              ) : null}
+              <p role="status">{coverRemoval ? "Original cover will be restored when you save." : coverFile ? `${coverFile.name} will replace the cover when you save.` : "Cover changes apply with Save Info."}</p>
+            </div>
+          </div>
           <label className="wide">
             <span>Title</span>
             <input
@@ -259,13 +276,15 @@ export function MetadataEditorDialog({
           </label>
         </div>
 
-        {metadataError ? <p className="metadata-edit-error">{metadataError}</p> : null}
+        </fieldset>
+
+        {metadataError ? <p className="metadata-edit-error" role="alert">{metadataError}</p> : null}
 
         <div className="metadata-edit-actions">
           <button
             type="button"
-            onClick={() => selectedBook && setMetadataForm(metadataEditorFromBook(selectedBook))}
-            disabled={metadataSaving || !selectedBook}
+            onClick={resetMetadataEditor}
+            disabled={metadataSaving}
           >
             Reset
           </button>

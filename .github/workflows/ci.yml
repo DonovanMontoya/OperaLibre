@@ -103,7 +103,16 @@ jobs:
       - name: Test Duo layouts, offline shelf, modal interactions, and per-address sign-in
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts cover-editor.spec.ts
+
+      - name: Upload cover editor screenshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: operalibre-cover-editor
+          path: output/lifecycle/**/mobile-cover-editor.png
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Build
         run: npm run build -w @operalibre/web
@@ -232,6 +241,9 @@ jobs:
         run: |
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
+
+      - name: Test iOS CarPlay cover cache
+        run: python3 script/test_car_artwork.py
 
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
