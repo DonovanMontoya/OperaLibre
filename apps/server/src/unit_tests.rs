@@ -120,6 +120,8 @@ fn book_with_tracks(duration_seconds: Option<f64>, tracks: Vec<super::Track>) ->
         duration_seconds,
         track_count: tracks.len(),
         cover_art_url: None,
+        has_cover_override: false,
+        cover_art_content_type: None,
         description: None,
         genres: Vec::new(),
         tags: Vec::new(),

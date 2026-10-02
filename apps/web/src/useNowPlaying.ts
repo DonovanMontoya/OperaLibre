@@ -50,9 +50,10 @@ export function useNowPlaying({
       setMediaArtworkUrl(networkArtwork);
       return;
     }
+    setMediaArtworkUrl(networkArtwork);
     void getOfflineCoverUrl(book).then((localArtwork) => {
       if (active) setMediaArtworkUrl(localArtwork ?? networkArtwork);
-    });
+    }).catch(() => undefined);
     return () => {
       active = false;
     };
