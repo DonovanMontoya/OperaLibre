@@ -5270,16 +5270,13 @@ async fn epub_entries_load_independently_with_media_auth_and_revalidation() {
     );
 }
 
-/// A server holding an EPUB whose first chapter is far larger than what is
-/// decompressed ahead of the client. Returns the book and companion ids and
-/// the archive as it was written.
-async fn server_with_large_epub_chapter() -> (TestServer, String, String, Vec<u8>) {
+/// A server holding `epub` as the first book's companion. Returns the owner's
+/// session token and the book and companion ids.
+async fn server_with_epub(epub: Vec<u8>) -> (TestServer, String, String, String) {
     let server = TestServer::start(1).await;
     let token = server.setup_owner().await;
-    let chapter = "<p>The meadow was quiet in the early morning light.</p>".repeat(20_000);
-    let epub = alignment::build_test_epub_with_text(&chapter, "<p>Later chapter</p>");
     server
-        .add_companions_to_first_book(&token, &[("Book 00.epub", epub.clone())])
+        .add_companions_to_first_book(&token, &[("Book 00.epub", epub)])
         .await;
     let books = server.get("/api/books", &token).await.json();
     let book = &books[0];
@@ -5292,12 +5289,18 @@ async fn server_with_large_epub_chapter() -> (TestServer, String, String, Vec<u8
         .as_str()
         .unwrap()
         .to_string();
-    (
-        server,
-        book["id"].as_str().unwrap().to_string(),
-        companion,
-        epub,
-    )
+    let book_id = book["id"].as_str().unwrap().to_string();
+    (server, token, book_id, companion)
+}
+
+/// A server holding an EPUB whose first chapter is far larger than what is
+/// decompressed ahead of the client. Returns the book and companion ids and
+/// the archive as it was written.
+async fn server_with_large_epub_chapter() -> (TestServer, String, String, Vec<u8>) {
+    let chapter = "<p>The meadow was quiet in the early morning light.</p>".repeat(20_000);
+    let epub = alignment::build_test_epub_with_text(&chapter, "<p>Later chapter</p>");
+    let (server, _, book_id, companion) = server_with_epub(epub.clone()).await;
+    (server, book_id, companion, epub)
 }
 
 const LARGE_EPUB_CHAPTER: &str = "OEBPS/text/ch1.xhtml";
@@ -5395,6 +5398,136 @@ async fn a_damaged_epub_entry_fails_rather_than_ending_short() {
         axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .is_err()
+    );
+}
+
+/// A picture that fills its last chunk exactly reaches its end, and with it
+/// its checksum, only on the read after. Over a real connection the response
+/// is complete the moment its declared length has gone out, and nothing found
+/// afterwards can take it back.
+#[tokio::test]
+async fn a_damaged_epub_entry_that_fills_its_last_chunk_is_not_sent_as_complete() {
+    use std::io::Write;
+    const PICTURE: &str = "OEBPS/images/plate.png";
+    let picture: Vec<u8> = (0..2 * EPUB_ENTRY_CHUNK_BYTES)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let mut writer = zip::ZipWriter::new_append(std::io::Cursor::new(
+        alignment::build_test_epub_with_text("<p>Chapter</p>", "<p>Later chapter</p>"),
+    ))
+    .unwrap();
+    // Stored, so that only the checksum can tell the damage.
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    writer.start_file(PICTURE, stored).unwrap();
+    writer.write_all(&picture).unwrap();
+    let mut epub = writer.finish().unwrap().into_inner();
+    let (server, token, book_id, companion) = server_with_epub(epub.clone()).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = server.router.clone();
+    let serving = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let client = reqwest::Client::new();
+    let fetch = || async {
+        client
+            .get(format!(
+                "http://{address}/api/books/{book_id}/companions/{companion}/entries/{PICTURE}"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+    };
+
+    let intact = fetch().await;
+    assert_eq!(intact.status().as_u16(), 200);
+    assert!(intact.bytes().await.unwrap() == picture);
+
+    let last_byte = {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&epub)).unwrap();
+        let entry = archive.by_name(PICTURE).unwrap();
+        entry.data_start().unwrap() + entry.size() - 1
+    };
+    epub[last_byte as usize] ^= 0xff;
+    std::fs::write(server.library_root.join("Book 00/Book 00.epub"), epub).unwrap();
+    let damaged = fetch().await;
+    assert_eq!(damaged.status().as_u16(), 200);
+    let received = damaged.bytes().await;
+    serving.abort();
+    assert!(
+        received.is_err(),
+        "a damaged picture arrived as a whole one"
+    );
+}
+
+/// Text that compression cannot fold away, so a compressed response is taken
+/// at about the pace its member is read.
+fn incompressible_text(length: usize) -> String {
+    use std::fmt::Write;
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut text = String::with_capacity(length + 16);
+    while text.len() < length {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        write!(text, "{state:016x}").unwrap();
+    }
+    text
+}
+
+/// A reader who stops taking a chapter loses the slot, and on coming back
+/// must not be told that what they hold is the whole of it. Compressed, a
+/// chapter cut off there would otherwise end as cleanly as a complete one.
+#[tokio::test]
+async fn a_stalled_epub_entry_gives_up_its_slot_and_fails_when_the_reader_returns() {
+    use axum::body::HttpBody;
+    let chapter = incompressible_text(4 * 1024 * 1024);
+    let epub = alignment::build_test_epub_with_text(&chapter, "<p>Later chapter</p>");
+    let (server, token, book_id, companion) = server_with_epub(epub).await;
+    let mut request = Request::builder()
+        .uri(format!(
+            "/api/books/{book_id}/companions/{companion}/entries/{LARGE_EPUB_CHAPTER}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            51234,
+        ))));
+    let response = server.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+    let mut body = response.into_body();
+    std::future::poll_fn(|context| std::pin::Pin::new(&mut body).poll_frame(context))
+        .await
+        .expect("the chapter has begun")
+        .unwrap();
+
+    // Nothing more is taken. The worker fills what little room there is and
+    // waits; only the clock can release it.
+    let slots = server.state.epub_entry_slots.clone();
+    assert_eq!(slots.available_permits(), EPUB_ENTRY_CONCURRENCY - 1);
+    tokio::time::pause();
+    while slots.available_permits() < EPUB_ENTRY_CONCURRENCY {
+        tokio::time::advance(EPUB_ENTRY_STALL).await;
+    }
+    tokio::time::resume();
+
+    assert!(
+        axum::body::to_bytes(body, usize::MAX).await.is_err(),
+        "a chapter cut short arrived as a whole one"
     );
 }
 

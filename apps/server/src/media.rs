@@ -145,12 +145,12 @@ pub(crate) async fn get_companion_file(
 /// small on modest hardware however many requests arrive together.
 pub(crate) const EPUB_ENTRY_CONCURRENCY: usize = 8;
 
-const EPUB_ENTRY_CHUNK_BYTES: usize = 64 * 1024;
+pub(crate) const EPUB_ENTRY_CHUNK_BYTES: usize = 64 * 1024;
 
 /// How long a reader may leave a chunk untaken before its slot is reclaimed.
 /// A phone that sleeps mid-chapter keeps its connection open for minutes; it
 /// must not keep the other readers waiting that long.
-const EPUB_ENTRY_STALL: Duration = Duration::from_secs(30);
+pub(crate) const EPUB_ENTRY_STALL: Duration = Duration::from_secs(30);
 
 /// Read just one ZIP member. No extraction directory or whole-book allocation:
 /// even a large illustrated EPUB sends only the requested chapter or image,
@@ -252,33 +252,36 @@ pub(crate) async fn get_epub_entry(
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut send = |chunk: io::Result<Bytes>| {
+        let mut send = |chunk| {
             runtime
                 .block_on(chunks.send_timeout(chunk, EPUB_ENTRY_STALL))
                 .is_ok()
         };
-        // A damaged member ends the response with an error instead of passing
-        // for a complete one.
+        // Whatever stops the worker early, it says nothing to the client: the
+        // response then ends short of its declared size, and its reader turns
+        // that into an error.
         if let Err(error) = read_epub_entry(&mut archive, index, size, &mut send) {
-            send(Err(error));
+            tracing::warn!("could not read EPUB entry: {error}");
         }
     });
     Ok(response.body(Body::from_stream(ReaderStream::with_capacity(
         EpubEntryReader {
             chunks: receiver,
             chunk: Bytes::new(),
+            remaining: size,
         },
         EPUB_ENTRY_CHUNK_BYTES,
     )))?)
 }
 
 /// Decompress one member in chunks, handing each to `send` before reading the
-/// next. Stops early, without an error, once `send` reports the client gone.
+/// next. Stops early, without an error, once `send` reports the client gone
+/// or no longer reading.
 fn read_epub_entry(
     archive: &mut zip::ZipArchive<std::fs::File>,
     index: usize,
     size: u64,
-    send: &mut impl FnMut(io::Result<Bytes>) -> bool,
+    send: &mut impl FnMut(Bytes) -> bool,
 ) -> io::Result<()> {
     let mut entry = archive.by_index(index).map_err(io::Error::other)?;
     let mut sent = 0_u64;
@@ -290,13 +293,16 @@ fn read_epub_entry(
         sent += read as u64;
         // The header's size was checked against the limit and promised as the
         // Content-Length; a member that expands past it is not to be trusted.
-        if sent > size {
+        // One that fills its last chunk exactly has not reached its end yet,
+        // which is where the checksum is compared, so look one byte further
+        // before sending what would complete the response.
+        if sent > size || (sent == size && entry.read(&mut [0])? != 0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "EPUB entry is larger than its header declares",
             ));
         }
-        if read == 0 || !send(Ok(chunk.into())) {
+        if read == 0 || !send(chunk.into()) {
             return Ok(());
         }
     }
@@ -304,8 +310,10 @@ fn read_epub_entry(
 
 /// The client's end of a member being decompressed on a blocking worker.
 struct EpubEntryReader {
-    chunks: tokio::sync::mpsc::Receiver<io::Result<Bytes>>,
+    chunks: tokio::sync::mpsc::Receiver<Bytes>,
     chunk: Bytes,
+    /// How much of the declared size has yet to be handed to the client.
+    remaining: u64,
 }
 
 impl tokio::io::AsyncRead for EpubEntryReader {
@@ -316,12 +324,22 @@ impl tokio::io::AsyncRead for EpubEntryReader {
     ) -> std::task::Poll<io::Result<()>> {
         if self.chunk.is_empty() {
             match std::task::ready!(self.chunks.poll_recv(context)) {
-                Some(chunk) => self.chunk = chunk?,
+                Some(chunk) => self.chunk = chunk,
+                // The worker stopped on a damaged member or gave up on a
+                // reader who had stalled. Compressed, a response that merely
+                // ended here would pass for a complete one.
+                None if self.remaining > 0 => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "EPUB entry ended before its declared size",
+                    )));
+                }
                 None => return std::task::Poll::Ready(Ok(())),
             }
         }
         let length = self.chunk.len().min(buffer.remaining());
         buffer.put_slice(&self.chunk.split_to(length));
+        self.remaining -= length as u64;
         std::task::Poll::Ready(Ok(()))
     }
 }
