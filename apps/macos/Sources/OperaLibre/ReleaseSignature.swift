@@ -164,12 +164,15 @@ func updateEnvelopeMessage(type: String, payload: String) -> Data {
 }
 
 enum UpdateManifestError: LocalizedError {
+    case tooLarge
     case malformed
     case untrusted
     case unsupportedSchema(Int)
 
     var errorDescription: String? {
         switch self {
+        case .tooLarge:
+            return "The update manifest is too large."
         case .malformed:
             return "The update manifest is not valid."
         case .untrusted:
@@ -178,6 +181,27 @@ enum UpdateManifestError: LocalizedError {
             return "The update manifest uses schema \(schema), which this version cannot read."
         }
     }
+}
+
+/// Collects a manifest response body, giving up as soon as it passes `maxUpdateManifestBytes`
+/// so an unsigned response cannot make this app hold more than that. `declaredLength` is the
+/// response's Content-Length, negative when it has none; the bytes are counted either way,
+/// because the header is only the sender's claim.
+func readUpdateManifestBody<Bytes: AsyncSequence>(
+    _ bytes: Bytes,
+    declaredLength: Int64
+) async throws -> Data where Bytes.Element == UInt8 {
+    guard declaredLength <= Int64(maxUpdateManifestBytes) else {
+        throw UpdateManifestError.tooLarge
+    }
+    var body = Data()
+    for try await byte in bytes {
+        guard body.count < maxUpdateManifestBytes else {
+            throw UpdateManifestError.tooLarge
+        }
+        body.append(byte)
+    }
+    return body
 }
 
 /// Verifies a manifest file's signatures, following any key rotations it carries. Nothing in

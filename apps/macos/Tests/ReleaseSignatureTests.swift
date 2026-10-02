@@ -3,9 +3,28 @@ import Foundation
 // Checks the manifest fixture script/release_signing.test.mjs writes from test-only keys, so
 // the Node signer and this verifier must agree byte for byte. Run from the repository root.
 
+/// A response body of `count` bytes that records how many of them were actually read.
+private final class CountedBytes: AsyncSequence, AsyncIteratorProtocol {
+    typealias Element = UInt8
+    let count: Int
+    private(set) var read = 0
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    func makeAsyncIterator() -> CountedBytes { self }
+
+    func next() async -> UInt8? {
+        guard read < count else { return nil }
+        read += 1
+        return 0x20
+    }
+}
+
 @main
 struct ReleaseSignatureTests {
-    static func main() {
+    static func main() async {
         let fixtureData = try! Data(contentsOf: URL(fileURLWithPath: "script/fixtures/update-manifest.json"))
         let fixture = try! JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
         let root = TrustedRoot(version: 1, threshold: 1, publicKeys: fixture["rootKeys"] as! [String])!
@@ -44,6 +63,38 @@ struct ReleaseSignatureTests {
 
         // A root's signature must not pass for a manifest's.
         precondition(verifies((rotated["roots"] as! [Any])[0], root) == nil)
+
+        // A manifest body is bounded while it is read, not after it has been buffered.
+        func isTooLarge(_ bytes: CountedBytes, declaredLength: Int64) async -> Bool {
+            do {
+                _ = try await readUpdateManifestBody(bytes, declaredLength: declaredLength)
+                return false
+            } catch UpdateManifestError.tooLarge {
+                return true
+            } catch {
+                return false
+            }
+        }
+        let largest = CountedBytes(count: maxUpdateManifestBytes)
+        let largestBody = try? await readUpdateManifestBody(largest, declaredLength: -1)
+        precondition(largestBody?.count == maxUpdateManifestBytes)
+
+        let oversized = CountedBytes(count: 8 * maxUpdateManifestBytes)
+        let oversizedRejected = await isTooLarge(oversized, declaredLength: -1)
+        precondition(oversizedRejected)
+        precondition(oversized.read == maxUpdateManifestBytes + 1, "reading stops at the limit")
+
+        // An oversized Content-Length is refused before any of the body is read.
+        let declared = CountedBytes(count: 8 * maxUpdateManifestBytes)
+        let declaredRejected = await isTooLarge(declared, declaredLength: Int64(maxUpdateManifestBytes) + 1)
+        precondition(declaredRejected)
+        precondition(declared.read == 0)
+
+        // A small Content-Length does not excuse a body that keeps going.
+        let understated = CountedBytes(count: 8 * maxUpdateManifestBytes)
+        let understatedRejected = await isTooLarge(understated, declaredLength: 16)
+        precondition(understatedRejected)
+        precondition(understated.read == maxUpdateManifestBytes + 1)
 
         precondition(TrustedRoot.builtIn != nil, "releaseRootKeys must be valid Ed25519 keys")
         print("Release signature tests passed")
