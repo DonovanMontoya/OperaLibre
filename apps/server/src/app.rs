@@ -80,6 +80,7 @@ pub(crate) struct AppState {
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
+    pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
     pub(crate) libro: Arc<LibroImports>,
     /// Excludes backups and restores from the updater handoff through shutdown.

@@ -2,6 +2,7 @@
 //! companions, cover art, and whole-book archive downloads.
 
 use crate::*;
+use axum::body::Bytes;
 
 // ReaderStream otherwise reads in very small chunks. A larger media chunk
 // keeps browser buffers supplied through brief scheduler or network jitter,
@@ -139,8 +140,21 @@ pub(crate) async fn get_companion_file(
     serve_companion_document(&state, &file_path, headers).await
 }
 
+/// How many EPUB members may be open and decompressing at once. A slot costs
+/// one blocking worker and a few chunks of expanded data, so the total stays
+/// small on modest hardware however many requests arrive together.
+pub(crate) const EPUB_ENTRY_CONCURRENCY: usize = 8;
+
+const EPUB_ENTRY_CHUNK_BYTES: usize = 64 * 1024;
+
+/// How long a reader may leave a chunk untaken before its slot is reclaimed.
+/// A phone that sleeps mid-chapter keeps its connection open for minutes; it
+/// must not keep the other readers waiting that long.
+const EPUB_ENTRY_STALL: Duration = Duration::from_secs(30);
+
 /// Read just one ZIP member. No extraction directory or whole-book allocation:
-/// even a large illustrated EPUB sends only the requested chapter or image.
+/// even a large illustrated EPUB sends only the requested chapter or image,
+/// and that is decompressed a chunk at a time as the client takes it.
 pub(crate) async fn get_epub_entry(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
@@ -168,30 +182,39 @@ pub(crate) async fn get_epub_entry(
             .cloned()
             .ok_or(ApiError::not_found("EPUB path not found"))?
     };
+    // Requests beyond the limit queue here, before any blocking work or
+    // allocation exists for them. The permit then travels with that work
+    // rather than with this future, so a request abandoned mid-read still
+    // counts until its archive is closed.
+    let permit = state
+        .epub_entry_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("EPUB entry workers are unavailable."))?;
     let root = state.library_root.clone();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
+    let (response, member) = tokio::task::spawn_blocking(move || {
         let (file, metadata) = open_contained_file(&path, &[root])
             .map_err(|_| ApiError::not_found("EPUB not found"))?;
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|_| ApiError::bad_request("Invalid EPUB archive"))?;
-        let mut entry = archive
-            .by_name(&entry_path)
-            .map_err(|_| ApiError::not_found("EPUB entry not found"))?;
-        const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
-        if entry.is_dir() || entry.size() > MAX_ENTRY_BYTES {
-            return Err(ApiError::bad_request(
-                "EPUB entry is too large or is a directory",
-            ));
-        }
-        let etag = file_etag(&metadata).map(|value| {
-            format!(
-                "\"{}-{:x}-{:x}\"",
-                value.trim_matches('"'),
-                entry.crc32(),
-                entry.size()
-            )
-        });
+        let index = archive
+            .index_for_name(&entry_path)
+            .ok_or(ApiError::not_found("EPUB entry not found"))?;
+        let (size, crc32) = {
+            let entry = archive
+                .by_index(index)
+                .map_err(|_| ApiError::not_found("EPUB entry not found"))?;
+            const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+            if entry.is_dir() || entry.size() > MAX_ENTRY_BYTES {
+                return Err(ApiError::bad_request(
+                    "EPUB entry is too large or is a directory",
+                ));
+            }
+            (entry.size(), entry.crc32())
+        };
+        let etag = file_etag(&metadata)
+            .map(|value| format!("\"{}-{:x}-{:x}\"", value.trim_matches('"'), crc32, size));
         let mut response = Response::builder()
             .header(CACHE_CONTROL, COMPANION_CACHE_CONTROL)
             .header("x-content-type-options", "nosniff")
@@ -204,28 +227,103 @@ pub(crate) async fn get_epub_entry(
         if let Some(etag) = etag.as_deref() {
             response = response.header(ETAG, etag);
             if if_none_match_matches(&headers, etag) {
-                return Ok(response
-                    .status(StatusCode::NOT_MODIFIED)
-                    .body(Body::empty())?);
+                return Ok((response.status(StatusCode::NOT_MODIFIED), None));
             }
         }
         let content_type = mime_guess::from_path(&entry_path)
             .first_or_octet_stream()
             .to_string();
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut entry)
-            .take(MAX_ENTRY_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_ENTRY_BYTES {
-            return Err(ApiError::bad_request("EPUB entry is too large"));
-        }
-        Ok(response
-            .header(CONTENT_TYPE, content_type)
-            .header(CONTENT_LENGTH, bytes.len())
-            .body(Body::from(bytes))?)
+        Ok((
+            response
+                .header(CONTENT_TYPE, content_type)
+                .header(CONTENT_LENGTH, size),
+            Some((archive, index, size, permit)),
+        ))
     })
     .await
-    .map_err(|error| ApiError::internal(format!("Could not read EPUB entry: {error}")))?
+    .map_err(|error| ApiError::internal(format!("Could not read EPUB entry: {error}")))??;
+    let Some((mut archive, index, size, permit)) = member else {
+        return Ok(response.body(Body::empty())?);
+    };
+
+    // One chunk waits in the channel while the next is decompressed; the
+    // worker goes no further until the client has taken it.
+    let (chunks, receiver) = tokio::sync::mpsc::channel(1);
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut send = |chunk: io::Result<Bytes>| {
+            runtime
+                .block_on(chunks.send_timeout(chunk, EPUB_ENTRY_STALL))
+                .is_ok()
+        };
+        // A damaged member ends the response with an error instead of passing
+        // for a complete one.
+        if let Err(error) = read_epub_entry(&mut archive, index, size, &mut send) {
+            send(Err(error));
+        }
+    });
+    Ok(response.body(Body::from_stream(ReaderStream::with_capacity(
+        EpubEntryReader {
+            chunks: receiver,
+            chunk: Bytes::new(),
+        },
+        EPUB_ENTRY_CHUNK_BYTES,
+    )))?)
+}
+
+/// Decompress one member in chunks, handing each to `send` before reading the
+/// next. Stops early, without an error, once `send` reports the client gone.
+fn read_epub_entry(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    index: usize,
+    size: u64,
+    send: &mut impl FnMut(io::Result<Bytes>) -> bool,
+) -> io::Result<()> {
+    let mut entry = archive.by_index(index).map_err(io::Error::other)?;
+    let mut sent = 0_u64;
+    loop {
+        let mut chunk = Vec::with_capacity(EPUB_ENTRY_CHUNK_BYTES);
+        let read = Read::by_ref(&mut entry)
+            .take(EPUB_ENTRY_CHUNK_BYTES as u64)
+            .read_to_end(&mut chunk)?;
+        sent += read as u64;
+        // The header's size was checked against the limit and promised as the
+        // Content-Length; a member that expands past it is not to be trusted.
+        if sent > size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "EPUB entry is larger than its header declares",
+            ));
+        }
+        if read == 0 || !send(Ok(chunk.into())) {
+            return Ok(());
+        }
+    }
+}
+
+/// The client's end of a member being decompressed on a blocking worker.
+struct EpubEntryReader {
+    chunks: tokio::sync::mpsc::Receiver<io::Result<Bytes>>,
+    chunk: Bytes,
+}
+
+impl tokio::io::AsyncRead for EpubEntryReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        if self.chunk.is_empty() {
+            match std::task::ready!(self.chunks.poll_recv(context)) {
+                Some(chunk) => self.chunk = chunk?,
+                None => return std::task::Poll::Ready(Ok(())),
+            }
+        }
+        let length = self.chunk.len().min(buffer.remaining());
+        buffer.put_slice(&self.chunk.split_to(length));
+        std::task::Poll::Ready(Ok(()))
+    }
 }
 
 async fn serve_companion_document(
