@@ -70,6 +70,10 @@ export function useCarPlay({
     return books
       .map((book) => [
         book.id,
+        book.coverArtUrl ?? "",
+        book.coverArtContentType ?? "",
+        book.localCoverPath ?? "",
+        book.hasCoverOverride ?? "",
         Math.floor((book.progress?.bookPositionSeconds ?? 0) / 60),
         book.progress?.status ?? "",
         downloadedBookIds.has(book.id) ? "1" : "0",
