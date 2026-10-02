@@ -234,11 +234,14 @@ impl Drop for ProcessGroup {
 // The child is assigned just after it starts, so a grandchild it launched in
 // that instant would escape.
 #[cfg(windows)]
-struct ProcessGroup(windows_sys::Win32::Foundation::HANDLE);
+struct ProcessGroup {
+    _job: std::os::windows::io::OwnedHandle,
+}
 
 #[cfg(windows)]
 impl ProcessGroup {
     fn new(child: &tokio::process::Child) -> anyhow::Result<Self> {
+        use std::os::windows::io::FromRawHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -252,7 +255,9 @@ impl ProcessGroup {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             ensure!(!job.is_null(), "Could not create a job for Libation");
-            let group = Self(job);
+            let group = Self {
+                _job: std::os::windows::io::OwnedHandle::from_raw_handle(job),
+            };
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             ensure!(
@@ -270,13 +275,35 @@ impl ProcessGroup {
     }
 }
 
-#[cfg(windows)]
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        // SAFETY: the handle is ours; closing it kills every process in the job.
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.0);
-        }
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn job_guard_can_cross_spawn_await_and_stops_its_child() {
+        let mut child = Command::new("ping.exe")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let group = ProcessGroup::new(&child).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+
+        // Production holds the job across awaits inside a spawned job future.
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            drop(group);
+        })
+        .await
+        .unwrap();
+
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .expect("Closing the job did not stop its child")
+            .unwrap();
+        assert!(!status.success());
     }
 }
 
