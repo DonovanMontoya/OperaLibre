@@ -144,3 +144,22 @@ test('invalid or oversized input is rejected before upload and the mobile editor
   await expect(page.getByRole('button', { name: 'Save Info', exact: true })).toBeInViewport();
   expect(writes).toHaveLength(0);
 });
+
+for (const native of [false, true]) for (const width of [390, 1440]) {
+  test(`${native ? 'native' : 'web'} editor fields and actions stay separate and reachable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await setup(page, { native });
+    const bounds = await page.evaluate(() => ({
+      fieldsBottom: document.querySelector('.metadata-edit-form')!.getBoundingClientRect().bottom,
+      actionsTop: document.querySelector('.metadata-edit-actions')!.getBoundingClientRect().top
+    }));
+    expect(bounds.fieldsBottom).toBeLessThanOrEqual(bounds.actionsTop);
+    const description = page.getByRole('textbox', { name: /^Description/ });
+    await description.fill('Every field remains editable after scrolling.');
+    await expect(description).toBeInViewport();
+    await page.getByRole('button', { name: 'Save Info', exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('button', { name: 'Save Info', exact: true })).toBeInViewport();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+}

@@ -4,8 +4,11 @@ import type { Book } from "./types";
 import { getServerStorageKey, removeBookCover, updateBookMetadata, uploadBookCover } from "./api";
 import { coverFileError, mergeBookEdit } from "./bookCover";
 import { errorMessage } from "./formatting";
+import { cacheLibrary } from "./offline";
 
-export function useMetadataEditor({ selectedBook, setBooks }: {
+export function useMetadataEditor({ books, currentUserId, selectedBook, setBooks }: {
+  books: Book[];
+  currentUserId: string;
   selectedBook: Book | null;
   setBooks: Dispatch<SetStateAction<Book[]>>;
 }) {
@@ -17,6 +20,11 @@ export function useMetadataEditor({ selectedBook, setBooks }: {
   const [coverRemoval, setCoverRemoval] = useState(false);
   const sessionRef = useRef(0);
   const pendingRef = useRef(new Set<string>());
+  const booksRef = useRef(books);
+  booksRef.current = books;
+  const scope = `${getServerStorageKey()}:${currentUserId}`;
+  const scopeRef = useRef<string | null>(scope);
+  scopeRef.current = scope;
 
   function closeMetadataEditor() {
     sessionRef.current += 1;
@@ -31,7 +39,10 @@ export function useMetadataEditor({ selectedBook, setBooks }: {
   useEffect(() => {
     if (metadataBook && metadataBook.id !== selectedBook?.id) closeMetadataEditor();
   }, [metadataBook, selectedBook?.id]);
-  useEffect(() => () => { sessionRef.current += 1; }, []);
+  useEffect(() => {
+    scopeRef.current = scope;
+    return () => { sessionRef.current += 1; scopeRef.current = null; };
+  }, [scope]);
 
   function openMetadataEditor(book: Book) {
     sessionRef.current += 1;
@@ -91,11 +102,23 @@ export function useMetadataEditor({ selectedBook, setBooks }: {
       return;
     }
     const session = sessionRef.current;
-    const isCurrent = () => sessionRef.current === session && getServerStorageKey() === server;
-    function applyResult(updated: Book, kind: "metadata" | "cover") {
+    const sameScope = () => scopeRef.current === scope && getServerStorageKey() === server;
+    const isCurrent = () => sessionRef.current === session && sameScope();
+    let cacheFailed = false;
+    async function applyResult(updated: Book, kind: "metadata" | "cover") {
       if (updated.id !== bookId) throw new Error("The server returned a different book. Reload the library and try again.");
-      if (getServerStorageKey() !== server) return;
+      if (!sameScope()) return;
+      const next = booksRef.current.map((book) => book.id === bookId ? mergeBookEdit(book, updated, kind) : book);
+      booksRef.current = next;
       setBooks((existing) => existing.map((book) => book.id === bookId ? mergeBookEdit(book, updated, kind) : book));
+      // Finish persisting the current catalogue before acknowledging the edit,
+      // so an offline relaunch cannot revive a removed or replaced cover.
+      try {
+        await cacheLibrary(currentUserId, next.filter((book) => book.source !== "device"));
+        cacheFailed = false;
+      } catch {
+        cacheFailed = true;
+      }
     }
     pendingRef.current.add(pendingKey);
     setMetadataSaving(true);
@@ -103,13 +126,16 @@ export function useMetadataEditor({ selectedBook, setBooks }: {
     let infoSaved = false;
     try {
       const updatedBook = await updateBookMetadata(bookId, update);
-      applyResult(updatedBook, "metadata");
+      await applyResult(updatedBook, "metadata");
       infoSaved = true;
       // Do not send the second write to a different server after reconnecting.
-      if (getServerStorageKey() !== server) return;
-      if (coverFile) applyResult(await uploadBookCover(bookId, coverFile), "cover");
-      else if (coverRemoval) applyResult(await removeBookCover(bookId), "cover");
-      if (isCurrent()) closeMetadataEditor();
+      if (!sameScope()) return;
+      if (coverFile) await applyResult(await uploadBookCover(bookId, coverFile), "cover");
+      else if (coverRemoval) await applyResult(await removeBookCover(bookId), "cover");
+      if (isCurrent()) {
+        if (cacheFailed) setMetadataError("Your changes were saved on the server, but the offline library could not be updated. Retry Save Info before going offline.");
+        else closeMetadataEditor();
+      }
     } catch (error) {
       if (isCurrent()) {
         const message = errorMessage(error, infoSaved ? "The cover could not be saved." : "Book info could not be saved.");

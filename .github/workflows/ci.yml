@@ -242,6 +242,9 @@ jobs:
           swiftc apps/web/ios/App/App/CarLibrary.swift apps/web/ios/Tests/CarLibraryTests.swift -o "$RUNNER_TEMP/car-library-tests"
           "$RUNNER_TEMP/car-library-tests"
 
+      - name: Test iOS CarPlay cover cache
+        run: python3 script/test_car_artwork.py
+
       - name: Install Rust for BookPlayer contract test
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 

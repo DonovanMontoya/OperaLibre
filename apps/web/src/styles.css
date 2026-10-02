@@ -6303,6 +6303,7 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 }
 
 .metadata-edit-fields {
+  flex-shrink: 0;
   border: 0;
   margin: 0;
   padding: 0;

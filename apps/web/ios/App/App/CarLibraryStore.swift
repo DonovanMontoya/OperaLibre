@@ -13,6 +13,7 @@ final class CarLibraryStore {
     private var cachedSnapshot: CarLibrarySnapshot?
     private let invalidatedKey = "operalibre.car-library-invalidated"
     private var artworkMemoryCache: [String: UIImage] = [:]
+    var onArtworkChange: (() -> Void)?
     /// Bumped by `clear()`, so a cover download already running for the
     /// signed-out library cannot put its results back.
     private var artworkEpoch = 0
@@ -132,13 +133,15 @@ final class CarLibraryStore {
     /// rather than blocking the car screen on a download, and the real cover
     /// lands in the cache for the next look.
     func artwork(for book: CarLibraryBook) -> UIImage {
-        if let image = artworkMemoryCache[book.id] { return image }
-        if let url = artworkDirectory?.appendingPathComponent("\(artworkFileName(book.id)).png"),
-           let data = try? Data(contentsOf: url),
-           let image = UIImage(data: data)
-        {
-            artworkMemoryCache[book.id] = image
-            return image
+        if let source = book.artworkUrl, !source.isEmpty {
+            if let image = artworkMemoryCache[book.id] { return image }
+            if let url = artworkDirectory?.appendingPathComponent("\(artworkFileName(book.id)).png"),
+               let data = try? Data(contentsOf: url),
+               let image = UIImage(data: data)
+            {
+                artworkMemoryCache[book.id] = image
+                return image
+            }
         }
         if let placeholder = placeholderCache[book.id] { return placeholder }
         let placeholder = spineArtwork()
@@ -213,6 +216,7 @@ final class CarLibraryStore {
                 result[book.id] = artworkUrl
             }
         }
+        artworkMemoryCache = artworkMemoryCache.filter { wanted[$0.key] != nil }
         let epoch = artworkEpoch
         queue.async { [weak self] in
             guard let self else { return }
@@ -220,6 +224,12 @@ final class CarLibraryStore {
             // that one saved, or writing its own copy back would drop it.
             var sources = UserDefaults.standard.dictionary(forKey: self.artworkSourcesKey)
                 as? [String: String] ?? [:]
+            for bookId in Set(sources.keys).union(snapshot.books.map(\.id)) where wanted[bookId] == nil {
+                if let file = self.artworkDirectory?.appendingPathComponent("\(self.artworkFileName(bookId)).png") {
+                    try? FileManager.default.removeItem(at: file)
+                }
+                sources.removeValue(forKey: bookId)
+            }
             for (bookId, source) in wanted where sources[bookId] != source {
                 guard
                     let url = resolveNativeAudioSourceURL(source),
@@ -230,11 +240,14 @@ final class CarLibraryStore {
                     let destination = self.artworkDirectory?
                         .appendingPathComponent("\(self.artworkFileName(bookId)).png")
                 else { continue }
-                try? encoded.write(to: destination, options: .atomic)
+                do { try encoded.write(to: destination, options: .atomic) }
+                catch { continue }
                 sources[bookId] = source
                 DispatchQueue.main.async {
-                    guard epoch == self.artworkEpoch else { return }
+                    guard epoch == self.artworkEpoch,
+                          self.cachedSnapshot?.book(withId: bookId)?.artworkUrl == source else { return }
                     self.artworkMemoryCache[bookId] = scaled
+                    self.onArtworkChange?()
                 }
             }
             UserDefaults.standard.set(sources, forKey: self.artworkSourcesKey)
