@@ -16,7 +16,7 @@ independently of the server releases.
 
 Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
 [`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
-through [`60d67013`](https://github.com/DonovanMontoya/OperaLibre/commit/60d670130374bbbb74ca867294f24096a456a277).
+through [`bf177955`](https://github.com/DonovanMontoya/OperaLibre/commit/bf17795555e7a90240c5a1b6f1d4a67769d0e2ba).
 This entry replaces the planned 1.2.7 notes. The distributed build number,
 channel, date, and archived source commit are pending confirmation.
 
@@ -70,6 +70,11 @@ channel, date, and archived source commit are pending confirmation.
   connections and download settings live in Settings, with visible refresh
   errors and continued account-management access in the browser.
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Owners and administrators can replace or restore audiobook covers in
+  Edit Info with a JPEG, PNG, or WebP. Saved artwork updates the offline shelf
+  and CarPlay without replacing downloaded audio or changing playback.
+  Cover editing requires a server with this feature and a writable library.
+  ([#246](https://github.com/DonovanMontoya/OperaLibre/pull/246))
 - Each saved server address keeps its own sign-in, preventing credentials
   from being reused for another address. EPUB pages are restricted to book
   resources instead of loading external content.
