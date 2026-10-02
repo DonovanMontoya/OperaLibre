@@ -9,7 +9,10 @@ import '../src/styles.css';
 Capacitor.isNativePlatform = () => true;
 Capacitor.getPlatform = () => 'ios';
 Capacitor.isPluginAvailable = () => false;
-localStorage.setItem('operalibre.serverUrl', location.origin);
-localStorage.setItem('operalibre.serverType', 'operalibre');
+// A spec that seeds its own server connection keeps it.
+if (!localStorage.getItem('operalibre.serverUrl')) {
+  localStorage.setItem('operalibre.serverUrl', location.origin);
+  localStorage.setItem('operalibre.serverType', 'operalibre');
+}
 markNativePlatform();
 createRoot(document.getElementById('root')!).render(<App />);

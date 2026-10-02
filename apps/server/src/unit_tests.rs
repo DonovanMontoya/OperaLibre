@@ -1769,6 +1769,7 @@ exit 0
         max_book_download_bytes: Some(super::DEFAULT_MAX_BOOK_DOWNLOAD_GIB * super::GIBIBYTE_BYTES),
         download_temp_dir: data_dir.join("download-temp"),
         min_download_free_bytes: super::DEFAULT_MIN_DOWNLOAD_FREE_GIB * super::GIBIBYTE_BYTES,
+        server_id: super::Arc::from("test-server-identity"),
         library_root: library_root.clone(),
         library_identities_file: data_dir.join("library-identities.json"),
         progress: super::Arc::new(super::ProgressStore::new(database.clone())),
@@ -1852,6 +1853,7 @@ exit 0
         download_task_slots: super::Arc::new(super::Semaphore::new(
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
+        epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
         upload_lock: super::Arc::new(super::Mutex::new(())),
         libro: super::Arc::new(super::LibroImports::default()),
         backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),

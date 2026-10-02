@@ -19,7 +19,7 @@ The web app obtains a session token and a separate scoped media token via `POST 
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. |
+| `GET` | `/api/health` | Liveness probe. Returns `200 OK` when the server is up. `serverId` is a random value that stays the same for the life of the installation, so a client can tell when two addresses reach different servers. It is public and is not proof of identity; never use it to decide where to send credentials. |
 | `GET` | `/api/auth/status` | Reports whether first-run setup is needed, whether the server requires a bootstrap token (`proxy` mode only, same for every client), and whether this client must set up locally. |
 | `POST` | `/api/auth/setup` | One-time owner creation. Every `proxy` client must send the current `setupToken`; `lan` setup is open to the trusted network, and `local` mode rejects remote setup. |
 | `POST` | `/api/auth/login` | Exchange username + password for session and scoped media tokens. |
@@ -100,7 +100,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/cover` | Uploaded cover override when present, otherwise artwork extracted from the audio files' embedded tags. |
 | `GET` | `/api/books/{book_id}/readalong` | The book's text companion (the `book`-kind entry of `companions`), if there is one. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
-| `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. |
+| `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. The server sends eight members at a time: further requests wait their turn, and a transfer the client leaves unread for 30 seconds is closed. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves an aligned sidecar or generated map when one exists; otherwise returns 404. Outdated maps remain available until replaced. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books restart generation from the beginning. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |

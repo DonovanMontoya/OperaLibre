@@ -50,8 +50,10 @@ import {
   isLocalMode,
   enterLocalMode,
   exitLocalMode,
+  forgetAllSignIns,
   logout as apiLogout,
   mediaUrl,
+  pinActiveServerId,
   reconnectUsingServerAliases,
   playbackReportingSession,
   setBookVolume,
@@ -262,6 +264,7 @@ export default function App() {
         setStoredMediaToken(status.mediaToken ?? getStoredToken());
         cacheOfflineUser(status.user);
         setAuthState({ phase: "ready", user: status.user });
+        void pinActiveServerId().catch(() => undefined);
         return;
       }
       const token = getStoredToken();
@@ -274,6 +277,7 @@ export default function App() {
         const user = await getMe();
         cacheOfflineUser(user);
         setAuthState({ phase: "ready", user });
+        void pinActiveServerId().catch(() => undefined);
       } catch (error) {
         // Keep the token when the server is simply unreachable; only a real
         // rejection should end the session.
@@ -394,10 +398,12 @@ export default function App() {
           setStoredMediaToken(response.mediaToken ?? response.token);
           cacheOfflineUser(response.user);
           setAuthState({ phase: "ready", user: response.user });
+          // Typing a password here is the user vouching for this address.
+          void pinActiveServerId(true).catch(() => undefined);
         }}
         onChangeServer={async () => {
           await clearCarLibrary();
-          setStoredToken(null);
+          forgetAllSignIns();
           clearServerUrl();
           setAuthState({ phase: "server" });
         }}
@@ -427,7 +433,7 @@ export default function App() {
         } catch {
           // ignore
         }
-        setStoredToken(null);
+        forgetAllSignIns();
         // Otherwise checkAuth's offline fallback signs the account straight
         // back in the next time the server cannot be reached.
         forgetOfflineUser();

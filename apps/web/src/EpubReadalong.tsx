@@ -1262,8 +1262,8 @@ export function EpubReadalong({
       const bounds = viewerRef.current?.getBoundingClientRect();
       // epub.js only gains a view manager once it has attached; a resize
       // before then throws inside the observer callback.
-      const attached = !!(rendition as unknown as { manager?: unknown } | null)?.manager;
-      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition && attached) {
+      const manager = (rendition as unknown as { manager?: { layout?: { name?: string } } } | null)?.manager;
+      if (bounds && bounds.width > 0 && bounds.height > 0 && rendition && manager) {
         // epub.js re-lays the chapter out and turns to the given place; left
         // to itself it would turn to the old page's first words instead,
         // which lands a little earlier with every pass.
@@ -1279,6 +1279,16 @@ export function EpubReadalong({
           Math.floor(bounds.height),
           pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined
         );
+        // epub.js can measure the new stage during its own layout pass before
+        // this observer runs. resize() then skips rebuilding the old-height
+        // page. Recreate that stale reflowable view at the same reading place.
+        const frame = viewerRef.current?.querySelector("iframe");
+        if (manager.layout?.name === "reflowable" && frame
+          && frame.offsetHeight !== Math.floor(bounds.height)) {
+          rendition.clear();
+          void rendition.display(pendingChapterHrefRef.current ?? anchorCfiRef.current ?? undefined)
+            .catch(() => undefined);
+        }
         setRelayoutTick((tick) => tick + 1);
       }
     });

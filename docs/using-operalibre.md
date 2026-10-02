@@ -96,6 +96,8 @@ The repository also includes a native iPhone app with background spoken-audio pl
 
 The app supports HTTP for private home-network and Tailscale-style addresses. Use HTTPS for a public server.
 
+To reach the same server from more than one network, save its other addresses under **Settings → Connection → Address aliases**. Each address keeps its own sign-in: the first time you use one, tap **Sign in** beside it and enter your password. After that the app moves between your signed-in addresses by itself whenever one stops answering. Signing out signs you out of all of them.
+
 #### Siri and Shortcuts
 
 On iOS 16 or later, say **“Siri, resume OperaLibre,”** **“Siri, resume my
