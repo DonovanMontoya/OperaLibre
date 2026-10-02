@@ -5444,10 +5444,9 @@ async fn a_damaged_epub_entry_that_fills_its_last_chunk_is_not_sent_as_complete(
             .bearer_auth(&token)
             .send()
             .await
-            .unwrap()
     };
 
-    let intact = fetch().await;
+    let intact = fetch().await.unwrap();
     assert_eq!(intact.status().as_u16(), 200);
     assert!(intact.bytes().await.unwrap() == picture);
 
@@ -5458,9 +5457,15 @@ async fn a_damaged_epub_entry_that_fills_its_last_chunk_is_not_sent_as_complete(
     };
     epub[last_byte as usize] ^= 0xff;
     std::fs::write(server.library_root.join("Book 00/Book 00.epub"), epub).unwrap();
-    let damaged = fetch().await;
-    assert_eq!(damaged.status().as_u16(), 200);
-    let received = damaged.bytes().await;
+    // The corrupt body can close the connection before headers are flushed.
+    // Either phase must fail, rather than delivering the complete picture.
+    let received = match fetch().await {
+        Ok(damaged) => {
+            assert_eq!(damaged.status().as_u16(), 200);
+            damaged.bytes().await
+        }
+        Err(error) => Err(error),
+    };
     serving.abort();
     assert!(
         received.is_err(),
