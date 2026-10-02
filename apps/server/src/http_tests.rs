@@ -794,6 +794,20 @@ async fn ebook_upload_rejects_bad_files_and_cleans_staging() {
             "expanded.epub",
             alignment::build_test_epub_with_text(&"x".repeat(8 * 1024 * 1024 + 1), ""),
         ),
+        (
+            "image-dense.epub",
+            alignment::build_test_epub_with_text(
+                &format!("Prose.{}", "<img/>".repeat(100_001)),
+                "",
+            ),
+        ),
+        (
+            "malformed.epub",
+            alignment::build_test_epub_with_text(
+                &format!("Prose.{}", "<script>".repeat(100_001)),
+                "",
+            ),
+        ),
     ] {
         let response = server.upload_ebook(&id, &owner, name, bytes).await;
         assert_eq!(
