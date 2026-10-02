@@ -47,4 +47,5 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+tokio = { version = "1.45", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

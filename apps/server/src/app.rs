@@ -12,6 +12,9 @@ pub(crate) struct AppState {
     pub(crate) max_book_download_bytes: Option<u64>,
     pub(crate) download_temp_dir: PathBuf,
     pub(crate) min_download_free_bytes: u64,
+    /// Random identity of this installation, reported by the health route so
+    /// apps can tell one server's addresses from another server's.
+    pub(crate) server_id: Arc<str>,
     pub(crate) library_root: PathBuf,
     pub(crate) library_identities_file: PathBuf,
     /// Saved playback positions. The only way to reach a listener's place.
@@ -77,6 +80,7 @@ pub(crate) struct AppState {
     pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginThrottle>>>,
     pub(crate) password_task_slots: Arc<Semaphore>,
     pub(crate) download_task_slots: Arc<Semaphore>,
+    pub(crate) epub_entry_slots: Arc<Semaphore>,
     pub(crate) upload_lock: Arc<Mutex<()>>,
     pub(crate) libro: Arc<LibroImports>,
     /// Excludes backups and restores from the updater handoff through shutdown.
@@ -518,7 +522,8 @@ pub(crate) async fn security_headers(
 
 /// Liveness, plus whether the catalogue is still being built: the listener
 /// is up before the first scan finishes, and a scan may be running at any
-/// time after that.
+/// time after that. `serverId` lets an app notice that a saved address
+/// reaches some other server before it treats the two as one library.
 pub(crate) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let library = state.library.read().await;
     let startup_scan_pending = library.startup_scan_pending;
@@ -530,6 +535,7 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<serde_json::Va
     let scan_running = state.rescan_lock.try_lock().is_err();
     Json(serde_json::json!({
         "ok": true,
+        "serverId": &*state.server_id,
         "scanning": startup_scan_pending || scan_running,
         "ready": catalogue_ready,
         "catalogueError": catalogue_error,

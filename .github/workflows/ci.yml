@@ -100,10 +100,10 @@ jobs:
       - name: Test development proxy
         run: node --experimental-strip-types --test script/dev_proxy.test.mjs
 
-      - name: Test Duo layouts, offline shelf, and modal interactions
+      - name: Test Duo layouts, offline shelf, modal interactions, and per-address sign-in
         run: |
           npx playwright install --with-deps chromium
-          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts cover-editor.spec.ts
+          npm run test:lifecycle -w @operalibre/web -- modal-focus.spec.ts duo-review.spec.ts duo-layout.spec.ts duo-reader-rail.spec.ts native-viewport.spec.ts address-sign-in.spec.ts cover-editor.spec.ts
 
       - name: Upload cover editor screenshot
         if: always()
@@ -116,6 +116,15 @@ jobs:
 
       - name: Build
         run: npm run build -w @operalibre/web
+
+      - name: Upload web lifecycle output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: operalibre-web-lifecycle-output
+          path: output/lifecycle
+          retention-days: 7
+          if-no-files-found: ignore
 
   playback:
     name: Playback lifecycle (browser)

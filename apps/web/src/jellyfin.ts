@@ -1,6 +1,7 @@
 import type { AuthUser, Book, Chapter, Progress, Track } from "./types";
 import { ApiError } from "./apiError.ts";
 import { summarizeBookProgress } from "./reliability.ts";
+import { readServerId } from "./serverIdentity.ts";
 
 const CLIENT_NAME = "OperaLibre";
 const CLIENT_VERSION = "0.1.0";
@@ -409,10 +410,11 @@ function mapBook(items: JellyfinItem[]): Book | null {
 }
 
 export async function pingJellyfin(baseUrl: string) {
-  await fetchWithTimeout(`${baseUrl}/System/Info/Public`, undefined, async (response) => {
+  return fetchWithTimeout(`${baseUrl}/System/Info/Public`, undefined, async (response) => {
     if (!response.ok) {
       throw new Error(`Jellyfin responded ${response.status}.`);
     }
+    return readServerId(await response.json().catch(() => null));
   });
 }
 
