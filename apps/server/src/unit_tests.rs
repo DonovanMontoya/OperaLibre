@@ -1880,8 +1880,6 @@ fn admin_user() -> super::AuthUser {
     }
 }
 
-#[cfg(unix)]
-#[cfg(unix)]
 fn stored_user(id: &str, is_admin: bool, is_owner: bool) -> super::User {
     super::User {
         id: id.to_string(),
@@ -2754,6 +2752,7 @@ fn job_timestamps_advance_when_the_clock_value_is_already_used() {
     assert_eq!(super::next_job_timestamp(&jobs), latest + 1);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn queued_jobs_record_when_they_begin_running() {
     let root = tempfile::tempdir().unwrap();
@@ -6349,6 +6348,7 @@ async fn selected_account_access_grant_checks_current_ownership() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn concurrent_libation_listings_reuse_one_export() {
     let root = tempfile::tempdir().unwrap();
