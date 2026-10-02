@@ -103,6 +103,14 @@ async fn download_with_budget(
     let mut child = command.spawn()?;
     #[cfg(unix)]
     let process_group = ProcessGroup(child.id().context("Missing Libation process ID")?);
+    #[cfg(windows)]
+    let process_group = match ProcessGroup::new(&child) {
+        Ok(group) => group,
+        Err(error) => {
+            let _ = child.kill().await;
+            return Err(error);
+        }
+    };
     let mut stdout = child.stdout.take().context("Missing Libation stdout")?;
     let mut stderr = child.stderr.take().context("Missing Libation stderr")?;
     let mut out = Vec::new();
@@ -117,7 +125,7 @@ async fn download_with_budget(
             result = monitor_budget(staging.path(), budget) => result,
         }
     };
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     drop(process_group);
     let status = match result {
         Ok(status) => status,
@@ -217,6 +225,57 @@ impl Drop for ProcessGroup {
         // SAFETY: the PID comes from our child, started in its own process group.
         unsafe {
             libc::kill(-(self.0 as i32), libc::SIGKILL);
+        }
+    }
+}
+
+// Windows has no process groups to signal. A job object that kills its members
+// when the last handle closes gives the same reach over decoder subprocesses.
+// The child is assigned just after it starts, so a grandchild it launched in
+// that instant would escape.
+#[cfg(windows)]
+struct ProcessGroup(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl ProcessGroup {
+    fn new(child: &tokio::process::Child) -> anyhow::Result<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        let process = child
+            .raw_handle()
+            .context("Missing Libation process handle")?;
+        // SAFETY: plain Win32 calls; the handle is owned by the returned guard
+        // and closed on every path, and `process` outlives the calls.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            ensure!(!job.is_null(), "Could not create a job for Libation");
+            let group = Self(job);
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            ensure!(
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                ) != 0
+                    && AssignProcessToJobObject(job, process as _) != 0,
+                "Could not place Libation in its job"
+            );
+            Ok(group)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        // SAFETY: the handle is ours; closing it kills every process in the job.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
     }
 }
