@@ -1852,6 +1852,9 @@ exit 0
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
         epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
+        epub_entry_account_slots: super::Arc::new(super::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         upload_lock: super::Arc::new(super::Mutex::new(())),
         libro: super::Arc::new(super::LibroImports::default()),
         backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),
@@ -8013,4 +8016,29 @@ async fn persisted_audible_ownership_requires_revalidation_for_reader_grants() {
             }
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn libation_download_budget_failure_is_reported_without_publishing() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, _) = fake_libation_state(root.path());
+    state.max_upload_bytes = Some(100);
+    let mut reader = admin_user();
+    reader.id = "reader".to_string();
+    reader.is_admin = false;
+    reader.is_owner = false;
+    let created = super::liberate_libation_book(
+        super::State(state.clone()),
+        super::Extension(reader),
+        super::Path("B000TEST00".to_string()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let job = wait_for_finished_job(&state, &created.job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(job.error.unwrap().contains("max_upload_gib"));
+    assert!(state.library.read().await.books.is_empty());
+    assert_eq!(std::fs::read_dir(&state.library_root).unwrap().count(), 0);
 }

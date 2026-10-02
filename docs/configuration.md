@@ -97,11 +97,11 @@ ffprobe_path =
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `max_upload_gib` | `20` | Maximum total size of one web-uploaded audiobook. Set to `0` only to delegate storage-exhaustion control to another trusted layer. |
+| `max_upload_gib` | `20` | Maximum total size of one web-uploaded audiobook or Libation title (including its temporary files). Set to `0` only to delegate storage-exhaustion control to another trusted layer. |
 | `max_book_download_gib` | `25` | Maximum source size that may be assembled into a temporary ZIP download. Set to `0` only when disk usage is constrained externally. |
 | `max_concurrent_book_downloads` | `1` | Simultaneous ZIP preparations/downloads. Accepted range: `1`–`32`. Each active archive can consume temporary disk space up to its book size. |
 | `download_temp_dir` | `data/download-temp` | Private staging directory for ZIP downloads. Put this on a data volume rather than a small operating-system temporary filesystem. Incomplete and completed archives are removed when their response ends. |
-| `min_download_free_gib` | `2` | Free space that must remain on the staging volume after a new archive is prepared. Set to `0` only when the volume is constrained and monitored elsewhere. |
+| `min_download_free_gib` | `2` | Free space that must remain on the staging volume after a new archive is prepared; also protects the library volume during Libation imports. Set to `0` only when the volume is constrained and monitored elsewhere. |
 
 When nginx is used, its `client_max_body_size` is an additional upload ceiling. Increase both that directive and `max_upload_gib` when deliberately supporting larger uploads.
 
