@@ -6354,10 +6354,6 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
   background: rgba(var(--lift-rgb), 0.9);
 }
 
-.metadata-cover-controls input[type="file"] {
-  font-size: 0.85rem;
-}
-
 .metadata-edit-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -6508,6 +6504,23 @@ html.native-app .connect-server-card .download-btn:not(.active):hover {
 .metadata-edit-form textarea {
   resize: vertical;
   line-height: 1.45;
+}
+
+.metadata-edit-form .metadata-cover-controls input[type="file"] {
+  min-height: 48px;
+  padding: 7px 8px;
+  line-height: 24px;
+}
+
+.metadata-cover-controls input[type="file"]::file-selector-button {
+  margin: 0 8px 0 0;
+  border: 1px solid rgba(var(--ink-rgb), 0.2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  background: rgba(var(--lift-rgb), 0.9);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .metadata-edit-error {
