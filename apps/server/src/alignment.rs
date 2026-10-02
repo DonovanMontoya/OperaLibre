@@ -72,6 +72,10 @@ pub struct WordTiming(pub f64, pub f64, pub u32, pub u32);
 // EPUB parsing
 // ---------------------------------------------------------------------------
 
+// Bounds parser work and the number of synthetic illustration sections in a
+// single spine document, independently of the archive's expanded-byte limits.
+const MAX_EPUB_DOCUMENT_TAGS: usize = 100_000;
+
 #[derive(Debug, Clone)]
 pub struct SpineSection {
     /// Manifest href exactly as written in the OPF (relative to the OPF dir).
@@ -163,7 +167,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
         let Some(document) = read_zip_text(archive, &document_path, &mut remaining)? else {
             continue;
         };
-        let text = html_to_text(&document);
+        let (text, trailing_images) = extract_html(&document, Some(MAX_EPUB_DOCUMENT_TAGS))?;
         section_paths.insert(document_path, sections.len());
         sections.push(SpineSection {
             href: item.href.clone(),
@@ -173,7 +177,7 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
         // prose document rather than a separate spine item. Empty logical
         // sections let its audio have a boundary without moving any text or
         // changing the href used by sentence highlights.
-        for _ in 0..trailing_image_count(&document) {
+        for _ in 0..trailing_images {
             sections.push(SpineSection {
                 href: item.href.clone(),
                 text: String::new(),
@@ -234,34 +238,6 @@ pub fn parse_epub_archive<R: Read + std::io::Seek>(
         language,
         image_count,
     })
-}
-
-fn trailing_image_count(document: &str) -> usize {
-    let lower = document.to_ascii_lowercase();
-    let Some(body) = lower.find("<body") else {
-        return 0;
-    };
-    let count = ["<img", "<svg"]
-        .iter()
-        .flat_map(|tag| {
-            lower[body..]
-                .match_indices(tag)
-                .map(move |(at, _)| (body + at, tag.len()))
-        })
-        .filter(|(at, length)| {
-            matches!(
-                lower.as_bytes().get(at + length),
-                Some(b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
-            ) && html_to_text(&document[*at..]).trim().is_empty()
-        })
-        .count();
-    // The existing section already represents the first picture on an
-    // image-only page. Additional figures may have their own audio markers.
-    if html_to_text(document).trim().is_empty() {
-        count.saturating_sub(1)
-    } else {
-        count
-    }
 }
 
 /// Text content of the first `<name>...</name>` element, if any.
@@ -440,17 +416,25 @@ const BLOCK_TAGS: &[&str] = &[
 /// Extracts readable text from an (X)HTML document: skips head/script/style,
 /// collapses whitespace, and inserts paragraph breaks at block elements.
 pub fn html_to_text(document: &str) -> String {
-    let body = document
-        .to_ascii_lowercase()
-        .find("<body")
-        .map(|index| document[index..].to_string())
-        .unwrap_or_else(|| document.to_string());
+    extract_html(document, None)
+        .expect("text extraction without a tag limit cannot fail")
+        .0
+}
+
+fn extract_html(document: &str, tag_limit: Option<usize>) -> anyhow::Result<(String, usize)> {
+    let lower = document.to_ascii_lowercase();
+    let body_start = lower.find("<body");
+    let body = &document[body_start.unwrap_or(0)..];
+    let lower = &lower[body_start.unwrap_or(0)..];
 
     let mut out = String::new();
+    let mut trailing_images: usize = 0;
+    let mut tag_count = 0;
+    let mut missing_close = [false; 3];
     let mut pending_break = false;
     let mut pending_space = false;
     let mut chars = body.char_indices().peekable();
-    let bytes = body.as_str();
+    let bytes = body;
 
     while let Some((index, ch)) = chars.next() {
         if ch != '<' {
@@ -458,6 +442,9 @@ pub fn html_to_text(document: &str) -> String {
                 if piece.is_whitespace() {
                     pending_space = true;
                 } else {
+                    // Every readable character disqualifies all earlier
+                    // pictures; no image candidate needs a suffix reparse.
+                    trailing_images = 0;
                     if pending_break && !out.is_empty() {
                         out.push_str("\n\n");
                     } else if pending_space && !out.is_empty() && !out.ends_with('\n') {
@@ -470,6 +457,12 @@ pub fn html_to_text(document: &str) -> String {
             }
             continue;
         }
+
+        tag_count += 1;
+        anyhow::ensure!(
+            tag_limit.is_none_or(|limit| tag_count <= limit),
+            "EPUB spine document contains too many markup tags."
+        );
 
         // Comments.
         if bytes[index..].starts_with("<!--") {
@@ -491,17 +484,35 @@ pub fn html_to_text(document: &str) -> String {
             .collect::<String>()
             .to_lowercase();
 
+        if body_start.is_some()
+            && !tag.starts_with('/')
+            && matches!(tag_name.as_str(), "img" | "svg")
+            && matches!(
+                body.as_bytes().get(index + 1 + tag_name.len()),
+                Some(b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
+            )
+        {
+            trailing_images += 1;
+        }
+
         // Skip container elements whose text should never be narrated.
-        if !tag.starts_with('/') && matches!(tag_name.as_str(), "script" | "style" | "head") {
+        if let Some(kind) = ["script", "style", "head"]
+            .iter()
+            .position(|name| *name == tag_name && !tag.starts_with('/'))
+            .filter(|kind| !missing_close[*kind])
+        {
             let close = format!("</{tag_name}");
             let search_start = index + end + 1;
-            if let Some(close_at) = bytes[search_start..].to_ascii_lowercase().find(&close) {
+            if let Some(close_at) = lower[search_start..].find(&close) {
                 let after_close = search_start + close_at;
                 if let Some(close_end) = bytes[after_close..].find('>') {
                     skip_to(&mut chars, after_close + close_end + 1);
                     continue;
                 }
             }
+            // A failed search remains failed for all later openings of this
+            // kind. Cache it so malformed markup cannot rescan the suffix.
+            missing_close[kind] = true;
         }
 
         if BLOCK_TAGS.contains(&tag_name.as_str()) {
@@ -510,7 +521,11 @@ pub fn html_to_text(document: &str) -> String {
         skip_to(&mut chars, index + end + 1);
     }
 
-    out
+    // The existing section represents the first picture on an image-only page.
+    if out.is_empty() {
+        trailing_images = trailing_images.saturating_sub(1);
+    }
+    Ok((out, trailing_images))
 }
 
 fn skip_to(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, target: usize) {
@@ -3894,7 +3909,134 @@ mod tests {
             "<body><img src='only-picture.png'/></body>",
             "<body><p>Before.</p><img src='inline.png'/><p>After.</p></body>",
         ] {
-            assert_eq!(trailing_image_count(html), 0);
+            assert_eq!(extract_html(html, None).unwrap().1, 0);
+        }
+    }
+
+    #[test]
+    fn trailing_images_use_decoded_visible_text_and_real_tags() {
+        for (html, text, count) in [
+            ("<body><p>İstanbul.</p><IMG/><svg/></body>", "İstanbul.", 2),
+            ("<body><img/><svg/></body>", "", 1),
+            (
+                "<body><p>Prose.</p><img/>&nbsp;&#32;&#x2003;\u{2003}</body>",
+                "Prose.",
+                1,
+            ),
+            ("<body><p>Prose.</p><img/>&amp;</body>", "Prose.\n\n&", 0),
+            ("<body><img/>&unknown;</body>", "&unknown;", 0),
+            (
+                "<body><img/><svg><text>Caption.</text></svg></body>",
+                "Caption.",
+                0,
+            ),
+            (
+                "<body><p>Prose.</p><!-- <img/> --><script><img/></script><style><svg/></style><head><img/></head></body>",
+                "Prose.",
+                0,
+            ),
+            (
+                "<body><p>Prose.</p><div title='<img'></div><img.fake/><svg:name/></body>",
+                "Prose.",
+                0,
+            ),
+            ("<p>Prose.</p><img/>", "Prose.", 0),
+        ] {
+            assert_eq!(
+                extract_html(html, None).unwrap(),
+                (text.into(), count),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_dense_epub_preserves_text_hrefs_and_toc_indices() {
+        let images = "<img src='map.png'/><svg/>".repeat(10_000);
+        let epub = parse_epub(&build_test_epub_with_text(
+            &format!("<p>Before.</p>{images}<p>After.</p>{images}"),
+            "<p>Next chapter.</p>",
+        ))
+        .unwrap();
+        assert_eq!(epub.sections.len(), 20_002);
+        assert_eq!(epub.sections[0].text, "Before.\n\nAfter.");
+        assert!(
+            epub.sections[1..20_001].iter().all(|section| {
+                section.text.is_empty() && section.href == epub.sections[0].href
+            })
+        );
+        assert_eq!(epub.toc[1].spine_index, 20_001);
+        assert_eq!(epub.sections[20_001].text, "Next chapter.");
+    }
+
+    #[test]
+    fn malformed_hidden_containers_keep_text_without_repeated_suffix_searches() {
+        for tag in ["script", "style", "head"] {
+            for close in [String::new(), format!("</{tag}")] {
+                let markup = format!("<body>{}End.{close}", format!("<{tag}>").repeat(20_000));
+                assert_eq!(
+                    extract_html(&markup, Some(MAX_EPUB_DOCUMENT_TAGS)).unwrap(),
+                    ("End.".into(), 0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn epub_rejects_excessive_valid_and_malformed_markup() {
+        // The fixture adds the body opening, body closing and HTML closing.
+        let at_limit = format!("Prose.{}", "<img/>".repeat(MAX_EPUB_DOCUMENT_TAGS - 3));
+        assert!(parse_epub(&build_test_epub_with_text(&at_limit, "Next.")).is_ok());
+        for tag in ["<img/>", "<script>", "<style>", "<head>"] {
+            let markup = format!("Prose.{}", tag.repeat(MAX_EPUB_DOCUMENT_TAGS));
+            let error = parse_epub(&build_test_epub_with_text(&markup, "Next.")).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "EPUB spine document contains too many markup tags."
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "run explicitly to measure EPUB parser scaling"]
+    fn epub_markup_scaling_is_approximately_linear() {
+        use std::time::Instant;
+        for tag in ["<img/>", "<script>", "<style>", "<head>"] {
+            for count in [4_000, 8_000, 16_000] {
+                let smaller =
+                    build_test_epub_with_text(&format!("Prose.{}", tag.repeat(count)), "Next.");
+                let larger =
+                    build_test_epub_with_text(&format!("Prose.{}", tag.repeat(count * 2)), "Next.");
+                let measure = |bytes: &[u8]| {
+                    let start = Instant::now();
+                    std::hint::black_box(parse_epub(bytes).unwrap());
+                    start.elapsed().as_secs_f64()
+                };
+                measure(&smaller);
+                measure(&larger);
+                let mut ratios = Vec::new();
+                // Pair and alternate measurements to avoid comparing one
+                // quiet period with a later period of contention on the host.
+                for sample in 0..9 {
+                    let (small, large) = if sample % 2 == 0 {
+                        (measure(&smaller), measure(&larger))
+                    } else {
+                        let large = measure(&larger);
+                        (measure(&smaller), large)
+                    };
+                    ratios.push(large / small);
+                }
+                ratios.sort_by(f64::total_cmp);
+                let ratio = ratios[ratios.len() / 2];
+                eprintln!(
+                    "{tag}: {count} -> {} tags: {ratio:.2}x median runtime",
+                    count * 2
+                );
+                assert!(
+                    ratio < 3.5,
+                    "{tag}: doubling tag count grew runtime by {ratio:.2}x"
+                );
+            }
         }
     }
 
