@@ -48,14 +48,16 @@ async function setup(page: Page, options: { override?: boolean; failCover?: bool
   return { books, writes, succeed: () => { failCover = false; } };
 }
 
-for (const dismiss of ['Cancel', 'Reset', 'Escape']) test(`${dismiss} discards the selected cover without an upload`, async ({ page }) => {
+for (const dismiss of ['Close metadata editor', 'Reset', 'Escape']) test(`${dismiss} discards unsaved info and the selected cover without an upload`, async ({ page }) => {
   const { writes } = await setup(page);
+  await page.getByLabel('Title', { exact: true }).fill('Unsaved title');
   await page.getByLabel('Choose cover', { exact: true }).setInputFiles(file);
   await expect(page.getByAltText('Selected cover preview')).toBeVisible();
   if (dismiss === 'Escape') await page.keyboard.press('Escape');
   else await page.getByRole('button', { name: dismiss, exact: true }).click();
   if (dismiss !== 'Reset') await page.getByRole('button', { name: 'Edit Info', exact: true }).click();
   await expect(page.getByAltText('Selected cover preview')).toHaveCount(0);
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue('Fixture Book 0000');
   expect(writes).toHaveLength(0);
 });
 
@@ -103,6 +105,7 @@ test('busy saves reject repeat submission and preserve playback advanced during 
   await page.getByLabel('Choose cover', { exact: true }).setInputFiles(file);
   await page.getByRole('button', { name: 'Save Info', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Saving...' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Close metadata editor', exact: true })).toBeDisabled();
   await page.getByRole('dialog').evaluate(form => { (form as HTMLFormElement).requestSubmit(); });
   await page.locator('#progress').evaluate(button => (button as HTMLButtonElement).click());
   await page.keyboard.press('Escape');
@@ -159,7 +162,11 @@ for (const native of [false, true]) for (const width of [390, 1440]) {
     await expect(description).toBeInViewport();
     await page.getByRole('button', { name: 'Save Info', exact: true }).scrollIntoViewIfNeeded();
     await expect(page.getByRole('button', { name: 'Save Info', exact: true })).toBeInViewport();
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    const resetBounds = await page.getByRole('button', { name: 'Reset', exact: true }).boundingBox();
+    const saveBounds = await page.getByRole('button', { name: 'Save Info', exact: true }).boundingBox();
+    expect(resetBounds!.y).toBe(saveBounds!.y);
+    expect(resetBounds!.x + resetBounds!.width).toBeLessThan(saveBounds!.x);
+    await page.getByRole('button', { name: 'Close metadata editor', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 }
