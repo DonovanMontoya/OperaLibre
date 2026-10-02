@@ -56,7 +56,9 @@ final class CarPlayCoordinator: AudiobookPlayerMonitor {
     /// handoff record does not need that resolution.
     private static let sessionWriteIntervalSeconds = 15.0
 
-    private init() {}
+    private init() {
+        store.onArtworkChange = { [weak self] in self?.onLibraryChange?() }
+    }
 
     func start() {
         engine.monitor = self
