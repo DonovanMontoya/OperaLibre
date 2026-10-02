@@ -72,3 +72,26 @@ test("failure on a required second track removes the first track", async (t) => 
   ), /503/);
   assert.equal(stored.size, 0);
 });
+
+test("replacement covers use revision-specific storage while downloaded audio keeps its key", async (t) => {
+  const stored = new Map<string, Blob>([["cover", new Blob(["old cover"])]]);
+  t.mock.method(globalThis, "fetch", async (url: string) => new Response(url));
+  await downloadWebBook({ ...book, coverArtUrl: "/cover?v=replacement" }, (url) => url,
+    async (key, blob) => { stored.set(key, blob); },
+    async (key) => { stored.delete(key); }, () => {});
+  assert.equal(await stored.get("track:t1")?.text(), "/audio");
+  assert.equal(await stored.get("cover:replacement")?.text(), "/cover?v=replacement");
+  assert.equal(await stored.get("cover")?.text(), "/cover?v=replacement");
+});
+
+
+test("a failed cover update keeps the last successful cover for offline use", async (t) => {
+  const stored = new Map<string, Blob>([["cover", new Blob(["last downloaded cover"])]]);
+  t.mock.method(globalThis, "fetch", async (url: string) => url.startsWith("/cover")
+    ? new Response(null, { status: 503 }) : new Response(url));
+  await downloadWebBook({ ...book, coverArtUrl: "/cover?v=unavailable" }, (url) => url,
+    async (key, blob) => { stored.set(key, blob); },
+    async (key) => { stored.delete(key); }, () => {});
+  assert.equal(await stored.get("cover")?.text(), "last downloaded cover");
+  assert.equal(await stored.get("track:t1")?.text(), "/audio");
+});
