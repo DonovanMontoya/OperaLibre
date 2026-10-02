@@ -12,31 +12,89 @@ independently of the server releases.
 
 ## Unreleased
 
-### 1.2.7 (planned)
+### 1.3.0 (planned)
 
-The iPhone Duo changes are scheduled for 1.2.7. The build number and
-distribution date are pending. These changes were introduced in
-[#167](https://github.com/DonovanMontoya/OperaLibre/pull/167) and are excluded
-from 1.2.6 (2).
+Prepared from the changes on main since the recorded 1.2.6 (2) app baseline,
+[`db31b5fb`](https://github.com/DonovanMontoya/OperaLibre/commit/db31b5fb2528f2a0530bbe2d7447b59c596dd358),
+through [`bf177955`](https://github.com/DonovanMontoya/OperaLibre/commit/bf17795555e7a90240c5a1b6f1d4a67769d0e2ba).
+This entry replaces the planned 1.2.7 notes. The distributed build number,
+channel, date, and archived source commit are pending confirmation.
 
 - Added iPhone Duo support: the shelf, player, reader, Settings, Ledger, and
-  Games adapt to folding, rotation, and the space around the hinge. Native
-  playback controls fit the side rail when space is available.
-  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+  Games adapt to folding and rotation. Controls stay clear of the active
+  crease, and the reader keeps its page when the screen changes size.
+  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167),
+  [#192](https://github.com/DonovanMontoya/OperaLibre/pull/192),
+  [#243](https://github.com/DonovanMontoya/OperaLibre/pull/243),
+  [#256](https://github.com/DonovanMontoya/OperaLibre/pull/256))
 - Reader text size is remembered separately for open and closed screens in
-  portrait and landscape, with a wider adjustment range. Page-edge taps turn
-  pages more reliably, and Follow Along keeps its highlight through fold
-  changes without pulling manually turned pages back to the narration.
+  portrait and landscape. Page-edge taps turn pages more reliably, and
+  Follow Along keeps its highlight through fold changes without pulling
+  manually turned pages back to the narration.
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Continue Reading provides quick access to in-progress books. In Settings,
+  choose whether opening a book there starts playback or opens it paused.
+  The ebook reader and Games are enabled by default, and book details make
+  better use of the available space.
+  ([#211](https://github.com/DonovanMontoya/OperaLibre/pull/211),
+  [#214](https://github.com/DonovanMontoya/OperaLibre/pull/214),
+  [#237](https://github.com/DonovanMontoya/OperaLibre/pull/237),
+  [6ed1305](https://github.com/DonovanMontoya/OperaLibre/commit/6ed1305))
+- Offline playback preserves deliberate seeks across app restarts and
+  reconnects, including CarPlay. Returning to a book or resuming a paused
+  restore adopts the server position more reliably when progress has changed
+  on another device.
+  ([#220](https://github.com/DonovanMontoya/OperaLibre/pull/220),
+  [#228](https://github.com/DonovanMontoya/OperaLibre/pull/228),
+  [#230](https://github.com/DonovanMontoya/OperaLibre/pull/230),
+  [#234](https://github.com/DonovanMontoya/OperaLibre/pull/234))
+- Downloaded books remain on the shelf when uploaded titles are refreshed.
+  EPUBs can be paired with imported audiobooks for offline reading, and older
+  downloads are retained if their migration cannot finish.
+  ([#187](https://github.com/DonovanMontoya/OperaLibre/pull/187),
+  [#213](https://github.com/DonovanMontoya/OperaLibre/pull/213),
+  [#227](https://github.com/DonovanMontoya/OperaLibre/pull/227))
+- Launch navigation is steadier, with an animated OperaLibre wordmark while
+  the app opens. The tab bar ignores stray swipes, iPad player controls are
+  larger, and the full-screen reader leaves more room for the page.
+  ([#231](https://github.com/DonovanMontoya/OperaLibre/pull/231),
+  [#232](https://github.com/DonovanMontoya/OperaLibre/pull/232),
+  [#240](https://github.com/DonovanMontoya/OperaLibre/pull/240),
+  [#241](https://github.com/DonovanMontoya/OperaLibre/pull/241),
+  [#242](https://github.com/DonovanMontoya/OperaLibre/pull/242))
+- Improved native audio activation, artwork loading, CarPlay updates, and
+  download retries when a book's files change.
+  ([1f71225](https://github.com/DonovanMontoya/OperaLibre/commit/1f71225),
+  [#188](https://github.com/DonovanMontoya/OperaLibre/pull/188))
 - Get Books has consistent grid, list, and compact views. Native book-store
   connections and download settings live in Settings, with visible refresh
   errors and continued account-management access in the browser.
   ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
-- Improved player and reader spacing, restored shelf ordering when closing
-  the device, and kept playback controls clear of navigation.
-  ([#167](https://github.com/DonovanMontoya/OperaLibre/pull/167))
+- Owners and administrators can replace or restore audiobook covers in
+  Edit Info with a JPEG, PNG, or WebP. Saved artwork updates the offline shelf
+  and CarPlay without replacing downloaded audio or changing playback.
+  Cover editing requires a server with this feature and a writable library.
+  ([#246](https://github.com/DonovanMontoya/OperaLibre/pull/246))
+- Each saved server address keeps its own sign-in, preventing credentials
+  from being reused for another address. EPUB pages are restricted to book
+  resources instead of loading external content.
+  ([#245](https://github.com/DonovanMontoya/OperaLibre/pull/245),
+  [#252](https://github.com/DonovanMontoya/OperaLibre/pull/252))
+- Follow Along recovers more reliably across chapter boundaries and
+  illustrated pages. These alignment improvements require matching server
+  support and a generated sync map. Regenerate maps made before those
+  server alignment improvements to receive the corrected timings. Older
+  OperaLibre-generated maps show **Outdated map** and remain usable; current
+  maps and external maps do not need regeneration. Downloaded maps remain
+  usable offline.
+  ([#208](https://github.com/DonovanMontoya/OperaLibre/pull/208),
+  [#212](https://github.com/DonovanMontoya/OperaLibre/pull/212))
 
-These changes do not require a server update.
+The iOS layout, navigation, offline-library, and per-address sign-in changes
+do not require a server update. Current server support is needed for the
+latest progress reconciliation and Follow Along generation; use the server
+release notes for server-only security, library scanning, download limits,
+and sync-queue changes.
 
 ## 1.2.6 (2)
 
