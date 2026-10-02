@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
+import { createServer as createHttpServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { createServer, type ViteDevServer } from 'vite';
 
 type ReaderWindow = Window & {
@@ -260,4 +262,36 @@ test('immersive reading keeps place controls in the sheet and returns to the sav
   await expect(sheet).toHaveCount(0);
   await expect(page.locator('.epub-reader > .epub-catch-up')).toHaveCount(0);
   await expect(page.getByText('Returned to your previous reading place.')).toHaveCount(0);
+});
+
+test('a book that references another host loads only what it carries itself', async ({ page }) => {
+  const requests: string[] = [];
+  let connections = 0;
+  const tracker = createHttpServer((request, response) => {
+    requests.push(request.url!);
+    response.setHeader('access-control-allow-origin', '*');
+    response.end();
+  });
+  tracker.on('connection', () => { connections += 1; });
+  await new Promise<void>(resolve => tracker.listen(0, '127.0.0.1', resolve));
+  try {
+    const origin = `http://127.0.0.1:${(tracker.address() as AddressInfo).port}`;
+    await page.goto(`${url}test/reader-catch-up.html?tracker=${encodeURIComponent(origin)}`);
+    await expect(page.locator('.epub-loading')).toHaveCount(0);
+    await expect(page.locator('.epub-error')).toHaveCount(0);
+    const chapter = page.frameLocator('.epub-stage iframe');
+    // The book's own image and stylesheet arrive, so the page has finished
+    // asking for everything it references.
+    await expect.poll(() => chapter.locator('#own').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+    await expect(chapter.locator('h1')).toHaveCSS('text-decoration-line', 'underline');
+    await chapter.locator('body').evaluate(() => document.fonts.ready.then(() => undefined));
+    await expect(chapter.locator('p').first()).toBeVisible();
+    await expect(chapter.locator('link[rel="preconnect"], link[rel="prefetch"]')).toHaveCount(0);
+    expect(connections).toBe(0);
+    // A request the test makes itself proves the listener was reachable.
+    await page.evaluate(target => fetch(`${target}/reachable`).then(() => undefined), origin);
+    expect(requests).toEqual(['/reachable']);
+  } finally {
+    await new Promise(resolve => tracker.close(resolve));
+  }
 });
