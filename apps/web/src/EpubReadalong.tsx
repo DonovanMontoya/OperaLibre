@@ -1,5 +1,6 @@
 import { isBookPosture, useDeviceFold } from "./deviceFold";
 import { attachEpubReadArchive, prepareEpubRead } from "./streamingEpub";
+import { restrictEpubContent } from "./readerContentPolicy";
 import { Capacitor } from "@capacitor/core";
 import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./readerPagination";
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
@@ -1056,6 +1057,7 @@ export function EpubReadalong({
         if (cancelled || !viewerRef.current) {
           return;
         }
+        restrictEpubContent(book, prepared.archive && typeof source === "string" ? source : undefined);
 
         rendition = book.renderTo(viewerRef.current, {
           width: "100%",
