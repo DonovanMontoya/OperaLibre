@@ -155,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         clear_legacy_state_files(&config).await;
     }
 
+    let server_id = load_or_create_server_id(&config.data_dir).await?;
     let state = build_app_state(
         &config,
         database,
@@ -162,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         snapshot,
         setup_token,
         libation_accounts_root,
+        server_id,
     )?;
 
     let app = build_router(
@@ -540,6 +542,7 @@ fn build_app_state(
     snapshot: CachedSnapshot,
     setup_token: Option<SetupToken>,
     libation_accounts_root: PathBuf,
+    server_id: String,
 ) -> anyhow::Result<AppState> {
     let (shutdown, _) = broadcast::channel(1);
     Ok(AppState {
@@ -550,6 +553,7 @@ fn build_app_state(
         max_book_download_bytes: config.max_book_download_bytes,
         download_temp_dir: config.download_temp_dir.clone(),
         min_download_free_bytes: config.min_download_free_bytes,
+        server_id: Arc::from(server_id),
         library_root: config.library_root.clone(),
         library_identities_file: config.data_dir.join("library-identities.json"),
         progress: Arc::new(ProgressStore::new(database.clone())),

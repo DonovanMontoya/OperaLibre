@@ -102,13 +102,18 @@ export function SettingsPage({
 }) {
   const {
     aliasError,
+    aliasPassword,
     aliasName,
     aliasUrl,
     saveAlias,
     serverAliases,
     setAliasName,
     setAliasUrl,
+    setAliasPassword,
     setServerAliases,
+    setSignInAliasId,
+    signInAliasId,
+    signInToAlias,
     switchToAlias,
     switchingAliasId
   } = serverAliasesState;
@@ -263,6 +268,7 @@ export function SettingsPage({
 
         <ConnectionSettings
           aliasError={aliasError}
+          aliasPassword={aliasPassword}
           aliasName={aliasName}
           aliasUrl={aliasUrl}
           audioRef={audioRef}
@@ -278,7 +284,11 @@ export function SettingsPage({
           serverAliases={serverAliases}
           setAliasName={setAliasName}
           setAliasUrl={setAliasUrl}
+          setAliasPassword={setAliasPassword}
           setServerAliases={setServerAliases}
+          setSignInAliasId={setSignInAliasId}
+          signInAliasId={signInAliasId}
+          signInToAlias={signInToAlias}
           setUploadModalOpen={setUploadModalOpen}
           switchToAlias={switchToAlias}
           switchingAliasId={switchingAliasId}

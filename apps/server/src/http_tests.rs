@@ -409,6 +409,7 @@ impl TestServer {
             max_book_download_bytes: Some(DEFAULT_MAX_BOOK_DOWNLOAD_GIB * GIBIBYTE_BYTES),
             download_temp_dir: data_dir.join("download-temp"),
             min_download_free_bytes: DEFAULT_MIN_DOWNLOAD_FREE_GIB * GIBIBYTE_BYTES,
+            server_id: Arc::from(load_or_create_server_id(&data_dir).await.unwrap()),
             library_root: library_root.clone(),
             library_identities_file: data_dir.join("library-identities.json"),
             progress: Arc::new(ProgressStore::new(database.clone())),
@@ -3966,6 +3967,30 @@ async fn health_reports_whether_the_library_is_still_being_scanned() {
     assert_eq!(body["catalogueError"], false);
 }
 
+/// Apps compare this across a server's saved addresses to keep one library's
+/// data together, so it has to survive restarts and differ per install.
+#[tokio::test]
+async fn health_reports_a_stable_identity_unique_to_the_installation() {
+    async fn reported_identity(server: &TestServer) -> String {
+        let request = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let body = server.send(request).await.json();
+        body["serverId"].as_str().unwrap().to_string()
+    }
+    let server = TestServer::start(1).await;
+    let other = TestServer::start(1).await;
+
+    let server_id = reported_identity(&server).await;
+    assert!(server_id.len() >= 16);
+    assert_ne!(reported_identity(&other).await, server_id);
+
+    // A restart reads the identity back from the data directory.
+    let data_dir = server.state.database_path.parent().unwrap();
+    assert_eq!(load_or_create_server_id(data_dir).await.unwrap(), server_id);
+}
+
 /// A range the server does not serve is ignored, as RFC 9110 allows, rather
 /// than refused: several ranges and other units both get the whole file.
 #[tokio::test]
@@ -4311,6 +4336,7 @@ async fn catalogue_listings_are_unavailable_until_the_startup_scan_finishes() {
         snapshot,
         None,
         data_dir.join("libation-accounts"),
+        load_or_create_server_id(&data_dir).await.unwrap(),
     )
     .unwrap();
     rescan_library(&state).await.unwrap();

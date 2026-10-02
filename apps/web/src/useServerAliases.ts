@@ -3,8 +3,8 @@ import {
   activateServerAlias,
   addServerAlias,
   getServerAliases,
-  getServerType,
-  pingServer,
+  hasSignInAt,
+  signInAtAddress,
   type ServerAlias
 } from "./api";
 
@@ -14,6 +14,9 @@ export function useServerAliases() {
   const [aliasUrl, setAliasUrl] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [switchingAliasId, setSwitchingAliasId] = useState<string | null>(null);
+  // The address waiting for its own sign-in before it can be used.
+  const [signInAliasId, setSignInAliasId] = useState<string | null>(null);
+  const [aliasPassword, setAliasPassword] = useState("");
 
   function saveAlias(event: React.FormEvent) {
     event.preventDefault();
@@ -28,12 +31,14 @@ export function useServerAliases() {
     }
   }
 
-  async function switchToAlias(alias: ServerAlias) {
+  async function activate(alias: ServerAlias, signIn?: { username: string; password: string }) {
     setAliasError(null);
     setSwitchingAliasId(alias.id);
     try {
-      await pingServer(getServerType(), alias.url);
-      activateServerAlias(alias);
+      if (signIn) {
+        await signInAtAddress(alias.url, signIn.username, signIn.password);
+      }
+      await activateServerAlias(alias);
       window.location.reload();
     } catch (error) {
       setAliasError(error instanceof Error ? error.message : "Could not reach that address.");
@@ -41,15 +46,37 @@ export function useServerAliases() {
     }
   }
 
+  async function switchToAlias(alias: ServerAlias) {
+    if (!hasSignInAt(alias.url)) {
+      setAliasError(null);
+      setAliasPassword("");
+      setSignInAliasId(alias.id);
+      return;
+    }
+    await activate(alias);
+  }
+
+  async function signInToAlias(event: React.FormEvent, alias: ServerAlias, username: string) {
+    event.preventDefault();
+    const password = aliasPassword;
+    setAliasPassword("");
+    await activate(alias, { username, password });
+  }
+
   return {
     aliasError,
     aliasName,
+    aliasPassword,
     aliasUrl,
     saveAlias,
     serverAliases,
     setAliasName,
+    setAliasPassword,
     setAliasUrl,
     setServerAliases,
+    setSignInAliasId,
+    signInAliasId,
+    signInToAlias,
     switchToAlias,
     switchingAliasId
   };

@@ -7,6 +7,7 @@ import {
   Download,
   FolderOpen,
   LoaderCircle,
+  LogIn,
   LogOut,
   Moon,
   Network,
@@ -20,11 +21,13 @@ import { supportsLibroDevice } from "./libroDevice";
 import { LibroCatalog } from "./LibroCatalog";
 import { getDeviceBooks, mergeDeviceAndServerBooks } from "./localLibrary";
 import { FOLLOW_AGGRESSIVENESS_LABELS, type FollowAggressiveness } from "./readalongPreferences";
+import { Fragment } from "react";
 import type { CSSProperties, Dispatch, FormEvent, ReactNode, RefObject, SetStateAction } from "react";
 import {
   getServerAliases,
   getServerIdentityUrl,
   getServerUrl,
+  hasSignInAt,
   removeServerAlias,
   type ServerAlias
 } from "./api";
@@ -375,6 +378,7 @@ export function ServerDownloadSettings({
 
 export function ConnectionSettings({
   aliasError,
+  aliasPassword,
   aliasName,
   aliasUrl,
   audioRef,
@@ -390,12 +394,17 @@ export function ConnectionSettings({
   serverAliases,
   setAliasName,
   setAliasUrl,
+  setAliasPassword,
   setServerAliases,
+  setSignInAliasId,
   setUploadModalOpen,
+  signInAliasId,
+  signInToAlias,
   switchToAlias,
   switchingAliasId
 }: {
   aliasError: string | null;
+  aliasPassword: string;
   aliasName: string;
   aliasUrl: string;
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -411,8 +420,12 @@ export function ConnectionSettings({
   serverAliases: ServerAlias[];
   setAliasName: Dispatch<SetStateAction<string>>;
   setAliasUrl: Dispatch<SetStateAction<string>>;
+  setAliasPassword: Dispatch<SetStateAction<string>>;
   setServerAliases: Dispatch<SetStateAction<ServerAlias[]>>;
+  setSignInAliasId: Dispatch<SetStateAction<string | null>>;
   setUploadModalOpen: Dispatch<SetStateAction<boolean>>;
+  signInAliasId: string | null;
+  signInToAlias: (event: FormEvent, alias: ServerAlias, username: string) => Promise<void>;
   switchToAlias: (alias: ServerAlias) => Promise<void>;
   switchingAliasId: string | null;
 }) {
@@ -435,14 +448,18 @@ export function ConnectionSettings({
         <span className="settings-label">Address aliases</span>
         <p className="settings-hint">
           Save other routes to this server, such as LAN, Tailscale, or a forwarded address.
+          Each address keeps its own sign-in: sign in at one once, and the app can switch to it
+          whenever the others are out of reach.
         </p>
         {[
           { id: "primary", name: "Original address", url: getServerIdentityUrl() },
           ...serverAliases
         ].map((alias) => {
           const active = alias.url === getServerUrl();
+          const signedIn = active || hasSignInAt(alias.url);
           return (
-            <div className="server-alias-row" key={alias.id}>
+            <Fragment key={alias.id}>
+            <div className="server-alias-row">
               <span>
                 <strong>{alias.name}</strong>
                 <small>{alias.url}</small>
@@ -454,7 +471,7 @@ export function ConnectionSettings({
                   disabled={active || switchingAliasId !== null}
                   onClick={() => void switchToAlias(alias)}
                 >
-                  {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : "Use"}
+                  {active ? "Active" : switchingAliasId === alias.id ? "Testing…" : signedIn ? "Use" : "Sign in"}
                 </button>
                 {alias.id !== "primary" ? (
                   <button
@@ -471,6 +488,29 @@ export function ConnectionSettings({
                 ) : null}
               </div>
             </div>
+            {signInAliasId === alias.id && !signedIn ? (
+              <form
+                className="server-alias-form server-alias-sign-in"
+                onSubmit={(event) => void signInToAlias(event, alias, currentUser.username)}
+              >
+                <input
+                  type="password"
+                  value={aliasPassword}
+                  onChange={(event) => setAliasPassword(event.currentTarget.value)}
+                  placeholder={`Password for ${currentUser.username}`}
+                  aria-label={`Password for ${currentUser.username} at ${alias.name}`}
+                  autoComplete="current-password"
+                  required
+                />
+                <button type="submit" className="download-btn" disabled={switchingAliasId !== null}>
+                  <LogIn size={13} /> Sign in and use
+                </button>
+                <button type="button" className="download-btn" onClick={() => setSignInAliasId(null)}>
+                  Cancel
+                </button>
+              </form>
+            ) : null}
+            </Fragment>
           );
         })}
         <form className="server-alias-form" onSubmit={saveAlias}>
