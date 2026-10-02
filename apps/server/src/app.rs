@@ -15,7 +15,6 @@ pub(crate) struct AppState {
     /// Random identity of this installation, reported by the health route so
     /// apps can tell one server's addresses from another server's.
     pub(crate) server_id: Arc<str>,
-    pub(crate) server_proof_keys: Arc<ServerProofKeys>,
     pub(crate) library_root: PathBuf,
     pub(crate) library_identities_file: PathBuf,
     /// Saved playback positions. The only way to reach a listener's place.
@@ -101,7 +100,6 @@ pub(crate) fn build_router(
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/setup", post(setup_admin))
         .route("/api/auth/login", post(login))
-        .route("/api/auth/server-proof", post(prove_server))
         // Audiobookshelf clients validate the server before presenting their
         // login form, and ping it again when checking a saved connection.
         .route("/abs/status", get(abs_status))
@@ -517,8 +515,8 @@ pub(crate) async fn security_headers(
 
 /// Liveness, plus whether the catalogue is still being built: the listener
 /// is up before the first scan finishes, and a scan may be running at any
-/// time after that. `serverId` lets an app confirm that another address
-/// reaches this same server before it sends a saved sign-in there.
+/// time after that. `serverId` lets an app notice that a saved address
+/// reaches some other server before it treats the two as one library.
 pub(crate) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let library = state.library.read().await;
     let startup_scan_pending = library.startup_scan_pending;

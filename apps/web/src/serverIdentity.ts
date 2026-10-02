@@ -11,58 +11,14 @@ export function readServerId(body: unknown): string | null {
 }
 
 /**
- * Gate for moving a saved sign-in to another address. Answering a health check
- * proves only that something is listening there, so the address must also
- * report the identity pinned when this server was connected; otherwise the
- * token would be handed to whoever now holds that address.
+ * Refuse an address that says it is some other server than the one this app
+ * is connected to, so two libraries' downloads and progress never mix. The
+ * identity is public and easily copied, so a match proves nothing and is not
+ * what protects a sign-in: each address only ever gets its own. Servers that
+ * report no identity cannot be compared and are let through.
  */
-export function requireSameServer(pinned: string | null, reported: string | null) {
-  if (!reported) {
-    throw new Error("That address could not be verified as your server. The server may need an update.");
-  }
-  if (!pinned) {
-    throw new Error("This app could not confirm that address is your server. Reach the server at its current address once, then try again.");
-  }
-  if (reported !== pinned) {
+export function refuseDifferentServer(pinned: string | null, reported: string | null) {
+  if (pinned && reported && reported !== pinned) {
     throw new Error("That address belongs to a different server. To use it, sign out and connect to it as a new server.");
   }
-}
-
-function base64Url(bytes: ArrayBuffer | Uint8Array): string {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return btoa(String.fromCharCode(...view)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function sha256(domain: string, value: string): Promise<string> {
-  return base64Url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${domain}\0${value}`)));
-}
-
-/**
- * What to ask an address so it can prove it holds this sign-in without being
- * sent the token: `session` names the session, and `expected` is the proof
- * only a server that has been shown the token can return for `nonce`. Mirrors
- * `server_proof_key`, `server_proof_handle` and `server_proof` in the server's
- * auth.rs.
- */
-export async function serverProofChallenge(
-  token: string,
-  nonce = base64Url(crypto.getRandomValues(new Uint8Array(32)))
-): Promise<{ session: string; nonce: string; expected: string }> {
-  // Its own derivation of the token: unlike the session id the server stores,
-  // this key appears in no database row or backup.
-  const proofKey = await sha256("operalibre-server-proof-key-v1", token);
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(proofKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const proof = await crypto.subtle.sign("HMAC", key, encoder.encode(`operalibre-server-proof-v1\0${nonce}`));
-  return {
-    session: await sha256("operalibre-server-proof-handle-v1", proofKey),
-    nonce,
-    expected: base64Url(proof)
-  };
 }
