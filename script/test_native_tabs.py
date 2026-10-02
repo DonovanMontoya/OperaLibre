@@ -28,7 +28,9 @@ def quote(value): return json.dumps(str(value))
 (OUT / 'ViewController.swift').write_text(
     'import UIKit\nimport WebKit\nclass ViewController: UIViewController { var webView: WKWebView? }\n')
 files = [ROOT / 'apps/web/ios/App/App/NativeTabs.swift',
-         ROOT / 'apps/web/ios/Tests/NativeTabsTests.swift', OUT / 'ViewController.swift']
+         ROOT / 'apps/web/ios/App/App/DeviceFold.swift',
+         ROOT / 'apps/web/ios/Tests/NativeTabsTests.swift',
+         ROOT / 'apps/web/ios/Tests/DeviceFoldTests.swift', OUT / 'ViewController.swift']
 refs = [add('PBXFileReference', f'lastKnownFileType = sourcecode.swift; path = {quote(p)}; sourceTree = "<absolute>";') for p in files]
 builds = [add('PBXBuildFile', f'fileRef = {ref};') for ref in refs]
 source = add('PBXSourcesBuildPhase', f'buildActionMask = 2147483647; files = ({",".join(builds)}); runOnlyForDeploymentPostprocessing = 0;')

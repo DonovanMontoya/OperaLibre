@@ -90,6 +90,62 @@ final class NativeTabsTests: XCTestCase {
         }
     }
 
+    @available(iOS 18.0, *)
+    func testFloatingTabPresentationFollowsHostGeometryAcrossWindowResizes() async throws {
+        let webView = WKWebView()
+        let loaded = expectation(description: "Tab presentation document loaded")
+        let observer = ViewportPageLoad(loaded)
+        webView.navigationDelegate = observer
+        webView.loadHTMLString("<meta name='viewport' content='width=device-width,initial-scale=1'>", baseURL: nil)
+        await fulfillment(of: [loaded], timeout: 10)
+        let content = ViewController()
+        content.view = webView
+        content.webView = webView
+        let controller = NativeTabsController(content: content)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        controller.traitOverrides.userInterfaceIdiom = .pad
+        configure(controller)
+        let navigation = try XCTUnwrap(controller.children.compactMap { $0 as? UITabBarController }.first)
+        var presentations: [Bool] = []
+        for (width, sizeClass) in [(1024.0, UIUserInterfaceSizeClass.regular),
+                                   (375.0, UIUserInterfaceSizeClass.compact),
+                                   (1024.0, UIUserInterfaceSizeClass.regular)] {
+            window.frame.size.width = width
+            controller.traitOverrides.horizontalSizeClass = sizeClass
+            window.layoutIfNeeded()
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
+            navigation.view.layoutIfNeeded()
+            let host = try XCTUnwrap(navigation.selectedViewController)
+            // The hostless bundle does not render iPad's floating platter.
+            // Supply its content clearance through UIKit's real safe area.
+            host.additionalSafeAreaInsets.top = sizeClass == .regular ? 68 : 0
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            controller.viewDidLayoutSubviews()
+            let frame = host.view.convert(host.view.safeAreaLayoutGuide.layoutFrame, to: controller.view)
+            let top = max(0, (frame.minY - controller.view.safeAreaInsets.top).rounded())
+            let floating = try await webView.evaluateJavaScript(
+                "document.documentElement.classList.contains('floating-tabs')") as? Bool
+            XCTAssertEqual(floating, top > 0)
+            presentations.append(top > 0)
+            let sentTop = try await webView.evaluateJavaScript(
+                "document.documentElement.style.getPropertyValue('--native-tabs-top')") as? String
+            XCTAssertEqual(sentTop, "\(Int(top))px")
+            let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: controller.view)
+            let bottom = top == 0 && bar.intersects(controller.view.bounds)
+                && bar.width >= controller.view.bounds.width / 2 && bar.midY >= controller.view.bounds.midY
+                ? controller.view.bounds.maxY - bar.minY : 0
+            XCTAssertEqual(content.additionalSafeAreaInsets.bottom,
+                           max(0, bottom - controller.view.safeAreaInsets.bottom), accuracy: 0.5)
+        }
+        XCTAssertEqual(presentations, [true, false, true])
+        _ = observer
+    }
+
     #if compiler(>=6.4)
     @available(iOS 27.1, *)
     func testHiddenReaderRailFollowsPhysicalEdgeAndLayoutDirection() {

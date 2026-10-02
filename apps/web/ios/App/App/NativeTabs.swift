@@ -455,20 +455,18 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         let hostSafeTop = frame.minY
         frame.origin.y = view.bounds.minY
         frame.size.height = view.bounds.height
-        // The floating top bar (handled below by topClearance) only exists
-        // on iPad from iOS 18's `.tabBar` mode onward — set at viewDidLoad,
-        // gated the same way. Earlier iPadOS still renders a real bottom
-        // `tabBar`; the page needs to know which one is actually in play,
-        // both to skip the hidden legacy bottom frame iOS 18+ leaves behind
-        // and to keep its own bottom-anchored decoration (the fold) from
-        // running under a real bottom bar's frosted backdrop.
         var usesFloatingTopBar = false
-        if #available(iOS 18.0, *) {
-            usesFloatingTopBar = traitCollection.userInterfaceIdiom == .pad
-        }
         var clearance: CGFloat = 0
         var topClearance: CGFloat = 0
         if navigationVisible, navigation.parent != nil, !navigation.view.isHidden {
+            if host !== self {
+                // Measure UIKit's current presentation: narrow windows can
+                // move the bar from the top to the bottom while resizing.
+                topClearance = max(0, (hostSafeTop - view.safeAreaInsets.top).rounded())
+                if #available(iOS 18.0, *) {
+                    usesFloatingTopBar = topClearance > 0
+                }
+            }
             if !usesFloatingTopBar {
                 let bar = navigation.tabBar.convert(navigation.tabBar.bounds, to: view)
                 if bar.intersects(view.bounds), bar.width >= view.bounds.width / 2, bar.midY >= view.bounds.midY {
@@ -477,14 +475,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
                     // reserves for the home indicator.
                     clearance = view.bounds.maxY - bar.minY
                 }
-            }
-            if host !== self {
-                // iPad hangs its floating bar from the top of the window, in a
-                // view of its own rather than `tabBar`. UIKit reserves it in
-                // the host's top safe area. The page learns the height as a
-                // variable rather than a safe-area inset, so its content clears
-                // the bar while the clock's veil stays the clock's height.
-                topClearance = max(0, (hostSafeTop - view.safeAreaInsets.top).rounded())
             }
         }
         let reserved = max(0, clearance - view.safeAreaInsets.bottom)
