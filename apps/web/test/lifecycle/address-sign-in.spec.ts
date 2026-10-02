@@ -198,9 +198,14 @@ for (const serverId of ['real-server', null]) {
     await open(page, { active: HOME, signIns: { [HOME]: HOME_SIGN_IN }, pinned: serverId });
     await expect(page.locator('.book-row')).toHaveCount(2);
 
-    await signInAtAway(page);
-    await expect.poll(async () => (await stored(page)).active).toBe(AWAY);
+    // Switching addresses reloads the app. Read storage in the new document,
+    // after navigation has finished replacing the previous execution context.
+    await Promise.all([
+      page.waitForEvent('domcontentloaded'),
+      signInAtAway(page)
+    ]);
     await expect(page.locator('.book-row')).toHaveCount(2);
+    expect((await stored(page)).active).toBe(AWAY);
     expect((await stored(page)).signIns).toEqual({ [HOME]: HOME_SIGN_IN, [AWAY]: AWAY_SIGN_IN });
     expect(away.seen.some(request => request.includes('/api/books') && request.includes('Bearer away-token'))).toBe(true);
 
