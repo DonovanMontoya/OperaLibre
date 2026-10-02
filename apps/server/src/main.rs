@@ -78,6 +78,7 @@ mod faststart_jobs;
 mod http_tests;
 mod jobs;
 mod libation;
+mod libation_download;
 mod library;
 mod libro;
 mod libro_account;
@@ -633,6 +634,7 @@ fn build_app_state(
         password_task_slots: Arc::new(Semaphore::new(PASSWORD_TASK_CONCURRENCY)),
         download_task_slots: Arc::new(Semaphore::new(config.max_concurrent_book_downloads)),
         epub_entry_slots: Arc::new(Semaphore::new(EPUB_ENTRY_CONCURRENCY)),
+        epub_entry_account_slots: Arc::new(Mutex::new(HashMap::new())),
         upload_lock: Arc::new(Mutex::new(())),
         libro: Arc::new(LibroImports::default()),
         backup_lock: Arc::new(Mutex::new(BackupLifecycle::default())),

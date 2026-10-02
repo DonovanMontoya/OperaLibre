@@ -145,6 +145,11 @@ pub(crate) async fn get_companion_file(
 /// small on modest hardware however many requests arrive together.
 pub(crate) const EPUB_ENTRY_CONCURRENCY: usize = 8;
 
+/// How many of those slots one account may hold. A reader who takes a chapter
+/// a chunk at a time keeps a slot for as long as they like, so no account may
+/// have them all: the rest stay free for everyone else.
+pub(crate) const EPUB_ENTRY_ACCOUNT_CONCURRENCY: usize = 4;
+
 pub(crate) const EPUB_ENTRY_CHUNK_BYTES: usize = 64 * 1024;
 
 /// How long a reader may leave a chunk untaken before its slot is reclaimed.
@@ -182,16 +187,25 @@ pub(crate) async fn get_epub_entry(
             .cloned()
             .ok_or(ApiError::not_found("EPUB path not found"))?
     };
-    // Requests beyond the limit queue here, before any blocking work or
-    // allocation exists for them. The permit then travels with that work
-    // rather than with this future, so a request abandoned mid-read still
-    // counts until its archive is closed.
-    let permit = state
-        .epub_entry_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::internal("EPUB entry workers are unavailable."))?;
+    // Requests beyond either limit queue here, before any blocking work or
+    // allocation exists for them. The account's own limit comes first, so a
+    // request waiting on it holds none of the server's slots. The permits
+    // then travel with that work rather than with this future, so a request
+    // abandoned mid-read still counts until its archive is closed.
+    let unavailable = |_| ApiError::internal("EPUB entry workers are unavailable.");
+    let permit = (
+        epub_entry_account_slots(&state, &auth.id)
+            .await
+            .acquire_owned()
+            .await
+            .map_err(unavailable)?,
+        state
+            .epub_entry_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(unavailable)?,
+    );
     let root = state.library_root.clone();
     let (response, member) = tokio::task::spawn_blocking(move || {
         let (file, metadata) = open_contained_file(&path, &[root])
@@ -272,6 +286,18 @@ pub(crate) async fn get_epub_entry(
         },
         EPUB_ENTRY_CHUNK_BYTES,
     )))?)
+}
+
+/// One account's share of the EPUB entry slots. Only accounts with a request
+/// waiting or being served are kept.
+async fn epub_entry_account_slots(state: &AppState, user_id: &str) -> Arc<Semaphore> {
+    let mut accounts = state.epub_entry_account_slots.lock().await;
+    // Every permit and every waiting request holds a reference of its own.
+    accounts.retain(|_, slots| Arc::strong_count(slots) > 1);
+    accounts
+        .entry(user_id.to_string())
+        .or_insert_with(|| Arc::new(Semaphore::new(EPUB_ENTRY_ACCOUNT_CONCURRENCY)))
+        .clone()
 }
 
 /// Decompress one member in chunks, handing each to `send` before reading the
