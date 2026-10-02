@@ -286,7 +286,7 @@ test('a book that references another host loads only what it carries itself', as
     await expect(chapter.locator('h1')).toHaveCSS('text-decoration-line', 'underline');
     await chapter.locator('body').evaluate(() => document.fonts.ready.then(() => undefined));
     await expect(chapter.locator('p').first()).toBeVisible();
-    await expect(chapter.locator('link[rel="preconnect"], link[rel="prefetch"]')).toHaveCount(0);
+    await expect(chapter.locator('link[rel~="preconnect"], link[rel~="dns-prefetch"], link[rel~="prefetch"]')).toHaveCount(0);
     expect(connections).toBe(0);
     // A request the test makes itself proves the listener was reachable.
     await page.evaluate(target => fetch(`${target}/reachable`).then(() => undefined), origin);

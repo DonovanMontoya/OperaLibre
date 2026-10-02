@@ -17,9 +17,15 @@ export function readerContentPolicy(streamedFrom?: string): string {
 export function restrictEpubContent(book: Book, streamedFrom?: string) {
   const policy = `<meta http-equiv="Content-Security-Policy" content="${readerContentPolicy(streamedFrom)}">`;
   // A content policy does not govern connection hints such as preconnect, so
-  // the links a chapter declares are dropped unless they are stylesheets.
+  // the links a chapter declares are dropped unless they are stylesheets, and
+  // a stylesheet link keeps no other relationship.
   book.spine.hooks.content.register((document: Document) => {
-    document.querySelectorAll('link:not([rel~="stylesheet" i])').forEach((link) => link.remove());
+    document.querySelectorAll("link").forEach((link) => {
+      const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/)
+        .filter((token) => token === "stylesheet" || token === "alternate");
+      if (rel.includes("stylesheet")) link.setAttribute("rel", rel.join(" "));
+      else link.remove();
+    });
   });
   // Ahead of the markup rather than inside its <head>: the HTML parser then
   // puts the policy in force before any element the book supplies, however
