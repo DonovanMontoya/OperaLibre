@@ -85,3 +85,30 @@ test('a short Duo reader keeps all listening controls reachable when the native 
   await play.click();
   await expect(play).toHaveAccessibleName('Play');
 });
+
+test('the reader resizes its page when epub.js measures the new stage before the observer', async ({ page }) => {
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&narration&listening=1`);
+  const layout = () => page.evaluate(() => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const iframe = stage.querySelector('iframe');
+    const rendition = (window as any).__operalibreReader?.rendition;
+    return { heightDifference: iframe ? iframe.offsetHeight - stage.clientHeight : null,
+      cfi: rendition?.currentLocation()?.start?.cfi as string | undefined };
+  });
+  await expect.poll(async () => (await layout()).heightDifference).toBe(0);
+  await expect.poll(async () => (await layout()).cfi).toBeTruthy();
+  const before = (await layout()).cfi;
+  await page.evaluate(() => {
+    const stage = document.querySelector<HTMLElement>('.epub-stage')!;
+    const rendition = (window as any).__operalibreReader.rendition;
+    // A toolbar disappearing grows the stage. epub.js can measure that new
+    // percentage height while the iframe still has its previous fixed height.
+    stage.style.height = `${stage.clientHeight + 56}px`;
+    rendition.manager.container.style.height = '100%';
+    rendition.manager.updateLayout();
+  });
+  await expect.poll(async () => (await layout()).heightDifference).toBe(0);
+  await expect.poll(async () => (await layout()).cfi).toBe(before);
+  await expect(page.frameLocator('.epub-stage iframe').locator('p').first()).toBeVisible();
+});
