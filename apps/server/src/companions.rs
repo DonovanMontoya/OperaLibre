@@ -227,33 +227,39 @@ fn duplicates_cover(path: &FsPath, cover: Option<&ScannedCover>) -> bool {
 
 /// Reads a document to find out how much text and how many pictures it
 /// holds. Pictures are never opened; their kind is fixed by extension.
-pub(crate) fn analyze_document(path: &FsPath) -> DocumentAnalysis {
+///
+/// `None` means the document needs more than `memory_bytes` to read, and is
+/// worth another attempt with a larger allowance.
+pub(crate) fn analyze_document(path: &FsPath, memory_bytes: u64) -> Option<DocumentAnalysis> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase())
         .unwrap_or_default();
-    let too_large = std::fs::metadata(path)
-        .map(|metadata| metadata.len() > MAX_ANALYZED_DOCUMENT_BYTES)
-        .unwrap_or(true);
-    if too_large {
-        return DocumentAnalysis {
-            unreadable: true,
-            ..Default::default()
-        };
-    }
-    // An EPUB is read entry by entry from disk; scans analyze several
-    // documents at once, and holding each whole file adds up.
+    let unreadable = DocumentAnalysis {
+        unreadable: true,
+        ..Default::default()
+    };
+    let len = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() <= MAX_ANALYZED_DOCUMENT_BYTES => metadata.len(),
+        _ => return Some(unreadable),
+    };
+    // An EPUB is read entry by entry from disk, so what it holds is the text
+    // it decompresses, however small or large the archive is.
     if extension == "epub" {
-        return epub_analysis(alignment::parse_epub_file(path));
+        let parsed = alignment::parse_epub_file_within(path, memory_bytes);
+        if parsed.is_err() && memory_bytes < alignment::EPUB_TEXT_BYTES {
+            return None;
+        }
+        return Some(epub_analysis(parsed));
+    }
+    if len > memory_bytes {
+        return None;
     }
     let Ok(bytes) = std::fs::read(path) else {
-        return DocumentAnalysis {
-            unreadable: true,
-            ..Default::default()
-        };
+        return Some(unreadable);
     };
-    match extension.as_str() {
+    Some(match extension.as_str() {
         "pdf" => analyze_pdf(&bytes),
         "html" | "htm" => DocumentAnalysis {
             text_characters: count_text(&alignment::html_to_text(&String::from_utf8_lossy(&bytes))),
@@ -267,11 +273,8 @@ pub(crate) fn analyze_document(path: &FsPath) -> DocumentAnalysis {
             page_count: None,
             unreadable: false,
         },
-        _ => DocumentAnalysis {
-            unreadable: true,
-            ..Default::default()
-        },
-    }
+        _ => unreadable,
+    })
 }
 
 fn count_text(text: &str) -> u64 {
@@ -412,21 +415,22 @@ pub(crate) fn classify(
 /// cache has not seen at this size and modification time. Documents are
 /// independent, so they fan out across the pool.
 pub(crate) fn analyze_all(paths: &[PathBuf], cache: &AnalysisCache) -> AnalysisCache {
-    // PDF, HTML, and text are held whole while they are analyzed. A document
-    // shares the pool only if one of its size on every worker still fits in
-    // what a single document may occupy, so a folder of near-limit files
-    // costs a small server no more memory than one of them.
+    // PDF, HTML, and text are held whole while they are analyzed, and an EPUB
+    // holds its text. A document shares the pool only if one of its size on
+    // every worker still fits in what a single document may occupy, so a
+    // folder of near-limit files costs a small server no more memory than
+    // one of them.
     let shared_document_bytes = MAX_ANALYZED_DOCUMENT_BYTES / rayon::current_num_threads() as u64;
     analyze_all_with(paths, cache, shared_document_bytes, analyze_document)
 }
 
-/// Documents larger than `shared_document_bytes` are analyzed one at a time,
-/// after the pool has finished with the rest.
+/// Documents that need more than `shared_document_bytes` are analyzed one at
+/// a time, after the pool has finished with the rest.
 fn analyze_all_with(
     paths: &[PathBuf],
     cache: &AnalysisCache,
     shared_document_bytes: u64,
-    analyze: impl Fn(&FsPath) -> DocumentAnalysis + Sync,
+    analyze: impl Fn(&FsPath, u64) -> Option<DocumentAnalysis> + Sync,
 ) -> AnalysisCache {
     use rayon::prelude::*;
     paths
@@ -446,22 +450,26 @@ fn analyze_all_with(
                 && cached.modified_unix == modified_unix
             {
                 Some(cached.analysis.clone())
-            } else if len > shared_document_bytes {
-                None
             } else {
-                Some(analyze(path))
+                analyze(path, shared_document_bytes)
             };
             Some((path, len, modified_unix, analysis))
         })
         .collect::<Vec<_>>()
         .into_iter()
         .map(|(path, len, modified_unix, analysis)| {
+            let analysis = analysis
+                .or_else(|| analyze(path, MAX_ANALYZED_DOCUMENT_BYTES))
+                .unwrap_or(DocumentAnalysis {
+                    unreadable: true,
+                    ..Default::default()
+                });
             (
                 path.clone(),
                 CachedAnalysis {
                     len,
                     modified_unix,
-                    analysis: analysis.unwrap_or_else(|| analyze(path)),
+                    analysis,
                 },
             )
         })
@@ -827,8 +835,11 @@ mod tests {
             .collect::<Vec<_>>();
         let held = AtomicU64::new(0);
         let peak = AtomicU64::new(0);
-        let analyses = analyze_all_with(&paths, &AnalysisCache::new(), SHARED, |path| {
+        let analyses = analyze_all_with(&paths, &AnalysisCache::new(), SHARED, |path, allowed| {
             let len = std::fs::metadata(path).unwrap().len();
+            if len > allowed {
+                return None;
+            }
             peak.fetch_max(
                 held.fetch_add(len, Ordering::SeqCst) + len,
                 Ordering::SeqCst,
@@ -837,7 +848,7 @@ mod tests {
             // held, so documents that share the pool overlap every run.
             rayon::yield_now();
             held.fetch_sub(len, Ordering::SeqCst);
-            DocumentAnalysis::default()
+            Some(DocumentAnalysis::default())
         });
         assert_eq!(analyses.len(), paths.len());
         assert_eq!(peak.load(Ordering::SeqCst), LARGE);
@@ -858,5 +869,27 @@ mod tests {
         assert!(analyses[&oversized].analysis.unreadable);
         assert!(!analyses[&book].analysis.unreadable);
         assert_eq!(analyses[&book].analysis.text_characters, 15);
+    }
+
+    /// A small archive can expand into far more text than its size on disk,
+    /// so an EPUB is admitted to the pool by its text, not its file length.
+    #[test]
+    fn an_epub_with_more_text_than_the_pool_allows_is_analyzed_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let epub = dir.path().join("book.epub");
+        let chapter = format!("<p>{}</p>", "meadow ".repeat(4096));
+        std::fs::write(&epub, alignment::build_test_epub_with_text(&chapter, "")).unwrap();
+        let shared = std::fs::metadata(&epub).unwrap().len();
+        assert!(shared < chapter.len() as u64);
+        assert_eq!(analyze_document(&epub, shared), None);
+
+        let analyses = analyze_all_with(
+            std::slice::from_ref(&epub),
+            &AnalysisCache::new(),
+            shared,
+            analyze_document,
+        );
+        assert!(!analyses[&epub].analysis.unreadable);
+        assert!(analyses[&epub].analysis.text_characters >= 4096 * 7 - 1);
     }
 }

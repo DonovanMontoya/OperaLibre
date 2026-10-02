@@ -103,17 +103,37 @@ pub fn parse_epub(bytes: &[u8]) -> anyhow::Result<EpubDocument> {
     parse_epub_archive(&mut zip::ZipArchive::new(std::io::Cursor::new(bytes))?)
 }
 
+/// The most text one EPUB may decompress, across every entry read.
+pub(crate) const EPUB_TEXT_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Parses an EPUB straight from disk. Only the entries the reader needs are
 /// decompressed, so the file is never held in memory whole.
 pub fn parse_epub_file(path: &std::path::Path) -> anyhow::Result<EpubDocument> {
-    parse_epub_archive(&mut zip::ZipArchive::new(std::fs::File::open(path)?)?)
+    parse_epub_file_within(path, EPUB_TEXT_BYTES)
+}
+
+/// As `parse_epub_file`, but fails once the EPUB's text passes `text_bytes`,
+/// for callers that hold several documents at once.
+pub(crate) fn parse_epub_file_within(
+    path: &std::path::Path,
+    text_bytes: u64,
+) -> anyhow::Result<EpubDocument> {
+    parse_epub_archive_within(
+        &mut zip::ZipArchive::new(std::fs::File::open(path)?)?,
+        text_bytes.min(EPUB_TEXT_BYTES),
+    )
 }
 
 pub fn parse_epub_archive<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
 ) -> anyhow::Result<EpubDocument> {
-    let mut remaining = 64 * 1024 * 1024;
+    parse_epub_archive_within(archive, EPUB_TEXT_BYTES)
+}
 
+fn parse_epub_archive_within<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    mut remaining: u64,
+) -> anyhow::Result<EpubDocument> {
     let container = read_zip_text(archive, "META-INF/container.xml", &mut remaining)?
         .ok_or_else(|| anyhow::anyhow!("EPUB is missing META-INF/container.xml"))?;
     let opf_path = find_tags(&container, "rootfile")
