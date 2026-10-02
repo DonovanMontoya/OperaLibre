@@ -1852,6 +1852,9 @@ exit 0
             super::DEFAULT_MAX_CONCURRENT_BOOK_DOWNLOADS,
         )),
         epub_entry_slots: super::Arc::new(super::Semaphore::new(super::EPUB_ENTRY_CONCURRENCY)),
+        epub_entry_account_slots: super::Arc::new(super::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         upload_lock: super::Arc::new(super::Mutex::new(())),
         libro: super::Arc::new(super::LibroImports::default()),
         backup_lock: super::Arc::new(super::Mutex::new(super::BackupLifecycle::default())),
