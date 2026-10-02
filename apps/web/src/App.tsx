@@ -842,6 +842,8 @@ function MainApp({
     [books, selectedBookId]
   );
   const metadataEditor = useMetadataEditor({
+    books,
+    currentUserId: currentUser.id,
     selectedBook,
     setBooks
   });

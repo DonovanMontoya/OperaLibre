@@ -20,7 +20,7 @@ function Fixture() {
   const [books, setBooks] = useState(fixtures);
   const [selectedId, setSelectedId] = useState(fixtures[0].id);
   const selectedBook = books.find(book => book.id === selectedId)!;
-  const editor = useMetadataEditor({ selectedBook, setBooks });
+  const editor = useMetadataEditor({ books, currentUserId: "fixture-owner", selectedBook, setBooks });
   return <>
     <button onClick={() => editor.openMetadataEditor(selectedBook)}>Edit Info</button>
     <button id="navigate" onClick={() => setSelectedId(fixtures[1].id)}>Next book</button>
