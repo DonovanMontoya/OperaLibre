@@ -72,6 +72,8 @@ pub(crate) struct MetadataOverrideStore {
 pub(crate) struct BookMetadataOverride {
     /// Explicitly uploaded reading copy, relative to the book's folder.
     pub(crate) ebook_file_name: Option<String>,
+    /// Managed cover sidecar, relative to the book folder.
+    pub(crate) cover_file_name: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) author: Option<String>,
     pub(crate) narrator: Option<String>,
@@ -104,6 +106,8 @@ pub(crate) struct LibraryState {
     /// image in memory cost a gigabyte on a few thousand books, and every
     /// request copied one again on its way out.
     pub(crate) cover_art: HashMap<String, CachedCover>,
+    /// Original art retained so removing an override needs no full rescan.
+    pub(crate) embedded_cover_art: HashMap<String, CachedCover>,
     /// True from the moment the server starts listening until its first scan
     /// has finished, so an empty catalogue can be told from a finished one.
     pub(crate) startup_scan_pending: bool,
@@ -331,6 +335,8 @@ pub(crate) struct Book {
     pub(crate) duration_seconds: Option<f64>,
     pub(crate) track_count: usize,
     pub(crate) cover_art_url: Option<String>,
+    pub(crate) has_cover_override: bool,
+    pub(crate) cover_art_content_type: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) genres: Vec<String>,
     pub(crate) tags: Vec<BookTag>,
@@ -607,6 +613,10 @@ pub(crate) async fn update_book_metadata(
     state
         .metadata_overrides
         .mutate(|overrides| {
+            metadata_override.cover_file_name = overrides
+                .books
+                .get(&book_id)
+                .and_then(|existing| existing.cover_file_name.clone());
             metadata_override.ebook_file_name = overrides
                 .books
                 .get(&book_id)
@@ -688,6 +698,7 @@ pub(crate) fn metadata_override_from_update(
 
     Ok(BookMetadataOverride {
         ebook_file_name: None,
+        cover_file_name: None,
         title: Some(title),
         author: update.author.map(|value| clean_metadata_text(&value)),
         narrator: update.narrator.map(|value| clean_metadata_text(&value)),
@@ -2175,6 +2186,8 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
                 duration_seconds,
                 track_count: tracks.len(),
                 cover_art_url,
+                has_cover_override: false,
+                cover_art_content_type: None,
                 description: metadata_summary.description.clone(),
                 genres: metadata_summary.genres.clone(),
                 tags: Vec::new(),
@@ -2340,8 +2353,20 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
     // would stall every route that reads the library, including media
     // streaming, for the length of the pass.
     let covers_dir = state.covers_dir.clone();
-    let (cover_art, stale_covers) = tokio::task::spawn_blocking(move || {
-        write_scanned_cover_cache(&covers_dir, extracted_covers)
+    let cover_root = state.library_root.clone();
+    let cover_paths = book_paths.clone();
+    let (cover_art, embedded_cover_art, stale_covers) = tokio::task::spawn_blocking(move || {
+        let (embedded, stale) = write_scanned_cover_cache(&covers_dir, extracted_covers)?;
+        let mut covers = embedded.clone();
+        for (id, metadata) in &metadata_overrides.books {
+            if let Some(name) = &metadata.cover_file_name
+                && let Some(path) = cover_paths.get(id)
+                && let Some(cover) = read_cover_override(&cover_root, path, id, name)
+            {
+                covers.insert(id.clone(), cover);
+            }
+        }
+        Ok::<_, anyhow::Error>((covers, embedded, stale))
     })
     .await
     .map_err(|error| anyhow::anyhow!("cover extraction failed: {error}"))??;
@@ -2356,6 +2381,13 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
             if let Some(metadata_override) = current_overrides.books.get(&book.id) {
                 apply_book_metadata_override(book, metadata_override);
             }
+            let cover = cover_art.get(&book.id);
+            let overridden = cover.is_some_and(|cover| {
+                embedded_cover_art
+                    .get(&book.id)
+                    .is_none_or(|embedded| embedded.path != cover.path)
+            });
+            set_book_cover(book, cover, overridden);
         }
         drop(current_overrides);
         library.books = books;
@@ -2365,6 +2397,7 @@ pub(crate) async fn rescan_library_locked(state: &AppState) -> anyhow::Result<()
         library.companion_analyses = companion_analyses;
         library.sync_paths = sync_paths;
         library.cover_art = cover_art;
+        library.embedded_cover_art = embedded_cover_art;
         library.catalogue_ready = true;
         library.catalogue_error = false;
     }

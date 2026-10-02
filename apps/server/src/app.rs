@@ -268,7 +268,13 @@ pub(crate) fn build_router(
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/books/{book_id}", get(get_book))
         .route("/api/books/{book_id}/metadata", put(update_book_metadata))
-        .route("/api/books/{book_id}/cover", get(get_cover_art))
+        .route(
+            "/api/books/{book_id}/cover",
+            get(get_cover_art)
+                .post(upload_cover)
+                .delete(remove_cover_override)
+                .layer(DefaultBodyLimit::max(MAX_COVER_UPLOAD_BYTES + 64 * 1024)),
+        )
         .route("/api/books/{book_id}/readalong", get(get_reading_file))
         .route(
             "/api/books/{book_id}/companions/{companion_id}",
