@@ -303,6 +303,8 @@ semantics. Job kind is `libro-import` and uses the standard jobs endpoints.
 
 Libation status, managed-account changes, refresh, download-all, and jobs require an administrator. Account removal requires an owner. Download-all also requires direct-download access, while request decisions require the separate approval permission. Authenticated accounts can browse the catalog in installed apps; one-title downloads require direct access or an approved request. Account-aware requests include `profileId` so duplicate ASINs owned by multiple Audible accounts remain distinct. A requester cannot approve their own request. If Libation is not configured, acquisition endpoints respond with an explanatory error.
 
+Libation download jobs enforce `max_upload_gib` per title, including temporary files, and monitor `min_download_free_gib` on the library volume. Budget failures set the job to `failed` and discard staged files. The same checks apply to approved requests and each title in download-all. Existing local titles are reused.
+
 ## OPDS
 
 The server publishes an [OPDS](https://opds.io/) catalog so generic reading apps can browse and download the library:
