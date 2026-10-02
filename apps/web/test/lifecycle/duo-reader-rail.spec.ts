@@ -10,6 +10,28 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await server?.close(); });
 
+test('the Duo Book reader title clears the close target and stays before the crease', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 951, height: 669 });
+  await page.goto(`${url}test/reader-catch-up.html?immersive&narration&listening=1`);
+  await page.evaluate(async () => {
+    const path = '/src/deviceFold.ts';
+    const { applyDeviceFold } = await import(path);
+    applyDeviceFold(document.documentElement, {
+      posture: 'half-open', angle: 110,
+      fold: { x: 470, y: 0, width: 12, height: 669, axis: 'vertical', active: true }
+    });
+  });
+  await expect(page.locator('.epub-loading')).toHaveCount(0);
+  const close = page.getByRole('button', { name: 'Close the reader' });
+  const closeBounds = (await close.boundingBox())!;
+  const titleBounds = (await page.locator('.epub-topbar-title').boundingBox())!;
+  expect(titleBounds.x).toBeGreaterThanOrEqual(closeBounds.x + closeBounds.width + 6);
+  expect(titleBounds.x + titleBounds.width).toBeLessThan(470);
+  await close.click({ position: { x: closeBounds.width - 2, y: closeBounds.height / 2 } });
+  await expect(page.locator('.epub-reader')).toHaveCount(0);
+});
+
 for (const edge of ['left', 'right'] as const) {
   for (const posture of ['flat', 'closed'] as const) {
     for (const height of [264, 300]) {

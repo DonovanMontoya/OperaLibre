@@ -2464,19 +2464,7 @@ async fn try_libation_liberate(
         }
     }
 
-    let books_override = format!("Books={}", profile.config.library_root.to_string_lossy());
-    let result = run_libation(
-        &profile.config,
-        vec![
-            "liberate".to_string(),
-            "--force".to_string(),
-            "--id".to_string(),
-            asin.to_string(),
-            "--override".to_string(),
-            books_override,
-        ],
-    )
-    .await;
+    let result = crate::libation_download::download_title(state, &profile.config, asin).await;
     invalidate_libation_export_cache().await;
 
     match result {
@@ -2567,14 +2555,16 @@ pub(crate) async fn schedule_libation_access_grant(
     let task_job_id = grant_job_id.clone();
     tokio::spawn(run_job(state.clone(), grant_job_id.clone(), async move {
         if !await_job_outcome(&state, &download_job_id).await {
-            update_job_finished(
-                &state,
-                &task_job_id,
-                "failed",
-                None,
-                Some("Libation download failed before access could be granted.".to_string()),
-            )
-            .await;
+            let error = state
+                .jobs
+                .read()
+                .await
+                .get(&download_job_id)
+                .and_then(|job| job.error.clone())
+                .unwrap_or_else(|| {
+                    "Libation download failed before access could be granted.".to_string()
+                });
+            update_job_finished(&state, &task_job_id, "failed", None, Some(error)).await;
             return;
         }
         update_job_running(&state, &task_job_id).await;
@@ -2770,8 +2760,6 @@ pub(crate) async fn liberate_all_libation_books(
                     failures.push(format!("No enabled Audible accounts in {}", profile.name));
                     continue;
                 }
-                let books_override =
-                    format!("Books={}", profile.config.library_root.to_string_lossy());
                 for account in enabled {
                     let name = account.name.as_deref().unwrap_or(&account.account_id);
                     update_job_output(
@@ -2833,19 +2821,14 @@ pub(crate) async fn liberate_all_libation_books(
                         &format!("Downloading remaining books from {name}.\n"),
                     )
                     .await;
-                    // Repeated --id is supported by Libation. Bound each
-                    // invocation so very large libraries fit in argv.
-                    for batch in asins.chunks(100) {
-                        let mut args = vec![
-                            "liberate".to_string(),
-                            "--override".to_string(),
-                            books_override.clone(),
-                        ];
-                        for asin in batch {
-                            args.push("--id".to_string());
-                            args.push(asin.clone());
-                        }
-                        match run_libation(&profile.config, args).await {
+                    for asin in &asins {
+                        match crate::libation_download::download_title(
+                            &state_for_job,
+                            &profile.config,
+                            asin,
+                        )
+                        .await
+                        {
                             Ok(output) if output.status.success() => {
                                 append_job_command_output(
                                     &state_for_job,
@@ -2923,28 +2906,36 @@ pub(crate) async fn liberate_all_libation_books(
                 &format!("Downloading remaining books from {}.\n", profile.name),
             )
             .await;
-            let books_override = format!("Books={}", profile.config.library_root.to_string_lossy());
-            match run_libation(
-                &profile.config,
-                vec![
-                    "liberate".to_string(),
-                    "--override".to_string(),
-                    books_override,
-                ],
-            )
-            .await
-            {
-                Ok(output) if output.status.success() => {
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                }
-                Ok(output) => {
-                    exit_code = output.status.code();
-                    append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
-                    failures.push(format!("{} download failed", profile.name));
-                }
+            let books = match export_libation_books(&profile).await {
+                Ok(books) => books,
                 Err(error) => {
-                    exit_code = None;
-                    failures.push(format!("{} download failed: {error}", profile.name));
+                    failures.push(format!(
+                        "Could not read {} library: {}",
+                        profile.name, error.message
+                    ));
+                    continue;
+                }
+            };
+            for book in books {
+                match crate::libation_download::download_title(
+                    &state_for_job,
+                    &profile.config,
+                    &book.asin,
+                )
+                .await
+                {
+                    Ok(output) if output.status.success() => {
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                    }
+                    Ok(output) => {
+                        exit_code = output.status.code();
+                        append_job_command_output(&state_for_job, &job_id_for_task, &output).await;
+                        failures.push(format!("{} download failed", profile.name));
+                    }
+                    Err(error) => {
+                        exit_code = None;
+                        failures.push(format!("{} download failed: {error}", profile.name));
+                    }
                 }
             }
         }

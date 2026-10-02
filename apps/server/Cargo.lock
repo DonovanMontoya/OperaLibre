@@ -1390,6 +1390,7 @@ dependencies = [
  "fs2",
  "id3",
  "image",
+ "libc",
  "lofty",
  "lopdf",
  "mime_guess",

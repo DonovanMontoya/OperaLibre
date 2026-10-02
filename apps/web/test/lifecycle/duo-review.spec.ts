@@ -84,19 +84,27 @@ test('Duo paused playback survives folding, rotation, and window resizing withou
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(30);
   const states: { name: string; width: number; height: number; state: DeviceFoldState }[] = [
     { name: 'open', width: 951, height: 669, state: { posture: 'flat', angle: 180,
-      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: false } } },
     { name: 'book', width: 951, height: 669, state: { posture: 'half-open', angle: 110,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'acute-book', width: 951, height: 669, state: { posture: 'half-open', angle: 65,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'hinge-status-lag', width: 951, height: 669, state: { posture: 'closed', angle: 0,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'flat-status-lag', width: 951, height: 669, state: { posture: 'flat', angle: 180,
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
+    { name: 'unknown-status-lag', width: 951, height: 669, state: { posture: 'unknown',
       fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } },
     { name: 'tabletop', width: 669, height: 951, state: { posture: 'half-open', angle: 110,
       fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
     { name: 'open-rotated', width: 669, height: 951, state: { posture: 'flat', angle: 180,
-      fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: true } } },
+      fold: { x: 0, y: 460, width: 669, height: 31, axis: 'horizontal', active: false } } },
     { name: 'closed', width: 466, height: 678, state: { posture: 'closed', angle: 0 } },
     { name: 'closed-landscape', width: 678, height: 466, state: { posture: 'closed', angle: 0 } },
     { name: 'narrow-window', width: 320, height: 600, state: { posture: 'flat', angle: 180 } },
     { name: 'short-window', width: 720, height: 360, state: { posture: 'flat', angle: 180 } },
     { name: 'reopened', width: 951, height: 669, state: { posture: 'flat', angle: 180,
-      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: true } } }
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: false } } }
   ];
   for (const { name, width, height, state } of states) {
     await test.step(name, async () => {
@@ -106,6 +114,7 @@ test('Duo paused playback survives folding, rotation, and window resizing withou
         const { applyDeviceFold } = await import(path);
         applyDeviceFold(document.documentElement, state);
       }, state);
+      await expect(page.locator('html')).toHaveAttribute('data-fold-posture', state.fold?.active ? 'half-open' : state.posture);
       await expect(page.locator('.native-now-copy > p')).toHaveText(book.title);
       await expect(page.locator('.native-now-play')).toHaveAccessibleName('Play');
       await expect(async () => {
@@ -494,7 +503,7 @@ async function foldDetails(page: Page, posture: 'closed' | 'half-open' | 'flat')
     const path = '/src/deviceFold.ts';
     const { applyDeviceFold } = await import(path);
     applyDeviceFold(document.documentElement, { posture, angle: posture === 'closed' ? 0 : posture === 'flat' ? 180 : 110,
-      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: posture !== 'closed' } });
+      fold: { x: 460, y: 0, width: 31, height: 669, axis: 'vertical', active: posture === 'half-open' } });
   }, posture);
   await expect(page.locator('html')).toHaveAttribute('data-fold-posture', posture);
 }

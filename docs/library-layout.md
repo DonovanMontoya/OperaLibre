@@ -96,6 +96,8 @@ Audible downloads often include a PDF supplement — maps, illustrations, a reci
 
 The judgement compares how much text a document holds against how much a narration of the book's length implies (a narrator reads roughly fourteen characters a second). A twelve-page atlas with captions beside a ten-hour audiobook is a supplement; a picture book's short EPUB beside a four-minute recording is still the book. A document that cannot be opened is offered as the book rather than hidden. Results are cached by file size and modification time, so a rescan re-reads only documents that changed. When several documents qualify as the book, the EPUB is preferred, then HTML, text, and PDF.
 
+To keep scans and uploads responsive, EPUB analysis stops after processing 100,000 markup tags in a chapter. Chapters over this limit cannot be analyzed or automatically aligned, and uploading such an EPUB is rejected.
+
 ### Sync maps (following the narration)
 
 When a book has an EPUB companion, a *sync map* lets the reader pane follow the audio. With the server’s follow-along experiment enabled, tapping a sentence plays from there. Pressing Follow in the ebook also highlights the narrated sentence and turns the page with the audio. Chapter sync remains available when sentence following is off. There are two levels of map precision:
