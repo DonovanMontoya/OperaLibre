@@ -108,6 +108,15 @@ jobs:
       - name: Build
         run: npm run build -w @operalibre/web
 
+      - name: Upload web lifecycle output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: operalibre-web-lifecycle-output
+          path: output/lifecycle
+          retention-days: 7
+          if-no-files-found: ignore
+
   playback:
     name: Playback lifecycle (browser)
     runs-on: ubuntu-latest

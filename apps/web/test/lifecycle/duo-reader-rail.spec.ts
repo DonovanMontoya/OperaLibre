@@ -31,8 +31,9 @@ for (const edge of ['left', 'right'] as const) {
         await expect(page.locator('.epub-loading')).toHaveCount(0);
         await expect.poll(() => page.evaluate(() => {
           const stage = document.querySelector<HTMLElement>('.epub-stage')!;
-          return stage.querySelector('iframe')?.offsetHeight === stage.clientHeight;
-        })).toBe(true);
+          const iframe = stage.querySelector('iframe');
+          return iframe ? iframe.offsetHeight - stage.clientHeight : null;
+        }), { message: 'The EPUB iframe must fill the reader stage' }).toBe(0);
         const rail = (await page.locator('.epub-audiobar').boundingBox())!;
         expect(rail).toEqual({ x: edge === 'left' ? 0 : width - 84, y: 120, width: 84, height });
         const stage = (await page.locator('.epub-stage').boundingBox())!;
