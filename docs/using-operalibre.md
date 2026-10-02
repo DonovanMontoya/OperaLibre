@@ -36,7 +36,9 @@ You can add books in either of these ways:
 1. **Copy files into the library folder.** Put them in the folder chosen as `library_root`, then choose **Rescan library** from the administrator controls. Follow [Library Layout](library-layout.md) for the expected folder and filename patterns.
 2. **Upload through the app.** An administrator can choose **Upload audiobook** in the library header, enter the book name, select one audio file (such as an M4B) or every track for a multi-file book, then upload. The app puts it in a new library folder and rescans automatically.
 
-Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art comes from the artwork embedded in the audio files' tags; add a readalong file by copying it into the book’s folder afterward, then rescan.
+Uploads accept the audio types listed in [Library Layout](library-layout.md#supported-audio-formats). Cover art initially comes from the artwork embedded in the audio files' tags. An administrator can open **Edit Info**, choose a JPEG, PNG, or WebP cover, and **Save Info** to replace it for everyone with access to the book. Images must be at most 8 MiB, 16 million pixels, and 8192 pixels per side; OperaLibre saves a resized copy without changing the audio. **Restore original cover** returns to the embedded artwork, or the placeholder if there is none.
+
+Cover changes survive rescans and server restarts. They require a writable book folder; keep its hidden OperaLibre cover files when moving or backing up your library, alongside a server backup containing your metadata edits. Add a readalong file by copying it into the book’s folder afterward, then rescan.
 
 ### Organize books with custom tags
 

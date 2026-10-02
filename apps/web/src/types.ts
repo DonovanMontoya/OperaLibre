@@ -21,6 +21,8 @@ export type Book = {
   trackCount: number;
   coverArtUrl: string | null;
   coverArtContentType: string | null;
+  /** Absent on older servers, Jellyfin, and device-only books. */
+  hasCoverOverride?: boolean;
   description: string | null;
   genres: string[];
   tags: BookTag[];
