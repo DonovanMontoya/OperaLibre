@@ -38,6 +38,30 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+  server-windows:
+    name: Server Windows (Rust)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/server
+
+      - name: Compile Windows server
+        run: cargo check --locked
+
+      - name: Test Windows Libation job cleanup
+        run: cargo test --locked libation_download::windows_tests -- --nocapture
+
   launcher:
     name: Release launcher (Rust)
     runs-on: ubuntu-latest
