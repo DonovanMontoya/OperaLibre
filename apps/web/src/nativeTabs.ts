@@ -47,6 +47,14 @@ export function spreadTab(tab: NativeTab, spread: boolean, layout: ShelfLayout):
   return layout === "library" ? "shelf" : "reading";
 }
 
+/**
+ * Playback and a book's details are set on the player page, which the full
+ * collection puts away. Whatever opened them, the spread has to come back.
+ */
+export function fullShelfMustYield(tab: NativeTab, playerView: string, layout: ShelfLayout): boolean {
+  return layout === "library" && (tab === "reading" || playerView !== "now");
+}
+
 export function nativeTabSelection(tab: NativeTab, tabs: NativeTabItem[]): NativeTab {
   if (tab === "admin") return "settings";
   return tabs.some((item) => item.id === tab) ? tab : "shelf";

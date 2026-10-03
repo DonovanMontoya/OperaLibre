@@ -37,7 +37,7 @@ export function usePlayerNavigation({
 }: {
   bookDetailsSwipeStartRef: RefObject<{ clientX: number; clientY: number; } | null>;
   books: Book[];
-  changeShelfLayout: (next: ShelfLayout) => void;
+  changeShelfLayout: (next: ShelfLayout, animate?: boolean) => void;
   chaptersOpen: boolean;
   gamesEnabled: boolean;
   isViewingPlayingBook: boolean;

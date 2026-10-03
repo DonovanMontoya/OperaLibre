@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeTabItems, nativeTabSelection, spreadTab } from "../src/nativeTabs.ts";
+import { nativeTabItems, fullShelfMustYield, nativeTabSelection, spreadTab } from "../src/nativeTabs.ts";
 
 test("native tabs keep Administration inside Settings and never need More", () => {
   for (const games of [false, true]) {
@@ -35,4 +35,13 @@ test("on the iPad spread, Shelf is the collection alone and Reading is the sprea
 test("without the spread, each route is its own tab", () => {
   assert.equal(spreadTab("shelf", false, "split"), "shelf");
   assert.equal(spreadTab("reading", false, "split"), "reading");
+});
+
+test("the full shelf gives way to anything shown on the player page", () => {
+  // Playing from the shelf and opening a companion set the route without going through the tab bar.
+  assert.equal(fullShelfMustYield("reading", "now", "library"), true);
+  assert.equal(fullShelfMustYield("shelf", "details", "library"), true);
+  assert.equal(fullShelfMustYield("shelf", "now", "library"), false);
+  assert.equal(fullShelfMustYield("reading", "now", "split"), false);
+  assert.equal(fullShelfMustYield("reading", "now", "player"), false);
 });
