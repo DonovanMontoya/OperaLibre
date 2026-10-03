@@ -8,9 +8,9 @@ use anyhow::{Context, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Client;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 /// Always the newest release's manifest; GitHub redirects this address to it,
 /// without counting against the API rate limit.
@@ -22,6 +22,10 @@ const ENVELOPE_DOMAIN: &str = "operalibre-signed-v1";
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 /// Redirects and bridges followed before giving up, which also ends a loop.
 const MAX_MANIFEST_HOPS: usize = 8;
+/// The key rotations this install has accepted, in the data dir. Verification
+/// starts from them, so a later manifest that leaves a rotation out cannot be
+/// accepted under a key that rotation retired.
+pub const ACCEPTED_ROOTS_FILE: &str = "update-roots.json";
 
 /// The keys this build trusts out of the box: root version 1. Later roots are
 /// learned from the rotations a manifest carries, each signed by the root
@@ -32,16 +36,16 @@ pub const ROOT_KEYS: &[&str] = &[
     "ZRqn6x4T1s5YydV/orpMeF1Ec4VgpLXq7EUgAFIn0Ns=",
 ];
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Envelope {
     payload: String,
     #[serde(default)]
     signatures: Vec<EnvelopeSignature>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     roots: Vec<Envelope>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct EnvelopeSignature {
     keyid: String,
     sig: String,
@@ -52,6 +56,14 @@ pub struct TrustedRoot {
     version: u64,
     threshold: usize,
     keys: Vec<(String, ed25519_dalek::VerifyingKey)>,
+    /// The signed rotations that led here from the built-in root.
+    rotations: Vec<Envelope>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct AcceptedRoots {
+    #[serde(default)]
+    rotations: Vec<Envelope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,7 +230,34 @@ impl TrustedRoot {
             version,
             threshold,
             keys,
+            rotations: Vec::new(),
         })
+    }
+
+    /// This root advanced by the rotations saved at `path`. Each one is
+    /// verified again, so the file can only move trust along rotations the
+    /// release keys signed. A missing or damaged file changes nothing, and the
+    /// next manifest teaches the rotations again.
+    pub async fn with_saved_rotations(self, path: &Path) -> anyhow::Result<Self> {
+        match tokio::fs::read(path).await {
+            Ok(bytes) => {
+                let saved = serde_json::from_slice::<AcceptedRoots>(&bytes).unwrap_or_default();
+                Ok(self.rotate(&saved.rotations))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(self),
+            Err(error) => Err(error).context("Could not read the saved update keys"),
+        }
+    }
+
+    async fn save(&self, path: &Path) -> anyhow::Result<()> {
+        crate::write_json_atomic(
+            path,
+            &AcceptedRoots {
+                rotations: self.rotations.clone(),
+            },
+        )
+        .await
+        .map_err(|error| anyhow!("Could not save the new update keys: {error:?}"))
     }
 
     fn verify(&self, envelope: &Envelope, kind: &str) -> anyhow::Result<()> {
@@ -265,7 +304,12 @@ impl TrustedRoot {
                 continue;
             };
             if self.verify(rotation, "root").is_ok() && next.verify(rotation, "root").is_ok() {
-                self = next;
+                let mut rotations = std::mem::take(&mut self.rotations);
+                rotations.push(Envelope {
+                    roots: Vec::new(),
+                    ..rotation.clone()
+                });
+                self = TrustedRoot { rotations, ..next };
             }
         }
         self
@@ -288,6 +332,7 @@ fn root_from_payload(payload: &RootPayload) -> anyhow::Result<TrustedRoot> {
         version: payload.version,
         threshold: payload.threshold,
         keys,
+        rotations: Vec::new(),
     })
 }
 
@@ -313,11 +358,14 @@ fn envelope_message(kind: &str, payload: &str) -> Vec<u8> {
 
 /// Verifies a manifest file's signatures, following any key rotations it
 /// carries, and returns the manifest. Nothing in an unverified file is used.
-pub fn verify_manifest(bytes: &[u8], root: &TrustedRoot) -> anyhow::Result<Manifest> {
+/// `root` is left at the root that signed the manifest, so the rotations it
+/// followed stay in force for whatever is verified next.
+pub fn verify_manifest(bytes: &[u8], root: &mut TrustedRoot) -> anyhow::Result<Manifest> {
     let envelope: Envelope =
         serde_json::from_slice(bytes).context("The update manifest is not valid JSON.")?;
-    let root = root.clone().rotate(&envelope.roots);
-    root.verify(&envelope, "manifest")?;
+    let rotated = root.clone().rotate(&envelope.roots);
+    rotated.verify(&envelope, "manifest")?;
+    *root = rotated;
     let manifest: Manifest = serde_json::from_str(&envelope.payload)
         .context("The update manifest payload is not valid.")?;
     if manifest.kind != "manifest" {
@@ -333,6 +381,29 @@ pub fn verify_manifest(bytes: &[u8], root: &TrustedRoot) -> anyhow::Result<Manif
     Ok(manifest)
 }
 
+/// Verifies a manifest starting from `root` advanced by the rotations saved at
+/// `accepted_roots`, and saves any further rotation the manifest carries.
+async fn verify_manifest_remembering(
+    bytes: &[u8],
+    root: TrustedRoot,
+    accepted_roots: &Path,
+) -> anyhow::Result<Manifest> {
+    // Checks of different feeds overlap. One at a time, each reads what the
+    // last one saved, so a feed that carries fewer rotations can neither
+    // overwrite a newer root nor be verified under an older one.
+    static SAVING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _saving = SAVING.lock().await;
+    let mut root = root.with_saved_rotations(accepted_roots).await?;
+    let known = root.version;
+    let manifest = verify_manifest(bytes, &mut root)?;
+    // Saved before the manifest is used: an update that went ahead on a
+    // rotation this install then forgot could be undone by the old key.
+    if root.version > known {
+        root.save(accepted_roots).await?;
+    }
+    Ok(manifest)
+}
+
 /// A manifest from its payload alone, for tests of code that reads one.
 #[cfg(test)]
 pub fn unsigned_manifest(payload: &str) -> Manifest {
@@ -343,23 +414,25 @@ pub fn unsigned_manifest(payload: &str) -> Manifest {
 /// one, or the one a redirect or bridge sends this install to.
 pub async fn fetch_manifest(
     client: &Client,
+    accepted_roots: &Path,
     component: &str,
     installed: Option<&Version>,
 ) -> anyhow::Result<Manifest> {
-    fetch_manifest_from(client, MANIFEST_URL, component, installed).await
+    fetch_manifest_from(client, accepted_roots, MANIFEST_URL, component, installed).await
 }
 
 pub async fn fetch_manifest_from(
     client: &Client,
+    accepted_roots: &Path,
     initial_url: &str,
     component: &str,
     installed: Option<&Version>,
 ) -> anyhow::Result<Manifest> {
-    let root = TrustedRoot::built_in()?;
     let mut url = initial_url.to_string();
     for _ in 0..MAX_MANIFEST_HOPS {
         let bytes = download_manifest(client, &url).await?;
-        let manifest = verify_manifest(&bytes, &root)?;
+        let manifest =
+            verify_manifest_remembering(&bytes, TrustedRoot::built_in()?, accepted_roots).await?;
         if let Some(next) = &manifest.redirect {
             url = next.clone();
             continue;
@@ -422,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_manifest_signed_by_a_root_key_verifies() {
-        let manifest = verify_manifest(&envelope("direct"), &test_root()).unwrap();
+        let manifest = verify_manifest(&envelope("direct"), &mut test_root()).unwrap();
         assert_eq!(manifest.version, "1.2.3");
         let server = manifest.package("server", Some("linux-x64"), None).unwrap();
         assert_eq!(server.archive_format(), Some(ArchiveFormat::TarGz));
@@ -445,7 +518,7 @@ mod tests {
     fn unknown_fields_components_and_formats_are_ignored() {
         // The fixture lists a component and fields this version has never
         // heard of; reading it must still succeed.
-        let manifest = verify_manifest(&envelope("direct"), &test_root()).unwrap();
+        let manifest = verify_manifest(&envelope("direct"), &mut test_root()).unwrap();
         let windows = manifest
             .package("server", Some("windows-x64"), None)
             .unwrap();
@@ -468,13 +541,17 @@ mod tests {
     #[test]
     fn a_rotated_root_is_trusted_only_through_its_signed_rotation() {
         let root = test_root();
-        let manifest = verify_manifest(&envelope("rotated"), &root).unwrap();
+        let manifest = verify_manifest(&envelope("rotated"), &mut root.clone()).unwrap();
         assert_eq!(manifest.version, "1.2.4");
 
         let mut without_rotation = fixture()["rotated"].clone();
         without_rotation["roots"] = serde_json::json!([]);
         assert!(
-            verify_manifest(&serde_json::to_vec(&without_rotation).unwrap(), &root).is_err(),
+            verify_manifest(
+                &serde_json::to_vec(&without_rotation).unwrap(),
+                &mut root.clone()
+            )
+            .is_err(),
             "the new key is not trusted without the rotation"
         );
 
@@ -485,9 +562,73 @@ mod tests {
             .clone();
         forged_rotation["roots"][0]["signatures"] = serde_json::json!([signatures[1]]);
         assert!(
-            verify_manifest(&serde_json::to_vec(&forged_rotation).unwrap(), &root).is_err(),
+            verify_manifest(
+                &serde_json::to_vec(&forged_rotation).unwrap(),
+                &mut root.clone()
+            )
+            .is_err(),
             "a rotation signed only by the new key is refused"
         );
+    }
+
+    #[test]
+    fn an_accepted_rotation_retires_the_keys_it_replaced() {
+        let mut root = test_root();
+        verify_manifest(&envelope("rotated"), &mut root).unwrap();
+        assert!(
+            verify_manifest(&envelope("direct"), &mut root).is_err(),
+            "a manifest that omits the rotation cannot fall back to the old key"
+        );
+        assert_eq!(
+            verify_manifest(&envelope("rotated"), &mut root)
+                .unwrap()
+                .version,
+            "1.2.4"
+        );
+
+        let mut refused = test_root();
+        let mut tampered = fixture()["rotated"].clone();
+        tampered["payload"] = serde_json::Value::String("{}".to_string());
+        assert!(verify_manifest(&serde_json::to_vec(&tampered).unwrap(), &mut refused).is_err());
+        verify_manifest(&envelope("direct"), &mut refused)
+            .expect("a refused manifest's rotation is not kept");
+    }
+
+    #[tokio::test]
+    async fn accepted_rotations_are_saved_and_verified_again_when_loaded() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(ACCEPTED_ROOTS_FILE);
+        let unchanged = test_root().with_saved_rotations(&path).await.unwrap();
+        assert_eq!(unchanged.version, 1, "nothing is saved yet");
+
+        verify_manifest_remembering(&envelope("rotated"), test_root(), &path)
+            .await
+            .unwrap();
+        assert!(
+            verify_manifest_remembering(&envelope("direct"), test_root(), &path)
+                .await
+                .is_err(),
+            "a later check starts from the saved rotation"
+        );
+        let mut restored = test_root().with_saved_rotations(&path).await.unwrap();
+        assert_eq!(restored.version, 2);
+        assert!(verify_manifest(&envelope("direct"), &mut restored).is_err());
+        assert!(verify_manifest(&envelope("rotated"), &mut restored).is_ok());
+
+        // A saved rotation the old root never signed moves nothing.
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        forged["rotations"][0]["signatures"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        std::fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
+        let forged = test_root().with_saved_rotations(&path).await.unwrap();
+        assert_eq!(forged.version, 1);
+
+        std::fs::write(&path, b"not json").unwrap();
+        let damaged = test_root().with_saved_rotations(&path).await.unwrap();
+        assert_eq!(damaged.version, 1);
     }
 
     #[test]
@@ -500,20 +641,24 @@ mod tests {
                 .unwrap()
                 .replace("1.2.3", "9.9.9"),
         );
-        assert!(verify_manifest(&serde_json::to_vec(&tampered).unwrap(), &root).is_err());
+        assert!(
+            verify_manifest(&serde_json::to_vec(&tampered).unwrap(), &mut root.clone()).is_err()
+        );
 
         // A root's signature must not pass for a manifest's.
         let rotation = fixture()["rotated"]["roots"][0].clone();
-        assert!(verify_manifest(&serde_json::to_vec(&rotation).unwrap(), &root).is_err());
+        assert!(
+            verify_manifest(&serde_json::to_vec(&rotation).unwrap(), &mut root.clone()).is_err()
+        );
 
         let untrusted =
             TrustedRoot::from_keys(1, 1, &[fixture()["otherKey"].as_str().unwrap()]).unwrap();
-        assert!(verify_manifest(&envelope("direct"), &untrusted).is_err());
+        assert!(verify_manifest(&envelope("direct"), &mut untrusted.clone()).is_err());
     }
 
     #[test]
     fn bridges_route_only_older_installs_of_their_component() {
-        let manifest = verify_manifest(&envelope("direct"), &test_root()).unwrap();
+        let manifest = verify_manifest(&envelope("direct"), &mut test_root()).unwrap();
         let old = Version::parse("0.9.0").unwrap();
         let current = Version::parse("1.0.0").unwrap();
         assert!(manifest.bridge_for("server", Some(&old)).is_some());

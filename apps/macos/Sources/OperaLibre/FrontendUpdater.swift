@@ -236,7 +236,9 @@ final class FrontendUpdater {
     /// The manifest that applies to this frontend: the latest one, or the one a redirect or a
     /// bridge sends an older install to.
     private func fetchManifest(currentVersion: [Int]?) async throws -> UpdateManifest {
-        guard let root = TrustedRoot.builtIn else {
+        let acceptedRoots = managedWebRoot.deletingLastPathComponent()
+            .appendingPathComponent(acceptedRootsFileName)
+        guard let builtIn = TrustedRoot.builtIn else {
             throw UpdateManifestError.untrusted
         }
         var url = updateManifestURL
@@ -259,7 +261,16 @@ final class FrontendUpdater {
             } catch {
                 throw FrontendUpdateError.network(error)
             }
-            let manifest = try verifyUpdateManifest(data, root: root)
+            // Read again for each manifest, with nothing awaited before the save, so this
+            // check starts from whatever an overlapping one has already saved.
+            var root = builtIn.withSavedRotations(at: acceptedRoots)
+            let known = root.version
+            let manifest = try verifyUpdateManifest(data, root: &root)
+            // Saved before the manifest is used: an update that went ahead on a rotation
+            // this install then forgot could be undone by the old key.
+            if root.version > known {
+                try root.saveRotations(to: acceptedRoots)
+            }
             let bridge = currentVersion.flatMap { current in
                 manifest.bridges?.first { bridge in
                     (bridge.component == nil || bridge.component == "frontend")
