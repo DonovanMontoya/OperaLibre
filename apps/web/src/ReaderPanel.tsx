@@ -2,7 +2,7 @@ import type { useNativeChrome } from "./useNativeChrome";
 import type { useReadalong } from "./useReadalong";
 import type { useReaderPreferences } from "./useReaderPreferences";
 import type { useSleepTimer } from "./useSleepTimer";
-import { BookOpen, ExternalLink, FileText, Images, LoaderCircle, ScrollText, Sparkles, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ExternalLink, FileText, Images, LoaderCircle, ScrollText, Sparkles, X } from "lucide-react";
 import { companionKindLabel, describeCompanion, READ_ALONG_MODE_LABELS } from "./readalong";
 import { GALLERY_COMPANION_ID } from "./useReadalong";
 import { EpubReadalong } from "./EpubReadalong";
@@ -10,6 +10,7 @@ import { chapterAtBookPosition, type ChapterSegment } from "./chapters";
 import { getCachedEpubBytes, loadCompanionBytes, loadEpubSource } from "./offline";
 import { FOLLOW_AGGRESSIVENESS_LEAD_SECONDS } from "./readalongPreferences";
 import { formatTime } from "./formatting";
+import { currentAppPrefersDark, readReaderThemeChoice, resolveReaderTheme } from "./readerTheme";
 import type { Book, JobStatus } from "./types";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import type { ReactNode } from "react";
@@ -319,6 +320,7 @@ export function renderEpubReader({
           ) : null
         }
         companionSwitcher={companionTabs}
+        fileUrl={native ? undefined : activeCompanionUrl}
       />
     ) : null
   );
@@ -331,6 +333,7 @@ export function renderReadalongPanel({
   displayBookPosition,
   epubReaderElement,
   immersiveEpub,
+  native,
   nativeChrome,
   readalong,
   readerSyncActions,
@@ -343,6 +346,7 @@ export function renderReadalongPanel({
   displayBookPosition: number;
   epubReaderElement: ReactNode;
   immersiveEpub: boolean;
+  native: boolean;
   nativeChrome: ReturnType<typeof useNativeChrome>;
   readalong: ReturnType<typeof useReadalong>;
   readerSyncActions: ReactNode;
@@ -366,11 +370,87 @@ export function renderReadalongPanel({
     nativeTabsShown
   } = nativeChrome;
 
+  const companionContent = showGallery ? (
+    <div className="readalong-gallery">
+      {selectedCompanionGroups.images.map((image) => (
+        <a key={image.id} href={companionPreviewUrl(image)} target="_blank" rel="noreferrer">
+          <img src={companionPreviewUrl(image)} alt={image.fileName} loading="lazy" />
+          <span>{image.fileName}</span>
+        </a>
+      ))}
+    </div>
+  ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
+    <iframe
+      className="readalong-frame"
+      src={companionPreviewUrl(activeCompanion)}
+      title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
+      sandbox=""
+      referrerPolicy="no-referrer"
+    />
+  ) : activeCompanion ? (
+    <div className="readalong-fallback">
+      <ScrollText size={36} strokeWidth={1.4} />
+      <p>
+        {activeCompanion.extension.toUpperCase()} files are available to open, but this browser
+        cannot preview them inline yet.
+      </p>
+    </div>
+  ) : null;
+
   return (
     readalongOpen && selectedBook && (activeCompanion || showGallery) ? immersiveEpub ? (
       // Mount once UIKit has removed the tab bar, so the book lays out a
       // single time at full screen instead of again as the web view grows.
       nativeTabsReady && nativeTabsShown ? null : epubReaderElement
+    ) : !native ? (
+      // In the browser the reader is a room of its own over the shelf and the
+      // player, with the mini player docked beneath it. The ebook lays out
+      // the room itself; other files borrow its frame.
+      <section
+        className="readalong-panel reading-room"
+        aria-label={`${selectedBook.title} read along`}
+        ref={readalongPanelRef}
+      >
+        {epubReaderElement ?? (
+          <div className={`epub-reader room theme-${resolveReaderTheme(readReaderThemeChoice(), currentAppPrefersDark())}`}>
+            <header className="epub-roombar">
+              <div className="epub-roombar-files">{companionTabs}</div>
+              <div className="epub-roombar-actions">
+                {activeCompanion && activeCompanionUrl && !showGallery ? (
+                  <a
+                    className="epub-room-button"
+                    href={companionPreviewUrl(activeCompanion)}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open in a new tab"
+                    title="Open in a new tab"
+                  >
+                    <ExternalLink size={16} />
+                  </a>
+                ) : null}
+                <button type="button" className="epub-room-button" onClick={closeReadalong} aria-label="Close the reader" title="Close the reader">
+                  <X size={17} />
+                </button>
+              </div>
+            </header>
+            <div className="reading-room-content">{companionContent}</div>
+            <nav className="epub-rail" aria-label="This file">
+              <button type="button" className="epub-rail-back" onClick={closeReadalong} title="Back to the book">
+                <ArrowLeft size={15} />
+                <span>{selectedBook.title}</span>
+              </button>
+              <h3>{showGallery ? "Pictures" : activeCompanion?.kind === "supplement" ? "Extras" : "Read along"}</h3>
+              <p className="epub-sheet-hint">
+                {showGallery
+                  ? `${selectedCompanionGroups.images.length} ${selectedCompanionGroups.images.length === 1 ? "picture" : "pictures"} found beside the audio.`
+                  : activeCompanion
+                    ? `${activeCompanion.fileName}. ${describeCompanion(activeCompanion)}`
+                    : null}
+              </p>
+            </nav>
+          </div>
+        )}
+      </section>
     ) : (
       <section
         className="readalong-panel"
@@ -412,34 +492,7 @@ export function renderReadalongPanel({
         </div>
         {companionTabs}
         {narrationFollowActive ? readerSyncMessages : null}
-        {showGallery ? (
-          <div className="readalong-gallery">
-            {selectedCompanionGroups.images.map((image) => (
-              <a key={image.id} href={companionPreviewUrl(image)} target="_blank" rel="noreferrer">
-                <img src={companionPreviewUrl(image)} alt={image.fileName} loading="lazy" />
-                <span>{image.fileName}</span>
-              </a>
-            ))}
-          </div>
-        ) : epubReaderElement ? (
-          epubReaderElement
-        ) : activeCompanion && activeCompanionUrl && canPreviewCompanion(activeCompanion.extension) ? (
-          <iframe
-            className="readalong-frame"
-            src={companionPreviewUrl(activeCompanion)}
-            title={`${selectedBook.title} ${activeCompanion.kind === "supplement" ? "extras" : "readalong"}`}
-            sandbox=""
-            referrerPolicy="no-referrer"
-          />
-        ) : activeCompanion ? (
-          <div className="readalong-fallback">
-            <ScrollText size={36} strokeWidth={1.4} />
-            <p>
-              {activeCompanion.extension.toUpperCase()} files are available to open, but this browser
-              cannot preview them inline yet.
-            </p>
-          </div>
-        ) : null}
+        {epubReaderElement ?? companionContent}
         {activeChapter && !showGallery ? (
           <div className="readalong-sync">
             <span>{activeChapter.title}</span>

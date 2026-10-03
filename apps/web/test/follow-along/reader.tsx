@@ -104,9 +104,10 @@ function Fixture() {
     {inline && <button onClick={() => setPosition(50)}>Second illustration</button>}
     <button onClick={() => setPosition(61)}>Recovered sentence</button>
     </>}
-  </div><EpubReadalong key={epoch} bookId={privatePath ?? "follow-regression"} storageScope="follow-regression"
+  </div>{/* A containing block, so the full-screen reader fills the space under the controls instead of sliding beneath them. */}
+  <div style={{ height: 'calc(100dvh - 80px)', transform: 'translateZ(0)' }}><EpubReadalong key={epoch} bookId={privatePath ?? "follow-regression"} storageScope="follow-regression"
     title={privateFixture?.title ?? 'River Observatory'} url="/generated.epub" loadSource={loadSource} listeningChapter={null} syncTarget={null}
     syncFragments={currentMap.fragments} syncRecoveryGaps={currentMap.recoveryGaps} audioChapters={privateFixture?.chapters ?? chapters}
-    positionSeconds={position} followLeadSeconds={lead} onSeekTo={setPosition} /></>;
+    positionSeconds={position} followLeadSeconds={lead} onSeekTo={setPosition} /></div></>;
 }
 createRoot(document.getElementById('root')!).render(<Fixture />);
