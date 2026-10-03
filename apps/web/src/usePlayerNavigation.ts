@@ -3,7 +3,7 @@ import type { Book } from "./types";
 import { haptic } from "./native";
 import type { NativePlayerSheet } from "./PlayerSheets";
 import { isLeftEdgeBackSwipe } from "./nativeNavigation";
-import type { NativeTab } from "./nativeTabs";
+import { type NativeTab, spreadTab } from "./nativeTabs";
 import { writeGamesEnabled } from "./gamePreferences";
 import type { LibrarySource, ShelfLayout } from "./shelfSort";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -31,12 +31,13 @@ export function usePlayerNavigation({
   setSelectedBookId,
   setShowChapterJumpTop,
   shelfLayout,
+  shelfSpread,
   showChapterJumpTop,
   trackListSectionRef
 }: {
   bookDetailsSwipeStartRef: RefObject<{ clientX: number; clientY: number; } | null>;
   books: Book[];
-  changeShelfLayout: (next: ShelfLayout) => void;
+  changeShelfLayout: (next: ShelfLayout, animate?: boolean) => void;
   chaptersOpen: boolean;
   gamesEnabled: boolean;
   isViewingPlayingBook: boolean;
@@ -55,6 +56,7 @@ export function usePlayerNavigation({
   setSelectedBookId: Dispatch<SetStateAction<string | null>>;
   setShowChapterJumpTop: Dispatch<SetStateAction<boolean>>;
   shelfLayout: ShelfLayout;
+  shelfSpread: boolean;
   showChapterJumpTop: boolean;
   trackListSectionRef: RefObject<HTMLElement | null>;
 }) {
@@ -216,9 +218,10 @@ export function usePlayerNavigation({
     haptic("light");
     // Re-tapping the active Shelf tab is an escape hatch from the Audible
     // catalogue back to the listener's own library.
-    if (tab === "shelf" && nativeTab === "shelf" && librarySource !== "local") {
+    if (tab === "shelf" && spreadTab(nativeTab, shelfSpread, shelfLayout) === "shelf" && librarySource !== "local") {
       showYourLibrary();
     }
+    if (tab === "shelf" && shelfSpread) changeShelfLayout("library");
     // Reading belongs to the playing book. A book browsed from the shelf stays
     // selected after its details page closes and must not follow into the tab.
     if (tab === "reading") {
