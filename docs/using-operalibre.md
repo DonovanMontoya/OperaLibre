@@ -186,12 +186,14 @@ The ebook reader is available by default when a book has a text companion. Open 
 
 To read while listening, place an EPUB, PDF, text, or HTML companion beside the audio as described in [Library Layout](library-layout.md#readalong-companions). Books that have one show a **Read along** tag in the library, and their details page opens with an invitation to **Open reader**. On the phone apps the Now Playing screen has a **Read along** button as well. The reader remembers that you had it open for a book and your place in it, so selecting the book again brings the text straight back.
 
+In a browser the reader fills the window. The book's contents run down the left, with the title above them as the way back to the book; the page sits in the middle; and on a wide window the right-hand column shows whether the page is following the narration, your place, and the sync tools. The player stays docked along the bottom with speed, the sleep timer, and the chapter list. A narrow window reads full screen instead, with the same bars as the phone apps.
+
 EPUBs support chapter sync. For sentence sync, the owner must enable **Follow along** under **Administration → Experimental features**. You can then tap a sentence to play from there. In the ebook, press **Follow** to start following the narration. Following starts off for a new reader and remembers the last choice afterward. With following on:
 
 - The narrated sentence is highlighted and the page turns with the narration.
-- Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target button in the reader, or the **Follow** control), and the marker snaps to the narrated sentence again.
+- Turning a page by hand pauses following so you can read ahead. To rejoin the audio, turn following back on (the target **Follow** button in the reader), and the marker snaps to the narrated sentence again.
 - With approximate sync, the marker can drift within a long chapter. Choose **Sync here**, then tap the sentence the narrator is reading: the server keeps that anchor with the book and re-times the sentences around it for every listener. One or two taps in a long chapter keep it close. An administrator can clear the adjustments from the reader.
-- Themes, text size, and a full-screen focus mode are in the reader's toolbar. Arrow keys and swipes turn pages.
+- Themes and text size are under **Aa** above the page, next to the full-screen focus mode. The arrows under the page, the arrow keys, and swipes turn pages.
 
 If you update the frontend separately, update the server too so ordinary readers can check the experiment setting. Older servers that deny that check offer chapter sync until upgraded; a denied check does not enable sentence following. The app retains a previously confirmed setting for offline reading.
 
@@ -219,7 +221,7 @@ Development and manually managed installations may instead set `alignment_cli_pa
 
 ### Extras: maps, illustrations, and supplements
 
-Audible titles often come with a PDF of maps or illustrations rather than the book's text. OperaLibre opens each companion during a scan and tells the two apart, so a picture PDF is offered as **Extras** instead of being presented as the book. A book can have both: the reader pane then shows tabs for the ebook, each supplement, and a gallery of any loose pictures in the book's folder (in the phone reader these are listed under **Other files** in the Contents sheet). A book with only extras shows a **View extras** invitation in place of the reader.
+Audible titles often come with a PDF of maps or illustrations rather than the book's text. OperaLibre opens each companion during a scan and tells the two apart, so a picture PDF is offered as **Extras** instead of being presented as the book. A book can have both: the reader then shows tabs above the page for the ebook, each supplement, and a gallery of any loose pictures in the book's folder (in the phone reader these are listed under **Other files** in the Contents sheet). A book with only extras shows a **View extras** invitation in place of the reader.
 
 ## Import Audible books with Libation (optional)
 

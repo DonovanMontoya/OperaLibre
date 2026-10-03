@@ -217,7 +217,9 @@ for (const failure of ['missing sentence', 'CFI conversion'] as const) {
     const failedPlace = await place(page);
     await page.getByLabel('Narration position').fill(String(failedPosition + 1));
     expect(await place(page)).toBe(failedPlace);
+    await page.getByRole('button', { name: /^Appearance/ }).click();
     await page.getByRole('button', { name: 'sepia', exact: true }).click();
+    await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 1100, height: 750 });
     await expect.poll(() => annotations(page)).toHaveLength(0);
     await page.getByLabel('Narration position').fill(String(failedPosition + 2));

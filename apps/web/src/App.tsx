@@ -1402,7 +1402,6 @@ function MainApp({
     loadBooks,
     localMode,
     native,
-    nativePlayerView,
     readalongEnabled,
     selectedBook,
     selectedBookId,
@@ -1977,6 +1976,7 @@ function MainApp({
     displayBookPosition,
     epubReaderElement,
     immersiveEpub,
+    native,
     nativeChrome,
     readalong,
     readerSyncActions,
@@ -1996,7 +1996,7 @@ function MainApp({
       className={
         native
           ? `shell native-shell tab-${nativeTab} shelf-${shelfLayout}${ipad ? " device-ipad" : ""}${shelfLandscape ? " shelf-landscape" : ""}${shelfFolded ? " shelf-folded" : ""}${nativeTab === "games" ? ` games-${activeGame}` : ""}${nativeTab === "shelf" && nativePlayerView === "details" ? " library-book-open" : ""}${hasMiniPlayer ? " has-mini-player" : ""}`
-          : `shell web-shell player-view-${nativePlayerView}`
+          : `shell web-shell player-view-${nativePlayerView}${readalongPanelElement ? " reader-open" : ""}`
       }
     >
       {native ? <NativeLaunchCover ready={startupViewReady} settled={nativeTabsSettled} onLift={liftLaunchCover} /> : null}
@@ -2201,7 +2201,7 @@ function MainApp({
         playerPaneRef={playerPaneRef}
         position={position}
         readalong={readalong}
-        readalongPanelElement={readalongPanelElement}
+        readalongPanelElement={native ? readalongPanelElement : null}
         readerPreferences={readerPreferences}
         restartOrPreviousChapter={restartOrPreviousChapter}
         returnToLibrary={returnToLibrary}
@@ -2235,6 +2235,11 @@ function MainApp({
         withWebViewTransition={withWebViewTransition}
       />
 
+      {/* The browser's reader is a room over the whole shell rather than a
+          panel in the player, so it survives moving between the book's page
+          and Now Playing without opening the ebook twice. */}
+      {native ? null : readalongPanelElement}
+
       {playbackBook && currentTrack ? (
         <MiniPlayer
           activeChapter={activeChapter}
@@ -2249,6 +2254,11 @@ function MainApp({
           playPending={playPending}
           playbackBook={playbackBook}
           position={position}
+          readerTools={!native && readalongPanelElement && isViewingPlayingBook ? {
+            speed,
+            sleepRemaining: sleepTimer.sleepRemaining,
+            onOpen: openNativePlayerSheet
+          } : null}
           restartOrPreviousChapter={restartOrPreviousChapter}
           scrollToPlayer={scrollToPlayer}
           scrubbedElapsed={scrubbedElapsed}
