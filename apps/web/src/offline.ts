@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
+import { demoMediaUrl, isDemoMediaPath, isDemoMode } from "./demo.ts";
 import { getServerStorageKey, getServerUrl } from "./api";
 import {
   cancelBackgroundBookDownload,
@@ -561,6 +562,7 @@ export async function removeBookDownload(book: Book) {
  * revoke. `releaseOfflineMediaUrl` handles both.
  */
 export async function getOfflineTrackUrl(book: Book, track: Track): Promise<string | null> {
+  if (isDemoMode() && isDemoMediaPath(track.streamUrl)) return demoMediaUrl(track.streamUrl);
   if (Capacitor.isNativePlatform()) {
     if (track.localFilePath) return nativeFileUrl(track.localFilePath);
     await migrateLegacyBookDirectory(book).catch(() => undefined);

@@ -1,3 +1,4 @@
+import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BookCredits } from "./BookCredits";
 import type { useBookCompletion } from "./useBookCompletion";
 import type { useMetadataEditor } from "./useMetadataEditor";
@@ -929,6 +930,8 @@ export function PlayerPane({
               ) : null}
             </div>
           ) : null}
+
+          {demoMode ? <DemoMediaCredits /> : null}
 
           {!native && !readalongOpen && readalongAvailable ? (
             <section className={`readalong-invite ${selectedBook.readingFile ? "" : "extras"}`} aria-label="Read along">

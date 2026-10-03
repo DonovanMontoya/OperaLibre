@@ -7,6 +7,10 @@ nav_order: 7
 
 This is the everyday guide for listeners and the person who looks after the library. You need an OperaLibre server or a Jellyfin server that you can reach first; [Getting Started](getting-started.md) explains the OperaLibre setup.
 
+## Try the demo
+
+Choose **Explore the on-device demo** on the server connection screen to try OperaLibre without a server or account. The bundled demo pairs a 2 minute, 7 second excerpt of *Alice’s Adventures in Wonderland*, read by Kristen McQuillin for [LibriVox](https://librivox.org/alices-adventures-in-wonderland-by-lewis-carroll/), with the full [Project Gutenberg ebook #11](https://www.gutenberg.org/ebooks/11) and sentence timings. The recording and ebook text are public domain in the USA; copyright status elsewhere can differ. The EPUB retains its original license and credits. **Sources, credits, and license**, on the demo book page and in Settings, is available offline.
+
 ## Sign in and listen
 
 1. Open the OperaLibre address in a browser. The person who set it up creates the first administrator account on this screen.
