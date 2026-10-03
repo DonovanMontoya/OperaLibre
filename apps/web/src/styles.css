@@ -3587,10 +3587,15 @@ img.large-cover {
 }
 
 @media (max-width: 899px) {
+  .readalong-panel.reading-room {
+    padding: 0;
+  }
+
   .epub-reader.room:has(> .reading-room-content) {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas: "bar" "page";
+    padding: 0;
   }
 
   .epub-reader.room:has(> .reading-room-content)::before {
