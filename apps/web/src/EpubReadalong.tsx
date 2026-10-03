@@ -6,8 +6,10 @@ import { classifyPageGesture, narrationTextOffset, pageTurnAtEdge } from "./read
 import { type AnnotationStore, type MarkedView, pruneUntrackedHighlights, removeHighlight } from "./readerAnnotations";
 import {
   ALargeSmall,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
   List,
   ListMusic,
   LocateFixed,
@@ -19,7 +21,6 @@ import {
   RotateCcw,
   RotateCw,
   Timer,
-  Undo2,
   X
 } from "lucide-react";
 import type { Contents, Book as EpubBook, EpubCFI, Location, NavItem, Rendition } from "epubjs";
@@ -61,7 +62,7 @@ import { createPortal } from "react-dom";
 import type { Chapter, SyncFragment, SyncRecoveryGap } from "./types";
 import { readStoredValue, writeStoredValue } from "./appStorage";
 import { readReaderFollowEnabled, writeReaderFollowEnabled } from "./readalongPreferences";
-import { useLandscapeOrientation, useWideSpreadWindow } from "./useOrientation";
+import { useLandscapeOrientation, useReadingRoomWindow, useWideSpreadWindow } from "./useOrientation";
 
 const EMPTY_ILLUSTRATION_GAPS: IllustrationGap[] = [];
 
@@ -277,7 +278,8 @@ export function EpubReadalong({
   playback = null,
   onListen,
   syncTools = null,
-  companionSwitcher = null
+  companionSwitcher = null,
+  fileUrl
 }: {
   bookId: string;
   storageScope: string;
@@ -317,6 +319,8 @@ export function EpubReadalong({
   syncTools?: ReactNode;
   /** Switcher for the book's other files, shown in the contents sheet. */
   companionSwitcher?: ReactNode;
+  /** The ebook file itself, offered as a link beside the web reader. */
+  fileUrl?: string;
 }) {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
@@ -467,9 +471,17 @@ export function EpubReadalong({
     setFontScale(readStoredFontScale(fontScaleBucket, readStoredValue));
   }, [fontScaleBucket]);
   const [focusMode, setFocusMode] = useState(false);
-  // Full screen: the native reader always, the web reader in focus mode. The
-  // bars fade out for reading and a tap on blank page brings them back.
-  const fullscreen = immersive || focusMode;
+  // The web reader is a reading room: contents down one side, the page in
+  // the middle, narration and sync down the other. A window too narrow for
+  // the contents rail reads full screen instead, and one too narrow for the
+  // third column keeps those controls in the appearance sheet.
+  const roomWindow = useReadingRoomWindow();
+  const roomFits = roomWindow !== "narrow";
+  const roomAside = roomWindow === "wide";
+  // Full screen: the native reader always, the web reader in focus mode or a
+  // narrow window. The bars fade out for reading and a tap on blank page
+  // brings them back.
+  const fullscreen = immersive || focusMode || !roomFits;
   // Immersive is the native reader; only the web reader's focus mode borrows
   // the spread from a wide window.
   const webSpreadWindow = useWideSpreadWindow() && !immersive && !Capacitor.isNativePlatform();
@@ -531,6 +543,7 @@ export function EpubReadalong({
     setOfferOpeningPreference(false);
   };
   const sheetRootRef = useRef<HTMLElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
   // A long table of contents opens on the chapter being read, not at the top.
   // The scroll runs after the sheet has settled to its card height and moves
   // only the sheet's own scrollbar (scrollIntoView would scroll ancestors and
@@ -1703,17 +1716,6 @@ export function EpubReadalong({
   // so they get the same follow toggle.
   const canFollow = hasSync || !!syncTarget;
   const followLabel = "Following by sentence";
-  const statusLabel = hasSync
-    ? follow
-      ? fragmentIndex >= 0
-        ? `${followLabel} · ${locationLabel}`
-        : illustrationGap
-          ? `${illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"} · ${locationLabel}`
-          : `${recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"} · ${locationLabel}`
-      : `Reading freely · ${locationLabel}`
-    : syncTarget
-      ? `Chapter sync · ${locationLabel}`
-      : locationLabel;
   const awayFromNarration = hasSync && !follow && fragmentIndex >= 0;
 
   const pageInfo =
@@ -1837,18 +1839,66 @@ export function EpubReadalong({
       {offerOpeningPreference ? (
         <span>Open at your listening chapter next time? <button type="button" onClick={() => changeOpeningPreference(true)}>Yes</button> <button type="button" onClick={() => setOfferOpeningPreference(false)}>Not now</button></span>
       ) : null}
-      {!fullscreen ? (
-        <label>When opening <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
-          <option value="reading">Resume reading</option>
-          <option value="listening">Open at listening chapter</option>
-        </select></label>
-      ) : null}
     </div>
+  );
+
+  // The room's appearance popover closes on Escape; full screen has its own
+  // handler, which also leaves focus mode.
+  useEffect(() => {
+    if (fullscreen || !sheet) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSheet(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [fullscreen, sheet]);
+  // The contents rail keeps the chapter being read in view, moving only its
+  // own scrollbar.
+  useEffect(() => {
+    const rail = railRef.current;
+    const current = rail?.querySelector<HTMLElement>(".epub-toc button.current");
+    if (!rail || !current) return;
+    const top = current.offsetTop - rail.scrollTop;
+    if (top < 0 || top + current.offsetHeight > rail.clientHeight) {
+      rail.scrollTop = Math.max(0, current.offsetTop - rail.clientHeight / 2 + current.offsetHeight / 2);
+    }
+  }, [fullscreen, selectedTocHref]);
+  const closeFullscreen = () => (immersive || !roomFits ? onClose?.() : setFocusMode(false));
+  const followState = hasSync
+    ? follow
+      ? fragmentIndex >= 0
+        ? "Following narration"
+        : illustrationGap
+          ? illustrationGap.divider ? "Illustrated page" : illustrationGap.heading ? "Chapter heading" : "Narrated illustration"
+          : recoveringSync ? "Waiting for a reliable match" : "Waiting for narration"
+      : "Reading freely"
+    : follow ? "Following by chapter" : "Reading freely";
+  const tocList = (onPicked?: () => void) => (
+    <ul className="epub-toc">
+      {toc.map((item) => {
+        const current = hrefsMatch(selectedTocHref, item.href);
+        return (
+          <li key={`${item.href}-${item.label}`} style={{ paddingLeft: `${item.depth * 16}px` }}>
+            <button
+              type="button"
+              className={current ? "current" : ""}
+              aria-current={current ? "location" : undefined}
+              onClick={() => {
+                goToHref(item.href);
+                onPicked?.();
+              }}
+            >
+              {item.label.trim()}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 
   const reader = (
     <div
-      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""}`}
+      className={`epub-reader theme-${readerTheme} ${fullscreen ? "fullscreen" : "room"} ${!fullscreen && roomAside ? "has-aside" : ""} ${immersive ? "immersive" : ""} ${fullscreen && chromeHidden ? "chrome-hidden" : ""}`}
       tabIndex={0}
       onKeyDown={handleReaderKeyDown}
     >
@@ -1857,7 +1907,7 @@ export function EpubReadalong({
           <button
             type="button"
             className="epub-icon-button"
-            onClick={() => (immersive ? onClose?.() : setFocusMode(false))}
+            onClick={closeFullscreen}
             aria-label="Close the reader"
           >
             <X size={20} />
@@ -1887,57 +1937,51 @@ export function EpubReadalong({
           </div>
         </header>
       ) : (
-        <div className="epub-reader-chrome">
-          <div className="epub-toolbar">
-            <button
-              type="button"
-              onClick={() => navigateByHand(() => renditionRef.current?.prev())}
-              aria-label="Previous page"
-            >
-              <ChevronLeft size={17} />
-            </button>
-            <div className="epub-location">
-              <select
-                aria-label={`${title} table of contents`}
-                value={selectedTocHref}
-                onChange={(event) => goToHref(event.currentTarget.value)}
+        <header className="epub-roombar">
+          <div className="epub-roombar-files">{companionSwitcher}</div>
+          <div className="epub-roombar-actions">
+            {canFollow && !roomAside ? (
+              <button
+                type="button"
+                className={`epub-room-button ${follow ? "selected" : ""}`}
+                onClick={() => (follow ? setFollow(false) : resumeFollowing())}
+                aria-pressed={follow}
+                aria-label={followActionLabel}
+                title={followActionLabel}
               >
-                <option value="">Contents</option>
-                {toc.map((item) => (
-                  <option key={`${item.href}-${item.label}`} value={item.href}>
-                    {" ".repeat(item.depth * 2)}{item.label}
-                  </option>
-                ))}
-              </select>
-              <span className="epub-status" aria-live="polite">{statusLabel}</span>
-            </div>
+                <LocateFixed size={17} />
+              </button>
+            ) : null}
             <button
               type="button"
-              onClick={() => navigateByHand(() => renditionRef.current?.next())}
-              aria-label="Next page"
+              className={`epub-room-button epub-room-type ${sheet === "appearance" ? "selected" : ""}`}
+              onClick={() => setSheet(sheet === "appearance" ? null : "appearance")}
+              aria-label={roomAside ? "Appearance" : "Appearance and sync"}
+              aria-expanded={sheet === "appearance"}
+              title="Theme and text size"
             >
-              <ChevronRight size={17} />
+              Aa
             </button>
-          </div>
-
-          <div className="epub-preferences" aria-label="Reader appearance">
-            {themeOptions}
-            {fontControls}
-            {followButton}
             <button
               type="button"
-              className="epub-tool-button"
-              onClick={() => setFocusMode(true)}
+              className="epub-room-button"
+              onClick={() => {
+                setSheet(null);
+                setFocusMode(true);
+              }}
               aria-label="Open reader focus mode"
               title="Focus mode"
             >
-              <Maximize2 size={15} />
-              <span>Focus</span>
+              <Maximize2 size={16} />
             </button>
+            {onClose ? (
+              <button type="button" className="epub-room-button" onClick={onClose} aria-label="Close the reader" title="Close the reader">
+                <X size={17} />
+              </button>
+            ) : null}
           </div>
-        </div>
+        </header>
       )}
-      {!fullscreen ? catchUpControls : null}
       <div className="epub-stage-wrap">
         {stage}
         {fullscreen ? (
@@ -2027,20 +2071,32 @@ export function EpubReadalong({
             </button>
           ) : null}
         </footer>
-      ) : hasSync ? (
-        // Guidance and the way back live in a bar under the page, never over
-        // the words: a listener reading ahead must keep every line legible.
-        <div className="epub-footer">
-          <p className="epub-hint" role="status">{hint}</p>
-          {awayFromNarration ? (
-            <button type="button" className="epub-footer-action" onClick={resumeFollowing}>
-              <Undo2 size={14} />
-              <span>Return to narration</span>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {fullscreen && sheet ? (
+      ) : (
+        // The way through the book sits under the page, never over the
+        // words: a listener reading ahead must keep every line legible.
+        <footer className="epub-pagefoot">
+          <button
+            type="button"
+            onClick={() => navigateByHand(() => renditionRef.current?.prev())}
+            aria-label="Previous page"
+          >
+            <ChevronLeft size={17} />
+          </button>
+          <p aria-live="polite">
+            {canFollow && !roomAside ? <span>{followState}</span> : null}
+            {chapterLabel ? <span>{chapterLabel}</span> : null}
+            <span>{pageInfo ?? locationLabel}</span>
+          </p>
+          <button
+            type="button"
+            onClick={() => navigateByHand(() => renditionRef.current?.next())}
+            aria-label="Next page"
+          >
+            <ChevronRight size={17} />
+          </button>
+        </footer>
+      )}
+      {sheet ? (
         <div className="epub-sheet-layer" role="presentation">
           <button type="button" className="epub-sheet-scrim" aria-label="Close" onClick={() => setSheet(null)} />
           <section
@@ -2048,7 +2104,7 @@ export function EpubReadalong({
             ref={sheetRootRef}
             role="dialog"
             aria-modal="true"
-            aria-label={sheet === "contents" ? "Contents" : "Appearance and sync"}
+            aria-label={sheet === "contents" ? "Contents" : !fullscreen && roomAside ? "Appearance" : "Appearance and sync"}
           >
             <div className="epub-sheet-grabber" aria-hidden="true" />
             {sheet === "contents" ? (
@@ -2056,28 +2112,7 @@ export function EpubReadalong({
                 <h3>Contents</h3>
                 {toc.length === 0 ? (
                   <p className="epub-sheet-hint">This book has no table of contents.</p>
-                ) : (
-                  <ul className="epub-toc">
-                    {toc.map((item) => {
-                      const current = hrefsMatch(selectedTocHref, item.href);
-                      return (
-                        <li key={`${item.href}-${item.label}`} style={{ paddingLeft: `${item.depth * 16}px` }}>
-                          <button
-                            type="button"
-                            className={current ? "current" : ""}
-                            aria-current={current ? "location" : undefined}
-                            onClick={() => {
-                              goToHref(item.href);
-                              setSheet(null);
-                            }}
-                          >
-                            {item.label.trim()}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+                ) : tocList(() => setSheet(null))}
                 {companionSwitcher ? (
                   <>
                     <h3>Other files</h3>
@@ -2090,8 +2125,12 @@ export function EpubReadalong({
                 <h3>Appearance</h3>
                 <div className="epub-sheet-row">{themeOptions}</div>
                 <div className="epub-sheet-row">{fontControls}</div>
-                <h3>Reading place</h3>
-                {catchUpControls}
+                {fullscreen || !roomAside ? (
+                  <>
+                    <h3>Reading place</h3>
+                    {catchUpControls}
+                  </>
+                ) : null}
                 <h3>When opening</h3>
                 <label className="epub-sheet-row">Starting place
                   <select value={openAtListening ? "listening" : "reading"} onChange={(event) => changeOpeningPreference(event.target.value === "listening")}>
@@ -2100,12 +2139,12 @@ export function EpubReadalong({
                   </select>
                 </label>
                 <p className="epub-sheet-hint">Opens at the beginning of your listening chapter when it is ahead. Your previous page stays available. Follow is controlled separately. Saved for this account on this device.</p>
-                {canFollow || syncTools ? (
+                {(fullscreen || !roomAside) && (canFollow || syncTools) ? (
                   <>
                     <h3>Narration</h3>
                     {canFollow ? (
                       <>
-                        <div className="epub-sheet-row">{followButton}</div>
+                        {fullscreen ? <div className="epub-sheet-row">{followButton}</div> : null}
                         <p className="epub-sheet-hint">
                           {hasSync
                             ? hint
@@ -2120,6 +2159,67 @@ export function EpubReadalong({
             )}
           </section>
         </div>
+      ) : null}
+      {fullscreen ? null : (
+        <nav className="epub-rail" aria-label="Contents" ref={railRef}>
+          {onClose ? (
+            <button type="button" className="epub-rail-back" onClick={onClose} title="Back to the book">
+              <ArrowLeft size={15} />
+              <span>{title}</span>
+            </button>
+          ) : (
+            <strong className="epub-rail-back">{title}</strong>
+          )}
+          <h3>Contents</h3>
+          {toc.length === 0 ? (
+            <p className="epub-sheet-hint">{isReady ? "This book has no table of contents." : "Opening the book…"}</p>
+          ) : tocList()}
+        </nav>
+      )}
+      {!fullscreen && roomAside ? (
+        <aside className="epub-aside" aria-label="Narration and sync">
+          {canFollow ? (
+            <section className="epub-aside-follow">
+              <h3 role="status">{followState}</h3>
+              <p>
+                {hasSync
+                  ? follow
+                    ? "Turning a page pauses following. Tap any sentence to play from there."
+                    : "You’re turning pages yourself. Tap any sentence to play from there."
+                  : follow
+                    ? "The reader keeps to the chapter being played."
+                    : "You’re reading ahead of the audio on your own."}
+              </p>
+              {followButton}
+            </section>
+          ) : null}
+          {onListen && !playback ? (
+            <button type="button" className="epub-audiobar-listen" onClick={onListen}>
+              <Play size={15} />
+              <span>Listen while you read</span>
+            </button>
+          ) : null}
+          <section>
+            <h3>Your place</h3>
+            <p className="epub-aside-place">
+              {chapterLabel ? <strong>{chapterLabel}</strong> : null}
+              <span>{[pageInfo, Number.isFinite(percent ?? NaN) ? `${locationLabel} of the book` : pageInfo ? null : locationLabel].filter(Boolean).join(" · ")}</span>
+            </p>
+            {catchUpControls}
+          </section>
+          {syncTools ? (
+            <section>
+              <h3>Sync</h3>
+              {syncTools}
+            </section>
+          ) : null}
+          {fileUrl ? (
+            <a className="epub-aside-file" href={fileUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={13} />
+              <span>Open the EPUB file</span>
+            </a>
+          ) : null}
+        </aside>
       ) : null}
     </div>
   );

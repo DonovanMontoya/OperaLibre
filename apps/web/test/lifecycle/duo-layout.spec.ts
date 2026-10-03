@@ -459,6 +459,7 @@ test('the reader remembers a different text size for the closed screen than the 
     applyDeviceFold(document.documentElement, state);
   }, state);
 
+  await page.getByRole('button', { name: /^Appearance/ }).click();
   await expect(size).toHaveText(/100%/);
   await grow.click();
   await expect(size).toHaveText(/110%/);

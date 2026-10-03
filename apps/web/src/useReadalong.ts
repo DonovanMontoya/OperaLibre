@@ -35,7 +35,6 @@ export function useReadalong({
   loadBooks,
   localMode,
   native,
-  nativePlayerView,
   readalongEnabled,
   selectedBook,
   selectedBookId,
@@ -53,7 +52,6 @@ export function useReadalong({
   loadBooks: () => Promise<void>;
   localMode: boolean;
   native: boolean;
-  nativePlayerView: "details" | "now" | "chapters";
   readalongEnabled: boolean;
   selectedBook: Book;
   selectedBookId: string | null;
@@ -147,18 +145,6 @@ export function useReadalong({
   const selectedReadAlongMode = selectedBook ? readAlongMode(selectedBook, selectedSyncMap, sentenceFollowAvailable) : null;
   const selectedHasExtras = !!selectedBook && hasExtras(selectedBook);
   const readalongAvailable = readalongEnabled && (!!selectedBook?.readingFile || selectedHasExtras);
-  // The web now-playing view hides the details block, so while the selected
-  // book is the one playing the reader moves into the playback card instead
-  // of vanishing the moment Play is pressed.
-  // Decided without waiting for the track to resolve: mounting the reader in
-  // the hidden details block first and moving it here a moment later would
-  // open the EPUB twice.
-  const showReaderInNowView =
-    !native
-    && nativePlayerView === "now"
-    && isViewingPlayingBook
-    && readalongOpen
-    && (!!activeCompanion || showGallery);
   const selectedSyncPrecise = hasPreciseSync(selectedBook);
   const canGenerateSync =
     currentUser.isAdmin &&
@@ -428,7 +414,6 @@ export function useReadalong({
     setReadalongOpen,
     setReaderClosing,
     showGallery,
-    showReaderInNowView,
     startSyncGeneration,
     syncJob,
     syncJobError,
