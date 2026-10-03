@@ -31,9 +31,10 @@ test("OperaLibre account roles gate mutations without taking away listener featu
 test("device and demo modes do not acquire server permissions from a saved account", () => {
   for (const mode of [{ local: true }, { demo: true }]) {
     const capabilities = serverCapabilities("operalibre", { isAdmin: true }, mode);
-    for (const feature of ["downloads", "progressSync", "administration", "imports", "sentenceAlignment", "sharedActivity"] as const) {
+    for (const feature of ["downloads", "progressSync", "administration", "imports", "sharedActivity"] as const) {
       assert.equal(capabilities[feature], false, feature);
     }
+    assert.equal(capabilities.sentenceAlignment, "demo" in mode);
     assert.equal(capabilities.readingFiles, true);
     assert.equal(capabilities.statistics, true, "retain the device-only ledger");
   }

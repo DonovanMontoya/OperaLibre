@@ -164,7 +164,7 @@ export function ServerSetup({
               Explore the on-device demo
             </button>
             <p className="auth-demo-note">
-              No server or sign-in required. Includes only original OperaLibre demo content.
+              No server or sign-in required. Includes Alice’s Adventures in Wonderland with public-domain audio and ebook (USA).
             </p>
           </>
         ) : null}

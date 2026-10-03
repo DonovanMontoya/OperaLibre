@@ -1604,6 +1604,14 @@ func downscaledArtwork(_ image: UIImage, maximumSide: CGFloat) -> UIImage {
 func resolveNativeAudioSourceURL(_ source: String) -> URL? {
     guard let url = URL(string: source) else { return nil }
     guard url.scheme == "capacitor" else { return url }
+    if url.host == "localhost", url.path.hasPrefix("/demo/"),
+       let resources = Bundle.main.resourceURL {
+        let demoRoot = resources.appendingPathComponent("public/demo", isDirectory: true)
+        let bundled = demoRoot.appendingPathComponent(String(url.path.dropFirst("/demo/".count))).standardizedFileURL
+        guard bundled.path.hasPrefix(demoRoot.path + "/"),
+              FileManager.default.fileExists(atPath: bundled.path) else { return nil }
+        return bundled
+    }
     let marker = "/_capacitor_file_"
     guard url.path.hasPrefix(marker) else { return nil }
     let filePath = String(url.path.dropFirst(marker.count)).removingPercentEncoding
