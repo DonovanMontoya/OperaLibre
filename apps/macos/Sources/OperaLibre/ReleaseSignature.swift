@@ -19,6 +19,9 @@ let releaseRootKeys = [
 ]
 let updateManifestSchema = 1
 let maxUpdateManifestBytes = 1024 * 1024
+/// The key rotations this install has accepted. Verification starts from them, so a later
+/// manifest that leaves a rotation out cannot be accepted under a key that rotation retired.
+let acceptedRootsFileName = "update-roots.json"
 
 struct UpdatePackage: Decodable {
     let component: String
@@ -69,13 +72,13 @@ struct UpdateManifest: Decodable {
     }
 }
 
-struct SignedEnvelope: Decodable {
+struct SignedEnvelope: Codable {
     let payload: String
     let signatures: [EnvelopeSignature]?
     let roots: [SignedEnvelope]?
 }
 
-struct EnvelopeSignature: Decodable {
+struct EnvelopeSignature: Codable {
     let keyid: String
     let sig: String
 }
@@ -95,6 +98,8 @@ struct TrustedRoot {
     let version: Int
     let threshold: Int
     let keys: [(id: String, key: Curve25519.Signing.PublicKey)]
+    /// The signed rotations that led here from the built-in root.
+    private(set) var rotations: [SignedEnvelope] = []
 
     init?(version: Int, threshold: Int, publicKeys: [String]) {
         var keys: [(id: String, key: Curve25519.Signing.PublicKey)] = []
@@ -140,7 +145,7 @@ struct TrustedRoot {
                 payload.keys.allSatisfy({ entry in
                     Data(base64Encoded: entry.publicKey).map(updateKeyID) == entry.keyid
                 }),
-                let next = TrustedRoot(
+                var next = TrustedRoot(
                     version: payload.version,
                     threshold: payload.threshold,
                     publicKeys: payload.keys.map(\.publicKey)
@@ -148,10 +153,34 @@ struct TrustedRoot {
                 current.verifies(rotation, type: "root"),
                 next.verifies(rotation, type: "root")
             else { continue }
+            next.rotations = current.rotations
+                + [SignedEnvelope(payload: rotation.payload, signatures: rotation.signatures, roots: nil)]
             current = next
         }
         return current
     }
+
+    /// This root advanced by the rotations saved at `file`. Each one is verified again, so
+    /// the file can only move trust along rotations the release keys signed. A missing or
+    /// damaged file changes nothing, and the next manifest teaches the rotations again.
+    func withSavedRotations(at file: URL) -> TrustedRoot {
+        guard let data = try? Data(contentsOf: file),
+            let saved = try? JSONDecoder().decode(AcceptedRoots.self, from: data)
+        else { return self }
+        return rotated(by: saved.rotations)
+    }
+
+    func saveRotations(to file: URL) throws {
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(AcceptedRoots(rotations: rotations)).write(to: file, options: .atomic)
+    }
+}
+
+private struct AcceptedRoots: Codable {
+    let rotations: [SignedEnvelope]
 }
 
 /// First 8 bytes of the SHA-256 of the raw public key, as hex.
@@ -205,16 +234,19 @@ func readUpdateManifestBody<Bytes: AsyncSequence>(
 }
 
 /// Verifies a manifest file's signatures, following any key rotations it carries. Nothing in
-/// an unverified file is used.
-func verifyUpdateManifest(_ data: Data, root: TrustedRoot) throws -> UpdateManifest {
+/// an unverified file is used. `root` is left at the root that signed the manifest, so the
+/// rotations it followed stay in force for whatever is verified next.
+func verifyUpdateManifest(_ data: Data, root: inout TrustedRoot) throws -> UpdateManifest {
     guard data.count <= maxUpdateManifestBytes,
         let envelope = try? JSONDecoder().decode(SignedEnvelope.self, from: data)
     else {
         throw UpdateManifestError.malformed
     }
-    guard root.rotated(by: envelope.roots ?? []).verifies(envelope, type: "manifest") else {
+    let rotated = root.rotated(by: envelope.roots ?? [])
+    guard rotated.verifies(envelope, type: "manifest") else {
         throw UpdateManifestError.untrusted
     }
+    root = rotated
     guard let manifest = try? JSONDecoder().decode(UpdateManifest.self, from: Data(envelope.payload.utf8)),
         manifest.type == "manifest"
     else {

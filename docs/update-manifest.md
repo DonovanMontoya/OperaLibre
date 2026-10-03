@@ -69,14 +69,18 @@ These are what let the update system change later without a new client:
 
 1. **Additions never break a client.** Unknown fields, components, platforms and formats are ignored. A package entry a client cannot use is skipped, and the next matching entry is tried. So a new format can be listed before an old one, and a new sync add-on `protocol` beside the old one.
 2. **Breaking changes get a new file.** A manifest a schema 1 client could misread is published as `operalibre-manifest-v2.json` beside the v1 file, never instead of it. Keep publishing v1 for as long as v1 clients matter.
-3. **Bridges route old installs through a stepping stone.** When an install is older than a bridge's `below` version, the client reads the bridge's manifest instead: the last release that can still update it. It updates there, and its next check reads the latest manifest. Old manifests stay valid forever, because they are signed files at fixed release URLs. Add bridges in `release/update-policy.json`.
+3. **Bridges route old installs through a stepping stone.** When an install is older than a bridge's `below` version, the client reads the bridge's manifest instead: the last release that can still update it. It updates there, and its next check reads the latest manifest. Old manifests stay valid for as long as a key that signed them is still trusted, because they are signed files at fixed release URLs. Add bridges in `release/update-policy.json`.
 4. **`redirect` moves the manifest.** A client reads the redirected manifest instead. Following redirects and bridges stops after eight hops.
 5. **`notice` is the last resort.** When a manifest has no package an install can use, its notice is shown in Administration, for example to ask for one manual update.
 6. **Normal updates move forward.** Server updates within a channel install only newer versions. An owner can explicitly select the other channel and install its older version only when signed data compatibility matches. Standalone frontend and native updaters continue to use the stable feed and only install newer versions.
 
 ## Keys and rotation
 
-Clients start from root version 1: the keys in `release/update-trust.json` → `rootKeys`, which the server and macOS app build in as `ROOT_KEYS` and `releaseRootKeys`. A manifest is accepted when a current root key signed it. The release workflow signs with the `OPERALIBRE_RELEASE_SIGNING_KEY` secret.
+Clients start from root version 1: the keys in `release/update-trust.json` → `rootKeys`, which the server and macOS app build in as `ROOT_KEYS` and `releaseRootKeys`. A manifest is accepted when a current root key signed it.
+
+A client remembers every rotation it accepts: the server in `update-roots.json` in its data folder, the macOS app beside its installed web files. Its later checks start from the newest root it has seen, so a manifest that leaves a rotation out is refused even when a key that rotation retired signed it. The saved rotations are verified again each time they are read, and deleting the file only makes the client learn them again from the next manifest. An installation that has never seen a rotation still starts from root version 1, so updating promptly after a rotation is what protects it.
+
+The release workflow signs with the `OPERALIBRE_RELEASE_SIGNING_KEY` secret.
 
 Keep a **backup root key** offline. It signs nothing day to day, but if the release key is lost or leaked it is what signs the rotation to a new key. Without it, a lost key means every installation has to be updated by hand once.
 
@@ -93,6 +97,7 @@ To rotate keys later:
    `OPERALIBRE_RELEASE_SIGNING_KEY=<key> node script/release_signing.mjs sign-envelope root root.json root.envelope.json`, once per key.
 3. Append the envelope to `rotations` in `release/update-trust.json`. Every later manifest carries the list, so clients of any age walk from their built-in root to the current one.
 4. Update the `OPERALIBRE_RELEASE_SIGNING_KEY` secret to a key in the new root.
+5. If the rotation retires a key, sign every manifest a bridge still points to again with a current key, with the rotation in its `roots`, and replace the published file. Clients that have accepted the rotation refuse a stepping stone signed only by the retired key.
 
 ## Legacy assets and the bridge release
 
