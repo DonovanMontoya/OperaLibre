@@ -381,6 +381,29 @@ pub fn verify_manifest(bytes: &[u8], root: &mut TrustedRoot) -> anyhow::Result<M
     Ok(manifest)
 }
 
+/// Verifies a manifest starting from `root` advanced by the rotations saved at
+/// `accepted_roots`, and saves any further rotation the manifest carries.
+async fn verify_manifest_remembering(
+    bytes: &[u8],
+    root: TrustedRoot,
+    accepted_roots: &Path,
+) -> anyhow::Result<Manifest> {
+    // Checks of different feeds overlap. One at a time, each reads what the
+    // last one saved, so a feed that carries fewer rotations can neither
+    // overwrite a newer root nor be verified under an older one.
+    static SAVING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _saving = SAVING.lock().await;
+    let mut root = root.with_saved_rotations(accepted_roots).await?;
+    let known = root.version;
+    let manifest = verify_manifest(bytes, &mut root)?;
+    // Saved before the manifest is used: an update that went ahead on a
+    // rotation this install then forgot could be undone by the old key.
+    if root.version > known {
+        root.save(accepted_roots).await?;
+    }
+    Ok(manifest)
+}
+
 /// A manifest from its payload alone, for tests of code that reads one.
 #[cfg(test)]
 pub fn unsigned_manifest(payload: &str) -> Manifest {
@@ -405,19 +428,11 @@ pub async fn fetch_manifest_from(
     component: &str,
     installed: Option<&Version>,
 ) -> anyhow::Result<Manifest> {
-    let mut root = TrustedRoot::built_in()?
-        .with_saved_rotations(accepted_roots)
-        .await?;
     let mut url = initial_url.to_string();
     for _ in 0..MAX_MANIFEST_HOPS {
         let bytes = download_manifest(client, &url).await?;
-        let known = root.version;
-        let manifest = verify_manifest(&bytes, &mut root)?;
-        // Saved before the manifest is used: an update that went ahead on a
-        // rotation this install then forgot could be undone by the old key.
-        if root.version > known {
-            root.save(accepted_roots).await?;
-        }
+        let manifest =
+            verify_manifest_remembering(&bytes, TrustedRoot::built_in()?, accepted_roots).await?;
         if let Some(next) = &manifest.redirect {
             url = next.clone();
             continue;
@@ -586,9 +601,15 @@ mod tests {
         let unchanged = test_root().with_saved_rotations(&path).await.unwrap();
         assert_eq!(unchanged.version, 1, "nothing is saved yet");
 
-        let mut root = test_root();
-        verify_manifest(&envelope("rotated"), &mut root).unwrap();
-        root.save(&path).await.unwrap();
+        verify_manifest_remembering(&envelope("rotated"), test_root(), &path)
+            .await
+            .unwrap();
+        assert!(
+            verify_manifest_remembering(&envelope("direct"), test_root(), &path)
+                .await
+                .is_err(),
+            "a later check starts from the saved rotation"
+        );
         let mut restored = test_root().with_saved_rotations(&path).await.unwrap();
         assert_eq!(restored.version, 2);
         assert!(verify_manifest(&envelope("direct"), &mut restored).is_err());
