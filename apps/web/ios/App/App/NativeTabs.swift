@@ -221,11 +221,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         overrideUserInterfaceStyle = appearance == "dark" ? .dark : appearance == "light" ? .light : .unspecified
         configuring = true
         defer { configuring = false }
-        // iPad presents the collection and player together. Keep the web's
-        // reading route for opening playback, but represent both with Shelf.
-        let unifiedShelf = traitCollection.userInterfaceIdiom == .pad
-        let items = unifiedShelf ? items.filter { $0["id"] as? String != "reading" } : items
-        let selected = unifiedShelf && selected == "reading" ? "shelf" : selected
         let ids = items.compactMap { $0["id"] as? String }
         let tabsChanged = ids != identifiers
         if tabsChanged {

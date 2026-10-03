@@ -12,6 +12,7 @@ import {
   sortModeStorageKey
 } from "./shelfSort";
 import { readStoredValue, writeStoredValue } from "./appStorage";
+import { runShelfLayoutTransition } from "./shelfTransition";
 import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode } from "./shelfView";
 import {
   bookMatchesFacet,
@@ -33,6 +34,9 @@ import { LANDSCAPE_QUERY, readLandscape, readShortLandscape, SHORT_LANDSCAPE_QUE
 import type { DeviceFoldState } from "./deviceFold";
 import type { Book } from "./types";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
+
+// The window size at which an iPad opens into the two-page spread.
+const SHELF_SPREAD_QUERY = "(min-width: 720px) and (min-height: 500px)";
 
 export function useShelf({
   books,
@@ -60,6 +64,10 @@ export function useShelf({
   // iPad's two-page Shelf can give the whole screen to either page: the
   // player alone, or the collection alone at its larger grid.
   const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
+  const [wideShelf, setWideShelf] = useState(() => native && window.matchMedia(SHELF_SPREAD_QUERY).matches);
+  // Where the spread shows, the Shelf and Reading tabs choose its layout
+  // rather than a page (see spreadTab).
+  const shelfSpread = native && ipad && wideShelf;
   // The view the collection had before it was widened, restored when it
   // folds back, so the grid it widens into never replaces a saved choice.
   const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
@@ -99,20 +107,23 @@ export function useShelf({
 
   function changeShelfLayout(next: ShelfLayout) {
     if (next === shelfLayout) return;
-    if (next === "library") {
-      viewBeforeWideShelfRef.current = viewMode;
-      setViewMode("grid");
-    } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
-      setViewMode(viewBeforeWideShelfRef.current);
-      viewBeforeWideShelfRef.current = null;
-    }
-    setShelfLayout(next);
+    runShelfLayoutTransition(document.documentElement, shelfLayout, next, () => {
+      if (next === "library") {
+        viewBeforeWideShelfRef.current = viewMode;
+        setViewMode("grid");
+      } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
+        setViewMode(viewBeforeWideShelfRef.current);
+        viewBeforeWideShelfRef.current = null;
+      }
+      setShelfLayout(next);
+    });
   }
 
   useEffect(() => {
     if (!native) return;
-    const wideShelf = window.matchMedia("(min-width: 720px) and (min-height: 500px)");
+    const wideShelf = window.matchMedia(SHELF_SPREAD_QUERY);
     const restoreSplitLayout = () => {
+      setWideShelf(wideShelf.matches);
       if (wideShelf.matches || shelfLayout === "split") return;
       if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
         setViewMode(viewBeforeWideShelfRef.current);
@@ -362,6 +373,7 @@ export function useShelf({
     shelfFolded,
     shelfLandscape,
     shelfLayout,
+    shelfSpread,
     shelfSearchRef,
     showShelfFilters,
     sortMode,
