@@ -39,3 +39,26 @@ export function useWideSpreadWindow(): boolean {
 export function readShortLandscape(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.(SHORT_LANDSCAPE_QUERY).matches;
 }
+
+// How much of the web reading room fits: the page alone, the page beside its
+// contents, or all three columns.
+const ROOM_QUERY = "(min-width: 900px)";
+const WIDE_ROOM_QUERY = "(min-width: 1240px)";
+export type ReadingRoomWindow = "narrow" | "contents" | "wide";
+function readReadingRoomWindow(): ReadingRoomWindow {
+  if (typeof window === "undefined" || !window.matchMedia) return "wide";
+  if (window.matchMedia(WIDE_ROOM_QUERY).matches) return "wide";
+  return window.matchMedia(ROOM_QUERY).matches ? "contents" : "narrow";
+}
+
+export function useReadingRoomWindow(): ReadingRoomWindow {
+  const [room, setRoom] = useState(readReadingRoomWindow);
+  useEffect(() => {
+    const queries = [window.matchMedia(ROOM_QUERY), window.matchMedia(WIDE_ROOM_QUERY)];
+    const update = () => setRoom(readReadingRoomWindow());
+    update();
+    queries.forEach((query) => query.addEventListener("change", update));
+    return () => queries.forEach((query) => query.removeEventListener("change", update));
+  }, []);
+  return room;
+}

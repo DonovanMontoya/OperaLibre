@@ -109,7 +109,9 @@ test('rotation and font reflow cannot revive an uncertain highlight', async ({ p
   await expect.poll(async () => (await state(page)).count).toBe(0);
   for (const viewport of [{ width: 844, height: 390 }, { width: 320, height: 568 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
+    await page.getByRole('button', { name: /^Appearance/ }).click();
     await page.getByRole('button', { name: 'Increase reader text size', exact: true }).click();
+    await page.keyboard.press('Escape');
     await expect(page.getByText(/^Waiting for a reliable match/)).toBeVisible();
     expect((await state(page)).count).toBe(0);
   }
