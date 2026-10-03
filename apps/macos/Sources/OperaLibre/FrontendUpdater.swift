@@ -238,7 +238,7 @@ final class FrontendUpdater {
     private func fetchManifest(currentVersion: [Int]?) async throws -> UpdateManifest {
         let acceptedRoots = managedWebRoot.deletingLastPathComponent()
             .appendingPathComponent(acceptedRootsFileName)
-        guard var root = TrustedRoot.builtIn?.withSavedRotations(at: acceptedRoots) else {
+        guard let builtIn = TrustedRoot.builtIn else {
             throw UpdateManifestError.untrusted
         }
         var url = updateManifestURL
@@ -261,6 +261,9 @@ final class FrontendUpdater {
             } catch {
                 throw FrontendUpdateError.network(error)
             }
+            // Read again for each manifest, with nothing awaited before the save, so this
+            // check starts from whatever an overlapping one has already saved.
+            var root = builtIn.withSavedRotations(at: acceptedRoots)
             let known = root.version
             let manifest = try verifyUpdateManifest(data, root: &root)
             // Saved before the manifest is used: an update that went ahead on a rotation

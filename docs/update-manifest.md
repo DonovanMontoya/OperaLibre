@@ -97,7 +97,7 @@ To rotate keys later:
    `OPERALIBRE_RELEASE_SIGNING_KEY=<key> node script/release_signing.mjs sign-envelope root root.json root.envelope.json`, once per key.
 3. Append the envelope to `rotations` in `release/update-trust.json`. Every later manifest carries the list, so clients of any age walk from their built-in root to the current one.
 4. Update the `OPERALIBRE_RELEASE_SIGNING_KEY` secret to a key in the new root.
-5. If the rotation retires a key, sign every manifest a bridge still points to again with a current key, with the rotation in its `roots`, and replace the published file. Clients that have accepted the rotation refuse a stepping stone signed only by the retired key.
+5. If the rotation retires a key, sign every manifest a client can still be sent to again with a current key, with the rotation in its `roots`, and replace the published file: the current stable manifest, the nightly feed, and each manifest a bridge points to. A client that has accepted the rotation from one of them refuses any other signed only by the retired key, so a nightly server would lose its sync add-on check until the next stable release.
 
 ## Legacy assets and the bridge release
 
