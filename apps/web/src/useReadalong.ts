@@ -68,7 +68,7 @@ export function useReadalong({
   const [activeCompanionId, setActiveCompanionId] = useState<string | null>(null);
   const readalongPanelRef = useRef<HTMLElement | null>(null);
   const alignmentScope = getServerStorageKey();
-  const cachedAlignmentStatus = useMemo(() => readAlignmentPreference(alignmentScope), [alignmentScope]);
+  const cachedAlignmentStatus = useMemo(() => demoMode ? { enabled: true, cliPath: null } : readAlignmentPreference(alignmentScope), [alignmentScope, demoMode]);
   const [alignmentState, setAlignmentState] = useState(() => ({ scope: alignmentScope, status: cachedAlignmentStatus }));
   const alignmentStatus = alignmentState.scope === alignmentScope ? alignmentState.status : cachedAlignmentStatus;
   const alignmentStatusUpdater = useMemo(() => createAlignmentStatusUpdater((status) => {
@@ -102,7 +102,7 @@ export function useReadalong({
   // The companion URL carries the media token. Until the token is known the
   // URL would change a moment later and the reader would open the EPUB
   // twice, so the reader waits for it.
-  const companionUrlReady = native || !isOperaLibre || !!getStoredMediaToken();
+  const companionUrlReady = demoMode || native || !isOperaLibre || !!getStoredMediaToken();
   const companionFilesKey = JSON.stringify([...selectedCompanionList, ...selectedCompanionGroups.images].map((file) => [file.id, file.extension]));
   const companionScope = `${getServerStorageKey()}:${currentUser.id}:${selectedBook?.id ?? ""}:${companionFilesKey}`;
   const [localCompanions, setLocalCompanions] = useState<{ scope: string; urls: Record<string, string | null> } | null>(null);

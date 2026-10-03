@@ -1222,6 +1222,13 @@ export async function liberateAllLibationBooks() {
 }
 
 export async function getSyncMap(bookId: string, signal?: AbortSignal) {
+  if (isDemoMode()) {
+    const syncFile = getDemoBooks().find((book) => book.id === bookId)?.syncFile;
+    if (!syncFile) throw new Error("This demo book has no timing map.");
+    const response = await fetch(demoMediaUrl(syncFile.url), { signal });
+    if (!response.ok) throw new Error("The demo timing map could not be loaded.");
+    return await response.json() as SyncMap;
+  }
   return request<SyncMap>(`/api/books/${encodeURIComponent(bookId)}/sync`, { signal });
 }
 

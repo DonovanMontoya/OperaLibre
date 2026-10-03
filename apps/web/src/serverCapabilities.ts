@@ -14,7 +14,7 @@ export function serverCapabilities(
     progressSync: connected,
     completion: connected,
     readingFiles: opera,
-    sentenceAlignment: connected && opera,
+    sentenceAlignment: (connected || mode.demo === true) && opera,
     // Includes the device-only ledger; detailed listening statistics still need the server.
     statistics: opera,
     sharedActivity: connected && opera,
