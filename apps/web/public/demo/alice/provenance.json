@@ -1,0 +1,39 @@
+{
+  "book": "Alice’s Adventures in Wonderland",
+  "author": "Lewis Carroll",
+  "chapter": "Down the Rabbit-Hole",
+  "narrator": "Kristen McQuillin",
+  "audioSource": "https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01_64kb.mp3",
+  "audioCatalog": "https://librivox.org/alices-adventures-in-wonderland-by-lewis-carroll/",
+  "ebookSource": "https://www.gutenberg.org/ebooks/11.epub3.images",
+  "ebookCatalog": "https://www.gutenberg.org/ebooks/11",
+  "rights": "The LibriVox recording and the Gutenberg ebook text are public domain in the USA. Copyright status outside the USA can differ. The unmodified EPUB retains its Project Gutenberg license, trademark notices and producer credits; Gutenberg redistribution terms still apply. Source media is not relicensed under OperaLibre’s software license.",
+  "trim": {
+    "originalStartSeconds": 16.35,
+    "originalEndSeconds": 143.55,
+    "durationSeconds": 127.2
+  },
+  "alignment": {
+    "tool": "echogarden",
+    "version": "3.3.0",
+    "engine": "dtw-ra",
+    "recognitionModel": "small.en",
+    "sentences": 11,
+    "words": 460,
+    "generation": "Local on this Mac; precomputed static map. Experimental alignment."
+  },
+  "sha256": {
+    "alice-demo.mp3": "950109a6025e6f606311507ba12ff0191b22d55d1dcc3a2624af966aa0f4b57f",
+    "alice.epub": "4f81245d31380ac1d6eafb9a321e3691369bc70985736ae4bccf849a4f784036",
+    "alice.sync.json": "ec3f2b25a4a56f4064d7debb8627b7f6c81d74e4035c0eeca96f7b54b934b2eb",
+    "original-audio.mp3": "fca40613cd198eb2b3e3b36e087b6cbaf22be8d143951d744670973a3c26d0d1"
+  },
+  "rightsVerification": {
+    "verifiedOn": "2026-10-03",
+    "audioRightsSource": "https://librivox.org/pages/public-domain/",
+    "audioCatalogSource": "https://librivox.org/alices-adventures-in-wonderland-by-lewis-carroll/",
+    "ebookRightsSource": "https://www.gutenberg.org/ebooks/11",
+    "ebookLicenseSource": "https://www.gutenberg.org/policy/license.html",
+    "originalSourceHashesVerified": true
+  }
+}

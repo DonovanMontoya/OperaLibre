@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
+import { getDemoBooks } from "../src/demo.ts";
+import { canPublishNativeQueue, nativeQueueIdentityAfterRestore, nativeQueueIsReady, resolveLocalFirstSources } from "../src/offlinePlayback.ts";
 import type { Book, SyncMap } from "../src/types.ts";
 
 // Load the real persistence code with native I/O replaced at the module boundary.
@@ -207,4 +209,48 @@ test("a track remains playable from an old folder after a partial scoped migrati
     await getOfflineTrackUrl(legacyBook, legacyBook.tracks[0]),
     "file://offline-media/legacy-book/track-chapter-one.m4a"
   );
+});
+
+test("native Alice playback publishes a bundled queue without a media credential or download", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const originalStat = state.stat;
+  let filesystemReads = 0;
+  let demo = true;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    localStorage: { getItem: (key: string) => key === "operalibre.demoMode" && demo ? "true" : null }
+  } });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { baseURI: "capacitor://localhost/index.html" } });
+  state.stat = async () => { filesystemReads++; throw new Error("No downloaded file"); };
+  try {
+    const alice = getDemoBooks()[0];
+    const track = alice.tracks[0];
+    const bundledUrl = "capacitor://localhost/demo/alice/alice-demo.mp3";
+    assert.equal(await getOfflineTrackUrl(alice, track), bundledUrl);
+    const sources = await resolveLocalFirstSources(
+      alice.tracks,
+      (queuedTrack) => getOfflineTrackUrl(alice, queuedTrack),
+      (queuedTrack) => queuedTrack.streamUrl
+    );
+    assert.deepEqual(sources, [{ url: bundledUrl, local: true }]);
+    assert.equal(filesystemReads, 0, "bundled playback needs no download directory");
+    assert.equal(canPublishNativeQueue(sources, false), true);
+    const queueKey = nativeQueueIdentityAfterRestore(true, alice.id, track.id, alice.id, false, false);
+    assert.ok(queueKey);
+    assert.equal(nativeQueueIsReady(true, queueKey, queueKey), true);
+
+    demo = false;
+    const remote = await resolveLocalFirstSources(
+      alice.tracks,
+      (queuedTrack) => getOfflineTrackUrl(alice, queuedTrack),
+      () => "https://server.example/audio.mp3"
+    );
+    assert.equal(canPublishNativeQueue(remote, false), false, "server media still requires its credential");
+  } finally {
+    state.stat = originalStat;
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+  }
 });
