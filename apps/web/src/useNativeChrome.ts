@@ -1,4 +1,4 @@
-import { nativeShellColor, type NativeTab, nativeTabItems, nativeTabSelection } from "./nativeTabs";
+import { nativeShellColor, type NativeTab, nativeTabItems, nativeTabSelection, spreadTab } from "./nativeTabs";
 import { type Dispatch, type RefObject, type SetStateAction, useEffect, useState } from "react";
 import { useNativeTabs } from "./useNativeTabs";
 import type { ServerCapabilities } from "./serverCapabilities";
@@ -25,6 +25,7 @@ export function useNativeChrome({
   setReadalongOpen,
   setReaderClosing,
   shelfLayout,
+  shelfSpread,
   shellRef
 }: {
   startupViewReady: boolean;
@@ -45,6 +46,7 @@ export function useNativeChrome({
   setReadalongOpen: Dispatch<SetStateAction<boolean>>;
   setReaderClosing: Dispatch<SetStateAction<boolean>>;
   shelfLayout: ShelfLayout;
+  shelfSpread: boolean;
   shellRef: RefObject<HTMLElement | null>;
 }) {
   const showLedgerTab = native && capabilities.statistics;
@@ -67,7 +69,7 @@ export function useNativeChrome({
   }, [native, nativeTab, shelfLayout, shellRef]);
   const { ready: nativeTabsReady, shown: nativeTabsShown, settled: nativeTabsSettled } = useNativeTabs({
     tabs: iosTabs,
-    selected: nativeTabSelection(nativeTab, iosTabs),
+    selected: nativeTabSelection(spreadTab(nativeTab, shelfSpread, shelfLayout), iosTabs),
     // Showing the bar moves the page's safe area. Lay it out at the same
     // restoration boundary that readies the page, while the launch cover is
     // still up, so the page is in place before anyone sees it.

@@ -12,6 +12,7 @@ import {
   sortModeStorageKey
 } from "./shelfSort";
 import { readStoredValue, writeStoredValue } from "./appStorage";
+import { runShelfLayoutTransition } from "./shelfTransition";
 import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode } from "./shelfView";
 import {
   bookMatchesFacet,
@@ -34,6 +35,9 @@ import type { DeviceFoldState } from "./deviceFold";
 import type { Book } from "./types";
 import { compareReadingStatus, readingStatus, readingStatusLabel } from "./bookProgress";
 
+// The window size at which an iPad opens into the two-page spread.
+const SHELF_SPREAD_QUERY = "(min-width: 720px) and (min-height: 500px)";
+
 export function useShelf({
   books,
   demoMode,
@@ -55,14 +59,21 @@ export function useShelf({
 }) {
   const [sortMode, setSortMode] = useState<SortMode>(() => readStoredSortMode("local"));
   const [sortReversed, setSortReversed] = useState(() => readStoredValue("operalibre.sortReversed.local") === "true");
-  const [viewMode, setViewMode] = useState<ShelfViewMode>(readStoredShelfViewMode);
+  // An iPad wide enough for the spread opens on the Shelf tab's full
+  // collection; restoring a book to play or read brings the spread back.
+  const [startsOnFullShelf] = useState(() => native && ipad && window.matchMedia(SHELF_SPREAD_QUERY).matches);
+  const [viewMode, setViewMode] = useState<ShelfViewMode>(() => startsOnFullShelf ? "grid" : readStoredShelfViewMode());
   const [purchaseViewMode, setPurchaseViewMode] = useState<ShelfViewMode>(readStoredPurchaseViewMode);
   // iPad's two-page Shelf can give the whole screen to either page: the
   // player alone, or the collection alone at its larger grid.
-  const [shelfLayout, setShelfLayout] = useState<ShelfLayout>("split");
+  const [shelfLayout, setShelfLayout] = useState<ShelfLayout>(startsOnFullShelf ? "library" : "split");
+  const [wideShelf, setWideShelf] = useState(() => native && window.matchMedia(SHELF_SPREAD_QUERY).matches);
+  // Where the spread shows, the Shelf and Reading tabs choose its layout
+  // rather than a page (see spreadTab).
+  const shelfSpread = native && ipad && wideShelf;
   // The view the collection had before it was widened, restored when it
   // folds back, so the grid it widens into never replaces a saved choice.
-  const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(null);
+  const viewBeforeWideShelfRef = useRef<ShelfViewMode | null>(startsOnFullShelf ? readStoredShelfViewMode() : null);
   const [searchQuery, setSearchQuery] = useState("");
   const shelfSearchRef = useRef<HTMLInputElement | null>(null);
   const [shelfFilters, setShelfFilters] = useState<ShelfFilters>(EMPTY_SHELF_FILTERS);
@@ -97,22 +108,27 @@ export function useShelf({
     writeStoredValue(PURCHASE_VIEW_MODE_STORAGE_KEY, mode);
   }
 
-  function changeShelfLayout(next: ShelfLayout) {
+  function changeShelfLayout(next: ShelfLayout, animate = true) {
     if (next === shelfLayout) return;
-    if (next === "library") {
-      viewBeforeWideShelfRef.current = viewMode;
-      setViewMode("grid");
-    } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
-      setViewMode(viewBeforeWideShelfRef.current);
-      viewBeforeWideShelfRef.current = null;
-    }
-    setShelfLayout(next);
+    const apply = () => {
+      if (next === "library") {
+        viewBeforeWideShelfRef.current = viewMode;
+        setViewMode("grid");
+      } else if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
+        setViewMode(viewBeforeWideShelfRef.current);
+        viewBeforeWideShelfRef.current = null;
+      }
+      setShelfLayout(next);
+    };
+    if (animate) runShelfLayoutTransition(document.documentElement, shelfLayout, next, apply);
+    else apply();
   }
 
   useEffect(() => {
     if (!native) return;
-    const wideShelf = window.matchMedia("(min-width: 720px) and (min-height: 500px)");
+    const wideShelf = window.matchMedia(SHELF_SPREAD_QUERY);
     const restoreSplitLayout = () => {
+      setWideShelf(wideShelf.matches);
       if (wideShelf.matches || shelfLayout === "split") return;
       if (shelfLayout === "library" && viewBeforeWideShelfRef.current) {
         setViewMode(viewBeforeWideShelfRef.current);
@@ -362,6 +378,7 @@ export function useShelf({
     shelfFolded,
     shelfLandscape,
     shelfLayout,
+    shelfSpread,
     shelfSearchRef,
     showShelfFilters,
     sortMode,

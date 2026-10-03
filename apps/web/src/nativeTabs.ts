@@ -1,4 +1,5 @@
 import type { AppearanceMode } from "./appearance";
+import type { ShelfLayout } from "./shelfSort";
 
 export type NativeTab = "shelf" | "reading" | "games" | "ledger" | "admin" | "settings";
 export type NativeTabItem = { id: NativeTab; title: string; symbol: string; badge?: string };
@@ -33,6 +34,25 @@ export function nativeTabItems(games: boolean, ledger: boolean, alerts: number):
     ...(ledger ? [{ id: "ledger" as const, title: "Ledger", symbol: "list.bullet.rectangle" }] : []),
     { id: "settings", title: "Settings", symbol: "gearshape" }
   ];
+}
+
+/**
+ * The tab the listener is on. An iPad wide enough for the spread shows the
+ * collection and the player together under either route, so there Shelf means
+ * the collection alone and Reading means the spread, whichever route the page
+ * was opened through.
+ */
+export function spreadTab(tab: NativeTab, spread: boolean, layout: ShelfLayout): NativeTab {
+  if (!spread || (tab !== "shelf" && tab !== "reading")) return tab;
+  return layout === "library" ? "shelf" : "reading";
+}
+
+/**
+ * Playback and a book's details are set on the player page, which the full
+ * collection puts away. Whatever opened them, the spread has to come back.
+ */
+export function fullShelfMustYield(tab: NativeTab, playerView: string, layout: ShelfLayout): boolean {
+  return layout === "library" && (tab === "reading" || playerView !== "now");
 }
 
 export function nativeTabSelection(tab: NativeTab, tabs: NativeTabItem[]): NativeTab {
