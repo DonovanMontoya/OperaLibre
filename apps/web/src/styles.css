@@ -3586,6 +3586,34 @@ img.large-cover {
   min-height: 0;
 }
 
+@media (max-width: 899px) {
+  .epub-reader.room:has(> .reading-room-content) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "bar" "page";
+  }
+
+  .epub-reader.room:has(> .reading-room-content)::before {
+    grid-area: 1 / 1 / -1 / 2;
+    width: 100%;
+    margin: 0;
+    border: 0;
+  }
+
+  .epub-reader.room:has(> .reading-room-content) > .epub-rail {
+    display: none;
+  }
+
+  .epub-reader.room:has(> .reading-room-content) > :is(.epub-roombar, .reading-room-content) {
+    width: calc(100% - 24px);
+  }
+
+  .epub-reader.room:has(> .reading-room-content) > .epub-roombar {
+    gap: 8px;
+    padding-top: 12px;
+  }
+}
+
 .epub-roombar {
   grid-area: bar;
   display: flex;
@@ -9241,12 +9269,14 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
     --reader-dock-h: 84px;
   }
 
-  html:not(.native-app) .web-shell.reader-open .mini-player {
+  html:not(.native-app) .web-shell.reader-open > .mini-player {
     display: grid;
+    position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
     height: var(--reader-dock-h);
+    margin: 0;
     grid-template-columns: auto minmax(140px, 1fr) minmax(200px, 1.4fr) auto auto;
     gap: 16px;
     padding: 0 clamp(16px, 2.4vw, 32px);
@@ -9298,6 +9328,10 @@ html:not(.native-app) .web-shell.player-view-now .mini-player {
 
 /* A narrower window reads full screen, with the reader's own transport. */
 @media (max-width: 899px) {
+  html:not(.native-app) .web-shell.reader-open > .mini-player {
+    display: none;
+  }
+
   .mini-tools {
     display: none;
   }
@@ -17955,7 +17989,7 @@ html.native-app[data-fold-axis="vertical"]:not([data-fold-posture="closed"]) .na
     padding-bottom: 28px;
   }
 
-  html:not(.native-app) .web-shell.player-view-details > .mini-player {
+  html:not(.native-app) .web-shell.player-view-details:not(.reader-open) > .mini-player {
     position: relative;
     inset: auto;
     grid-column: -2 / -1;
