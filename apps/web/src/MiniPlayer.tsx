@@ -1,7 +1,7 @@
 import { CoverArt } from "./CoverArt";
 import { ScrubSlider } from "./PlaybackControls";
 import { formatTime } from "./formatting";
-import { Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward } from "lucide-react";
+import { ListMusic, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Timer } from "lucide-react";
 import type { ChapterSegment } from "./chapters";
 import type { Book, Track } from "./types";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -19,6 +19,7 @@ export function MiniPlayer({
   playPending,
   playbackBook,
   position,
+  readerTools = null,
   restartOrPreviousChapter,
   scrollToPlayer,
   scrubbedElapsed,
@@ -41,6 +42,13 @@ export function MiniPlayer({
   playPending: boolean;
   playbackBook: Book;
   position: number;
+  /** Speed, sleep timer, and chapters, offered while the web reader is open
+      over the player that normally holds them. */
+  readerTools?: {
+    speed: number;
+    sleepRemaining: number;
+    onOpen: (sheet: "speed" | "sleep" | "chapters") => void;
+  } | null;
   restartOrPreviousChapter: () => void;
   scrollToPlayer: () => void;
   scrubbedElapsed: number;
@@ -125,6 +133,25 @@ export function MiniPlayer({
           </button>
         ) : null}
       </div>
+
+      {readerTools ? (
+        <div className="mini-tools">
+          <button type="button" className="mini-speed" onClick={() => readerTools.onOpen("speed")} aria-label={`Playback speed, ${readerTools.speed}×`}>
+            {readerTools.speed}×
+          </button>
+          <button
+            type="button"
+            onClick={() => readerTools.onOpen("sleep")}
+            aria-label={readerTools.sleepRemaining > 0 ? `Sleep timer, ${Math.ceil(readerTools.sleepRemaining / 60)} minutes left` : "Sleep timer"}
+          >
+            <Timer size={16} />
+            {readerTools.sleepRemaining > 0 ? <small>{Math.ceil(readerTools.sleepRemaining / 60)}m</small> : null}
+          </button>
+          <button type="button" onClick={() => readerTools.onOpen("chapters")} aria-label="Chapters">
+            <ListMusic size={16} />
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
 }

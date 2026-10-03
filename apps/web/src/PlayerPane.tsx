@@ -265,8 +265,7 @@ export function PlayerPane({
     readalongOpen,
     selectedCompanionGroups,
     selectedHasExtras,
-    selectedReadAlongMode,
-    showReaderInNowView
+    selectedReadAlongMode
   } = readalong;
   const {
     readalongEnabled
@@ -313,7 +312,7 @@ export function PlayerPane({
     <section
       className={`player-pane native-player-view-${nativePlayerView} ${
         isViewingPlayingBook && currentTrack ? "has-native-player" : ""
-      } ${showReaderInNowView ? "has-reader" : ""} ${
+      } ${
         nativeTab === "reading" && usesFoldLayout(playbackFold) && playbackFold.fold?.axis === "horizontal"
           ? "" : "fit-playback"
       }`}
@@ -341,7 +340,7 @@ export function PlayerPane({
       {selectedBook && (currentTrack || nativePlayerView !== "now") ? (
         <>
           {isViewingPlayingBook && nativePlayerView === "now" && nowPlayingBook && currentTrack ? (
-            <section className={`native-now-playing ${showReaderInNowView ? "has-reader" : ""}`} aria-label="Now playing">
+            <section className="native-now-playing" aria-label="Now playing">
               {/* The halves group the stack for a foldable phone, which sets
                   them either side of its fold. Everywhere else they take no
                   box and their children lay out in the card's grid. */}
@@ -582,7 +581,6 @@ export function PlayerPane({
                   </section>
                 </div>
               ) : null}
-              {showReaderInNowView ? <div className="web-now-reader">{readalongPanelElement}</div> : null}
             </section>
           ) : null}
           {native ? bookPageMasthead : <div className="book-page-masthead">{bookPageMasthead}</div>}
@@ -977,7 +975,7 @@ export function PlayerPane({
             </section>
           ) : null}
 
-          {showReaderInNowView ? null : readalongPanelElement}
+          {readalongPanelElement}
 
           {isViewingPlayingBook && currentTrack ? (
             <>
