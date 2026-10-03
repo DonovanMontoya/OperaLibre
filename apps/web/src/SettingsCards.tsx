@@ -1,3 +1,4 @@
+import { DemoMediaCredits } from "./DemoMediaCredits";
 import { BehaviorSection } from "./BehaviorSection";
 import { ContinueReadingSetting } from "./ContinueReadingSetting";
 import { DeviceImportNotice } from "./DeviceImportNotice";
@@ -317,7 +318,10 @@ export function ServerDownloadSettings({
     <section className="settings-card">
       <span className="section-label"><Download size={13} /> Server downloads</span>
       {demoMode ? (
-        <p className="settings-hint">Demo books and their procedural audio are included on this device.</p>
+        <>
+          <p className="settings-hint">The Alice demo audio, ebook, and sentence timing map are included on this device.</p>
+          <DemoMediaCredits />
+        </>
       ) : (
         <>
           {deviceDownloadQueue.length > 0 ? (
