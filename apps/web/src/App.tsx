@@ -4,7 +4,7 @@ import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
-import { spreadTab } from "./nativeTabs";
+import { fullShelfMustYield, spreadTab } from "./nativeTabs";
 import {
   Gamepad2,
   Headphones,
@@ -1833,6 +1833,14 @@ function MainApp({
     showChapterJumpTop,
     trackListSectionRef
   });
+  // Playing from the full Shelf, restoring a book at launch, and opening a
+  // companion all set the route without going through the tab bar. Under the
+  // launch cover the layout changes without motion: the transition's
+  // snapshots would be drawn over the cover.
+  useEffect(() => {
+    if (fullShelfMustYield(nativeTab, nativePlayerView, shelfLayout)) changeShelfLayout("split", launchCoverLifted);
+  });
+
   const {
     applyAdminLibraryChange,
     prepareForAdminLibraryMutation,
