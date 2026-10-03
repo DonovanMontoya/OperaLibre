@@ -33,7 +33,8 @@ struct ReleaseSignatureTests {
             try! JSONSerialization.data(withJSONObject: value)
         }
         func verifies(_ value: Any, _ root: TrustedRoot) -> UpdateManifest? {
-            try? verifyUpdateManifest(envelope(value), root: root)
+            var root = root
+            return try? verifyUpdateManifest(envelope(value), root: &root)
         }
 
         // A manifest signed by a root key, with fields and components this build ignores.
@@ -60,6 +61,38 @@ struct ReleaseSignatureTests {
         var forgedRotation = rotated
         forgedRotation["roots"] = rotations
         precondition(verifies(forgedRotation, root) == nil)
+
+        // An accepted rotation retires the keys it replaced, and is saved so it still does
+        // after a restart. A manifest that was refused leaves the root where it was.
+        var advanced = root
+        precondition((try? verifyUpdateManifest(envelope(rotated), root: &advanced)) != nil)
+        precondition(advanced.version == 2)
+        precondition(verifies(direct, advanced) == nil, "the old key cannot sign past the rotation")
+        precondition(verifies(rotated, advanced)?.version == "1.2.4")
+        var refused = root
+        var tamperedRotated = rotated
+        tamperedRotated["payload"] = "{}"
+        precondition((try? verifyUpdateManifest(envelope(tamperedRotated), root: &refused)) == nil)
+        precondition(refused.version == 1)
+
+        let saved = FileManager.default.temporaryDirectory
+            .appendingPathComponent("operalibre-roots-\(UUID().uuidString)")
+            .appendingPathComponent(acceptedRootsFileName)
+        defer { try? FileManager.default.removeItem(at: saved.deletingLastPathComponent()) }
+        precondition(root.withSavedRotations(at: saved).version == 1, "nothing is saved yet")
+        try! advanced.saveRotations(to: saved)
+        let restored = root.withSavedRotations(at: saved)
+        precondition(restored.version == 2)
+        precondition(verifies(direct, restored) == nil)
+        // A saved rotation the old root never signed moves nothing.
+        var forged = try! JSONSerialization.jsonObject(with: Data(contentsOf: saved)) as! [String: Any]
+        var forgedRotations = forged["rotations"] as! [[String: Any]]
+        forgedRotations[0]["signatures"] = Array((forgedRotations[0]["signatures"] as! [Any]).dropFirst())
+        forged["rotations"] = forgedRotations
+        try! envelope(forged).write(to: saved)
+        precondition(root.withSavedRotations(at: saved).version == 1)
+        try! Data("not json".utf8).write(to: saved)
+        precondition(root.withSavedRotations(at: saved).version == 1)
 
         // A root's signature must not pass for a manifest's.
         precondition(verifies((rotated["roots"] as! [Any])[0], root) == nil)

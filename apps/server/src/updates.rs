@@ -18,7 +18,7 @@ use tokio::{fs, process::Command, sync::Mutex};
 
 use crate::update_channel::{UpdateChannel, update_available, validate_target};
 use crate::update_manifest::{
-    ArchiveFormat, Manifest, Package, fetch_manifest, fetch_manifest_from,
+    ACCEPTED_ROOTS_FILE, ArchiveFormat, Manifest, Package, fetch_manifest, fetch_manifest_from,
 };
 
 #[cfg(unix)]
@@ -777,6 +777,7 @@ impl UpdateManager {
         let current = Version::parse(&current_version()).ok();
         fetch_manifest_from(
             &self.client,
+            &self.accepted_roots(),
             channel.manifest_url(),
             "server",
             current.as_ref(),
@@ -796,7 +797,17 @@ impl UpdateManager {
     // Sync add-on releases remain independent of the selected server channel.
     async fn stable_manifest(&self) -> anyhow::Result<Manifest> {
         let current = Version::parse(&current_version()).ok();
-        fetch_manifest(&self.client, "server", current.as_ref()).await
+        fetch_manifest(
+            &self.client,
+            &self.accepted_roots(),
+            "server",
+            current.as_ref(),
+        )
+        .await
+    }
+
+    fn accepted_roots(&self) -> PathBuf {
+        self.data_dir.join(ACCEPTED_ROOTS_FILE)
     }
 
     async fn frontend_manifest(
@@ -813,7 +824,13 @@ impl UpdateManager {
             .map(str::to_string)
             .or_else(|| installed_frontend_version(self.web_dist_dir.as_deref()).ok())
             .and_then(|version| Version::parse(&version).ok());
-        fetch_manifest(&self.client, "frontend", installed.as_ref()).await
+        fetch_manifest(
+            &self.client,
+            &self.accepted_roots(),
+            "frontend",
+            installed.as_ref(),
+        )
+        .await
     }
 
     /// Downloads a package listed in a verified manifest and holds it to the
