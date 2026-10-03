@@ -14103,6 +14103,224 @@ html.native-app .profile-page.ledger-dashboard { border-radius: 0; max-width: 10
   }
 }
 
+/* Changing the spread's layout moves its pages rather than swapping screens
+   (see runShelfLayoutTransition, which names the direction). Between the
+   Shelf and Reading tabs the collection opens across the spread and closes
+   back to its page, carrying the player with its edge. Putting the shelf
+   away slides it off the spine edge. The panes are the snapshots the fold
+   transitions already name.
+
+   Everything moves on one curve for one duration. The groups take their
+   final place at once rather than resizing every frame, and each snapshot
+   keeps the width it was captured at, so nothing stretches. The gutter rides
+   the seam with whichever page is moving. */
+html.native-app.platform-ios[data-shelf-transition] .native-shell:is(.tab-shelf, .tab-reading)::after {
+  view-transition-name: shelf-gutter;
+}
+
+html.native-app[data-shelf-transition]::view-transition-old(root) { display: none; }
+html.native-app[data-shelf-transition]::view-transition-new(root) { animation: none; }
+
+html.native-app[data-shelf-transition]::view-transition-group(duo-library),
+html.native-app[data-shelf-transition]::view-transition-group(duo-player),
+html.native-app[data-shelf-transition]::view-transition-group(shelf-gutter) {
+  animation: none;
+}
+html.native-app[data-shelf-transition]::view-transition-group(shelf-gutter) { z-index: 2; }
+html.native-app[data-shelf-transition]::view-transition-group(duo-mini-player) {
+  z-index: 3;
+  animation-duration: 440ms;
+  animation-timing-function: cubic-bezier(.32, .72, 0, 1);
+}
+
+html.native-app[data-shelf-transition]::view-transition-old(duo-library),
+html.native-app[data-shelf-transition]::view-transition-new(duo-library),
+html.native-app[data-shelf-transition]::view-transition-old(duo-player),
+html.native-app[data-shelf-transition]::view-transition-new(duo-player) {
+  block-size: 100%;
+  mix-blend-mode: normal;
+  animation: none;
+}
+
+/* Shelf and Reading: the collection at one page and at both. The paper is
+   the shell's, not the player pane's, so the page cannot be slid as a sheet
+   of its own. Instead the wide wall is opened and closed at its edge, over
+   paper that never moves, and the player's content keeps exactly to that
+   edge: the same distance on the same curve. The narrow index slides off
+   the spine edge and back rather than dissolving in place, because it and
+   the wall set the same header and titles in different places and would
+   double. On the way to the Shelf tab both departing pages also drop back
+   and thin out as they near the edges, so the eye stays on the wall they
+   uncover; coming back, they arrive solid and full size. */
+html.native-app[data-shelf-transition="split-library"]::view-transition-old(duo-library),
+html.native-app[data-shelf-transition="library-split"]::view-transition-new(duo-library) {
+  inline-size: var(--verso-w);
+  z-index: 1;
+}
+html.native-app[data-shelf-transition$="-library"]::view-transition-new(duo-library),
+html.native-app[data-shelf-transition="library-split"]::view-transition-old(duo-library) {
+  inline-size: 100vw;
+}
+html.native-app[data-shelf-transition="split-library"]::view-transition-old(duo-library) {
+  animation: shelf-index-recede 440ms cubic-bezier(.32, .72, 0, 1) both, shelf-recede 240ms ease-in both;
+}
+html.native-app[data-shelf-transition="library-split"]::view-transition-new(duo-library) {
+  animation: shelf-slide-back 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="split-library"]::view-transition-new(duo-library) {
+  animation: shelf-wall-open 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="library-split"]::view-transition-old(duo-library) {
+  animation: shelf-wall-close 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="split-library"]::view-transition-old(duo-player) {
+  animation: shelf-page-recede 440ms cubic-bezier(.32, .72, 0, 1) both, shelf-recede 240ms ease-in both;
+}
+html.native-app[data-shelf-transition="library-split"]::view-transition-new(duo-player) {
+  animation: shelf-page-on 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="split-library"]::view-transition-old(shelf-gutter) {
+  animation: shelf-seam-off 440ms cubic-bezier(.32, .72, 0, 1) both, shelf-recede 240ms ease-in both;
+}
+html.native-app[data-shelf-transition="library-split"]::view-transition-new(shelf-gutter) {
+  animation: shelf-seam-on 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+
+/* From the player alone there is no shelf on screen to widen, so the
+   collection slides in from the spine over the page. */
+html.native-app[data-shelf-transition="player-library"]::view-transition-group(duo-library) {
+  z-index: 1;
+}
+html.native-app[data-shelf-transition="player-library"]::view-transition-new(duo-library) {
+  animation: shelf-slide-back 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="player-library"]::view-transition-old(duo-player) {
+  animation: shelf-page-off 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+
+/* The transport that stands in for the page rises as it leaves and sinks
+   as it returns. */
+html.native-app[data-shelf-transition$="-library"]::view-transition-new(duo-mini-player) {
+  animation: shelf-transport-in 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition^="library-"]::view-transition-old(duo-mini-player) {
+  animation: shelf-transport-out 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+
+/* Hiding and showing the shelf: the shelf slides, above paper that does not
+   move, and shoves the player's content with it. That content is centred
+   half a shelf's width apart at its two widths, so the page's new setting
+   travels that far into place and the old one is dropped at the start,
+   while everything is moving, rather than dissolved. */
+html.native-app:is([data-shelf-transition="split-player"], [data-shelf-transition="player-split"])::view-transition-group(duo-library) {
+  z-index: 1;
+}
+html.native-app:is([data-shelf-transition="split-player"], [data-shelf-transition="player-split"])::view-transition-old(duo-player),
+html.native-app:is([data-shelf-transition="split-player"], [data-shelf-transition="player-split"])::view-transition-new(duo-player) {
+  inset-inline: auto 0;
+}
+html.native-app[data-shelf-transition="split-player"]::view-transition-old(duo-player),
+html.native-app[data-shelf-transition="player-split"]::view-transition-new(duo-player) {
+  inline-size: calc(100vw - var(--verso-w));
+}
+html.native-app[data-shelf-transition="split-player"]::view-transition-new(duo-player),
+html.native-app[data-shelf-transition="player-split"]::view-transition-old(duo-player) {
+  inline-size: 100vw;
+}
+html.native-app:is([data-shelf-transition="split-player"], [data-shelf-transition="player-split"])::view-transition-old(duo-player) {
+  opacity: 0;
+}
+html.native-app[data-shelf-transition="split-player"]::view-transition-new(duo-player) {
+  animation: shelf-page-centre 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="player-split"]::view-transition-new(duo-player) {
+  animation: shelf-page-aside 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="split-player"]::view-transition-old(duo-library) {
+  animation: shelf-slide-away 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="player-split"]::view-transition-new(duo-library) {
+  animation: shelf-slide-back 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="split-player"]::view-transition-old(shelf-gutter) {
+  animation: shelf-seam-away 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+html.native-app[data-shelf-transition="player-split"]::view-transition-new(shelf-gutter) {
+  animation: shelf-seam-back 440ms cubic-bezier(.32, .72, 0, 1) both;
+}
+
+@keyframes shelf-wall-open {
+  from { clip-path: inset(0 calc(100vw - var(--verso-w)) 0 0); }
+  to { clip-path: inset(0); }
+}
+
+@keyframes shelf-wall-close {
+  from { clip-path: inset(0); }
+  to { clip-path: inset(0 calc(100vw - var(--verso-w)) 0 0); }
+}
+
+@keyframes shelf-recede {
+  to { opacity: 0; }
+}
+
+@keyframes shelf-index-recede {
+  to { transform: translateX(-100%) scale(0.9); }
+}
+
+@keyframes shelf-page-recede {
+  to { transform: translateX(calc(100vw - var(--verso-w))) scale(0.9); }
+}
+
+@keyframes shelf-page-off {
+  to { transform: translateX(calc(100vw - var(--verso-w))); }
+}
+
+@keyframes shelf-page-on {
+  from { transform: translateX(calc(100vw - var(--verso-w))); }
+}
+
+/* The seam travels with the page beside it, and its own width further so
+   that it leaves the screen instead of standing at the edge. */
+@keyframes shelf-seam-off {
+  to { transform: translateX(calc(100vw - var(--verso-w) + var(--gutter))); }
+}
+
+@keyframes shelf-seam-on {
+  from { transform: translateX(calc(100vw - var(--verso-w) + var(--gutter))); }
+}
+
+@keyframes shelf-seam-away {
+  to { transform: translateX(calc(-1 * var(--verso-w) - var(--gutter))); }
+}
+
+@keyframes shelf-seam-back {
+  from { transform: translateX(calc(-1 * var(--verso-w) - var(--gutter))); }
+}
+
+@keyframes shelf-page-centre {
+  from { transform: translateX(calc(var(--verso-w) / 2)); }
+}
+
+@keyframes shelf-page-aside {
+  from { transform: translateX(calc(var(--verso-w) / -2)); }
+}
+
+@keyframes shelf-transport-in {
+  from { transform: translateY(160%); }
+}
+
+@keyframes shelf-transport-out {
+  to { transform: translateY(160%); }
+}
+
+@keyframes shelf-slide-away {
+  to { transform: translateX(-100%); }
+}
+
+@keyframes shelf-slide-back {
+  from { transform: translateX(-100%); }
+}
+
 /* A phone on its side is held by both ends and has little height to spare,
    so it takes the iPad's lessons at phone scale. Games put the play surface
    against the right edge under a thumb and hand the now-playing strip to

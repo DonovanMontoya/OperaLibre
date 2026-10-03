@@ -211,7 +211,13 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         sentTopClearance = -1
         sentFloatingTopBar = nil
         sentRail = .none
-        applyChrome(chrome, bar: bar)
+        // The page can move to another tab and change its tones in one
+        // update. Retinting the floating bar and then selecting in the same
+        // pass leaves its labels drawn for the previous tab, platter aside,
+        // so the tones follow the selection a turn later, as they do after a
+        // tap.
+        let reselecting = requestedSelection != nil && selected != requestedSelection
+        if !reselecting { applyChrome(chrome, bar: bar) }
         if visible != navigationVisible && navigation.parent != nil {
             // Showing or hiding the bar resizes the web view, and the page
             // reflows over several frames as its safe area and viewport catch
@@ -221,11 +227,6 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
         overrideUserInterfaceStyle = appearance == "dark" ? .dark : appearance == "light" ? .light : .unspecified
         configuring = true
         defer { configuring = false }
-        // iPad presents the collection and player together. Keep the web's
-        // reading route for opening playback, but represent both with Shelf.
-        let unifiedShelf = traitCollection.userInterfaceIdiom == .pad
-        let items = unifiedShelf ? items.filter { $0["id"] as? String != "reading" } : items
-        let selected = unifiedShelf && selected == "reading" ? "shelf" : selected
         let ids = items.compactMap { $0["id"] as? String }
         let tabsChanged = ids != identifiers
         if tabsChanged {
@@ -277,6 +278,9 @@ final class NativeTabsController: UIViewController, UITabBarControllerDelegate {
             } else if let index = identifiers.firstIndex(of: selected) {
                 navigation.selectedIndex = index
             }
+        }
+        if reselecting {
+            DispatchQueue.main.async { [weak self] in self?.applyChrome(chrome, bar: bar) }
         }
         requestedSelection = selected
         // Web sheets rise from the bottom of the page, which now runs under

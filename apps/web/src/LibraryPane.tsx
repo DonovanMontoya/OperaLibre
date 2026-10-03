@@ -23,8 +23,6 @@ import {
   Library,
   List,
   LoaderCircle,
-  Maximize2,
-  Minimize2,
   Network,
   PanelLeftClose,
   RefreshCcw,
@@ -264,49 +262,20 @@ export function LibraryPane({
           <span className="eyebrow"><Library size={13} /> The Collection</span>
           <h1>OperaLibre</h1>
         </div>
-        {native && ipad ? (
-          <div className="shelf-layout-controls" role="group" aria-label="Shelf layout">
-            {shelfLayout === "library" ? (
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Show the player beside the shelf"
-                title="Show the player"
-                onClick={() => {
-                  haptic("light");
-                  changeShelfLayout("split");
-                }}
-              >
-                <Minimize2 size={16} />
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Hide the shelf"
-                  title="Hide the shelf"
-                  onClick={() => {
-                    haptic("light");
-                    changeShelfLayout("player");
-                  }}
-                >
-                  <PanelLeftClose size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Expand the shelf to full screen"
-                  title="Expand the shelf"
-                  onClick={() => {
-                    haptic("light");
-                    changeShelfLayout("library");
-                  }}
-                >
-                  <Maximize2 size={16} />
-                </button>
-              </>
-            )}
+        {native && ipad && shelfLayout !== "library" ? (
+          <div className="shelf-layout-controls">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Hide the shelf"
+              title="Hide the shelf"
+              onClick={() => {
+                haptic("light");
+                changeShelfLayout("player");
+              }}
+            >
+              <PanelLeftClose size={16} />
+            </button>
           </div>
         ) : null}
         <div className="pane-actions">

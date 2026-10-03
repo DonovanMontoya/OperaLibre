@@ -4,6 +4,7 @@ import { progressSeekOptions, progressSeekStorage, readProgressSeekIntent } from
 import { createPlaybackTransitions, playbackReportPosition } from "./playbackReporting";
 import { serverCapabilities } from "./serverCapabilities";
 import { Capacitor } from "@capacitor/core";
+import { fullShelfMustYield, spreadTab } from "./nativeTabs";
 import {
   Gamepad2,
   Headphones,
@@ -803,6 +804,7 @@ function MainApp({
     shelfFolded,
     shelfLandscape,
     shelfLayout,
+    shelfSpread,
     sortMode,
     sortReversed,
   } = shelf;
@@ -1827,9 +1829,18 @@ function MainApp({
     setSelectedBookId,
     setShowChapterJumpTop,
     shelfLayout,
+    shelfSpread,
     showChapterJumpTop,
     trackListSectionRef
   });
+  // Playing from the full Shelf, restoring a book at launch, and opening a
+  // companion all set the route without going through the tab bar. Under the
+  // launch cover the layout changes without motion: the transition's
+  // snapshots would be drawn over the cover.
+  useEffect(() => {
+    if (fullShelfMustYield(nativeTab, nativePlayerView, shelfLayout)) changeShelfLayout("split", launchCoverLifted);
+  });
+
   const {
     applyAdminLibraryChange,
     prepareForAdminLibraryMutation,
@@ -1886,6 +1897,7 @@ function MainApp({
     setReadalongOpen,
     setReaderClosing,
     shelfLayout,
+    shelfSpread,
     shellRef
   });
   const {
@@ -1989,6 +2001,8 @@ function MainApp({
     native,
     purchases
   });
+
+  const shownTab = spreadTab(nativeTab, shelfSpread, shelfLayout);
 
   return (
     <main
@@ -2477,7 +2491,9 @@ function MainApp({
           onAlignmentChanged={updateAlignmentStatus}
           onOpenBook={(bookId) => {
             openBookDetails(bookId);
-            openNativeTab("shelf");
+            // On the iPad spread the book opens beside the collection; its
+            // Shelf tab would put the page away again.
+            if (!shelfSpread) openNativeTab("shelf");
           }}
         />
       ) : null}
@@ -2486,8 +2502,8 @@ function MainApp({
         <nav className="spine-tabs" aria-label="Primary">
           <button
             type="button"
-            className={`spine-tab ${nativeTab === "shelf" ? "active" : ""}`}
-            aria-current={nativeTab === "shelf" ? "page" : undefined}
+            className={`spine-tab ${shownTab === "shelf" ? "active" : ""}`}
+            aria-current={shownTab === "shelf" ? "page" : undefined}
             onClick={() => openNativeTab("shelf")}
           >
             <Library size={20} strokeWidth={1.6} />
@@ -2496,8 +2512,8 @@ function MainApp({
           </button>
           <button
             type="button"
-            className={`spine-tab ${nativeTab === "reading" ? "active" : ""}`}
-            aria-current={nativeTab === "reading" ? "page" : undefined}
+            className={`spine-tab ${shownTab === "reading" ? "active" : ""}`}
+            aria-current={shownTab === "reading" ? "page" : undefined}
             onClick={() => openNativeTab("reading")}
           >
             <Headphones size={20} strokeWidth={1.6} />
