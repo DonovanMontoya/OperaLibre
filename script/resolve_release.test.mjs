@@ -18,7 +18,7 @@ test("stable supports an explicit version or promotion of the tested nightly", (
   assert.throws(() => resolveRelease({ channel: "stable", sourceNightly: "nightly" }));
 });
 
-const scheduled = { channel: "nightly", event: "schedule", branch: "refs/heads/main",
+const scheduled = { channel: "nightly", event: "repository_dispatch", branch: "refs/heads/main",
   sha: "main-sha", date: "20260927", run: 12 };
 const stable = { tag_name: "0.4.9", draft: false, prerelease: false };
 const publishedNightly = { tag_name: "0.4.10-nightly.20260926.11", prerelease: true,
