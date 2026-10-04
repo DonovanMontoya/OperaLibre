@@ -17,6 +17,7 @@ import { readStoredShelfViewMode, type ShelfViewMode, writeStoredShelfViewMode }
 import {
   bookMatchesFacet,
   bookMatchesShelfDownload,
+  bookMatchesShelfReadAlong,
   bookMatchesShelfSearch,
   bookMatchesShelfStatus,
   compareShelfAddedAt,
@@ -185,7 +186,7 @@ export function useShelf({
     tags: countShelfFacet(books, "tags")
   }), [books]);
 
-  // Each book scored once against every filter axis separately. Keeping the five
+  // Each book scored once against every filter axis separately. Keeping the
   // verdicts apart is what lets the panel count a group over the books the
   // *other* groups allow without walking the library again per chip.
   const shelfMatches = useMemo(() => {
@@ -200,6 +201,7 @@ export function useShelf({
         || book.source === "device"
         || !!book.deviceBookId
         || downloadedBookIds.has(book.id),
+      readAlong: bookMatchesShelfReadAlong(book, shelfFilters.readAlongOnly),
       genres: bookMatchesFacet(book, "genres", shelfFilters.genres),
       tags: bookMatchesFacet(book, "tags", shelfFilters.tags)
     })).map((match) => ({
@@ -218,22 +220,27 @@ export function useShelf({
       finished: 0
     };
     let downloadedCount = 0;
+    let readAlongCount = 0;
     for (const match of shelfMatches) {
-      if (match.search && match.status && match.tags && match.downloaded) forGenres.push(match.book);
-      if (match.search && match.status && match.genres && match.downloaded) forTags.push(match.book);
-      if (match.search && match.genres && match.tags && match.downloaded) {
+      if (match.search && match.status && match.tags && match.downloaded && match.readAlong) forGenres.push(match.book);
+      if (match.search && match.status && match.genres && match.downloaded && match.readAlong) forTags.push(match.book);
+      if (match.search && match.genres && match.tags && match.downloaded && match.readAlong) {
         statusCounts.all += 1;
         statusCounts[readingStatus(match.book)] += 1;
       }
-      if (match.search && match.status && match.genres && match.tags && match.availableOnDevice) {
+      if (match.search && match.status && match.genres && match.tags && match.readAlong && match.availableOnDevice) {
         downloadedCount += 1;
+      }
+      if (match.search && match.status && match.genres && match.tags && match.downloaded && match.book.readingFile) {
+        readAlongCount += 1;
       }
     }
     return {
       genres: updateShelfFacetCounts(allShelfFacets.genres, forGenres, "genres"),
       tags: updateShelfFacetCounts(allShelfFacets.tags, forTags, "tags"),
       statusCounts,
-      downloadedCount
+      downloadedCount,
+      readAlongCount
     };
   }, [allShelfFacets, shelfMatches]);
 
@@ -266,6 +273,14 @@ export function useShelf({
         clear: () => setShelfFilters((filters) => ({ ...filters, downloadedOnly: false }))
       });
     }
+    if (shelfFilters.readAlongOnly) {
+      chips.push({
+        id: "availability:readAlong",
+        caption: "Availability",
+        label: "Read along",
+        clear: () => setShelfFilters((filters) => ({ ...filters, readAlongOnly: false }))
+      });
+    }
     for (const group of ["genres", "tags"] as ShelfFacetGroupKey[]) {
       const caption = group === "genres" ? "Genre" : "Tag";
       for (const key of shelfFilters[group]) {
@@ -288,7 +303,7 @@ export function useShelf({
 
   const visibleBooks = useMemo(() => {
     const filtered = shelfMatches
-      .filter((match) => match.search && match.status && match.downloaded && match.genres && match.tags)
+      .filter((match) => match.search && match.status && match.downloaded && match.readAlong && match.genres && match.tags)
       .map((match) => match.book);
 
     const sorted = [...filtered];

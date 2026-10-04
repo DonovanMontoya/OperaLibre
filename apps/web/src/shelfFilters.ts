@@ -17,6 +17,7 @@ export type ShelfStatusFilter = ReadingStatus | "all";
 export type ShelfFilters = {
   status: ShelfStatusFilter;
   downloadedOnly: boolean;
+  readAlongOnly: boolean;
   genres: string[];
   tags: string[];
 };
@@ -31,6 +32,7 @@ export type ShelfFacetOption = ShelfFacetValue & { count: number };
 export const EMPTY_SHELF_FILTERS: ShelfFilters = {
   status: "all",
   downloadedOnly: false,
+  readAlongOnly: false,
   genres: [],
   tags: []
 };
@@ -92,6 +94,11 @@ export function bookMatchesShelfStatus(book: Book, status: ShelfStatusFilter) {
 
 export function bookMatchesShelfDownload(availableOnDevice: boolean, downloadedOnly: boolean) {
   return !downloadedOnly || availableOnDevice;
+}
+
+/** The same test the shelf's Read along badge uses: the book's text is beside its audio. */
+export function bookMatchesShelfReadAlong(book: Pick<Book, "readingFile">, readAlongOnly: boolean) {
+  return !readAlongOnly || !!book.readingFile;
 }
 
 /**
@@ -172,6 +179,7 @@ export function compareShelfAddedAt(left: string | null | undefined, right: stri
 export function countActiveShelfFilters(filters: ShelfFilters) {
   return (filters.status === "all" ? 0 : 1)
     + (filters.downloadedOnly ? 1 : 0)
+    + (filters.readAlongOnly ? 1 : 0)
     + filters.genres.length
     + filters.tags.length;
 }
