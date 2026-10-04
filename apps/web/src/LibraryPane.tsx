@@ -591,6 +591,21 @@ export function LibraryPane({
                     <span className="facet-chip-label">Downloaded on Device</span>
                     <em>{shelfFacets.downloadedCount}</em>
                   </button>
+                  {readalongEnabled || shelfFilters.readAlongOnly ? (
+                    <button
+                      type="button"
+                      className={`facet-chip ${shelfFilters.readAlongOnly ? "selected" : ""}`}
+                      aria-pressed={shelfFilters.readAlongOnly}
+                      disabled={shelfFacets.readAlongCount === 0 && !shelfFilters.readAlongOnly}
+                      onClick={() => setShelfFilters({
+                        ...shelfFilters,
+                        readAlongOnly: !shelfFilters.readAlongOnly
+                      })}
+                    >
+                      <span className="facet-chip-label">Read along</span>
+                      <em>{shelfFacets.readAlongCount}</em>
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
