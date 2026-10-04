@@ -13,13 +13,13 @@ The backend is a Rust `axum` server that exposes a documented HTTP API; the incl
 - **Your files, your library.** Scans a folder of `.mp3`, `.m4b`, `.m4a`, `.mp4`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `.aiff` files with rich tag, chapter, and cover-art extraction.
 - **A full player.** Seekable streaming, playback speed, sleep timer, 15/30-second skips, and OS-level media controls.
 - **Per-reader accounts.** Each reader gets their own progress, listening stats, reading log, and a durable completion history that survives a book being deleted or replaced.
-- **Read along.** Read an EPUB, PDF, or text companion beside the audio. EPUBs support chapter sync. Enable the server’s follow-along experiment for sentence seeking, then press Follow in the ebook for sentence highlighting and automatic page turns. The optional aligner replaces estimated timings with a map aligned to the narration. Audible picture PDFs are told apart from the book and shown as extras.
+- **Read along.** Open an EPUB, PDF, text, or HTML companion in a full-window reader with playback controls. EPUBs support chapter sync; an aligned map and the server's follow-along experiment enable sentence seeking, highlighting, and automatic page turns. The optional generator creates those maps locally. Audible picture PDFs are told apart from the book and shown as extras.
 - **Offline listening.** The native Android and iPhone apps download books for playback without a connection.
 - **CarPlay.** The iPhone app browses your shelf, downloads, and books in progress on the car screen and plays them there, from a library snapshot that works with the phone locked and the server out of reach.
 - **Audible import.** Optional [Libation](https://github.com/rmcrackan/Libation) integration lets administrators connect Audible accounts, browse purchases, and download titles straight into the library — with a per-reader approval workflow. See [Libation / Audible Import](docs/libation.md).
 - **Libro.fm import.** Connect your Libro.fm account, browse purchases, and import selected audiobooks directly into the server. A watched-folder option is also available. See [Libro.fm Import](docs/libro.md).
 - **Jellyfin support.** The apps can also connect to a Jellyfin server for audiobook browsing, streaming, and resume sync.
-- **Works with other audiobook apps.** The server speaks an Audiobookshelf-compatible API, so clients such as BookPlayer can connect with a normal account, and publishes an OPDS catalog for generic reading apps.
+- **Third-party client access.** A subset of the Audiobookshelf API supports BookPlayer browsing and download contracts; an OPDS catalog provides individual audio downloads. Compatibility and progress sync depend on the client; see [Client compatibility](docs/client-compatibility.md).
 - **Book identity across editions.** Different rips, editions, and ISBNs of the same book are linked as one work, so reading history follows the reader across copies.
 - **Try it instantly.** A self-contained on-device demo works without a server, account, or network connection.
 
@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/DonovanMontoya/OperaLibre/main/scri
 
 It asks where to install, which audiobook folder to use, whether other devices on your home network may connect, and whether to set up the optional Audible import — which can install Libation into the OperaLibre folder for you. On Linux, it also offers to install Libation's ICU system dependency with administrator access when needed. Run the same command later to update an existing installation in place; your accounts, progress, audiobooks, and settings are kept. To skip the questions, add `| sh -s -- --yes`, and see `--help` for the other options.
 
-The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experimental features**; normal playback and chapter sync remain available with it disabled. Disabling the experiment keeps existing sync maps but pauses sentence following until it is enabled again.
+The main package stays small. Owners who want experimental follow-along sync generation can install its separate, verified runtime later from **Administration → Experiments**; normal playback and chapter sync remain available with it disabled. Disabling the experiment keeps existing sync maps but pauses sentence following until it is enabled again.
 
 For a headless machine, `--server-only` installs the server without the bundled web app and writes background start/stop helper scripts beside it.
 
@@ -56,7 +56,7 @@ An iPhone TestFlight build is also available: https://testflight.apple.com/join/
 You need Node.js 22.12+, Rust, and an audiobook folder. On macOS, run `xcode-select --install` once if needed.
 
 ```bash
-npm install
+npm ci
 cp server.config.example server.config
 # edit server.config: set library_root to your audiobook folder
 npm run dev
@@ -66,10 +66,10 @@ Open [http://localhost:5173](http://localhost:5173), create the first administra
 
 ### Native apps
 
-Each app packages the same React frontend:
+Each app packages the same React frontend. Leave `VITE_API_BASE` unset when building native apps, then choose the reachable server address in the app after launch:
 
 - **Android** (Capacitor, Android 7+): `npm run build:android` produces a debug APK; open in Android Studio with `npm run android:open -w @operalibre/web` for signing and devices.
-- **iPhone** (Capacitor, iOS 15+): `npm run build:ios` produces a simulator build; open in Xcode with `npm run ios:open -w @operalibre/web` for signing and physical phones. Background spoken-audio playback and CarPlay are configured; CarPlay on a device needs Apple to grant the `com.apple.developer.carplay-audio` entitlement for the App ID (see [Using OperaLibre](docs/using-operalibre.md#carplay)).
+- **iPhone and iPad** (Capacitor, iOS 15+): `npm run build:ios` produces a simulator build; open in Xcode with `npm run ios:open -w @operalibre/web` for signing and physical devices. Background spoken-audio playback and CarPlay are configured; CarPlay on a device needs Apple to grant the `com.apple.developer.carplay-audio` entitlement for the App ID (see [Using OperaLibre](docs/using-operalibre.md#carplay)).
 - **macOS** (AppKit/WebKit host): `./script/build_and_run.sh` builds and launches `dist/OperaLibre.app`.
 
 The mobile apps support plain HTTP for local-network and private-overlay servers (including Tailscale `100.x` addresses); use HTTPS for public remote servers.
@@ -87,8 +87,10 @@ The server owns scanning, authentication, metadata, cover art, readalong files, 
 - [Library Layout](docs/library-layout.md) — how folders, files, and companions are organized
 - [Users](docs/users.md) — accounts, sessions, and administration
 - [Libation / Audible Import](docs/libation.md) — optional Audible integration setup
+- [Libro.fm Import](docs/libro.md) — server imports and native device downloads
 - [Deployment](docs/deployment.md) — running it long-term
 - [API Reference](docs/api.md) — for building custom clients
+- [Client compatibility](docs/client-compatibility.md) — third-party client coverage and limitations
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## Development

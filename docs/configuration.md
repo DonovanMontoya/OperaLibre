@@ -5,7 +5,7 @@ nav_order: 4
 
 # Configuration
 
-The server is configured by a plain text file named `server.config` at the repository root. All settings live here — there is no admin UI for these values. Every key also has an environment-variable fallback (listed [below](#environment-variables)); the config file always wins when both are set.
+The server is configured by a plain text file named `server.config` in the installation folder. These settings are changed in the file, not in Administration. Some keys also have an environment-variable fallback (listed [below](#environment-variables)); the config file always wins when both are set. Other features, such as update channels, nightly sync schedules, and watched-folder imports, have their own controls in Administration.
 
 ## File location
 
@@ -113,7 +113,7 @@ When nginx is used, its `client_max_body_size` is an additional upload ceiling. 
 
 ### Data directory
 
-The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), cached cover art (`covers/`), the server log and PID file written by the launcher, and `update-backups/` from in-app updates. The release launchers and the installer read `data_dir` from `server.config` too, so moving it relocates all of those files together. On Unix, everything in it is kept readable only by the account running the server.
+The server keeps its state — accounts, sessions, listening progress, the reading log, completions, the work index, metadata overrides, and Libation requests — in one SQLite database, `operalibre.db`, inside `data_dir`. The directory also holds generated sync maps (`sync/`), the durable sync queue and schedules (`sync-jobs.json`, `sync-schedules.json`, and `sync-sweep.json`), cached cover art (`covers/`), optional import-account credentials, the server log and PID file written by the launcher, and `update-backups/` from in-app updates. The release launchers and the installer read `data_dir` from `server.config` too, so moving it relocates all of those files together. On Unix, everything in it is kept readable only by the account running the server.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -123,9 +123,9 @@ The server keeps its state — accounts, sessions, listening progress, the readi
 | `activity_file` | `data/activity.json` | Legacy JSON path for daily listening totals, used once to import an older installation. |
 | `metadata_overrides_file` | `data/metadata-overrides.json` | Legacy JSON path for saved metadata edits, used once to import an older installation. |
 
-The three `*_file` keys and their siblings matter only when upgrading an installation that predates the database: on first start the server copies the JSON files into `data/backup-pre-sqlite/`, imports them into `operalibre.db` in a single transaction, and never reads them again. The originals are left in place as the rollback path. Running the binary with `--export-json` writes the database contents back out in the original JSON layout and exits, which is also the supported way to inspect or hand-edit server state: export, remove `operalibre.db`, edit the JSON, and restart to re-import.
+The four legacy `*_file` keys matter only when upgrading an installation that predates the database: on first start the server copies the JSON files into `backup-pre-sqlite/` inside `data_dir`, imports them into `operalibre.db` in a single transaction, and never reads them again. The originals are left in place as the rollback path. Running the binary with `--export-json` writes the database contents back out in the original JSON layout and exits. For recovery through edited JSON, stop the server and follow [the recovery procedure](users.md#resetting-a-forgotten-admin-password), keeping the original database and its journal files until recovery is verified.
 
-Back up `data_dir` to preserve progress, reading history, and accounts. The completion records in the database are the only history of a book that has since been deleted from the library.
+Back up `data_dir` to preserve progress, reading history, and accounts; see [Backups](deployment.md#backups) for a safe copy and the portable export option. The completion records in the database are the only history of a book that has since been deleted from the library.
 
 ### Web app
 
@@ -135,18 +135,18 @@ Back up `data_dir` to preserve progress, reading history, and accounts. The comp
 
 ### Optional Libation integration
 
-Leave both blank to disable. See [Libation / Audible Import](libation.md) for the full integration guide.
+Libation is available when the server finds its CLI at the configured path or on `PATH`. See [Libation / Audible Import](libation.md) for the full integration guide.
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `libation_cli_path` | *(empty)* | Absolute path to the Libation CLI binary (`libationcli`, `LibationCli`, or `libationcli.exe`). If blank, the server searches `PATH`. |
-| `libation_files_dir` | *(empty)* | Optional legacy Libation files directory containing `AccountsSettings.json` and `Settings.json`. Accounts added by an administrator in OperaLibre are stored as isolated profiles under `data_dir/libation-accounts`. |
+| `libation_files_dir` | *(empty)* | Libation files directory containing `AccountsSettings.json` and `Settings.json`. Existing managed accounts and accounts added through the managed-account API use isolated profiles under `data_dir/libation-accounts`. |
 | `libation_auto_refresh_hours` | `24` | How often the server asks Libation to scan Audible automatically. The first scan runs at startup when no previous successful scan is recorded. Set to `0` to disable scheduled scans. |
 | `libation_reader_refreshes_per_hour` | `3` | Maximum reader-triggered Audible scans per account in a rolling hour. Administrators are not limited. Set to `0` to remove the reader rate limit. |
 
 ### Optional readalong alignment
 
-Owners of managed release installations can install and enable the generator under **Administration → Experimental features**; no configuration entry is needed. Sentence following requires the experiment to be enabled and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
+Owners of managed release installations can install and enable the generator under **Administration → Experiments**; no configuration entry is needed. Sentence following requires an aligned map, the experiment to be enabled, and the reader to press Follow in the ebook, including for user-provided and previously generated `.sync.json` maps. Disabling it keeps those maps and leaves chapter sync available. Development and manually managed installations can configure an existing echogarden executable here instead; that explicit configuration takes priority over the managed add-on. See [Library Layout](library-layout.md#sync-maps-following-the-narration) for the sync-map workflow.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -163,7 +163,7 @@ MP4-family files written without a leading `moov` index start playing slowly ove
 
 ## Environment variables
 
-Every config key has an environment-variable fallback. A value in `server.config` always takes precedence; the variable is read only when the key is absent or empty.
+Only the config keys listed here have environment-variable fallbacks. Transfer size limits, download concurrency, and the two Libation refresh limits must be set in `server.config`. A value in the file always takes precedence; the variable is read only when the key is absent or empty.
 
 | Variable | Description |
 | --- | --- |
@@ -185,13 +185,17 @@ The web app has one build-time variable:
 
 | Variable | Description |
 | --- | --- |
-| `VITE_API_BASE` | Base URL the web app uses for API calls when not running behind the Vite dev proxy (e.g., a Capacitor iOS build pointing at a remote server). |
+| `VITE_API_BASE` | Optional default server address for a deliberately separate browser frontend. A saved address chosen in the app takes precedence. |
 
-`VITE_API_BASE` is read at **build time** by Vite. Set it before running `npm run build`:
+Leave `VITE_API_BASE` **unset** for development, same-origin deployments, and packaged iOS, Android, and macOS builds. Vite proxies development requests, and installed apps let the reader choose a server at runtime. A baked-in loopback address points at the reader's own device and can prevent it from reaching the server.
+
+For a browser frontend intentionally hosted at a different address, `VITE_API_BASE` is read at **build time** by Vite:
 
 ```bash
-VITE_API_BASE=https://books.example.com npm run build
+VITE_API_BASE=https://books.example.com npm run build -w @operalibre/web
 ```
+
+Also add the frontend's full origin to the server's `allowed_origins` setting.
 
 ## Reloading config
 

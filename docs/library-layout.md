@@ -54,7 +54,9 @@ If a single `.m4b` has internal chapters, those win. If not, you get one chapter
 
 ## Cover art
 
-Cover art comes from the artwork embedded in the audio files' tags; the server extracts it during a scan and caches it under `data/covers/`. A book with no embedded art falls back to a generic tile in the UI, so add the artwork with a tag editor (Mp3Tag, Kid3, or similar) and rescan. Loose image files such as `cover.jpg` beside the tracks are not read.
+Cover art initially comes from the artwork embedded in the audio files' tags; the server extracts it during a scan and caches it under `data_dir/covers/`. A book with no embedded art falls back to a generic tile. Loose image files such as `cover.jpg` beside the tracks are not used as covers.
+
+An administrator can replace the cover through **Edit Info** with a JPEG, PNG, or WebP, without changing the audio. The replacement survives rescans and restarts; **Restore original cover** returns to embedded art or the generic tile. Replacements need a writable book folder and are stored there as hidden OperaLibre files. Keep those files with the library and preserve the server's metadata in backups. See [Add books to the library](using-operalibre.md#add-books-to-the-library) for image limits.
 
 Covers are served from `/api/books/:bookId/cover`.
 
@@ -100,12 +102,9 @@ To keep scans and uploads responsive, EPUB analysis stops after processing 100,0
 
 ### Sync maps (following the narration)
 
-When a book has an EPUB companion, a *sync map* lets the reader pane follow the audio. With the server’s follow-along experiment enabled, tapping a sentence plays from there. Pressing Follow in the ebook also highlights the narrated sentence and turns the page with the audio. Chapter sync remains available when sentence following is off. There are two levels of map precision:
+When a book has an EPUB companion, a *sync map* lets the reader follow the audio sentence by sentence. With the server’s follow-along experiment enabled and an aligned map available, tapping a mapped sentence plays from there. Pressing **Follow** also highlights the narrated sentence and turns the page with the audio. Without an aligned map, chapter sync remains available; the server does not create estimated sentence timings.
 
-1. **Estimated.** With no sync map on disk, the server builds one on first request from the chapter list: each audio chapter is pinned to its entry in the EPUB's table of contents, and the chapter's seconds are shared among its sentences by how long the narrator is expected to spend on each. That pace is fitted to the book — seconds per character, per sentence end, per paragraph, and on dialogue — from the chapters' known lengths when there are enough of them. The estimate itself needs no alignment job and keeps the page and paragraph in step, but the marker can run a few lines ahead or behind. The reader labels it *Approximate sync*, and offers **Sync here**: tapping the sentence being narrated stores an anchor in `{book_id}.anchors.json` and re-times the chapter through it. Estimates live under `data_dir/sync/` as `{book_id}.estimate-{fingerprint}.sync.json` and are rebuilt when the EPUB, the chapters, or the anchors change.
-2. **Sentence.** A forced alignment of the audio against the text, exact to the sentence. The alignment also times every word and those timings are kept in the map, but the reader marks whole sentences only.
-
-Sentence timings come from a matching `.sync.json` sidecar or the optional generator. Owners can install and enable it under **Administration → Experimental features**, then administrators can choose **Improve sync** in the reader. Manual installations can set `alignment_cli_path` to an existing echogarden executable. Generated maps live under `data_dir/sync/`; sidecars take priority, and both take priority over estimates. Disabling or removing the generator keeps those maps but disables sentence following until the experiment is enabled again.
+Sentence timings come from a matching `.sync.json` sidecar or the optional generator, which aligns the audio against the text. Owners can install and enable it under **Administration → Experiments**, then administrators can choose **Improve sync** in the reader. Manual installations can set `alignment_cli_path` to an existing echogarden executable. Generated maps live under `data_dir/sync/`. A sidecar takes priority unless a current generated map replaces an outdated OperaLibre-generated sidecar. Existing outdated maps remain usable while you regenerate them; current maps and third-party maps do not need remapping just because the application was updated. Disabling or removing the generator keeps those maps but disables sentence following until the experiment is enabled again.
 
 Generation uses embedded chapter boundaries when they match the EPUB; otherwise it uses whole-track scopes. Long scopes are processed in transcription and alignment windows to limit drift. Multi-file books use ordered chapter matching, including spelled-out and roman chapter numbers, repeated titles, and unmatched credits. Generation runs one book at a time and requires no paid transcription service.
 

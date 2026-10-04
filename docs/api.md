@@ -7,7 +7,7 @@ nav_order: 9
 
 All endpoints are served by the Rust backend on `host:port` (default `127.0.0.1:4920`). With the exception of a small public surface, every endpoint requires an authenticated session. Public deployments must expose a TLS reverse proxy rather than this raw HTTP listener.
 
-Browser clients that authenticate with the session cookie must send an `Origin` (or `Referer`) matching the API host for `POST`, `PUT`, and `DELETE` requests. Origins explicitly trusted through `allowed_origins` are also accepted. Native and other API clients should send the session with `Authorization: Bearer ...`; bearer-authenticated changes do not require browser CSRF headers.
+Browser clients that authenticate with the session cookie must send an `Origin` (or `Referer`) matching the API host for `POST`, `PUT`, `PATCH`, and `DELETE` requests. Origins explicitly trusted through `allowed_origins` are also accepted. Native and other API clients should send the session with `Authorization: Bearer ...`; bearer-authenticated changes do not require browser CSRF headers.
 
 The included React/Vite app is one client for this API. Custom web, mobile, desktop, or native frontends can use the same endpoints as long as they follow the authentication and media URL conventions below.
 
@@ -80,6 +80,15 @@ Frontend installation is available when the server directly serves a versioned w
 | `PUT` | `/api/users/{user_id}/libation-access` | Set direct or approval-required Libation access. Admin targets require an owner. |
 | `PUT` | `/api/users/{user_id}/libation-approval` | Grant or revoke an administrator's request-approval permission. Owner only. |
 
+#### Server backup (owner)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/admin/backup` | Export a portable JSON backup of database state and stable library identities. |
+| `POST` | `/api/admin/backup` | Restore the exported JSON body, up to 256 MiB. Replaces server-owned state after validating the format and creating a safety backup. |
+
+The archive includes accounts, permissions, progress, per-book settings, reading history, metadata, work links, and Libation records. It excludes audio, companion and cover files, generated sync maps, sync queue/schedule files, import credentials, and `server.config`; back up those separately. Restoring does not revive sessions from the archive. The requesting owner's live session is retained only when its user ID exists in the restored accounts; other clients must sign in again. The response reports `safetyBackup`, counts, `sessionRetained`, and any warning. See [Backups](deployment.md#backups) for the complete workflow.
+
 #### Account settings
 
 | Method | Path | Description |
@@ -102,6 +111,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `GET` | `/api/books/{book_id}/companions/{companion_id}` | Any companion file beside the book — the text, a picture supplement, or a loose image — by the id from the book's `companions` list. |
 | `GET` | `/api/books/{book_id}/companions/{companion_id}/entries/{path}` | One EPUB archive member, such as `META-INF/container.xml` or `OEBPS/chapter1.xhtml`. Supports media tokens, private ETag revalidation, and compression. Members are limited to 32 MiB uncompressed. The server sends eight members at a time, at most four of them to one account: further requests wait their turn, and a transfer the client leaves unread for 30 seconds is closed. |
 | `GET` | `/api/books/{book_id}/sync` | The readalong sync map (`.sync.json`). Serves an aligned sidecar or generated map when one exists; otherwise returns 404. Outdated maps remain available until replaced. |
+| `GET` | `/api/books/{book_id}/tracks/{track_id}/stream` | Stream one track in its original format, with HTTP byte-range support for seeking. Accepts the scoped media token. |
 | `POST` | `/api/books/{book_id}/sync/generate` | Start a background job that force-aligns the audio against the EPUB companion and writes a sentence- and word-level sync map. Admin only; requires an enabled add-on or manually configured alignment CLI. Jobs are durably queued and deduplicated by book; queued and interrupted jobs resume after restart with the same job IDs. Interrupted books restart generation from the beginning. Returns `{ "jobId": "..." }`. |
 | `GET` | `/api/alignment/status` | Whether sync generation is enabled: `{ "enabled": bool, "cliPath": string \| null }`. Admin only. |
 | `GET` | `/api/experimental-features/readalong-sync` | Installed, enabled, version, package availability, size, and management status for the optional generator. Admin only. Add `?refresh=true` to refresh release metadata. |
@@ -116,6 +126,7 @@ Frontend installation is available when the server directly serves a versioned w
 | `PUT` | `/api/books/{book_id}/volume` | Set the current user's playback gain for the book. Body `{ "volumeGain": number }`, a linear multiplier clamped to `0.5`–`16.0`. Returns the updated book. |
 | `POST` | `/api/library/rescan` | Re-scan `library_root` for changes. Admin only. |
 | `POST` | `/api/library/upload` | Upload one or more audio files as a new library folder. Admin only; multipart fields are `bookName` and one or more `files`. Subject to `max_upload_gib`. |
+| `POST` | `/api/books/{book_id}/ebook` | Pair one validated, unencrypted EPUB with an existing book. Admin only; multipart field `file`. Limited to 64 MiB or `max_upload_gib`, whichever is lower. Does not overwrite files; refuses books with an existing paired EPUB or sync map. Returns the refreshed book list. |
 | `GET` | `/api/library/faststart` | Report which MP4/M4B files still keep their `moov` index behind the audio. Admin only. |
 | `POST` | `/api/library/faststart` | Start a faststart conversion job. Admin only; body `{ "bookId": string \| null, "includeActive": bool }`. Returns `{ "jobId": ... }` to poll on `/api/jobs/{job_id}`. |
 
@@ -256,15 +267,16 @@ Editions are matched to works in tiers: an administrator's manual link, then an 
 
 #### Libro.fm accounts and imports
 
-These routes operate only on the authenticated user's Libro.fm connection.
+These routes operate only on the authenticated user's Libro.fm accounts. A user can connect multiple accounts, with cached purchases carrying their `accountEmail`.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/me/libro` | Connection status, cached purchases, accessible local book IDs, and the user's jobs. Tokens are never returned. |
+| `GET` | `/api/me/libro` | Account summaries (email, nickname, last refresh), cached purchases, accessible local book IDs, and the user's jobs. Tokens are never returned. |
 | `POST` | `/api/me/libro` | Connect with `{ "email": "…", "password": "…" }`; save the returned token and queue library refresh. Password is not retained. |
-| `DELETE` | `/api/me/libro` | Remove the user's connection and cached purchases; keep imported audio. |
-| `POST` | `/api/me/libro/refresh` | Queue library refresh; returns `{ "jobId": "…" }`. |
-| `POST` | `/api/me/libro/books/{isbn}/import` | Queue one owned purchase for import; grant the importing user access after indexing. |
+| `PATCH` | `/api/me/libro` | Rename one account with `{ "email": "…", "nickname": "…" }`. Nickname: at most 80 characters, with no control characters. Returns `204`. |
+| `DELETE` | `/api/me/libro` | Remove the selected account and its cached purchases; keep imported audio. Use `?email=...` when multiple accounts are connected. |
+| `POST` | `/api/me/libro/refresh` | Queue refresh of all connected accounts; returns `{ "jobId": "…" }`. |
+| `POST` | `/api/me/libro/books/{isbn}/import` | Queue one owned purchase for import; `?email=...` selects its account. Grants the importing user access after indexing. |
 
 Jobs use `libro-refresh` and `libro-download`. Imported ISBNs have stable folders
 and `.libro-book.json` metadata sidecars. Library updates preserve manual metadata
@@ -338,9 +350,12 @@ Compatibility is client-specific. BookPlayer response decoding and its browse/do
 | `GET` | `/abs/api/libraries/{library_id}/filterdata` | Author, series, narrator, genre, and tag facets. |
 | `GET` | `/abs/api/libraries/{library_id}/search` | Search books. |
 | `GET` | `/abs/api/libraries/{library_id}/collections` | Always empty; collections are not supported. |
+| `GET` | `/abs/api/collections/{collection_id}` | Returns 404; collections are not supported. |
 | `GET` | `/abs/api/authors/{author_id}` | An author with their items. |
 | `GET` | `/abs/api/items/{item_id}` | One library item. |
 | `GET` | `/abs/api/items/{item_id}/cover` | Cover art. |
+| `GET` | `/abs/api/books/{book_id}/cover` | Media-token-compatible cover alias for clients resolving URLs against `/abs`. |
+| `GET` | `/abs/api/books/{book_id}/tracks/{track_id}/stream` | Media-token-compatible byte-range audio alias for those clients. |
 | `GET`/`POST` | `/abs/api/items/{item_id}/play` | Open a playback session with the resume position. |
 | `GET`/`PATCH` | `/abs/api/me/progress/{item_id}` | Read or write media progress; synced with native OperaLibre progress. |
 | `GET` | `/abs/api/items/{item_id}/download` | Download the item archive. |
