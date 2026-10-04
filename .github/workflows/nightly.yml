@@ -1,0 +1,45 @@
+name: Nightly trigger
+
+# GitHub can start scheduled runs hours late and drops some under load, so a
+# single 8:17 p.m. cron is unreliable. This checks hourly and starts the
+# nightly release from the first run after 8:17 p.m. Eastern. It stays out of
+# the release concurrency group so these checks never replace a pending
+# manual release.
+on:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-trigger
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Start tonight's nightly
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # repository_dispatch
+    steps:
+      - name: Dispatch once per night
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          boundary="$(TZ=America/New_York date -d '20:17' +%s)"
+          if (( boundary > $(date +%s) )); then
+            boundary="$(TZ=America/New_York date -d 'yesterday 20:17' +%s)"
+          fi
+          since="$(date -u -d "@${boundary}" +%Y-%m-%dT%H:%M:%SZ)"
+          # A run cancelled while pending gets another try next hour; a failed
+          # one waits for a maintainer instead of retrying all night.
+          started="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs" \
+            -f event=repository_dispatch -f created=">=${since}" \
+            --jq '[.workflow_runs[] | select(.conclusion != "cancelled")] | length')"
+          if (( started > 0 )); then
+            echo "The nightly since ${since} has already started."
+            exit 0
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/dispatches" -f event_type=nightly
+          echo "Dispatched the nightly for ${since}."

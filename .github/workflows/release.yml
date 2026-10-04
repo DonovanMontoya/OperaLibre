@@ -1,10 +1,9 @@
 name: Create Release
 
 on:
-  schedule:
-    # 8:17 p.m. Eastern, following daylight saving time.
-    - cron: "17 20 * * *"
-      timezone: "America/New_York"
+  # Nightlies are started by nightly.yml shortly after 8:17 p.m. Eastern.
+  repository_dispatch:
+    types: [nightly]
   push:
     tags:
       - "v*"
